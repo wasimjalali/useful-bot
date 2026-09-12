@@ -1,7 +1,6 @@
 import { eveChannel } from "eve/channels/eve";
 import { ForbiddenError, jwtHmac, type AuthFn } from "eve/channels/auth";
-
-const sessionOwner = new Map<string, string>();
+import { SessionOwners, defaultOwnerPath } from "../lib/session-owners.ts";
 
 function principalKey(ctx: {
   authenticator: string;
@@ -32,18 +31,14 @@ function channelAuth(): AuthFn<Request> {
     issuer: "useful-bot",
     secret,
   });
+  const owners = new SessionOwners(defaultOwnerPath());
   return async (request) => {
     const ctx = await verify(request);
     if (!ctx) return null;
     const sessionId = sessionIdFrom(request);
     if (!sessionId) return ctx;
-    const key = principalKey(ctx);
-    const owner = sessionOwner.get(sessionId);
-    if (!owner) {
-      sessionOwner.set(sessionId, key);
-      return ctx;
-    }
-    if (owner !== key) {
+    const decision = owners.claim(sessionId, principalKey(ctx));
+    if (decision === "forbidden") {
       throw new ForbiddenError({ message: "session_ownership" });
     }
     return ctx;

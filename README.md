@@ -14,8 +14,8 @@ Local-first personal agent on [eve](https://github.com/vercel/eve) 0.54.3. Priva
 |---|---|
 | 0 spikes S0-S3 | merged (#2) |
 | 1.1-1.2 router and agent core | merged (#3) |
-| 1.3 macOS surface | in progress on `feat/pr4-macos-surface` |
-| 2 daily usefulness | not started |
+| 1.3 macOS surface | merged (#4) |
+| 2 daily usefulness | in progress on `feat/pr5-daily-usefulness` |
 | 3 phone | not started |
 
 ## Commands
