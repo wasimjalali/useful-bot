@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 /* Useful Bot role-named tokens, Useful Brain parity. */
 :root {
   --canvas: #f8f8f8;
@@ -39,6 +41,40 @@
   --shadow-raise: 0 1px 0 rgb(23 23 23 / 0.04), 0 22px 44px -22px rgb(23 23 23 / 0.22);
   --shadow-pop: 0 24px 56px -28px rgb(23 23 23 / 0.28);
   --shadow-rail: inset 0 1px 0 rgb(255 255 255 / 0.78), inset 0 -1px 0 rgb(23 23 23 / 0.03);
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-rail: var(--rail);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-on-dark: var(--accent-on-dark);
+  --color-accent-ink: var(--accent-ink);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 html, body {
