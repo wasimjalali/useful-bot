@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
-import { loadRuntimeConfig, type CredentialDigest } from "../../../../shared/runtime.ts";
+import { loadRuntimeConfig, type CredentialDigest } from "../../shared/runtime.ts";
 
 const COOKIE = "ub_session";
 const sessions = new Map<string, { callerId: string; profile: string; csrf: string; expiresAt: number }>();

@@ -39,4 +39,5 @@ function reviewerModel() {
 export default defineAgent({
   model: reviewerModel(),
   modelContextWindowTokens: POLICY_WINDOW_TOKENS,
+  description: "Read-only defect finder over supplied text. No tools, no delegation.",
 });

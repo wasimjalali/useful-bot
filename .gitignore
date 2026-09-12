@@ -13,7 +13,7 @@ secrets/
 dist/
 router/dist/
 .next/
-agent/channels/web/.next/
+web/.next/
 build/
 
 # regenerable verification evidence (large, reproduce with scripts/build-plan-html.py)
