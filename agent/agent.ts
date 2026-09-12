@@ -144,7 +144,23 @@ function requireModel() {
   if (process.env.UB_S2_FIXTURE === "1") {
     return s2FixtureModel();
   }
-  throw new Error("router LanguageModel is not wired in this PR; S2 probe sets UB_S2_FIXTURE=1");
+  const token = process.env.UB_ROUTER_DESKTOP_TOKEN;
+  if (!token) {
+    throw new Error("UB_ROUTER_DESKTOP_TOKEN missing; S2 probe sets UB_S2_FIXTURE=1");
+  }
+  const provider = createOpenAICompatible({
+    name: "useful-bot-router",
+    baseURL: process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1",
+    apiKey: token,
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      headers.set("x-useful-session-id", process.env.UB_SESSION_ID ?? crypto.randomUUID());
+      headers.set("x-useful-turn-id", process.env.UB_TURN_ID ?? crypto.randomUUID());
+      headers.set("x-useful-request-id", crypto.randomUUID());
+      return fetch(input, { ...init, headers });
+    },
+  });
+  return provider.chatModel("workhorse");
 }
 
 export default defineAgent({

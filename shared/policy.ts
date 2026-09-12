@@ -9,6 +9,21 @@ export const POLICY_APPROVAL_TTL_MS = 5 * 60 * 1000;
 export const POLICY_NODE_MAJOR = 24;
 export const POLICY_EVE_VERSION = "0.54.3";
 export const ABSOLUTE_NODE = "/usr/local/bin/node";
+export const ROUTER_HOST = "127.0.0.1";
+export const ROUTER_PORT = 4319;
+export const EVE_HOST = "127.0.0.1";
+export const EVE_PORT = 4321;
+export const BODY_LIMIT_BYTES = 1_048_576;
+export const WRITE_MAX_BYTES = 64 * 1024;
+export const READ_MAX_BYTES = 16 * 1024;
+
+export const CALLER_LIMITS = {
+  desktop: { aliases: ["workhorse"], search: true, rpm: 12, requests24h: 200, input24h: 2_000_000, output24h: 200_000 },
+  phone: { aliases: ["workhorse"], search: true, rpm: 4, requests24h: 40, input24h: 400_000, output24h: 40_000 },
+  reviewer: { aliases: ["reviewer"], search: false, rpm: 4, requests24h: 20, input24h: 300_000, output24h: 80_000 },
+  eval: { aliases: ["workhorse", "reviewer"], search: true, rpm: 12, requests24h: 80, input24h: 1_000_000, output24h: 160_000 },
+  ops: { aliases: [], search: false, rpm: 30, requests24h: 0, input24h: 0, output24h: 0 },
+} as const;
 
 export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".env",
