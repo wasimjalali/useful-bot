@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHmac } from "node:crypto";
 
 const NODE = "/usr/local/bin/node";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,6 +37,20 @@ function keychain(service) {
       resolve(value);
     });
   });
+}
+
+function signChannelJwt(secret, sub) {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const payload = Buffer.from(JSON.stringify({
+    sub,
+    iss: "useful-bot",
+    aud: "useful-bot",
+    iat: now,
+    exp: now + 12 * 60 * 60,
+  })).toString("base64url");
+  const sig = createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url");
+  return `${header}.${payload}.${sig}`;
 }
 
 async function childEnv() {
@@ -95,15 +110,27 @@ async function main() {
   if (mode === "eve") {
     await waitReady("http://127.0.0.1:4319/health/live", 60_000);
     const env = { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" };
-    run([path.join(ROOT, "node_modules/eve/bin/eve.js"), "start", "--host", "127.0.0.1", "--port", "4321"], env);
+    try {
+      env.UB_CHANNEL_JWT_SECRET = await keychain("com.usefulbot.channel.desktop");
+      env.UB_ROUTER_DESKTOP_TOKEN = await keychain("com.usefulbot.router.desktop");
+    } catch {
+      fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
+    }
+    run([path.join(ROOT, "node_modules/eve/bin/eve.js"), "dev", "--no-ui", "--host", "127.0.0.1", "--port", "4321"], env);
     return;
   }
   if (mode === "web") {
     const env = { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" };
+    try {
+      const secret = await keychain("com.usefulbot.channel.desktop");
+      env.UB_CHANNEL_JWT = signChannelJwt(secret, "desktop-app");
+    } catch {
+      fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
+    }
     run([
       path.join(ROOT, "node_modules/next/dist/bin/next"),
       "dev",
-      path.join(ROOT, "agent/channels/web"),
+      path.join(ROOT, "web"),
       "--hostname",
       "127.0.0.1",
       "--port",

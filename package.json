@@ -17,8 +17,8 @@
     "s1": "/usr/local/bin/node spikes/s1/probe.mjs",
     "start": "/usr/local/bin/node scripts/service.mjs eve",
     "router:start": "/usr/local/bin/node scripts/service.mjs router",
-    "web:dev": "/usr/local/bin/node node_modules/next/dist/bin/next dev agent/channels/web --hostname 127.0.0.1 --port 4320",
-    "web:build": "/usr/local/bin/node node_modules/next/dist/bin/next build agent/channels/web"
+    "web:dev": "/usr/local/bin/node node_modules/next/dist/bin/next dev web --hostname 127.0.0.1 --port 4320",
+    "web:build": "/usr/local/bin/node node_modules/next/dist/bin/next build web"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.48",
