@@ -15,17 +15,24 @@ Local-first personal agent on [eve](https://github.com/vercel/eve) 0.54.3. Priva
 | 0 spikes S0-S3 | merged (#2) |
 | 1.1-1.2 router and agent core | merged (#3) |
 | 1.3 macOS surface | merged (#4) |
-| 2 daily usefulness | in progress on `feat/pr5-daily-usefulness` |
-| 3 phone | not started |
+| 2 daily usefulness | merged (#5) |
+| 3 phone | deferred |
 
-## Commands
+## Run locally
 
 ```sh
 export PATH=/usr/local/bin:$PATH
-npm run verify:phase0 -- --case runtime
-npm run verify:phase0 -- --case opencode
-npm run verify:phase0 -- --case eve
-npm run verify:phase0 -- --case sandbox
+/usr/local/bin/node scripts/setup-local.mjs
 ```
 
-Sleeping the Mac is downtime. Do not claim otherwise.
+That writes Keychain items and `~/.useful-bot/config.json` digests. Reveal the device token in Keychain Access (`com.usefulbot.device.desktop`). Install the OpenCode Go key as `com.usefulbot.opencode-go` yourself. This repo never prints those values.
+
+```sh
+export PATH=/usr/local/bin:$PATH
+/usr/local/bin/node scripts/service.mjs router
+/usr/local/bin/node scripts/service.mjs web
+make -C macos bundle
+open "macos/dist/Useful Bot.app"
+```
+
+Web is `http://127.0.0.1:4320`. Chat needs eve as well (`service.mjs eve`) after the Go key is in Keychain. Sleeping the Mac is downtime.
