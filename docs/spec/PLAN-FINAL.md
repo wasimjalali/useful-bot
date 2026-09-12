@@ -28,7 +28,7 @@ Hermes parity is not a v1 acceptance criterion. Acceptance is seven days of the 
 | Authored tools can access the agent runtime's environment. An agent router token is therefore a usable quota capability. | Muse and HY4 findings, adopted threat model. Separate processes reduce accidental provider-key exposure but do not isolate processes running under one macOS user. |
 | eve auth and approval hooks are exported, but session identity propagation, replay and cancel behavior need local proof. | [auth source](https://raw.githubusercontent.com/vercel/eve/main/packages/eve/src/public/channels/auth.ts), [approval exports](https://raw.githubusercontent.com/vercel/eve/main/packages/eve/src/public/tools/approval/index.ts). VERIFY S2 and S3 gate deployment. |
 | Tailscale Serve can front a local service with tailnet HTTPS. | [Serve documentation](https://tailscale.com/docs/features/tailscale-serve). VERIFY S4 tests the actual ACL, phone identity and Funnel-off configuration. |
-| Brave Search API is the named search provider. | [Brave API](https://brave.com/search/api/). VERIFY S5 needs an owner-installed key and approved account spending limit. No account or paid tier is provisioned by this plan. |
+| Keyless search is verified working from this machine, with no key, account or signup. | Direct probe 2026-09-12: `POST https://api.firecrawl.dev/v2/search` with no API key returned HTTP 200 in 1.2s, body shape `{success, data:{web:[{url,title,description}]}, creditsUsed, id}`, and the hosted keyless MCP endpoint handshakes (firecrawl-fastmcp 3.24.1). The response carries no rate-limit headers, so 429 is the only limit signal and our own caps stay conservative. Keyless access still binds the operator to Firecrawl's terms and to target `robots.txt`. |
 
 The supplied reviews disagree about whether to reuse Codex threads and whether a macOS wrapper belongs in the smallest release. The fixed constraints decide both: fresh threads in the later spike, and a working macOS wrapper in the first product milestone.
 
@@ -57,8 +57,8 @@ Loopback addresses above are local application constants. The real tailnet hostn
 | D7 | Markdown truth plus Node's SQLite FTS5 index; explicit memory budgets and atomic writes. | Muse, GLM and HY4 identify cross-session scope, concurrency and retrieval problems. A small bounded index avoids a future 10,000-note scan without a database service. |
 | D8 | Default this machine to non-VM mode until S3 proves a real VM. Every bash and write_file call requires local approval in non-VM mode. | HY4 disproved assumed microsandbox installation. A backend failure never silently lowers permissions. |
 | D9 | Distinct device tokens, router caller tokens, session ownership and a phone tool allowlist. | Muse and HY4 show why one shared tailnet bearer is a remote-shell vulnerability. |
-| D10 | Model and search keys are owner-installed in Keychain, loaded only by the router bootstrap. No repository credential files or key-install script. | Fixes v0.1's contradiction between `router/.env` and secret discipline. Agent capabilities remain reachable and are capped rather than falsely described as secret. |
-| D11 | Brave Search API via a bounded router endpoint, plus constrained public-HTTPS fetch. | Muse, HY4 and Grok require a real search provider, credential boundary and quota rule. |
+| D10 | The only model credential is the OpenCode Go key, owner-installed in Keychain and loaded only by the router bootstrap. Search needs no credential at all (keyless Firecrawl). No repository credential files and no key-install script. | Fixes v0.1's contradiction between `router/.env` and secret discipline, and the keyless search decision removes the second credential the plan used to need. Agent capabilities remain reachable and are capped rather than falsely described as secret. |
+| D11 | Keyless Firecrawl search behind a bounded router endpoint, plus constrained public-HTTPS fetch. No search credential exists anywhere, so there is nothing to leak or rotate. | Owner decision 2026-09-12: free and keyless. Muse, HY4 and Grok still require the bounded provider endpoint, the credential boundary and the quota rule, all of which this keeps. |
 | D12 | Absolute Node 24 interpreter, production builds and launchd from the first desktop milestone. | HY4's PATH finding and every review's missing-supervision finding. |
 | D13 | One deterministic contract/eval suite plus live model cases and a seven-day task trial. | HY4 asks for named cutover tasks; all reject “a text reply worked” as sufficient proof. |
 
@@ -93,7 +93,7 @@ Phase 1 is the first usable product, on macOS. No native mobile or terminal prod
 | Task | Deliverable | Verification gate |
 |---|---|---|
 | 2.1 | Memory note format, atomic store, FTS5 index, audience filtering, injection cap and local recovery snapshots. | Cross-session recall, conflict, index rebuild, expiry and 10,000-note retrieval tests pass. All memory paths collectively stay within budget. |
-| 2.2 / S5 | Brave search and public web_fetch with bounded results and SSRF defense. | Live query returns attributable title/URL/snippet results; timeout/429 and private-address redirects fail visibly; no loopback/tailnet fetch succeeds. |
+| 2.2 / S5 | Keyless Firecrawl search and public web_fetch with bounded results and SSRF defense. | A live query with no search key present returns attributable title/URL/snippet results; timeout/429 and private-address redirects fail visibly; no loopback/tailnet fetch succeeds. |
 | 2.3 | One pinned reviewer with supplied-text-only input and no side-effect tools. | Its real model ID appears in metadata; seeded defect is found; it cannot delegate recursively or acquire desktop tools. |
 | 2.4 | Stable prompt prefix and complete owner instructions. | Voice, to-do, secret refusal, approval, branch and verification-honesty cases pass `verify:phase2`. No bulk skill import or old-memory import. |
 
@@ -130,7 +130,7 @@ The 25 scored attempts are five each: answer a research question with two checke
 | Cache destruction and silent fallback | All four drove static aliases; GLM and Grok drove visible new-turn-only retry with no automatic v1 fallback. |
 | No memory concurrency/injection contract | Muse, GLM and HY4 drove FTS5, atomic writes and a hard cap. Grok's simplicity concern is addressed by Node SQLite with no database server or embeddings. |
 | Missing lifecycle, concurrency and accounting | All four drove launchd, health, redacted request IDs and persistent quota reservations. GLM drove one-active-turn and session ownership rules. |
-| Search provider omitted and scope inflated | Muse, HY4 and Grok drove Brave selection and the explicit v2 list. No schedules, integrations or skill migration enter the release. |
+| Search provider omitted and scope inflated | Muse, HY4 and Grok drove the requirement for a real, bounded search provider; the owner's 2026-09-12 decision replaced the paid option with keyless Firecrawl. The explicit v2 list keeps its force: no schedules, integrations or skill migration enter the release. |
 
 ## Deferred to v2
 
@@ -145,6 +145,30 @@ The 25 scored attempts are five each: answer a research question with two checke
 
 The later Codex spike is capped at one engineering day after v1. Pin the installed CLI version and generate its schema. A single long-lived app-server child must use one fresh thread for each completion request with the full eve history. Pass only if Useful Bot's system rules prevail over injected Codex instructions, eve executes a complete tool-call round trip, streaming and cancel are faithful, compacted history/retry/restart do not duplicate state and our code never opens `~/.codex/auth.json`. A text-only answer is insufficient. Failure of any condition means Codex is exposed later as an explicit eve delegation tool with Codex owning its own agent state, never as a model upstream. See SPEC.md for the exact gates.
 
+## Execution and review pipeline
+
+Owner decisions of 2026-09-12. Work runs in the implementing agent's harness, not in `dsh`. `dsh` is verified working headless and already points at OpenCode Go, but its per-call model selection is unverified, its default model returned a weekly-limit 429 on the first probe, and it is a `0.1.2-rc.1` build. It stays available as an optional executor. Both target models were verified through OpenCode Go on 2026-09-12: `opencode-go/deepseek-v4.1-flash` and `opencode-go/glm-5.3`.
+
+| Role | Model and harness | When it runs |
+|---|---|---|
+| Executor | `opencode-go/deepseek-v4.1-flash`, one fresh process per task | Every task in every PR |
+| In-PR adversarial review | DeepSeek, multiple fresh processes across angles, driven by subagents | After each PR's tasks land, before the gate |
+| Pre-merge gate | `opencode-go/glm-5.3`, fresh process, skeptic brief | After the DeepSeek passes come back clean |
+| Hard-spot adversarial | Grok 4.6 through the Grok Build CLI, not OpenCode | Only on auth, token handling, Keychain and channel-auth changes |
+
+The loop: executor work, then DeepSeek adversarial passes, fix confirmed Critical and High findings, then the GLM 5.3 gate, and only a clean gate merges. The implementing agent merges on green and reports after each PR. Document-only changes skip the adversarial step, per the standing loop. If the Grok CLI is not authenticated when a hard-spot pass is needed, that pass falls back to an additional DeepSeek adversarial pass plus the GLM 5.3 gate, and the substitution is stated in the PR.
+
+Delivery shape: six PRs, each ending in a working, verified increment.
+
+| PR | Scope | Exit gate |
+|---|---|---|
+| 1 | Documentation baseline: plan, spec, review page, `.gitignore`, repository hygiene | Merged to `main` |
+| 2 | Phase 0 spikes S0 to S3: Node 24 pin, pinned scaffold, both Go aliases with tool-call round trip, eve channel auth and cancel, sandbox backend and approval enforcement | `verify:phase0` green for all four cases |
+| 3 | Router package and agent core: two aliases, per-caller tokens and caps, stream and error contract, instructions, core tools, launchd supervision | Router contract tests plus one live desktop task that requests approval and writes only approved bytes |
+| 4 | macOS surface: Next.js chat plus the Swift WKWebView shell, device login, session list, stream, cancel and approval UI | A live turn completes inside the macOS app; reload resumes the session; a rejected approval has zero side effects |
+| 5 | Daily usefulness: memory store with atomic writes and the FTS5 index, keyless search, the pinned reviewer subagent, stable prompt prefix | `verify:phase2` including the 10,000-note retrieval case |
+| 6 | Phone reachability and release verification: scoped Tailscale ACL and Serve, reduced phone profile, full suite, restart and sleep/wake drills, seven-day scored trial | `verify:phase3` then `verify:release`, then the seven-day score |
+
 ## Risks and mitigations
 
 | Risk | Mitigation |
@@ -153,7 +177,7 @@ The later Codex spike is capped at one engineering day after v1. Pin the install
 | Host-approved bash can exceed application controls under the same user. | Approve every command in non-VM mode; show exact command, cwd and network intent. Never claim a same-user process boundary is a security sandbox. Deny credential and application-control paths. |
 | eve beta APIs differ from draft examples. | S0-S3 compile and exercise the installed public API. No automatic upgrades or internal patches. Block the affected phase with the failed gate visible. |
 | A model disappears or Go changes limits. | Validate public IDs at startup and contract-test on upgrades. Runtime 404 disables the alias; 429 opens a circuit. Unknown quota is displayed as unknown. No downgrade. |
-| Local-first is mistaken for offline/private inference. | Explain in onboarding only where needed: prompts go to Go, search queries to Brave and fetched sites receive requests. No sensitive memory import by default. |
+| Local-first is mistaken for offline/private inference. | Explain in onboarding only where needed: prompts go to Go, search queries to Firecrawl and fetched sites receive requests. No sensitive memory import by default. |
 | Mac sleep, logout or locked Keychain prevents service. | Honest unavailable UI, launchd after login and wake probes. No assertion of continuous availability while asleep. |
 | Lost phone or overly broad existing Tailscale rules. | Revoke just that device; recheck additive ACL rules; default-deny tailnet test from another device. Remote enablement waits for S4. |
 | Memory corruption or stale/injected content. | Markdown truth, atomic revisions, index rebuild, bounded local snapshots, expiry and untrusted-data handling. No silent note eviction. |
@@ -161,6 +185,14 @@ The later Codex spike is capped at one engineering day after v1. Pin the install
 
 ## Decisions for Wasim
 
-1. Approve the implementation dependency installation and the Brave account spending ceiling. Recommendation: the pinned minimum dependency set, existing Brave entitlement if available and a provider-enforced $0 overage setting; approve a paid ceiling only if that is unavailable. The technical search provider is already decided.
-2. Select the single phone to enroll and authorize the narrowly scoped Tailscale policy change. Recommendation: only the daily-use phone, no tailnet-wide rule. Supply device identity through local setup, never a repository document.
-3. Choose whether to retire the old daily agents after the trial. Recommendation: keep them until all release gates and the seven-day score pass. No retirement or VM purchase is required to implement v1.
+Settled by the owner on 2026-09-12 and recorded here as fixed decisions, not open questions:
+
+1. Dependency installation is approved. Search is keyless Firecrawl, so no search key, account or spending ceiling exists. The only model credential in the system is the OpenCode Go key.
+2. Phone enrollment is delegated to the implementing agent: one device only, the owner's daily phone, enrolled at Phase 3 with a per-device credential in Keychain and a Tailscale rule scoped to that phone. The owner performs one tap at enrollment; no device identity enters the repository.
+3. Delivery is six PRs, with the DeepSeek adversarial pass on every PR and the GLM 5.3 gate before each merge. The implementing agent merges on green.
+
+Still the owner's call:
+
+1. Whether to retire the old daily agents after the trial. Recommendation: keep them until every release gate and the seven-day score pass. No retirement or VM purchase is needed to implement v1.
+2. Whether to authenticate the Grok CLI. The reserved hard-spot adversarial pass runs through the Grok Build CLI as specified, and that CLI is not authenticated on this machine (verified 2026-09-12: `grok models` reports "You are not authenticated"). Until it is signed in, hard-spot passes fall back to an extra DeepSeek adversarial pass plus the GLM 5.3 gate.
+3. Whether to enable OpenCode Go balance spend if the weekly window becomes a blocker during execution. Default is off; a 429 pauses the affected alias and the PR waits for the window to reset.
