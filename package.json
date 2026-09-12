@@ -16,16 +16,23 @@
     "verify:phase0": "/usr/local/bin/node scripts/verify.mjs phase0",
     "s1": "/usr/local/bin/node spikes/s1/probe.mjs",
     "start": "/usr/local/bin/node scripts/service.mjs eve",
-    "router:start": "/usr/local/bin/node scripts/service.mjs router"
+    "router:start": "/usr/local/bin/node scripts/service.mjs router",
+    "web:dev": "/usr/local/bin/node node_modules/next/dist/bin/next dev agent/channels/web --hostname 127.0.0.1 --port 4320",
+    "web:build": "/usr/local/bin/node node_modules/next/dist/bin/next build agent/channels/web"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.48",
     "ai": "7.0.99",
     "eve": "0.54.3",
+    "next": "16.2.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
     "zod": "4.6.2"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "typescript": "7.0.2"
   }
 }
