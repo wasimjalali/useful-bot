@@ -96,8 +96,18 @@ async function main() {
     return;
   }
   if (mode === "web") {
-    process.stderr.write(`${JSON.stringify({ error: "web_not_built", item: "PR 4" })}\n`);
-    process.exit(2);
+    await waitReady("http://127.0.0.1:4321/eve/v1/health", 60_000);
+    const env = { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" };
+    run([
+      path.join(ROOT, "node_modules/next/dist/bin/next"),
+      "dev",
+      path.join(ROOT, "agent/channels/web"),
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      "4320",
+    ], env);
+    return;
   }
   process.stderr.write("usage: service.mjs router|eve|web\n");
   process.exit(2);

@@ -11,5 +11,6 @@
     "resolveJsonModule": true,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["agent/**/*.ts", "evals/**/*.ts", "shared/**/*.ts", "test/**/*.ts", "spikes/**/*.ts"]
+  "include": ["agent/**/*.ts", "evals/**/*.ts", "shared/**/*.ts", "test/**/*.ts", "spikes/**/*.ts"],
+  "exclude": ["agent/channels/web", "node_modules"]
 }
