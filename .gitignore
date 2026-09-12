@@ -11,6 +11,7 @@ secrets/
 # eve runtime state and build output
 .eve/
 dist/
+router/dist/
 .next/
 build/
 

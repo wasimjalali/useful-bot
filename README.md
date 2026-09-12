@@ -12,8 +12,9 @@ Local-first personal agent on [eve](https://github.com/vercel/eve) 0.54.3. Priva
 
 | Phase | Status |
 |---|---|
-| 0 spikes S0-S3 | in progress on `feat/pr2-phase0-spikes` |
-| 1 macOS vertical slice | not started |
+| 0 spikes S0-S3 | merged (#2) |
+| 1.1-1.2 router and agent core | in progress on `feat/pr3-router-agent-core` |
+| 1.3 macOS surface | not started |
 | 2 daily usefulness | not started |
 | 3 phone | not started |
 
