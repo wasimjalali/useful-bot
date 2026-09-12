@@ -1,0 +1,29 @@
+{
+  "name": "useful-bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#*": "./agent/*",
+    "#evals/*": "./evals/*"
+  },
+  "engines": {
+    "node": ">=24.11.1 <25"
+  },
+  "scripts": {
+    "typecheck": "/usr/local/bin/node node_modules/typescript/bin/tsc --noEmit",
+    "test": "/usr/local/bin/node --experimental-strip-types --test test/contracts.test.ts spikes/s3/approvals.test.ts",
+    "verify:phase0": "/usr/local/bin/node scripts/verify.mjs phase0",
+    "s1": "/usr/local/bin/node spikes/s1/probe.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.48",
+    "ai": "7.0.99",
+    "eve": "0.54.3",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "7.0.2"
+  }
+}

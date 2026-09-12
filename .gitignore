@@ -17,5 +17,8 @@ build/
 # regenerable verification evidence (large, reproduce with scripts/build-plan-html.py)
 review-*.png
 
+# spike scratch (never evidence)
+spikes/**/scratch/
+
 # macOS
 .DS_Store

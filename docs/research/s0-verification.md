@@ -95,6 +95,5 @@ Two findings worth carrying into PR 2:
 
 ## Not yet proved
 
-S1 (Go alias behaviour, tool-call round trip, operating window), S2 (eve channel auth, session
-ownership, cancel) and S3 (sandbox backend selection and approval enforcement) are PR 2. Nothing in
-this file claims they passed.
+S1, S2 and S3 evidence now lives in `s1-verification.md`, `s2-verification.md` and
+`s3-verification.md`. This file only claims S0.
