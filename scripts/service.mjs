@@ -120,7 +120,11 @@ async function main() {
     return;
   }
   if (mode === "web") {
-    const env = { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" };
+    const env = {
+      ...process.env,
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      UB_ROUTER_CONFIG: process.env.UB_ROUTER_CONFIG ?? path.join(process.env.HOME ?? "", ".useful-bot/config.json"),
+    };
     try {
       const secret = await keychain("com.usefulbot.channel.desktop");
       env.UB_CHANNEL_JWT = signChannelJwt(secret, "desktop-app");
