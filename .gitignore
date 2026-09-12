@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# secrets and local runtime config (never committed)
+.env
+.env.*
+router/.env
+secrets/
+*.pem
+
+# eve runtime state and build output
+.eve/
+dist/
+.next/
+build/
+
+# regenerable verification evidence (large, reproduce with scripts/build-plan-html.py)
+review-*.png
+
+# macOS
+.DS_Store

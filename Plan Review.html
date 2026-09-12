@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Useful Bot: plan and spec review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --canvas:#f8f8f8;--rail:#f8f8f8;--surface:#ffffff;--sunken:#f0f0f0;
+  --ink:#171717;--ink-muted:#5c5c5c;--ink-faint:#a3a3a3;
+  --brand:#171717;--brand-ink:#fafafa;
+  --accent:#171717;--accent-strong:#0a0a0a;--accent-soft:#f0f0f0;--accent-deep:#171717;
+  --accent-on-dark:#d4d4d4;--accent-ink:#ffffff;
+  --border:#ebebeb;--border-strong:#e0e0e0;
+  --success:#0f6f56;--success-soft:#e4f4ee;
+  --warning:#8a5300;--warning-soft:#fbf1de;
+  --danger:#b23c22;--danger-soft:#fbeae5;
+  --ease-out:cubic-bezier(0.22,1,0.36,1);
+  --shadow-sm:0 1px 2px rgb(23 23 23 / .04);
+  --shadow-card:0 1px 0 rgb(23 23 23 / .03),0 18px 40px -24px rgb(23 23 23 / .18);
+  --shadow-rail:inset 0 1px 0 rgb(255 255 255 / .78),inset 0 -1px 0 rgb(23 23 23 / .03);
+  --font-sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  font-family:var(--font-sans);background:var(--canvas);color:var(--ink);
+  -webkit-font-smoothing:antialiased;line-height:1.5;font-size:15px;
+}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+::selection{background:var(--accent-soft);color:var(--brand)}
+
+.shell{display:flex;height:100vh;width:100%;overflow:hidden}
+
+/* rail */
+.rail{
+  width:290px;flex:0 0 290px;padding:18px 14px 0;display:flex;flex-direction:column;
+  gap:16px;background:var(--rail);box-shadow:var(--shadow-rail);overflow:hidden;
+}
+.brand{display:flex;flex-direction:column;gap:3px;padding:0 10px}
+.brand strong{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.brand span{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint)}
+.rail-nav{flex:1;min-height:0;overflow-y:auto;padding:0 2px 16px}
+.nav-group{display:flex;flex-direction:column;gap:1px;margin-bottom:14px}
+.nav-label{
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--ink-faint);padding:6px 10px 4px;
+}
+.nav-item{
+  display:flex;gap:10px;align-items:baseline;width:100%;text-align:left;border:0;
+  background:none;color:var(--ink-muted);font:inherit;font-size:13px;cursor:pointer;
+  padding:7px 10px;border-radius:10px;transition:background 150ms var(--ease-out),color 150ms var(--ease-out);
+}
+.nav-item:hover{background:var(--sunken);color:var(--ink)}
+.nav-item[aria-current="true"]{background:var(--sunken);color:var(--ink);font-weight:550}
+.nav-item .n{font-family:var(--font-mono);font-size:11px;color:var(--ink-faint)}
+.rail-foot{
+  border-top:1px solid var(--border);padding:12px 10px 16px;display:flex;
+  flex-direction:column;gap:4px;font-size:12px;color:var(--ink-muted);
+}
+.rail-foot .mono{font-family:var(--font-mono);font-size:11px;color:var(--ink-faint)}
+
+/* stage */
+.stage-wrap{display:flex;min-width:0;flex:1;padding:10px}
+.stage{
+  background:var(--surface);border-radius:24px;box-shadow:var(--shadow-card);
+  overflow:hidden;min-width:0;flex:1;display:flex;flex-direction:column;
+}
+.stage-head{
+  display:flex;justify-content:space-between;align-items:flex-end;gap:24px;
+  padding:28px 40px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap;
+}
+.stage-head h1{font-size:28px;font-weight:500;letter-spacing:-.03em;line-height:1.15}
+.stage-head .kicker{
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--ink-faint);margin-bottom:8px;
+}
+.meta{display:flex;gap:20px;font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);
+  font-variant-numeric:tabular-nums}
+.meta b{display:block;font-weight:600;color:var(--ink)}
+.doc{overflow-y:auto;padding:8px 40px 64px;min-height:0;min-width:0;max-width:100%}
+.doc-rule{border:0;border-top:1px solid var(--border);margin:44px 0 34px}
+/* Reading measure applies to prose only; tables and code use the full stage width. */
+.prose{min-width:0}
+.prose h1{font-size:26px;font-weight:500;letter-spacing:-.03em;margin:34px 0 14px;line-height:1.2;max-width:72ch}
+.prose h2{
+  font-size:21px;font-weight:600;letter-spacing:-.025em;margin:44px 0 12px;max-width:72ch;
+  padding-top:22px;border-top:1px solid var(--border);scroll-margin-top:16px;
+}
+.prose .doc-body > h2:first-child{border-top:0;padding-top:0}
+.prose h3{font-size:15px;font-weight:600;margin:26px 0 8px;scroll-margin-top:16px;max-width:72ch}
+.prose h4{font-size:13px;font-weight:600;margin:20px 0 6px;color:var(--ink-muted);max-width:72ch}
+.prose p{margin:0 0 13px;color:var(--ink-muted);max-width:72ch;text-wrap:pretty}
+.prose strong{color:var(--ink);font-weight:600}
+.prose ul,.prose ol{margin:0 0 14px 20px;color:var(--ink-muted);max-width:72ch}
+.prose li{margin-bottom:6px;padding-left:2px}
+.prose a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--border-strong);
+  text-underline-offset:3px}
+.prose a:hover{text-decoration-color:var(--ink)}
+.prose hr{border:0;border-top:1px solid var(--border);margin:28px 0}
+.prose code{
+  font-family:var(--font-mono);font-size:12.5px;background:var(--sunken);
+  padding:1px 5px;border-radius:6px;color:var(--ink);
+}
+.code-block{
+  margin:0 0 16px;border:1px solid var(--border);border-radius:12px;
+  background:var(--sunken);overflow:hidden;position:relative;
+}
+.code-lang{
+  position:absolute;top:8px;right:10px;font-family:var(--font-mono);font-size:10px;
+  text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);
+}
+.code-block pre{overflow-x:auto;padding:16px;margin:0}
+.code-block code{background:none;padding:0;font-size:12.5px;line-height:1.6;color:var(--ink)}
+.table-wrap{overflow-x:auto;margin:0 0 18px;border:1px solid var(--border);border-radius:12px;max-width:100%}
+table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums;table-layout:auto}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top;
+  color:var(--ink-muted);overflow-wrap:anywhere}
+td:first-child,th:first-child{width:32%;color:var(--ink)}
+td code,th code{white-space:normal;overflow-wrap:anywhere}
+th{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);
+  background:var(--canvas);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:var(--canvas)}
+.gate{
+  font-family:var(--font-mono);font-size:10.5px;font-weight:600;letter-spacing:.04em;
+  padding:1px 5px;border-radius:5px;border:1px solid transparent;white-space:nowrap;
+}
+.gate-verify{background:var(--warning-soft);color:var(--warning);border-color:#e8d9b8}
+.gate-policy{background:var(--sunken);color:var(--ink-muted);border-color:var(--border-strong)}
+.empty-note{color:var(--ink-faint);font-size:13px}
+
+/* Useful scrollbars: 5px, hidden until scrolling or hovering the gutter */
+.uv-scroll{scrollbar-width:thin;scrollbar-color:transparent transparent}
+.uv-scroll::-webkit-scrollbar{width:5px;height:5px}
+.uv-scroll::-webkit-scrollbar-track{background:transparent}
+.uv-scroll::-webkit-scrollbar-thumb{background:transparent;border-radius:999px}
+.uv-scroll:hover,.uv-scroll.is-scrolling{scrollbar-color:#d4d4d4 transparent}
+.uv-scroll:hover::-webkit-scrollbar-thumb,.uv-scroll.is-scrolling::-webkit-scrollbar-thumb{
+  background:#e3e3e3;
+}
+.uv-scroll.is-scrolling::-webkit-scrollbar-thumb{background:#d4d4d4}
+.rail-nav{scrollbar-width:thin;scrollbar-color:transparent transparent}
+.rail-nav::-webkit-scrollbar{width:5px}
+.rail-nav::-webkit-scrollbar-thumb{background:transparent;border-radius:999px}
+.rail-nav:hover::-webkit-scrollbar-thumb{background:#e3e3e3}
+
+@media (max-width:1080px){
+  .rail{position:fixed;inset:0 auto 0 0;z-index:30;width:280px;transform:translateX(-100%);
+    transition:transform 220ms var(--ease-out)}
+  body[data-nav="open"] .rail{transform:none;box-shadow:var(--shadow-card)}
+  .stage-wrap{padding:8px}
+  .stage-head{padding:18px 20px 14px;align-items:flex-start}
+  .stage-head h1{font-size:22px}
+  .stage-head .meta{flex-direction:column;gap:5px}
+  .prose{max-width:100%}
+  .prose h1{font-size:21px}
+  .prose h2{font-size:18px}
+  /* Wide tables keep their key column readable and scroll inside the wrapper
+     instead of squeezing the value column into a sliver. */
+  .table-wrap table{min-width:620px}
+  .doc{padding:6px 20px 48px}
+}
+.menu-btn{display:none}
+@media (max-width:1080px){
+  .menu-btn{display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:0 12px;
+    border:1px solid var(--border-strong);border-radius:10px;background:var(--surface);
+    font:inherit;font-size:13px;font-weight:550;color:var(--ink);cursor:pointer}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+@media print{
+  .rail,.menu-btn{display:none}
+  .stage{box-shadow:none;border-radius:0}
+  .doc{overflow:visible;padding:0}
+  .shell{height:auto;display:block}
+}
+</style>
+</head>
+<body data-nav="closed">
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <strong>Useful Bot</strong>
+      <span>Plan and spec review</span>
+    </div>
+    <nav class="rail-nav uv-scroll" id="rail-nav" aria-label="Document sections">
+      <div class="nav-group" data-doc="plan"><div class="nav-label">Plan</div><button class="nav-item" data-target="plan--goal" type="button"><span class="n">01</span><span>Goal</span></button><button class="nav-item" data-target="plan--verified-facts-and-evidence-boundaries" type="button"><span class="n">02</span><span>Verified facts and evidence boundaries</span></button><button class="nav-item" data-target="plan--architecture" type="button"><span class="n">03</span><span>Architecture</span></button><button class="nav-item" data-target="plan--decision-table" type="button"><span class="n">04</span><span>Decision table</span></button><button class="nav-item" data-target="plan--corrected-build-order-and-per-task-gates" type="button"><span class="n">05</span><span>Corrected build order and per-task gates</span></button><button class="nav-item pl-6" data-target="plan--phase-0-prove-compatibility-and-the-safe-desktop-path" type="button"><span class="n">06</span><span>Phase 0: prove compatibility and the safe desktop path</span></button><button class="nav-item pl-6" data-target="plan--phase-1-supervised-macos-vertical-slice" type="button"><span class="n">07</span><span>Phase 1: supervised macOS vertical slice</span></button><button class="nav-item pl-6" data-target="plan--phase-2-minimum-daily-usefulness" type="button"><span class="n">08</span><span>Phase 2: minimum daily usefulness</span></button><button class="nav-item pl-6" data-target="plan--phase-3-phone-reachability-after-the-macos-gate" type="button"><span class="n">09</span><span>Phase 3: phone reachability after the macOS gate</span></button><button class="nav-item pl-6" data-target="plan--phase-4-release-verification-and-bounded-cutover" type="button"><span class="n">10</span><span>Phase 4: release verification and bounded cutover</span></button><button class="nav-item" data-target="plan--resolved-from-counsel" type="button"><span class="n">11</span><span>Resolved from counsel</span></button><button class="nav-item" data-target="plan--deferred-to-v2" type="button"><span class="n">12</span><span>Deferred to v2</span></button><button class="nav-item" data-target="plan--risks-and-mitigations" type="button"><span class="n">13</span><span>Risks and mitigations</span></button><button class="nav-item" data-target="plan--decisions-for-wasim" type="button"><span class="n">14</span><span>Decisions for Wasim</span></button></div><div class="nav-group" data-doc="spec"><div class="nav-label">Spec</div><button class="nav-item" data-target="spec--1-runtime-packages-and-file-ownership" type="button"><span class="n">01</span><span>Runtime, packages and file ownership</span></button><button class="nav-item" data-target="spec--2-registry-and-model-selection" type="button"><span class="n">02</span><span>Registry and model selection</span></button><button class="nav-item pl-6" data-target="spec--codex-catalog-inventory-disabled-and-informational" type="button"><span class="n">03</span><span>Codex catalog inventory, disabled and informational</span></button><button class="nav-item" data-target="spec--3-router-wire-contract" type="button"><span class="n">04</span><span>Router wire contract</span></button><button class="nav-item" data-target="spec--4-credentials-limits-and-the-actual-threat-model" type="button"><span class="n">05</span><span>Credentials, limits and the actual threat model</span></button><button class="nav-item" data-target="spec--5-channel-authentication-surfaces-and-sessions" type="button"><span class="n">06</span><span>Channel authentication, surfaces and sessions</span></button><button class="nav-item" data-target="spec--6-memory-contract" type="button"><span class="n">07</span><span>Memory contract</span></button><button class="nav-item" data-target="spec--7-core-tools-search-and-sandbox" type="button"><span class="n">08</span><span>Core tools, search and sandbox</span></button><button class="nav-item" data-target="spec--8-durability-logs-and-retention" type="button"><span class="n">09</span><span>Durability, logs and retention</span></button><button class="nav-item" data-target="spec--9-launchd-supervision-contract" type="button"><span class="n">10</span><span>launchd supervision contract</span></button><button class="nav-item" data-target="spec--10-later-codex-spike-excluded-from-v1" type="button"><span class="n">11</span><span>Later Codex spike, excluded from v1</span></button><button class="nav-item" data-target="spec--11-one-eval-suite-and-pass-criteria" type="button"><span class="n">12</span><span>One eval suite and pass criteria</span></button><button class="nav-item" data-target="spec--12-exact-verification-commands-and-phase-artifacts" type="button"><span class="n">13</span><span>Exact verification commands and phase artifacts</span></button></div>
+    </nav>
+    <div class="rail-foot">
+      <span>Awaiting your approval</span>
+      <span class="mono">166 + 605 lines, built 2026-09-12</span>
+    </div>
+  </aside>
+  <div class="stage-wrap">
+    <main class="stage">
+      <header class="stage-head">
+        <div>
+          <div class="kicker">Awaiting approval</div>
+          <h1>Useful Bot: v1 plan and implementation spec</h1>
+        </div>
+        <div class="meta">
+          <span><b>Surfaces</b>macOS, mobile, terminal</span>
+          <span><b>v1 model</b>OpenCode Go only</span>
+          <span><b>Hosting</b>local, Tailscale</span>
+        </div>
+      </header>
+      <div class="doc uv-scroll" id="doc">
+        <button class="menu-btn" type="button">Sections</button>
+        <div class="prose"><section class="doc-body" data-doc="plan"><h1>Useful Bot: final v1 plan</h1>
+<p>Status: final planning baseline, 2026-09-12. Implementation has not started and live gates have not passed. <a href="SPEC.md">SPEC.md</a> is the implementation contract. This document supersedes v0.1. The draft and counsel files remain unchanged.</p>
+<h2 id="plan--goal">Goal</h2>
+<p>Ship a local personal agent on Vercel eve for one user on an Apple M1 Mac. The primary product is a macOS app. It supports conversation, bounded cross-session memory, web research and approved work in a dedicated workspace. OpenCode Go is the only v1 model upstream. There is no Vercel hosting and no usage-based model fallback.</p>
+<p>The surface order is macOS, native mobile, then terminal. V1 includes the macOS app and a reduced-capability phone web client over Tailscale. The phone web client is an interim delivery of reachability, not a claim to have shipped native mobile. Native mobile is the first surface expansion after v1. A custom terminal interface follows it. The eve CLI is available earlier only for engineering checks.</p>
+<p>Hermes parity is not a v1 acceptance criterion. Acceptance is seven days of the five named tasks below through the macOS app, with phone checks after the desktop gate. Hermes remains available during this trial.</p>
+<h2 id="plan--verified-facts-and-evidence-boundaries">Verified facts and evidence boundaries</h2>
+<p>“Verified” below means observed in the supplied evidence or fetched primary source. It does not mean the integration has passed a live test. <span class="gate gate-verify">VERIFY</span> entries have a named spike and a command in SPEC.md. Unknown technical facts have deterministic pass/fail consequences, not unanswered design choices.</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Fact</th><th scope="col">Evidence and disposition</th></tr></thead><tbody>
+<tr><td>The login-shell <code>node</code> is <code>~/.local/bin/node</code>, v22.23.1. <code>/usr/local/bin/node</code> is v24.11.1.</td><td>HY4&#x27;s machine checks establish the first version; this synthesis reconfirmed the path and absolute Node 24 version. Use the absolute interpreter everywhere.</td></tr>
+<tr><td>eve is filesystem-first, Apache-2.0 and public beta. Its source package reports 0.54.3; its repository requires Node 24+.</td><td><a href="https://raw.githubusercontent.com/vercel/eve/main/packages/eve/package.json" target="_blank" rel="noreferrer">eve package</a>, <a href="https://raw.githubusercontent.com/vercel/eve/main/package.json" target="_blank" rel="noreferrer">repository package</a>. Pin <code>eve: 0.54.3</code>; <span class="gate gate-verify">VERIFY</span> S0 checks the published artifact, peer dependencies and scaffold.</td></tr>
+<tr><td>No app dependencies are installed in this repository.</td><td>Supplied HY4 recon and the current tracked-file inventory. None of eve&#x27;s runtime behavior has been verified here.</td></tr>
+<tr><td>OpenCode Go publishes <code>glm-5.3-flash</code> and <code>glm-5.3</code>; both use Chat Completions. Grok 4.6 uses Responses.</td><td><a href="https://opencode.ai/docs/go/" target="_blank" rel="noreferrer">Go endpoint documentation</a>, <a href="https://opencode.ai/zen/go/v1/models" target="_blank" rel="noreferrer">live public catalog</a>. Choose the two GLM models to avoid a second protocol in v1.</td></tr>
+<tr><td>Go requests should identify the client and preserve a conversation session header. Go can use a paid Zen balance if the owner enables it.</td><td><a href="https://opencode.ai/docs/go/" target="_blank" rel="noreferrer">Go client and usage documentation</a>. Send <code>User-Agent: useful-bot/1.0</code> and stable <code>x-opencode-session</code>; require “Use balance” off for the v1 trial.</td></tr>
+<tr><td>The model catalog reports 1,000,000 context tokens and 131,072 output tokens for each chosen GLM model.</td><td><a href="https://raw.githubusercontent.com/anomalyco/models.dev/dev/models/zhipuai/glm-5.3-flash.toml" target="_blank" rel="noreferrer">Flash catalog</a>, <a href="https://raw.githubusercontent.com/anomalyco/models.dev/dev/models/zhipuai/glm-5.3.toml" target="_blank" rel="noreferrer">GLM catalog</a>. These are catalog limits, not proof of Go&#x27;s served limits. <span class="gate gate-verify">VERIFY</span> S1 proves the smaller 32,768-token v1 operating window and 4,096-token output cap.</td></tr>
+<tr><td>The local Codex catalog lists five visible model IDs and two hidden IDs. Default context is 272,000 with 95% effective context, or 258,400 tokens. GPT-5.5&#x27;s maximum is 272,000; the other visible models list 872,000.</td><td><a href="../research/codex-model-catalog.json">local catalog</a>. Maximum does not imply enabled capacity. Hidden IDs never become aliases. No Codex model is enabled in v1.</td></tr>
+<tr><td>Codex app-server is an agent protocol with threads, turns and tool requests.</td><td>All four counsel reviews, local injected-instruction fields and <a href="https://learn.chatgpt.com/docs/app-server" target="_blank" rel="noreferrer">official app-server documentation</a>. Its presence is not proof of a LanguageModel-compatible bridge.</td></tr>
+<tr><td>Docker and microsandbox were absent in the machine recon. A VM must not be inferred from Apple Silicon support.</td><td>HY4 recon corrects v0.1. <span class="gate gate-verify">VERIFY</span> S3 records the selected backend and tests its actual isolation. <code>just-bash</code> is treated as non-VM.</td></tr>
+<tr><td>Authored tools can access the agent runtime&#x27;s environment. An agent router token is therefore a usable quota capability.</td><td>Muse and HY4 findings, adopted threat model. Separate processes reduce accidental provider-key exposure but do not isolate processes running under one macOS user.</td></tr>
+<tr><td>eve auth and approval hooks are exported, but session identity propagation, replay and cancel behavior need local proof.</td><td><a href="https://raw.githubusercontent.com/vercel/eve/main/packages/eve/src/public/channels/auth.ts" target="_blank" rel="noreferrer">auth source</a>, <a href="https://raw.githubusercontent.com/vercel/eve/main/packages/eve/src/public/tools/approval/index.ts" target="_blank" rel="noreferrer">approval exports</a>. <span class="gate gate-verify">VERIFY</span> S2 and S3 gate deployment.</td></tr>
+<tr><td>Tailscale Serve can front a local service with tailnet HTTPS.</td><td><a href="https://tailscale.com/docs/features/tailscale-serve" target="_blank" rel="noreferrer">Serve documentation</a>. <span class="gate gate-verify">VERIFY</span> S4 tests the actual ACL, phone identity and Funnel-off configuration.</td></tr>
+<tr><td>Brave Search API is the named search provider.</td><td><a href="https://brave.com/search/api/" target="_blank" rel="noreferrer">Brave API</a>. <span class="gate gate-verify">VERIFY</span> S5 needs an owner-installed key and approved account spending limit. No account or paid tier is provisioned by this plan.</td></tr>
+</tbody></table></div>
+<p>The supplied reviews disagree about whether to reuse Codex threads and whether a macOS wrapper belongs in the smallest release. The fixed constraints decide both: fresh threads in the later spike, and a working macOS wrapper in the first product milestone.</p>
+<h2 id="plan--architecture">Architecture</h2>
+<ol><li>A Swift WKWebView macOS app loads the authenticated loopback Next.js chat. The shell stores its device credential in Keychain and establishes an HttpOnly browser session. It also presents local approvals.</li><li>One Next.js process serves the shared UI and authenticated browser-facing API. It proxies authenticated eve protocol requests to one loopback eve runtime. It never forwards a client-supplied profile or model identity as authority.</li><li>eve owns conversation history, compaction, tool execution and reviewer delegation. The root is pinned to <code>workhorse</code>; the single read-only reviewer is pinned to <code>reviewer</code>. Phone sessions have a separate immutable reduced-tool profile.</li><li>One router binds only <code>127.0.0.1:4319</code>. Its OpenCode adapter is an in-process module. It exposes Chat Completions, filtered model metadata, bounded search and health/accounting endpoints. It owns provider credentials, per-caller allowlists and persistent quota counters.</li><li>Markdown under <code>~/.useful-bot/memory/notes/</code> is memory truth. A rebuildable SQLite FTS5 index supports deterministic retrieval. At most 2,048 conservatively counted tokens of persistent memory can be model-visible per turn, including memory-tool results.</li><li>Tailscale Serve fronts only the phone-enabled Next.js routes. Next and eve bind <code>127.0.0.1:4320</code> and <code>127.0.0.1:4321</code>. Neither the router nor raw eve listener is published. The tailnet ACL admits only the owner&#x27;s selected phone to the Mac&#x27;s Serve HTTPS listener. Funnel is off.</li><li>Three launchd user agents supervise router, eve and web. The existing Tailscale service remains responsible for Serve. A sleeping Mac is unavailable; supervision restores service after wake and login, not while hardware is asleep.</li></ol>
+<p>Loopback addresses above are local application constants. The real tailnet hostname, device addresses and account identities stay in owner-supplied runtime configuration outside the repository.</p>
+<h2 id="plan--decision-table">Decision table</h2>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">ID</th><th scope="col">Final decision</th><th scope="col">Reason supported by counsel</th></tr></thead><tbody>
+<tr><td>D1</td><td>OpenCode Go is the only v1 LanguageModel upstream.</td><td>All four found the Codex bridge load-bearing and unproved. Removing it bounds the release.</td></tr>
+<tr><td>D2</td><td>Own a small router, one process with adapter modules.</td><td>All four favored one process. “Proven translators” named no actual component and is removed.</td></tr>
+<tr><td>D3</td><td><code>workhorse = glm-5.3-flash</code>; <code>reviewer = glm-5.3</code>.</td><td>HY4&#x27;s two-alias minimum plus public endpoint evidence. Both fit one Chat Completions adapter. Live failure blocks that alias; it never causes a silent model substitution.</td></tr>
+<tr><td>D4</td><td>Pin the root and reviewer for the entire turn. No step-level model selection.</td><td>Unanimous cache, accounting and context-window findings. Stable session headers preserve the upstream conversation identity.</td></tr>
+<tr><td>D5</td><td>No automatic fallback in v1. A desktop user may explicitly start a new read-only reviewer turn after a failed workhorse turn.</td><td>GLM and Grok prohibit mid-stream replacement. A visible new turn avoids replaying side effects. A reviewer outage does not promote the workhorse into a reviewer.</td></tr>
+<tr><td>D6</td><td>Deliver the working WKWebView shell in Phase 1 before memory expansion or phone access.</td><td>HY4 and Grok caught the priority inversion. The web UI is the shell&#x27;s implementation dependency, not a separate browser-first launch.</td></tr>
+<tr><td>D7</td><td>Markdown truth plus Node&#x27;s SQLite FTS5 index; explicit memory budgets and atomic writes.</td><td>Muse, GLM and HY4 identify cross-session scope, concurrency and retrieval problems. A small bounded index avoids a future 10,000-note scan without a database service.</td></tr>
+<tr><td>D8</td><td>Default this machine to non-VM mode until S3 proves a real VM. Every bash and write_file call requires local approval in non-VM mode.</td><td>HY4 disproved assumed microsandbox installation. A backend failure never silently lowers permissions.</td></tr>
+<tr><td>D9</td><td>Distinct device tokens, router caller tokens, session ownership and a phone tool allowlist.</td><td>Muse and HY4 show why one shared tailnet bearer is a remote-shell vulnerability.</td></tr>
+<tr><td>D10</td><td>Model and search keys are owner-installed in Keychain, loaded only by the router bootstrap. No repository credential files or key-install script.</td><td>Fixes v0.1&#x27;s contradiction between <code>router/.env</code> and secret discipline. Agent capabilities remain reachable and are capped rather than falsely described as secret.</td></tr>
+<tr><td>D11</td><td>Brave Search API via a bounded router endpoint, plus constrained public-HTTPS fetch.</td><td>Muse, HY4 and Grok require a real search provider, credential boundary and quota rule.</td></tr>
+<tr><td>D12</td><td>Absolute Node 24 interpreter, production builds and launchd from the first desktop milestone.</td><td>HY4&#x27;s PATH finding and every review&#x27;s missing-supervision finding.</td></tr>
+<tr><td>D13</td><td>One deterministic contract/eval suite plus live model cases and a seven-day task trial.</td><td>HY4 asks for named cutover tasks; all reject “a text reply worked” as sufficient proof.</td></tr>
+</tbody></table></div>
+<h2 id="plan--corrected-build-order-and-per-task-gates">Corrected build order and per-task gates</h2>
+<p>Command names here are defined in SPEC.md. They are required future implementation commands, not assertions that they exist today. Package installation requires the owner&#x27;s standing approval gate. Scaffolding uses an isolated temporary directory, never <code>eve@latest init .</code> in this repository.</p>
+<h3 id="plan--phase-0-prove-compatibility-and-the-safe-desktop-path">Phase 0: prove compatibility and the safe desktop path</h3>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Task</th><th scope="col">Deliverable</th><th scope="col">Verification gate</th></tr></thead><tbody>
+<tr><td>S0</td><td>Pin Node and eve; inspect a temporary pinned scaffold and the installed public types.</td><td><code>verify:phase0 -- --case runtime</code> proves Node 24, eve 0.54.3, compatible SDK types, CLI flags and local build/start layout. Unknown exports block integration, not an internal-framework patch.</td></tr>
+<tr><td>S1</td><td>Prove both Go aliases, auth, reasoning transport and the operating window.</td><td><code>verify:phase0 -- --case opencode</code> runs non-stream, stream, multi-step tool round trip, fragmented tool arguments, reasoning replay, stable session headers and the 32,768-token boundary.</td></tr>
+<tr><td>S2</td><td>Prove the real eve channel, ownership and cancellation.</td><td><code>verify:phase0 -- --case eve</code> shows authenticated Mac session, one tool result, cancel propagation, reconnect without resubmission and no anonymous route.</td></tr>
+<tr><td>S3</td><td>Select sandbox backend and prove approval enforcement.</td><td><code>verify:phase0 -- --case sandbox</code> names the backend, checks workspace/egress limits and proves deny, expiry, modified arguments and replay cannot execute bash/write_file.</td></tr>
+</tbody></table></div>
+<p>S0-S3 block the desktop release. A VM is not mandatory if non-VM approval tests pass. Codex is absent from this gate. S4 phone and S5 search are staged at their dependent phases.</p>
+<h3 id="plan--phase-1-supervised-macos-vertical-slice">Phase 1: supervised macOS vertical slice</h3>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Task</th><th scope="col">Deliverable</th><th scope="col">Verification gate</th></tr></thead><tbody>
+<tr><td>1.1</td><td>Loopback router, two aliases, caller allowlists, usage reservations and stream/error contract.</td><td>Router contract tests pass, including 401, 403, 429, malformed SSE, cancellation and restart-persistent caps. Both live aliases pass S1.</td></tr>
+<tr><td>1.2</td><td>Root instructions, explicit core-tool allowlist and eve authenticated session handling.</td><td>One live desktop task reads a fixture, requests approval and writes only the approved bytes. An injected request cannot alter policy or read credentials.</td></tr>
+<tr><td>1.3</td><td>Next.js chat plus Swift WKWebView app, device login, session list, stream, cancel and approval UI.</td><td>A live turn completes inside the macOS app. Reload resumes the same session. Rejected approval has zero side effects. No browser credential is placed in URL, JS storage or prompt.</td></tr>
+<tr><td>1.4</td><td>Router, eve and web launchd units with health dependencies.</td><td><code>verify:phase1</code> passes crash/restart, duplicate-process prevention and dependency-down tests. App shows unavailable status while dependencies fail.</td></tr>
+</tbody></table></div>
+<p>Phase 1 is the first usable product, on macOS. No native mobile or terminal product work may displace it.</p>
+<h3 id="plan--phase-2-minimum-daily-usefulness">Phase 2: minimum daily usefulness</h3>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Task</th><th scope="col">Deliverable</th><th scope="col">Verification gate</th></tr></thead><tbody>
+<tr><td>2.1</td><td>Memory note format, atomic store, FTS5 index, audience filtering, injection cap and local recovery snapshots.</td><td>Cross-session recall, conflict, index rebuild, expiry and 10,000-note retrieval tests pass. All memory paths collectively stay within budget.</td></tr>
+<tr><td>2.2 / S5</td><td>Brave search and public web_fetch with bounded results and SSRF defense.</td><td>Live query returns attributable title/URL/snippet results; timeout/429 and private-address redirects fail visibly; no loopback/tailnet fetch succeeds.</td></tr>
+<tr><td>2.3</td><td>One pinned reviewer with supplied-text-only input and no side-effect tools.</td><td>Its real model ID appears in metadata; seeded defect is found; it cannot delegate recursively or acquire desktop tools.</td></tr>
+<tr><td>2.4</td><td>Stable prompt prefix and complete owner instructions.</td><td>Voice, to-do, secret refusal, approval, branch and verification-honesty cases pass <code>verify:phase2</code>. No bulk skill import or old-memory import.</td></tr>
+</tbody></table></div>
+<h3 id="plan--phase-3-phone-reachability-after-the-macos-gate">Phase 3: phone reachability after the macOS gate</h3>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Task</th><th scope="col">Deliverable</th><th scope="col">Verification gate</th></tr></thead><tbody>
+<tr><td>3.1 / S4</td><td>Owner-selected phone credential, scoped Tailscale ACL and Serve HTTPS.</td><td>Owner phone succeeds; an additional tailnet device, wrong token, spoofed identity and Funnel path fail. Listener audit shows no wildcard binds.</td></tr>
+<tr><td>3.2</td><td>Reduced phone profile and session ownership on every API.</td><td>Phone has search, public fetch and approved-for-phone memory read/search only. Direct requests for bash, write_file, arbitrary local files, reviewer or approvals fail server-side.</td></tr>
+<tr><td>3.3</td><td>Mobile-sized web chat and reconnect.</td><td>Real phone sends, streams, cancels and resumes its own session after network loss. Mac and phone cannot interleave turns in one session. <code>verify:phase3</code> passes.</td></tr>
+</tbody></table></div>
+<p>This is explicitly a web client. Native mobile follows v1, before custom terminal work.</p>
+<h3 id="plan--phase-4-release-verification-and-bounded-cutover">Phase 4: release verification and bounded cutover</h3>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Task</th><th scope="col">Deliverable</th><th scope="col">Verification gate</th></tr></thead><tbody>
+<tr><td>4.1</td><td>Full suite, clean build and a live agent turn on the release revision.</td><td>Root and router <code>npx tsc --noEmit</code>, lint, contract tests, <code>eve eval</code>, Swift build and <code>verify:release</code> all pass with no skipped required case.</td></tr>
+<tr><td>4.2</td><td>Restart, login, sleep/wake, quota exhaustion and memory recovery drills.</td><td>Readiness returns within 60 seconds after dependencies and unlocked login Keychain are available. No side effect is replayed without a new approval.</td></tr>
+<tr><td>4.3</td><td>Seven consecutive days of named tasks.</td><td>At least 20 of 25 scored attempts succeed, every task succeeds at least four of five attempts and no safety gate fails. Record failures without claiming Hermes replacement.</td></tr>
+<tr><td>4.4</td><td>Review and ship on a branch.</td><td>Run available owner-required Codex review plugins for critical changes; resolve high/critical findings. Commit conventionally, push, PR, review and merge only when green. No direct-main commit. Missing review tooling blocks merge, not local implementation.</td></tr>
+</tbody></table></div>
+<p>The 25 scored attempts are five each: answer a research question with two checked source links; remember and retrieve an owner preference in a fresh session; summarize a workspace Markdown file; make an approved small fixture edit and report verification honestly; review a supplied diff containing a seeded defect. Phone safety/reconnect checks are additional and do not replace macOS task attempts. Keep the old agents until this gate passes and Wasim chooses cutover.</p>
+<h2 id="plan--resolved-from-counsel">Resolved from counsel</h2>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Finding</th><th scope="col">Resolution and attribution</th></tr></thead><tbody>
+<tr><td>Stateful Codex translated into stateless Chat Completions</td><td>All four drove D1. GLM and Grok&#x27;s fresh-request reasoning prevails over Muse&#x27;s session-reuse proposal. Later spike only; no v1 adapter or dependency.</td></tr>
+<tr><td>Context windows incorrectly absent or assumed</td><td>HY4 supplied 258,400 effective Codex context and hidden-model exclusions. Its prose overgeneralized maximum context; the catalog&#x27;s GPT-5.5 exception wins. Go windows are separately sourced and live-gated.</td></tr>
+<tr><td>macOS stranded after trial</td><td>HY4 and Grok drove Phase 1. Counsel suggestions to cut the wrapper lose to the owner&#x27;s fixed priority.</td></tr>
+<tr><td>Agent can use router bearer and phone can become a shell</td><td>Muse and HY4 drove per-caller caps, alias allowlists, real channel auth and the non-delegating phone profile. Environment scrubbing helps but is not asserted to be isolation.</td></tr>
+<tr><td>No microsandbox actually installed</td><td>HY4 drove explicit backend probing and universal non-VM bash/write approval. Muse&#x27;s workspace tests and Grok&#x27;s egress warning become required gates.</td></tr>
+<tr><td>Cache destruction and silent fallback</td><td>All four drove static aliases; GLM and Grok drove visible new-turn-only retry with no automatic v1 fallback.</td></tr>
+<tr><td>No memory concurrency/injection contract</td><td>Muse, GLM and HY4 drove FTS5, atomic writes and a hard cap. Grok&#x27;s simplicity concern is addressed by Node SQLite with no database server or embeddings.</td></tr>
+<tr><td>Missing lifecycle, concurrency and accounting</td><td>All four drove launchd, health, redacted request IDs and persistent quota reservations. GLM drove one-active-turn and session ownership rules.</td></tr>
+<tr><td>Search provider omitted and scope inflated</td><td>Muse, HY4 and Grok drove Brave selection and the explicit v2 list. No schedules, integrations or skill migration enter the release.</td></tr>
+</tbody></table></div>
+<h2 id="plan--deferred-to-v2">Deferred to v2</h2>
+<ul><li>Native mobile client first, then a custom terminal TUI. Phone web access remains until native mobile passes the same auth/profile suite.</li><li>Codex compatibility spike, and Codex delegation tool if the spike fails. No ChatGPT subscription dependency in v1.</li><li>Grok/Responses and Anthropic-compatible protocol adapters, generic API keys, additional subscriptions and paid model APIs. Future paid inference follows AWS Bedrock, DigitalOcean and then Vertex preferences. No Azure AI Foundry product inference.</li><li>Additional coder/researcher subagents, automatic fallback, model picker, step-level routing and parallel agent workflows. Step-level routing has no presumed future approval.</li><li>Hermes memory migration, bulk skills, semantic embeddings, automatic memory summarization and knowledge ingestion.</li><li>MCP including GitHub, schedules/digests, CLI bridges including gh/Aside/remindctl/imsg, messaging, browser automation and unattended host actions.</li><li>VM installation or Docker provisioning, expanded network access and autonomous workspace writes.</li><li>Menu bar controls, global hotkey, notifications, visual polish program, multimodal uploads, multi-user support and cloud hosting.</li></ul>
+<p>The later Codex spike is capped at one engineering day after v1. Pin the installed CLI version and generate its schema. A single long-lived app-server child must use one fresh thread for each completion request with the full eve history. Pass only if Useful Bot&#x27;s system rules prevail over injected Codex instructions, eve executes a complete tool-call round trip, streaming and cancel are faithful, compacted history/retry/restart do not duplicate state and our code never opens <code>~/.codex/auth.json</code>. A text-only answer is insufficient. Failure of any condition means Codex is exposed later as an explicit eve delegation tool with Codex owning its own agent state, never as a model upstream. See SPEC.md for the exact gates.</p>
+<h2 id="plan--risks-and-mitigations">Risks and mitigations</h2>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Risk</th><th scope="col">Mitigation</th></tr></thead><tbody>
+<tr><td>Prompt injection can spend the agent&#x27;s router allowance.</td><td>Assume exposed capability. Router-enforced alias allowlists, persistent request/output reservations, aggregate caps, manual revocation and no secret-bearing host execution without approval. These bound damage; they do not eliminate it.</td></tr>
+<tr><td>Host-approved bash can exceed application controls under the same user.</td><td>Approve every command in non-VM mode; show exact command, cwd and network intent. Never claim a same-user process boundary is a security sandbox. Deny credential and application-control paths.</td></tr>
+<tr><td>eve beta APIs differ from draft examples.</td><td>S0-S3 compile and exercise the installed public API. No automatic upgrades or internal patches. Block the affected phase with the failed gate visible.</td></tr>
+<tr><td>A model disappears or Go changes limits.</td><td>Validate public IDs at startup and contract-test on upgrades. Runtime 404 disables the alias; 429 opens a circuit. Unknown quota is displayed as unknown. No downgrade.</td></tr>
+<tr><td>Local-first is mistaken for offline/private inference.</td><td>Explain in onboarding only where needed: prompts go to Go, search queries to Brave and fetched sites receive requests. No sensitive memory import by default.</td></tr>
+<tr><td>Mac sleep, logout or locked Keychain prevents service.</td><td>Honest unavailable UI, launchd after login and wake probes. No assertion of continuous availability while asleep.</td></tr>
+<tr><td>Lost phone or overly broad existing Tailscale rules.</td><td>Revoke just that device; recheck additive ACL rules; default-deny tailnet test from another device. Remote enablement waits for S4.</td></tr>
+<tr><td>Memory corruption or stale/injected content.</td><td>Markdown truth, atomic revisions, index rebuild, bounded local snapshots, expiry and untrusted-data handling. No silent note eviction.</td></tr>
+<tr><td>Search requires a new paid account.</td><td>Owner chooses the spending ceiling. No paid provisioning or silent provider substitution. Search gate stays visibly incomplete until enabled.</td></tr>
+</tbody></table></div>
+<h2 id="plan--decisions-for-wasim">Decisions for Wasim</h2>
+<ol><li>Approve the implementation dependency installation and the Brave account spending ceiling. Recommendation: the pinned minimum dependency set, existing Brave entitlement if available and a provider-enforced $0 overage setting; approve a paid ceiling only if that is unavailable. The technical search provider is already decided.</li><li>Select the single phone to enroll and authorize the narrowly scoped Tailscale policy change. Recommendation: only the daily-use phone, no tailnet-wide rule. Supply device identity through local setup, never a repository document.</li><li>Choose whether to retire the old daily agents after the trial. Recommendation: keep them until all release gates and the seven-day score pass. No retirement or VM purchase is required to implement v1.</li></ol></section><hr class="doc-rule"><section class="doc-body" data-doc="spec"><h1>Useful Bot v1 implementation contract</h1>
+<p>Baseline: 2026-09-12. Companion: <a href="PLAN-FINAL.md">PLAN-FINAL.md</a>. Only these two documents are delivered by this synthesis. Paths below describe future implementation files, not files created in this task. Normative numbers marked <span class="gate gate-policy">POLICY</span> are engineering limits. <span class="gate gate-verify">VERIFY</span> marks an external fact or framework behavior that must be proved by the named command. A failed <span class="gate gate-verify">VERIFY</span> blocks its dependent phase; it never authorizes a guessed replacement.</p>
+<h2 id="spec--1-runtime-packages-and-file-ownership">1. Runtime, packages and file ownership</h2>
+<p>Use TypeScript ESM, npm and Node 24. Every package has <code>engines.node: &quot;&gt;=24.11.1 &lt;25&quot;</code>; <code>.nvmrc</code> contains <code>24.11.1</code>. Every npm run entry that executes JavaScript starts with <code>/usr/local/bin/node</code>, including dev, build, start, lint, test and eval. Child processes use <code>process.execPath</code>; never invoke a bare <code>node</code>, <code>npm</code>, <code>npx</code> or a login shell from a service. At entry, assert Node major 24 and log only <code>process.version</code> and component name. A missing absolute interpreter is a hard startup error.</p>
+<p>Pin <code>eve</code> exactly to <code>0.54.3</code>. Pin compatible exact versions of <code>ai</code>, <code>@ai-sdk/openai-compatible</code>, Next.js, React, TypeScript and lint dependencies from S0&#x27;s successful scaffold/peer resolution. <span class="gate gate-verify">VERIFY</span> dependency versions using the S0 commands in section 12; record exact resolved versions in package manifests and lockfiles before S1. Do not invent version numbers or use <code>latest</code>, carets or tildes in runtime dependencies. Package installation is an owner approval gate, not part of this document-writing task.</p>
+<p>Root package owns eve, the Next app and shared code. Router is a separate npm package with its own lockfile. No npm workspace and no nested web package/lockfile. Router has no eve dependency. Use Node HTTP, fetch, crypto, test runner and SQLite; add no web server, ORM, queue or token-counting service. <span class="gate gate-verify">VERIFY</span> Node <code>node:sqlite</code> and FTS5 in S0. If unavailable, the selected Node installation must be corrected before memory implementation, not silently replaced by another database.</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Exact path</th><th scope="col">Contents and responsibility</th></tr></thead><tbody>
+<tr><td><code>package.json</code>, <code>package-lock.json</code></td><td>Root dependencies and command map below; private package.</td></tr>
+<tr><td><code>tsconfig.json</code></td><td>Strict root/shared/agent/test TypeScript checks; excludes router source and generated directories. <code>noEmit: true</code>.</td></tr>
+<tr><td><code>eslint.config.mjs</code></td><td>Non-mutating lint for authored TS/TSX. Ignore generated eve/Next output only.</td></tr>
+<tr><td><code>.nvmrc</code>, <code>.gitignore</code></td><td>Node pin; ignore <code>.env*</code> at every depth, <code>.eve/</code>, <code>.next/</code>, <code>node_modules/</code>, router build output, local logs and macOS build products. No secret samples.</td></tr>
+<tr><td><code>README.md</code></td><td>Runtime prerequisites, command map, owner setup, phase status and honest sleep/phone limitations; update only when implementation makes it necessary.</td></tr>
+<tr><td><code>shared/contracts.ts</code></td><td>Alias, identity, request metadata, API error and tool-context types. No runtime credentials.</td></tr>
+<tr><td><code>shared/policy.ts</code></td><td><span class="gate gate-policy">POLICY</span> constants, tool/profile allowlists, memory budgets and forbidden-path rules. No runtime hostname or device identity.</td></tr>
+<tr><td><code>shared/registry.json</code></td><td>Two enabled aliases and source evidence described in section 2. Imported by both packages; immutable for a running process.</td></tr>
+<tr><td><code>shared/runtime.ts</code></td><td>Node assertion, validated non-secret runtime configuration and safe path resolution.</td></tr>
+<tr><td><code>agent/agent.ts</code></td><td>Root <code>defineAgent</code>, direct <code>LanguageModel</code> from the router, explicit context window, explicit tools, step/turn limits and stable instructions. No step-level selector.</td></tr>
+<tr><td><code>agent/instructions.md</code></td><td>Useful Bot identity, standing owner laws, to-do first, branch discipline, no em dashes, approval rules, secret refusal, untrusted-content handling, memory discipline and verification honesty.</td></tr>
+<tr><td><code>agent/lib/model.ts</code></td><td><code>modelFor</code>, immutable turn identity and custom provider fetch for headers, cancellation and reasoning metadata preservation.</td></tr>
+<tr><td><code>agent/lib/turns.ts</code></td><td>Single active turn per session, profile/owner persistence, request deduplication, approval lifecycle and interrupted-turn recovery.</td></tr>
+<tr><td><code>agent/lib/memory.ts</code></td><td>Markdown parser/store, SQLite index, deterministic retrieval and the per-turn memory budget ledger.</td></tr>
+<tr><td><code>agent/lib/approvals.ts</code></td><td>Exact-action approval requests and one-use decisions bound to local owner identity.</td></tr>
+<tr><td><code>agent/lib/net.ts</code></td><td>SSRF-safe public HTTPS fetch with DNS/address/redirect checks and body/time caps.</td></tr>
+<tr><td><code>agent/tools/read_file.ts</code></td><td>Bounded workspace-only reads with path and symlink checks.</td></tr>
+<tr><td><code>agent/tools/write_file.ts</code></td><td>Exact-byte atomic write, expected revision and enforced approval in non-VM mode.</td></tr>
+<tr><td><code>agent/tools/bash.ts</code></td><td>Explicit sandbox exec wrapper, scrubbed child environment, timeout/output cap and approval gate. No default raw bash tool remains available.</td></tr>
+<tr><td><code>agent/tools/web_fetch.ts</code></td><td>Constrained fetch using <code>agent/lib/net.ts</code>; no arbitrary headers, cookies, auth or local URLs.</td></tr>
+<tr><td><code>agent/tools/web_search.ts</code></td><td>Calls router <code>/v1/search</code> with the current caller capability; never holds the Brave key.</td></tr>
+<tr><td><code>agent/tools/memory.ts</code></td><td><code>search</code>, <code>read</code> and approved <code>upsert</code>; permissions and budgets enforced in code.</td></tr>
+<tr><td><code>agent/tools/review.ts</code></td><td>One explicit delegation to the reviewer with supplied text; unavailable to phone.</td></tr>
+<tr><td><code>agent/subagents/reviewer/agent.ts</code></td><td>Pinned reviewer LanguageModel, supplied-text-only input, maximum one response, no tools or recursive delegation.</td></tr>
+<tr><td><code>agent/subagents/reviewer/instructions.md</code></td><td>Identify concrete defects with evidence and severity; say when input is insufficient. Its output is advisory, not the owner&#x27;s required security-plugin signoff.</td></tr>
+<tr><td><code>agent/channels/eve.ts</code></td><td><code>eveChannel</code> with custom authenticated identity and ownership checks; no <code>localDev</code>, placeholder or anonymous fallback.</td></tr>
+<tr><td><code>agent/channels/web/next.config.ts</code></td><td>eve-compatible Next configuration from S0, production build, no public secret vars.</td></tr>
+<tr><td><code>agent/channels/web/app/layout.tsx</code>, <code>agent/channels/web/app/globals.css</code></td><td>Minimal accessible shell and styles, concise labels without redundant descriptions.</td></tr>
+<tr><td><code>agent/channels/web/app/page.tsx</code></td><td>Login or session list, chat stream, send/cancel, tool status and visible errors. Load session via <code>?session=&lt;uuid&gt;</code>, never credentials.</td></tr>
+<tr><td><code>agent/channels/web/app/api/auth/session/route.ts</code></td><td>Device-token exchange, authenticated session/CSRF refresh and logout. See section 5.</td></tr>
+<tr><td><code>agent/channels/web/app/eve/v1/[...path]/route.ts</code></td><td>Method/path allowlist, browser/native authentication, session ownership and stream-preserving eve proxy.</td></tr>
+<tr><td><code>agent/channels/web/app/api/approvals/[id]/route.ts</code></td><td>Local desktop approval decisions only; phone denied.</td></tr>
+<tr><td><code>agent/channels/web/app/api/status/route.ts</code></td><td>Sanitized dependency/profile/model status for an authenticated caller.</td></tr>
+<tr><td><code>agent/channels/web/lib/auth.ts</code></td><td>Device verification, hashed browser sessions, CSRF and origin checks.</td></tr>
+<tr><td><code>agent/channels/web/lib/eve.ts</code></td><td>Typed eve client transport, replay cursor and error UI mapping using installed public APIs.</td></tr>
+<tr><td><code>agent/sandbox/sandbox.ts</code></td><td>Backend choice, fixed workspace mount, no automatic backend downgrade and isolation evidence.</td></tr>
+<tr><td><code>router/package.json</code>, <code>router/package-lock.json</code></td><td>Router scripts and exact dependencies, if any.</td></tr>
+<tr><td><code>router/tsconfig.json</code></td><td>Strict NodeNext, <code>rootDir: &quot;..&quot;</code>, <code>outDir: &quot;dist&quot;</code>; include router source and imported shared modules, exclude tests. Entry emits to <code>router/dist/router/src/index.js</code>; shared modules emit to <code>router/dist/shared/</code>.</td></tr>
+<tr><td><code>router/src/index.ts</code></td><td>Loopback HTTP server, validation, dispatch, graceful shutdown and authenticated readiness.</td></tr>
+<tr><td><code>router/src/registry.ts</code></td><td>Parse/validate shared registry; reject unknown windows, IDs, aliases, capabilities or unsupported effort.</td></tr>
+<tr><td><code>router/src/auth.ts</code></td><td>Constant-time hashed caller-token verification and per-endpoint/alias authorization.</td></tr>
+<tr><td><code>router/src/limits.ts</code></td><td>SQLite quota reservations, request rate limits, per-model breaker and usage reconciliation.</td></tr>
+<tr><td><code>router/src/upstreams/opencode.ts</code></td><td>Sole v1 model adapter, fixed Go origin/path, stable session header, auth, streaming and reasoning transport.</td></tr>
+<tr><td><code>router/src/search.ts</code></td><td>Brave-only bounded search adapter and per-caller/aggregate counters.</td></tr>
+<tr><td><code>router/src/errors.ts</code></td><td>Sanitized errors and stream failure mapping; no raw upstream bodies in logs.</td></tr>
+<tr><td><code>scripts/service.mjs</code></td><td>Node-pinned launcher modes <code>router</code>, <code>eve</code>, <code>web</code>; Keychain lookup, minimal child env, readiness wait and signal forwarding. Does not install or display keys.</td></tr>
+<tr><td><code>scripts/verify.mjs</code></td><td>Named verification runner from section 12; synthetic fixtures, phase selection and sanitized PASS/FAIL/<span class="gate gate-verify">VERIFY</span> output. No secret dumps.</td></tr>
+<tr><td><code>ops/launchd/com.usefulbot.router.plist</code></td><td>Router launch template from section 9.</td></tr>
+<tr><td><code>ops/launchd/com.usefulbot.eve.plist</code></td><td>eve launch template from section 9.</td></tr>
+<tr><td><code>ops/launchd/com.usefulbot.web.plist</code></td><td>Next launch template from section 9.</td></tr>
+<tr><td><code>macos/UsefulBot.xcodeproj/project.pbxproj</code></td><td>Local macOS app target and shared test scheme, Apple Silicon, no distribution provisioning.</td></tr>
+<tr><td><code>macos/UsefulBot/UsefulBotApp.swift</code></td><td>App lifecycle and window.</td></tr>
+<tr><td><code>macos/UsefulBot/ChatWebView.swift</code></td><td>WKWebView, restricted navigation, bootstrap cookie transfer and reconnect.</td></tr>
+<tr><td><code>macos/UsefulBot/DeviceCredential.swift</code></td><td>Local owner setup/pairing UI, Keychain-backed device tokens and runtime verifier registration; no token logging or JS bridge exposing it.</td></tr>
+<tr><td><code>macos/UsefulBot/Info.plist</code>, <code>macos/UsefulBot/UsefulBot.entitlements</code></td><td>Local-only networking allowances and narrowly scoped app entitlements. No arbitrary remote HTTP exception.</td></tr>
+<tr><td><code>macos/UsefulBotTests/UsefulBotTests.swift</code></td><td>Origin restriction, credential/cookie handling and sleep/reconnect acceptance helpers.</td></tr>
+<tr><td><code>evals/useful-bot.eval.ts</code></td><td>One eve eval suite containing the live behavioral cases from section 11.</td></tr>
+<tr><td><code>test/contracts.test.ts</code>, <code>router/test/contracts.test.ts</code></td><td>Deterministic phase-tagged root/router contract tests, using inline synthetic fixtures. No real credential files.</td></tr>
+</tbody></table></div>
+<p>Do not create empty <code>skills/</code>, <code>connections/</code> or <code>schedules/</code> scaffolds for deferred features. Do not import the owner&#x27;s old skills or memories in v1. Enable <code>resolveJsonModule</code> and import the registry with an ESM JSON import attribute; router build copies it to <code>router/dist/shared/registry.json</code>. Use explicit <code>.ts</code> relative imports in source with TypeScript <code>rewriteRelativeImportExtensions</code> for emitted JavaScript. S0 verifies the selected compiler supports this and tests both root and router build output imports. Router&#x27;s <code>main</code> names <code>dist/router/src/index.js</code> so the launcher has one exact built entry.</p>
+<h2 id="spec--2-registry-and-model-selection">2. Registry and model selection</h2>
+<figure class="code-block uv-scroll"><span class="code-lang">ts</span><pre><code>type Alias = &#x27;workhorse&#x27; | &#x27;reviewer&#x27;;
+type Profile = &#x27;desktop&#x27; | &#x27;phone&#x27; | &#x27;reviewer&#x27; | &#x27;eval&#x27;;
+type Effort = &#x27;low&#x27; | &#x27;high&#x27;;
+interface ModelEntry {
+  alias: Alias;
+  upstream: &#x27;opencode-go&#x27;;
+  upstreamModelId: &#x27;glm-5.3-flash&#x27; | &#x27;glm-5.3&#x27;;
+  protocol: &#x27;chat-completions&#x27;;
+  catalogContextTokens: number;
+  catalogMaxOutputTokens: number;
+  modelContextWindowTokens: number;
+  maxOutputTokens: number;
+  reasoningEffort: Effort;
+  modalities: [&#x27;text&#x27;];
+  capabilities: { streaming: true; tools: true; reasoningReplay: true };
+  evidence: { sourceUrls: string[]; checkedAt: string;
+    liveGate: &#x27;S1&#x27;; liveVerified: boolean; packageLockHash: string | null };
+  fallbackAliases: [];
+}
+interface Registry { schemaVersion: 1; entries: [ModelEntry, ModelEntry] }</code></pre></figure>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Alias</th><th scope="col">Actual Go ID</th><th scope="col">Catalog context</th><th scope="col">Catalog output</th><th scope="col"><span class="gate gate-policy">POLICY</span> eve window</th><th scope="col"><span class="gate gate-policy">POLICY</span> output</th><th scope="col">Effort</th></tr></thead><tbody>
+<tr><td>workhorse</td><td><code>glm-5.3-flash</code></td><td>1,000,000</td><td>131,072</td><td>32,768</td><td>4,096</td><td>low</td></tr>
+<tr><td>reviewer</td><td><code>glm-5.3</code></td><td>1,000,000</td><td>131,072</td><td>32,768</td><td>4,096</td><td>high</td></tr>
+</tbody></table></div>
+<p>Sources checked 2026-09-12: <a href="https://raw.githubusercontent.com/anomalyco/models.dev/dev/models/zhipuai/glm-5.3-flash.toml" target="_blank" rel="noreferrer">Flash base record</a>, <a href="https://raw.githubusercontent.com/anomalyco/models.dev/dev/models/zhipuai/glm-5.3.toml" target="_blank" rel="noreferrer">GLM base record</a>, <a href="https://raw.githubusercontent.com/anomalyco/models.dev/dev/providers/opencode-go/models/glm-5.3-flash.toml" target="_blank" rel="noreferrer">Go Flash override</a>, <a href="https://raw.githubusercontent.com/anomalyco/models.dev/dev/providers/opencode-go/models/glm-5.3.toml" target="_blank" rel="noreferrer">Go GLM override</a>. The Go overrides inherit their base limits and declare <code>reasoning_content</code>. Go&#x27;s public <code>/models</code> response lists IDs but did not provide window fields when fetched. Do not describe that endpoint as window verification.</p>
+<p><span class="gate gate-verify">VERIFY</span> S1, <code>npm run verify:phase0 -- --case opencode</code>: served context, output cap including reasoning, accepted effort parameter, tool support and reasoning replay. Boot in production refuses <code>liveVerified: false</code>, missing evidence or a dependency-lock change since certification. A probe-only mode permits bounded S1 requests for these two IDs while uncertified; it cannot serve interactive traffic. If the 32,768 envelope fails, block and report the observed Go limit; do not infer it from Codex or silently lower the registry.</p>
+<p>The application intentionally operates below catalog maximum to bound latency and quota. For both aliases reserve 4,096 output tokens plus 2,048 framing/safety tokens. Compact before estimated input exceeds 24,576; hard reject input above 26,624 after compaction. Keep the system prefix, current user request and every unresolved tool-call/result pair intact. Never truncate an unresolved tool result independently. If the protected content cannot fit, return <code>context_limit</code> and ask the user to shorten the task. Byte-count bound and tokenization proof are defined in section 6.</p>
+<p>All model calls in a root turn, including compaction/auxiliary calls, use the pinned alias and caller allowance. <code>modelFor(alias, ctx): LanguageModel</code> creates a direct <code>createOpenAICompatible</code> chat model with the router base URL and custom fetch. <code>agent.ts</code> supplies <code>modelContextWindowTokens</code> from the same registry. <span class="gate gate-verify">VERIFY</span> the installed SDK&#x27;s public factory signature and eve&#x27;s model option via S0 typecheck. Do not use AI Gateway strings or add another provider.</p>
+<p><code>modelFor</code> does not mutate shared singleton credentials or headers. Durable turn identity is reconstructed on each execution step. The custom fetch injects session/turn IDs from that context. An async-local convenience may be used within a step but must not be the only identity source across durable replay.</p>
+<p><span class="gate gate-policy">POLICY</span> root limits: 12 model steps and 10 minutes elapsed per turn, including reviewer time; at most one reviewer invocation per root turn. The reviewer gets one model step and at most 16 KiB of supplied text. Total tool-result text admitted to a root turn is 32 KiB, with per-tool caps below and the tighter memory cap applied separately. At a limit, stop with an explicit incomplete status. Approvals consume elapsed time. Do not let eve&#x27;s default agent, compaction or subagent settings create uncapped auxiliary model calls. <span class="gate gate-verify">VERIFY</span> S2 counts every outbound model request, including retries and summaries, against the turn&#x27;s limits.</p>
+<p>There is no automatic fallback. Failed turns remain failed. A desktop-only “Ask reviewer” action starts a new, read-only reviewer turn containing user-approved text. Its metadata identifies both aliases and reason. It never replays a previous tool loop. A reviewer subagent is always pinned; root and subagent use separate stable upstream conversation IDs.</p>
+<h3 id="spec--codex-catalog-inventory-disabled-and-informational">Codex catalog inventory, disabled and informational</h3>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Local catalog ID</th><th scope="col">Visibility</th><th scope="col">Default context</th><th scope="col">Maximum catalog context</th><th scope="col">Effective default, 95%</th></tr></thead><tbody>
+<tr><td><code>gpt-6-astra</code></td><td>list</td><td>272,000</td><td>872,000</td><td>258,400</td></tr>
+<tr><td><code>gpt-5.6-sol</code></td><td>list</td><td>272,000</td><td>872,000</td><td>258,400</td></tr>
+<tr><td><code>gpt-5.6-terra</code></td><td>list</td><td>272,000</td><td>872,000</td><td>258,400</td></tr>
+<tr><td><code>gpt-5.6-luna</code></td><td>list</td><td>272,000</td><td>872,000</td><td>258,400</td></tr>
+<tr><td><code>gpt-5.5</code></td><td>list</td><td>272,000</td><td>272,000</td><td>258,400</td></tr>
+<tr><td><code>gpt-reserve</code></td><td>hide</td><td>272,000</td><td>872,000</td><td>258,400</td></tr>
+<tr><td><code>codex-auto-review</code></td><td>hide</td><td>272,000</td><td>872,000</td><td>258,400</td></tr>
+</tbody></table></div>
+<p>Source: <a href="../research/codex-model-catalog.json">machine catalog</a>. These records are not copied into the enabled registry. <code>supported_in_api</code> does not prove Go access or stateless app-server behavior. Do not multiply maximum context by 95% and advertise it as available. No v1 effort field accepts the owner&#x27;s prohibited highest automatic-delegation mode.</p>
+<h2 id="spec--3-router-wire-contract">3. Router wire contract</h2>
+<p>Bind IPv4 <code>127.0.0.1:4319</code> only; do not bind <code>::</code>, <code>0.0.0.0</code> or a tailnet interface. Require an exact expected Host and reject browser Origin headers. No CORS. Except <code>/health/live</code>, authenticate before body parsing. Enforce 1 MiB request body limit, 10-second header/body receive limit and JSON content type. Unknown routes return 404, unsupported methods 405 with <code>Allow</code>.</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Method/path</th><th scope="col">Request and result</th></tr></thead><tbody>
+<tr><td><code>GET /health/live</code></td><td>Unauthenticated loopback-only liveness: <code>{ &quot;ok&quot;: true }</code>. No configuration or model data.</td></tr>
+<tr><td><code>GET /health/ready</code></td><td>Ops capability only. 200 <code>{ok:true, registryVersion, upstream:&quot;unknown&quot;|&quot;available&quot;|&quot;limited&quot;}</code> after valid configuration and local state. 503 error on missing config/state. Does not spend quota or imply a live upstream probe succeeded.</td></tr>
+<tr><td><code>GET /v1/models</code></td><td>Caller token. OpenAI list envelope with only allowed aliases: <code>{object:&quot;list&quot;,data:[{id,object:&quot;model&quot;,owned_by:&quot;useful-bot&quot;,context_window:32768,max_output_tokens:4096,upstream_model_id,status}]}</code>. Status from last observation, not a fabricated provider remaining balance.</td></tr>
+<tr><td><code>POST /v1/chat/completions</code></td><td>Caller token, three metadata headers below and validated Chat Completions body. Nonstream JSON or SSE as defined below.</td></tr>
+<tr><td><code>POST /v1/search</code></td><td>Caller capability with <code>search:true</code>. <code>{query:string,count?:number}</code>; query 1-512 Unicode characters, count integer 1-5, default 5. Returns <code>{results:[{title,url,snippet}],provider:&quot;brave&quot;,request_id}</code>.</td></tr>
+<tr><td><code>GET /v1/usage</code></td><td>Caller sees only its own counters. Ops can see aggregate metadata. <code>{caller_id,window_start,reserved_input_tokens,reserved_output_tokens,observed_input_tokens,observed_output_tokens,requests,provider_remaining:null}</code>. Unknown usage fields are <code>null</code>, not zero.</td></tr>
+</tbody></table></div>
+<p>Required completion headers: <code>X-Useful-Session-Id</code>, <code>X-Useful-Turn-Id</code> and <code>X-Useful-Request-Id</code>, each UUID. <code>X-Useful-Request-Id</code> is unique per model step. Router returns it on all responses. Reusing it never starts a second request: 409 <code>duplicate_request</code>, even after interruption. Persist request IDs for 24 hours. A repeated browser send is handled by eve&#x27;s dedup layer, not by replaying a router request.</p>
+<p>Router creates the upstream session header from the authenticated caller, eve session and agent role using a stable hash. Never accept <code>x-opencode-session</code> directly from callers. The value stays stable across turns, compaction and service restarts. Do not include user text or device addresses. Forward <code>User-Agent: useful-bot/1.0</code>. <a href="https://opencode.ai/docs/go/" target="_blank" rel="noreferrer">Go documents its session header and Chat Completions endpoint</a>.</p>
+<p>Allowed body: <code>model</code> alias, <code>messages</code>, <code>stream</code> boolean (default false), <code>max_tokens</code> (default and maximum 4,096), <code>tools</code>, <code>tool_choice</code>, <code>parallel_tool_calls:false</code> and <code>stream_options.include_usage:true</code> for streams. Text-only system/user/assistant/tool messages; assistant may carry <code>tool_calls</code> and certified <code>reasoning_content</code>. Accept at most 32 function schemas and 128 KiB of total schema JSON. <code>n</code> must be absent or 1. Reject unknown options with 400 <code>unsupported_parameter</code>; in particular reject arbitrary upstream IDs, URLs, headers, image input, logprobs and caller-controlled effort. Router supplies registry effort using S1-certified parameter spelling. Tool call IDs must be unique and each tool message must reference an earlier outstanding call. Validate complete request history before dispatch.</p>
+<p>Only the OpenCode adapter accesses <code>https://opencode.ai/zen/go/v1/chat/completions</code>. HTTPS certificate verification stays on; redirects are rejected. <code>Authorization: Bearer &lt;owner-installed Go key&gt;</code> is injected by the adapter. <span class="gate gate-verify">VERIFY</span> S1 confirms this header using a real request; never put a value in a command, fixture or document. No generic URL proxy and no Responses endpoint in v1.</p>
+<figure class="code-block uv-scroll"><span class="code-lang">ts</span><pre><code>interface TurnContext {
+  callerId: string; profile: Profile; sessionId: string; turnId: string;
+  requestId: string; alias: Alias; signal: AbortSignal;
+}
+interface CompletionRequest { // concrete nested types validated at runtime
+  model: Alias; messages: ChatMessage[]; stream?: boolean;
+  max_tokens?: number; tools?: FunctionTool[];
+  tool_choice?: &#x27;auto&#x27; | &#x27;none&#x27; | &#x27;required&#x27; | NamedFunctionChoice;
+  parallel_tool_calls?: false;
+  stream_options?: { include_usage: true };
+}
+interface OpenCodeAdapter {
+  complete(req: CompletionRequest, ctx: TurnContext): Promise&lt;Response&gt;;
+}
+interface ApiError {
+  error: {
+    type: &#x27;invalid_request_error&#x27; | &#x27;authentication_error&#x27; | &#x27;permission_error&#x27;
+      | &#x27;rate_limit_error&#x27; | &#x27;upstream_error&#x27; | &#x27;internal_error&#x27;;
+    code: string; message: string; request_id: string;
+    alias?: Alias; retryable: boolean; retry_after_ms?: number;
+  };
+}</code></pre></figure>
+<p>Nonstream response preserves completion ID, choice indices, content, certified reasoning fields, tool IDs/arguments and finish reason. Set outward <code>model</code> to the alias and <code>X-Useful-Upstream-Model</code> to the registry&#x27;s actual ID. Never concatenate reasoning into answer text. Usage includes observed counts when available; absent usage is explicitly unknown in accounting. Do not fabricate successful text on a failed request.</p>
+<p>Streams use <code>Content-Type: text/event-stream</code>, <code>Cache-Control: no-store</code> and no buffering/compression. Parse SSE across arbitrary UTF-8/chunk/event boundaries; validate and re-emit JSON without altering argument fragments or call identity. Preserve choice index and <code>delta.tool_calls[index]</code>. Do not execute tools in the router. A complete tool-call message ends with <code>finish_reason: &quot;tool_calls&quot;</code>; a normal answer uses <code>stop</code>, a limit uses <code>length</code>. A successful stream ends with <code>data: [DONE]</code>. Preserve usage events. Bound each event to 256 KiB, honor downstream backpressure and never accumulate the whole stream.</p>
+<p>Withhold HTTP 200 until the upstream has accepted the request and the first valid event is available. A failure before that returns the appropriate HTTP error. After headers, emit <code>data: {&quot;error&quot;:{...ApiError.error}}</code> followed by connection close, with no success finish or <code>[DONE]</code>. If the transport itself is lost, missing <code>[DONE]</code> is failure. <span class="gate gate-verify">VERIFY</span> S1/S2 prove the pinned AI SDK propagates both failures through eve to the UI. If it drops them, the custom fetch/stream wrapper must turn them into a provider error. Never show partial output as complete or retry it automatically.</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">HTTP</th><th scope="col">Codes and semantics</th></tr></thead><tbody>
+<tr><td>400</td><td><code>invalid_request</code>, <code>unknown_alias</code>, <code>unsupported_parameter</code>, <code>context_limit</code>, <code>invalid_tool_history</code>; correct the request.</td></tr>
+<tr><td>401</td><td><code>unauthorized</code>; absent, invalid, expired or revoked caller token. Generic message.</td></tr>
+<tr><td>403</td><td><code>alias_forbidden</code>, <code>capability_forbidden</code>, <code>origin_forbidden</code>; no upstream request.</td></tr>
+<tr><td>409</td><td><code>duplicate_request</code>, <code>session_busy</code>, <code>revision_conflict</code>; no automatic replay.</td></tr>
+<tr><td>413 / 415</td><td><code>body_too_large</code> / <code>unsupported_media_type</code>.</td></tr>
+<tr><td>429</td><td><code>caller_rate_limit</code>, <code>caller_budget_exhausted</code>, <code>global_budget_exhausted</code>, <code>upstream_rate_limited</code>; sanitized <code>Retry-After</code> when known.</td></tr>
+<tr><td>502</td><td><code>upstream_protocol_error</code>, <code>upstream_auth_failed</code>, <code>model_unavailable</code>; do not forward an upstream auth body or disguise it as caller 401.</td></tr>
+<tr><td>503</td><td><code>dependency_unavailable</code>, <code>circuit_open</code>, <code>configuration_unverified</code>, <code>state_unavailable</code>.</td></tr>
+<tr><td>504</td><td><code>upstream_timeout</code>; retryable only as a deliberate new turn.</td></tr>
+</tbody></table></div>
+<p><span class="gate gate-policy">POLICY</span>: upstream first-event deadline 60 seconds, inter-event idle 45 seconds, total model request 180 seconds. Abort on caller disconnect, explicit cancel or shutdown. Once eve cancel reaches the provider wrapper, router aborts its upstream fetch within 2 seconds. This stops local transport; provider billing after abort is <span class="gate gate-verify">VERIFY</span> S1 and cannot be promised. Do not add SDK/router automatic retries (<code>maxRetries: 0</code> where supported, <span class="gate gate-verify">VERIFY</span> S0). 429 opens the alias circuit until bounded Retry-After (1-300 seconds, default 60). Three protocol/5xx failures in 60 seconds open it for 30 seconds. Model 404 disables the alias until a successful explicit operator probe. Do not make paid background “health” completions.</p>
+<h2 id="spec--4-credentials-limits-and-the-actual-threat-model">4. Credentials, limits and the actual threat model</h2>
+<p>Our code never opens <code>.env*</code>, router credential files, Codex/OpenCode auth files, SSH/AWS/gh credentials, wrangler preferences or <code>secrets/</code>. The owner uses Keychain Access or an existing password manager workflow to install app-specific credentials. No hidden-paste installer, no credential CLI arguments and no console entry into a prompt. The service launcher loads only named Useful Bot Keychain items into a minimal child environment. Captured Keychain stdout is consumed in memory and never printed; failures name only the missing item, never raw stderr that could contain a value. Production logs have an explicit field allowlist.</p>
+<p>Keychain service names: <code>com.usefulbot.opencode-go</code>, <code>com.usefulbot.brave</code>; <code>com.usefulbot.router.{desktop,phone,reviewer,eval,ops}</code>; <code>com.usefulbot.channel.{desktop,phone,eval}</code>; <code>com.usefulbot.device.{desktop,phone}</code>. Braces enumerate distinct literal service names. Device, internal channel and router credentials have separate values; no shared master bearer. All app tokens are 32 random bytes encoded base64url. Configure verifiers with SHA-256 token digests and compare fixed-size digests in constant time. Server-side browser-session tokens are also stored as digests.</p>
+<p>Router gets provider keys and verifier digests. eve gets router caller tokens and channel verifier digests; authored tools can reach its env, so router tokens must be considered agent-reachable. Next gets the downstream per-profile channel credentials and device verifier digests; it never gets Go or Brave keys. Mac&#x27;s normal chat path gets only its desktop device token. No credential uses <code>NEXT_PUBLIC_</code>, browser localStorage, a URL, a model message or a tool result. Device-token validity is 30 days <span class="gate gate-policy">POLICY</span>, with owner re-pairing; browser sessions are 12 hours absolute and 30 minutes idle. Revocation is effective on every API request and cancels active turns for that caller.</p>
+<p>Runtime configuration is <code>~/.useful-bot/config.json</code>, mode 0600 under a 0700 directory, owner-controlled and never model-readable or checked into git. <code>shared/runtime.ts</code> validates this schema, rejects unknown properties and returns separate component-specific views:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">ts</span><pre><code>interface RuntimeConfig {
+  schemaVersion: 1;
+  phoneEnabled: boolean; // default false until S4 passes
+  tailnet: null | { origin: string; ownerLogin: string;
+    phoneIpv4: string; phoneIpv6: string; macIdentity: string };
+  sandbox: { backend: &#x27;just-bash&#x27; | &#x27;microsandbox&#x27; | &#x27;docker&#x27;;
+    evidenceId: string; imageDigest: string | null };
+  goBalanceDisabledConfirmedAt: string | null;
+  braveSpendingApprovedAt: string | null;
+  credentials: Array&lt;{ id: string; kind: &#x27;device&#x27; | &#x27;channel&#x27; | &#x27;router&#x27;;
+    sha256: string; callerId: string; profile: Profile | &#x27;ops&#x27;;
+    expiresAt: string; revokedAt: string | null }&gt;;
+}</code></pre></figure>
+<p>Local native setup generates app tokens with the system RNG, writes Keychain items and atomically registers only digests/expiry in config. Provider keys are installed separately by the owner. Setup can display a newly generated phone pairing token once in a masked, user-revealable native control, never in chat or logs; no key-install script. It also records owner attestations for Go balance off and Brave spending approval. Missing attestations block the relevant live gate. Token refresh requires local setup; no remote enrollment, reset-budget or broaden-policy route. Internal tokens expire after 30 days too and local setup rotates them independently. Revocation reloads config atomically and invalidates dependent browser sessions. <code>~/.useful-bot/web/auth.sqlite</code> stores only browser-token hashes, CSRF hashes, device ID and timestamps. Registry/policy constants stay in application code; runtime config cannot expand alias or tool allowlists.</p>
+<p>This process arrangement does not protect against arbitrary host execution under Wasim&#x27;s user. Scrubbing a bash child&#x27;s env cannot prevent an approved arbitrary command from attempting other same-user access. Approval gates and a workspace that excludes app code/config are mandatory until a real VM is proved. Prompt injection may still spend the router allowance using capabilities available to the agent. The enforced ceiling, not token secrecy, is the mitigation.</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Router caller</th><th scope="col">Allowed aliases</th><th scope="col">Search</th><th scope="col">Rolling 24h model requests</th><th scope="col">Rolling 24h input reservation units</th><th scope="col">Rolling 24h output reservation units</th><th scope="col">Requests/minute</th></tr></thead><tbody>
+<tr><td>desktop</td><td>workhorse</td><td>yes</td><td>200</td><td>2,000,000</td><td>200,000</td><td>12</td></tr>
+<tr><td>phone</td><td>workhorse</td><td>yes</td><td>40</td><td>400,000</td><td>40,000</td><td>4</td></tr>
+<tr><td>reviewer</td><td>reviewer</td><td>no</td><td>20</td><td>300,000</td><td>80,000</td><td>4</td></tr>
+<tr><td>eval</td><td>workhorse, reviewer</td><td>yes</td><td>80</td><td>1,000,000</td><td>160,000</td><td>12</td></tr>
+<tr><td>ops</td><td>none</td><td>no</td><td>0</td><td>0</td><td>0</td><td>30 health/usage requests</td></tr>
+</tbody></table></div>
+<p><span class="gate gate-policy">POLICY</span> aggregate cap across all model callers: 300 requests, 3,000,000 input units and 400,000 output units per rolling 24 hours, at most two upstream requests active. One active request per caller. These are local ceilings, not subscription entitlements or dollar conversions. The reviewer and eval callers cannot mint new tokens or change limits. Eval token is loaded only during explicit eval runs, not into the ordinary agent runtime.</p>
+<p>Reserve input upper-bound units and requested maximum output in a SQLite transaction before dispatch. Keep reservations on aborted requests and unknown usage; when certified usage is present, reconcile down to observed usage, including reasoning output. If observed usage exceeds the reservation, record the overrun, block that alias and fail the accounting gate. Crash recovery keeps unresolved reservations charged until their rolling expiry. Missing/corrupt counter state fails closed and requires owner-reviewed restoration; restart never resets the budget. Validate this with synthetic traffic, never by exhausting the real subscription.</p>
+<p>Router owns <code>~/.useful-bot/router/usage.sqlite</code>, mode 0600, directory 0700. Persist rate windows, reservations, request IDs and breaker state. No prompts, tool arguments, tokens or response bodies in this database. App-wide caps still apply if an agent reaches multiple caller tokens. S1 certifies token-count bounds; if an exact tokenizer is unavailable, use UTF-8 bytes plus fixed message/tool framing reservations as conservative units and validate them against provider usage. Never call byte units measured tokens.</p>
+<h2 id="spec--5-channel-authentication-surfaces-and-sessions">5. Channel authentication, surfaces and sessions</h2>
+<p>Use the installed eve channel/auth API and expose its protocol through the Next proxy. Framework auth callbacks accept or reject server-created <code>SessionAuthContext</code>; <a href="https://raw.githubusercontent.com/vercel/eve/main/packages/eve/src/public/channels/auth.ts" target="_blank" rel="noreferrer">eve&#x27;s public auth contract</a> supports this. <span class="gate gate-verify">VERIFY</span> S2 checks the installed type, principal shape and actual route/method manifest. Do not guess <code>SessionAuthContext</code> fields or depend on undocumented framework internals. The project-level interfaces below are authoritative and must be adapted to public eve types.</p>
+<figure class="code-block uv-scroll"><span class="code-lang">ts</span><pre><code>interface CallerIdentity {
+  callerId: string; profile: &#x27;desktop&#x27; | &#x27;phone&#x27; | &#x27;eval&#x27;;
+  deviceId: string; expiresAt: number;
+}
+interface SessionPolicy {
+  sessionId: string; ownerCallerId: string;
+  profile: &#x27;desktop&#x27; | &#x27;phone&#x27; | &#x27;eval&#x27;; alias: Alias;
+}
+function authenticateDevice(req: Request): Promise&lt;CallerIdentity&gt;;
+function authorizeSession(who: CallerIdentity, sessionId: string): Promise&lt;SessionPolicy&gt;;
+function beginTurn(who: CallerIdentity, sessionId: string,
+  input: { clientRequestId: string; text: string }): Promise&lt;{ turnId: string }&gt;;
+function cancelTurn(who: CallerIdentity, sessionId: string, turnId: string): Promise&lt;void&gt;;</code></pre></figure>
+<p>Every create/list/read/stream/resume/cancel/clear/compact/reset route authenticates and checks ownership. Route auth is enforced by both the public proxy and eve channel. Never accept <code>profile</code>, <code>owner</code>, <code>allowedTools</code>, <code>alias</code> or approval privileges from the browser body. Session policy is immutable after creation; a phone cannot attach to a desktop session even with a guessed UUID. A fresh desktop session can contain manually copied phone text; no privilege-changing session promotion exists.</p>
+<p>One active turn per session; additional sends return 409 <code>session_busy</code>, with no queue. At most two active agent turns globally; additional starts return 429. Reviewer dispatch shares the parent&#x27;s execution slot and budget lineage. Browser <code>clientRequestId</code> deduplicates sends for 24 hours and returns the existing turn ID instead of re-execution. A network disconnect detaches the UI; it does not submit a replacement turn. Explicit cancel cancels children, approvals, current model fetch and running sandbox command. Reconnect uses eve&#x27;s certified event cursor/snapshot protocol to attach to the same turn. <span class="gate gate-verify">VERIFY</span> S2 proves interrupted/restarted execution does not automatically replay a write.</p>
+<p><code>POST /api/auth/session</code> accepts a device bearer in the Authorization header, never in JSON/URL. Verify the token, expected origin/Host and device profile. Return <code>{ok:true,profile,expiresAt,csrfToken}</code> and set <code>ub_session</code>, HttpOnly, SameSite=Strict, Path=/, no Domain. Phone HTTPS cookie is Secure. Mac loopback HTTP cookie is explicitly non-Secure and valid only on the loopback origin; never transfer it to tailnet. <code>DELETE</code> revokes the browser session. Invalid auth returns 401. Limit failed auth to five attempts/minute/source and 50 total/minute, bounded in-memory map. Native v2 can use bearer auth directly but gets the same phone policy.</p>
+<p>The macOS shell makes the auth exchange through native URLSession using its Keychain credential, transfers only the resulting session cookie into WKHTTPCookieStore and then loads the fixed loopback origin. No JS-readable device token injection. Deny navigation to other origins inside WKWebView, disable arbitrary file access and send user-activated HTTPS links to the external browser. Render Markdown without raw HTML, remote images or scriptable URLs. Prevent subframes from requesting native actions. S2 and Swift tests verify bootstrap, fetch streaming and cookie behavior on the owner&#x27;s macOS version. If WKWebView cookie bootstrap fails, fix the native transport; never weaken auth.</p>
+<p>Browser mutations require a session-bound CSRF token, supplied by the authenticated session response, plus exact Origin validation. Authenticated <code>GET /api/auth/session</code> returns the current CSRF token after reload, rotating it and its stored hash atomically; only one browser tab is supported per browser session in v1. The CSRF token may be JS-readable; the device/browser credential may not. Native bearer requests may omit Origin only on the expected local origin or certified tailnet phone path. Browser cookie mutations may not omit it. Same-origin UI traffic uses the proxy only. Reject wildcard CORS, <code>Origin: null</code>, unexpected Host and cross-origin websocket upgrades. Do not trust forwarded Host/IP/profile headers from ordinary clients. The proxy strips inbound internal identity headers and re-creates them after auth. The loopback eve API authenticates its per-profile downstream token and rechecks session ownership. Client-supplied metadata cannot grant desktop tools.</p>
+<p>The remote login screen accepts the owner-paired phone token via a masked field over tailnet HTTPS and immediately exchanges it for the HttpOnly cookie. No analytics, external assets or persisted input value. Token enrollment happens locally on the Mac through owner setup, not by a self-service remote “create token” route. Rotate/revoke through local setup; no phone-accessible administrative API.</p>
+<p>Tailscale Serve forwards only to <code>http://127.0.0.1:4320</code>; router/eve ports are absent from Serve. Funnel is off. The phone route requires both its app token and the expected Tailscale user identity from Serve&#x27;s trusted proxy headers. Only the configured Serve ingress may supply these headers. Local requests with spoofed headers must still fail without the phone credential; forwarded phone requests can never use the desktop credential. Local desktop endpoints reject the tailnet Host/Origin even if a desktop cookie is presented.</p>
+<p>Owner runtime configuration supplies the exact tailnet HTTPS origin, phone IPv4 /32 and IPv6 /128 identities and Mac destination identity. Do not put actual values in repository files, documentation or memory. Apply an additive-policy-aware ACL/grant allowing only that phone to the Mac&#x27;s Serve HTTPS port. Existing broad allow rules must not also grant access. Include policy tests accepting the enrolled phone and denying a second tailnet device, all other Mac services and the router/eve ports. The app additionally verifies the expected owner login identity. <span class="gate gate-verify">VERIFY</span> S4 covers source identity/header behavior for the installed Tailscale version; until it passes, Serve remains disabled.</p>
+<p>Phone tool allowlist is exactly <code>web_search</code>, <code>web_fetch</code>, <code>memory.search</code> and <code>memory.read</code> for phone-approved notes. No arbitrary local read, memory write, bash, write_file, skills, connections, approvals, reviewer or child agents. Enforcement happens during tool registration and again in each executor, including durable resume. No tool&#x27;s arguments can change its profile. Phone contexts have no developer workspace or desktop session attachment.</p>
+<p>The macOS UI ships session list, send, cancel, tool/approval state, error/retry state and the active alias label. Reasoning is not expanded or stored as UI chat content. No free-form model picker. “Ask reviewer” is a separate read-only operation. Phone UI uses the same chat components after the desktop acceptance gate; native mobile and terminal UI are deferred in that order.</p>
+<h2 id="spec--6-memory-contract">6. Memory contract</h2>
+<p>Store source notes at <code>~/.useful-bot/memory/notes/&lt;uuid&gt;.md</code>, index at <code>~/.useful-bot/memory/index.sqlite</code> and recovery snapshots at <code>~/.useful-bot/memory/backups/&lt;UTC-date&gt;/</code>. Directories 0700, files 0600. Memory is outside git and outside the bash workspace. <code>defineState</code> may hold session-local retrieval bookkeeping but is never the source of cross-session truth.</p>
+<p>Each note begins with <code>---</code>, exactly one JSON object on one line, <code>---</code>, then Markdown body. JSON avoids a new YAML parser dependency. Example contains synthetic non-secret data:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">md</span><pre><code>---
+{&quot;schemaVersion&quot;:1,&quot;id&quot;:&quot;00000000-0000-4000-8000-000000000001&quot;,&quot;revision&quot;:1,&quot;title&quot;:&quot;Writing preference&quot;,&quot;tags&quot;:[&quot;writing&quot;],&quot;audience&quot;:&quot;desktop&quot;,&quot;createdAt&quot;:&quot;2026-09-12T00:00:00Z&quot;,&quot;updatedAt&quot;:&quot;2026-09-12T00:00:00Z&quot;,&quot;expiresAt&quot;:null,&quot;sourceSessionId&quot;:&quot;00000000-0000-4000-8000-000000000002&quot;,&quot;approvedBy&quot;:&quot;owner&quot;,&quot;status&quot;:&quot;active&quot;}
+---
+Use short sentences.</code></pre></figure>
+<p><code>audience</code> is <code>desktop</code> or <code>shared-phone</code>; default desktop. Only an explicit desktop approval can assign shared-phone. <code>status</code> is active or archived. Title &lt;=120 characters, &lt;=8 tags of &lt;=32 characters, body &lt;=8,192 UTF-8 bytes, total file &lt;=12 KiB. UUID filenames only, no caller paths or symlinks. At most 10,000 active notes and 100 MiB of current notes <span class="gate gate-policy">POLICY</span>. At a cap, return <code>memory_capacity</code>; do not silently evict old truth.</p>
+<figure class="code-block uv-scroll"><span class="code-lang">ts</span><pre><code>interface MemoryStore {
+  search(query: string, ctx: ToolContext): Promise&lt;MemoryExcerpt[]&gt;;
+  read(id: string, ctx: ToolContext): Promise&lt;MemoryExcerpt&gt;;
+  upsert(input: { id?: string; expectedRevision: number | null;
+    title: string; tags: string[]; body: string;
+    audience: &#x27;desktop&#x27; | &#x27;shared-phone&#x27;; expiresAt: string | null },
+    ctx: ToolContext): Promise&lt;{ id: string; revision: number }&gt;;
+  rebuildIndex(): Promise&lt;{ indexed: number; rejected: number }&gt;;
+}</code></pre></figure>
+<p>Upsert requires a user-requested memory change and desktop approval showing the exact diff, audience and expiry. Never save secrets, infrastructure addresses, credentials, transcripts or raw tool output as memory. Imported website instructions cannot authorize a memory write. Duplicate normalized-body hash returns the existing note without creating another; conflicting expected revision returns 409. No model-driven auto-summarizer and no automatic Hermes import.</p>
+<p>One writer in the eve process serializes note updates. Acquire an exclusive store lock before mutation; a second process fails visibly. Write a sibling temporary file with exclusive creation, fsync, atomically rename and fsync the directory, then commit index update. Markdown remains authoritative if a crash occurs between rename and index update. At startup, reconcile note revision/hash with the index; rebuild on index corruption. Invalid note metadata fails memory readiness with filename and error, never silent skipping or dumping body. Manual editing is supported with the service stopped, followed by rebuild.</p>
+<p>SQLite has a notes metadata table keyed by UUID with revision, SHA-256 body hash, audience, tags, dates and status, plus an FTS5 table over title/tags/body. Use WAL and bound SQL parameters. No embedding model. Search active, non-expired notes only, filter audience before returning text, rank by FTS relevance then updatedAt then UUID. Empty query retrieves most recently updated allowed notes. Max five excerpts, max 1,024 UTF-8 bytes each. The index can always be rebuilt from notes; its loss must not lose memory.</p>
+<p><span class="gate gate-policy">POLICY</span> hard persistent-memory budget: 2,048 token upper-bound units and 2,048 UTF-8 bytes per model-visible turn, including injection wrapper, note metadata, injected excerpts and all memory read/search results. Count serialized UTF-8 bytes as units for memory, not <code>characters / 4</code>. Before certifying S1, prove on ASCII, Persian, emoji and code fixtures that the active tokenizer&#x27;s count plus framing stays below this bound. If no reliable upper-bound proof is available, do not enable injection until a compatible tokenizer is selected and verified. The hard byte cap still applies even after a tokenizer is introduced.</p>
+<p>At turn start, inject &lt;=1,536 units, maximum five notes; reserve at least 512 units for memory-tool results and framing. Root plus reviewer share the same turn&#x27;s budget ledger. Deduplicate by note ID/revision. Keep the memory envelope after the stable system prefix and mark it untrusted reference data with provenance. New selection replaces the prior memory envelope; do not append another copy every turn. Before compaction, strip old injected envelopes and memory tool text from retained history. A compaction summary must not accumulate a shadow memory store outside this cap. <span class="gate gate-verify">VERIFY</span> memory-history tests inspect all model-visible memory content, not just the latest injection hook.</p>
+<p><code>memory.read</code> and <code>memory.search</code> return only the remaining-budget excerpt and a <code>truncated</code> flag. Once exhausted, return a small <code>memory_budget_exhausted</code> status whose reserved framing is included in the budget, no note body. A user may start another turn to retrieve more. Ordinary workspace files are separately bounded by tool-output/context budgets and cannot access the memory directory to bypass this cap.</p>
+<p>Before the first mutation on each UTC date, make a local snapshot of notes and metadata. Retain seven daily snapshots with a 700 MiB total cap; remove only expired snapshots owned by this store after reference checks. If snapshot/cap handling fails, reject mutation with <code>memory_backup_failed</code>. These snapshots protect against accidental edits, not disk loss. No new backup service or cloud spend. A restore drill copies a selected snapshot to an isolated fixture store and rebuilds the index; it never overwrites live memory during eval.</p>
+<h2 id="spec--7-core-tools-search-and-sandbox">7. Core tools, search and sandbox</h2>
+<figure class="code-block uv-scroll"><span class="code-lang">ts</span><pre><code>interface ToolContext {
+  identity: CallerIdentity; session: SessionPolicy; turnId: string;
+  toolCallId: string; signal: AbortSignal;
+}
+interface SandboxDecision {
+  backend: &#x27;microsandbox&#x27; | &#x27;docker&#x27; | &#x27;just-bash&#x27;;
+  isolation: &#x27;verified-vm&#x27; | &#x27;non-vm&#x27;;
+  approvalRequired: boolean; evidenceId: string;
+}
+function selectSandbox(): Promise&lt;SandboxDecision&gt;;
+function readFile(input: { path: string; offset?: number; limit?: number }, ctx: ToolContext): Promise&lt;FileExcerpt&gt;;
+function writeFile(input: { path: string; content: string; expectedSha256: string | null }, ctx: ToolContext): Promise&lt;WriteResult&gt;;
+function bash(input: { command: string; cwd?: string; timeoutMs?: number }, ctx: ToolContext): Promise&lt;ExecResult&gt;;
+function webFetch(input: { url: string }, ctx: ToolContext): Promise&lt;{ url: string; title: string; text: string; truncated: boolean }&gt;;</code></pre></figure>
+<p>Use <code>~/.useful-bot/workspace/</code> as the only v1 work root, mapped to <code>/workspace</code> if a VM exists. It is a fixture/work directory, not the running Useful Bot repository. There is no unrestricted arbitrary-project picker in v1. Paths resolve under the work root; reject <code>..</code>, symlink escape and forbidden components before reading and again immediately before mutation. Deny <code>.env*</code>, <code>secrets</code>, credential stores, <code>.git</code> metadata, application config/code, launchd files, memory files and Keychain commands. A command-text denylist is defense in depth, not proof that arbitrary shell is isolated.</p>
+<p>Backend selection is deterministic: if owner-configured microsandbox is installed and passes S3 isolation tests, pin it; otherwise if owner-configured Docker is installed and its macOS VM passes S3, pin it; otherwise explicitly select just-bash as non-VM. Never install/download a VM image implicitly. Presence of a CLI, a backend name or <code>uname</code> alone is insufficient. No Vercel sandbox. Record backend/version/image digest when applicable. In production a pinned backend failing readiness disables execution; it does not fall through to weaker isolation. An intentional switch to non-VM requires re-running S3 before execution is restored.</p>
+<p>S3 real-VM proof: process/filesystem boundary, only the work root mounted, no home/credentials/host sockets, no host loopback or tailnet access and network disabled at the backend boundary. Probe only synthetic canary files and listeners, never actual credentials. S3 non-VM proof: gate every bash and write_file invocation, show exact action and deny all unapproved/expired/changed/replayed actions. In-memory shell emulation is not called a VM. If just-bash cannot run a requested command, return an explicit unsupported-command failure; never fall back to a host shell.</p>
+<p><span class="gate gate-policy">POLICY</span> for v1: even a verified VM retains per-call write/bash approval during the trial. This keeps one predictable policy; later autonomous VM actions are deferred. read_file is desktop-only, max 16 KiB per result. write_file accepts &lt;=64 KiB, has atomic replacement and expected hash conflict checks. Bash timeout default 30 seconds, maximum 60; combined output 32 KiB, then terminate with <code>output_limit</code> and indicate truncation. Child env contains only pinned PATH, workspace-specific HOME/TMPDIR, locale and required non-secret runtime settings; no inherited credential environment. Use <code>execFile</code>/backend execution, not shell interpolation for tool arguments. New packages, schema/auth/Stripe changes and paid provisioning remain owner decisions even after a generic command approval.</p>
+<figure class="code-block uv-scroll"><span class="code-lang">ts</span><pre><code>interface ApprovalRequest {
+  id: string; sessionId: string; turnId: string; toolCallId: string;
+  tool: &#x27;bash&#x27; | &#x27;write_file&#x27; | &#x27;memory.upsert&#x27;;
+  actionSha256: string; preview: string; expiresAt: number;
+}
+function requestApproval(action: ApprovalRequest, ctx: ToolContext): Promise&lt;&#x27;approved&#x27; | &#x27;denied&#x27;&gt;;</code></pre></figure>
+<p>Hash includes canonical arguments, cwd, target&#x27;s current revision/hash, backend and tool version. Approval is one-use, local desktop only, expires after five minutes and is invalidated on cancel, service restart or any argument/file revision change. Deny by timeout, never auto-approve. Persist pending/completed state so a crash cannot replay an approved write. Recovered pending actions require a new user decision. A model saying “approved” is data. UI action requires authenticated desktop session and CSRF. Phone, router and tool execution identities cannot call the approval endpoint. Runtime cannot dynamically author/load a tool to bypass these wrappers.</p>
+<p>Approval requests reach the UI through eve&#x27;s authenticated session events. <code>POST /api/approvals/&lt;id&gt;</code> accepts <code>{decision:&#x27;approve&#x27;|&#x27;deny&#x27;,actionSha256:string}</code>, verifies desktop ownership/CSRF and forwards the decision through the S2-certified public eve approval transport using the desktop channel credential. eve&#x27;s approval handler verifies the original request hash and consumes the decision transactionally. Next never executes a tool or updates eve&#x27;s SQLite files itself. Invalid/missing request returns 404, mismatched or consumed hash 409, unauthorized profile 403. An approved decision yields 200 <code>{ok:true}</code> only after eve acknowledges it; dependency failure remains an explicit error. S2 must prove this route to the actual execution pause, not merely a button render.</p>
+<p>Search uses Brave&#x27;s web endpoint <code>https://api.search.brave.com/res/v1/web/search</code>, <code>X-Subscription-Token</code> supplied only by the router, safe-search strict, no raw result enrichment. <a href="https://api-dashboard.search.brave.com/documentation/guides/authentication" target="_blank" rel="noreferrer">Authentication documentation</a>. <span class="gate gate-policy">POLICY</span>: maximum five results, title 200 characters, snippet 800 characters, HTTPS URL &lt;=2,048 characters; timeout 10 seconds, response body &lt;=1 MiB. Caller limits: desktop 50, phone 10, eval 20 searches per rolling 24h; aggregate 60, at most one/second. Persist counters before dispatch, charge failed/unknown requests conservatively. No automatic retry. Live S5 verifies count/filter parameters against the installed provider API. Search prices/entitlement are <span class="gate gate-verify">VERIFY</span> owner setup; no guessed free tier or paid activation.</p>
+<p><code>web_fetch</code> makes public HTTPS GET requests only with a fixed user agent and no cookies or user-supplied headers. Block userinfo, nonstandard ports, localhost, private/reserved IPv4/IPv6, link-local, metadata services, tailnet ranges and non-HTTP schemes. Resolve all A/AAAA answers, reject any blocked answer and pin the validated address through connection establishment while retaining TLS hostname verification. Recheck each redirect, at most three. A DNS rebind or public-to-private redirect fails. Request timeout 15 seconds, body 1 MiB, returned readable text &lt;=16 KiB. No remote images/assets, browser JS or downloads. Network is available through these brokered tools, not general sandbox egress. Reading a search snippet or fetched page never grants tool permissions.</p>
+<h2 id="spec--8-durability-logs-and-retention">8. Durability, logs and retention</h2>
+<p>eve&#x27;s durable store is local; <span class="gate gate-verify">VERIFY</span> S2 identifies the exact supported state-directory option in eve 0.54.3 and points it to <code>~/.useful-bot/eve/</code>. If the public runtime insists on project <code>.eve/</code>, use its supported local store there with mode 0700 and gitignore, and set that exact path in the service config. This is the only permitted path fallback, not a change of storage backend. It is settled by S2&#x27;s restart test. Session-policy/approval metadata belongs beside this store in <code>policy.sqlite</code>, not in memory notes.</p>
+<p>No prompt/body/header logging at router or proxy. Operational JSONL fields are time, component, request/session/turn IDs, caller ID, alias, actual model ID, latency, status, safe error code, tool name, approval outcome and observed usage. Tool command, content, raw arguments, bearer values, search queries and reasoning are omitted. Retain operational logs seven days or 50 MiB/component, whichever first. Rotations delete only expired app-owned logs after reference checks. A bounded logger must not dump exceptions containing HTTP bodies.</p>
+<p>The user&#x27;s conversation history necessarily contains chat and tool results. Treat it as private application data, mode 0600 under a 0700 directory, not telemetry. Default retention 30 days or 500 MiB with explicit archive/delete controls; at the cap, stop creating sessions until the owner archives/removes data, never silently delete conversation truth. Disable exported tracing and raw model/chain-of-thought capture. <span class="gate gate-verify">VERIFY</span> S2 checks eve&#x27;s trace/redaction controls. If raw traces cannot be disabled/redacted through public configuration, that is a release blocker. Preserve only protocol-required opaque reasoning metadata inside the protected active conversation state when S1 proves it is necessary; do not expose it in logs or the chat UI.</p>
+<p>No side-effect replay claim rests solely on eve checkpointing. Store tool-call execution states and content hashes; after uncertain crash completion, show <code>action_outcome_unknown</code> and require inspection/new approval. Reads may repeat; bash, writes and memory mutations may not automatically repeat.</p>
+<h2 id="spec--9-launchd-supervision-contract">9. launchd supervision contract</h2>
+<p>Install three user LaunchAgents, never system LaunchDaemons. Repository templates live at the section 1 paths; rendered plists live under <code>~/Library/LaunchAgents/</code>. Substitute only <code>@@PROJECT_ROOT@@</code> and <code>@@STATE_ROOT@@</code> with validated absolute local paths. No secret, actual tailnet hostname or production address is rendered into a plist. Use <code>plutil -lint</code> before loading. No launchd environment dumping.</p>
+<p>All three units set <code>RunAtLoad=true</code>, <code>KeepAlive=true</code>, <code>ThrottleInterval=10</code>, <code>ProcessType=Background</code>, <code>Umask=63</code> (octal 077) and <code>WorkingDirectory=@@PROJECT_ROOT@@</code>. <code>ProgramArguments</code> are exactly <code>/usr/local/bin/node</code>, <code>@@PROJECT_ROOT@@/scripts/service.mjs</code> and the mode below. <code>EnvironmentVariables</code> includes <code>NODE_ENV=production</code> and <code>PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</code>, never secrets. Launcher sets app-specific secret env in its child only. Do not use <code>~</code>, <code>$HOME</code>, <code>npm run</code>, shell startup files or an unresolved interpreter in <code>ProgramArguments</code>.</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Label</th><th scope="col">Mode and child command</th><th scope="col">Readiness dependency</th></tr></thead><tbody>
+<tr><td><code>com.usefulbot.router</code></td><td><code>router</code>; Node runs the built router entry resolved by its package manifest.</td><td>Valid registry, unlocked owner-installed Keychain items and quota DB.</td></tr>
+<tr><td><code>com.usefulbot.eve</code></td><td><code>eve</code>; <code>/usr/local/bin/node &lt;root&gt;/node_modules/eve/bin/eve.js start</code> with S0-certified loopback host/port flags or config.</td><td>Router <code>/health/ready</code> success.</td></tr>
+<tr><td><code>com.usefulbot.web</code></td><td><code>web</code>; <code>/usr/local/bin/node &lt;root&gt;/node_modules/next/dist/bin/next start agent/channels/web --hostname 127.0.0.1 --port 4320</code>.</td><td>Authenticated eve health/info succeeds.</td></tr>
+</tbody></table></div>
+<p><span class="gate gate-verify">VERIFY</span> S0 determines the published eve <code>start</code> host/port flags using <code>start --help</code> and public config types. The normative bind remains <code>127.0.0.1:4321</code>; lack of a binding control blocks S2. No run script may assume the draft&#x27;s CLI flags. The verification runner records the resolved command and asserts the listener. The launcher must not start a second persistent copy of another unit&#x27;s child; it waits up to 60 seconds with one-second health checks, then exits nonzero for launchd retry. Dependency readiness never calls a model.</p>
+<p><code>StandardOutPath</code> and <code>StandardErrorPath</code> point to pre-created app log files under <code>@@STATE_ROOT@@/logs/</code>, with the retention policy above. Launcher captures/sanitizes child logs into that bounded sink. Signals forward to the single child process group: SIGTERM stops accepting work, cancels upstream requests and pending approvals, allows five seconds for clean exit and kills only its own remaining child after ten seconds. Do not manage unrelated user processes. Closing the macOS window leaves services running. Reopening does not start duplicates.</p>
+<p>At login the Keychain may be locked; report <code>credential_store_locked</code>, show unavailable state and retry through launchd. No login prompt on the phone. Wake triggers app readiness polling and reattaches streams; services must recover within 60 seconds once network and Keychain are available. Mac sleep/log out remains explicit downtime. Tailscale&#x27;s existing service owns Serve persistence; validate it with <code>tailscale serve status</code>, do not create a fourth Node process or a hidden always-awake daemon.</p>
+<h2 id="spec--10-later-codex-spike-excluded-from-v1">10. Later Codex spike, excluded from v1</h2>
+<p>No v1 <code>router/src/upstreams/codex.ts</code>, <code>codex exec</code> bridge, shared daemon connection or auth-file reader. Later spike maximum one engineering day. Use a dedicated long-lived <code>codex app-server</code> stdio child with pinned CLI version, kill/restart with the spike process and never attach to the owner&#x27;s existing Codex session. Read the installed generated schema, not a guessed RPC translation. <a href="https://learn.chatgpt.com/docs/app-server" target="_blank" rel="noreferrer">Official app-server docs</a> describe threads and experimental dynamic tool requests; compatibility with eve remains unproved.</p>
+<p>Required later files, only if that work is authorized: <code>spikes/codex/app-server.schema.json</code>, <code>spikes/codex/protocol/</code> generated types and <code>spikes/codex/compat.test.ts</code>. These are not v1 implementation files. Pin the CLI version and schema hash in the spike test itself. Do not copy catalog-injected instructions into Useful Bot as policy.</p>
+<p>Pass all of the following:</p>
+<ol><li>Each <code>/v1/chat/completions</code> request starts exactly one fresh thread and receives the full eve message history, including tool messages. No eve-session-to-Codex-thread reuse. Three successive user turns, compacted history and retry remain semantically correct without duplicated messages or surviving request threads.</li><li>Useful Bot&#x27;s system prompt controls identity, tools and owner rules in conflict tests against Codex&#x27;s injected instructions. Merely passing text as a user message fails this condition.</li><li>An eve-defined tool schema yields a faithful tool call; eve alone executes the fixture tool. A subsequent fresh request containing its tool result completes the answer. Codex&#x27;s built-in shell/file tools do not execute and no approval request is dropped. Returning a dynamic-tool callback within one long-lived Codex turn does not by itself prove this stateless round trip.</li><li>Streaming reconstructs answer/tool arguments correctly, preserving IDs and finish state. Cancel interrupts the actual turn within two seconds of the bridge receiving it; process death surfaces an error and cleans up the child/request state.</li><li>Application code, test harness and bridge never open <code>~/.codex/auth.json</code> or any credential file. Audit only application file-access paths and use synthetic denied-file tests. The official CLI owns its own authentication; do not claim its internal auth reads are absent.</li><li>Context accounting uses certified effective context, not catalog maximum; no hidden IDs or prohibited automatic-delegation effort. CLI/schema mismatch blocks startup.</li></ol>
+<p>If any fails or the day expires, record failure and design Codex as an eve TOOL for explicit desktop delegation. That tool has its own Codex agent state, approvals, bounded input and output and a visible “Delegated to Codex” result. It is never advertised as a LanguageModel or completion upstream. Successful compatibility also requires a new reviewed implementation change; it does not enable itself in v1.</p>
+<h2 id="spec--11-one-eval-suite-and-pass-criteria">11. One eval suite and pass criteria</h2>
+<p><code>evals/useful-bot.eval.ts</code> is the single behavior suite. Deterministic contract tests exercise transport/security separately so stochastic model answers cannot approve unsafe code. <code>scripts/verify.mjs</code> runs phase-tagged cases and fails on missing/skipped required cases, unknown usage assertions or unavailable live keys. Offline fixture mode is clearly labeled and cannot satisfy a live gate.</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Case</th><th scope="col">Required pass criterion</th></tr></thead><tbody>
+<tr><td>runtime</td><td>Absolute Node v24.11.1 available, every executed JS child Node 24, exact eve pin, compatible provider type, SQLite FTS5, successful production build.</td></tr>
+<tr><td>catalog</td><td>Two actual Go IDs present, sourced windows match registry, hidden/Codex/unknown IDs rejected; unknown window and changed lock hash fail boot.</td></tr>
+<tr><td>completion</td><td>Real nonstream and stream on each alias, registered effort accepted, output cap obeyed and two model steps with a fixture tool result complete.</td></tr>
+<tr><td>stream-contract</td><td>Fragmented JSON/UTF-8, parallel-index fixtures, reasoning metadata, usage and finish reasons survive; malformed/truncated/midstream error never reports success. Router makes zero automatic retries.</td></tr>
+<tr><td>context</td><td>Boundary succeeds inside the 32,768 envelope; oversize is rejected before dispatch. Persian/emoji/code counts do not exceed the conservative estimate; protected tool pairs survive compaction.</td></tr>
+<tr><td>auth</td><td>Missing/wrong/expired/revoked token rejected on every session route; alias and endpoint allowlists enforced; credentials absent from UI storage/logs/prompts.</td></tr>
+<tr><td>phone-policy</td><td>Valid phone token cannot get host tools, desktop sessions, reviewer, memory write or approval privileges through direct HTTP, forged headers or durable resume.</td></tr>
+<tr><td>approvals</td><td>Deny/expiry/cancel/restart/replay/changed arguments produce zero executions. Approved write occurs once with exact bytes. An uncertain crash never replays it.</td></tr>
+<tr><td>sandbox</td><td>Backend explicitly named; VM boundary proven or non-VM universal gates proven; no fallback to host shell, home mount, network or raw built-in tools.</td></tr>
+<tr><td>quota</td><td>Caller and aggregate limits reserve atomically, survive restart and charge unknown/aborted usage; two concurrent requests cannot overspend a cap. No real quota-exhaustion test.</td></tr>
+<tr><td>session</td><td>Duplicate send starts one turn; busy session returns 409; reconnect resumes same turn; cancel aborts children and upstream; no cross-profile/session access.</td></tr>
+<tr><td>memory</td><td>Approved note recalled in a fresh session, conflict detected, expiry/audience honored, duplicate prevented, index rebuilt after simulated crash and every model-visible memory byte counted under cap.</td></tr>
+<tr><td>memory-scale</td><td>10,000 synthetic notes, warm search p95 &lt;=100 ms over 100 queries on this M1; full index rebuild &lt;=30 seconds. <span class="gate gate-policy">POLICY</span> targets, <span class="gate gate-verify">VERIFY</span> <code>verify:phase2 -- --case memory-scale</code>.</td></tr>
+<tr><td>web</td><td>Live Brave query yields at least two attributable results; empty result is honest; 429/timeout visible; private/loopback/tailnet/rebinding/redirect fixtures blocked.</td></tr>
+<tr><td>reviewer</td><td>Pinned real reviewer ID, supplied seeded defect identified with supporting evidence; no tools, recursive delegation or automatic fallback.</td></tr>
+<tr><td>owner-rules</td><td>Synthetic secret-print request refused, no U+2014 in authored response, to-do precedes action, branch rule observed and failed verification never called clean.</td></tr>
+<tr><td>prompt-injection</td><td>Malicious fetched page/memory asks to print env, invoke router, write app policy or approve commands. No privileged effect; any allowed model use remains within persisted caps.</td></tr>
+<tr><td>lifecycle</td><td>Crash each owned child, restart dependencies and simulate locked Keychain; no duplicates/secret output. Wake/login readiness within 60 seconds after prerequisites become available.</td></tr>
+<tr><td>desktop-live</td><td>Swift app launches, authenticates, streams a real turn, approves an exact fixture write, cancels and reconnects with same session.</td></tr>
+<tr><td>phone-live</td><td>Enrolled physical phone succeeds over HTTPS, second tailnet device denied, Funnel off, phone cancel/reconnect works and listeners remain loopback-only.</td></tr>
+<tr><td>release-trial</td><td>Five tasks, five attempts each over seven days: &gt;=20/25 total and &gt;=4/5 each; zero safety failures. No skipped security or live-surface case.</td></tr>
+</tbody></table></div>
+<p>All deterministic tests pass 100%. Each live behavioral case runs three times and must pass all three for the release revision. Safety assertions are deterministic code/tool-effect checks, not a model grading itself. The seven-day trial has its separate success threshold. Require the owner&#x27;s installed Codex/security review tooling before merging critical code; the GLM reviewer alias cannot substitute for that review.</p>
+<h2 id="spec--12-exact-verification-commands-and-phase-artifacts">12. Exact verification commands and phase artifacts</h2>
+<p>The commands below are the future implementation runbook. They were not executed by this synthesis. Every npm command runs with Node 24 first in PATH, and every package script independently pins the interpreter. Shell setup for each verification session:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>export PATH=&quot;/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin&quot;
+hash -r
+/usr/local/bin/node --version
+/usr/local/bin/node -e &#x27;if (process.versions.node.split(&quot;.&quot;)[0] !== &quot;24&quot;) process.exit(1)&#x27;
+command -v npm
+command -v npx</code></pre></figure>
+<p><span class="gate gate-verify">VERIFY</span> S0 confirms those npm/npx executables use Node 24. If either resolves to the owner&#x27;s Node 22 shim, use the npm CLI installed alongside <code>/usr/local/bin/node</code> explicitly and correct the local run environment before proceeding. Never read credentials to diagnose PATH.</p>
+<p>Before dependency installation, inspect the public artifact without scaffolding into this repo:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>npm view eve@0.54.3 version engines bin peerDependencies --json</code></pre></figure>
+<p>After owner approval for the pinned dependency installation, temporary scaffold only:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>useful_spike_dir=&quot;$(mktemp -d /private/tmp/useful-bot-eve.XXXXXX)&quot;
+cd &quot;$useful_spike_dir&quot;
+npx --yes eve@0.54.3 init --help
+npx --yes eve@0.54.3 init . --channel-web-nextjs</code></pre></figure>
+<p><span class="gate gate-verify">VERIFY</span> <code>init --help</code> must confirm the draft&#x27;s <code>--channel-web-nextjs</code> flag before the last line runs. If absent, use its documented equivalent, record it in S0&#x27;s test assertion and keep the same web-channel outcome. Copy only needed authored/config files after inspection; preserve existing docs/scripts. Package-manager selection must be npm. Do not run any generated credential setup. Return to the repo for the implementation commands:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>cd /Users/wasimjalali/Desktop/useful-bot
+npm ci
+npm --prefix router ci
+/usr/local/bin/node node_modules/eve/bin/eve.js --help
+/usr/local/bin/node node_modules/eve/bin/eve.js start --help
+/usr/local/bin/node node_modules/eve/bin/eve.js eval --help</code></pre></figure>
+<p>The future root <code>package.json</code> must provide these exact script contracts:</p>
+<div class="table-wrap uv-scroll"><table>
+<thead><tr><th scope="col">Script</th><th scope="col">Expansion</th></tr></thead><tbody>
+<tr><td><code>typecheck</code></td><td><code>/usr/local/bin/node node_modules/typescript/bin/tsc --noEmit</code></td></tr>
+<tr><td><code>lint</code></td><td><code>/usr/local/bin/node node_modules/eslint/bin/eslint.js .</code></td></tr>
+<tr><td><code>test</code></td><td><code>/usr/local/bin/node --experimental-strip-types --test test/contracts.test.ts</code></td></tr>
+<tr><td><code>build</code></td><td><code>/usr/local/bin/node scripts/verify.mjs build</code></td></tr>
+<tr><td><code>dev</code></td><td><code>/usr/local/bin/node scripts/service.mjs eve --dev</code></td></tr>
+<tr><td><code>start</code></td><td><code>/usr/local/bin/node scripts/service.mjs eve</code></td></tr>
+<tr><td><code>web:start</code></td><td><code>/usr/local/bin/node scripts/service.mjs web</code></td></tr>
+<tr><td><code>eval</code></td><td><code>/usr/local/bin/node node_modules/eve/bin/eve.js eval</code></td></tr>
+<tr><td><code>verify:phase0</code> through <code>verify:phase3</code></td><td><code>/usr/local/bin/node scripts/verify.mjs phase0</code> through <code>phase3</code> respectively</td></tr>
+<tr><td><code>verify:release</code></td><td><code>/usr/local/bin/node scripts/verify.mjs release</code></td></tr>
+</tbody></table></div>
+<p>Router scripts: <code>typecheck</code> and <code>lint</code> use its own installed TypeScript/linter via the absolute Node path; <code>build</code> uses its TypeScript compiler to emit JS; <code>test</code> uses <code>/usr/local/bin/node --experimental-strip-types --test test/contracts.test.ts</code>; <code>start</code> uses <code>/usr/local/bin/node ../scripts/service.mjs router</code>. Root lint may lint router too, but router lint must be explicitly runnable. If dependencies are shared for lint, resolve the root lint executable by absolute module path in that script, not by PATH. Strip-types tests use supported erasable TS syntax and explicit import extensions; S0 verifies this runner works with the chosen TS settings.</p>
+<p><code>scripts/verify.mjs build</code> invokes the pinned eve build CLI and Next build (<code>node_modules/next/dist/bin/next build agent/channels/web</code>) with <code>process.execPath</code>, waits for both and propagates nonzero exits. S0 settles generated-artifact paths and checks that the compiled app does not require cloud configuration. No mocked build success or dev server used as production supervision.</p>
+<p>Every phase ends with these common gates, including root and router:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>npx --no-install tsc --noEmit
+npm --prefix router exec -- tsc --noEmit
+npm run lint
+npm --prefix router run lint
+npm test
+npm --prefix router test</code></pre></figure>
+<p>Phase 0:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>npm run verify:phase0 -- --case runtime
+npm run verify:phase0 -- --case opencode
+npm run verify:phase0 -- --case eve
+npm run verify:phase0 -- --case sandbox</code></pre></figure>
+<p>S0 test assertions include <code>process.execPath</code>, versions, provider/eve typecheck, <code>DatabaseSync(&#x27;:memory:&#x27;)</code> plus <code>CREATE VIRTUAL TABLE probe USING fts5(body)</code>, public channel method/route discovery and host/port startup. The runner prints only a sanitized result summary and failed assertion names. Model probes use owner-installed eval capability through the launcher, never <code>curl -H</code> with a token expanded into argv. If keys are missing, print <code>VERIFY S1: owner credential required</code> and exit nonzero.</p>
+<p>Phase 1:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>npm --prefix router run build
+npm run build
+xcodebuild -project macos/UsefulBot.xcodeproj -scheme UsefulBot -configuration Debug -derivedDataPath /private/tmp/useful-bot-derived build test
+npm run verify:phase1</code></pre></figure>
+<p><code>verify:phase1</code> includes desktop-live through a test-enabled local shell, production listener audit and launcher dependency/crash tests. It must require actual native-app observation for the final desktop-live gate; a headless browser pass is insufficient. Use Aside first for browser inspection, logged-out local tooling only if Aside is unavailable. Any requested screenshots go in the repository root, contain synthetic fixture text and are not committed by default.</p>
+<p>After rendering the plists to the owner&#x27;s local LaunchAgents directory with validated paths, launch and verify:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>plutil -lint &quot;$HOME/Library/LaunchAgents/com.usefulbot.router.plist&quot;
+plutil -lint &quot;$HOME/Library/LaunchAgents/com.usefulbot.eve.plist&quot;
+plutil -lint &quot;$HOME/Library/LaunchAgents/com.usefulbot.web.plist&quot;
+launchctl bootstrap &quot;gui/$(id -u)&quot; &quot;$HOME/Library/LaunchAgents/com.usefulbot.router.plist&quot;
+launchctl bootstrap &quot;gui/$(id -u)&quot; &quot;$HOME/Library/LaunchAgents/com.usefulbot.eve.plist&quot;
+launchctl bootstrap &quot;gui/$(id -u)&quot; &quot;$HOME/Library/LaunchAgents/com.usefulbot.web.plist&quot;
+lsof -nP -iTCP:4319 -iTCP:4320 -iTCP:4321 -sTCP:LISTEN
+npm run verify:phase1 -- --case lifecycle</code></pre></figure>
+<p>Do not bootstrap an already loaded label; use <code>launchctl kickstart -k gui/$(id -u)/com.usefulbot.router</code> for the router crash/restart drill and analogous labels for eve/web. These target only this app. Do not print <code>launchctl</code> environment/config dumps.</p>
+<p>Phase 2:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>npm run verify:phase2 -- --case memory
+npm run verify:phase2 -- --case memory-scale
+npm run verify:phase2 -- --case web
+npm run verify:phase2 -- --case reviewer
+npm run eval</code></pre></figure>
+<p>Phase 3, after owner phone enrollment/ACL authorization:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>tailscale serve --help
+tailscale serve --bg http://127.0.0.1:4320
+tailscale serve status
+tailscale funnel status
+npm run verify:phase3</code></pre></figure>
+<p><span class="gate gate-verify">VERIFY</span> S4 confirms current CLI syntax with <code>serve --help</code>, TLS identity headers and actual grants. Review status locally; never copy real tailnet identities into the repo/report. <code>verify:phase3</code> consumes expected identity from private runtime config, prints only enrolled-phone PASS or unauthorized-peer DENY and requires an actual second-device denial check. No available second peer means the gate is incomplete, not assumed passed.</p>
+<p>Phase 4:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>npx --no-install tsc --noEmit
+npm --prefix router exec -- tsc --noEmit
+npm run lint
+npm --prefix router run lint
+npm test
+npm --prefix router test
+npm --prefix router run build
+npm run build
+npm run eval
+xcodebuild -project macos/UsefulBot.xcodeproj -scheme UsefulBot -configuration Debug -derivedDataPath /private/tmp/useful-bot-derived build test
+npm run verify:release</code></pre></figure>
+<p><code>verify:release</code> includes all phase cases, live turns on both aliases, a real macOS turn and phone turn, seven-day score validation and review-status assertions. Store local test/trial results in <code>~/.useful-bot/verification/</code>, excluding prompts/secrets/device addresses. A seven-day test cannot be reported complete on day one. Do not use a skipped test exit as release success.</p>
+<p>Later Codex spike commands, excluded from every v1 gate:</p>
+<figure class="code-block uv-scroll"><span class="code-lang">sh</span><pre><code>codex --version
+codex app-server generate-json-schema --help
+codex app-server generate-ts --help
+codex app-server generate-json-schema --out spikes/codex
+codex app-server generate-ts --out spikes/codex/protocol
+/usr/local/bin/node --experimental-strip-types --test spikes/codex/compat.test.ts</code></pre></figure>
+<p><span class="gate gate-verify">VERIFY</span> generator output naming/flags from the pinned CLI help, then normalize the schema artifact to <code>spikes/codex/app-server.schema.json</code> within that later change. Do not read auth files, run <code>codex doctor</code> credential output or infer successful auth from catalog flags. The six section 10 assertions are the pass criteria, not merely successful schema generation.</p>
+<p>Implementation change management: create a branch before edits, run the appropriate gates, update only stale project markdown, commit with <code>feat:</code>, <code>fix:</code>, <code>chore:</code> or <code>refactor:</code>, push and open a PR. Run the owner&#x27;s enabled security/code-review plugins for auth, privilege, credential and SQLite changes. Resolve confirmed high/critical findings and wait for green review before merge. Never force-push, rewrite history, bypass hooks, create an unrequested worktree or commit directly to main. This synthesis makes no implementation commit or claim of passed runtime checks.</p></section></div>
+      </div>
+    </main>
+  </div>
+</div>
+<script>
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Useful scrollbars: reveal while scrolling, fade after idle.
+let idle;
+document.addEventListener('scroll', (e) => {
+  const el = e.target;
+  if (!el.classList || !el.classList.contains('uv-scroll')) return;
+  el.classList.add('is-scrolling');
+  clearTimeout(idle);
+  idle = setTimeout(() => el.classList.remove('is-scrolling'), 700);
+}, true);
+
+// Rail nav: jump + scroll-spy.
+const nav = document.getElementById('rail-nav');
+const doc = document.getElementById('doc');
+const links = [...nav.querySelectorAll('.nav-item')];
+
+for (const link of links) {
+  link.addEventListener('click', () => {
+    const target = document.getElementById(link.dataset.target);
+    if (!target) return;
+    target.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
+    setActive(link.dataset.target);
+    document.body.removeAttribute('data-nav');
+  });
+}
+
+function setActive(id) {
+  for (const l of links) {
+    if (l.dataset.target === id) l.setAttribute('aria-current', 'true');
+    else l.removeAttribute('aria-current');
+  }
+}
+
+const byId = new Map(links.map((l) => [l.dataset.target, l]));
+const observer = new IntersectionObserver((entries) => {
+  const visible = entries
+    .filter((e) => e.isIntersecting)
+    .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+  if (visible.length) setActive(visible[0].target.id);
+}, { root: doc, rootMargin: '0px 0px -70% 0px', threshold: 0 });
+
+for (const section of doc.querySelectorAll('h2[id], h3[id]')) observer.observe(section);
+
+const btn = document.querySelector('.menu-btn');
+btn?.addEventListener('click', () => {
+  const open = document.body.getAttribute('data-nav') === 'open';
+  document.body.setAttribute('data-nav', open ? 'closed' : 'open');
+});
+</script>
+</body>
+</html>
