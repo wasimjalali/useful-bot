@@ -86,6 +86,9 @@ async function main() {
   if (!existsSync(NODE)) fail("interpreter_missing", NODE);
   if (mode === "router") {
     const env = await childEnv();
+    if (!env.UB_ROUTER_CONFIG) {
+      env.UB_ROUTER_CONFIG = path.join(process.env.HOME ?? "", ".useful-bot/config.json");
+    }
     run(["--experimental-strip-types", path.join(ROOT, "router/src/index.ts")], env);
     return;
   }
@@ -96,7 +99,6 @@ async function main() {
     return;
   }
   if (mode === "web") {
-    await waitReady("http://127.0.0.1:4321/eve/v1/health", 60_000);
     const env = { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" };
     run([
       path.join(ROOT, "node_modules/next/dist/bin/next"),
