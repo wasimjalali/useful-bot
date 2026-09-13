@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createBrowserSession, readSession, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
+import { createBrowserSession, destroySession, readSession, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
 
 export async function GET() {
   const session = await readSession();
@@ -35,6 +35,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE() {
+  await destroySession();
   const response = NextResponse.json({ ok: true });
   response.headers.set("set-cookie", clearSessionCookie());
   return response;

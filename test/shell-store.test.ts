@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -81,4 +81,13 @@ test("group members and persist roundtrip", () => {
   assert.equal(searchBots(loaded, "rev").some((item) => item.label === "Rev"), true);
   store = applyShellAction(loaded, { type: "setSession", botId: group.createdId!, sessionId: "sess-1" }).store;
   assert.equal(store.bots.find((item) => item.id === group.createdId)?.sessionId, "sess-1");
+});
+
+test("readShell reseeds an incompatible file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-shell-"));
+  const path = join(dir, "shell.json");
+  writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, operatorName: "x", bots: [], sections: [] })}\n`);
+  const loaded = readShell(path);
+  assert.equal(loaded.bots[0].id, DEFAULT_BOT_ID);
+  assert.equal(loaded.schemaVersion, 1);
 });

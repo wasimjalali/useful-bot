@@ -3,7 +3,7 @@ import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { workspaceRoot } from "../lib/workspace.ts";
-import { actionSha256, executeIfApproved } from "../lib/approvals.ts";
+import { actionSha256, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 
 const execFileAsync = promisify(execFile);
@@ -33,6 +33,7 @@ export default defineTool({
       actionSha256: hash,
       preview: input.command,
     });
+    await waitUntilNotPending(store, rec.id);
     return executeIfApproved(store, rec.id, hash, async () => {
       const args = ["/bin/sh", "-c", input.command];
       const { stdout, stderr } = await execFileAsync(args[0], args.slice(1), {

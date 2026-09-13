@@ -1,4 +1,17 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
 
 export type ApprovalTool = "bash" | "write_file" | "memory.upsert";
@@ -27,6 +40,16 @@ export interface StoredApproval {
   status: ApprovalStatus;
 }
 
+export type PendingApproval = Pick<
+  StoredApproval,
+  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt"
+>;
+
+export function defaultApprovalsPath(): string {
+  if (process.env.UB_APPROVALS_PATH) return process.env.UB_APPROVALS_PATH;
+  return join(homedir(), ".useful-bot", "approvals.json");
+}
+
 function hashesEqual(left: string, right: string): boolean {
   const a = Buffer.from(left, "utf8");
   const b = Buffer.from(right, "utf8");
@@ -50,9 +73,12 @@ export class ApprovalStore {
   readonly records = new Map<string, StoredApproval>();
   private seq = 0;
   private readonly now: () => number;
+  private readonly persistPath: string | null;
 
-  constructor(now: () => number = Date.now) {
+  constructor(now: () => number = Date.now, persistPath: string | null = null) {
     this.now = now;
+    this.persistPath = persistPath;
+    this.load();
   }
 
   request(input: {
@@ -63,10 +89,13 @@ export class ApprovalStore {
     actionSha256: string;
     preview: string;
   }): StoredApproval {
+    this.load();
     this.seq += 1;
     const createdAt = this.now();
     const record: StoredApproval = {
-      id: `apr_${this.seq.toString().padStart(4, "0")}`,
+      id: this.persistPath
+        ? `apr_${randomUUID().replaceAll("-", "").slice(0, 16)}`
+        : `apr_${this.seq.toString().padStart(4, "0")}`,
       sessionId: input.sessionId,
       turnId: input.turnId,
       toolCallId: input.toolCallId,
@@ -78,10 +107,12 @@ export class ApprovalStore {
       status: "pending",
     };
     this.records.set(record.id, record);
+    this.persist();
     return record;
   }
 
   decide(id: string, decision: ApprovalDecision, presentedHash: string): StoredApproval {
+    this.load();
     const record = this.records.get(id);
     if (!record) {
       throw new Error(`approval_not_found:${id}`);
@@ -94,10 +125,12 @@ export class ApprovalStore {
       throw new Error("approval_hash_mismatch");
     }
     record.status = decision === "approve" ? "approved" : "denied";
+    this.persist();
     return record;
   }
 
   consume(id: string, presentedHash: string): StoredApproval {
+    this.load();
     const record = this.records.get(id);
     if (!record) {
       throw new Error(`approval_not_found:${id}`);
@@ -119,15 +152,52 @@ export class ApprovalStore {
       throw new Error(`approval_not_approved:${record.status}`);
     }
     record.status = "consumed";
+    this.persist();
     return record;
   }
 
+  get(id: string): StoredApproval | undefined {
+    this.load();
+    const record = this.records.get(id);
+    if (!record) return undefined;
+    const before = record.status;
+    this.refreshExpiry(record);
+    if (record.status !== before) this.persist();
+    return record;
+  }
+
+  listPending(): PendingApproval[] {
+    this.load();
+    let changed = false;
+    const out: PendingApproval[] = [];
+    for (const record of this.records.values()) {
+      const before = record.status;
+      this.refreshExpiry(record);
+      if (record.status !== before) changed = true;
+      if (record.status === "pending") {
+        out.push({
+          id: record.id,
+          tool: record.tool,
+          preview: record.preview,
+          actionSha256: record.actionSha256,
+          createdAt: record.createdAt,
+          expiresAt: record.expiresAt,
+        });
+      }
+    }
+    if (changed) this.persist();
+    out.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+    return out;
+  }
+
   invalidateOnRestart(): void {
+    this.load();
     for (const record of this.records.values()) {
       if (record.status === "pending" || record.status === "approved") {
         record.status = "expired";
       }
     }
+    this.persist();
   }
 
   private refreshExpiry(record: StoredApproval): void {
@@ -135,6 +205,57 @@ export class ApprovalStore {
       record.status = "expired";
     }
   }
+
+  private load(): void {
+    if (!this.persistPath) return;
+    this.records.clear();
+    if (!existsSync(this.persistPath)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(this.persistPath, "utf8")) as { records?: StoredApproval[] };
+      const rows = Array.isArray(parsed.records) ? parsed.records : [];
+      for (const row of rows) {
+        if (!row || typeof row.id !== "string" || typeof row.actionSha256 !== "string") continue;
+        this.records.set(row.id, row);
+      }
+    } catch {
+      this.records.clear();
+    }
+  }
+
+  private persist(): void {
+    if (!this.persistPath) return;
+    mkdirSync(dirname(this.persistPath), { recursive: true, mode: 0o700 });
+    const tmp = `${this.persistPath}.${process.pid}.${Date.now()}.tmp`;
+    const body = `${JSON.stringify({ records: [...this.records.values()] })}\n`;
+    try {
+      writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      const fd = openSync(tmp, "r");
+      fsyncSync(fd);
+      closeSync(fd);
+      renameSync(tmp, this.persistPath);
+    } catch (err) {
+      try { unlinkSync(tmp); } catch { /* ignore */ }
+      throw err;
+    }
+  }
+}
+
+export async function waitUntilNotPending(
+  store: ApprovalStore,
+  id: string,
+  timeoutMs = POLICY_APPROVAL_TTL_MS,
+  intervalMs = 250,
+): Promise<StoredApproval> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const record = store.get(id);
+    if (!record) throw new Error(`approval_not_found:${id}`);
+    if (record.status !== "pending") return record;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  const expired = store.get(id);
+  if (expired && expired.status !== "pending") return expired;
+  throw new Error("approval_expired");
 }
 
 export async function executeIfApproved<T>(

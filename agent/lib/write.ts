@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { ApprovalStore, actionSha256, executeIfApproved } from "./approvals.ts";
+import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
 import { resolveWorkspacePath, workspaceRoot } from "./workspace.ts";
 import { WRITE_MAX_BYTES } from "../../shared/policy.ts";
 
-let store = new ApprovalStore();
+let store: ApprovalStore | null = null;
 
 export function getApprovalStore(): ApprovalStore {
+  if (!store) store = new ApprovalStore(Date.now, defaultApprovalsPath());
   return store;
 }
 
@@ -37,7 +38,8 @@ export async function approvedWrite(input: {
     backend: "just-bash",
     toolVersion: "1",
   });
-  const rec = store.request({
+  const approvals = getApprovalStore();
+  const rec = approvals.request({
     sessionId: input.sessionId,
     turnId: input.turnId,
     toolCallId: input.toolCallId,
@@ -46,9 +48,11 @@ export async function approvedWrite(input: {
     preview: `write ${input.path}`,
   });
   if (input.autoDecision) {
-    store.decide(rec.id, input.autoDecision, hash);
+    approvals.decide(rec.id, input.autoDecision, hash);
+  } else {
+    await waitUntilNotPending(approvals, rec.id);
   }
-  return executeIfApproved(store, rec.id, hash, () => {
+  return executeIfApproved(approvals, rec.id, hash, () => {
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
     const tmp = join(dirname(target), `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.tmp`);
     writeFileSync(tmp, input.content, { encoding: "utf8", mode: 0o600, flag: "wx" });

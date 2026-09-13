@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { MemoryStore } from "../lib/memory.ts";
-import { actionSha256, executeIfApproved } from "../lib/approvals.ts";
+import { actionSha256, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 
 export default defineTool({
@@ -15,7 +15,7 @@ export default defineTool({
     audience: z.enum(["desktop", "shared-phone"]),
     expiresAt: z.string().nullable(),
   }),
-  execute(input) {
+  execute: async (input) => {
     const hash = actionSha256({
       tool: "memory.upsert",
       canonicalArgs: JSON.stringify(input),
@@ -32,6 +32,7 @@ export default defineTool({
       actionSha256: hash,
       preview: `memory ${input.title}`,
     });
+    await waitUntilNotPending(getApprovalStore(), rec.id);
     return executeIfApproved(getApprovalStore(), rec.id, hash, () =>
       new MemoryStore().upsert({ ...input, sessionId: "live" }),
     );

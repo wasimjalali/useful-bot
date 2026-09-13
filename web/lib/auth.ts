@@ -1,9 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { loadRuntimeConfig, type CredentialDigest } from "../../shared/runtime.ts";
+import {
+  dropBrowserSession,
+  getBrowserSession,
+  putBrowserSession,
+} from "../../shared/web-sessions.ts";
 
 const COOKIE = "ub_session";
-const sessions = new Map<string, { callerId: string; profile: string; csrf: string; expiresAt: number }>();
 
 function digest(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
@@ -44,7 +48,7 @@ export function createBrowserSession(callerId: string, profile: string): { token
   const token = randomBytes(32).toString("base64url");
   const csrf = randomBytes(32).toString("base64url");
   const expiresAt = Date.now() + 12 * 60 * 60 * 1000;
-  sessions.set(createHash("sha256").update(token).digest("hex"), { callerId, profile, csrf, expiresAt });
+  putBrowserSession(token, { callerId, profile, csrf, expiresAt });
   return { token, csrf, expiresAt };
 }
 
@@ -52,9 +56,13 @@ export async function readSession(): Promise<{ callerId: string; profile: string
   const jar = await cookies();
   const token = jar.get(COOKIE)?.value;
   if (!token) return null;
-  const rec = sessions.get(createHash("sha256").update(token).digest("hex"));
-  if (!rec || rec.expiresAt <= Date.now()) return null;
-  return rec;
+  return getBrowserSession(token);
+}
+
+export async function destroySession(): Promise<void> {
+  const jar = await cookies();
+  const token = jar.get(COOKIE)?.value;
+  if (token) dropBrowserSession(token);
 }
 
 export function sessionCookie(token: string): string {

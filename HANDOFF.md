@@ -83,29 +83,18 @@ model's answer. Two root causes, both already identified:
 
 ## Remaining PRs, in order
 
-1. **GitHub PR 11: real replies.** Stream eve NDJSON into the chat. Still open
-   at handoff of the multi-bot shell. Merge it before (or with) the shell UI PR.
-   Gate: send "hi", see a real GLM-5.3-flash answer, cancel mid-turn stops
-   within 2s, reload resumes (`?session=<uuid>`).
-2. **Multi-bot shell UI.** Light-theme rail of bots (search, compact rows,
-   sections including Unassigned, pin cards, context menu, create bot/group,
-   per-bot settings). Stacked on PR 11 so streaming stays intact. Local store
-   at `~/.useful-bot/shell.json`.
-3. **Memory in the chat.** The `memory_search`/`memory_read`/`memory_upsert`
-   tools exist; surface a Memory view that lists notes (`audience: "desktop"`)
-   and a small "remember this" flow driven by the agent. The upsert tool
-   already requires approval; make the approval card render in the chat from a
-   pending-approvals poll (route is `web/app/api/approvals/[id]/route.ts`).
-4. **Search + reviewer in the chat.** `web_search` tool calls router
+1. **Memory in the chat.** List desktop notes and render approval cards from a
+   pending-approvals poll. Shared file store so eve tools and the Next API agree.
+2. **Search + reviewer in the chat.** `web_search` tool calls router
    `/v1/search` (keyless Firecrawl). Show results as chips. "Ask reviewer" runs
    the pinned reviewer subagent with the turn's text.
-5. **launchd for real.** Render the three plists in `ops/launchd/` to
-   `~/Library/LaunchAgents` with the substitute script; `plutil -lint` first;
-   verify crash/restart and duplicate-process prevention. Note `service.mjs` eve
-   currently runs `eve dev` because `eve start` needs `eve build` output that
-   conflicts with the web subapp; revisit before going to production launchd.
-6. **Release verification.** Full verify suite, seven-day usage trial begins
+3. **launchd for real.** Render the three plists in `ops/launchd/` with the
+   substitute script; lint on Linux, `plutil -lint` if present. Do not install
+   on the Mac from this cloud VM.
+4. **Release verification.** Full verify suite, seven-day usage trial begins
    here.
+
+GitHub PRs 11 (stream) and 12 (multi-bot shell) are on `main`. PR 13 stays closed.
 
 Then the deferring list from earlier PRs: 10k-note memory soak, Tailscale/phone
 (Phase 3), the `product-price-monitor`-style pricing checks. None of these block
