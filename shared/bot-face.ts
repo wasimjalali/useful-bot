@@ -63,10 +63,12 @@ export function defaultFaceFor(id: string): BotFace {
 }
 
 export function randomFace(at = Date.now()): BotFace {
-  const seed = at ^ Math.floor(Math.random() * 0xffffff);
+  // `^` coerces to a signed 32-bit int, so a negative seed produced negative
+  // modulo indices and undefined shapes. Stay unsigned end to end.
+  const seed = (at ^ Math.floor(Math.random() * 0xffffff)) >>> 0;
   return {
     shape: AVATAR_SHAPES[seed % AVATAR_SHAPES.length],
-    color: AVATAR_COLORS[(seed >> 4) % AVATAR_COLORS.length],
+    color: AVATAR_COLORS[(seed >>> 4) % AVATAR_COLORS.length],
     image: null,
   };
 }

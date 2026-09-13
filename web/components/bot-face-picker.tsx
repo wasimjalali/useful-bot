@@ -1,11 +1,13 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import {
   AVATAR_COLORS,
   AVATAR_SHAPES,
   AVATAR_SWATCHES,
   defaultFaceFor,
+  isAvatarColor,
+  isAvatarShape,
   randomFace,
 } from "../../shared/bot-face.ts";
 import { DEFAULT_BOT_ID, type BotProfilePatch, type ShellBot } from "../../shared/shell-store.ts";
@@ -36,6 +38,7 @@ export function BotFacePicker({
   onPatch: (patch: BotProfilePatch) => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const [notice, setNotice] = useState("");
 
   return (
     <div className="face-picker">
@@ -50,8 +53,18 @@ export function BotFacePicker({
           event.target.value = "";
           if (!file) return;
           void readFaceImage(file)
-            .then((image) => onPatch({ avatarImage: image, avatarCustom: true }))
-            .catch(() => undefined);
+            .then((image) => {
+              setNotice("");
+              onPatch({ avatarImage: image, avatarCustom: true });
+            })
+            .catch((err) => {
+              const reason = err instanceof Error ? err.message : "";
+              setNotice(
+                reason === "image_large"
+                  ? "That image is too large after resizing. Try a smaller file."
+                  : "That image could not be read. Use a PNG, JPEG or WebP.",
+              );
+            });
         }}
         ref={fileRef}
         type="file"
@@ -62,6 +75,11 @@ export function BotFacePicker({
           className="face-picker-tab"
           onClick={() => {
             const face = randomFace();
+            if (!isAvatarShape(face.shape) || !isAvatarColor(face.color)) {
+              setNotice("Face generation failed. Try again.");
+              return;
+            }
+            setNotice("");
             onPatch({
               avatarShape: face.shape,
               avatarColor: face.color,
@@ -79,6 +97,7 @@ export function BotFacePicker({
         <button
           className="face-picker-tab"
           onClick={() => {
+            setNotice("");
             if (bot.id === DEFAULT_BOT_ID) {
               onPatch({
                 avatarShape: "circle",
@@ -101,6 +120,7 @@ export function BotFacePicker({
           Reset
         </button>
       </div>
+      {notice ? <p className="text-[12px] text-danger">{notice}</p> : null}
       <div className="face-grid">
         {AVATAR_SHAPES.map((shape) => {
           const selected = bot.avatarCustom && !bot.avatarImage && bot.avatarShape === shape;
