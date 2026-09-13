@@ -333,6 +333,28 @@ html, body {
     box-shadow: var(--shadow-sm);
   }
 
+  .search-chip {
+    display: inline-flex;
+    max-width: 100%;
+    align-items: center;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .search-chip:hover { background: var(--sunken); }
+
+  .reviewer-card {
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    background: var(--sunken);
+    padding: 14px 16px;
+  }
+
   .skeleton {
     border-radius: 8px;
     background: var(--border);

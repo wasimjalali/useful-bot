@@ -11,6 +11,7 @@ import { BotSettingsPanel } from "../components/bot-settings-panel";
 import { CreateBotDialog, CreateGroupDialog } from "../components/create-dialogs";
 import { ConfirmDialog, PromptDialog } from "../components/confirm-dialog";
 import { MemoryPanel } from "../components/memory-panel";
+import { SearchChips } from "../components/search-chips";
 import {
   applyEveEvent,
   consumeEveNdjson,
@@ -66,6 +67,8 @@ export default function Page() {
     updatedAt: string;
     truncated: boolean;
   }> | null>(null);
+  const [review, setReview] = useState("");
+  const [reviewPending, setReviewPending] = useState(false);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
@@ -242,6 +245,7 @@ export default function Page() {
       projSession.current = null;
       setActive(sid);
       setProj(createProjection());
+      setReview("");
     }
     setQuery(bot.id, sid);
   }
@@ -349,8 +353,37 @@ export default function Page() {
     setApprovals((current) => current.filter((row) => row.id !== item.id));
   }
 
+  async function askReviewer() {
+    const user = [...messages].reverse().find((message) => message.role === "user");
+    const assistant = [...messages].reverse().find((message) => message.role === "assistant");
+    const text = [user?.text, assistant?.text].filter(Boolean).join("\n\n").trim();
+    if (!text || reviewPending) return;
+    setReviewPending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/auth/session", { credentials: "include" });
+      const session = await res.json() as { csrfToken?: string };
+      const out = await fetch("/api/reviewer", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json", "x-ub-csrf": session.csrfToken ?? "" },
+        body: JSON.stringify({ text: text.slice(0, 8000) }),
+      });
+      const body = await out.json() as { ok?: boolean; text?: string; error?: string };
+      if (!out.ok || !body.text) {
+        throw new Error(body.error ?? "Reviewer failed");
+      }
+      setReview(body.text);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reviewer failed");
+    } finally {
+      setReviewPending(false);
+    }
+  }
+
   const messages = proj.messages;
   const pending = proj.pending;
+  const searchHits = proj.searchHits;
   const displayError = error || proj.error || shellError;
   const showSpinner = pending && !proj.blockOpen && !proj.currentAssistantId;
   const bot = selected ?? (store ? selectedBot(store) : null);
@@ -494,6 +527,15 @@ export default function Page() {
                     ) : null}
                   </div>
                   <button
+                    aria-label="Ask reviewer"
+                    className="btn btn-secondary min-h-8 px-3 text-xs"
+                    disabled={reviewPending || messages.length === 0}
+                    onClick={() => void askReviewer()}
+                    type="button"
+                  >
+                    {reviewPending ? "Reviewing" : "Ask reviewer"}
+                  </button>
+                  <button
                     aria-label="Bot settings"
                     className="icon-btn tip size-8"
                     data-tip="Bot settings"
@@ -561,6 +603,13 @@ export default function Page() {
                                 </div>
                               </div>
                             </div>
+                          ) : null}
+                          {searchHits.length > 0 ? <SearchChips hits={searchHits} /> : null}
+                          {review ? (
+                            <article className="reviewer-card">
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-muted">Reviewer</div>
+                              <p className="mt-2 whitespace-pre-wrap text-[14px] leading-6 text-ink">{review}</p>
+                            </article>
                           ) : null}
                           <div ref={bottomRef} />
                         </div>

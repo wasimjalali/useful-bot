@@ -12,6 +12,12 @@ export type EveEvent = {
   meta?: { id?: string; at?: string };
 };
 
+export type SearchChip = {
+  title: string;
+  url: string;
+  snippet: string;
+};
+
 export type StreamProjection = {
   messages: ChatMessage[];
   pending: boolean;
@@ -19,6 +25,7 @@ export type StreamProjection = {
   seenIds: Set<string>;
   currentAssistantId: string | null;
   blockOpen: boolean;
+  searchHits: SearchChip[];
 };
 
 export function createProjection(): StreamProjection {
@@ -29,6 +36,7 @@ export function createProjection(): StreamProjection {
     seenIds: new Set(),
     currentAssistantId: null,
     blockOpen: false,
+    searchHits: [],
   };
 }
 
@@ -51,6 +59,42 @@ function textField(data: Record<string, unknown> | undefined, key: string): stri
   return typeof value === "string" ? value : null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+export function parseSearchChips(value: unknown): SearchChip[] {
+  let payload: unknown = value;
+  if (typeof payload === "string") {
+    try { payload = JSON.parse(payload); } catch { return []; }
+  }
+  const rec = asRecord(payload);
+  const nested = asRecord(rec?.result) ?? asRecord(rec?.output);
+  const list: unknown[] = Array.isArray(payload)
+    ? payload
+    : Array.isArray(rec?.results)
+      ? rec.results as unknown[]
+      : Array.isArray(nested?.results)
+        ? nested.results as unknown[]
+        : [];
+  const chips: SearchChip[] = [];
+  for (const item of list) {
+    const row = asRecord(item);
+    if (!row) continue;
+    const url = typeof row.url === "string" ? row.url.trim() : "";
+    if (!url.startsWith("https://") && !url.startsWith("http://")) continue;
+    chips.push({
+      title: String(row.title ?? url).slice(0, 200),
+      url: url.slice(0, 2048),
+      snippet: String(row.snippet ?? row.description ?? "").slice(0, 800),
+    });
+    if (chips.length >= 5) break;
+  }
+  return chips;
+}
+
 export function applyEveEvent(state: StreamProjection, event: EveEvent): StreamProjection {
   const id = event.meta?.id;
   if (id && state.seenIds.has(id)) return state;
@@ -62,6 +106,7 @@ export function applyEveEvent(state: StreamProjection, event: EveEvent): StreamP
     seenIds: new Set(state.seenIds),
     currentAssistantId: state.currentAssistantId,
     blockOpen: state.blockOpen,
+    searchHits: state.searchHits.slice(),
   };
   if (id) next.seenIds.add(id);
 
@@ -71,6 +116,7 @@ export function applyEveEvent(state: StreamProjection, event: EveEvent): StreamP
       next.error = "";
       next.currentAssistantId = null;
       next.blockOpen = false;
+      next.searchHits = [];
       return next;
     case "message.received": {
       const text = textField(event.data, "message") ?? "";
@@ -138,6 +184,12 @@ export function applyEveEvent(state: StreamProjection, event: EveEvent): StreamP
       next.blockOpen = false;
       next.error = "Turn failed";
       return next;
+    case "action.result":
+    case "action.partial": {
+      const chips = parseSearchChips(event.data);
+      if (chips.length > 0) next.searchHits = chips;
+      return next;
+    }
     default:
       return next;
   }
