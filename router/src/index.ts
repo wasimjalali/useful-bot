@@ -8,6 +8,7 @@ import { LimitStore } from "./limits.ts";
 import { entryFor, loadRegistry } from "./registry.ts";
 import { search } from "./search.ts";
 import { completeUpstream } from "./upstreams/opencode.ts";
+import { usageFromPayload, usageFromSseBlock } from "../../shared/usage-parse.ts";
 
 const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
 if (NODE_MAJOR !== POLICY_NODE_MAJOR) {
@@ -237,48 +238,60 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         });
         const outHeaders: Record<string, string> = {
           "x-useful-request-id": stepId,
-          "x-useful-upstream-model": entry.upstreamModelId,
+          "x-useful-upstream-model": upstream.model,
         };
         void turnId;
+        const record = (usage: { inputTokens: number; outputTokens: number } | null) => {
+          if (!usage || upstream.response.status >= 400) return;
+          limits.recordUsage({
+            callerId: caller.callerId,
+            provider: upstream.providerId,
+            model: upstream.model,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            at: Date.now(),
+          });
+        };
         if (parsed.stream) {
-          res.writeHead(upstream.status, {
+          res.writeHead(upstream.response.status, {
             "content-type": "text/event-stream",
             "cache-control": "no-store",
             ...outHeaders,
           });
-          if (!upstream.body) {
+          if (!upstream.response.body) {
             res.end();
             return;
           }
-          const reader = upstream.body.getReader();
+          const reader = upstream.response.body.getReader();
+          const decoder = new TextDecoder();
+          let leftover = "";
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             res.write(Buffer.from(value));
+            leftover += decoder.decode(value, { stream: true });
+            const parts = leftover.split("\n\n");
+            leftover = parts.pop() ?? "";
+            for (const part of parts) {
+              const usage = usageFromSseBlock(part);
+              if (usage) record(usage);
+            }
           }
           res.end();
           return;
         }
-        const text = await upstream.text();
+        const text = await upstream.response.text();
         let json: unknown = text;
         try { json = JSON.parse(text); } catch { /* keep */ }
         if (json && typeof json === "object" && json !== null && "model" in json) {
           (json as { model: string }).model = parsed.model;
         }
-        send(res, upstream.status, json, outHeaders);
+        record(usageFromPayload(json));
+        send(res, upstream.response.status, json, outHeaders);
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/usage") {
-        send(res, 200, {
-          caller_id: caller.callerId,
-          window_start: null,
-          reserved_input_tokens: null,
-          reserved_output_tokens: null,
-          observed_input_tokens: null,
-          observed_output_tokens: null,
-          requests: null,
-          provider_remaining: null,
-        });
+        send(res, 200, limits.summarize(caller.callerId));
         return;
       }
       res.setHeader("allow", "GET, POST");

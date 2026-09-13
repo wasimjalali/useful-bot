@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { MemoryStore } from "../lib/memory.ts";
+import { MemoryStore, tagsForBot } from "../lib/memory.ts";
 import { actionSha256, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 
@@ -14,6 +14,7 @@ export default defineTool({
     body: z.string(),
     audience: z.enum(["desktop", "shared-phone"]),
     expiresAt: z.string().nullable(),
+    botId: z.string().optional(),
   }),
   execute: async (input) => {
     const hash = actionSha256({
@@ -33,8 +34,19 @@ export default defineTool({
       preview: `memory ${input.title}`,
     });
     await waitUntilNotPending(getApprovalStore(), rec.id);
-    return executeIfApproved(getApprovalStore(), rec.id, hash, () =>
-      new MemoryStore().upsert({ ...input, sessionId: "live" }),
-    );
+    return executeIfApproved(getApprovalStore(), rec.id, hash, () => {
+      const botId = input.botId ?? process.env.UB_ACTIVE_BOT_ID;
+      const tags = botId ? tagsForBot(input.tags, botId) : input.tags;
+      return new MemoryStore().upsert({
+        id: input.id,
+        expectedRevision: input.expectedRevision,
+        title: input.title,
+        tags,
+        body: input.body,
+        audience: input.audience,
+        expiresAt: input.expiresAt,
+        sessionId: "live",
+      });
+    });
   },
 });

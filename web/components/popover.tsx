@@ -7,11 +7,13 @@ export type MenuPoint = { x: number; y: number };
 
 export function Popover({
   onClose,
+  placement = "below",
   point,
   width = 220,
   children,
 }: {
   onClose: () => void;
+  placement?: "above" | "below";
   point: MenuPoint;
   width?: number;
   children: ReactNode;
@@ -23,10 +25,12 @@ export function Popover({
     if (!node) return;
     const rect = node.getBoundingClientRect();
     const x = Math.max(8, Math.min(point.x, window.innerWidth - rect.width - 8));
-    const y = Math.max(8, Math.min(point.y, window.innerHeight - rect.height - 8));
+    const y = placement === "above"
+      ? Math.max(8, point.y - rect.height - 8)
+      : Math.max(8, Math.min(point.y, window.innerHeight - rect.height - 8));
     node.style.left = `${x}px`;
     node.style.top = `${y}px`;
-  }, [point.x, point.y]);
+  }, [placement, point.x, point.y]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {

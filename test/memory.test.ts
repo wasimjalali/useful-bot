@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
+import { MemoryStore, botTag, resetMemoryDir, tagsForBot } from "../agent/lib/memory.ts";
 
 test("upsert search read and revision conflict", () => {
   const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
@@ -118,4 +118,36 @@ test("list returns desktop notes and hides phone audience", () => {
   assert.equal(listed[0].title, "Desktop note");
   assert.equal(listed[0].tags[0], "pref");
   assert.equal(store.list("shared-phone").length, 1);
+});
+
+test("list can isolate notes to one bot tag", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  store.upsert({
+    expectedRevision: null,
+    title: "CEO pref",
+    tags: tagsForBot(["writing"], "ceo"),
+    body: "Short sentences.",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  store.upsert({
+    expectedRevision: null,
+    title: "SEO pref",
+    tags: tagsForBot(["seo"], "seo"),
+    body: "Keyword notes.",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  const ceo = store.list("desktop", 100, "ceo");
+  const seo = store.list("desktop", 100, "seo");
+  assert.equal(ceo.length, 1);
+  assert.equal(ceo[0].title, "CEO pref");
+  assert.equal(ceo[0].tags.includes(botTag("ceo")), true);
+  assert.equal(seo.length, 1);
+  assert.equal(seo[0].title, "SEO pref");
+  assert.equal(store.list("desktop", 100, "missing").length, 0);
 });

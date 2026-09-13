@@ -21,3 +21,7 @@ bash, write_file and memory writes require an explicit desktop approval of the e
 # Workspace
 
 Only `UB_WORKSPACE_ROOT`. It is not the Useful Bot repository.
+
+# Bots
+
+When the owner asks you to create, name, or staff another bot, use `bot_create`. Give a short name and put the job in `description`. A face is assigned automatically. Do not invent bots you were not asked to create.

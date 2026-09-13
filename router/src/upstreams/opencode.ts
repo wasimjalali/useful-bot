@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { RouterError } from "../errors.ts";
 import type { RegistryEntry } from "../registry.ts";
-
-const GO_DEFAULT = "https://opencode.ai/zen/go/v1";
+import { applyReasoning } from "../../../shared/models.ts";
+import { readProviderStore, resolveUpstream } from "../../../shared/providers.ts";
 
 export function sessionHeader(callerId: string, sessionId: string, role: string): string {
   return createHash("sha256").update(`${callerId}:${sessionId}:${role}`).digest("hex");
@@ -14,9 +14,11 @@ export async function completeUpstream(input: {
   sessionId: string;
   callerId: string;
   signal: AbortSignal;
-}): Promise<Response> {
-  const key = process.env.UB_OPENCODE_GO_KEY;
-  if (!key) {
+}): Promise<{ response: Response; providerId: string; model: string }> {
+  let resolved: ReturnType<typeof resolveUpstream>;
+  try {
+    resolved = resolveUpstream(readProviderStore(), input.entry.alias, process.env);
+  } catch {
     throw new RouterError({
       status: 503,
       type: "internal_error",
@@ -24,22 +26,24 @@ export async function completeUpstream(input: {
       message: "upstream credential missing",
     });
   }
-  const base = process.env.UB_OPENCODE_GO_BASE || GO_DEFAULT;
-  const url = `${base.replace(/\/$/, "")}/chat/completions`;
+  const url = `${resolved.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const payload = input.body as Record<string, unknown>;
-  const forwarded = {
+  const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...payload,
-    model: input.entry.upstreamModelId,
+    model: resolved.model,
     max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : input.entry.maxOutputTokens,
+  });
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${resolved.key}`,
+    "content-type": "application/json",
+    "user-agent": "useful-bot/1.0",
   };
+  if (resolved.opencodeSession) {
+    headers["x-opencode-session"] = sessionHeader(input.callerId, input.sessionId, "root");
+  }
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${key}`,
-      "content-type": "application/json",
-      "user-agent": "useful-bot/1.0",
-      "x-opencode-session": sessionHeader(input.callerId, input.sessionId, "root"),
-    },
+    headers,
     body: JSON.stringify(forwarded),
     redirect: "manual",
     signal: input.signal,
@@ -60,5 +64,5 @@ export async function completeUpstream(input: {
       message: "upstream auth failed",
     });
   }
-  return response;
+  return { response, providerId: resolved.providerId, model: resolved.model };
 }

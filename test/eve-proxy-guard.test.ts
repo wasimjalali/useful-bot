@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { eveGetAllowed, evePostAllowed } from "../shared/eve-proxy.ts";
+import { eveGetAllowed, evePostAllowed, personaPrefix, rewriteEveSessionBody } from "../shared/eve-proxy.ts";
+import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
 
 test("eve proxy allowlists stream get and session posts", () => {
   assert.equal(eveGetAllowed("health"), true);
@@ -14,4 +15,18 @@ test("eve proxy allowlists stream get and session posts", () => {
   assert.equal(evePostAllowed("session/abc/clear"), false);
   assert.equal(evePostAllowed("session/abc/compact"), false);
   assert.equal(evePostAllowed("health"), false);
+});
+
+test("persona prefix is only for specialist bots", () => {
+  assert.equal(personaPrefix({ id: DEFAULT_BOT_ID, kind: "bot", name: "Useful Bot", description: "Main" }), "");
+  assert.equal(
+    personaPrefix({ id: "bot-seo", kind: "bot", name: "SEO", description: "Watch rankings." }),
+    "You are SEO. Follow these instructions: Watch rankings.\n\n",
+  );
+  const rewritten = rewriteEveSessionBody(
+    JSON.stringify({ message: "hello", botId: "bot-seo" }),
+    { id: "bot-seo", kind: "bot", name: "SEO", description: "Watch rankings." },
+  );
+  assert.equal(JSON.parse(rewritten).message.startsWith("You are SEO."), true);
+  assert.equal("botId" in JSON.parse(rewritten), false);
 });

@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultFaceFor, isAvatarColor, isAvatarShape } from "../shared/bot-face.ts";
 import {
   applyShellAction,
   DEFAULT_BOT_ID,
@@ -38,6 +39,11 @@ test("create section pin move hide delete and new chat", () => {
   });
   store = created.store;
   assert.equal(selectedBot(store).name, "Researcher");
+  assert.equal(selectedBot(store).avatarCustom, true);
+  assert.equal(isAvatarShape(selectedBot(store).avatarShape), true);
+  assert.equal(isAvatarColor(selectedBot(store).avatarColor), true);
+  assert.equal(selectedBot(store).avatarShape, defaultFaceFor(created.createdId!).shape);
+  assert.equal(selectedBot(store).avatarColor, defaultFaceFor(created.createdId!).color);
   store = applyShellAction(store, { type: "pin", botId: created.createdId! }).store;
   assert.equal(pinnedBots(store).length, 1);
   assert.equal(sectionBots(store, section.createdId!).length, 0);
@@ -125,6 +131,13 @@ test("search palette finds hidden bots and recents", () => {
   const empty = searchShell(store, "");
   assert.equal(empty.some((hit) => hit.kind === "bot" && hit.bot.hidden), false);
   assert.equal(empty.some((hit) => hit.kind === "recent"), true);
+  const messages = searchShell(store, "script", "messages");
+  assert.equal(messages.every((hit) => hit.kind === "recent"), true);
+  const botsOnly = searchShell(store, "first", "bots");
+  assert.equal(botsOnly.every((hit) => hit.kind === "bot"), true);
+  assert.equal(searchShell(store, "", "groups").length, 0);
+  assert.equal(searchShell(store, "script", "files").length, 0);
+  assert.equal(searchShell(store, "script", "routines").length, 0);
 });
 
 test("parseShell accepts bots without lastPreview from older files", () => {
@@ -135,9 +148,29 @@ test("parseShell accepts bots without lastPreview from older files", () => {
   };
   delete raw.bots[0].lastPreview;
   delete raw.bots[0].lastAt;
+  delete raw.bots[0].avatarShape;
+  delete raw.bots[0].avatarColor;
+  delete raw.bots[0].avatarImage;
+  delete raw.bots[0].avatarCustom;
   delete raw.recents;
   const parsed = parseShell(raw);
   assert.equal(parsed.bots[0].lastPreview, "");
   assert.equal(parsed.bots[0].lastAt, null);
   assert.equal(parsed.recents.length, 0);
+  assert.equal(parsed.bots[0].avatarCustom, false);
+  assert.equal(isAvatarShape(parsed.bots[0].avatarShape), true);
+  assert.equal(isAvatarColor(parsed.bots[0].avatarColor), true);
+});
+
+test("updateBot writes a custom face", () => {
+  let store = seedStore();
+  const created = applyShellAction(store, { type: "createBot", name: "SEO" });
+  store = applyShellAction(created.store, {
+    type: "updateBot",
+    botId: created.createdId!,
+    patch: { avatarShape: "drop", avatarColor: "gold", avatarCustom: true },
+  }).store;
+  const bot = store.bots.find((item) => item.id === created.createdId);
+  assert.equal(bot?.avatarShape, "drop");
+  assert.equal(bot?.avatarColor, "gold");
 });

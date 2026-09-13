@@ -4,6 +4,7 @@ import UsefulBotCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let config = ServerConfig.resolved()
     private let poller = HealthPoller(probe: URLSessionHealthProbe())
+    private let services = LocalServices()
     private var windowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -13,24 +14,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        Task { await poll() }
+        Task { await startAndPoll() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
-    private func poll() async {
-        let ok = await poller.check(config.healthURL)
-        await MainActor.run {
-            if ok {
-                windowController?.showRunning()
-            } else {
-                windowController?.showStatus(false)
-            }
-        }
-        try? await Task.sleep(nanoseconds: 3_000_000_000)
+    private func startAndPoll() async {
+        await MainActor.run { windowController?.showStatus(.starting) }
+        let started = await services.ensure(config: config)
+        await apply(ok: started)
         await poll()
+    }
+
+    private func poll() async {
+        while true {
+            let ok = await poller.check(config.healthURL)
+            if !ok {
+                _ = await services.ensure(config: config, timeoutSeconds: 8)
+            }
+            await apply(ok: await poller.check(config.healthURL))
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        }
+    }
+
+    @MainActor
+    private func apply(ok: Bool) {
+        if ok {
+            windowController?.showRunning()
+        } else {
+            windowController?.showStatus(.unavailable)
+        }
     }
 
     private func buildMenu() {

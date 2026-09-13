@@ -50,8 +50,8 @@ export function SettingsIcon(props: IconProps) {
 export function SendIcon(props: IconProps) {
   return (
     <Icon {...props}>
-      <path d="M5 12h13" />
-      <path d="m12.5 6 5.8 6-5.8 6" />
+      <path d="M12 19V5" />
+      <path d="m6 11 6-6 6 6" />
     </Icon>
   );
 }
@@ -206,10 +206,120 @@ export function FolderIcon(props: IconProps) {
   );
 }
 
+export function MarketplaceIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 8.5 8 5h8l3 3.5V18a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18Z" />
+      <path d="M3 8.5h18" />
+      <path d="M9.5 12.5h5" />
+    </Icon>
+  );
+}
+
+export function MicIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="9" y="3.5" width="6" height="10" rx="3" />
+      <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v3.5" />
+    </Icon>
+  );
+}
+
 export function MenuIcon(props: IconProps) {
   return (
     <Icon {...props}>
       <path d="M5 7h14M5 12h14M5 17h14" />
+    </Icon>
+  );
+}
+
+export function ComputerIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="3.5" y="5" width="17" height="11" rx="1.5" />
+      <path d="M8 19.5h8M12 16v3.5" />
+    </Icon>
+  );
+}
+
+export function UsageIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4.5 16.5 9 11l3.5 3.5 7-8" />
+      <path d="M4.5 19.5h15" />
+    </Icon>
+  );
+}
+
+export function UpdatesIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20 12a8 8 0 1 1-2.2-5.5" />
+      <path d="M20 4.5v4.2h-4.2" />
+    </Icon>
+  );
+}
+
+export function SupportIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="4" y="6" width="16" height="12" rx="2" />
+      <path d="m4 8 8 6 8-6" />
+    </Icon>
+  );
+}
+
+export function ProviderIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3.5 20 8v8l-8 4.5L4 16V8Z" />
+      <path d="M12 12 20 8M12 12v8.5M12 12 4 8" />
+    </Icon>
+  );
+}
+
+export function PlanIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M8 6h10M8 12h10M8 18h7" />
+      <path d="M5 6h.01M5 12h.01M5 18h.01" />
+    </Icon>
+  );
+}
+
+export function DebugIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 5v2M12 17v2M5 12h2M17 12h2M7 7l1.5 1.5M15.5 15.5 17 17M17 7l-1.5 1.5M8.5 15.5 7 17" />
+    </Icon>
+  );
+}
+
+export function AskIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1.4.9-1.4 1.7V14" />
+      <path d="M12 17.2h.01" />
+    </Icon>
+  );
+}
+
+export function MultitaskIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="4" y="5" width="10" height="10" rx="1.5" />
+      <path d="M10 15v1.5A1.5 1.5 0 0 0 11.5 18H18a1.5 1.5 0 0 0 1.5-1.5v-6.5A1.5 1.5 0 0 0 18 8.5H16" />
+    </Icon>
+  );
+}
+
+export function McpIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M8 8h8v8H8Z" />
+      <path d="M12 4.5v3.5M12 16v3.5M4.5 12H8M16 12h3.5" />
     </Icon>
   );
 }

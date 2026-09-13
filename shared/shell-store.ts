@@ -1,3 +1,12 @@
+import {
+  defaultFaceFor,
+  isAvatarColor,
+  isAvatarShape,
+  parseAvatarImage,
+  type AvatarColor,
+  type AvatarShape,
+} from "./bot-face.ts";
+
 export const SHELL_SCHEMA = 1;
 export const DEFAULT_BOT_ID = "bot-useful";
 export const UNASSIGNED_SECTION = "unassigned";
@@ -27,7 +36,27 @@ export type ShellBot = {
   lastAt: string | null;
   createdAt: string;
   updatedAt: string;
+  avatarShape: AvatarShape;
+  avatarColor: AvatarColor;
+  avatarImage: string | null;
+  avatarCustom: boolean;
 };
+
+export type BotProfilePatch = Partial<
+  Pick<
+    ShellBot,
+    | "name"
+    | "label"
+    | "description"
+    | "notify"
+    | "memberIds"
+    | "lastPreview"
+    | "avatarShape"
+    | "avatarColor"
+    | "avatarImage"
+    | "avatarCustom"
+  >
+>;
 
 export type ShellRecent = {
   id: string;
@@ -72,7 +101,7 @@ export type ShellAction =
   | {
       type: "updateBot";
       botId: string;
-      patch: Partial<Pick<ShellBot, "name" | "label" | "description" | "notify" | "memberIds" | "lastPreview">>;
+      patch: BotProfilePatch;
     }
   | { type: "pin"; botId: string; pinned?: boolean }
   | { type: "hide"; botId: string; hidden?: boolean }
@@ -111,6 +140,10 @@ const BOT_KEYS = new Set([
   "lastAt",
   "createdAt",
   "updatedAt",
+  "avatarShape",
+  "avatarColor",
+  "avatarImage",
+  "avatarCustom",
 ]);
 
 const RECENT_KEYS = new Set(["id", "botId", "title", "sessionId", "preview", "updatedAt"]);
@@ -149,7 +182,7 @@ export function seedStore(at = new Date()): ShellStore {
         kind: "bot",
         name: "Useful Bot",
         label: "",
-        description: "Local personal agent on this Mac.",
+        description: "Local personal agent on this Mac. Creates other bots with a name and instructions.",
         notify: false,
         pinned: false,
         hidden: false,
@@ -160,6 +193,10 @@ export function seedStore(at = new Date()): ShellStore {
         lastAt: null,
         createdAt: stamp,
         updatedAt: stamp,
+        avatarShape: "circle",
+        avatarColor: "ink",
+        avatarImage: null,
+        avatarCustom: false,
       },
     ],
     recents: [],
@@ -194,6 +231,7 @@ function parseBot(raw: unknown): ShellBot {
   if (rec.lastAt !== undefined && rec.lastAt !== null && typeof rec.lastAt !== "string") {
     throw new Error("shell_bot_last_at");
   }
+  const face = defaultFaceFor(rec.id);
   return {
     id: rec.id,
     kind: rec.kind,
@@ -210,6 +248,10 @@ function parseBot(raw: unknown): ShellBot {
     lastAt: typeof rec.lastAt === "string" ? rec.lastAt : null,
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
+    avatarShape: isAvatarShape(rec.avatarShape) ? rec.avatarShape : face.shape,
+    avatarColor: isAvatarColor(rec.avatarColor) ? rec.avatarColor : face.color,
+    avatarImage: parseAvatarImage(rec.avatarImage),
+    avatarCustom: typeof rec.avatarCustom === "boolean" ? rec.avatarCustom : rec.id !== DEFAULT_BOT_ID,
   };
 }
 
@@ -346,6 +388,7 @@ export function applyShellAction(
     }
     case "createBot": {
       const id = crypto.randomUUID();
+      const face = defaultFaceFor(id);
       const bot: ShellBot = {
         id,
         kind: action.kind === "group" ? "group" : "bot",
@@ -364,6 +407,10 @@ export function applyShellAction(
         lastAt: null,
         createdAt: stamp,
         updatedAt: stamp,
+        avatarShape: face.shape,
+        avatarColor: face.color,
+        avatarImage: null,
+        avatarCustom: true,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [bot, ...store.bots] },
@@ -375,6 +422,7 @@ export function applyShellAction(
         all.indexOf(id) === index && store.bots.some((bot) => bot.id === id)
       ));
       const id = crypto.randomUUID();
+      const face = defaultFaceFor(id);
       const group: ShellBot = {
         id,
         kind: "group",
@@ -393,6 +441,10 @@ export function applyShellAction(
         lastAt: null,
         createdAt: stamp,
         updatedAt: stamp,
+        avatarShape: face.shape,
+        avatarColor: face.color,
+        avatarImage: null,
+        avatarCustom: true,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [group, ...store.bots] },
@@ -447,6 +499,16 @@ export function applyShellAction(
           all.indexOf(id) === index && id !== action.botId && store.bots.some((bot) => bot.id === id)
         ));
       }
+      if (action.patch.avatarShape !== undefined && isAvatarShape(action.patch.avatarShape)) {
+        patch.avatarShape = action.patch.avatarShape;
+      }
+      if (action.patch.avatarColor !== undefined && isAvatarColor(action.patch.avatarColor)) {
+        patch.avatarColor = action.patch.avatarColor;
+      }
+      if (action.patch.avatarImage !== undefined) {
+        patch.avatarImage = parseAvatarImage(action.patch.avatarImage);
+      }
+      if (action.patch.avatarCustom !== undefined) patch.avatarCustom = action.patch.avatarCustom;
       return {
         store: {
           ...store,
@@ -639,30 +701,53 @@ export type ShellSearchHit =
   | { kind: "recent"; recent: ShellRecent; bot: ShellBot | null }
   | { kind: "bot"; bot: ShellBot };
 
+export type SearchTab =
+  | "all"
+  | "messages"
+  | "bots"
+  | "groups"
+  | "files"
+  | "links"
+  | "routines"
+  | "actions";
+
 function matchesNeedle(hay: string, needle: string): boolean {
   return hay.toLowerCase().includes(needle);
 }
 
-export function searchShell(store: ShellStore, query: string): ShellSearchHit[] {
+export function searchShell(store: ShellStore, query: string, tab: SearchTab = "all"): ShellSearchHit[] {
   const needle = query.trim().toLowerCase();
-  const hits: ShellSearchHit[] = [{ kind: "new-chat" }];
-  const recents = store.recents.filter((recent) => {
-    if (!needle) return true;
-    const bot = store.bots.find((item) => item.id === recent.botId);
-    return matchesNeedle(`${recent.title} ${recent.preview} ${bot?.name ?? ""} ${bot?.label ?? ""}`, needle);
-  });
-  const recentCap = needle ? recents : recents.slice(0, 8);
-  for (const recent of recentCap) {
-    hits.push({
-      kind: "recent",
-      recent,
-      bot: store.bots.find((item) => item.id === recent.botId) ?? null,
+  const hits: ShellSearchHit[] = [];
+  if (tab === "all") hits.push({ kind: "new-chat" });
+
+  if (tab === "all" || tab === "messages") {
+    const recents = store.recents.filter((recent) => {
+      if (!needle) return true;
+      const bot = store.bots.find((item) => item.id === recent.botId);
+      return matchesNeedle(`${recent.title} ${recent.preview} ${bot?.name ?? ""} ${bot?.label ?? ""}`, needle);
     });
+    const recentCap = needle ? recents : recents.slice(0, 8);
+    for (const recent of recentCap) {
+      hits.push({
+        kind: "recent",
+        recent,
+        bot: store.bots.find((item) => item.id === recent.botId) ?? null,
+      });
+    }
   }
-  const bots = store.bots.filter((bot) => {
-    if (!needle) return !bot.hidden;
-    return matchesNeedle(`${bot.name} ${bot.label} ${bot.description} ${bot.lastPreview}`, needle);
-  });
-  for (const bot of bots) hits.push({ kind: "bot", bot });
+
+  if (tab === "files" || tab === "links" || tab === "routines" || tab === "actions") {
+    return hits;
+  }
+
+  if (tab === "all" || tab === "bots" || tab === "groups") {
+    const bots = store.bots.filter((bot) => {
+      if (tab === "bots" && bot.kind !== "bot") return false;
+      if (tab === "groups" && bot.kind !== "group") return false;
+      if (!needle) return !bot.hidden;
+      return matchesNeedle(`${bot.name} ${bot.label} ${bot.description} ${bot.lastPreview}`, needle);
+    });
+    for (const bot of bots) hits.push({ kind: "bot", bot });
+  }
   return hits;
 }
