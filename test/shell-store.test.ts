@@ -9,6 +9,7 @@ import {
   parseShell,
   pinnedBots,
   searchBots,
+  searchShell,
   sectionBots,
   seedStore,
   selectedBot,
@@ -49,10 +50,19 @@ test("create section pin move hide delete and new chat", () => {
   store = applyShellAction(store, { type: "hide", botId: created.createdId!, hidden: false }).store;
   store = applyShellAction(store, { type: "deleteBot", botId: created.createdId! }).store;
   assert.equal(store.bots.length, 1);
+  store = applyShellAction(store, { type: "setSession", botId: DEFAULT_BOT_ID, sessionId: "sess-old" }).store;
+  store = applyShellAction(store, { type: "touchChat", botId: DEFAULT_BOT_ID, preview: "hello there" }).store;
   const chat = applyShellAction(store, { type: "newChat" });
   store = chat.store;
-  assert.match(selectedBot(store).name, /New chat/);
+  assert.equal(store.bots.length, 1);
+  assert.equal(selectedBot(store).id, DEFAULT_BOT_ID);
   assert.equal(selectedBot(store).sessionId, null);
+  assert.equal(selectedBot(store).lastPreview, "");
+  assert.equal(store.recents.length, 1);
+  assert.equal(store.recents[0].sessionId, "sess-old");
+  assert.equal(store.recents[0].preview, "hello there");
+  store = applyShellAction(store, { type: "openRecent", recentId: store.recents[0].id }).store;
+  assert.equal(selectedBot(store).sessionId, "sess-old");
 });
 
 test("refuses deleting the last bot and unknown keys", () => {
@@ -90,4 +100,44 @@ test("readShell reseeds an incompatible file", () => {
   const loaded = readShell(path);
   assert.equal(loaded.bots[0].id, DEFAULT_BOT_ID);
   assert.equal(loaded.schemaVersion, 1);
+  assert.equal(loaded.recents.length, 0);
+});
+
+test("search palette finds hidden bots and recents", () => {
+  let store = seedStore();
+  const created = applyShellAction(store, {
+    type: "createBot",
+    name: "First Frame",
+    label: "Video",
+    description: "Short form scripts",
+  });
+  store = created.store;
+  store = applyShellAction(store, { type: "touchChat", botId: created.createdId!, preview: "write a script" }).store;
+  store = applyShellAction(store, { type: "setSession", botId: created.createdId!, sessionId: "sess-ff" }).store;
+  store = applyShellAction(store, { type: "newChat", botId: created.createdId! }).store;
+  store = applyShellAction(store, { type: "hide", botId: created.createdId! }).store;
+  assert.equal(searchBots(store, "first").some((bot) => bot.id === created.createdId), true);
+  assert.equal(searchBots(store, "").some((bot) => bot.id === created.createdId), false);
+  const hits = searchShell(store, "script");
+  assert.equal(hits.some((hit) => hit.kind === "new-chat"), true);
+  assert.equal(hits.some((hit) => hit.kind === "recent" && hit.recent.preview.includes("write a script")), true);
+  assert.equal(hits.some((hit) => hit.kind === "bot" && hit.bot.hidden && hit.bot.name === "First Frame"), true);
+  const empty = searchShell(store, "");
+  assert.equal(empty.some((hit) => hit.kind === "bot" && hit.bot.hidden), false);
+  assert.equal(empty.some((hit) => hit.kind === "recent"), true);
+});
+
+test("parseShell accepts bots without lastPreview from older files", () => {
+  const seeded = seedStore(new Date("2026-09-12T00:00:00Z"));
+  const raw = JSON.parse(JSON.stringify(seeded)) as {
+    bots: Array<Record<string, unknown>>;
+    recents?: unknown;
+  };
+  delete raw.bots[0].lastPreview;
+  delete raw.bots[0].lastAt;
+  delete raw.recents;
+  const parsed = parseShell(raw);
+  assert.equal(parsed.bots[0].lastPreview, "");
+  assert.equal(parsed.bots[0].lastAt, null);
+  assert.equal(parsed.recents.length, 0);
 });

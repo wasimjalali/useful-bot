@@ -137,6 +137,17 @@ export function BotSettingsPanel({
           </fieldset>
         ) : null}
         <section>
+          <h3 className="text-[13px] font-medium text-ink-muted">Computer</h3>
+          <div className="mt-2 rounded-xl border border-border px-3 py-3">
+            <p className="text-sm text-ink-muted">
+              Virtual computer preview is not in this build.
+            </p>
+            <button className="btn btn-secondary mt-3 min-h-9 px-3 text-sm" disabled type="button">
+              Open computer
+            </button>
+          </div>
+        </section>
+        <section>
           <h3 className="text-[13px] font-medium text-ink-muted">Routines</h3>
           <div className="mt-2 rounded-xl border border-border px-3 py-3">
             <p className="text-sm text-ink-muted">No routines yet. Scheduler is not wired.</p>
