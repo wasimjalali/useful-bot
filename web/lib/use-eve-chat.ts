@@ -79,6 +79,8 @@ export function useEveChat(sessionId: string | null, authed: boolean) {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [proj.messages, proj.pending]);
 
+  const sendLock = useRef(false);
+
   const resetLocal = useCallback(() => {
     projSession.current = null;
     setProj(createProjection());
@@ -86,7 +88,8 @@ export function useEveChat(sessionId: string | null, authed: boolean) {
   }, []);
 
   const send = useCallback(async (text: string, active: string | null): Promise<string | null> => {
-    if (!text || proj.pending) return active;
+    if (!text || proj.pending || sendLock.current) return active;
+    sendLock.current = true;
     setError("");
     setProj((current) => ({
       ...current,
@@ -112,6 +115,8 @@ export function useEveChat(sessionId: string | null, authed: boolean) {
       setError(err instanceof Error ? err.message : "Send failed");
       setProj((current) => ({ ...current, pending: false }));
       return active;
+    } finally {
+      sendLock.current = false;
     }
   }, [proj.pending]);
 
@@ -131,8 +136,7 @@ export function useEveChat(sessionId: string | null, authed: boolean) {
   const messages = proj.messages;
   const pending = proj.pending;
   const displayError = error || proj.error;
-  const hasAssistantText = messages.some((message) => message.role === "assistant" && message.text);
-  const showSpinner = pending && !hasAssistantText;
+  const showSpinner = pending && !proj.blockOpen && !proj.currentAssistantId;
 
   return {
     bottomRef,

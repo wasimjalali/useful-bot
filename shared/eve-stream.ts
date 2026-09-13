@@ -122,6 +122,7 @@ export function applyEveEvent(state: StreamProjection, event: EveEvent): StreamP
     }
     case "turn.completed":
     case "session.waiting":
+    case "session.completed":
       next.pending = false;
       next.blockOpen = false;
       next.currentAssistantId = null;
