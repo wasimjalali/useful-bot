@@ -1,23 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatIcon, MemoryIcon, NewChatIcon, SearchIcon, SettingsIcon, TrashIcon } from "../components/icons";
 import { UsefulBotAvatar, UsefulBotLogo, UsefulBotMark } from "../components/useful-bot-logo";
 import { ChatSearchDialog, type SessionSummary } from "../components/chat-search-dialog";
 import { ChatComposer } from "../components/chat-composer";
+import {
+  applyEveEvent,
+  consumeEveNdjson,
+  createProjection,
+  type StreamProjection,
+} from "../../shared/eve-stream.ts";
 
 type View = "chat" | "memory";
-
-type ChatMessage = {
-  role: "user" | "assistant";
-  text: string;
-  id: string;
-};
 
 let seq = 0;
 function nextId() {
   seq += 1;
   return `m${seq}`;
+}
+
+function titleFrom(text: string): string {
+  return text.length > 42 ? `${text.slice(0, 42)}...` : text;
 }
 
 export default function Page() {
@@ -27,11 +31,12 @@ export default function Page() {
   const [view, setView] = useState<View>("chat");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [active, setActive] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
-  const [pending, setPending] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [approval, setApproval] = useState<{ id: string; hash: string; preview: string } | null>(null);
+  const [proj, setProj] = useState<StreamProjection>(() => createProjection());
+  const projSession = useRef<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch("/api/auth/session", { credentials: "include" })
@@ -50,10 +55,89 @@ export default function Page() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  useEffect(() => {
+    if (!authed) return;
+    const sid = new URLSearchParams(window.location.search).get("session");
+    if (sid) setActive(sid);
+  }, [authed]);
+
+  useEffect(() => {
+    if (!authed || !active) return;
+    if (projSession.current !== active) {
+      projSession.current = active;
+      setProj(createProjection());
+    }
+    const ac = new AbortController();
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/eve/v1/session/${active}/stream?startIndex=0`, {
+          credentials: "include",
+          signal: ac.signal,
+        });
+        if (!res.ok || !res.body) {
+          if (res.status === 401) {
+            setAuthed(false);
+            return;
+          }
+          throw new Error(res.status === 503 ? "Agent unavailable" : "Stream failed");
+        }
+        await consumeEveNdjson(res.body, (event) => {
+          if (cancelled) return;
+          setProj((current) => applyEveEvent(current, event));
+        }, ac.signal);
+      } catch (err) {
+        if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return;
+        setError(err instanceof Error ? err.message : "Stream failed");
+        setProj((current) => ({ ...current, pending: false }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+  }, [authed, active]);
+
+  useEffect(() => {
+    if (!active) return;
+    const first = proj.messages.find((message) => message.role === "user");
+    if (!first) return;
+    setSessions((current) => {
+      const title = titleFrom(first.text);
+      const rest = current.filter((session) => session.id !== active);
+      return [{ id: active, title }, ...rest];
+    });
+  }, [active, proj.messages]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [proj.messages, proj.pending]);
+
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/auth/session", { credentials: "include" });
     setAuthed(res.ok);
   }, []);
+
+  function resetChat() {
+    projSession.current = null;
+    setActive(null);
+    setProj(createProjection());
+    setError("");
+    setView("chat");
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }
+
+  function openSession(id: string) {
+    projSession.current = null;
+    setActive(id);
+    setProj(createProjection());
+    setView("chat");
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", `?session=${id}`);
+    }
+  }
 
   async function signIn(event: React.FormEvent) {
     event.preventDefault();
@@ -73,11 +157,16 @@ export default function Page() {
 
   async function send() {
     const text = draft.trim();
-    if (!text || pending) return;
-    setPending(true);
+    if (!text || proj.pending) return;
     setError("");
     setDraft("");
-    setMessages((current) => [...current, { role: "user", text, id: nextId() }]);
+    setView("chat");
+    setProj((current) => ({
+      ...current,
+      pending: true,
+      error: "",
+      messages: [...current.messages, { role: "user", text, id: nextId() }],
+    }));
     try {
       const res = await fetch(active ? `/eve/v1/session/${active}` : "/eve/v1/session", {
         method: "POST",
@@ -89,30 +178,35 @@ export default function Page() {
         throw new Error(res.status === 503 ? "Agent unavailable" : "Send failed");
       }
       const body = (await res.json()) as { sessionId?: string };
-      const sid = body.sessionId;
+      const sid = body.sessionId ?? active;
       if (sid) {
+        projSession.current = sid;
         setActive(sid);
         setSessions((current) => {
-          const title = text.length > 42 ? `${text.slice(0, 42)}...` : text;
-          const rest = current.filter((s) => s.id !== sid);
-          return [{ id: sid, title }, ...rest];
+          const rest = current.filter((session) => session.id !== sid);
+          return [{ id: sid, title: titleFrom(text) }, ...rest];
         });
         if (typeof window !== "undefined") {
           window.history.replaceState(null, "", `?session=${sid}`);
         }
       }
-      setMessages((current) => [...current, { role: "assistant", text: "Turn accepted.", id: nextId() }]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
-    } finally {
-      setPending(false);
+      setProj((current) => ({ ...current, pending: false }));
     }
   }
 
   async function cancel() {
     if (!active) return;
-    await fetch(`/eve/v1/session/${active}/cancel`, { method: "POST", credentials: "include" });
-    setPending(false);
+    const settle = () => setProj((current) => ({ ...current, pending: false }));
+    try {
+      await Promise.race([
+        fetch(`/eve/v1/session/${active}/cancel`, { method: "POST", credentials: "include" }),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    } finally {
+      settle();
+    }
   }
 
   async function decide(decision: "approve" | "deny") {
@@ -129,12 +223,15 @@ export default function Page() {
   }
 
   function removeSession(id: string) {
-    setSessions((current) => current.filter((s) => s.id !== id));
-    if (active === id) {
-      setActive(null);
-      setMessages([]);
-    }
+    setSessions((current) => current.filter((session) => session.id !== id));
+    if (active === id) resetChat();
   }
+
+  const messages = proj.messages;
+  const pending = proj.pending;
+  const displayError = error || proj.error;
+  const hasAssistantText = messages.some((message) => message.role === "assistant" && message.text);
+  const showSpinner = pending && !hasAssistantText;
 
   if (authed === null) {
     return <div className="flex h-screen w-full bg-canvas" />;
@@ -161,7 +258,7 @@ export default function Page() {
                 type="password"
                 value={token}
               />
-              <div className="field-error">{error}</div>
+              <div className="field-error">{displayError}</div>
             </div>
             <button className="btn btn-primary mt-2 w-full" type="submit">
               Sign in
@@ -183,11 +280,7 @@ export default function Page() {
         <nav aria-label="Workspace" className="flex flex-col gap-0.5">
           <button
             className="nav-item text-sm"
-            onClick={() => {
-              setActive(null);
-              setMessages([]);
-              setView("chat");
-            }}
+            onClick={() => resetChat()}
             type="button"
           >
             <NewChatIcon className="size-[18px] shrink-0" />
@@ -224,10 +317,7 @@ export default function Page() {
                           ? "bg-sunken text-ink"
                           : "text-ink-muted hover:bg-sunken hover:text-ink",
                       ].join(" ")}
-                      onClick={() => {
-                        setActive(session.id);
-                        setView("chat");
-                      }}
+                      onClick={() => openSession(session.id)}
                       type="button"
                     >
                       <ChatIcon className="size-4 shrink-0 opacity-70" />
@@ -268,9 +358,9 @@ export default function Page() {
 
       <div className="flex min-w-0 flex-1 p-2.5 lg:pl-0">
         <main className="stage flex min-w-0 flex-1 flex-col">
-          {error ? (
+          {displayError ? (
             <div className="px-4 py-2 text-sm text-danger sm:px-6" role="alert">
-              {error}
+              {displayError}
             </div>
           ) : null}
           {approval ? (
@@ -346,7 +436,7 @@ export default function Page() {
                         </div>
                       ),
                     )}
-                    {pending ? (
+                    {showSpinner ? (
                       <div className="msg-in flex gap-3" role="status">
                         <UsefulBotAvatar />
                         <div className="pt-1.5">
@@ -357,6 +447,7 @@ export default function Page() {
                         </div>
                       </div>
                     ) : null}
+                    <div ref={bottomRef} />
                   </div>
                 </div>
               </div>
@@ -377,14 +468,11 @@ export default function Page() {
         <ChatSearchDialog
           onClose={() => setSearchOpen(false)}
           onNewChat={() => {
-            setActive(null);
-            setMessages([]);
-            setView("chat");
+            resetChat();
             setSearchOpen(false);
           }}
           onSelect={(id) => {
-            setActive(id);
-            setView("chat");
+            openSession(id);
             setSearchOpen(false);
           }}
           sessions={sessions}

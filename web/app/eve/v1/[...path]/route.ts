@@ -38,7 +38,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     body = await request.arrayBuffer();
   }
   try {
-    const upstream = await fetch(target, { method, headers, body, signal: AbortSignal.timeout(180_000) });
+    const signal = method === "GET"
+      ? request.signal
+      : AbortSignal.any([request.signal, AbortSignal.timeout(180_000)]);
+    const upstream = await fetch(target, { method, headers, body, signal });
     const out = new Headers();
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);
