@@ -47,12 +47,14 @@ async function withRouter(fn: (base: string, tokens: Record<string, string>) => 
       object: "chat.completion",
       model: "glm-5.3-flash",
       choices: [{ index: 0, message: { role: "assistant", content: "fixture-ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
     }));
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const upPort = (upstream.address() as { port: number }).port;
   process.env.UB_OPENCODE_GO_KEY = "test-upstream-key";
   process.env.UB_OPENCODE_GO_BASE = `http://127.0.0.1:${upPort}/v1`;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
 
   let router: ReturnType<typeof startRouter> | undefined;
   try {
@@ -180,5 +182,12 @@ test("completion maps model to alias", async () => {
     assert.equal(body.model, "workhorse");
     assert.equal(body.choices[0].message.content, "fixture-ok");
     assert.equal(res.headers.get("x-useful-upstream-model"), "glm-5.3-flash");
+    const usage = await fetch(`${base}/v1/usage`, { headers: { authorization: `Bearer ${tokens.desktop}` } });
+    assert.equal(usage.status, 200);
+    const meter = await usage.json() as { observed_input_tokens: number; observed_output_tokens: number; requests: number; by_model: Array<{ model: string }> };
+    assert.equal(meter.requests, 1);
+    assert.equal(meter.observed_input_tokens, 11);
+    assert.equal(meter.observed_output_tokens, 4);
+    assert.equal(meter.by_model[0]?.model, "glm-5.3-flash");
   });
 });

@@ -126,16 +126,18 @@ export class MemoryStore {
     return rows.map((row) => this.read(row.id, audience));
   }
 
-  list(audience: Audience, limit = 100): MemoryNoteCard[] {
+  list(audience: Audience, limit = 100, botId?: string): MemoryNoteCard[] {
     const now = new Date().toISOString();
     const rows = this.db.prepare(
       "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT ?",
     ).all(audience, now, limit) as Array<{ id: string }>;
-    return rows.map((row) => {
+    const cards = rows.map((row) => {
       const excerpt = this.read(row.id, audience);
       const { meta } = parseNote(readFileSync(join(this.notesDir, `${row.id}.md`), "utf8"));
       return { ...excerpt, tags: meta.tags, updatedAt: meta.updatedAt };
     });
+    if (!botId) return cards;
+    return cards.filter((card) => noteBelongsToBot(card.tags, botId));
   }
 
   read(id: string, audience: Audience): MemoryExcerpt {
@@ -231,6 +233,22 @@ export class MemoryStore {
       meta.id,
     );
   }
+}
+
+export const BOT_TAG_PREFIX = "bot:";
+
+export function botTag(botId: string): string {
+  return `${BOT_TAG_PREFIX}${botId}`;
+}
+
+export function tagsForBot(tags: string[], botId: string): string[] {
+  const next = tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX) && tag.trim());
+  next.push(botTag(botId));
+  return next.slice(0, 8);
+}
+
+export function noteBelongsToBot(tags: string[], botId: string): boolean {
+  return tags.includes(botTag(botId));
 }
 
 export function resetMemoryDir(root: string): void {

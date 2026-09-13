@@ -5,12 +5,42 @@ import { RouterError } from "./errors.ts";
 import { CALLER_LIMITS } from "../../shared/policy.ts";
 import type { AuthedCaller } from "./auth.ts";
 
+export interface UsageRow {
+  callerId: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  at: number;
+}
+
+export interface UsageBucket {
+  provider: string;
+  model: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface UsageSummary {
+  caller_id: string;
+  window_start: string;
+  reserved_input_tokens: null;
+  reserved_output_tokens: null;
+  observed_input_tokens: number;
+  observed_output_tokens: number;
+  requests: number;
+  provider_remaining: null;
+  by_model: UsageBucket[];
+}
+
 export class LimitStore {
   private readonly db: DatabaseSync;
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
+    this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS requests (
         request_id TEXT PRIMARY KEY,
@@ -21,7 +51,57 @@ export class LimitStore {
         caller_id TEXT NOT NULL,
         ts INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        caller_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        ts INTEGER NOT NULL
+      );
     `);
+  }
+
+  recordUsage(row: UsageRow): void {
+    this.db.prepare(
+      "INSERT INTO usage (caller_id, provider, model, input_tokens, output_tokens, ts) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(row.callerId, row.provider, row.model, row.inputTokens, row.outputTokens, row.at);
+  }
+
+  summarize(callerId?: string, now = Date.now(), windowMs = 7 * 24 * 60 * 60 * 1000): UsageSummary {
+    const start = now - windowMs;
+    const totals = callerId
+      ? this.db.prepare(
+        "SELECT COUNT(*) AS requests, COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output FROM usage WHERE caller_id = ? AND ts > ?",
+      ).get(callerId, start) as { requests: number; input: number; output: number }
+      : this.db.prepare(
+        "SELECT COUNT(*) AS requests, COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output FROM usage WHERE ts > ?",
+      ).get(start) as { requests: number; input: number; output: number };
+    const rows = callerId
+      ? this.db.prepare(
+        "SELECT provider, model, COUNT(*) AS requests, SUM(input_tokens) AS input, SUM(output_tokens) AS output FROM usage WHERE caller_id = ? AND ts > ? GROUP BY provider, model ORDER BY output DESC, input DESC",
+      ).all(callerId, start) as Array<{ provider: string; model: string; requests: number; input: number; output: number }>
+      : this.db.prepare(
+        "SELECT provider, model, COUNT(*) AS requests, SUM(input_tokens) AS input, SUM(output_tokens) AS output FROM usage WHERE ts > ? GROUP BY provider, model ORDER BY output DESC, input DESC",
+      ).all(start) as Array<{ provider: string; model: string; requests: number; input: number; output: number }>;
+    return {
+      caller_id: callerId ?? "desktop",
+      window_start: new Date(start).toISOString(),
+      reserved_input_tokens: null,
+      reserved_output_tokens: null,
+      observed_input_tokens: Number(totals.input),
+      observed_output_tokens: Number(totals.output),
+      requests: Number(totals.requests),
+      provider_remaining: null,
+      by_model: rows.map((row) => ({
+        provider: row.provider,
+        model: row.model,
+        requests: Number(row.requests),
+        inputTokens: Number(row.input),
+        outputTokens: Number(row.output),
+      })),
+    };
   }
 
   rememberRequest(requestId: string, callerId: string, now: number): void {

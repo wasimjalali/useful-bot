@@ -15,52 +15,57 @@ import { BotAvatar } from "./bot-avatar";
 import {
   ChevronDownIcon,
   HideIcon,
-  MemoryIcon,
+  MarketplaceIcon,
   MenuIcon,
   MoreIcon,
   NewChatIcon,
   PencilIcon,
   PinIcon,
-  PlusIcon,
   SearchIcon,
   SettingsIcon,
   TrashIcon,
+  UsageIcon,
   UsersIcon,
 } from "./icons";
 import { UsefulBotLogo } from "./useful-bot-logo";
 import { MenuItem, Popover, type MenuPoint } from "./popover";
 
-type CreateKind = "chat" | "bot" | "group" | "section";
+type CreateKind = "bot" | "group" | "section";
 
 export function BotRail({
-  memoryActive,
   onAction,
   onCreate,
   onDeleteRequest,
-  onMemory,
+  onConnectors,
+  onNewChat,
+  newChatActive = false,
+  onOpenAppSettings,
   onOpenSettings,
   onRenameRequest,
   onSearch,
   onSelect,
   onSignOut,
   onToggleMobile,
+  operator,
   store,
 }: {
-  memoryActive: boolean;
   onAction: (action: ShellAction) => void;
   onCreate: (kind: CreateKind, sectionId?: string | null) => void;
   onDeleteRequest: (bot: ShellBot) => void;
-  onMemory: () => void;
+  onConnectors: () => void;
+  newChatActive?: boolean;
+  onNewChat: () => void;
+  onOpenAppSettings: (tab?: "general" | "usage" | "providers") => void;
   onOpenSettings: (botId: string) => void;
   onRenameRequest: (bot: ShellBot) => void;
   onSearch: () => void;
   onSelect: (botId: string) => void;
   onSignOut: () => void;
   onToggleMobile?: () => void;
+  operator: { name: string; initials: string };
   store: ShellStore;
 }) {
   const [kbd, setKbd] = useState("Ctrl+K");
-  const [createOpen, setCreateOpen] = useState<MenuPoint | null>(null);
   const [accountOpen, setAccountOpen] = useState<MenuPoint | null>(null);
   const [menu, setMenu] = useState<{ bot: ShellBot; point: MenuPoint; submenu?: boolean } | null>(null);
   const pinned = pinnedBots(store);
@@ -94,31 +99,14 @@ export function BotRail({
         <kbd className="search-kbd">{kbd}</kbd>
       </button>
 
-      <div className="flex items-center gap-1">
-        <button className="nav-item flex-1 text-[13px]" onClick={() => onCreate("chat")} type="button">
-          <NewChatIcon className="size-4 shrink-0" />
-          New chat
-        </button>
-        <button
-          aria-label="Create"
-          className="icon-btn size-8 shrink-0"
-          onClick={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
-            setCreateOpen({ x: rect.right - 210, y: rect.bottom + 6 });
-          }}
-          type="button"
-        >
-          <PlusIcon className="size-4" />
-        </button>
-      </div>
       <button
-        aria-current={memoryActive ? "page" : undefined}
-        className="nav-item text-[13px]"
-        onClick={onMemory}
+        aria-current={newChatActive ? "page" : undefined}
+        className="new-bot-trigger"
+        onClick={onNewChat}
         type="button"
       >
-        <MemoryIcon className="size-4 shrink-0" />
-        Memory
+        <NewChatIcon className="size-4 shrink-0" />
+        New Bot
       </button>
 
       <div className="uv-scroll -mr-1 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
@@ -130,7 +118,7 @@ export function BotRail({
                 key={bot.id}
                 onMenu={(event) => openMenu(event, bot)}
                 onSelect={() => onSelect(bot.id)}
-                selected={bot.id === store.selectedBotId && !memoryActive}
+                selected={bot.id === store.selectedBotId}
               />
             ))}
           </div>
@@ -143,7 +131,6 @@ export function BotRail({
               collapsed={section.collapsed}
               key={section.id}
               label={section.name}
-              onAdd={() => onCreate("bot", section.id)}
               onToggle={() => onAction({ type: "toggleSection", sectionId: section.id })}
             >
               {bots.map((bot) => (
@@ -152,7 +139,7 @@ export function BotRail({
                   key={bot.id}
                   onMenu={(event) => openMenu(event, bot)}
                   onSelect={() => onSelect(bot.id)}
-                  selected={bot.id === store.selectedBotId && !memoryActive}
+                  selected={bot.id === store.selectedBotId}
                 />
               ))}
             </SectionBlock>
@@ -162,7 +149,6 @@ export function BotRail({
         <SectionBlock
           collapsed={store.collapsedUnassigned}
           label="Unassigned"
-          onAdd={() => onCreate("bot", null)}
           onToggle={() => onAction({ type: "toggleSection", sectionId: UNASSIGNED_SECTION })}
         >
           {unassigned.length === 0 ? (
@@ -174,7 +160,7 @@ export function BotRail({
                 key={bot.id}
                 onMenu={(event) => openMenu(event, bot)}
                 onSelect={() => onSelect(bot.id)}
-                selected={bot.id === store.selectedBotId && !memoryActive}
+                selected={bot.id === store.selectedBotId}
               />
             ))
           )}
@@ -192,74 +178,63 @@ export function BotRail({
                 key={bot.id}
                 onMenu={(event) => openMenu(event, bot)}
                 onSelect={() => onSelect(bot.id)}
-                selected={bot.id === store.selectedBotId && !memoryActive}
+                selected={bot.id === store.selectedBotId}
               />
             ))}
           </SectionBlock>
         ) : null}
       </div>
 
-      <div className="operator-row flex items-center gap-2.5 px-1.5 pt-3">
-        <span aria-hidden="true" className="operator-avatar shrink-0">
-          WJ
-        </span>
-        <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">Wasim</p>
+      <div className="operator-row space-y-1 pt-3">
+        <button className="nav-item text-[13px]" onClick={onConnectors} type="button">
+          <MarketplaceIcon className="size-4 shrink-0" />
+          Connectors
+        </button>
         <button
-          aria-label="Account"
-          className="icon-btn tip size-7 shrink-0"
-          data-tip="Account"
+          className="flex w-full items-center gap-2.5 px-1.5 py-1.5"
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
-            setAccountOpen({ x: rect.left, y: rect.top - 8 });
+            setAccountOpen({ x: rect.left, y: rect.top });
           }}
           type="button"
         >
-          <SettingsIcon className="size-4" />
+          <span aria-hidden="true" className="operator-avatar shrink-0">{operator.initials}</span>
+          <p className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-ink">{operator.name}</p>
         </button>
       </div>
-
-      {createOpen ? (
-        <Popover onClose={() => setCreateOpen(null)} point={createOpen} width={210}>
-          <MenuItem
-            onClick={() => {
-              setCreateOpen(null);
-              onCreate("bot");
-            }}
-          >
-            Create bot
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setCreateOpen(null);
-              onCreate("group");
-            }}
-          >
-            Create group chat
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setCreateOpen(null);
-              onCreate("section");
-            }}
-          >
-            Create section
-          </MenuItem>
-        </Popover>
-      ) : null}
 
       {accountOpen ? (
         <Popover
           onClose={() => setAccountOpen(null)}
-          point={{ x: accountOpen.x, y: Math.max(8, accountOpen.y - 88) }}
-          width={180}
+          placement="above"
+          point={accountOpen}
+          width={220}
         >
+          <MenuItem
+            onClick={() => {
+              setAccountOpen(null);
+              onOpenAppSettings("usage");
+            }}
+          >
+            <UsageIcon className="size-3.5" />
+            Weekly usage
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              setAccountOpen(null);
+              onOpenAppSettings("general");
+            }}
+          >
+            <SettingsIcon className="size-3.5" />
+            Settings
+          </MenuItem>
           <MenuItem
             onClick={() => {
               setAccountOpen(null);
               onSignOut();
             }}
           >
-            Sign out
+            Log out
           </MenuItem>
         </Popover>
       ) : null}
@@ -360,13 +335,11 @@ function SectionBlock({
   children,
   collapsed,
   label,
-  onAdd,
   onToggle,
 }: {
   children: React.ReactNode;
   collapsed: boolean;
   label: string;
-  onAdd?: () => void;
   onToggle: () => void;
 }) {
   return (
@@ -376,11 +349,6 @@ function SectionBlock({
           <ChevronDownIcon className={collapsed ? "size-3 -rotate-90" : "size-3"} />
           <span>{label}</span>
         </button>
-        {onAdd ? (
-          <button aria-label={`Add bot to ${label}`} className="icon-btn size-6" onClick={onAdd} type="button">
-            <PlusIcon className="size-3.5" />
-          </button>
-        ) : null}
       </div>
       {collapsed ? null : <div className="mt-0.5 space-y-0.5">{children}</div>}
     </section>

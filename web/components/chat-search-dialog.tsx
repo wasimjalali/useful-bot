@@ -3,7 +3,23 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ChatIcon, HideIcon, NewChatIcon, SearchIcon } from "./icons";
 import { BotAvatar } from "./bot-avatar";
-import { searchShell, type ShellSearchHit, type ShellStore } from "../../shared/shell-store.ts";
+import {
+  searchShell,
+  type SearchTab,
+  type ShellSearchHit,
+  type ShellStore,
+} from "../../shared/shell-store.ts";
+
+const TABS: Array<{ id: SearchTab; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "messages", label: "Messages" },
+  { id: "bots", label: "Bots" },
+  { id: "groups", label: "Groups" },
+  { id: "files", label: "Files" },
+  { id: "links", label: "Links" },
+  { id: "routines", label: "Routines" },
+  { id: "actions", label: "Actions" },
+];
 
 export function ChatSearchDialog({
   onClose,
@@ -19,10 +35,11 @@ export function ChatSearchDialog({
   store: ShellStore;
 }) {
   const [query, setQuery] = useState("");
+  const [tab, setTab] = useState<SearchTab>("all");
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const hits = useMemo(() => searchShell(store, query), [store, query]);
+  const hits = useMemo(() => searchShell(store, query, tab), [store, query, tab]);
   const count = hits.length;
 
   useEffect(() => {
@@ -42,7 +59,7 @@ export function ChatSearchDialog({
 
   useEffect(() => {
     setActive(0);
-  }, [query]);
+  }, [query, tab]);
 
   useEffect(() => {
     const node = listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`);
@@ -89,7 +106,7 @@ export function ChatSearchDialog({
       >
         <div className="search-palette-head">
           <SearchIcon className="size-4 shrink-0 text-ink-faint" />
-          <label className="sr-only" htmlFor="chat-search">Search chats and bots</label>
+          <label className="sr-only" htmlFor="chat-search">Search</label>
           <input
             aria-activedescendant={count > 0 ? `search-hit-${active}` : undefined}
             aria-autocomplete="list"
@@ -100,18 +117,32 @@ export function ChatSearchDialog({
             id="chat-search"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Search chats and bots"
+            placeholder="Search"
             ref={inputRef}
             role="combobox"
             type="text"
             value={query}
           />
         </div>
+        <div className="search-tabs" role="tablist">
+          {TABS.map((item) => (
+            <button
+              aria-selected={tab === item.id}
+              className={tab === item.id ? "search-tab search-tab-active" : "search-tab"}
+              key={item.id}
+              onClick={() => setTab(item.id)}
+              role="tab"
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
 
         <div className="uv-scroll search-palette-body" id="chat-search-results" ref={listRef} role="listbox">
           {hits.map((hit, index) => {
             const prev = hits[index - 1];
-            const heading = headingFor(hit, prev);
+            const heading = headingFor(hit, prev, tab);
             return (
               <div key={hitKey(hit, index)}>
                 {heading ? <p className="search-palette-label">{heading}</p> : null}
@@ -125,8 +156,12 @@ export function ChatSearchDialog({
               </div>
             );
           })}
-          {hits.length === 1 && query.trim() ? (
-            <p className="px-3 py-3 text-sm text-ink-muted">No matching chats or bots.</p>
+          {hits.length === 0 ? (
+            <p className="px-3 py-3 text-sm text-ink-muted">
+              {tab === "all"
+                ? "No matching chats or bots."
+                : `Nothing in ${TABS.find((item) => item.id === tab)?.label ?? tab} yet.`}
+            </p>
           ) : null}
         </div>
       </div>
@@ -134,7 +169,8 @@ export function ChatSearchDialog({
   );
 }
 
-function headingFor(hit: ShellSearchHit, prev: ShellSearchHit | undefined): string | null {
+function headingFor(hit: ShellSearchHit, prev: ShellSearchHit | undefined, tab: SearchTab): string | null {
+  if (tab !== "all") return null;
   if (hit.kind === "recent" && prev?.kind !== "recent") return "Recents";
   if (hit.kind === "bot" && prev?.kind !== "bot") return "Bots";
   return null;
@@ -174,7 +210,7 @@ function SearchHitRow({
         type="button"
       >
         <NewChatIcon className="size-4 shrink-0" />
-        <span className="truncate">New chat</span>
+        <span className="truncate">New Bot</span>
       </button>
     );
   }

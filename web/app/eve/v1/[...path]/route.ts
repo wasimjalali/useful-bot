@@ -1,6 +1,7 @@
 import { readSession } from "../../../../lib/auth";
 import { originAllowed } from "../../../../lib/desktop-gate";
-import { eveGetAllowed, evePostAllowed } from "../../../../../shared/eve-proxy.ts";
+import { eveGetAllowed, evePostAllowed, isEveSessionPost, rewriteEveSessionBody } from "../../../../../shared/eve-proxy.ts";
+import { readShell } from "../../../../../shared/shell-io.ts";
 
 const EVE = "http://127.0.0.1:4321";
 
@@ -47,6 +48,18 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   let body: ArrayBuffer | undefined;
   if (method !== "GET") {
     body = await request.arrayBuffer();
+    if (isEveSessionPost(suffix)) {
+      try {
+        const raw = new TextDecoder().decode(body);
+        const json = JSON.parse(raw) as { botId?: unknown };
+        const botId = typeof json.botId === "string" ? json.botId : "";
+        const bot = readShell().bots.find((item) => item.id === botId) ?? null;
+        body = new TextEncoder().encode(rewriteEveSessionBody(raw, bot)).buffer;
+        headers.set("content-type", "application/json");
+      } catch {
+        /* keep original body */
+      }
+    }
   }
   try {
     const signal = method === "GET"

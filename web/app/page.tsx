@@ -7,10 +7,13 @@ import { ChatSearchDialog } from "../components/chat-search-dialog";
 import { ChatComposer } from "../components/chat-composer";
 import { BotRail } from "../components/bot-rail";
 import { BotAvatar } from "../components/bot-avatar";
+import { ChatMarkdown } from "../components/chat-markdown";
 import { BotSettingsPanel } from "../components/bot-settings-panel";
 import { CreateBotDialog, CreateGroupDialog } from "../components/create-dialogs";
 import { ConfirmDialog, PromptDialog } from "../components/confirm-dialog";
-import { MemoryPanel } from "../components/memory-panel";
+import { NewChatPicker } from "../components/new-chat-picker";
+import { AppSettingsDialog, type AppSettingsTab } from "../components/app-settings-dialog";
+import { ConnectorsDialog } from "../components/marketplace-dialog";
 import { SearchChips } from "../components/search-chips";
 import {
   applyEveEvent,
@@ -21,8 +24,7 @@ import {
 import { selectedBot, type ShellBot } from "../../shared/shell-store.ts";
 import { useShell } from "../lib/use-shell.ts";
 
-type View = "chat" | "memory";
-type CreateKind = "chat" | "bot" | "group" | "section";
+type CreateKind = "bot" | "group" | "section";
 
 let seq = 0;
 function nextId() {
@@ -56,28 +58,22 @@ export default function Page() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
-  const [view, setView] = useState<View>("chat");
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appSettingsOpen, setAppSettingsOpen] = useState(false);
+  const [appSettingsTab, setAppSettingsTab] = useState<AppSettingsTab>("general");
+  const [connectorsOpen, setConnectorsOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [createKind, setCreateKind] = useState<CreateKind | null>(null);
   const [createSectionId, setCreateSectionId] = useState<string | null>(null);
   const [renameBot, setRenameBot] = useState<ShellBot | null>(null);
   const [deleteBot, setDeleteBot] = useState<ShellBot | null>(null);
   const [routineNotice, setRoutineNotice] = useState(false);
+  const [operator, setOperator] = useState({ name: "Desktop owner", initials: "DO" });
   const [approvals, setApprovals] = useState<Array<{ id: string; hash: string; preview: string; tool: string }>>([]);
-  const [notes, setNotes] = useState<Array<{
-    id: string;
-    title: string;
-    body: string;
-    tags: string[];
-    updatedAt: string;
-    truncated: boolean;
-  }> | null>(null);
-  const [review, setReview] = useState("");
-  const [reviewPending, setReviewPending] = useState(false);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
@@ -92,6 +88,18 @@ export default function Page() {
       .then((res) => setAuthed(res.ok))
       .catch(() => setAuthed(false));
   }, []);
+
+  useEffect(() => {
+    if (!authed) return;
+    fetch("/api/status", { credentials: "include" })
+      .then((res) => res.ok ? res.json() : null)
+      .then((body: { operator?: { name?: string; initials?: string } } | null) => {
+        if (body?.operator?.name && body.operator.initials) {
+          setOperator({ name: body.operator.name, initials: body.operator.initials });
+        }
+      })
+      .catch(() => undefined);
+  }, [authed]);
 
   useEffect(() => {
     if (!authed) return;
@@ -120,34 +128,6 @@ export default function Page() {
       window.clearInterval(timer);
     };
   }, [authed]);
-
-  useEffect(() => {
-    if (!authed || view !== "memory") return;
-    let cancelled = false;
-    async function loadNotes() {
-      try {
-        const res = await fetch("/api/memory", { credentials: "include" });
-        if (!res.ok || cancelled) return;
-        const body = await res.json() as { notes?: Array<{
-          id: string;
-          title: string;
-          body: string;
-          tags: string[];
-          updatedAt: string;
-          truncated: boolean;
-        }> };
-        setNotes(body.notes ?? []);
-      } catch {
-        if (!cancelled) setNotes([]);
-      }
-    }
-    void loadNotes();
-    const timer = window.setInterval(() => void loadNotes(), 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [authed, view, approvals.length]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -255,22 +235,33 @@ export default function Page() {
   }, []);
 
   function attachBot(bot: ShellBot) {
-    setView("chat");
+    setPickerOpen(false);
     setRailOpen(false);
     const sid = bot.sessionId;
     if (sid !== activeRef.current) {
       projSession.current = null;
       setActive(sid);
       setProj(createProjection());
-      setReview("");
     }
     setQuery(bot.id, sid);
   }
 
   function selectBot(id: string) {
     dispatch({ type: "select", botId: id });
-    setView("chat");
+    setPickerOpen(false);
     setRailOpen(false);
+  }
+
+  function startNewChat(botId?: string) {
+    const id = botId ?? store?.selectedBotId;
+    if (botId) dispatch({ type: "select", botId });
+    dispatch({ type: "newChat", botId: id });
+    projSession.current = null;
+    setActive(null);
+    setProj(createProjection());
+    setPickerOpen(false);
+    setSearchOpen(false);
+    setQuery(id ?? null, null);
   }
 
   const selectedId = selected?.id;
@@ -301,20 +292,20 @@ export default function Page() {
     setAuthed(false);
   }
 
-  async function send() {
-    const text = draft.trim();
-    if (!text || proj.pending || sendLock.current || !selected) return;
+  async function send(text: string) {
+    const message = text.trim();
+    if (!message || proj.pending || sendLock.current || !selected) return;
     sendLock.current = true;
     setError("");
     setDraft("");
-    setView("chat");
+    setPickerOpen(false);
     setProj((current) => ({
       ...current,
       pending: true,
       error: "",
-      messages: [...current.messages, { role: "user", text, id: nextId() }],
+      messages: [...current.messages, { role: "user", text: message, id: nextId() }],
     }));
-    dispatch({ type: "touchChat", botId: selected.id, preview: text });
+    dispatch({ type: "touchChat", botId: selected.id, preview: message });
     try {
       const sessionId = selected.sessionId ?? active;
       const csrf = await csrfHeaders();
@@ -322,7 +313,7 @@ export default function Page() {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json", ...csrf },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message, botId: selected.id }),
       });
       if (!res.ok) {
         throw new Error(res.status === 503 ? "Agent unavailable" : "Send failed");
@@ -332,7 +323,7 @@ export default function Page() {
       if (sid) {
         projSession.current = sid;
         setActive(sid);
-        dispatch({ type: "touchChat", botId: selected.id, preview: text, sessionId: sid });
+        dispatch({ type: "touchChat", botId: selected.id, preview: message, sessionId: sid });
         setQuery(selected.id, sid);
       }
     } catch (err) {
@@ -377,34 +368,6 @@ export default function Page() {
       return;
     }
     setApprovals((current) => current.filter((row) => row.id !== item.id));
-  }
-
-  async function askReviewer() {
-    const user = [...proj.messages].reverse().find((message) => message.role === "user");
-    const assistant = [...proj.messages].reverse().find((message) => message.role === "assistant");
-    const text = [user?.text, assistant?.text].filter(Boolean).join("\n\n").trim();
-    if (!text || reviewPending) return;
-    setReviewPending(true);
-    setError("");
-    try {
-      const res = await fetch("/api/auth/session", { credentials: "include" });
-      const session = await res.json() as { csrfToken?: string };
-      const out = await fetch("/api/reviewer", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json", "x-ub-csrf": session.csrfToken ?? "" },
-        body: JSON.stringify({ text: text.slice(0, 8000) }),
-      });
-      const body = await out.json() as { ok?: boolean; text?: string; error?: string };
-      if (!out.ok || !body.text) {
-        throw new Error(body.error ?? "Reviewer failed");
-      }
-      setReview(body.text);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Reviewer failed");
-    } finally {
-      setReviewPending(false);
-    }
   }
 
   const messages = proj.messages;
@@ -460,26 +423,22 @@ export default function Page() {
 
   const rail = (
     <BotRail
-      memoryActive={view === "memory"}
       onAction={dispatch}
       onCreate={(kind, sectionId) => {
-        if (kind === "chat") {
-          dispatch({ type: "newChat" });
-          projSession.current = null;
-          setActive(null);
-          setProj(createProjection());
-          setView("chat");
-          setQuery(store.selectedBotId, null);
-          return;
-        }
         setCreateSectionId(sectionId ?? null);
         setCreateKind(kind);
       }}
       onDeleteRequest={setDeleteBot}
-      onMemory={() => {
-        setView("memory");
+      newChatActive={pickerOpen}
+      onConnectors={() => setConnectorsOpen(true)}
+      onNewChat={() => {
+        setPickerOpen(true);
         setSettingsOpen(false);
         setRailOpen(false);
+      }}
+      onOpenAppSettings={(tab) => {
+        setAppSettingsTab(tab ?? "general");
+        setAppSettingsOpen(true);
       }}
       onOpenSettings={(id) => {
         dispatch({ type: "select", botId: id });
@@ -492,6 +451,7 @@ export default function Page() {
       onSelect={selectBot}
       onSignOut={() => void signOut()}
       onToggleMobile={() => setRailOpen(false)}
+      operator={operator}
       store={store}
     />
   );
@@ -533,34 +493,36 @@ export default function Page() {
             </div>
           ) : null}
 
-          {view === "memory" ? (
-            <MemoryPanel notes={notes} onOpenRail={() => setRailOpen(true)} />
+          {pickerOpen ? (
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <header className="flex items-center gap-2 px-3 py-2.5 sm:px-5 lg:hidden">
+                <button aria-label="Open rail" className="icon-btn size-8" onClick={() => setRailOpen(true)} type="button">
+                  <MenuIcon className="size-4" />
+                </button>
+              </header>
+              <NewChatPicker
+                onClose={() => setPickerOpen(false)}
+                onCreateBot={() => {
+                  setPickerOpen(false);
+                  setCreateKind("bot");
+                }}
+                onCreateGroup={() => {
+                  setPickerOpen(false);
+                  setCreateKind("group");
+                }}
+                onSelectBot={(id) => startNewChat(id)}
+                store={store}
+              />
+            </div>
           ) : (
             <div className="relative flex min-h-0 flex-1">
               <div className="flex min-w-0 flex-1 flex-col">
-                <header className="flex items-center gap-2 px-3 py-2.5 sm:px-5">
+                <header className="chat-head">
                   <button aria-label="Open rail" className="icon-btn size-8 lg:hidden" onClick={() => setRailOpen(true)} type="button">
                     <MenuIcon className="size-4" />
                   </button>
                   <BotAvatar bot={bot} size="sm" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <h1 className="truncate text-[15px] font-semibold">{bot.name}</h1>
-                      {bot.label ? <span className="bot-label">{bot.label}</span> : null}
-                    </div>
-                    {bot.description ? (
-                      <p className="truncate text-[12px] text-ink-muted">{bot.description}</p>
-                    ) : null}
-                  </div>
-                  <button
-                    aria-label="Ask reviewer"
-                    className="btn btn-secondary min-h-8 px-3 text-xs"
-                    disabled={reviewPending || messages.length === 0}
-                    onClick={() => void askReviewer()}
-                    type="button"
-                  >
-                    {reviewPending ? "Reviewing" : "Ask reviewer"}
-                  </button>
+                  <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold">{bot.name}</h1>
                   <button
                     aria-label="Bot settings"
                     className="icon-btn tip size-8"
@@ -573,7 +535,7 @@ export default function Page() {
                 </header>
 
                 {messages.length === 0 && !pending ? (
-                  <div className="rise flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-16 text-center">
+                  <div className="rise flex min-h-0 flex-1 flex-col items-center justify-center px-4 text-center">
                     <h2 className="max-w-2xl text-2xl font-semibold tracking-[-0.03em] text-ink sm:text-[28px]">
                       What can I do for you?
                     </h2>
@@ -582,77 +544,60 @@ export default function Page() {
                         ? "Group chat on this Mac. Replies still come from Useful Bot."
                         : "Runs locally on this Mac. Writes and commands need your approval."}
                     </p>
-                    <div className="mt-8 w-full max-w-2xl">
-                      <ChatComposer
-                        disabled={false}
-                        onChange={setDraft}
-                        onSend={() => void send()}
-                        onStop={() => void cancel()}
-                        pending={pending}
-                        placeholder={`Ask ${bot.name}`}
-                        value={draft}
-                      />
-                    </div>
                   </div>
                 ) : (
-                  <>
-                    <div className="uv-scroll min-h-0 flex-1 overflow-y-auto">
-                      <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
-                        <div className="flex flex-col gap-6">
-                          {messages.map((message) =>
-                            message.role === "user" ? (
-                              <div className="msg-in flex justify-end" key={message.id}>
-                                <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
-                                  {message.text}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="msg-in flex gap-3" key={message.id}>
-                                <BotAvatar bot={bot} size="md" />
-                                <div className="min-w-0 flex-1">
-                                  <div className="mb-2 flex items-center gap-2">
-                                    <span className="text-sm font-semibold text-ink">{bot.name}</span>
-                                  </div>
-                                  <div className="whitespace-pre-wrap break-words text-[15px] leading-7 text-ink">
-                                    {message.text}
-                                  </div>
-                                </div>
-                              </div>
-                            ),
-                          )}
-                          {showSpinner ? (
-                            <div className="msg-in flex gap-3" role="status">
-                              <BotAvatar bot={bot} size="md" />
-                              <div className="pt-1.5">
-                                <div className="flex items-center gap-2.5">
-                                  <span className="size-4 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
-                                  <span className="text-sm text-ink-muted">Working.</span>
-                                </div>
+                  <div className="uv-scroll min-h-0 flex-1 overflow-y-auto">
+                    <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
+                      <div className="flex flex-col gap-6">
+                        {messages.map((message) =>
+                          message.role === "user" ? (
+                            <div className="msg-in flex justify-end" key={message.id}>
+                              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
+                                {message.text}
                               </div>
                             </div>
-                          ) : null}
-                          {searchHits.length > 0 ? <SearchChips hits={searchHits} /> : null}
-                          {review ? (
-                            <article className="reviewer-card">
-                              <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-muted">Reviewer</div>
-                              <p className="mt-2 whitespace-pre-wrap text-[14px] leading-6 text-ink">{review}</p>
-                            </article>
-                          ) : null}
-                          <div ref={bottomRef} />
-                        </div>
+                          ) : (
+                            <div className="msg-in flex gap-3" key={message.id}>
+                              <BotAvatar bot={bot} size="sm" />
+                              <div className="min-w-0 flex-1 pt-0.5">
+                                <ChatMarkdown text={message.text} />
+                              </div>
+                            </div>
+                          ),
+                        )}
+                        {showSpinner ? (
+                          <div className="msg-in flex gap-3" role="status">
+                            <BotAvatar bot={bot} size="sm" />
+                            <div className="pt-1.5">
+                              <div className="flex items-center gap-2.5">
+                                <span className="size-4 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
+                                <span className="text-sm text-ink-muted">Working.</span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                        {searchHits.length > 0 ? <SearchChips hits={searchHits} /> : null}
+                        <div ref={bottomRef} />
                       </div>
                     </div>
-                    <ChatComposer
-                      disabled={false}
-                      onChange={setDraft}
-                      onSend={() => void send()}
-                      onStop={() => void cancel()}
-                      pending={pending}
-                      placeholder={`Ask ${bot.name}`}
-                      value={draft}
-                    />
-                  </>
+                  </div>
                 )}
+                <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
+                  <ChatComposer
+                    disabled={false}
+                    onChange={setDraft}
+                    onOpenConnectors={() => setConnectorsOpen(true)}
+                    onOpenProviders={() => {
+                      setAppSettingsTab("providers");
+                      setAppSettingsOpen(true);
+                    }}
+                    onSend={(text) => void send(text)}
+                    onStop={() => void cancel()}
+                    pending={pending}
+                    placeholder={`Message ${bot.name}`}
+                    value={draft}
+                  />
+                </div>
               </div>
               {settingsOpen ? (
                 <BotSettingsPanel
@@ -664,7 +609,6 @@ export default function Page() {
                   onCreateRoutine={() => setRoutineNotice(true)}
                   onPatch={(patch) => dispatch({ type: "updateBot", botId: bot.id, patch })}
                   routineNotice={routineNotice}
-                  store={store}
                 />
               ) : null}
             </div>
@@ -676,19 +620,14 @@ export default function Page() {
         <ChatSearchDialog
           onClose={() => setSearchOpen(false)}
           onNewChat={() => {
-            dispatch({ type: "newChat" });
-            projSession.current = null;
-            setActive(null);
-            setProj(createProjection());
-            setView("chat");
             setSearchOpen(false);
-            setQuery(store.selectedBotId, null);
+            setPickerOpen(true);
           }}
           onOpenRecent={(recentId) => {
             const recent = store.recents.find((item) => item.id === recentId);
             dispatch({ type: "openRecent", recentId });
             setSearchOpen(false);
-            setView("chat");
+            setPickerOpen(false);
             setRailOpen(false);
             projSession.current = null;
             setProj(createProjection());
@@ -717,7 +656,6 @@ export default function Page() {
             projSession.current = null;
             setActive(null);
             setProj(createProjection());
-            setView("chat");
             setCreateKind(null);
             setSettingsOpen(true);
           }}
@@ -734,12 +672,26 @@ export default function Page() {
             projSession.current = null;
             setActive(null);
             setProj(createProjection());
-            setView("chat");
             setCreateKind(null);
             setSettingsOpen(true);
           }}
         />
       ) : null}
+
+      {appSettingsOpen ? (
+        <AppSettingsDialog
+          key={appSettingsTab}
+          initialTab={appSettingsTab}
+          onClose={() => setAppSettingsOpen(false)}
+          operator={operator}
+          onSignOut={() => {
+            setAppSettingsOpen(false);
+            void signOut();
+          }}
+        />
+      ) : null}
+
+      {connectorsOpen ? <ConnectorsDialog onClose={() => setConnectorsOpen(false)} /> : null}
 
       {createKind === "section" ? (
         <PromptDialog

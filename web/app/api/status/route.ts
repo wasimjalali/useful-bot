@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readSession } from "../../../lib/auth";
+import { appVersion, systemOperator } from "../../../../shared/operator.ts";
 
 export async function GET() {
   const session = await readSession();
@@ -13,5 +14,12 @@ export async function GET() {
   } catch {
     eve = "limited";
   }
-  return NextResponse.json({ ok: true, profile: session.profile, eve, alias: "workhorse" });
+  return NextResponse.json({
+    ok: true,
+    profile: session.profile,
+    eve,
+    operator: systemOperator(),
+    version: appVersion(),
+    theme: "light",
+  });
 }
