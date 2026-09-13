@@ -14,8 +14,8 @@ import {
   readAgentStore,
   reserveKey,
   reserveSend,
-  resolveProposal,
   threadSnapshot,
+  writeAgentStore,
 } from "../shared/agent-store.ts";
 import {
   claimHandoff,
@@ -34,24 +34,25 @@ function tempPaths() {
   return { dir, storePath: join(dir, "agents.json"), handoffDir: join(dir, "handoffs") };
 }
 
-test("unknown top-level keys are tolerated and a malformed thread is dropped", () => {
+test("unknown keys at any level are tolerated instead of dropping data", () => {
+  // A newer build adding a field must not make this build prune transcripts.
   const parsed = parseAgentStore({
     schemaVersion: 1,
-    threads: [{ id: "b1", botId: "b1", kind: "bot", sessionId: "", updatedAt: "x", events: [], nope: 1 }],
+    threads: [{
+      id: "b1",
+      botId: "b1",
+      kind: "bot",
+      sessionId: "",
+      updatedAt: "x",
+      events: [],
+      futureThreadField: 1,
+    }],
     proposals: [],
     reserves: [],
-    futureField: true,
+    futureTopLevel: true,
   });
-  assert.equal(parsed.threads.length, 0);
-  // A newer build adding a top-level field must not wipe every transcript.
-  const kept = parseAgentStore({
-    schemaVersion: 1,
-    threads: [],
-    proposals: [],
-    reserves: [],
-    futureField: true,
-  });
-  assert.equal(kept.schemaVersion, 1);
+  assert.equal(parsed.threads.length, 1);
+  assert.equal(parsed.threads[0].id, "b1");
 });
 
 test("thread events dedupe by id and stay capped", () => {
@@ -91,7 +92,7 @@ test("proposals are created pending, scoped to a thread, and resolved once", () 
   const snapshot = threadSnapshot("b1", storePath);
   assert.equal(snapshot.proposals.length, 1);
   assert.equal(snapshot.proposals[0].id, proposal.id);
-  const resolved = resolveProposal(proposal.id, "confirmed", storePath);
+  const resolved = claimProposal(proposal.id, "confirmed", storePath);
   assert.equal(resolved?.status, "confirmed");
   assert.equal(threadSnapshot("b1", storePath).proposals.length, 0);
   assert.equal(threadSnapshot("b2", storePath).proposals.length, 0);
@@ -112,7 +113,26 @@ test("a proposal can only be claimed once", () => {
   }, storePath);
   assert.equal(claimProposal(proposal.id, "confirmed", storePath)?.id, proposal.id);
   assert.equal(claimProposal(proposal.id, "confirmed", storePath), null);
-  assert.equal(resolveProposal(proposal.id, "dismissed", storePath)?.status, "confirmed");
+  assert.equal(claimProposal(proposal.id, "dismissed", storePath), null);
+});
+
+test("an expired proposal cannot be claimed", () => {
+  const { storePath } = tempPaths();
+  const proposal = createProposal({
+    kind: "createBot",
+    name: "Too Late",
+    petname: "New Bot 1",
+    title: "",
+    description: "",
+    sectionId: null,
+    sourceBotId: null,
+    threadId: "b1",
+    brief: "",
+  }, storePath);
+  const store = readAgentStore(storePath);
+  store.proposals[0].expiresAt = new Date(Date.now() - 1000).toISOString();
+  writeAgentStore(store, storePath);
+  assert.equal(claimProposal(proposal.id, "confirmed", storePath), null);
 });
 
 test("the same side of a handoff lands once per transcript", () => {

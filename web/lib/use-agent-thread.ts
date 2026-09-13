@@ -56,15 +56,18 @@ export function useAgentThread(authed: boolean, botId: string | null) {
       setProposals([]);
     }
     let cancelled = false;
+    let generation = 0;
     async function poll(id: string) {
+      const mine = ++generation;
       try {
         const next = await load(id);
-        if (cancelled) return;
+        // A slow earlier poll must not overwrite a newer response.
+        if (cancelled || mine !== generation) return;
         setEvents(next.events);
         setProposals(next.proposals);
         setError("");
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Thread failed");
+        if (!cancelled && mine === generation) setError(err instanceof Error ? err.message : "Thread failed");
       }
     }
     void poll(botId);

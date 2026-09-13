@@ -11,7 +11,7 @@ import {
   HANDOFF_ATTEMPTS_MAX,
   type HandoffRecord,
 } from "../../shared/handoffs.ts";
-import { readShell, writeShell } from "../../shared/shell-io.ts";
+import { readShell, updateShell } from "../../shared/shell-io.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
 /**
@@ -46,7 +46,7 @@ export function agentsEnabled(): boolean {
   return Boolean(process.env.UB_CHANNEL_JWT || process.env.UB_CHANNEL_JWT_SECRET);
 }
 
-function channelJwt(): string | null {
+export function channelJwt(): string | null {
   if (process.env.UB_CHANNEL_JWT) return process.env.UB_CHANNEL_JWT;
   const secret = process.env.UB_CHANNEL_JWT_SECRET;
   if (!secret) return null;
@@ -142,6 +142,11 @@ export async function readHandoffStream(
   } finally {
     signal.removeEventListener("abort", onAbort);
     try { await reader.cancel(); } catch { /* ignore */ }
+  }
+  if (expectedMessage && !armed) {
+    // Our envelope never came back: marking this delivered with an empty reply
+    // would silently drop the handoff from the receiver transcript.
+    throw new Error("envelope_mismatch");
   }
   return text.trim();
 }
@@ -252,7 +257,9 @@ async function deliverOne(handoff: HandoffRecord): Promise<string> {
     clearTimeout(timer);
   }
 
-  markDelivered(handoff.id, reply);
+  // Transcript and shell row first, delivery marker last: a crash in between
+  // leaves the record claimed/pending so the next pump retries, and the event
+  // dedupe keeps the retry from appending a second copy.
   if (reply) {
     appendAgentEvent(bot.id, {
       kind: "assistant",
@@ -264,8 +271,7 @@ async function deliverOne(handoff: HandoffRecord): Promise<string> {
       handoffId: handoff.id,
     });
   }
-  const current = readShell();
-  writeShell({
+  updateShell((current) => ({
     ...current,
     bots: current.bots.map((item) => (
       item.id === bot.id
@@ -278,7 +284,8 @@ async function deliverOne(handoff: HandoffRecord): Promise<string> {
         }
         : item
     )),
-  });
+  }));
+  markDelivered(handoff.id, reply);
   return reply;
 }
 
@@ -286,12 +293,26 @@ export function handoffsInFlight(): string[] {
   return [...inflight];
 }
 
+// Pumps are single-flight: the UI poll, wakePump and fan-out confirmations can
+// all call this within the same second, and overlapping pumps would hold many
+// eve deliveries open at once. Callers queue behind the pump in progress.
+let pumpQueue: Promise<unknown> = Promise.resolve();
+
+export function pumpHandoffs(limit = 2): Promise<{
+  delivered: Array<{ id: string; to: string }>;
+  failed: Array<{ id: string; error: string }>;
+  queued: number;
+}> {
+  const run = pumpQueue.then(() => pumpOnce(limit), () => pumpOnce(limit));
+  pumpQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 /**
- * Deliver queued handoffs, oldest first, one at a time. Called by the UI poll
- * and by the agent tool that just queued one; concurrent calls are deduped per
- * handoff id so a fan-out is never delivered twice.
+ * Deliver queued handoffs, oldest first, one at a time. Concurrent calls are
+ * deduped per handoff id and serialized by pumpHandoffs.
  */
-export async function pumpHandoffs(limit = 2): Promise<{
+async function pumpOnce(limit: number): Promise<{
   delivered: Array<{ id: string; to: string }>;
   failed: Array<{ id: string; error: string }>;
   queued: number;
@@ -336,6 +357,7 @@ export function fanOut(input: {
   message: string;
   group?: { id: string; name: string } | null;
 }): number {
+  if (input.targets.length === 0) throw new Error("fanout_empty");
   const sourceBotId = input.source?.id ?? null;
   const sourceName = input.source?.name ?? "Useful Bot";
   let count = 0;

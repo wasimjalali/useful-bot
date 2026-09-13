@@ -126,40 +126,6 @@ export type AgentStore = {
 
 export type ReserveKind = "handoff" | "post" | "proposal";
 
-const STORE_KEYS = new Set(["schemaVersion", "threads", "proposals", "reserves"]);
-const THREAD_KEYS = new Set(["id", "kind", "botId", "sessionId", "updatedAt", "events"]);
-const EVENT_KEYS = new Set([
-  "id",
-  "at",
-  "kind",
-  "text",
-  "authorBotId",
-  "authorName",
-  "targetBotIds",
-  "proposalId",
-  "handoffId",
-]);
-const PROPOSAL_KEYS = new Set([
-  "id",
-  "kind",
-  "createdAt",
-  "expiresAt",
-  "status",
-  "name",
-  "petname",
-  "title",
-  "description",
-  "sectionId",
-  "memberIds",
-  "botId",
-  "patch",
-  "message",
-  "targetIds",
-  "groupId",
-  "sourceBotId",
-  "threadId",
-  "brief",
-]);
 const EVENT_KINDS = new Set<AgentEventKind>([
   "user",
   "assistant",
@@ -206,9 +172,8 @@ function emptyStore(): AgentStore {
 function parseEvent(raw: unknown): AgentEvent | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!EVENT_KEYS.has(key)) return null;
-  }
+  // Unknown fields are ignored, never fatal: a newer build may add one and an
+  // older build must not drop the event (and then prune it on the next write).
   if (!isId(rec.id, 120)) return null;
   if (typeof rec.kind !== "string" || !EVENT_KINDS.has(rec.kind as AgentEventKind)) return null;
   const at = typeof rec.at === "string" ? rec.at : new Date(0).toISOString();
@@ -231,9 +196,6 @@ function parseEvent(raw: unknown): AgentEvent | null {
 function parseThread(raw: unknown): AgentThread | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!THREAD_KEYS.has(key)) return null;
-  }
   if (!isId(rec.id) || !isId(rec.botId)) return null;
   if (rec.kind !== "bot" && rec.kind !== "group") return null;
   const events: AgentEvent[] = [];
@@ -264,9 +226,6 @@ function isProposalKind(value: unknown): value is ProposalKind {
 function parseProposal(raw: unknown): Proposal | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!PROPOSAL_KEYS.has(key)) return null;
-  }
   if (!isId(rec.id, 120) || !isProposalKind(rec.kind)) return null;
   if (typeof rec.threadId !== "string") return null;
   const status: Proposal["status"] = rec.status === "confirmed" || rec.status === "dismissed"
@@ -543,19 +502,6 @@ export function nextPetname(store: { bots: Array<{ name: string }> }): string {
   return "New Bot";
 }
 
-export function resolveProposal(
-  id: string,
-  status: "confirmed" | "dismissed",
-  path = agentStorePath(),
-): Proposal | null {
-  return withAgentStore((store) => {
-    const proposal = store.proposals.find((item) => item.id === id);
-    if (!proposal) return null;
-    if (proposal.status === "pending") proposal.status = status;
-    return proposal;
-  }, path);
-}
-
 /**
  * Confirmable-once claim. Returns the proposal only to the caller that flipped
  * it out of pending; everyone else gets null. Two concurrent confirms can
@@ -569,6 +515,9 @@ export function claimProposal(
   return withAgentStore((store) => {
     const proposal = store.proposals.find((item) => item.id === id);
     if (!proposal || proposal.status !== "pending") return null;
+    // An expired proposal is not confirmable, even though it still reads as
+    // pending until the snapshot filters it out.
+    if (Date.parse(proposal.expiresAt) <= Date.now()) return null;
     proposal.status = status;
     return proposal;
   }, path);

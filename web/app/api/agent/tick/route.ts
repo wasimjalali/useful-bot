@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { originAllowed } from "../../../../lib/desktop-gate";
+import { isGateError, originAllowed, requireDesktop } from "../../../../lib/desktop-gate";
 import {
   agentsEnabled,
   handoffsInFlight,
@@ -25,22 +25,25 @@ function keyMatches(candidate: string | null): boolean {
   });
 }
 
-function authorised(request: Request): boolean {
+async function authorised(request: Request): Promise<boolean> {
   if (keyMatches(request.headers.get("x-ub-agent-key"))) return true;
-  // Browser callers: the UI always sends Origin on its POST, so a request with
-  // no Origin is not the app and gets no pass. originAllowed() alone treats a
-  // missing Origin as same-origin, which any local script can fake.
+  // Browser callers: the UI sends Origin on its POST and carries the desktop
+  // session cookie. originAllowed() alone treats a missing Origin as
+  // same-origin, which any local script can fake, so both are required.
   const origin = request.headers.get("origin");
-  return Boolean(origin) && originAllowed(request);
+  if (!origin || !originAllowed(request)) return false;
+  const gate = await requireDesktop(request);
+  return !isGateError(gate);
 }
 
 export async function GET(request: Request) {
-  if (!agentsEnabled() || !authorised(request)) {
+  if (!agentsEnabled() || !(await authorised(request))) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),
+    started: false,
     inFlight: handoffsInFlight(),
   });
 }
@@ -49,7 +52,7 @@ export async function POST(request: Request) {
   if (!agentsEnabled()) {
     return NextResponse.json({ ok: false, error: "agent_credential_missing" }, { status: 503 });
   }
-  if (!authorised(request)) {
+  if (!(await authorised(request))) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   const raw = Number(new URL(request.url).searchParams.get("limit") ?? "2");
@@ -58,5 +61,10 @@ export async function POST(request: Request) {
   // background: the UI poll would otherwise stay blocked and stop scheduling
   // ticks, and queue state is durable anyway.
   void pumpHandoffs(limit).catch(() => undefined);
-  return NextResponse.json({ ok: true, started: true, inFlight: handoffsInFlight() });
+  return NextResponse.json({
+    ok: true,
+    enabled: agentsEnabled(),
+    started: true,
+    inFlight: handoffsInFlight(),
+  });
 }

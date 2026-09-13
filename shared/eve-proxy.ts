@@ -37,14 +37,9 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
   }
   const bot = store.bots.find((item) => item.id === botId) ?? null;
   const speakers = speakersFrom(store.bots);
-  if (!bot) {
-    const fallback = store.bots.find((item) => item.id === store.selectedBotId) ?? store.bots[0];
-    if (!fallback) return null;
-    return {
-      ...resolveRoute({ botId: fallback.id, text: message, bots: speakers }),
-      mentionNames: [],
-    };
-  }
+  // An unknown botId is an error, never a silent remap to whichever bot is
+  // selected: rewriting the turn as another bot would misattribute the reply.
+  if (!bot) return null;
   const route = resolveRoute({
     botId: bot.id,
     text: message,

@@ -84,7 +84,7 @@ export default function Page() {
 
   const [transcriptUser, setTranscriptUser] = useState<Array<{ id: string; text: string }>>([]);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-  const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
+  const [busyProposals, setBusyProposals] = useState<ReadonlySet<string>>(() => new Set());
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -498,7 +498,9 @@ export default function Page() {
   })();
 
   const isDefaultBot = !bot || bot.id === DEFAULT_BOT_ID;
-  const openProposals = proposals.filter((proposal) => proposal.status === "pending");
+  const openProposals = proposals.filter((proposal) => (
+    proposal.status === "pending" && Date.parse(proposal.expiresAt) > Date.now()
+  ));
   const showOnboarding = Boolean(bot)
     && !isDefaultBot
     && bot?.kind === "bot"
@@ -511,11 +513,16 @@ export default function Page() {
 
   function decideProposal(decision: ProposalDecision) {
     // Disable the card while the confirm is in flight so a double click cannot
-    // queue the same decision twice.
-    setBusyProposalId(decision.proposalId);
+    // queue the same decision twice. A set keeps other cards independent.
+    setBusyProposals((current) => new Set(current).add(decision.proposalId));
     window.setTimeout(() => {
-      setBusyProposalId((current) => (current === decision.proposalId ? null : current));
-    }, 10_000);
+      setBusyProposals((current) => {
+        if (!current.has(decision.proposalId)) return current;
+        const next = new Set(current);
+        next.delete(decision.proposalId);
+        return next;
+      });
+    }, 15_000);
     if (decision.action) dispatch(decision.action, {
       proposalId: decision.proposalId,
       proposalStatus: decision.proposalStatus,
@@ -756,7 +763,7 @@ export default function Page() {
                               <ProposalCard
                                 bots={store.bots}
                                 onDecision={decideProposal}
-                                pending={busyProposalId === proposal.id}
+                                pending={busyProposals.has(proposal.id)}
                                 proposal={proposal}
                               />
                             </div>

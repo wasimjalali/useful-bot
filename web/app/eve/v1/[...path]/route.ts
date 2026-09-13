@@ -9,6 +9,7 @@ import {
   sessionRouteHeader,
   type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
+import { channelJwt } from "../../../../lib/agent-exec";
 import { readShell } from "../../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
@@ -52,7 +53,9 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
-  const jwt = process.env.UB_CHANNEL_JWT;
+  // Same credential path as the handoff pump: env token if present, otherwise
+  // sign one from the channel secret.
+  const jwt = channelJwt();
   if (jwt) headers.set("authorization", `Bearer ${jwt}`);
   let body: ArrayBuffer | undefined;
   let route: SessionRoute | null = null;
@@ -63,9 +66,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const raw = new TextDecoder().decode(body);
         const shell = readShell();
         route = eveSessionRoute(raw, shell);
-        const bot = shell.bots.find((item) => item.id === route?.threadId)
-          ?? shell.bots.find((item) => item.id === shell.selectedBotId)
-          ?? null;
+        if (!route) {
+          return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
+        }
+        const bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
         const members = bot && bot.kind === "group"
           ? groupMembers(speakersFrom(shell.bots), bot.memberIds)
           : [];

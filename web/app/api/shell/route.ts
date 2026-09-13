@@ -9,8 +9,8 @@ import {
   type Proposal,
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
-import { applyShellAction, parseShell, type ShellAction } from "../../../../shared/shell-store.ts";
-import { readShell, writeShell } from "../../../../shared/shell-io.ts";
+import { applyShellAction, type ShellAction } from "../../../../shared/shell-store.ts";
+import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 
 export async function GET(request: Request) {
@@ -61,6 +61,24 @@ function applyFollowUp(action: ShellAction | undefined): number {
   return 0;
 }
 
+/** The action a card sends must match the proposal the owner answered. */
+function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefined): boolean {
+  if (!action) return false;
+  const sameName = (left: string, right: string) => left.trim().toLowerCase() === right.trim().toLowerCase();
+  switch (proposal.kind) {
+    case "createBot":
+      return action.type === "createBot" && sameName(action.name, proposal.name);
+    case "createGroup":
+      return action.type === "createGroup" && sameName(action.name, proposal.name);
+    case "updateBotProfile":
+      return action.type === "updateBot" && action.botId === proposal.botId;
+    case "fanout":
+      return action.type === "sendToBot"
+        && action.message === proposal.message
+        && (action.botId === proposal.groupId || proposal.targetIds.includes(action.botId));
+  }
+}
+
 /** Note that the proposal was answered, on the thread that raised it. */
 function noteProposal(claimed: Proposal, action: ShellAction | undefined, queued: number): void {
   const fallback = action && "botId" in action && typeof action.botId === "string"
@@ -77,16 +95,6 @@ function noteProposal(claimed: Proposal, action: ShellAction | undefined, queued
   });
 }
 
-// Shell writes are read/apply/write over one JSON file. The client serializes
-// its own calls, but two tabs (or a retry) could still interleave, so requests
-// in this process run one at a time.
-let shellWriteChain: Promise<void> = Promise.resolve();
-function withShellWrite<T>(task: () => Promise<T>): Promise<T> {
-  const result = shellWriteChain.then(task);
-  shellWriteChain = result.then(() => undefined, () => undefined);
-  return result;
-}
-
 export async function PUT(request: Request) {
   const gate = await requireDesktop(request);
   if (isGateError(gate)) return gate.error;
@@ -94,42 +102,75 @@ export async function PUT(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
-  return withShellWrite(async () => {
   try {
     const body = await request.json() as {
-      store?: unknown;
       action?: ShellAction;
       proposalId?: string;
       proposalStatus?: "confirmed" | "dismissed";
     };
+    if (!body.action && !body.proposalId) {
+      return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+    }
     const current = readShell();
-    // Validate and compute the next store before claiming, so an invalid
-    // action leaves a pending proposal pending.
-    const next = body.action
-      ? applyShellAction(current, body.action).store
-      : body.store !== undefined
-        ? parseShell(body.store)
-        : current;
+
+    // Resolve fan-out recipients before anything is claimed or written, so an
+    // empty or missing group cannot consume a proposal or leave a phantom card.
+    if (body.action?.type === "sendToBot") {
+      const action = body.action;
+      const target = current.bots.find((bot) => bot.id === action.botId);
+      if (!target) {
+        return NextResponse.json({ ok: false, error: "target_missing" }, { status: 400 });
+      }
+      if (target.kind === "group") {
+        const members = groupMembers(speakersFrom(current.bots), target.memberIds);
+        if (members.length === 0) {
+          return NextResponse.json({ ok: false, error: "fanout_empty" }, { status: 400 });
+        }
+      }
+    }
+
     // A proposal is confirmable once. claimProposal only returns to the caller
     // that flips it out of pending, so two concurrent confirms cannot both
     // apply the same createBot.
     let claimed: Proposal | null = null;
     if (body.proposalId) {
       const status = body.proposalStatus === "dismissed" ? "dismissed" : "confirmed";
+      if (status === "confirmed") {
+        const existing = readProposal(body.proposalId);
+        if (!existing) {
+          return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
+        }
+        if (existing.status !== "pending") {
+          return NextResponse.json({ ok: true, store: current, queued: 0, replay: true });
+        }
+        if (Date.parse(existing.expiresAt) <= Date.now()) {
+          return NextResponse.json({ ok: false, error: "proposal_expired" }, { status: 410 });
+        }
+        if (!proposalMatchesAction(existing, body.action)) {
+          return NextResponse.json({ ok: false, error: "proposal_mismatch" }, { status: 400 });
+        }
+      }
       claimed = claimProposal(body.proposalId, status);
       if (!claimed) {
         const existing = readProposal(body.proposalId);
         if (!existing) {
           return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
         }
-        return NextResponse.json({ ok: true, store: current, queued: 0, replay: true });
+        if (existing.status !== "pending") {
+          return NextResponse.json({ ok: true, store: current, queued: 0, replay: true });
+        }
+        return NextResponse.json({ ok: false, error: "proposal_expired" }, { status: 410 });
       }
     }
-    writeShell(next);
+
+    const action = body.action;
+    const next = action
+      ? updateShell((shell) => applyShellAction(shell, action).store)
+      : current;
     let queued = 0;
-    if (body.action) {
+    if (action) {
       try {
-        queued = applyFollowUp(body.action);
+        queued = applyFollowUp(action);
       } catch {
         /* the shell action already landed; the handoff pump reports the rest */
       }
@@ -146,5 +187,4 @@ export async function PUT(request: Request) {
     const message = err instanceof Error ? err.message : "invalid";
     return NextResponse.json({ ok: false, error: message }, { status: 400 });
   }
-  });
 }

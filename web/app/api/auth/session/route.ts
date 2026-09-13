@@ -3,7 +3,7 @@ import { originAllowed } from "../../../../lib/desktop-gate";
 import { createBrowserSession, destroySession, readSession, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
 
 function isLoopback(host: string): boolean {
-  return host === "127.0.0.1" || host === "localhost";
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
 }
 
 /**
