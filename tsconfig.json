@@ -9,7 +9,8 @@
     "skipLibCheck": true,
     "noEmit": true,
     "resolveJsonModule": true,
-    "rewriteRelativeImportExtensions": true
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["agent/**/*.ts", "evals/**/*.ts", "shared/**/*.ts", "test/**/*.ts", "spikes/**/*.ts"],
   "exclude": ["web", "node_modules"]
