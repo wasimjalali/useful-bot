@@ -116,6 +116,9 @@ async function main() {
     } catch {
       fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
     }
+    // Lets an agent tool wake the handoff pump at once instead of waiting for
+    // the next web poll. Best effort: the poll drains the same queue.
+    env.UB_WEB_BASE_URL = process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
     run([path.join(ROOT, "node_modules/eve/bin/eve.js"), "dev", "--no-ui", "--host", "127.0.0.1", "--port", "4321"], env);
     return;
   }
@@ -128,6 +131,10 @@ async function main() {
     try {
       const secret = await keychain("com.usefulbot.channel.desktop");
       env.UB_CHANNEL_JWT = signChannelJwt(secret, "desktop-app");
+      // The agent tool wakes the handoff pump with the raw secret as its key
+      // (see shared/agents-send.ts). Without it here every wake-up would 403
+      // and only the UI poll would drain the queue.
+      env.UB_CHANNEL_JWT_SECRET = secret;
     } catch {
       fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
     }
