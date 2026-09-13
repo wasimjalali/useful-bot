@@ -1,4 +1,6 @@
 import { readSession } from "../../../../lib/auth";
+import { originAllowed } from "../../../../lib/desktop-gate";
+import { eveGetAllowed, evePostAllowed } from "../../../../../shared/eve-proxy.ts";
 
 const EVE = "http://127.0.0.1:4321";
 
@@ -22,9 +24,18 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
   const suffix = params.path.join("/");
-  const allowed = suffix === "health" || suffix === "info" || suffix.startsWith("session");
+  const allowed = method === "GET" ? eveGetAllowed(suffix) : evePostAllowed(suffix);
   if (!allowed) {
     return Response.json({ ok: false, error: "not found" }, { status: 404 });
+  }
+  if (!originAllowed(request)) {
+    return Response.json({ ok: false, error: "origin" }, { status: 403 });
+  }
+  if (method !== "GET") {
+    const csrf = request.headers.get("x-ub-csrf");
+    if (!csrf || csrf !== session.csrf) {
+      return Response.json({ ok: false, error: "csrf" }, { status: 403 });
+    }
   }
   const url = new URL(request.url);
   const target = `${EVE}/eve/v1/${suffix}${url.search}`;

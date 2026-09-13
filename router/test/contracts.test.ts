@@ -54,24 +54,31 @@ async function withRouter(fn: (base: string, tokens: Record<string, string>) => 
   process.env.UB_OPENCODE_GO_KEY = "test-upstream-key";
   process.env.UB_OPENCODE_GO_BASE = `http://127.0.0.1:${upPort}/v1`;
 
-  const router = startRouter({
-    port: 0,
-    configPath,
-    lockPath: join(process.cwd(), "package-lock.json"),
-    dbPath,
-  });
-  await new Promise<void>((resolve) => {
-    if (router.listening) resolve();
-    else router.once("listening", () => resolve());
-  });
-  const addr = router.address();
-  if (!addr || typeof addr === "string") throw new Error("no listen address");
-  const base = `http://127.0.0.1:${addr.port}`;
+  let router: ReturnType<typeof startRouter> | undefined;
   try {
+    router = startRouter({
+      port: 0,
+      configPath,
+      lockPath: join(process.cwd(), "package-lock.json"),
+      dbPath,
+    });
+    await new Promise<void>((resolve) => {
+      if (router?.listening) resolve();
+      else router?.once("listening", () => resolve());
+    });
+    const addr = router.address();
+    if (!addr || typeof addr === "string") throw new Error("no listen address");
+    const base = `http://127.0.0.1:${addr.port}`;
     await fn(base, { desktop, phone, ops, expired });
   } finally {
-    router.close();
-    upstream.close();
+    await new Promise<void>((resolve) => {
+      if (!router) {
+        resolve();
+        return;
+      }
+      router.close(() => resolve());
+    });
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }
 }
 

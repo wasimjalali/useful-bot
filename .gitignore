@@ -24,3 +24,7 @@ spikes/**/scratch/
 
 # macOS
 .DS_Store
+
+# generated ts
+*.tsbuildinfo
+web/tsconfig.tsbuildinfo

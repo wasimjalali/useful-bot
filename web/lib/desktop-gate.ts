@@ -1,15 +1,9 @@
 import { NextResponse } from "next/server";
+import { originHeaderAllowed } from "../../shared/origin.ts";
 import { readSession } from "./auth";
 
 export function originAllowed(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  try {
-    const url = new URL(origin);
-    return url.hostname === "127.0.0.1" || url.hostname === "localhost";
-  } catch {
-    return false;
-  }
+  return originHeaderAllowed(request.headers.get("origin"), request.url);
 }
 
 export async function requireDesktop(request: Request): Promise<
