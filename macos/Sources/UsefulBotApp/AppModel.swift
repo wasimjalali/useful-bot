@@ -19,10 +19,17 @@ final class AppModel: ObservableObject {
     /// Profile save failures surface inside the settings sheet.
     @Published private(set) var saveError: String?
 
-    private let config = ServerConfig.resolved()
+    private let config: ServerConfig
     private let services = LocalServices()
     private let poller = HealthPoller(probe: URLSessionHealthProbe())
-    private let client = BackendClient()
+    private let client: BackendClient
+    private var startAttempt = 0
+
+    init() {
+        let config = ServerConfig.resolved()
+        self.config = config
+        self.client = BackendClient(base: config.baseURL)
+    }
     private var projection = StreamProjection()
     private var durableEvents: [AgentEvent] = []
     private var pollTask: Task<Void, Never>?
@@ -48,17 +55,22 @@ final class AppModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        startAttempt += 1
+        let attempt = startAttempt
         phase = .starting
         threadError = nil
         saveError = nil
         _ = await services.ensure(config: config, timeoutSeconds: 40)
+        guard attempt == startAttempt else { return }
         guard await poller.check(config.healthURL) else {
             phase = .unavailable
             return
         }
         do {
             try await client.signIn()
+            guard attempt == startAttempt else { return }
             let loaded = try await client.shell()
+            guard attempt == startAttempt else { return }
             store = loaded
             selectedBotId = loaded.selectedBotId ?? loaded.bots.first?.id
             phase = .ready
@@ -67,6 +79,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
+            guard attempt == startAttempt else { return }
             threadError = (error as? LocalizedError)?.errorDescription ?? "Could not reach the local server."
             phase = .unavailable
         }
@@ -75,6 +88,8 @@ final class AppModel: ObservableObject {
     func retry() async {
         pollTask?.cancel()
         reloadTask?.cancel()
+        saveChain?.cancel()
+        saveChain = nil
         cancelSend()
         pollTask = nil
         reloadTask = nil
@@ -161,6 +176,7 @@ final class AppModel: ObservableObject {
             let events = try await client.events(botId: bot.id)
             durableEvents = events
             rebuildTranscript()
+            threadError = nil
         } catch {
             /* keep the last view; the next poll retries */
         }
@@ -183,10 +199,11 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             do {
                 // Snapshot the turn ids first so a resend of identical text
-                // cannot arm on the earlier turn.
+                // cannot arm on the earlier turn. A failed snapshot aborts the
+                // send rather than risking the wrong turn.
                 var history = Set<String>()
                 if let sessionId = bot.sessionId, !sessionId.isEmpty {
-                    history = await self.client.historyTurnIds(sessionId: sessionId)
+                    history = try await self.client.historyTurnIds(sessionId: sessionId)
                 }
                 guard generation == self.sendGeneration else { return }
                 let sessionId = try await self.client.send(
@@ -197,21 +214,24 @@ final class AppModel: ObservableObject {
                 guard generation == self.sendGeneration else { return }
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: message)
                 guard generation == self.sendGeneration else { return }
+                var sawUserTurn = false
                 for try await event in self.client.stream(
                     sessionId: sessionId,
                     expectedSuffix: message,
                     historyTurnIds: history
                 ) {
                     guard generation == self.sendGeneration, self.sendBotId == bot.id else { return }
+                    if event.type == "message.received" { sawUserTurn = true }
                     self.projection.apply(event)
                     self.rebuildTranscript()
                 }
                 guard generation == self.sendGeneration else { return }
                 if self.projection.failed {
                     self.threadError = "The turn failed."
+                } else if !sawUserTurn {
+                    self.threadError = "The turn did not start."
                 }
                 self.pending = false
-                self.projection = StreamProjection()
                 await self.reloadThread()
             } catch is CancellationError {
                 return
@@ -219,7 +239,6 @@ final class AppModel: ObservableObject {
                 guard generation == self.sendGeneration else { return }
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
                 self.pending = false
-                self.projection = StreamProjection()
                 await self.reloadThread()
             }
             if generation == self.sendGeneration {

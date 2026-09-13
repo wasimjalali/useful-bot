@@ -121,6 +121,8 @@ public struct StreamProjection: Equatable, Sendable {
                     ))
                 }
             }
+            // Also on an empty completion: a later delta must not append to a
+            // stale bubble.
             currentAssistantId = nil
         case "turn.failed", "session.failed":
             pending = false

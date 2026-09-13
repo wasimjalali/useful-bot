@@ -190,8 +190,11 @@ public actor BackendClient {
     // MARK: - Writes
 
     public func send(botId: String, sessionId: String?, message: String) async throws -> String {
+        // An empty stored session means "start one", not a trailing-slash path
+        // the proxy rejects.
+        let normalized = sessionId.flatMap { $0.isEmpty ? nil : $0 }
         let (data, response) = try await perform { client, token in
-            let path = sessionId.map { "eve/v1/session/\($0)" } ?? "eve/v1/session"
+            let path = normalized.map { "eve/v1/session/\($0)" } ?? "eve/v1/session"
             var request = URLRequest(url: client.base.appendingPathComponent(path))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -206,7 +209,7 @@ public actor BackendClient {
         guard let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) else {
             throw BackendError.decoding
         }
-        guard let sid = decoded.sessionId ?? sessionId, !sid.isEmpty else {
+        guard let sid = decoded.sessionId ?? normalized, !sid.isEmpty else {
             throw BackendError.decoding
         }
         return sid
@@ -257,16 +260,12 @@ public actor BackendClient {
     /// Turn ids the session already has. The next turn is the first with an id
     /// outside this set, which keeps a resend of identical text from arming the
     /// stream on the earlier turn.
-    public func historyTurnIds(sessionId: String) async -> Set<String> {
+    public func historyTurnIds(sessionId: String) async throws -> Set<String> {
         var ids = Set<String>()
-        do {
-            for try await event in stream(sessionId: sessionId, expectedSuffix: nil) {
-                if let turnId = event.turnId, !turnId.isEmpty {
-                    ids.insert(turnId)
-                }
+        for try await event in stream(sessionId: sessionId, expectedSuffix: nil) {
+            if let turnId = event.turnId, !turnId.isEmpty {
+                ids.insert(turnId)
             }
-        } catch {
-            /* treat a failed snapshot as an empty history */
         }
         return ids
     }
