@@ -1114,13 +1114,16 @@ html, body {
     background: var(--surface);
   }
   .face-picker-tab {
+    display: grid;
     min-height: 36px;
     padding: 0 2px;
+    place-items: center;
     border: 0;
     background: transparent;
     color: var(--ink-muted);
     font-size: 12px;
     font-weight: 550;
+    text-align: center;
     white-space: nowrap;
   }
   .face-picker-tab-active,
