@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MenuIcon, SettingsIcon } from "../components/icons";
-import { UsefulBotMark } from "../components/useful-bot-logo";
 import { ChatSearchDialog } from "../components/chat-search-dialog";
 import { ChatComposer } from "../components/chat-composer";
 import { BotRail } from "../components/bot-rail";
@@ -15,21 +14,28 @@ import { NewChatPicker } from "../components/new-chat-picker";
 import { AppSettingsDialog, type AppSettingsTab } from "../components/app-settings-dialog";
 import { ConnectorsDialog } from "../components/marketplace-dialog";
 import { SearchChips } from "../components/search-chips";
+import { GroupSettingsPanel } from "../components/group-settings-panel";
+import { OnboardingCard, ProposalCard, type ProposalDecision } from "../components/proposal-card";
 import {
   applyEveEvent,
   consumeEveNdjson,
   createProjection,
   type StreamProjection,
 } from "../../shared/eve-stream.ts";
-import { selectedBot, type ShellBot } from "../../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, PREVIEW_MAX, selectedBot, type ShellBot } from "../../shared/shell-store.ts";
+import { groupMembers, parseMentions, speakerLabel, speakersFrom } from "../../shared/threads.ts";
 import { useShell } from "../lib/use-shell.ts";
+import { useAgentThread } from "../lib/use-agent-thread.ts";
 
 type CreateKind = "bot" | "group" | "section";
 
 let seq = 0;
-function nextId() {
+function nextSeq() {
   seq += 1;
-  return `m${seq}`;
+  return seq;
+}
+function nextId() {
+  return `m${nextSeq()}`;
 }
 
 async function csrfHeaders(): Promise<Record<string, string>> {
@@ -56,7 +62,7 @@ function setQuery(botId: string | null, sessionId: string | null) {
 
 export default function Page() {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  const [token, setToken] = useState("");
+
   const [error, setError] = useState("");
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -75,13 +81,54 @@ export default function Page() {
   const [operator, setOperator] = useState({ name: "Desktop owner", initials: "DO" });
   const [approvals, setApprovals] = useState<Array<{ id: string; hash: string; preview: string; tool: string }>>([]);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
+
+  const [transcriptUser, setTranscriptUser] = useState<Array<{ id: string; text: string }>>([]);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [busyProposals, setBusyProposals] = useState<ReadonlySet<string>>(() => new Set());
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const hydrated = useRef(false);
   const sendLock = useRef(false);
-  const { store, error: shellError, dispatch, selected } = useShell(Boolean(authed));
+  const { store, error: shellError, dispatch, resolveOnly, selected } = useShell(Boolean(authed));
+  const selectedIdForThread = selected?.id ?? null;
+  const {
+    events: threadEvents,
+    proposals,
+    error: threadError,
+    refresh: refreshThread,
+  } = useAgentThread(Boolean(authed), selectedIdForThread);
   activeRef.current = active;
+
+  useEffect(() => {
+    setTranscriptUser([]);
+  }, [selectedIdForThread]);
+
+  useEffect(() => {
+    // Drop busy flags as soon as the proposal is answered, instead of waiting
+    // for the timeout.
+    setBusyProposals((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const id of current) {
+        if (!proposals.some((proposal) => proposal.id === id && proposal.status === "pending")) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [proposals]);
+
+  useEffect(() => {
+    const key = selectedIdForThread ? `ub-onboarding:${selectedIdForThread}` : "";
+    if (!key) return;
+    try {
+      setOnboardingDismissed(window.localStorage.getItem(key) === "1");
+    } catch {
+      setOnboardingDismissed(false);
+    }
+  }, [selectedIdForThread]);
 
   useEffect(() => {
     fetch("/api/auth/session", { credentials: "include" })
@@ -225,14 +272,12 @@ export default function Page() {
     if (!selected || proj.pending) return;
     if ((selected.sessionId ?? null) !== active) return;
     const last = proj.messages.at(-1);
-    if (!last?.text || last.text === selected.lastPreview) return;
+    if (!last?.text) return;
+    // The store clips previews, so compare against the clipped form: comparing
+    // the full text re-dispatched touchChat forever for any long reply.
+    if (last.text.trim().slice(0, PREVIEW_MAX) === selected.lastPreview) return;
     dispatch({ type: "touchChat", botId: selected.id, preview: last.text });
   }, [active, dispatch, proj.messages, proj.pending, selected]);
-
-  const refreshSession = useCallback(async () => {
-    const res = await fetch("/api/auth/session", { credentials: "include" });
-    setAuthed(res.ok);
-  }, []);
 
   function attachBot(bot: ShellBot) {
     setPickerOpen(false);
@@ -255,7 +300,8 @@ export default function Page() {
   function startNewChat(botId?: string) {
     const id = botId ?? store?.selectedBotId;
     if (botId) dispatch({ type: "select", botId });
-    dispatch({ type: "newChat", botId: id });
+    if (id) dispatch({ type: "clearThread", botId: id });
+    setTranscriptUser([]);
     projSession.current = null;
     setActive(null);
     setProj(createProjection());
@@ -270,27 +316,6 @@ export default function Page() {
     attachBot(selected);
     setRoutineNotice(false);
   }, [selectedId]);
-
-  async function signIn(event: React.FormEvent) {
-    event.preventDefault();
-    setError("");
-    const res = await fetch("/api/auth/session", {
-      method: "POST",
-      credentials: "include",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      setError("Sign in failed");
-      return;
-    }
-    setToken("");
-    await refreshSession();
-  }
-
-  async function signOut() {
-    await fetch("/api/auth/session", { method: "DELETE", credentials: "include" });
-    setAuthed(false);
-  }
 
   async function send(text: string) {
     const message = text.trim();
@@ -318,6 +343,9 @@ export default function Page() {
       if (!res.ok) {
         throw new Error(res.status === 503 ? "Agent unavailable" : "Send failed");
       }
+      // Always append: the merge pairs each optimistic entry against one
+      // projected message, so repeated identical sends stay countable.
+      setTranscriptUser((current) => [...current, { id: `u-${nextSeq()}`, text: message }]);
       const body = (await res.json()) as { sessionId?: string };
       const sid = body.sessionId ?? sessionId;
       if (sid) {
@@ -326,6 +354,7 @@ export default function Page() {
         dispatch({ type: "touchChat", botId: selected.id, preview: message, sessionId: sid });
         setQuery(selected.id, sid);
       }
+      void refreshThread(selected.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Send failed";
       if (message === "unauthorized") setAuthed(false);
@@ -373,9 +402,177 @@ export default function Page() {
   const messages = proj.messages;
   const pending = proj.pending;
   const searchHits = proj.searchHits;
-  const displayError = error || proj.error || shellError;
+  const displayError = error || proj.error || shellError || threadError;
   const showSpinner = pending && !proj.blockOpen && !proj.currentAssistantId;
   const bot = selected ?? (store ? selectedBot(store) : null);
+
+  type ThreadRow = {
+    id: string;
+    kind: "user" | "assistant" | "handoff" | "post" | "note" | "proposal";
+    text: string;
+    authorName: string | null;
+    authorBotId: string | null;
+    handoffId: string | null;
+    targetBotIds: string[];
+    order: number;
+  };
+
+  const memberNames = bot && bot.kind === "group" && store
+    ? bot.memberIds
+      .map((id) => store.bots.find((item) => item.id === id)?.name ?? "")
+      .filter((name) => name.length > 0)
+    : [];
+
+  // Durable transcript (handoffs, routed replies, confirmations) merged with the
+  // live stream projection. Event ids dedupe replays of the same turn; user text
+  // is matched one-to-one so two identical messages ("hi", "hi") both survive.
+  const groupRoster = bot && bot.kind === "group" && store
+    ? groupMembers(speakersFrom(store.bots), bot.memberIds)
+    : [];
+
+  const threadRows: ThreadRow[] = (() => {
+    const rows: ThreadRow[] = threadEvents.map((event, index) => ({
+      id: event.id,
+      kind: event.kind,
+      text: event.text,
+      authorName: event.authorName,
+      authorBotId: event.authorBotId,
+      handoffId: event.handoffId,
+      targetBotIds: event.targetBotIds,
+      order: index,
+    }));
+    const head = proj.messages.length;
+    const streamIds = new Set(threadEvents.map((event) => event.id));
+    const durableUserCounts = new Map<string, number>();
+    const durableAssistantCounts = new Map<string, number>();
+    for (const event of threadEvents) {
+      const counts = event.kind === "user"
+        ? durableUserCounts
+        : event.kind === "assistant"
+          ? durableAssistantCounts
+          : null;
+      if (!counts) continue;
+      counts.set(event.text, (counts.get(event.text) ?? 0) + 1);
+    }
+    for (const message of proj.messages) {
+      if (streamIds.has(message.id)) continue;
+      // Delivered replies exist both in the session stream and as durable
+      // events with attribution; keep the durable row and drop the echo.
+      if (message.role === "user" || message.role === "assistant") {
+        const counts = message.role === "user" ? durableUserCounts : durableAssistantCounts;
+        const remaining = counts.get(message.text) ?? 0;
+        if (remaining > 0) {
+          counts.set(message.text, remaining - 1);
+          continue;
+        }
+      }
+      rows.push({
+        id: message.id,
+        kind: message.role === "user" ? "user" : "assistant",
+        text: message.text,
+        authorName: null,
+        authorBotId: null,
+        handoffId: null,
+        targetBotIds: [],
+        order: head + rows.length,
+      });
+    }
+    const projectedUserCounts = new Map<string, number>();
+    for (const message of proj.messages) {
+      if (message.role !== "user") continue;
+      projectedUserCounts.set(message.text, (projectedUserCounts.get(message.text) ?? 0) + 1);
+    }
+    for (const item of transcriptUser) {
+      const remaining = projectedUserCounts.get(item.text) ?? 0;
+      if (remaining > 0) {
+        projectedUserCounts.set(item.text, remaining - 1);
+        continue;
+      }
+      rows.push({
+        id: item.id,
+        kind: "user",
+        text: item.text,
+        authorName: null,
+        authorBotId: null,
+        handoffId: null,
+        targetBotIds: [],
+        order: head + rows.length,
+      });
+    }
+    // A group turn addressed to exactly one member was answered as that member
+    // (the proxy tells the model so). Attribute the reply by the mention in the
+    // turn that produced it, which works for the live turn and for replays.
+    if (bot?.kind === "group" && groupRoster.length > 0) {
+      rows.forEach((row, index) => {
+        if (row.kind !== "assistant" || row.authorBotId) return;
+        const previousUser = [...rows.slice(0, index)].reverse().find((item) => item.kind === "user");
+        if (!previousUser) return;
+        const mentionIds = parseMentions(previousUser.text, groupRoster).mentionIds;
+        if (mentionIds.length !== 1) return;
+        const label = speakerLabel({
+          bot,
+          speakers: groupRoster,
+          route: { threadId: bot.id, kind: "group", mentionIds, untargeted: false },
+        });
+        if (label.authorBotId) {
+          rows[index] = { ...row, authorBotId: label.authorBotId, authorName: label.authorName };
+        }
+      });
+    }
+    return rows;
+  })();
+
+  const isDefaultBot = !bot || bot.id === DEFAULT_BOT_ID;
+  const openProposals = proposals.filter((proposal) => (
+    proposal.status === "pending" && Date.parse(proposal.expiresAt) > Date.now()
+  ));
+  const showOnboarding = Boolean(bot)
+    && !isDefaultBot
+    && bot?.kind === "bot"
+    && !onboardingDismissed
+    && !bot.label.trim()
+    && !bot.description.trim()
+    && threadEvents.length === 0
+    && threadRows.length === 0
+    && openProposals.length === 0;
+
+  function decideProposal(decision: ProposalDecision) {
+    // Disable the card while the confirm is in flight so a double click cannot
+    // queue the same decision twice. A set keeps other cards independent.
+    setBusyProposals((current) => new Set(current).add(decision.proposalId));
+    window.setTimeout(() => {
+      setBusyProposals((current) => {
+        if (!current.has(decision.proposalId)) return current;
+        const next = new Set(current);
+        next.delete(decision.proposalId);
+        return next;
+      });
+    }, 15_000);
+    const meta = {
+      proposalId: decision.proposalId,
+      proposalStatus: decision.proposalStatus,
+    };
+    if (decision.action) {
+      dispatch(decision.action, meta);
+      if (selectedIdForThread) void refreshThread(selectedIdForThread);
+      return;
+    }
+    void resolveOnly(meta)
+      .catch((err) => setError(err instanceof Error ? err.message : "Shell save failed"))
+      .finally(() => {
+        if (selectedIdForThread) void refreshThread(selectedIdForThread);
+      });
+  }
+
+  function dismissOnboarding() {
+    if (!selectedIdForThread) return;
+    try {
+      window.localStorage.setItem(`ub-onboarding:${selectedIdForThread}`, "1");
+    } catch {
+      /* private mode: the card just comes back next launch */
+    }
+    setOnboardingDismissed(true);
+  }
 
   if (authed === null) {
     return <div className="flex h-screen w-full bg-canvas" />;
@@ -383,31 +580,16 @@ export default function Page() {
 
   if (!authed) {
     return (
-      <div className="flex h-screen w-full bg-canvas text-ink">
-        <div className="mx-auto grid w-full max-w-md place-items-center px-4">
-          <form className="w-full" onSubmit={signIn}>
-            <div className="mb-8 flex flex-col items-center gap-3 text-center">
-              <span className="grid size-14 place-items-center rounded-2xl bg-brand">
-                <UsefulBotMark tone="dark" className="h-8 w-auto" />
-              </span>
-              <h1 className="text-xl font-semibold tracking-[-0.03em]">Sign in to Useful Bot</h1>
-            </div>
-            <div className="field">
-              <label htmlFor="device-token">Device token</label>
-              <input
-                autoComplete="off"
-                className="field-input min-h-11 w-full px-3 text-sm"
-                id="device-token"
-                onChange={(event) => setToken(event.target.value)}
-                type="password"
-                value={token}
-              />
-              <div className="field-error">{displayError}</div>
-            </div>
-            <button className="btn btn-primary mt-2 w-full" type="submit">
-              Sign in
-            </button>
-          </form>
+      <div className="flex h-screen w-full items-center justify-center bg-canvas px-4 text-ink">
+        <div className="text-center">
+          <p className="text-sm text-ink-muted">Waiting for the local server.</p>
+          <button
+            className="btn btn-secondary mt-4 min-h-9 px-3 text-sm"
+            onClick={() => window.location.reload()}
+            type="button"
+          >
+            Retry
+          </button>
         </div>
       </div>
     );
@@ -449,7 +631,6 @@ export default function Page() {
       onRenameRequest={setRenameBot}
       onSearch={() => setSearchOpen(true)}
       onSelect={selectBot}
-      onSignOut={() => void signOut()}
       onToggleMobile={() => setRailOpen(false)}
       operator={operator}
       store={store}
@@ -522,7 +703,14 @@ export default function Page() {
                     <MenuIcon className="size-4" />
                   </button>
                   <BotAvatar bot={bot} size="sm" />
-                  <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold">{bot.name}</h1>
+                  <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+                    {bot.name}
+                    {bot.kind === "group" && memberNames.length > 0 ? (
+                      <span className="ml-2 text-[12px] font-normal text-ink-faint">
+                        {memberNames.length} members
+                      </span>
+                    ) : null}
+                  </h1>
                   <button
                     aria-label="Bot settings"
                     className="icon-btn tip size-8"
@@ -534,14 +722,14 @@ export default function Page() {
                   </button>
                 </header>
 
-                {messages.length === 0 && !pending ? (
+                {threadRows.length === 0 && openProposals.length === 0 && !pending && !showOnboarding ? (
                   <div className="rise flex min-h-0 flex-1 flex-col items-center justify-center px-4 text-center">
                     <h2 className="max-w-2xl text-2xl font-semibold tracking-[-0.03em] text-ink sm:text-[28px]">
                       What can I do for you?
                     </h2>
                     <p className="mt-2 max-w-md text-[15px] leading-6 text-ink-muted">
                       {bot.kind === "group"
-                        ? "Group chat on this Mac. Replies still come from Useful Bot."
+                        ? `Group chat with ${memberNames.join(", ") || "no members yet"}. Untargeted messages go to the orchestrator; @name directs one bot.`
                         : "Runs locally on this Mac. Writes and commands need your approval."}
                     </p>
                   </div>
@@ -549,22 +737,68 @@ export default function Page() {
                   <div className="uv-scroll min-h-0 flex-1 overflow-y-auto">
                     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
                       <div className="flex flex-col gap-6">
-                        {messages.map((message) =>
-                          message.role === "user" ? (
-                            <div className="msg-in flex justify-end" key={message.id}>
-                              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
-                                {message.text}
+                        {showOnboarding ? (
+                          <OnboardingCard
+                            onDismiss={dismissOnboarding}
+                            onFillForm={() => {
+                              dismissOnboarding();
+                              setSettingsOpen(true);
+                            }}
+                            name={bot.name}
+                          />
+                        ) : null}
+                        {threadRows.map((row) => {
+                          if (row.kind === "user") {
+                            return (
+                              <div className="msg-in flex justify-end" key={row.id}>
+                                <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
+                                  {row.text}
+                                </div>
                               </div>
-                            </div>
-                          ) : (
-                            <div className="msg-in flex gap-3" key={message.id}>
-                              <BotAvatar bot={bot} size="sm" />
+                            );
+                          }
+                          const speaker = row.authorBotId
+                            ? store.bots.find((item) => item.id === row.authorBotId) ?? bot
+                            : bot;
+                          const handoff = row.kind === "handoff" || row.kind === "post";
+                          const targetNames = row.targetBotIds
+                            .map((id) => store.bots.find((item) => item.id === id)?.name ?? "")
+                            .filter((name) => name.length > 0);
+                          return (
+                            <div className="msg-in flex gap-3" key={row.id}>
+                              <BotAvatar bot={speaker} size="sm" />
                               <div className="min-w-0 flex-1 pt-0.5">
-                                <ChatMarkdown text={message.text} />
+                                {handoff || row.authorName || row.kind === "note" ? (
+                                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-faint">
+                                    {row.kind === "handoff" && targetNames.length > 0
+                                      ? `Handoff to ${targetNames.join(", ")}`
+                                      : row.kind === "post"
+                                        ? `${row.authorName ?? "A bot"} to this chat`
+                                        : row.authorName ?? speaker.name}
+                                  </p>
+                                ) : null}
+                                {row.kind === "note" ? (
+                                  <p className="text-[13px] text-ink-muted">{row.text}</p>
+                                ) : (
+                                  <ChatMarkdown text={row.text} />
+                                )}
                               </div>
                             </div>
-                          ),
-                        )}
+                          );
+                        })}
+                        {openProposals.map((proposal) => (
+                          <div className="msg-in flex gap-3" key={proposal.id}>
+                            <BotAvatar bot={bot} size="sm" />
+                            <div className="min-w-0 flex-1 pt-0.5">
+                              <ProposalCard
+                                bots={store.bots}
+                                onDecision={decideProposal}
+                                pending={busyProposals.has(proposal.id)}
+                                proposal={proposal}
+                              />
+                            </div>
+                          </div>
+                        ))}
                         {showSpinner ? (
                           <div className="msg-in flex gap-3" role="status">
                             <BotAvatar bot={bot} size="sm" />
@@ -594,12 +828,23 @@ export default function Page() {
                     onSend={(text) => void send(text)}
                     onStop={() => void cancel()}
                     pending={pending}
-                    placeholder={`Message ${bot.name}`}
+                    placeholder={bot.kind === "group"
+                      ? `Message this group. @name to direct one bot`
+                      : `Message ${bot.name}`}
                     value={draft}
                   />
                 </div>
               </div>
-              {settingsOpen ? (
+              {settingsOpen && bot.kind === "group" ? (
+                <GroupSettingsPanel
+                  group={bot}
+                  onClose={() => setSettingsOpen(false)}
+                  onDeleteRequest={() => setDeleteBot(bot)}
+                  onPatch={(patch) => dispatch({ type: "updateBot", botId: bot.id, patch })}
+                  store={store}
+                />
+              ) : null}
+              {settingsOpen && bot.kind === "bot" ? (
                 <BotSettingsPanel
                   bot={bot}
                   onClose={() => {
@@ -649,6 +894,7 @@ export default function Page() {
             dispatch({
               type: "createBot",
               name: input.name,
+              petname: input.petname,
               label: input.label,
               description: input.description,
               sectionId: createSectionId,
@@ -657,7 +903,6 @@ export default function Page() {
             setActive(null);
             setProj(createProjection());
             setCreateKind(null);
-            setSettingsOpen(true);
           }}
           sectionName={store.sections.find((section) => section.id === createSectionId)?.name}
         />
@@ -684,10 +929,6 @@ export default function Page() {
           initialTab={appSettingsTab}
           onClose={() => setAppSettingsOpen(false)}
           operator={operator}
-          onSignOut={() => {
-            setAppSettingsOpen(false);
-            void signOut();
-          }}
         />
       ) : null}
 
@@ -722,7 +963,9 @@ export default function Page() {
 
       {deleteBot ? (
         <ConfirmDialog
-          message={`Delete ${deleteBot.name}? This removes it from the local shell. Eve sessions stay on disk.`}
+          message={deleteBot.kind === "group"
+            ? `Delete ${deleteBot.name}? The group and its roster go away. Member bots stay.`
+            : `Delete ${deleteBot.name}? This removes the bot, its profile and its transcript. Workspace files stay.`}
           onClose={() => setDeleteBot(null)}
           onConfirm={() => {
             dispatch({ type: "deleteBot", botId: deleteBot.id });

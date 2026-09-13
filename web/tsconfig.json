@@ -34,9 +34,14 @@
     "../shared/shell-io.ts",
     "../shared/policy.ts",
     "../shared/web-sessions.ts",
+    "../shared/eve-proxy.ts",
+    "../shared/agent-store.ts",
+    "../shared/handoffs.ts",
+    "../shared/threads.ts",
+    "../shared/agents-send.ts",
+    "../shared/bot-face.ts",
     "../agent/lib/approvals.ts",
-    "../agent/lib/memory.ts",
-    "../shared/web-sessions.ts"
+    "../agent/lib/memory.ts"
   ],
   "exclude": [
     "node_modules"

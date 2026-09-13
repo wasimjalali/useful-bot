@@ -1,0 +1,74 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+import { NextResponse } from "next/server";
+import { isGateError, originAllowed, requireDesktop } from "../../../../lib/desktop-gate";
+import {
+  agentsEnabled,
+  handoffsInFlight,
+  pumpHandoffs,
+} from "../../../../lib/agent-exec";
+
+/**
+ * Handoff pump. The sending agent tool only queues a record, so delivery is
+ * driven from here: the UI poll POSTs every few seconds and wakePump() POSTs
+ * once right after a send. The agent key reaches this route as a header; the
+ * browser reaches it as a same-origin desktop request.
+ */
+
+function keyMatches(candidate: string | null): boolean {
+  if (!candidate) return false;
+  const probe = createHash("sha256").update(candidate).digest();
+  const secrets = [process.env.UB_CHANNEL_JWT, process.env.UB_CHANNEL_JWT_SECRET]
+    .filter((value): value is string => Boolean(value));
+  return secrets.some((secret) => {
+    const expected = createHash("sha256").update(secret).digest();
+    return timingSafeEqual(probe, expected);
+  });
+}
+
+async function authorised(request: Request): Promise<boolean> {
+  if (keyMatches(request.headers.get("x-ub-agent-key"))) return true;
+  // Browser callers carry the desktop session cookie (SameSite=Strict, so a
+  // cross-site page does not have it). A present Origin must be allowed; a
+  // caller that omits Origin must prove itself with the session CSRF token.
+  const origin = request.headers.get("origin");
+  if (origin && !originAllowed(request)) return false;
+  const gate = await requireDesktop(request);
+  if (isGateError(gate)) return false;
+  if (!origin) {
+    const csrf = request.headers.get("x-ub-csrf");
+    if (!csrf || csrf !== gate.session.csrf) return false;
+  }
+  return true;
+}
+
+export async function GET(request: Request) {
+  if (!agentsEnabled() || !(await authorised(request))) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  return NextResponse.json({
+    ok: true,
+    enabled: agentsEnabled(),
+    inFlight: handoffsInFlight(),
+  });
+}
+
+export async function POST(request: Request) {
+  if (!agentsEnabled()) {
+    return NextResponse.json({ ok: false, error: "agent_credential_missing" }, { status: 503 });
+  }
+  if (!(await authorised(request))) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  const raw = Number(new URL(request.url).searchParams.get("limit") ?? "2");
+  const limit = Number.isFinite(raw) ? Math.min(4, Math.max(1, Math.trunc(raw))) : 2;
+  // Delivery can take up to two minutes. Answer now and let the pump run in the
+  // background: the UI poll would otherwise stay blocked and stop scheduling
+  // ticks, and queue state is durable anyway.
+  void pumpHandoffs(limit).catch(() => undefined);
+  return NextResponse.json({
+    ok: true,
+    enabled: agentsEnabled(),
+    started: true,
+    inFlight: handoffsInFlight(),
+  });
+}

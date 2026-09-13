@@ -1,3 +1,5 @@
+import { stripThreadPrefix } from "./threads.ts";
+
 export type ChatRole = "user" | "assistant";
 
 export type ChatMessage = {
@@ -119,7 +121,9 @@ export function applyEveEvent(state: StreamProjection, event: EveEvent): StreamP
       next.searchHits = [];
       return next;
     case "message.received": {
-      const text = textField(event.data, "message") ?? "";
+      // Eve stores the rewritten turn, so strip the identity prefix before the
+      // owner sees it; otherwise every bot and group turn shows the prompt.
+      const text = stripThreadPrefix(textField(event.data, "message") ?? "");
       const last = next.messages[next.messages.length - 1];
       if (last?.role === "user" && last.text === text) return next;
       next.messages.push({

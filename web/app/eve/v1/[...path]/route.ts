@@ -1,7 +1,17 @@
 import { readSession } from "../../../../lib/auth";
 import { originAllowed } from "../../../../lib/desktop-gate";
-import { eveGetAllowed, evePostAllowed, isEveSessionPost, rewriteEveSessionBody } from "../../../../../shared/eve-proxy.ts";
+import {
+  eveGetAllowed,
+  evePostAllowed,
+  eveSessionRoute,
+  isEveSessionPost,
+  rewriteEveTurnBody,
+  sessionRouteHeader,
+  type SessionRoute,
+} from "../../../../../shared/eve-proxy.ts";
+import { channelJwt } from "../../../../lib/agent-exec";
 import { readShell } from "../../../../../shared/shell-io.ts";
+import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
 const EVE = "http://127.0.0.1:4321";
 
@@ -43,21 +53,30 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
-  const jwt = process.env.UB_CHANNEL_JWT;
+  // Same credential path as the handoff pump: env token if present, otherwise
+  // sign one from the channel secret.
+  const jwt = channelJwt();
   if (jwt) headers.set("authorization", `Bearer ${jwt}`);
   let body: ArrayBuffer | undefined;
+  let route: SessionRoute | null = null;
   if (method !== "GET") {
     body = await request.arrayBuffer();
     if (isEveSessionPost(suffix)) {
       try {
         const raw = new TextDecoder().decode(body);
-        const json = JSON.parse(raw) as { botId?: unknown };
-        const botId = typeof json.botId === "string" ? json.botId : "";
-        const bot = readShell().bots.find((item) => item.id === botId) ?? null;
-        body = new TextEncoder().encode(rewriteEveSessionBody(raw, bot)).buffer;
+        const shell = readShell();
+        route = eveSessionRoute(raw, shell);
+        if (!route) {
+          return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
+        }
+        const bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
+        const members = bot && bot.kind === "group"
+          ? groupMembers(speakersFrom(shell.bots), bot.memberIds)
+          : [];
+        body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members)).buffer;
         headers.set("content-type", "application/json");
       } catch {
-        /* keep original body */
+        /* keep the original body: a malformed turn must fail at eve, not here */
       }
     }
   }
@@ -70,6 +89,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);
     out.set("cache-control", "no-store");
+    const encoded = sessionRouteHeader(route);
+    // Tells the caller which bot or group answered, and which member an
+    // @mention directed the turn at.
+    if (encoded) out.set("x-ub-route", encoded);
     return new Response(upstream.body, { status: upstream.status, headers: out });
   } catch {
     return Response.json({ ok: false, error: "eve unavailable" }, { status: 503 });
