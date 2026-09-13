@@ -103,3 +103,24 @@ test("consumeEveNdjson emits parsed events from a chunked body", async () => {
   await consumeEveNdjson(stream, (event) => events.push(event.type));
   assert.deepEqual(events, ["turn.started", "message.appended"]);
 });
+
+test("action.result projects https search chips and ignores junk", () => {
+  let state = createProjection();
+  state = applyEveEvent(state, { type: "turn.started", meta: { id: "s1" } });
+  state = applyEveEvent(state, {
+    type: "action.result",
+    data: {
+      results: [
+        { title: "Example", url: "https://example.com/a", snippet: "Hello" },
+        { title: "bad", url: "javascript:alert(1)" },
+        { title: "File", url: "http://127.0.0.1/docs", snippet: "local" },
+      ],
+    },
+    meta: { id: "s2" },
+  });
+  assert.equal(state.searchHits.length, 2);
+  assert.equal(state.searchHits[0].url, "https://example.com/a");
+  assert.equal(state.searchHits[1].url, "http://127.0.0.1/docs");
+  state = applyEveEvent(state, { type: "turn.started", meta: { id: "s3" } });
+  assert.equal(state.searchHits.length, 0);
+});

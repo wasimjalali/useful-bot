@@ -83,18 +83,14 @@ model's answer. Two root causes, both already identified:
 
 ## Remaining PRs, in order
 
-1. **Memory in the chat.** List desktop notes and render approval cards from a
-   pending-approvals poll. Shared file store so eve tools and the Next API agree.
-2. **Search + reviewer in the chat.** `web_search` tool calls router
-   `/v1/search` (keyless Firecrawl). Show results as chips. "Ask reviewer" runs
-   the pinned reviewer subagent with the turn's text.
-3. **launchd for real.** Render the three plists in `ops/launchd/` with the
+1. **launchd for real.** Render the three plists in `ops/launchd/` with the
    substitute script; lint on Linux, `plutil -lint` if present. Do not install
    on the Mac from this cloud VM.
-4. **Release verification.** Full verify suite, seven-day usage trial begins
+2. **Release verification.** Full verify suite, seven-day usage trial begins
    here.
 
-GitHub PRs 11 (stream) and 12 (multi-bot shell) are on `main`. PR 13 stays closed.
+GitHub PRs 11 (stream), 12 (shell), and 14 (memory/approvals) are on `main`.
+This branch adds search chips and Ask reviewer. PR 13 stays closed.
 
 Then the deferring list from earlier PRs: 10k-note memory soak, Tailscale/phone
 (Phase 3), the `product-price-monitor`-style pricing checks. None of these block
