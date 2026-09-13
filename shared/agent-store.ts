@@ -516,10 +516,22 @@ export function claimProposal(
     const proposal = store.proposals.find((item) => item.id === id);
     if (!proposal || proposal.status !== "pending") return null;
     // An expired proposal is not confirmable, even though it still reads as
-    // pending until the snapshot filters it out.
-    if (Date.parse(proposal.expiresAt) <= Date.now()) return null;
+    // pending until the snapshot filters it out. Dismissing stays allowed so
+    // the card can always be cleared.
+    if (status === "confirmed" && Date.parse(proposal.expiresAt) <= Date.now()) return null;
     proposal.status = status;
     return proposal;
+  }, path);
+}
+
+/**
+ * Put a claimed proposal back to pending when applying its action failed, so
+ * the owner can try again instead of the card being silently consumed.
+ */
+export function reopenProposal(id: string, path = agentStorePath()): void {
+  withAgentStore((store) => {
+    const proposal = store.proposals.find((item) => item.id === id);
+    if (proposal && proposal.status === "confirmed") proposal.status = "pending";
   }, path);
 }
 

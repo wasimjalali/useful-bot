@@ -119,42 +119,63 @@ function claimPath(id: string, dir = handoffDir()): string {
   return join(dir, `${id}.claim`);
 }
 
+function readClaim(id: string, dir: string): { at: number; token: string } | null {
+  try {
+    const info = JSON.parse(readFileSync(claimPath(id, dir), "utf8")) as {
+      at?: unknown;
+      token?: unknown;
+    };
+    if (typeof info.at !== "number" || typeof info.token !== "string") return null;
+    return { at: info.at, token: info.token };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Cross-process delivery claim. O_EXCL creation means exactly one process can
- * hold a record; a claim older than the stale window (process died mid-delivery)
- * is taken over so the record is not stranded.
+ * hold a record; a claim older than the stale window (process died
+ * mid-delivery) is taken over so the record is not stranded. The returned
+ * token proves ownership later, so a stale-takeover cannot let the old holder
+ * write a second transcript entry.
  */
-export function claimHandoff(id: string, dir = handoffDir()): boolean {
+export function claimHandoff(id: string, dir = handoffDir()): string | null {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = claimPath(id, dir);
   const stamp = Date.now();
+  const token = crypto.randomUUID();
   const create = () => {
     try {
-      writeFileSync(path, `${JSON.stringify({ pid: process.pid, at: stamp })}\n`, {
+      writeFileSync(path, `${JSON.stringify({ pid: process.pid, at: stamp, token })}\n`, {
         encoding: "utf8",
         mode: 0o600,
         flag: "wx",
       });
-      return true;
+      return token;
     } catch {
-      return false;
+      return null;
     }
   };
-  if (create()) return true;
-  try {
-    const info = JSON.parse(readFileSync(path, "utf8")) as { at?: unknown };
-    if (typeof info.at !== "number" || stamp - info.at > CLAIM_STALE_MS) {
-      unlinkSync(path);
-      return create();
-    }
-  } catch {
+  const first = create();
+  if (first) return first;
+  const current = readClaim(id, dir);
+  if (!current || stamp - current.at > CLAIM_STALE_MS) {
     try { unlinkSync(path); } catch { /* ignore */ }
     return create();
   }
-  return false;
+  return null;
 }
 
-export function releaseHandoffClaim(id: string, dir = handoffDir()): void {
+export function ownsHandoffClaim(id: string, token: string, dir = handoffDir()): boolean {
+  const current = readClaim(id, dir);
+  return Boolean(current && current.token === token);
+}
+
+export function releaseHandoffClaim(id: string, token = "", dir = handoffDir()): void {
+  if (token) {
+    const current = readClaim(id, dir);
+    if (current && current.token !== token) return;
+  }
   try { unlinkSync(claimPath(id, dir)); } catch { /* ignore */ }
 }
 
@@ -246,15 +267,19 @@ export function listHandoffs(dir = handoffDir()): HandoffRecord[] {
 
 /** Oldest first, so a fan-out is delivered in the order the owner confirmed. */
 export function listDeliverable(dir = handoffDir()): HandoffRecord[] {
+  // markFailed keeps a retryable record pending until it is terminal, so only
+  // pending records are ever deliverable.
   return listHandoffs(dir)
-    .filter((record) => (
-      record.status === "pending"
-      || (record.status === "failed" && record.attempts < HANDOFF_ATTEMPTS_MAX)
-    ))
+    .filter((record) => record.status === "pending")
     .slice(0, HANDOFF_LIST_MAX);
 }
 
-export function markDelivered(id: string, response: string, dir = handoffDir()): HandoffRecord | null {
+export function markDelivered(
+  id: string,
+  response: string,
+  dir = handoffDir(),
+  claimToken = "",
+): HandoffRecord | null {
   const record = readHandoff(id, dir);
   if (!record) return null;
   const next: HandoffRecord = {
@@ -266,11 +291,16 @@ export function markDelivered(id: string, response: string, dir = handoffDir()):
     updatedAt: new Date().toISOString(),
   };
   writeHandoff(next, dir);
-  releaseHandoffClaim(id, dir);
+  releaseHandoffClaim(id, claimToken, dir);
   return next;
 }
 
-export function markFailed(id: string, error: string, dir = handoffDir()): HandoffRecord | null {
+export function markFailed(
+  id: string,
+  error: string,
+  dir = handoffDir(),
+  claimToken = "",
+): HandoffRecord | null {
   const record = readHandoff(id, dir);
   if (!record) return null;
   const attempts = record.attempts + 1;
@@ -282,7 +312,7 @@ export function markFailed(id: string, error: string, dir = handoffDir()): Hando
     updatedAt: new Date().toISOString(),
   };
   writeHandoff(next, dir);
-  releaseHandoffClaim(id, dir);
+  releaseHandoffClaim(id, claimToken, dir);
   return next;
 }
 

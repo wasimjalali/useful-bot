@@ -90,7 +90,7 @@ export default function Page() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const hydrated = useRef(false);
   const sendLock = useRef(false);
-  const { store, error: shellError, dispatch, selected } = useShell(Boolean(authed));
+  const { store, error: shellError, dispatch, resolveOnly, selected } = useShell(Boolean(authed));
   const selectedIdForThread = selected?.id ?? null;
   const {
     events: threadEvents,
@@ -103,6 +103,22 @@ export default function Page() {
   useEffect(() => {
     setTranscriptUser([]);
   }, [selectedIdForThread]);
+
+  useEffect(() => {
+    // Drop busy flags as soon as the proposal is answered, instead of waiting
+    // for the timeout.
+    setBusyProposals((current) => {
+      let changed = false;
+      const next = new Set(current);
+      for (const id of current) {
+        if (!proposals.some((proposal) => proposal.id === id && proposal.status === "pending")) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [proposals]);
 
   useEffect(() => {
     const key = selectedIdForThread ? `ub-onboarding:${selectedIdForThread}` : "";
@@ -428,16 +444,25 @@ export default function Page() {
     const head = proj.messages.length;
     const streamIds = new Set(threadEvents.map((event) => event.id));
     const durableUserCounts = new Map<string, number>();
+    const durableAssistantCounts = new Map<string, number>();
     for (const event of threadEvents) {
-      if (event.kind !== "user") continue;
-      durableUserCounts.set(event.text, (durableUserCounts.get(event.text) ?? 0) + 1);
+      const counts = event.kind === "user"
+        ? durableUserCounts
+        : event.kind === "assistant"
+          ? durableAssistantCounts
+          : null;
+      if (!counts) continue;
+      counts.set(event.text, (counts.get(event.text) ?? 0) + 1);
     }
     for (const message of proj.messages) {
       if (streamIds.has(message.id)) continue;
-      if (message.role === "user") {
-        const remaining = durableUserCounts.get(message.text) ?? 0;
+      // Delivered replies exist both in the session stream and as durable
+      // events with attribution; keep the durable row and drop the echo.
+      if (message.role === "user" || message.role === "assistant") {
+        const counts = message.role === "user" ? durableUserCounts : durableAssistantCounts;
+        const remaining = counts.get(message.text) ?? 0;
         if (remaining > 0) {
-          durableUserCounts.set(message.text, remaining - 1);
+          counts.set(message.text, remaining - 1);
           continue;
         }
       }
@@ -523,15 +548,20 @@ export default function Page() {
         return next;
       });
     }, 15_000);
-    if (decision.action) dispatch(decision.action, {
+    const meta = {
       proposalId: decision.proposalId,
       proposalStatus: decision.proposalStatus,
-    });
-    else dispatch({ type: "select", botId: bot?.id ?? store?.selectedBotId ?? DEFAULT_BOT_ID }, {
-      proposalId: decision.proposalId,
-      proposalStatus: decision.proposalStatus,
-    });
-    if (selectedIdForThread) void refreshThread(selectedIdForThread);
+    };
+    if (decision.action) {
+      dispatch(decision.action, meta);
+      if (selectedIdForThread) void refreshThread(selectedIdForThread);
+      return;
+    }
+    void resolveOnly(meta)
+      .catch((err) => setError(err instanceof Error ? err.message : "Shell save failed"))
+      .finally(() => {
+        if (selectedIdForThread) void refreshThread(selectedIdForThread);
+      });
   }
 
   function dismissOnboarding() {

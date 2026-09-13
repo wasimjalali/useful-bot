@@ -71,10 +71,12 @@ test("create section pin move hide delete and new chat", () => {
   assert.equal(selectedBot(store).sessionId, "sess-old");
 });
 
-test("refuses deleting the last bot and unknown keys", () => {
+test("refuses deleting the last bot and tolerates unknown keys", () => {
   const store = seedStore();
   assert.throws(() => applyShellAction(store, { type: "deleteBot", botId: DEFAULT_BOT_ID }), /shell_last_bot/);
-  assert.throws(() => parseShell({ ...store, extra: true }), /shell_unknown_key/);
+  // Forward compatibility: a newer build's extra field must not wipe the store.
+  const parsed = parseShell({ ...store, extra: true, bots: store.bots.map((bot) => ({ ...bot, extra: 1 })) });
+  assert.equal(parsed.bots.length, store.bots.length);
 });
 
 test("group members and persist roundtrip", () => {

@@ -5,11 +5,12 @@ import {
   claimProposal,
   clearThread,
   readProposal,
+  reopenProposal,
   threadIdFor,
   type Proposal,
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
-import { applyShellAction, type ShellAction } from "../../../../shared/shell-store.ts";
+import { applyShellAction, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 
@@ -30,10 +31,9 @@ export async function GET(request: Request) {
  *    member bot and touches both sides of every transcript;
  *  - clearing a thread drops that bot's agent transcript with its eve session.
  */
-function applyFollowUp(action: ShellAction | undefined): number {
+function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): number {
   if (!action) return 0;
   if (action.type === "sendToBot") {
-    const shell = readShell();
     const target = shell.bots.find((bot) => bot.id === action.botId);
     if (!target) return 0;
     const source = action.sourceBotId
@@ -61,17 +61,35 @@ function applyFollowUp(action: ShellAction | undefined): number {
   return 0;
 }
 
-/** The action a card sends must match the proposal the owner answered. */
+/** The action a card sends must match every field the proposal carried. */
 function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefined): boolean {
   if (!action) return false;
   const sameName = (left: string, right: string) => left.trim().toLowerCase() === right.trim().toLowerCase();
+  const sameSet = (left: string[], right: string[]) => {
+    const a = [...new Set(left)].sort();
+    const b = [...new Set(right)].sort();
+    return a.length === b.length && a.every((value, index) => value === b[index]);
+  };
   switch (proposal.kind) {
     case "createBot":
-      return action.type === "createBot" && sameName(action.name, proposal.name);
+      return action.type === "createBot"
+        && sameName(action.name, proposal.name)
+        && (action.petname ?? "") === proposal.petname
+        && (action.label ?? "") === proposal.title
+        && (action.description ?? "") === proposal.description
+        && (action.sectionId ?? null) === proposal.sectionId;
     case "createGroup":
-      return action.type === "createGroup" && sameName(action.name, proposal.name);
+      return action.type === "createGroup"
+        && sameName(action.name, proposal.name)
+        && sameSet(action.memberIds, proposal.memberIds);
     case "updateBotProfile":
-      return action.type === "updateBot" && action.botId === proposal.botId;
+      return action.type === "updateBot"
+        && action.botId === proposal.botId
+        && (action.patch?.name ?? "") === proposal.patch.name
+        && (action.patch?.label ?? "") === proposal.patch.title
+        && (action.patch?.description ?? "") === proposal.patch.description
+        && (action.patch?.avatarShape ?? null) === proposal.patch.avatarShape
+        && (action.patch?.avatarColor ?? null) === proposal.patch.avatarColor;
     case "fanout":
       return action.type === "sendToBot"
         && action.message === proposal.message
@@ -102,6 +120,7 @@ export async function PUT(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
+  let claimed: Proposal | null = null;
   try {
     const body = await request.json() as {
       action?: ShellAction;
@@ -132,7 +151,6 @@ export async function PUT(request: Request) {
     // A proposal is confirmable once. claimProposal only returns to the caller
     // that flips it out of pending, so two concurrent confirms cannot both
     // apply the same createBot.
-    let claimed: Proposal | null = null;
     if (body.proposalId) {
       const status = body.proposalStatus === "dismissed" ? "dismissed" : "confirmed";
       if (status === "confirmed") {
@@ -170,7 +188,7 @@ export async function PUT(request: Request) {
     let queued = 0;
     if (action) {
       try {
-        queued = applyFollowUp(action);
+        queued = applyFollowUp(action, next);
       } catch {
         /* the shell action already landed; the handoff pump reports the rest */
       }
@@ -184,6 +202,11 @@ export async function PUT(request: Request) {
     }
     return NextResponse.json({ ok: true, store: next, queued });
   } catch (err) {
+    // Applying the action failed after the claim; give the card back so the
+    // owner can retry instead of losing the proposal to a 400.
+    if (claimed) {
+      try { reopenProposal(claimed.id); } catch { /* best effort */ }
+    }
     const message = err instanceof Error ? err.message : "invalid";
     return NextResponse.json({ ok: false, error: message }, { status: 400 });
   }

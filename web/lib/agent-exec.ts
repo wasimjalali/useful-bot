@@ -7,6 +7,7 @@ import {
   listDeliverable,
   markDelivered,
   markFailed,
+  ownsHandoffClaim,
   releaseHandoffClaim,
   HANDOFF_ATTEMPTS_MAX,
   type HandoffRecord,
@@ -221,7 +222,7 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
   return target ? { bot: target, kind: "bot" } : null;
 }
 
-async function deliverOne(handoff: HandoffRecord): Promise<string> {
+async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
   const jwt = channelJwt();
   if (!jwt) throw new Error("channel_credential_missing");
   const shell = readShell();
@@ -257,6 +258,9 @@ async function deliverOne(handoff: HandoffRecord): Promise<string> {
     clearTimeout(timer);
   }
 
+  // A stale takeover may have handed this record to another process; only the
+  // token holder may write the transcript, or both would append a reply.
+  if (!ownsHandoffClaim(handoff.id, claimToken)) throw new Error("claim_lost");
   // Transcript and shell row first, delivery marker last: a crash in between
   // leaves the record claimed/pending so the next pump retries, and the event
   // dedupe keeps the retry from appending a second copy.
@@ -285,7 +289,7 @@ async function deliverOne(handoff: HandoffRecord): Promise<string> {
         : item
     )),
   }));
-  markDelivered(handoff.id, reply);
+  markDelivered(handoff.id, reply, undefined, claimToken);
   return reply;
 }
 
@@ -324,14 +328,16 @@ async function pumpOnce(limit: number): Promise<{
   for (const record of batch) {
     // Cross-process claim: without it two web servers can both deliver the
     // same record and append two replies to the receiver transcript.
-    if (!claimHandoff(record.id)) continue;
+    const claimToken = claimHandoff(record.id);
+    if (!claimToken) continue;
     inflight.add(record.id);
     try {
-      await deliverOne(record);
+      await deliverOne(record, claimToken);
       delivered.push({ id: record.id, to: record.targetName });
     } catch (err) {
       const message = err instanceof Error ? err.message : "handoff_failed";
-      const next = markFailed(record.id, message);
+      if (message === "claim_lost") continue;
+      const next = markFailed(record.id, message, undefined, claimToken);
       failed.push({
         id: record.id,
         error: next && next.status === "failed" && next.attempts >= HANDOFF_ATTEMPTS_MAX
@@ -340,7 +346,7 @@ async function pumpOnce(limit: number): Promise<{
       });
     } finally {
       inflight.delete(record.id);
-      releaseHandoffClaim(record.id);
+      releaseHandoffClaim(record.id, claimToken);
     }
   }
   return { delivered, failed, queued: Math.max(0, candidates.length - batch.length) };

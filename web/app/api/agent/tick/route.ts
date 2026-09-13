@@ -27,13 +27,18 @@ function keyMatches(candidate: string | null): boolean {
 
 async function authorised(request: Request): Promise<boolean> {
   if (keyMatches(request.headers.get("x-ub-agent-key"))) return true;
-  // Browser callers: the UI sends Origin on its POST and carries the desktop
-  // session cookie. originAllowed() alone treats a missing Origin as
-  // same-origin, which any local script can fake, so both are required.
+  // Browser callers carry the desktop session cookie (SameSite=Strict, so a
+  // cross-site page does not have it). A present Origin must be allowed; a
+  // caller that omits Origin must prove itself with the session CSRF token.
   const origin = request.headers.get("origin");
-  if (!origin || !originAllowed(request)) return false;
+  if (origin && !originAllowed(request)) return false;
   const gate = await requireDesktop(request);
-  return !isGateError(gate);
+  if (isGateError(gate)) return false;
+  if (!origin) {
+    const csrf = request.headers.get("x-ub-csrf");
+    if (!csrf || csrf !== gate.session.csrf) return false;
+  }
+  return true;
 }
 
 export async function GET(request: Request) {

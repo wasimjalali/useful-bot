@@ -4,7 +4,10 @@ function defaultPort(url: URL): string {
 }
 
 function isLoopbackHost(hostname: string): boolean {
-  return hostname === "127.0.0.1" || hostname === "localhost";
+  return hostname === "127.0.0.1"
+    || hostname === "localhost"
+    || hostname === "::1"
+    || hostname === "[::1]";
 }
 
 export function originHeaderAllowed(origin: string | null, requestUrl: string): boolean {

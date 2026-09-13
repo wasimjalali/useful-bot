@@ -131,10 +131,32 @@ export function useShell(authed: boolean) {
     setStore(next);
   }, [load, persist]);
 
+  // Dismissing a card carries no shell action; send the proposal fields alone.
+  const resolveOnly = useCallback(async (meta: {
+    proposalId: string;
+    proposalStatus: "confirmed" | "dismissed";
+  }) => {
+    const token = await csrfToken();
+    const res = await fetch("/api/shell", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "content-type": "application/json", "x-ub-csrf": token },
+      body: JSON.stringify(meta),
+    });
+    if (res.status === 401) throw new Error("unauthorized");
+    if (!res.ok) throw new Error("Shell save failed");
+    const body = (await res.json()) as { store?: unknown };
+    const fresh = parseShell(body.store ?? seedStore());
+    latest.current = fresh;
+    setStore(fresh);
+    return fresh;
+  }, []);
+
   return {
     store,
     error,
     dispatch,
+    resolveOnly,
     selected: store ? selectedBot(store) : null,
   };
 }

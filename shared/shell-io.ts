@@ -29,7 +29,7 @@ export function readShell(path = defaultShellPath()): ShellStore {
   try {
     return parseShell(JSON.parse(readFileSync(path, "utf8")));
   } catch {
-    const bak = `${path}.invalid.${process.pid}`;
+    const bak = `${path}.invalid.${process.pid}.${Date.now()}`;
     try { renameSync(path, bak); } catch { /* ignore */ }
     const seeded = seedStore();
     writeShell(seeded, path);
@@ -71,8 +71,8 @@ function sleep(ms: number): void {
 /**
  * Locked read-modify-write for the shell store. The route and the handoff pump
  * both update bot rows, and a plain read/apply/write pair can drop the other
- * writer's row when they overlap; the lock plus an in-process chain keeps the
- * update whole across requests and across processes.
+ * writer's row when they overlap; the directory lock keeps the update whole
+ * across requests and across processes.
  */
 export function updateShell(
   mutate: (store: ShellStore) => ShellStore,

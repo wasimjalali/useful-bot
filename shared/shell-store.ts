@@ -130,43 +130,6 @@ export type ShellAction =
   | { type: "openRecent"; recentId: string }
   | { type: "toggleSection"; sectionId: string };
 
-const STORE_KEYS = new Set([
-  "schemaVersion",
-  "selectedBotId",
-  "collapsedUnassigned",
-  "collapsedHidden",
-  "bots",
-  "sections",
-  "recents",
-]);
-
-const BOT_KEYS = new Set([
-  "id",
-  "kind",
-  "name",
-  "petname",
-  "label",
-  "description",
-  "notify",
-  "pinned",
-  "hidden",
-  "sectionId",
-  "sessionId",
-  "memberIds",
-  "lastPreview",
-  "lastAt",
-  "createdAt",
-  "updatedAt",
-  "avatarShape",
-  "avatarColor",
-  "avatarImage",
-  "avatarCustom",
-]);
-
-const RECENT_KEYS = new Set(["id", "botId", "title", "sessionId", "preview", "updatedAt"]);
-
-const SECTION_KEYS = new Set(["id", "name", "collapsed", "order"]);
-
 export function nowIso(at = new Date()): string {
   return at.toISOString();
 }
@@ -224,9 +187,8 @@ export function seedStore(at = new Date()): ShellStore {
 function parseBot(raw: unknown): ShellBot {
   if (!raw || typeof raw !== "object") throw new Error("shell_bot_invalid");
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!BOT_KEYS.has(key)) throw new Error(`shell_bot_unknown_key:${key}`);
-  }
+  // Unknown fields are ignored so a newer build's store stays readable here;
+  // a full-store overwrite is no longer accepted over the API.
   if (!isId(rec.id)) throw new Error("shell_bot_id");
   if (rec.kind !== "bot" && rec.kind !== "group") throw new Error("shell_bot_kind");
   if (typeof rec.name !== "string") throw new Error("shell_bot_name");
@@ -277,9 +239,6 @@ function parseBot(raw: unknown): ShellBot {
 function parseRecent(raw: unknown): ShellRecent {
   if (!raw || typeof raw !== "object") throw new Error("shell_recent_invalid");
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!RECENT_KEYS.has(key)) throw new Error(`shell_recent_unknown_key:${key}`);
-  }
   if (!isId(rec.id)) throw new Error("shell_recent_id");
   if (!isId(rec.botId)) throw new Error("shell_recent_bot");
   if (typeof rec.title !== "string") throw new Error("shell_recent_title");
@@ -299,9 +258,6 @@ function parseRecent(raw: unknown): ShellRecent {
 function parseSection(raw: unknown): ShellSection {
   if (!raw || typeof raw !== "object") throw new Error("shell_section_invalid");
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!SECTION_KEYS.has(key)) throw new Error(`shell_section_unknown_key:${key}`);
-  }
   if (!isId(rec.id) || rec.id === UNASSIGNED_SECTION || rec.id === HIDDEN_SECTION) {
     throw new Error("shell_section_id");
   }
@@ -319,9 +275,6 @@ function parseSection(raw: unknown): ShellSection {
 export function parseShell(raw: unknown): ShellStore {
   if (!raw || typeof raw !== "object") throw new Error("shell_invalid");
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!STORE_KEYS.has(key)) throw new Error(`shell_unknown_key:${key}`);
-  }
   if (rec.schemaVersion !== SHELL_SCHEMA) throw new Error("shell_schema");
   if (!Array.isArray(rec.bots) || !Array.isArray(rec.sections)) throw new Error("shell_shape");
   if (rec.recents !== undefined && !Array.isArray(rec.recents)) throw new Error("shell_recents");

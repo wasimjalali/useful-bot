@@ -24,6 +24,7 @@ import {
   listHandoffs,
   markDelivered,
   markFailed,
+  ownsHandoffClaim,
   queueHandoff,
   readHandoff,
 } from "../shared/handoffs.ts";
@@ -197,11 +198,14 @@ test("a handoff record is claimed by one deliverer at a time", () => {
     targetName: "Research",
     message: "claim me",
   }, handoffDir);
-  assert.equal(claimHandoff(record.id, handoffDir), true);
-  assert.equal(claimHandoff(record.id, handoffDir), false);
+  const first = claimHandoff(record.id, handoffDir);
+  assert.ok(first);
+  assert.equal(claimHandoff(record.id, handoffDir), null);
+  assert.equal(ownsHandoffClaim(record.id, first, handoffDir), true);
   // A failed attempt releases the claim so the retry can pick it up.
-  markFailed(record.id, "boom", handoffDir);
-  assert.equal(claimHandoff(record.id, handoffDir), true);
+  markFailed(record.id, "boom", handoffDir, first);
+  assert.equal(ownsHandoffClaim(record.id, first, handoffDir), false);
+  assert.ok(claimHandoff(record.id, handoffDir));
 });
 
 test("sendHandoff writes both sides of the transcript and one queue record", () => {
