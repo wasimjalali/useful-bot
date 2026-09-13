@@ -201,6 +201,20 @@ export function threadPrefix(input: {
   return `${lines.join("\n")}\n\n`;
 }
 
+const BOT_TURN_PREFIX = /^You are [^\n]+\.\nStanding instructions: /;
+const GROUP_TURN_PREFIX = /^Group chat: [^\n]+\.\n/;
+
+/**
+ * Remove the identity prefix injected into a stored user turn so the UI can
+ * render the owner's original message. Only text matching one of the two
+ * prefix shapes is stripped; an ordinary message is returned untouched.
+ */
+export function stripThreadPrefix(text: string): string {
+  if (!BOT_TURN_PREFIX.test(text) && !GROUP_TURN_PREFIX.test(text)) return text;
+  const breakAt = text.indexOf("\n\n");
+  return breakAt === -1 ? text : text.slice(breakAt + 2);
+}
+
 /** Transcript label for the bot a routed turn is answering as. */
 export function speakerLabel(input: {
   bot: { id: string; kind: BotKind; name: string; label: string } | null;

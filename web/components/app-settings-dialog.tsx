@@ -44,12 +44,10 @@ function formatCount(value: number): string {
 export function AppSettingsDialog({
   initialTab = "general",
   onClose,
-  onSignOut,
   operator,
 }: {
   initialTab?: AppSettingsTab;
   onClose: () => void;
-  onSignOut: () => void;
   operator: { name: string; initials: string };
 }) {
   const [tab, setTab] = useState<AppSettingsTab>(initialTab);
@@ -114,9 +112,6 @@ export function AppSettingsDialog({
                         <p className="truncate text-xs text-ink-muted">Local desktop owner</p>
                       </div>
                     </div>
-                    <button className="btn btn-secondary min-h-8 px-3 text-xs" onClick={onSignOut} type="button">
-                      Sign out
-                    </button>
                   </div>
                 </div>
               </section>

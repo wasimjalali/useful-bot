@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { DEFAULT_BOT_ID, type ShellBot } from "../../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, GROUP_MAX_MEMBERS, type ShellBot } from "../../shared/shell-store.ts";
 import { Dialog } from "./dialog";
 
 export function CreateBotDialog({
@@ -96,7 +96,11 @@ export function CreateGroupDialog({
   const [name, setName] = useState("");
   const [memberIds, setMemberIds] = useState<string[]>([]);
   function toggle(id: string) {
-    setMemberIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
+    setMemberIds((current) => {
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      if (current.length >= GROUP_MAX_MEMBERS) return current;
+      return [...current, id];
+    });
   }
   return (
     <Dialog ariaLabel="Create group chat" maxWidth="max-w-md" onClose={onClose}>
@@ -136,6 +140,7 @@ export function CreateGroupDialog({
               <label className="nav-item cursor-pointer text-sm" key={bot.id}>
                 <input
                   checked={memberIds.includes(bot.id)}
+                  disabled={!memberIds.includes(bot.id) && memberIds.length >= GROUP_MAX_MEMBERS}
                   onChange={() => toggle(bot.id)}
                   type="checkbox"
                 />

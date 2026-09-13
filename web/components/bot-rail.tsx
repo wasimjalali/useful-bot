@@ -44,7 +44,6 @@ export function BotRail({
   onRenameRequest,
   onSearch,
   onSelect,
-  onSignOut,
   onToggleMobile,
   operator,
   store,
@@ -60,7 +59,6 @@ export function BotRail({
   onRenameRequest: (bot: ShellBot) => void;
   onSearch: () => void;
   onSelect: (botId: string) => void;
-  onSignOut: () => void;
   onToggleMobile?: () => void;
   operator: { name: string; initials: string };
   store: ShellStore;
@@ -227,14 +225,6 @@ export function BotRail({
           >
             <SettingsIcon className="size-3.5" />
             Settings
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              setAccountOpen(null);
-              onSignOut();
-            }}
-          >
-            Log out
           </MenuItem>
         </Popover>
       ) : null}

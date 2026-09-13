@@ -22,6 +22,7 @@ import {
   rosterLine,
   speakerLabel,
   speakersFrom,
+  stripThreadPrefix,
   threadPrefix,
 } from "../shared/threads.ts";
 
@@ -298,6 +299,43 @@ test("thread prefix keeps the default bot prefix empty and describes a bot role"
   });
   assert.match(prefix, /You are Research\./);
   assert.match(prefix, /Standing instructions:/);
+});
+
+test("stored turns lose the injected prefix and plain messages stay untouched", () => {
+  const store = withBots();
+  const research = store.bots.find((bot) => bot.name === "Research");
+  assert.ok(research);
+  const botPrefix = threadPrefix({
+    bot: {
+      id: research.id,
+      kind: research.kind,
+      name: research.name,
+      label: research.label,
+      description: research.description,
+    },
+  });
+  assert.equal(stripThreadPrefix(`${botPrefix}hello there`), "hello there");
+
+  const group = applyShellAction(store, {
+    type: "createGroup",
+    name: "Room",
+    memberIds: [research.id, idOf(store, "Writer")],
+  }).store.bots.find((bot) => bot.kind === "group");
+  assert.ok(group);
+  const groupPrefix = threadPrefix({
+    bot: {
+      id: group.id,
+      kind: group.kind,
+      name: group.name,
+      label: group.label,
+      description: group.description,
+    },
+    members: speakersFrom(store.bots).filter((speaker) => group.memberIds.includes(speaker.id)),
+    mentionNames: ["Writer"],
+  });
+  assert.equal(stripThreadPrefix(`${groupPrefix}@Writer draft this`), "@Writer draft this");
+  assert.equal(stripThreadPrefix("You are reading a book."), "You are reading a book.");
+  assert.equal(stripThreadPrefix("Group chat: not a prefix"), "Group chat: not a prefix");
 });
 
 test("shell file round trip keeps groups and petnames", () => {

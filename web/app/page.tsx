@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MenuIcon, SettingsIcon } from "../components/icons";
-import { UsefulBotMark } from "../components/useful-bot-logo";
 import { ChatSearchDialog } from "../components/chat-search-dialog";
 import { ChatComposer } from "../components/chat-composer";
 import { BotRail } from "../components/bot-rail";
@@ -66,7 +65,7 @@ function setQuery(botId: string | null, sessionId: string | null) {
 
 export default function Page() {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  const [token, setToken] = useState("");
+
   const [error, setError] = useState("");
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -267,11 +266,6 @@ export default function Page() {
     dispatch({ type: "touchChat", botId: selected.id, preview: last.text });
   }, [active, dispatch, proj.messages, proj.pending, selected]);
 
-  const refreshSession = useCallback(async () => {
-    const res = await fetch("/api/auth/session", { credentials: "include" });
-    setAuthed(res.ok);
-  }, []);
-
   function attachBot(bot: ShellBot) {
     setPickerOpen(false);
     setRailOpen(false);
@@ -309,27 +303,6 @@ export default function Page() {
     attachBot(selected);
     setRoutineNotice(false);
   }, [selectedId]);
-
-  async function signIn(event: React.FormEvent) {
-    event.preventDefault();
-    setError("");
-    const res = await fetch("/api/auth/session", {
-      method: "POST",
-      credentials: "include",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      setError("Sign in failed");
-      return;
-    }
-    setToken("");
-    await refreshSession();
-  }
-
-  async function signOut() {
-    await fetch("/api/auth/session", { method: "DELETE", credentials: "include" });
-    setAuthed(false);
-  }
 
   async function send(text: string) {
     const message = text.trim();
@@ -497,6 +470,8 @@ export default function Page() {
     && !isDefaultBot
     && bot?.kind === "bot"
     && !onboardingDismissed
+    && !bot.label.trim()
+    && !bot.description.trim()
     && threadEvents.length === 0
     && threadRows.length === 0
     && openProposals.length === 0;
@@ -529,31 +504,16 @@ export default function Page() {
 
   if (!authed) {
     return (
-      <div className="flex h-screen w-full bg-canvas text-ink">
-        <div className="mx-auto grid w-full max-w-md place-items-center px-4">
-          <form className="w-full" onSubmit={signIn}>
-            <div className="mb-8 flex flex-col items-center gap-3 text-center">
-              <span className="grid size-14 place-items-center rounded-2xl bg-brand">
-                <UsefulBotMark tone="dark" className="h-8 w-auto" />
-              </span>
-              <h1 className="text-xl font-semibold tracking-[-0.03em]">Sign in to Useful Bot</h1>
-            </div>
-            <div className="field">
-              <label htmlFor="device-token">Device token</label>
-              <input
-                autoComplete="off"
-                className="field-input min-h-11 w-full px-3 text-sm"
-                id="device-token"
-                onChange={(event) => setToken(event.target.value)}
-                type="password"
-                value={token}
-              />
-              <div className="field-error">{displayError}</div>
-            </div>
-            <button className="btn btn-primary mt-2 w-full" type="submit">
-              Sign in
-            </button>
-          </form>
+      <div className="flex h-screen w-full items-center justify-center bg-canvas px-4 text-ink">
+        <div className="text-center">
+          <p className="text-sm text-ink-muted">Waiting for the local server.</p>
+          <button
+            className="btn btn-secondary mt-4 min-h-9 px-3 text-sm"
+            onClick={() => window.location.reload()}
+            type="button"
+          >
+            Retry
+          </button>
         </div>
       </div>
     );
@@ -595,7 +555,6 @@ export default function Page() {
       onRenameRequest={setRenameBot}
       onSearch={() => setSearchOpen(true)}
       onSelect={selectBot}
-      onSignOut={() => void signOut()}
       onToggleMobile={() => setRailOpen(false)}
       operator={operator}
       store={store}
@@ -709,7 +668,7 @@ export default function Page() {
                               dismissOnboarding();
                               setSettingsOpen(true);
                             }}
-                            petname={bot.petname || bot.name}
+                            name={bot.name}
                           />
                         ) : null}
                         {threadRows.map((row) => {
@@ -896,10 +855,6 @@ export default function Page() {
           initialTab={appSettingsTab}
           onClose={() => setAppSettingsOpen(false)}
           operator={operator}
-          onSignOut={() => {
-            setAppSettingsOpen(false);
-            void signOut();
-          }}
         />
       ) : null}
 

@@ -225,18 +225,18 @@ function Actions({
 
 /** First-turn onboarding prompt for a bot that has no profile yet. */
 export function OnboardingCard({
-  petname,
+  name,
   onFillForm,
   onDismiss,
 }: {
-  petname: string;
+  name: string;
   onFillForm: () => void;
   onDismiss: () => void;
 }) {
   return (
     <Card title="New bot" tone="accent">
       <p className="text-[15px] leading-6 text-ink">
-        {petname} has no job yet. What should I own? Give me a job title, standing rules, and anything I must never
+        {name} has no job yet. What should I own? Give me a job title, standing rules, and anything I must never
         do without asking.
       </p>
       <p className="mt-2 text-[12px] leading-5 text-ink-muted">
