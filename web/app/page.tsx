@@ -32,8 +32,11 @@ function nextId() {
 
 async function csrfHeaders(): Promise<Record<string, string>> {
   const res = await fetch("/api/auth/session", { credentials: "include" });
+  if (res.status === 401) throw new Error("unauthorized");
+  if (!res.ok) throw new Error("Session failed");
   const session = await res.json() as { csrfToken?: string };
-  return { "x-ub-csrf": session.csrfToken ?? "" };
+  if (!session.csrfToken) throw new Error("Session failed");
+  return { "x-ub-csrf": session.csrfToken };
 }
 
 function titleFrom(text: string): string {
@@ -324,7 +327,9 @@ export default function Page() {
         setQuery(selected.id, sid);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Send failed");
+      const message = err instanceof Error ? err.message : "Send failed";
+      if (message === "unauthorized") setAuthed(false);
+      setError(message === "unauthorized" ? "Sign in expired" : message);
       setProj((current) => ({ ...current, pending: false }));
     } finally {
       sendLock.current = false;
@@ -570,9 +575,10 @@ export default function Page() {
                     </p>
                     <div className="mt-8 w-full max-w-2xl">
                       <ChatComposer
-                        disabled={pending}
+                        disabled={false}
                         onChange={setDraft}
                         onSend={() => void send()}
+                        onStop={() => void cancel()}
                         pending={pending}
                         placeholder={`Ask ${bot.name}`}
                         value={draft}

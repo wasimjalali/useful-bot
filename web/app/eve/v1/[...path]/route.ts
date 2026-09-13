@@ -28,13 +28,13 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   if (!allowed) {
     return Response.json({ ok: false, error: "not found" }, { status: 404 });
   }
+  if (!originAllowed(request)) {
+    return Response.json({ ok: false, error: "origin" }, { status: 403 });
+  }
   if (method !== "GET") {
     const csrf = request.headers.get("x-ub-csrf");
     if (!csrf || csrf !== session.csrf) {
       return Response.json({ ok: false, error: "csrf" }, { status: 403 });
-    }
-    if (!originAllowed(request)) {
-      return Response.json({ ok: false, error: "origin" }, { status: 403 });
     }
   }
   const url = new URL(request.url);

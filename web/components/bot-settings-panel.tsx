@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import type { ShellBot, ShellStore } from "../../shared/shell-store.ts";
 import { CloseIcon } from "./icons";
 
@@ -31,13 +31,26 @@ export function BotSettingsPanel({
   }, [bot.id, bot.name, bot.label, bot.description]);
 
   function commitName() {
-    if (name.trim() && name !== bot.name) onPatch({ name });
+    const next = name.trim();
+    if (!next) {
+      setName(bot.name);
+      return;
+    }
+    if (next !== bot.name) onPatch({ name: next });
   }
   function commitLabel() {
-    if (label !== bot.label) onPatch({ label });
+    const next = label.trim();
+    if (next !== bot.label) onPatch({ label: next });
   }
   function commitDescription() {
     if (description !== bot.description) onPatch({ description });
+  }
+
+  function blurOnEnter(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+    }
   }
 
   return (
@@ -57,6 +70,7 @@ export function BotSettingsPanel({
             id="settings-name"
             onBlur={commitName}
             onChange={(event) => setName(event.target.value)}
+            onKeyDown={blurOnEnter}
             value={name}
           />
         </div>
@@ -68,6 +82,7 @@ export function BotSettingsPanel({
             id="settings-label"
             onBlur={commitLabel}
             onChange={(event) => setLabel(event.target.value)}
+            onKeyDown={blurOnEnter}
             value={label}
           />
         </div>
