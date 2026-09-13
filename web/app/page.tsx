@@ -62,6 +62,7 @@ export default function Page() {
   const activeRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const hydrated = useRef(false);
+  const sendLock = useRef(false);
   const { store, error: shellError, dispatch, selected } = useShell(Boolean(authed));
   activeRef.current = active;
 
@@ -110,34 +111,44 @@ export default function Page() {
       projSession.current = active;
       setProj(createProjection());
     }
-    const ac = new AbortController();
     let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/eve/v1/session/${active}/stream?startIndex=0`, {
-          credentials: "include",
-          signal: ac.signal,
-        });
-        if (!res.ok || !res.body) {
-          if (res.status === 401) {
-            setAuthed(false);
+    let controller = new AbortController();
+
+    async function follow() {
+      while (!cancelled && active) {
+        controller = new AbortController();
+        try {
+          const res = await fetch(`/eve/v1/session/${active}/stream?startIndex=0`, {
+            credentials: "include",
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) {
+            if (res.status === 401) {
+              setAuthed(false);
+              return;
+            }
+            throw new Error(res.status === 503 ? "Agent unavailable" : "Stream failed");
+          }
+          await consumeEveNdjson(res.body, (event) => {
+            if (cancelled) return;
+            setProj((current) => applyEveEvent(current, event));
+          }, controller.signal);
+        } catch (err) {
+          if (cancelled || (err instanceof DOMException && err.name === "AbortError")) {
             return;
           }
-          throw new Error(res.status === 503 ? "Agent unavailable" : "Stream failed");
+          setError(err instanceof Error ? err.message : "Stream failed");
+          setProj((current) => ({ ...current, pending: false }));
         }
-        await consumeEveNdjson(res.body, (event) => {
-          if (cancelled) return;
-          setProj((current) => applyEveEvent(current, event));
-        }, ac.signal);
-      } catch (err) {
-        if (cancelled || (err instanceof DOMException && err.name === "AbortError")) return;
-        setError(err instanceof Error ? err.message : "Stream failed");
-        setProj((current) => ({ ...current, pending: false }));
+        if (cancelled) return;
+        await new Promise((resolve) => setTimeout(resolve, 400));
       }
-    })();
+    }
+
+    void follow();
     return () => {
       cancelled = true;
-      ac.abort();
+      controller.abort();
     };
   }, [authed, active]);
 
@@ -206,7 +217,8 @@ export default function Page() {
 
   async function send() {
     const text = draft.trim();
-    if (!text || proj.pending || !selected) return;
+    if (!text || proj.pending || sendLock.current || !selected) return;
+    sendLock.current = true;
     setError("");
     setDraft("");
     setView("chat");
@@ -238,6 +250,8 @@ export default function Page() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
       setProj((current) => ({ ...current, pending: false }));
+    } finally {
+      sendLock.current = false;
     }
   }
 
@@ -270,8 +284,7 @@ export default function Page() {
   const messages = proj.messages;
   const pending = proj.pending;
   const displayError = error || proj.error || shellError;
-  const hasAssistantText = messages.some((message) => message.role === "assistant" && message.text);
-  const showSpinner = pending && !hasAssistantText;
+  const showSpinner = pending && !proj.blockOpen && !proj.currentAssistantId;
   const bot = selected ?? (store ? selectedBot(store) : null);
 
   if (authed === null) {

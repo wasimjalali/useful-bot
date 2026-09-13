@@ -85,6 +85,9 @@ test("applyEveEvent cancel and failure settle pending", () => {
   state = applyEveEvent(state, { type: "turn.failed", data: { message: "boom", code: "x" }, meta: { id: "t4" } });
   assert.equal(state.pending, false);
   assert.equal(state.error, "Turn failed");
+  state = applyEveEvent(state, { type: "turn.started", meta: { id: "t5" } });
+  state = applyEveEvent(state, { type: "session.completed", meta: { id: "t6" } });
+  assert.equal(state.pending, false);
 });
 
 test("consumeEveNdjson emits parsed events from a chunked body", async () => {
