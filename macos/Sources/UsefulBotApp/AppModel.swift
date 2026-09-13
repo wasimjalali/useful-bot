@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 import UsefulBotCore
 
 @MainActor
@@ -14,10 +15,28 @@ final class AppModel: ObservableObject {
     @Published private(set) var selectedBotId: String?
     @Published private(set) var transcript: [TranscriptRow] = []
     @Published private(set) var pending = false
-    /// Thread load and send failures surface near the composer.
+    /// Thread load and send failures surface in the chat column.
     @Published private(set) var threadError: String?
-    /// Profile save failures surface inside the settings sheet.
+    /// Profile save failures surface inside the settings pane.
     @Published private(set) var saveError: String?
+    /// Proposals waiting on the owner for the open thread.
+    @Published private(set) var proposals: [Proposal] = []
+    @Published private(set) var busyProposals: Set<String> = []
+    @Published private(set) var operatorName = "Desktop owner"
+    @Published private(set) var operatorInitials = "DO"
+    @Published private(set) var composer: ComposerState?
+    @Published private(set) var memoryNotes: [MemoryNote]?
+
+    /// Inline settings pane, toggled from the chat header.
+    @Published var settingsOpen = false
+    @Published var routineNotice = false
+    /// ⌘K palette.
+    @Published var searchOpen = false
+    /// Composer draft is page-level on the web, so it survives a bot switch.
+    @Published var draft = ""
+    @Published var attachments: [Attachment] = []
+    @Published var attachError: String?
+    @Published private(set) var onboardingDismissedFor: Set<String> = []
 
     private let config: ServerConfig
     private let services = LocalServices()
@@ -30,6 +49,7 @@ final class AppModel: ObservableObject {
         self.config = config
         self.client = BackendClient(base: config.baseURL)
     }
+
     private var projection = StreamProjection()
     private var durableEvents: [AgentEvent] = []
     private var pollTask: Task<Void, Never>?
@@ -40,6 +60,10 @@ final class AppModel: ObservableObject {
     private var sendGeneration = 0
     private var sendBotId: String?
     private var started = false
+    /// Rebuilding the transcript on every streamed event re-parses markdown
+    /// for every row; the replay of a long session contains thousands of
+    /// events, so publishes are throttled and the final state is forced.
+    private var lastTranscriptPublish = Date.distantPast
 
     var selectedBot: ShellBot? {
         guard let store else { return nil }
@@ -74,6 +98,8 @@ final class AppModel: ObservableObject {
             store = loaded
             selectedBotId = loaded.selectedBotId ?? loaded.bots.first?.id
             phase = .ready
+            await loadOperator()
+            await refreshComposer()
             await reloadThread()
             startPolling()
         } catch is CancellationError {
@@ -110,13 +136,40 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func loadOperator() async {
+        guard let status = try? await client.status() else { return }
+        if let name = status.name, !name.isEmpty, let initials = status.initials, !initials.isEmpty {
+            operatorName = name
+            operatorInitials = initials
+        }
+    }
+
     // MARK: - Selection and reload
 
     func select(_ botId: String) {
-        guard botId != selectedBotId else { return }
+        guard botId != selectedBotId else {
+            if store?.selectedBotId != botId {
+                store?.selectedBotId = botId
+                persistSelection(botId)
+            }
+            return
+        }
         cancelSend()
         selectedBotId = botId
+        routineNotice = false
+        // The draft and its attachments are page-level on the web, so they
+        // survive a bot switch rather than being cleared with the thread.
         startReload()
+        persistSelection(botId)
+    }
+
+    /// Persist the selection the way the web's select action does, without
+    /// applying the echoed store (that would re-enter this method).
+    private func persistSelection(_ botId: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            _ = try? await self.client.shellAction(ShellActions.select(botId: botId))
+        }
     }
 
     func reloadThread() async {
@@ -144,20 +197,24 @@ final class AppModel: ObservableObject {
     private func performReload(_ generation: Int) async {
         guard let bot = selectedBot else { return }
         do {
-            let events = try await client.events(botId: bot.id)
+            let state = try await client.threadState(botId: bot.id)
             guard generation == loadGeneration else { return }
-            var fresh = StreamProjection()
+            // Durable rows render before the session replay starts, so a long
+            // transcript appears at once instead of after the stream goes idle.
+            durableEvents = state.events
+            proposals = state.proposals
+            projection = StreamProjection()
+            rebuildTranscript()
             if let sessionId = bot.sessionId, !sessionId.isEmpty {
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
-                    fresh.apply(event)
+                    projection.apply(event)
+                    publishTranscript()
                 }
             }
             guard generation == loadGeneration else { return }
-            durableEvents = events
-            projection = fresh
-            rebuildTranscript()
-            threadError = fresh.failed ? "The last turn failed." : nil
+            publishTranscript(force: true)
+            threadError = projection.failed ? "The last turn failed." : nil
         } catch is CancellationError {
             return
         } catch {
@@ -173,12 +230,38 @@ final class AppModel: ObservableObject {
             let fresh = try await client.shell()
             store = fresh
             guard let bot = selectedBot else { return }
-            let events = try await client.events(botId: bot.id)
-            durableEvents = events
+            let state = try await client.threadState(botId: bot.id)
+            durableEvents = state.events
+            proposals = state.proposals
+            pruneBusyProposals()
             rebuildTranscript()
             threadError = nil
+            Task { [weak self] in
+                guard let self else { return }
+                await self.client.tick()
+            }
+            await refreshComposer()
         } catch {
             /* keep the last view; the next poll retries */
+        }
+    }
+
+    private func pruneBusyProposals() {
+        let live = Set(proposals.filter { $0.isOpen() }.map(\.id))
+        busyProposals = busyProposals.intersection(live)
+    }
+
+    func refreshComposer() async {
+        if let next = try? await client.composer() {
+            composer = next
+        }
+    }
+
+    func saveComposer(modelId: String? = nil, effort: String? = nil, speed: String? = nil) async {
+        if let next = try? await client.updateComposer(modelId: modelId, effort: effort, speed: speed) {
+            composer = next
+        } else {
+            await refreshComposer()
         }
     }
 
@@ -223,8 +306,9 @@ final class AppModel: ObservableObject {
                     guard generation == self.sendGeneration, self.sendBotId == bot.id else { return }
                     if event.type == "message.received" { sawUserTurn = true }
                     self.projection.apply(event)
-                    self.rebuildTranscript()
+                    self.publishTranscript()
                 }
+                self.publishTranscript(force: true)
                 guard generation == self.sendGeneration else { return }
                 if self.projection.failed {
                     self.threadError = "The turn failed."
@@ -243,6 +327,18 @@ final class AppModel: ObservableObject {
             }
             if generation == self.sendGeneration {
                 self.pending = false
+            }
+        }
+    }
+
+    func cancel() {
+        guard let bot = selectedBot else { return }
+        cancelSend()
+        pending = false
+        Task { [weak self] in
+            guard let self else { return }
+            if let sessionId = bot.sessionId, !sessionId.isEmpty {
+                _ = try? await self.client.cancel(sessionId: sessionId)
             }
         }
     }
@@ -275,20 +371,38 @@ final class AppModel: ObservableObject {
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
         current.bots[index].sessionId = sessionId
         current.bots[index].lastPreview = preview
+        current.bots[index].lastAt = ISO8601DateFormatter().string(from: Date())
         store = current
         try? await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
     }
 
+    /// Throttled transcript publish: at most one view rebuild per 100ms while
+    /// events stream in, with a forced rebuild when the turn settles.
+    private func publishTranscript(force: Bool = false) {
+        let now = Date()
+        if !force, now.timeIntervalSince(lastTranscriptPublish) < 0.1 { return }
+        lastTranscriptPublish = now
+        rebuildTranscript()
+    }
+
     private func rebuildTranscript() {
         let author = selectedBot?.name ?? "Useful Bot"
-        transcript = Transcript.merge(
+        var rows = Transcript.merge(
             events: durableEvents,
             messages: projection.messages,
             fallbackAuthor: author
         )
+        if let bot = selectedBot, bot.isGroup, let store {
+            let roster = Threads.groupMembers(
+                Threads.speakers(from: store.bots),
+                memberIds: bot.memberIds
+            )
+            rows = Transcript.attributeGroupReplies(rows, roster: roster)
+        }
+        transcript = rows
     }
 
-    // MARK: - Profile
+    // MARK: - Profile and shell actions
 
     func patchBot(botId: String, _ patch: [String: Any?]) {
         // Serialize saves so rapid taps cannot land out of order.
@@ -297,12 +411,243 @@ final class AppModel: ObservableObject {
             _ = await previous?.value
             guard let self else { return }
             do {
-                try await self.client.patchBot(botId: botId, patch: patch)
-                self.store = try await self.client.shell()
+                let next = try await self.client.shellAction(ShellActions.updateBot(botId: botId, patch: patch))
+                self.store = next
                 self.saveError = nil
             } catch {
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
             }
         }
+    }
+
+    func perform(_ action: [String: Any]) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let next = try await self.client.shellAction(action)
+                self.applyStore(next)
+                self.saveError = nil
+            } catch {
+                self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
+            }
+        }
+    }
+
+    /// Apply a store the server echoed and keep the local selection honest.
+    private func applyStore(_ next: ShellStore) {
+        store = next
+        if let selected = next.selectedBotId, next.bots.contains(where: { $0.id == selected }) {
+            if selected != selectedBotId {
+                select(selected)
+            }
+        } else if let current = selectedBotId, !next.bots.contains(where: { $0.id == current }) {
+            select(next.bots.first?.id ?? "")
+            return
+        }
+        rebuildTranscript()
+    }
+
+    func createBot(name: String, petname: String, label: String, description: String, sectionId: String?) {
+        Task { [weak self] in
+            guard let self else { return }
+            let action = ShellActions.createBot(
+                name: name,
+                petname: petname,
+                label: label,
+                description: description,
+                sectionId: sectionId
+            )
+            do {
+                let next = try await self.client.shellAction(action)
+                self.resetThread()
+                self.applyStore(next)
+            } catch {
+                self.saveError = (error as? LocalizedError)?.errorDescription ?? "Create failed."
+            }
+        }
+    }
+
+    func createGroup(name: String, memberIds: [String], sectionId: String?) {
+        Task { [weak self] in
+            guard let self else { return }
+            let action = ShellActions.createGroup(name: name, memberIds: memberIds, sectionId: sectionId)
+            do {
+                let next = try await self.client.shellAction(action)
+                self.resetThread()
+                self.applyStore(next)
+                self.settingsOpen = true
+            } catch {
+                self.saveError = (error as? LocalizedError)?.errorDescription ?? "Create failed."
+            }
+        }
+    }
+
+    func createSection(name: String) {
+        perform(ShellActions.createSection(name: name))
+    }
+
+    func rename(botId: String, name: String) {
+        perform(ShellActions.rename(botId: botId, name: name))
+    }
+
+    func delete(botId: String) {
+        perform(ShellActions.deleteBot(botId: botId))
+    }
+
+    /// New Bot from the rail: clear the thread server-side and start fresh.
+    func startNewChat(botId: String? = nil) {
+        guard let id = botId ?? selectedBotId else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            if self.store?.selectedBotId != id {
+                if let next = try? await self.client.shellAction(ShellActions.select(botId: id)) {
+                    self.store = next
+                }
+            }
+            if let cleared = try? await self.client.shellAction(ShellActions.clearThread(botId: id)) {
+                self.store = cleared
+            }
+            self.resetThread()
+            self.selectedBotId = id
+            self.rebuildTranscript()
+            self.settingsOpen = false
+            self.routineNotice = false
+        }
+    }
+
+    func openRecent(_ recentId: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let next = try await self.client.shellAction(ShellActions.openRecent(recentId: recentId))
+                let switched = next.selectedBotId != self.selectedBotId
+                self.applyStore(next)
+                if !switched {
+                    // Same bot, different stored session: the thread must be
+                    // reloaded explicitly or the old transcript stays on screen.
+                    await self.reloadThread()
+                }
+            } catch {
+                self.saveError = (error as? LocalizedError)?.errorDescription ?? "Open failed."
+            }
+        }
+    }
+
+    func toggleSection(_ sectionId: String) {
+        perform(ShellActions.toggleSection(sectionId: sectionId))
+    }
+
+    private func resetThread() {
+        loadGeneration += 1
+        reloadTask?.cancel()
+        durableEvents = []
+        proposals = []
+        projection = StreamProjection()
+        transcript = []
+        pending = false
+    }
+
+    // MARK: - Proposals
+
+    func decideProposal(_ proposal: Proposal, confirmed: Bool) {
+        guard !busyProposals.contains(proposal.id) else { return }
+        busyProposals.insert(proposal.id)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if confirmed, let action = ProposalActions.confirm(proposal) {
+                    let next = try await self.client.shellAction(
+                        action,
+                        proposalId: proposal.id,
+                        proposalStatus: "confirmed"
+                    )
+                    self.applyStore(next)
+                } else {
+                    let next = try await self.client.resolveProposal(
+                        proposalId: proposal.id,
+                        status: confirmed ? "confirmed" : "dismissed"
+                    )
+                    self.applyStore(next)
+                }
+                self.threadError = nil
+                self.busyProposals.remove(proposal.id)
+                await self.reloadThread()
+            } catch {
+                self.busyProposals.remove(proposal.id)
+                self.threadError = (error as? LocalizedError)?.errorDescription ?? "Proposal failed."
+            }
+        }
+    }
+
+    // MARK: - Onboarding
+
+    func onboardingDismissed(for botId: String) -> Bool {
+        onboardingDismissedFor.contains(botId)
+            || UserDefaults.standard.bool(forKey: "ub-onboarding:\(botId)")
+    }
+
+    func dismissOnboarding(botId: String) {
+        onboardingDismissedFor.insert(botId)
+        UserDefaults.standard.set(true, forKey: "ub-onboarding:\(botId)")
+    }
+
+    var showOnboarding: Bool {
+        guard let bot = selectedBot, !onboardingDismissed(for: bot.id) else { return false }
+        guard bot.kind == "bot", bot.id != Threads.defaultBotId else { return false }
+        return bot.label.trimmingCharacters(in: .whitespaces).isEmpty
+            && bot.description.trimmingCharacters(in: .whitespaces).isEmpty
+            && durableEvents.isEmpty
+            && transcript.isEmpty
+            && openProposals.isEmpty
+    }
+
+    var openProposals: [Proposal] {
+        proposals.filter { $0.isOpen() }
+    }
+
+    var hasThreadContent: Bool {
+        !transcript.isEmpty || !openProposals.isEmpty || showOnboarding
+    }
+
+    // MARK: - Memory
+
+    func loadMemory(botId: String) async {
+        memoryNotes = (try? await client.memoryNotes(botId: botId)) ?? []
+    }
+
+    // MARK: - Composer attachments
+
+    func addAttachments(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        attachError = nil
+        let room = max(Attachments.maxFiles - attachments.count, 0)
+        let incoming = Array(urls.prefix(room))
+        Task { [weak self] in
+            guard let self else { return }
+            var next = self.attachments
+            for url in incoming {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                let type = UTType(filenameExtension: url.pathExtension)?.identifier ?? "application/octet-stream"
+                do {
+                    let attachment = try await self.client.uploadAttachment(fileURL: url, mimeType: type)
+                    next.append(attachment)
+                } catch is Attachments.NameError {
+                    self.attachError = "That file name is not allowed."
+                } catch {
+                    self.attachError = "Attach failed."
+                }
+            }
+            self.attachments = next
+        }
+    }
+
+    func removeAttachment(id: String) {
+        attachments.removeAll { $0.id == id }
+    }
+
+    func clearAttachments() {
+        attachments = []
+        attachError = nil
     }
 }

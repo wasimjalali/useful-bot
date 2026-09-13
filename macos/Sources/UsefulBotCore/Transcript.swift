@@ -9,12 +9,26 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var kind: Kind
     public var text: String
     public var author: String?
+    public var authorBotId: String?
+    public var targetBotIds: [String]
+    public var handoffId: String?
 
-    public init(id: String, kind: Kind, text: String, author: String? = nil) {
+    public init(
+        id: String,
+        kind: Kind,
+        text: String,
+        author: String? = nil,
+        authorBotId: String? = nil,
+        targetBotIds: [String] = [],
+        handoffId: String? = nil
+    ) {
         self.id = id
         self.kind = kind
         self.text = text
         self.author = author
+        self.authorBotId = authorBotId
+        self.targetBotIds = targetBotIds
+        self.handoffId = handoffId
     }
 }
 
@@ -41,7 +55,12 @@ public enum Transcript {
                 id: event.id,
                 kind: kind,
                 text: text,
-                author: event.authorName ?? (kind == .assistant ? fallbackAuthor : nil)
+                // Only a durable author label renders; the web treats an
+                // unattributed stream echo as unlabelled.
+                author: event.authorName,
+                authorBotId: event.authorBotId,
+                targetBotIds: event.targetBotIds,
+                handoffId: event.handoffId
             ))
             if kind == .user {
                 durableUserCounts[text, default: 0] += 1
@@ -62,12 +81,29 @@ public enum Transcript {
                 rows.append(TranscriptRow(
                     id: message.id,
                     kind: .assistant,
-                    text: message.text,
-                    author: fallbackAuthor
+                    text: message.text
                 ))
             }
         }
         return rows
+    }
+
+    /// Attribute an untagged group reply by the member mention in the user turn
+    /// that produced it, the same rule the web client applies.
+    public static func attributeGroupReplies(_ rows: [TranscriptRow], roster: [Speaker]) -> [TranscriptRow] {
+        guard !roster.isEmpty else { return rows }
+        var next = rows
+        for (index, row) in next.enumerated() {
+            if row.kind != .assistant || row.authorBotId != nil { continue }
+            let previousUser = next[..<index].last { $0.kind == .user }
+            guard let previousUser else { continue }
+            let mentions = Threads.parseMentions(previousUser.text, bots: roster).mentionIds
+            guard mentions.count == 1,
+                  let speaker = roster.first(where: { $0.id == mentions[0] }) else { continue }
+            next[index].authorBotId = speaker.id
+            next[index].author = speaker.name
+        }
+        return next
     }
 
     private static func kindFor(_ raw: String) -> TranscriptRow.Kind {

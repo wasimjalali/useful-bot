@@ -45,6 +45,41 @@ import Testing
         #expect(rows.first?.text == "final text")
     }
 
+    @Test func groupRepliesAreAttributedByTheMentionThatProducedThem() {
+        let user = TranscriptRow(id: "u1", kind: .user, text: "@Writer tighten this")
+        let reply = TranscriptRow(id: "a1", kind: .assistant, text: "done")
+        let rows = Transcript.attributeGroupReplies(
+            [user, reply],
+            roster: [
+                Speaker(id: "b1", kind: "bot", name: "Writer", title: ""),
+                Speaker(id: "b2", kind: "bot", name: "Research", title: ""),
+            ]
+        )
+        #expect(rows[1].authorBotId == "b1")
+        #expect(rows[1].author == "Writer")
+    }
+
+    @Test func untargetedGroupRepliesStayUnattributed() {
+        let user = TranscriptRow(id: "u1", kind: .user, text: "kick off")
+        let reply = TranscriptRow(id: "a1", kind: .assistant, text: "on it")
+        let rows = Transcript.attributeGroupReplies(
+            [user, reply],
+            roster: [Speaker(id: "b1", kind: "bot", name: "Writer", title: "")]
+        )
+        #expect(rows[1].authorBotId == nil)
+    }
+
+    @Test func durableAttributionSurvivesTheMerge() throws {
+        let event = try JSONDecoder().decode(AgentEvent.self, from: Data(#"""
+        {"id":"e1","kind":"handoff","text":"task","authorBotId":"b7","authorName":"Writer",
+         "targetBotIds":["b8"],"handoffId":"h1"}
+        """#.utf8))
+        let rows = Transcript.merge(events: [event], messages: [], fallbackAuthor: "Bot")
+        #expect(rows.first?.authorBotId == "b7")
+        #expect(rows.first?.targetBotIds == ["b8"])
+        #expect(rows.first?.handoffId == "h1")
+    }
+
     @Test func mergeRendersHandoffsAndNotes() throws {
         let handoff = try JSONDecoder().decode(
             AgentEvent.self,

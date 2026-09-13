@@ -21,8 +21,19 @@ public enum BackendError: Error, LocalizedError, Equatable {
 }
 
 private struct ShellResponse: Decodable { let store: ShellStore }
-private struct StateResponse: Decodable { let events: [AgentEvent] }
+private struct StateResponse: Decodable {
+    let events: [AgentEvent]
+    let proposals: [Proposal]
+}
 private struct SendResponse: Decodable { let sessionId: String? }
+private struct ProvidersResponse: Decodable { let composer: ComposerState? }
+private struct MemoryResponse: Decodable { let notes: [MemoryNote] }
+private struct AttachmentResponse: Decodable {
+    let name: String?
+    let bytes: Int?
+    let text: String?
+    let error: String?
+}
 
 private final class ActivityBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -171,7 +182,7 @@ public actor BackendClient {
         return decoded.store
     }
 
-    public func events(botId: String) async throws -> [AgentEvent] {
+    public func threadState(botId: String) async throws -> (events: [AgentEvent], proposals: [Proposal]) {
         let (data, response) = try await perform { client, _ in
             var components = URLComponents(
                 url: client.base.appendingPathComponent("api/agent/state"),
@@ -184,7 +195,76 @@ public actor BackendClient {
         guard let decoded = try? JSONDecoder().decode(StateResponse.self, from: data) else {
             throw BackendError.decoding
         }
-        return decoded.events
+        return (decoded.events, decoded.proposals)
+    }
+
+    public func events(botId: String) async throws -> [AgentEvent] {
+        try await threadState(botId: botId).events
+    }
+
+    /// The operator identity shown in the rail's account row.
+    public func status() async throws -> (name: String?, initials: String?) {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/status"))
+        }
+        try Self.expectOK(response)
+        let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let operatorRow = body?["operator"] as? [String: Any]
+        return (operatorRow?["name"] as? String, operatorRow?["initials"] as? String)
+    }
+
+    /// Ask the proxy to cancel the active turn on a session.
+    public func cancel(sessionId: String) async throws {
+        let (_, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("eve/v1/session/\(sessionId)/cancel"))
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectOK(response)
+    }
+
+    public func memoryNotes(botId: String) async throws -> [MemoryNote] {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/memory"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
+            return URLRequest(url: components?.url ?? client.base)
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(MemoryResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.notes
+    }
+
+    public func composer() async throws -> ComposerState? {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/providers"))
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.composer
+    }
+
+    /// Drain the handoff pump the way the web poll does. Best effort: the next
+    /// poll retries and the agent-side wake-up also drives the queue.
+    public func tick() async {
+        _ = try? await perform { client, token in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/agent/tick"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "limit", value: "2")]
+            var request = URLRequest(url: components?.url ?? client.base)
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
     }
 
     // MARK: - Writes
@@ -239,20 +319,106 @@ public actor BackendClient {
     /// Apply a profile patch through the shell action endpoint. Nil values are
     /// sent as null: the server treats them as "clear this field".
     public func patchBot(botId: String, patch: [String: Any?]) async throws {
-        var clean: [String: Any] = [:]
-        for (key, value) in patch {
-            clean[key] = value ?? NSNull()
-        }
-        let (_, response) = try await perform { client, token in
-            let action: [String: Any] = ["type": "updateBot", "botId": botId, "patch": clean]
+        _ = try await shellAction(ShellActions.updateBot(botId: botId, patch: patch))
+    }
+
+    /// Send any shell action, optionally resolving a proposal in the same
+    /// write. Returns the authoritative store the server echoed back.
+    @discardableResult
+    public func shellAction(
+        _ action: [String: Any],
+        proposalId: String? = nil,
+        proposalStatus: String? = nil
+    ) async throws -> ShellStore {
+        var body: [String: Any] = ["action": action]
+        if let proposalId { body["proposalId"] = proposalId }
+        if let proposalStatus { body["proposalStatus"] = proposalStatus }
+        let (data, response) = try await perform { client, token in
             var request = URLRequest(url: client.base.appendingPathComponent("api/shell"))
             request.httpMethod = "PUT"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action])
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
             return request
         }
         try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.store
+    }
+
+    /// Resolve a proposal without a shell action (the dismiss path).
+    @discardableResult
+    public func resolveProposal(proposalId: String, status: String) async throws -> ShellStore {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/shell"))
+            request.httpMethod = "PUT"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "proposalId": proposalId,
+                "proposalStatus": status,
+            ])
+            return request
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.store
+    }
+
+    /// Persist effort/speed/model choices from the composer chip.
+    @discardableResult
+    public func updateComposer(modelId: String? = nil, effort: String? = nil, speed: String? = nil) async throws -> ComposerState? {
+        var patch: [String: Any] = [:]
+        if let modelId { patch["modelId"] = modelId }
+        if let effort { patch["effort"] = effort }
+        if let speed { patch["speed"] = speed }
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/providers"))
+            request.httpMethod = "PUT"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: patch)
+            return request
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.composer
+    }
+
+    /// Upload one attachment for the composer. The caller is responsible for
+    /// the extension/size checks in `Attachments`.
+    public func uploadAttachment(fileURL: URL, mimeType: String) async throws -> Attachment {
+        let data = try Data(contentsOf: fileURL)
+        let name = try Attachments.safeName(fileURL.lastPathComponent)
+        let boundary = "useful-bot-\(UUID().uuidString)"
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(name)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        let (responseData, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/attachments"))
+            request.httpMethod = "POST"
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = body
+            return request
+        }
+        let decoded = try? JSONDecoder().decode(AttachmentResponse.self, from: responseData)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw BackendError.http(http.statusCode)
+        }
+        guard let decoded, let resolvedName = decoded.name, let bytes = decoded.bytes else {
+            throw BackendError.decoding
+        }
+        return Attachment(id: name, name: resolvedName, bytes: bytes, text: decoded.text)
     }
 
     // MARK: - Stream
