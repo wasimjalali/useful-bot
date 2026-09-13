@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { ShellBot, ShellStore } from "../../shared/shell-store.ts";
 import { CloseIcon } from "./icons";
 
@@ -18,7 +19,27 @@ export function BotSettingsPanel({
   onPatch: (patch: Partial<Pick<ShellBot, "name" | "label" | "description" | "notify" | "memberIds">>) => void;
   routineNotice?: boolean;
 }) {
+  const [name, setName] = useState(bot.name);
+  const [label, setLabel] = useState(bot.label);
+  const [description, setDescription] = useState(bot.description);
   const members = store.bots.filter((item) => item.kind === "bot" && item.id !== bot.id && !item.hidden);
+
+  useEffect(() => {
+    setName(bot.name);
+    setLabel(bot.label);
+    setDescription(bot.description);
+  }, [bot.id, bot.name, bot.label, bot.description]);
+
+  function commitName() {
+    if (name.trim() && name !== bot.name) onPatch({ name });
+  }
+  function commitLabel() {
+    if (label !== bot.label) onPatch({ label });
+  }
+  function commitDescription() {
+    if (description !== bot.description) onPatch({ description });
+  }
+
   return (
     <aside className="settings-pane uv-scroll" aria-label={`${bot.name} settings`}>
       <header className="flex items-center justify-between gap-2 px-4 py-3">
@@ -34,8 +55,9 @@ export function BotSettingsPanel({
             autoComplete="off"
             className="field-input min-h-10 w-full px-3 text-sm"
             id="settings-name"
-            onChange={(event) => onPatch({ name: event.target.value })}
-            value={bot.name}
+            onBlur={commitName}
+            onChange={(event) => setName(event.target.value)}
+            value={name}
           />
         </div>
         <div className="field">
@@ -44,8 +66,9 @@ export function BotSettingsPanel({
             autoComplete="off"
             className="field-input min-h-10 w-full px-3 text-sm"
             id="settings-label"
-            onChange={(event) => onPatch({ label: event.target.value })}
-            value={bot.label}
+            onBlur={commitLabel}
+            onChange={(event) => setLabel(event.target.value)}
+            value={label}
           />
         </div>
         <div className="field">
@@ -53,8 +76,9 @@ export function BotSettingsPanel({
           <textarea
             className="field-input min-h-24 w-full resize-none px-3 py-2 text-sm"
             id="settings-description"
-            onChange={(event) => onPatch({ description: event.target.value })}
-            value={bot.description}
+            onBlur={commitDescription}
+            onChange={(event) => setDescription(event.target.value)}
+            value={description}
           />
         </div>
         <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2.5">

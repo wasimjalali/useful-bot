@@ -30,6 +30,12 @@ function nextId() {
   return `m${seq}`;
 }
 
+async function csrfHeaders(): Promise<Record<string, string>> {
+  const res = await fetch("/api/auth/session", { credentials: "include" });
+  const session = await res.json() as { csrfToken?: string };
+  return { "x-ub-csrf": session.csrfToken ?? "" };
+}
+
 function titleFrom(text: string): string {
   return text.length > 42 ? `${text.slice(0, 42)}...` : text;
 }
@@ -299,10 +305,11 @@ export default function Page() {
     }));
     try {
       const sessionId = selected.sessionId ?? active;
+      const csrf = await csrfHeaders();
       const res = await fetch(sessionId ? `/eve/v1/session/${sessionId}` : "/eve/v1/session", {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...csrf },
         body: JSON.stringify({ message: text }),
       });
       if (!res.ok) {
@@ -328,8 +335,13 @@ export default function Page() {
     if (!active) return;
     const settle = () => setProj((current) => ({ ...current, pending: false }));
     try {
+      const csrf = await csrfHeaders();
       await Promise.race([
-        fetch(`/eve/v1/session/${active}/cancel`, { method: "POST", credentials: "include" }),
+        fetch(`/eve/v1/session/${active}/cancel`, {
+          method: "POST",
+          credentials: "include",
+          headers: csrf,
+        }),
         new Promise((resolve) => setTimeout(resolve, 2000)),
       ]);
     } finally {
@@ -354,8 +366,8 @@ export default function Page() {
   }
 
   async function askReviewer() {
-    const user = [...messages].reverse().find((message) => message.role === "user");
-    const assistant = [...messages].reverse().find((message) => message.role === "assistant");
+    const user = [...proj.messages].reverse().find((message) => message.role === "user");
+    const assistant = [...proj.messages].reverse().find((message) => message.role === "assistant");
     const text = [user?.text, assistant?.text].filter(Boolean).join("\n\n").trim();
     if (!text || reviewPending) return;
     setReviewPending(true);
@@ -558,10 +570,10 @@ export default function Page() {
                     </p>
                     <div className="mt-8 w-full max-w-2xl">
                       <ChatComposer
-                        disabled={false}
+                        disabled={pending}
                         onChange={setDraft}
                         onSend={() => void send()}
-                        pending={false}
+                        pending={pending}
                         placeholder={`Ask ${bot.name}`}
                         value={draft}
                       />
