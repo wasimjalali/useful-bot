@@ -159,8 +159,11 @@ html, body {
     border: 1px solid var(--border-strong);
     border-radius: 12px;
     background: var(--surface);
+    color: var(--ink);
+    caret-color: var(--ink);
     transition: border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
   }
+  .field-input::placeholder { color: var(--ink-faint); }
   .field-input:focus-within,
   .field-input:focus {
     outline: none;

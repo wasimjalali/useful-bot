@@ -19,9 +19,11 @@ export function Dialog({
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const panel = panelRef.current;
-    (panel?.querySelector<HTMLElement>(
-      "input, textarea, button:not([disabled])",
-    ) ?? panel)?.focus();
+    const focusTarget =
+      panel?.querySelector<HTMLElement>("input:not([type='hidden']), textarea, select") ??
+      panel?.querySelector<HTMLElement>("button:not([disabled])") ??
+      panel;
+    focusTarget?.focus();
 
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
