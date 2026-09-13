@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { ShellBot } from "../../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, type ShellBot } from "../../shared/shell-store.ts";
 import { Dialog } from "./dialog";
 
 export function CreateBotDialog({
@@ -10,7 +10,7 @@ export function CreateBotDialog({
   sectionName,
 }: {
   onClose: () => void;
-  onSubmit: (input: { name: string; label: string; description: string }) => void;
+  onSubmit: (input: { name: string; petname: string; label: string; description: string }) => void;
   sectionName?: string;
 }) {
   const [name, setName] = useState("");
@@ -23,12 +23,18 @@ export function CreateBotDialog({
         onSubmit={(event) => {
           event.preventDefault();
           if (!name.trim()) return;
-          onSubmit({ name: name.trim(), label: label.trim(), description: description.trim() });
+          onSubmit({
+            name: name.trim(),
+            petname: name.trim(),
+            label: label.trim(),
+            description: description.trim(),
+          });
         }}
       >
         <h2 className="text-base font-semibold">Create bot</h2>
         <p className="mt-1 text-sm text-ink-muted">
-          {sectionName ? `Added to ${sectionName}.` : "Lands in Unassigned until you move it."}
+          {sectionName ? `Added to ${sectionName}. ` : "Lands in Unassigned until you move it. "}
+          Leave the name blank-ish if you want the bot to ask what it should be: you can confirm the real name in chat.
         </p>
         <div className="mt-4 grid gap-3">
           <div className="field">
@@ -84,7 +90,9 @@ export function CreateGroupDialog({
   onClose: () => void;
   onSubmit: (input: { name: string; memberIds: string[] }) => void;
 }) {
-  const candidates = useMemo(() => bots.filter((bot) => bot.kind === "bot" && !bot.hidden), [bots]);
+  const candidates = useMemo(() => bots.filter((bot) => (
+    bot.kind === "bot" && !bot.hidden && bot.id !== DEFAULT_BOT_ID
+  )), [bots]);
   const [name, setName] = useState("");
   const [memberIds, setMemberIds] = useState<string[]>([]);
   function toggle(id: string) {
@@ -102,7 +110,7 @@ export function CreateGroupDialog({
       >
         <h2 className="text-base font-semibold">Create group chat</h2>
         <p className="mt-1 text-sm text-ink-muted">
-          Local group label. Replies still stream from the Useful Bot agent.
+          Pick 2 to 6 bots. Untargeted messages go to Useful Bot as orchestrator; @name directs one member.
         </p>
         <div className="field mt-4">
           <label htmlFor="group-name">Name</label>
@@ -115,8 +123,15 @@ export function CreateGroupDialog({
           />
         </div>
         <fieldset className="mt-4">
-          <legend className="text-[13px] font-medium text-ink-muted">Members</legend>
+          <legend className="text-[13px] font-medium text-ink-muted">
+            Members {memberIds.length}/6
+          </legend>
           <div className="mt-2 max-h-40 space-y-1 overflow-y-auto uv-scroll">
+            {candidates.length === 0 ? (
+              <p className="px-1 py-1 text-[13px] text-ink-muted">
+                Create a second bot first, then this group can hold both.
+              </p>
+            ) : null}
             {candidates.map((bot) => (
               <label className="nav-item cursor-pointer text-sm" key={bot.id}>
                 <input
@@ -133,7 +148,11 @@ export function CreateGroupDialog({
           <button className="btn btn-secondary min-h-9 px-3 text-sm" onClick={onClose} type="button">
             Cancel
           </button>
-          <button className="btn btn-primary min-h-9 px-3 text-sm" disabled={!name.trim()} type="submit">
+          <button
+            className="btn btn-primary min-h-9 px-3 text-sm"
+            disabled={!name.trim() || memberIds.length < 2}
+            type="submit"
+          >
             Create group
           </button>
         </div>

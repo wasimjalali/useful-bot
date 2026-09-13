@@ -15,21 +15,31 @@ import { NewChatPicker } from "../components/new-chat-picker";
 import { AppSettingsDialog, type AppSettingsTab } from "../components/app-settings-dialog";
 import { ConnectorsDialog } from "../components/marketplace-dialog";
 import { SearchChips } from "../components/search-chips";
+import { GroupSettingsPanel } from "../components/group-settings-panel";
+import { OnboardingCard, ProposalCard, type ProposalDecision } from "../components/proposal-card";
 import {
   applyEveEvent,
   consumeEveNdjson,
   createProjection,
   type StreamProjection,
 } from "../../shared/eve-stream.ts";
-import { selectedBot, type ShellBot } from "../../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, PREVIEW_MAX, selectedBot, type ShellBot } from "../../shared/shell-store.ts";
+import {
+  parseSessionRouteHeader,
+  type SessionRoute,
+} from "../../shared/eve-proxy.ts";
 import { useShell } from "../lib/use-shell.ts";
+import { useAgentThread } from "../lib/use-agent-thread.ts";
 
 type CreateKind = "bot" | "group" | "section";
 
 let seq = 0;
-function nextId() {
+function nextSeq() {
   seq += 1;
-  return `m${seq}`;
+  return seq;
+}
+function nextId() {
+  return `m${nextSeq()}`;
 }
 
 async function csrfHeaders(): Promise<Record<string, string>> {
@@ -75,13 +85,38 @@ export default function Page() {
   const [operator, setOperator] = useState({ name: "Desktop owner", initials: "DO" });
   const [approvals, setApprovals] = useState<Array<{ id: string; hash: string; preview: string; tool: string }>>([]);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
+  const [route, setRoute] = useState<SessionRoute | null>(null);
+  const [transcriptUser, setTranscriptUser] = useState<Array<{ id: string; text: string }>>([]);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const hydrated = useRef(false);
   const sendLock = useRef(false);
   const { store, error: shellError, dispatch, selected } = useShell(Boolean(authed));
+  const selectedIdForThread = selected?.id ?? null;
+  const {
+    events: threadEvents,
+    proposals,
+    error: threadError,
+    refresh: refreshThread,
+  } = useAgentThread(Boolean(authed), selectedIdForThread);
   activeRef.current = active;
+
+  useEffect(() => {
+    setTranscriptUser([]);
+    setRoute(null);
+  }, [selectedIdForThread]);
+
+  useEffect(() => {
+    const key = selectedIdForThread ? `ub-onboarding:${selectedIdForThread}` : "";
+    if (!key) return;
+    try {
+      setOnboardingDismissed(window.localStorage.getItem(key) === "1");
+    } catch {
+      setOnboardingDismissed(false);
+    }
+  }, [selectedIdForThread]);
 
   useEffect(() => {
     fetch("/api/auth/session", { credentials: "include" })
@@ -225,7 +260,10 @@ export default function Page() {
     if (!selected || proj.pending) return;
     if ((selected.sessionId ?? null) !== active) return;
     const last = proj.messages.at(-1);
-    if (!last?.text || last.text === selected.lastPreview) return;
+    if (!last?.text) return;
+    // The store clips previews, so compare against the clipped form: comparing
+    // the full text re-dispatched touchChat forever for any long reply.
+    if (last.text.trim().slice(0, PREVIEW_MAX) === selected.lastPreview) return;
     dispatch({ type: "touchChat", botId: selected.id, preview: last.text });
   }, [active, dispatch, proj.messages, proj.pending, selected]);
 
@@ -255,7 +293,8 @@ export default function Page() {
   function startNewChat(botId?: string) {
     const id = botId ?? store?.selectedBotId;
     if (botId) dispatch({ type: "select", botId });
-    dispatch({ type: "newChat", botId: id });
+    if (id) dispatch({ type: "clearThread", botId: id });
+    setTranscriptUser([]);
     projSession.current = null;
     setActive(null);
     setProj(createProjection());
@@ -318,6 +357,11 @@ export default function Page() {
       if (!res.ok) {
         throw new Error(res.status === 503 ? "Agent unavailable" : "Send failed");
       }
+      const nextRoute = parseSessionRouteHeader(res.headers.get("x-ub-route"));
+      if (nextRoute) setRoute(nextRoute);
+      setTranscriptUser((current) => (
+        current.some((item) => item.text === message) ? current : [...current, { id: `u-${nextSeq()}`, text: message }]
+      ));
       const body = (await res.json()) as { sessionId?: string };
       const sid = body.sessionId ?? sessionId;
       if (sid) {
@@ -326,6 +370,7 @@ export default function Page() {
         dispatch({ type: "touchChat", botId: selected.id, preview: message, sessionId: sid });
         setQuery(selected.id, sid);
       }
+      void refreshThread(selected.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Send failed";
       if (message === "unauthorized") setAuthed(false);
@@ -373,9 +418,110 @@ export default function Page() {
   const messages = proj.messages;
   const pending = proj.pending;
   const searchHits = proj.searchHits;
-  const displayError = error || proj.error || shellError;
+  const displayError = error || proj.error || shellError || threadError;
   const showSpinner = pending && !proj.blockOpen && !proj.currentAssistantId;
   const bot = selected ?? (store ? selectedBot(store) : null);
+
+  type ThreadRow = {
+    id: string;
+    kind: "user" | "assistant" | "handoff" | "post" | "note" | "proposal";
+    text: string;
+    authorName: string | null;
+    authorBotId: string | null;
+    handoffId: string | null;
+    targetBotIds: string[];
+    order: number;
+  };
+
+  const memberNames = bot && bot.kind === "group" && store
+    ? bot.memberIds
+      .map((id) => store.bots.find((item) => item.id === id)?.name ?? "")
+      .filter((name) => name.length > 0)
+    : [];
+
+  // Durable transcript (handoffs, routed replies, confirmations) merged with the
+  // live stream projection. Event ids dedupe replays of the same turn.
+  const threadRows: ThreadRow[] = (() => {
+    const rows: ThreadRow[] = threadEvents.map((event, index) => ({
+      id: event.id,
+      kind: event.kind,
+      text: event.text,
+      authorName: event.authorName,
+      authorBotId: event.authorBotId,
+      handoffId: event.handoffId,
+      targetBotIds: event.targetBotIds,
+      order: index,
+    }));
+    const head = proj.messages.length;
+    const streamIds = new Set(threadEvents.map((event) => event.id));
+    const streamedUserTexts = new Set(
+      proj.messages.filter((message) => message.role === "user").map((message) => message.text),
+    );
+    for (const message of proj.messages) {
+      if (streamIds.has(message.id)) continue;
+      if (message.role === "user" && streamedUserTexts.has(message.text)) {
+        const known = rows.some((row) => row.kind === "user" && row.text === message.text);
+        if (known) continue;
+      }
+      rows.push({
+        id: message.id,
+        kind: message.role === "user" ? "user" : "assistant",
+        text: message.text,
+        authorName: message.role === "user" ? null : null,
+        authorBotId: message.role === "user" ? null : null,
+        handoffId: null,
+        targetBotIds: [],
+        order: head + rows.length,
+      });
+    }
+    for (const item of transcriptUser) {
+      const known = rows.some((row) => row.kind === "user" && row.text === item.text);
+      if (known) continue;
+      rows.push({
+        id: item.id,
+        kind: "user",
+        text: item.text,
+        authorName: null,
+        authorBotId: null,
+        handoffId: null,
+        targetBotIds: [],
+        order: head + rows.length,
+      });
+    }
+    return rows;
+  })();
+
+  const isDefaultBot = !bot || bot.id === DEFAULT_BOT_ID;
+  const openProposals = proposals.filter((proposal) => proposal.status === "pending");
+  const showOnboarding = Boolean(bot)
+    && !isDefaultBot
+    && bot?.kind === "bot"
+    && !onboardingDismissed
+    && threadEvents.length === 0
+    && threadRows.length === 0
+    && openProposals.length === 0;
+
+  function decideProposal(decision: ProposalDecision) {
+    if (decision.action) dispatch(decision.action, {
+      proposalId: decision.proposalId,
+      proposalStatus: decision.proposalStatus,
+    });
+    else dispatch({ type: "select", botId: bot?.id ?? store?.selectedBotId ?? DEFAULT_BOT_ID }, {
+      proposalId: decision.proposalId,
+      proposalStatus: decision.proposalStatus,
+    });
+    if (selectedIdForThread) void refreshThread(selectedIdForThread);
+  }
+
+  function dismissOnboarding() {
+    if (!selectedIdForThread) return;
+    try {
+      window.localStorage.setItem(`ub-onboarding:${selectedIdForThread}`, "1");
+    } catch {
+      /* private mode: the card just comes back next launch */
+    }
+    setOnboardingDismissed(true);
+  }
 
   if (authed === null) {
     return <div className="flex h-screen w-full bg-canvas" />;
@@ -522,7 +668,14 @@ export default function Page() {
                     <MenuIcon className="size-4" />
                   </button>
                   <BotAvatar bot={bot} size="sm" />
-                  <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold">{bot.name}</h1>
+                  <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+                    {bot.name}
+                    {bot.kind === "group" && memberNames.length > 0 ? (
+                      <span className="ml-2 text-[12px] font-normal text-ink-faint">
+                        {memberNames.length} members
+                      </span>
+                    ) : null}
+                  </h1>
                   <button
                     aria-label="Bot settings"
                     className="icon-btn tip size-8"
@@ -534,14 +687,14 @@ export default function Page() {
                   </button>
                 </header>
 
-                {messages.length === 0 && !pending ? (
+                {threadRows.length === 0 && openProposals.length === 0 && !pending && !showOnboarding ? (
                   <div className="rise flex min-h-0 flex-1 flex-col items-center justify-center px-4 text-center">
                     <h2 className="max-w-2xl text-2xl font-semibold tracking-[-0.03em] text-ink sm:text-[28px]">
                       What can I do for you?
                     </h2>
                     <p className="mt-2 max-w-md text-[15px] leading-6 text-ink-muted">
                       {bot.kind === "group"
-                        ? "Group chat on this Mac. Replies still come from Useful Bot."
+                        ? `Group chat with ${memberNames.join(", ") || "no members yet"}. Untargeted messages go to the orchestrator; @name directs one bot.`
                         : "Runs locally on this Mac. Writes and commands need your approval."}
                     </p>
                   </div>
@@ -549,22 +702,68 @@ export default function Page() {
                   <div className="uv-scroll min-h-0 flex-1 overflow-y-auto">
                     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
                       <div className="flex flex-col gap-6">
-                        {messages.map((message) =>
-                          message.role === "user" ? (
-                            <div className="msg-in flex justify-end" key={message.id}>
-                              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
-                                {message.text}
+                        {showOnboarding ? (
+                          <OnboardingCard
+                            onDismiss={dismissOnboarding}
+                            onFillForm={() => {
+                              dismissOnboarding();
+                              setSettingsOpen(true);
+                            }}
+                            petname={bot.petname || bot.name}
+                          />
+                        ) : null}
+                        {threadRows.map((row) => {
+                          if (row.kind === "user") {
+                            return (
+                              <div className="msg-in flex justify-end" key={row.id}>
+                                <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
+                                  {row.text}
+                                </div>
                               </div>
-                            </div>
-                          ) : (
-                            <div className="msg-in flex gap-3" key={message.id}>
-                              <BotAvatar bot={bot} size="sm" />
+                            );
+                          }
+                          const speaker = row.authorBotId
+                            ? store.bots.find((item) => item.id === row.authorBotId) ?? bot
+                            : bot;
+                          const handoff = row.kind === "handoff" || row.kind === "post";
+                          const targetNames = row.targetBotIds
+                            .map((id) => store.bots.find((item) => item.id === id)?.name ?? "")
+                            .filter((name) => name.length > 0);
+                          return (
+                            <div className="msg-in flex gap-3" key={row.id}>
+                              <BotAvatar bot={speaker} size="sm" />
                               <div className="min-w-0 flex-1 pt-0.5">
-                                <ChatMarkdown text={message.text} />
+                                {handoff || row.authorName || row.kind === "note" ? (
+                                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-faint">
+                                    {row.kind === "handoff" && targetNames.length > 0
+                                      ? `Handoff to ${targetNames.join(", ")}`
+                                      : row.kind === "post"
+                                        ? `${row.authorName ?? "A bot"} to this chat`
+                                        : row.authorName ?? speaker.name}
+                                  </p>
+                                ) : null}
+                                {row.kind === "note" ? (
+                                  <p className="text-[13px] text-ink-muted">{row.text}</p>
+                                ) : (
+                                  <ChatMarkdown text={row.text} />
+                                )}
                               </div>
                             </div>
-                          ),
-                        )}
+                          );
+                        })}
+                        {openProposals.map((proposal) => (
+                          <div className="msg-in flex gap-3" key={proposal.id}>
+                            <BotAvatar bot={bot} size="sm" />
+                            <div className="min-w-0 flex-1 pt-0.5">
+                              <ProposalCard
+                                bots={store.bots}
+                                onDecision={decideProposal}
+                                pending={false}
+                                proposal={proposal}
+                              />
+                            </div>
+                          </div>
+                        ))}
                         {showSpinner ? (
                           <div className="msg-in flex gap-3" role="status">
                             <BotAvatar bot={bot} size="sm" />
@@ -594,12 +793,23 @@ export default function Page() {
                     onSend={(text) => void send(text)}
                     onStop={() => void cancel()}
                     pending={pending}
-                    placeholder={`Message ${bot.name}`}
+                    placeholder={bot.kind === "group"
+                      ? `Message this group. @name to direct one bot`
+                      : `Message ${bot.name}`}
                     value={draft}
                   />
                 </div>
               </div>
-              {settingsOpen ? (
+              {settingsOpen && bot.kind === "group" ? (
+                <GroupSettingsPanel
+                  group={bot}
+                  onClose={() => setSettingsOpen(false)}
+                  onDeleteRequest={() => setDeleteBot(bot)}
+                  onPatch={(patch) => dispatch({ type: "updateBot", botId: bot.id, patch })}
+                  store={store}
+                />
+              ) : null}
+              {settingsOpen && bot.kind === "bot" ? (
                 <BotSettingsPanel
                   bot={bot}
                   onClose={() => {
@@ -649,6 +859,7 @@ export default function Page() {
             dispatch({
               type: "createBot",
               name: input.name,
+              petname: input.petname,
               label: input.label,
               description: input.description,
               sectionId: createSectionId,
@@ -656,8 +867,8 @@ export default function Page() {
             projSession.current = null;
             setActive(null);
             setProj(createProjection());
+            setRoute(null);
             setCreateKind(null);
-            setSettingsOpen(true);
           }}
           sectionName={store.sections.find((section) => section.id === createSectionId)?.name}
         />
@@ -672,6 +883,7 @@ export default function Page() {
             projSession.current = null;
             setActive(null);
             setProj(createProjection());
+            setRoute(null);
             setCreateKind(null);
             setSettingsOpen(true);
           }}
@@ -722,7 +934,9 @@ export default function Page() {
 
       {deleteBot ? (
         <ConfirmDialog
-          message={`Delete ${deleteBot.name}? This removes it from the local shell. Eve sessions stay on disk.`}
+          message={deleteBot.kind === "group"
+            ? `Delete ${deleteBot.name}? The group and its roster go away. Member bots stay.`
+            : `Delete ${deleteBot.name}? This removes the bot, its profile and its transcript. Workspace files stay.`}
           onClose={() => setDeleteBot(null)}
           onConfirm={() => {
             dispatch({ type: "deleteBot", botId: deleteBot.id });

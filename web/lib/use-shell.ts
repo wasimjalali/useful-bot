@@ -17,10 +17,16 @@ async function csrfToken(): Promise<string> {
   return body.csrfToken ?? "";
 }
 
+type ProposalMeta = {
+  proposalId?: string;
+  proposalStatus?: "confirmed" | "dismissed";
+};
+
 export function useShell(authed: boolean) {
   const [store, setStore] = useState<ShellStore | null>(null);
   const [error, setError] = useState("");
   const pending = useRef<Promise<void>>(Promise.resolve());
+  const latest = useRef<ShellStore | null>(null);
 
   const gen = useRef(0);
   const dirty = useRef(false);
@@ -39,7 +45,10 @@ export function useShell(authed: boolean) {
     void (async () => {
       try {
         const next = await load();
-        if (!cancelled) setStore(next);
+        if (!cancelled) {
+          latest.current = next;
+          setStore(next);
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Shell failed");
       }
@@ -48,7 +57,10 @@ export function useShell(authed: boolean) {
       if (dirty.current) return;
       void load()
         .then((next) => {
-          if (!dirty.current) setStore(next);
+          if (!dirty.current) {
+            latest.current = next;
+            setStore(next);
+          }
         })
         .catch(() => undefined);
     }, 2500);
@@ -58,13 +70,13 @@ export function useShell(authed: boolean) {
     };
   }, [authed, load]);
 
-  const persist = useCallback(async (action: ShellAction) => {
+  const persist = useCallback(async (action: ShellAction, meta: ProposalMeta) => {
     const token = await csrfToken();
     const res = await fetch("/api/shell", {
       method: "PUT",
       credentials: "include",
       headers: { "content-type": "application/json", "x-ub-csrf": token },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, ...meta }),
     });
     if (res.status === 401) throw new Error("unauthorized");
     if (!res.ok) throw new Error("Shell save failed");
@@ -72,38 +84,42 @@ export function useShell(authed: boolean) {
     return parseShell(body.store ?? seedStore());
   }, []);
 
-  const dispatch = useCallback((action: ShellAction) => {
-    setStore((current) => {
-      const base = current ?? seedStore();
-      let next: ShellStore;
-      try {
-        next = applyShellAction(base, action).store;
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Shell action failed");
-        return base;
-      }
-      dirty.current = true;
-      gen.current += 1;
-      const mine = gen.current;
-      pending.current = pending.current
-        .then(async () => {
-          try {
-            const saved = await persist(action);
-            if (mine === gen.current) {
-              dirty.current = false;
-              setStore(saved);
-              setError("");
-            }
-          } catch (err) {
-            if (mine === gen.current) {
-              dirty.current = false;
-              setError(err instanceof Error ? err.message : "Shell save failed");
-            }
+  // The previous version queued the save from inside the setState updater.
+  // React invokes updaters more than once in development (StrictMode), so one
+  // click sent two PUTs and one confirm created two bots. Compute the next
+  // store synchronously and keep the updater pure instead.
+  const dispatch = useCallback((action: ShellAction, meta: ProposalMeta = {}) => {
+    const base = latest.current ?? seedStore();
+    let next: ShellStore;
+    try {
+      next = applyShellAction(base, action).store;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Shell action failed");
+      return;
+    }
+    latest.current = next;
+    dirty.current = true;
+    gen.current += 1;
+    const mine = gen.current;
+    pending.current = pending.current
+      .then(async () => {
+        try {
+          const saved = await persist(action, meta);
+          if (mine === gen.current) {
+            dirty.current = false;
+            latest.current = saved;
+            setStore(saved);
+            setError("");
           }
-        })
-        .catch(() => undefined);
-      return next;
-    });
+        } catch (err) {
+          if (mine === gen.current) {
+            dirty.current = false;
+            setError(err instanceof Error ? err.message : "Shell save failed");
+          }
+        }
+      })
+      .catch(() => undefined);
+    setStore(next);
   }, [persist]);
 
   return {
