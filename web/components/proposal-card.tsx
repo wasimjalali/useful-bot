@@ -1,6 +1,7 @@
 "use client";
 
 import type { Proposal } from "../../shared/agent-store.ts";
+import { isAvatarColor, isAvatarShape } from "../../shared/bot-face.ts";
 import { BotAvatar } from "./bot-avatar";
 import { CheckIcon, CloseIcon, UsersIcon } from "./icons";
 import type { ShellBot } from "../../shared/shell-store.ts";
@@ -110,8 +111,8 @@ export function ProposalCard({
               name: proposal.patch.name,
               label: proposal.patch.title,
               description: proposal.patch.description,
-              ...(proposal.patch.avatarShape ? { avatarShape: proposal.patch.avatarShape } : {}),
-              ...(proposal.patch.avatarColor ? { avatarColor: proposal.patch.avatarColor } : {}),
+              ...(isAvatarShape(proposal.patch.avatarShape) ? { avatarShape: proposal.patch.avatarShape } : {}),
+              ...(isAvatarColor(proposal.patch.avatarColor) ? { avatarColor: proposal.patch.avatarColor } : {}),
             },
           })}
           onDismiss={dismiss}
@@ -122,23 +123,31 @@ export function ProposalCard({
   }
 
   const group = proposal.groupId ? bots.find((bot) => bot.id === proposal.groupId) : null;
+  // A pruned or corrupt fanout can lose every target; confirm must be a no-op
+  // instead of dispatching an action with an undefined botId.
+  const targetId = proposal.groupId ?? proposal.targetIds[0] ?? null;
   return (
     <Card title={group ? `Post to ${group.name}` : "Send to several bots"} tone="warning">
       <p className="whitespace-pre-wrap text-[13px] leading-5 text-ink">{proposal.message}</p>
       <p className="mt-2 text-[12px] text-ink-muted">
-        {proposal.targetIds.length} bots will each run on this: {proposal.targetIds.map(nameOf).join(", ")}
+        {proposal.targetIds.length > 0
+          ? `${proposal.targetIds.length} bots will each run on this: ${proposal.targetIds.map(nameOf).join(", ")}`
+          : "No recipients are available for this proposal."}
       </p>
       <Actions
-        confirmLabel={`Send to ${proposal.targetIds.length}`}
+        confirmLabel={targetId ? `Send to ${proposal.targetIds.length}` : "Nothing to send"}
         dismissLabel="Cancel"
-        onConfirm={() => confirm({
-          type: "sendToBot",
-          botId: proposal.groupId ?? proposal.targetIds[0],
-          message: proposal.message,
-          sourceBotId: proposal.sourceBotId,
-        })}
+        onConfirm={() => {
+          if (!targetId) return;
+          confirm({
+            type: "sendToBot",
+            botId: targetId,
+            message: proposal.message,
+            sourceBotId: proposal.sourceBotId,
+          });
+        }}
         onDismiss={dismiss}
-        pending={pending}
+        pending={pending || !targetId}
       />
     </Card>
   );
@@ -166,7 +175,7 @@ function Card({
   );
 }
 
-function Row({ before, after, label }: { before: string; after: string }) {
+function Row({ before, after, label }: { before: string; after: string; label: string }) {
   const changed = before !== after;
   return (
     <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-2">

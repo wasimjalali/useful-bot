@@ -27,6 +27,10 @@ export const HANDOFF_SCHEMA = 1;
 export const HANDOFF_ATTEMPTS_MAX = 3;
 export const HANDOFF_TEXT_MAX = 4000;
 export const HANDOFF_LIST_MAX = 50;
+/** Delivered records are pruned after this; failed ones keep longer. */
+const HANDOFF_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+/** Longer than the 120s deliver timeout, so a crashed claim can be retried. */
+const CLAIM_STALE_MS = 10 * 60 * 1000;
 
 export type HandoffStatus = "pending" | "delivered" | "failed";
 
@@ -111,10 +115,76 @@ function handoffPath(id: string, dir = handoffDir()): string {
   return join(dir, `${id}.json`);
 }
 
+function claimPath(id: string, dir = handoffDir()): string {
+  return join(dir, `${id}.claim`);
+}
+
+/**
+ * Cross-process delivery claim. O_EXCL creation means exactly one process can
+ * hold a record; a claim older than the stale window (process died mid-delivery)
+ * is taken over so the record is not stranded.
+ */
+export function claimHandoff(id: string, dir = handoffDir()): boolean {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = claimPath(id, dir);
+  const stamp = Date.now();
+  const create = () => {
+    try {
+      writeFileSync(path, `${JSON.stringify({ pid: process.pid, at: stamp })}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+        flag: "wx",
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (create()) return true;
+  try {
+    const info = JSON.parse(readFileSync(path, "utf8")) as { at?: unknown };
+    if (typeof info.at !== "number" || stamp - info.at > CLAIM_STALE_MS) {
+      unlinkSync(path);
+      return create();
+    }
+  } catch {
+    try { unlinkSync(path); } catch { /* ignore */ }
+    return create();
+  }
+  return false;
+}
+
+export function releaseHandoffClaim(id: string, dir = handoffDir()): void {
+  try { unlinkSync(claimPath(id, dir)); } catch { /* ignore */ }
+}
+
+/** Keep the queue directory bounded: old delivered and failed records go. */
+function pruneHandoffs(dir: string): void {
+  if (!existsSync(dir)) return;
+  const cutoff = Date.now() - HANDOFF_KEEP_MS;
+  for (const name of readdirSync(dir)) {
+    const id = name.endsWith(".json") ? name.slice(0, -5) : "";
+    if (!id) {
+      if (name.endsWith(".claim")) {
+        try {
+          const info = JSON.parse(readFileSync(join(dir, name), "utf8")) as { at?: unknown };
+          if (typeof info.at === "number" && info.at < cutoff) unlinkSync(join(dir, name));
+        } catch {
+          try { unlinkSync(join(dir, name)); } catch { /* ignore */ }
+        }
+      }
+      continue;
+    }
+    const record = readHandoff(id, dir);
+    if (!record || record.status === "pending") continue;
+    if (Date.parse(record.updatedAt) < cutoff) dropHandoff(id, dir);
+  }
+}
+
 export function writeHandoff(record: HandoffRecord, dir = handoffDir()): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = handoffPath(record.id, dir);
-  const tmp = `${path}.${process.pid}.tmp`;
+  const tmp = `${path}.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}.tmp`;
   try {
     writeFileSync(tmp, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     const fd = openSync(tmp, "r");
@@ -148,6 +218,7 @@ export function queueHandoff(input: HandoffDraft, dir = handoffDir()): HandoffRe
     response: "",
   };
   writeHandoff(record, dir);
+  try { pruneHandoffs(dir); } catch { /* pruning is best effort */ }
   return record;
 }
 
@@ -195,6 +266,7 @@ export function markDelivered(id: string, response: string, dir = handoffDir()):
     updatedAt: new Date().toISOString(),
   };
   writeHandoff(next, dir);
+  releaseHandoffClaim(id, dir);
   return next;
 }
 
@@ -210,9 +282,11 @@ export function markFailed(id: string, error: string, dir = handoffDir()): Hando
     updatedAt: new Date().toISOString(),
   };
   writeHandoff(next, dir);
+  releaseHandoffClaim(id, dir);
   return next;
 }
 
 export function dropHandoff(id: string, dir = handoffDir()): void {
   rmSync(handoffPath(id, dir), { force: true });
+  releaseHandoffClaim(id, dir);
 }

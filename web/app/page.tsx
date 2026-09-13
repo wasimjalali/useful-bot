@@ -23,10 +23,7 @@ import {
   type StreamProjection,
 } from "../../shared/eve-stream.ts";
 import { DEFAULT_BOT_ID, PREVIEW_MAX, selectedBot, type ShellBot } from "../../shared/shell-store.ts";
-import {
-  parseSessionRouteHeader,
-  type SessionRoute,
-} from "../../shared/eve-proxy.ts";
+import { groupMembers, parseMentions, speakerLabel, speakersFrom } from "../../shared/threads.ts";
 import { useShell } from "../lib/use-shell.ts";
 import { useAgentThread } from "../lib/use-agent-thread.ts";
 
@@ -84,9 +81,10 @@ export default function Page() {
   const [operator, setOperator] = useState({ name: "Desktop owner", initials: "DO" });
   const [approvals, setApprovals] = useState<Array<{ id: string; hash: string; preview: string; tool: string }>>([]);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
-  const [route, setRoute] = useState<SessionRoute | null>(null);
+
   const [transcriptUser, setTranscriptUser] = useState<Array<{ id: string; text: string }>>([]);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -104,7 +102,6 @@ export default function Page() {
 
   useEffect(() => {
     setTranscriptUser([]);
-    setRoute(null);
   }, [selectedIdForThread]);
 
   useEffect(() => {
@@ -330,8 +327,6 @@ export default function Page() {
       if (!res.ok) {
         throw new Error(res.status === 503 ? "Agent unavailable" : "Send failed");
       }
-      const nextRoute = parseSessionRouteHeader(res.headers.get("x-ub-route"));
-      if (nextRoute) setRoute(nextRoute);
       setTranscriptUser((current) => (
         current.some((item) => item.text === message) ? current : [...current, { id: `u-${nextSeq()}`, text: message }]
       ));
@@ -413,7 +408,12 @@ export default function Page() {
     : [];
 
   // Durable transcript (handoffs, routed replies, confirmations) merged with the
-  // live stream projection. Event ids dedupe replays of the same turn.
+  // live stream projection. Event ids dedupe replays of the same turn; user text
+  // is matched one-to-one so two identical messages ("hi", "hi") both survive.
+  const groupRoster = bot && bot.kind === "group" && store
+    ? groupMembers(speakersFrom(store.bots), bot.memberIds)
+    : [];
+
   const threadRows: ThreadRow[] = (() => {
     const rows: ThreadRow[] = threadEvents.map((event, index) => ({
       id: event.id,
@@ -427,29 +427,42 @@ export default function Page() {
     }));
     const head = proj.messages.length;
     const streamIds = new Set(threadEvents.map((event) => event.id));
-    const streamedUserTexts = new Set(
-      proj.messages.filter((message) => message.role === "user").map((message) => message.text),
-    );
+    const durableUserCounts = new Map<string, number>();
+    for (const event of threadEvents) {
+      if (event.kind !== "user") continue;
+      durableUserCounts.set(event.text, (durableUserCounts.get(event.text) ?? 0) + 1);
+    }
     for (const message of proj.messages) {
       if (streamIds.has(message.id)) continue;
-      if (message.role === "user" && streamedUserTexts.has(message.text)) {
-        const known = rows.some((row) => row.kind === "user" && row.text === message.text);
-        if (known) continue;
+      if (message.role === "user") {
+        const remaining = durableUserCounts.get(message.text) ?? 0;
+        if (remaining > 0) {
+          durableUserCounts.set(message.text, remaining - 1);
+          continue;
+        }
       }
       rows.push({
         id: message.id,
         kind: message.role === "user" ? "user" : "assistant",
         text: message.text,
-        authorName: message.role === "user" ? null : null,
-        authorBotId: message.role === "user" ? null : null,
+        authorName: null,
+        authorBotId: null,
         handoffId: null,
         targetBotIds: [],
         order: head + rows.length,
       });
     }
+    const projectedUserCounts = new Map<string, number>();
+    for (const message of proj.messages) {
+      if (message.role !== "user") continue;
+      projectedUserCounts.set(message.text, (projectedUserCounts.get(message.text) ?? 0) + 1);
+    }
     for (const item of transcriptUser) {
-      const known = rows.some((row) => row.kind === "user" && row.text === item.text);
-      if (known) continue;
+      const remaining = projectedUserCounts.get(item.text) ?? 0;
+      if (remaining > 0) {
+        projectedUserCounts.set(item.text, remaining - 1);
+        continue;
+      }
       rows.push({
         id: item.id,
         kind: "user",
@@ -459,6 +472,26 @@ export default function Page() {
         handoffId: null,
         targetBotIds: [],
         order: head + rows.length,
+      });
+    }
+    // A group turn addressed to exactly one member was answered as that member
+    // (the proxy tells the model so). Attribute the reply by the mention in the
+    // turn that produced it, which works for the live turn and for replays.
+    if (bot?.kind === "group" && groupRoster.length > 0) {
+      rows.forEach((row, index) => {
+        if (row.kind !== "assistant" || row.authorBotId) return;
+        const previousUser = [...rows.slice(0, index)].reverse().find((item) => item.kind === "user");
+        if (!previousUser) return;
+        const mentionIds = parseMentions(previousUser.text, groupRoster).mentionIds;
+        if (mentionIds.length !== 1) return;
+        const label = speakerLabel({
+          bot,
+          speakers: groupRoster,
+          route: { threadId: bot.id, kind: "group", mentionIds, untargeted: false },
+        });
+        if (label.authorBotId) {
+          rows[index] = { ...row, authorBotId: label.authorBotId, authorName: label.authorName };
+        }
       });
     }
     return rows;
@@ -477,6 +510,12 @@ export default function Page() {
     && openProposals.length === 0;
 
   function decideProposal(decision: ProposalDecision) {
+    // Disable the card while the confirm is in flight so a double click cannot
+    // queue the same decision twice.
+    setBusyProposalId(decision.proposalId);
+    window.setTimeout(() => {
+      setBusyProposalId((current) => (current === decision.proposalId ? null : current));
+    }, 10_000);
     if (decision.action) dispatch(decision.action, {
       proposalId: decision.proposalId,
       proposalStatus: decision.proposalStatus,
@@ -717,7 +756,7 @@ export default function Page() {
                               <ProposalCard
                                 bots={store.bots}
                                 onDecision={decideProposal}
-                                pending={false}
+                                pending={busyProposalId === proposal.id}
                                 proposal={proposal}
                               />
                             </div>
@@ -826,7 +865,6 @@ export default function Page() {
             projSession.current = null;
             setActive(null);
             setProj(createProjection());
-            setRoute(null);
             setCreateKind(null);
           }}
           sectionName={store.sections.find((section) => section.id === createSectionId)?.name}
@@ -842,7 +880,6 @@ export default function Page() {
             projSession.current = null;
             setActive(null);
             setProj(createProjection());
-            setRoute(null);
             setCreateKind(null);
             setSettingsOpen(true);
           }}

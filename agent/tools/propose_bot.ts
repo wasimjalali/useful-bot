@@ -1,6 +1,13 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { appendAgentEvent, createProposal, nextPetname, threadIdFor } from "../../shared/agent-store.ts";
+import {
+  appendAgentEvent,
+  createProposal,
+  nextPetname,
+  releaseSend,
+  reserveSend,
+  threadIdFor,
+} from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 
@@ -12,30 +19,41 @@ export default defineTool({
     title: z.string().max(24).optional(),
     description: z.string().max(500).optional(),
     brief: z.string().max(1000).optional(),
+    requestId: z.string().min(1).max(120).optional(),
   }),
   execute(input) {
     const shell = readShell();
     const source = shell.bots.find((bot) => bot.id === process.env.UB_ACTIVE_BOT_ID);
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : shell.selectedBotId;
     const threadId = threadIdFor(sourceBotId);
-    const proposal = createProposal({
-      kind: "createBot",
-      name: input.name.trim(),
-      petname: nextPetname(shell),
-      title: (input.title ?? "").trim(),
-      description: (input.description ?? "").trim(),
-      sectionId: null,
-      sourceBotId,
-      threadId,
-      brief: (input.brief ?? "").trim(),
-    });
-    appendAgentEvent(sourceBotId, {
-      kind: "proposal",
-      text: `Proposed teammate ${proposal.name}`,
-      proposalId: proposal.id,
-      authorBotId: sourceBotId,
-      authorName: source?.name ?? null,
-    });
+    const requestId = input.requestId?.trim();
+    if (requestId && !reserveSend("proposal", requestId)) {
+      return { status: "duplicate", error: "that requestId was already proposed", requestId };
+    }
+    let proposal;
+    try {
+      proposal = createProposal({
+        kind: "createBot",
+        name: input.name.trim(),
+        petname: nextPetname(shell),
+        title: (input.title ?? "").trim(),
+        description: (input.description ?? "").trim(),
+        sectionId: null,
+        sourceBotId,
+        threadId,
+        brief: (input.brief ?? "").trim(),
+      });
+      appendAgentEvent(sourceBotId, {
+        kind: "proposal",
+        text: `Proposed teammate ${proposal.name}`,
+        proposalId: proposal.id,
+        authorBotId: sourceBotId,
+        authorName: source?.name ?? null,
+      });
+    } catch (err) {
+      if (requestId) releaseSend("proposal", requestId);
+      throw err;
+    }
     return {
       status: "awaiting_owner_confirmation",
       proposalId: proposal.id,

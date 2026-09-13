@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { sendHandoff } from "../../shared/agents-send.ts";
-import { isReserved, reserveKey, reserveSend } from "../../shared/agent-store.ts";
+import { releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
@@ -34,13 +34,6 @@ export default defineTool({
       return { status: "invalid", error: "that is this bot; answer directly instead" };
     }
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
-    const requestId = input.requestId?.trim();
-    if (requestId) {
-      const key = reserveKey("handoff", requestId);
-      if (isReserved(key) || !reserveSend("handoff", requestId)) {
-        return { status: "duplicate", error: "that requestId was already sent", requestId };
-      }
-    }
     if (target.kind === "group") {
       const members = groupMembers(speakersFrom(shell.bots), target.memberIds);
       if (members.length > 1) {
@@ -51,11 +44,22 @@ export default defineTool({
         };
       }
     }
-    const record = sendHandoff({
-      source: source && source.id !== DEFAULT_BOT_ID ? { id: source.id, name: source.name } : null,
-      target: { id: target.id, name: target.name },
-      message: input.message.trim(),
-    });
+    const requestId = input.requestId?.trim();
+    if (requestId && !reserveSend("handoff", requestId)) {
+      return { status: "duplicate", error: "that requestId was already sent", requestId };
+    }
+    let record;
+    try {
+      record = sendHandoff({
+        source: source && source.id !== DEFAULT_BOT_ID ? { id: source.id, name: source.name } : null,
+        target: { id: target.id, name: target.name },
+        message: input.message.trim(),
+      });
+    } catch (err) {
+      // A crash between reserve and queue must not burn the requestId.
+      if (requestId) releaseSend("handoff", requestId);
+      throw err;
+    }
     return {
       status: "queued",
       handoffId: record.id,

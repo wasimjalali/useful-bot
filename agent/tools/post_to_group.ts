@@ -1,8 +1,8 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { appendAgentEvent, createProposal } from "../../shared/agent-store.ts";
+import { appendAgentEvent, createProposal, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
-import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, GROUP_MIN_MEMBERS } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
 
 export default defineTool({
@@ -11,6 +11,7 @@ export default defineTool({
   inputSchema: z.object({
     groupId: z.string().min(1).max(80),
     message: z.string().min(1).max(2000),
+    requestId: z.string().min(1).max(120).optional(),
   }),
   execute(input) {
     const shell = readShell();
@@ -23,30 +24,44 @@ export default defineTool({
       return { status: "not_found", error: `no group matches ${requested}`, hint: "Call listBots for groups." };
     }
     const members = groupMembers(speakersFrom(shell.bots), group.memberIds);
-    if (members.length === 0) {
-      return { status: "invalid", error: "that group has no member bots" };
+    if (members.length < GROUP_MIN_MEMBERS) {
+      return {
+        status: "invalid",
+        error: `that group has ${members.length} member bot${members.length === 1 ? "" : "s"}; a post needs ${GROUP_MIN_MEMBERS}`,
+        hint: "Add a member in the group settings first.",
+      };
     }
     const sourceId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : null;
     const message = input.message.trim();
-    const proposal = createProposal({
-      kind: "fanout",
-      message,
-      targetIds: members.map((member) => member.id),
-      groupId: group.id,
-      sourceBotId,
-      threadId: group.id,
-    });
-    appendAgentEvent(group.id, {
-      kind: "proposal",
-      threadKind: "group",
-      text: message,
-      authorBotId: sourceBotId,
-      authorName: source?.name ?? null,
-      proposalId: proposal.id,
-      targetBotIds: members.map((member) => member.id),
-    });
+    const requestId = input.requestId?.trim();
+    if (requestId && !reserveSend("proposal", requestId)) {
+      return { status: "duplicate", error: "that requestId was already proposed", requestId };
+    }
+    let proposal;
+    try {
+      proposal = createProposal({
+        kind: "fanout",
+        message,
+        targetIds: members.map((member) => member.id),
+        groupId: group.id,
+        sourceBotId,
+        threadId: group.id,
+      });
+      appendAgentEvent(group.id, {
+        kind: "proposal",
+        threadKind: "group",
+        text: message,
+        authorBotId: sourceBotId,
+        authorName: source?.name ?? null,
+        proposalId: proposal.id,
+        targetBotIds: members.map((member) => member.id),
+      });
+    } catch (err) {
+      if (requestId) releaseSend("proposal", requestId);
+      throw err;
+    }
     return {
       status: "awaiting_owner_confirmation",
       proposalId: proposal.id,

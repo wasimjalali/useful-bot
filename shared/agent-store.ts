@@ -124,7 +124,7 @@ export type AgentStore = {
   reserves: string[];
 };
 
-export type ReserveKind = "handoff" | "post";
+export type ReserveKind = "handoff" | "post" | "proposal";
 
 const STORE_KEYS = new Set(["schemaVersion", "threads", "proposals", "reserves"]);
 const THREAD_KEYS = new Set(["id", "kind", "botId", "sessionId", "updatedAt", "events"]);
@@ -329,9 +329,8 @@ function parseProposal(raw: unknown): Proposal | null {
 export function parseAgentStore(raw: unknown): AgentStore {
   if (!raw || typeof raw !== "object") return emptyStore();
   const rec = raw as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    if (!STORE_KEYS.has(key)) return emptyStore();
-  }
+  // Unknown top-level keys are ignored, not fatal: a newer build may add one,
+  // and losing every transcript over a forward-compatible field is worse.
   if (rec.schemaVersion !== AGENT_SCHEMA) return emptyStore();
   const threads: AgentThread[] = [];
   for (const item of Array.isArray(rec.threads) ? rec.threads : []) {
@@ -347,7 +346,7 @@ export function parseAgentStore(raw: unknown): AgentStore {
       proposals.push(proposal);
     }
   }
-  return { schemaVersion: 1, threads, proposals, reserves: Array.isArray(rec.reserves) ? rec.reserves.filter((key): key is string => isId(key, 200)).slice(-200) : [] };
+  return { schemaVersion: 1, threads, proposals, reserves: Array.isArray(rec.reserves) ? rec.reserves.filter((key): key is string => isId(key, 200)).slice(-1000) : [] };
 }
 
 export function readAgentStore(path = agentStorePath()): AgentStore {
@@ -359,10 +358,27 @@ export function readAgentStore(path = agentStorePath()): AgentStore {
   }
 }
 
+/**
+ * If the file on disk cannot be parsed as the current schema, move it aside
+ * before the next write. A crash during migration must never destroy the only
+ * copy of every transcript.
+ */
+function backupIncompatible(path: string): void {
+  if (!existsSync(path)) return;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (raw && typeof raw === "object" && raw.schemaVersion === AGENT_SCHEMA) return;
+  } catch {
+    /* fall through to backup */
+  }
+  try { renameSync(path, `${path}.invalid.${Date.now()}`); } catch { /* ignore */ }
+}
+
 export function writeAgentStore(store: AgentStore, path = agentStorePath()): void {
   const parsed = parseAgentStore(store);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  backupIncompatible(path);
+  const tmp = `${path}.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}.tmp`;
   try {
     writeFileSync(tmp, `${JSON.stringify(parsed)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     const fd = openSync(tmp, "r");
@@ -375,10 +391,18 @@ export function writeAgentStore(store: AgentStore, path = agentStorePath()): voi
   }
 }
 
+const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
+
 function sleep(ms: number): void {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    /* spin: callers are short synchronous server actions */
+  try {
+    // Sync callers must not spin the event loop while another process holds
+    // the lock; Atomics.wait parks the thread without burning CPU.
+    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* fallback for runtimes without Atomics.wait */
+    }
   }
 }
 
@@ -404,6 +428,7 @@ export function withAgentStore<T>(fn: (store: AgentStore) => T, path = agentStor
       sleep(15);
     }
   }
+  if (!held) throw new Error("agent_store_locked");
   try {
     const before = readAgentStore(path);
     const scratch = parseAgentStore(JSON.parse(JSON.stringify(before)));
@@ -471,6 +496,14 @@ export function appendAgentEvent(
     };
     const existing = thread.events.findIndex((item) => item.id === event.id);
     if (existing >= 0) return thread.events[existing];
+    // A handoff can be delivered more than once after a crash; the same side
+    // of the same handoff must never land twice in one transcript.
+    if (event.handoffId) {
+      const duplicate = thread.events.find((item) => (
+        item.handoffId === event.handoffId && item.kind === event.kind
+      ));
+      if (duplicate) return duplicate;
+    }
     thread.events.push(event);
     if (thread.events.length > EVENT_CAP_PER_THREAD) {
       thread.events.splice(0, thread.events.length - EVENT_CAP_PER_THREAD);
@@ -523,6 +556,24 @@ export function resolveProposal(
   }, path);
 }
 
+/**
+ * Confirmable-once claim. Returns the proposal only to the caller that flipped
+ * it out of pending; everyone else gets null. Two concurrent confirms can
+ * therefore never apply the same action twice.
+ */
+export function claimProposal(
+  id: string,
+  status: "confirmed" | "dismissed",
+  path = agentStorePath(),
+): Proposal | null {
+  return withAgentStore((store) => {
+    const proposal = store.proposals.find((item) => item.id === id);
+    if (!proposal || proposal.status !== "pending") return null;
+    proposal.status = status;
+    return proposal;
+  }, path);
+}
+
 export function listPendingProposals(threadId: string, path = agentStorePath()): Proposal[] {
   const now = Date.now();
   return readAgentStore(path).proposals.filter((item) => (
@@ -553,8 +604,19 @@ export function reserveSend(kind: ReserveKind, requestId: string, path = agentSt
     const key = reserveKey(kind, requestId);
     if (store.reserves.includes(key)) return false;
     store.reserves.push(key);
-    store.reserves = store.reserves.slice(-200);
+    store.reserves = store.reserves.slice(-1000);
     return true;
+  }, path);
+}
+
+/**
+ * Give an idempotency slot back when the work it guarded did not survive.
+ * Without this, a crash between reserve and queue would burn the request id.
+ */
+export function releaseSend(kind: ReserveKind, requestId: string, path = agentStorePath()): void {
+  withAgentStore((store) => {
+    const key = reserveKey(kind, requestId);
+    store.reserves = store.reserves.filter((item) => item !== key);
   }, path);
 }
 

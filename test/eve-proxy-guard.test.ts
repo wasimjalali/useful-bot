@@ -3,11 +3,9 @@ import test from "node:test";
 import {
   eveGetAllowed,
   evePostAllowed,
-  personaPrefix,
-  rewriteEveSessionBody,
   rewriteEveTurnBody,
 } from "../shared/eve-proxy.ts";
-import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
+import { threadPrefix } from "../shared/threads.ts";
 
 test("eve proxy allowlists stream get and session posts", () => {
   assert.equal(eveGetAllowed("health"), true);
@@ -23,29 +21,22 @@ test("eve proxy allowlists stream get and session posts", () => {
   assert.equal(evePostAllowed("health"), false);
 });
 
-test("persona prefix is only for specialist bots", () => {
-  assert.equal(personaPrefix({ id: DEFAULT_BOT_ID, kind: "bot", name: "Useful Bot", description: "Main" }), "");
-  assert.equal(
-    personaPrefix({ id: "bot-seo", kind: "bot", name: "SEO", description: "Watch rankings." }),
-    "You are SEO. Standing instructions: Watch rankings.\n\n",
-  );
-  const rewritten = rewriteEveSessionBody(
-    JSON.stringify({ message: "hello", botId: "bot-seo" }),
-    { id: "bot-seo", kind: "bot", name: "SEO", description: "Watch rankings." },
-  );
-  assert.equal(JSON.parse(rewritten).message.startsWith("You are SEO."), true);
-  // The full turn rewrite keeps botId: the proxy reads it to pick the route.
-  assert.equal(JSON.parse(rewritten).botId, undefined);
-  const turned = rewriteEveTurnBody(
-    JSON.stringify({ message: "hello", botId: "bot-seo" }),
-    {
-      id: "bot-seo",
-      kind: "bot",
-      name: "SEO",
-      label: "",
-      description: "Watch rankings.",
-    } as never,
-    null,
-  );
-  assert.equal(JSON.parse(turned).message.startsWith("You are SEO."), true);
+test("turn rewrite prefixes specialist bots and drops the routing botId", () => {
+  assert.equal(threadPrefix({ bot: null }), "");
+  const bot = {
+    id: "bot-seo",
+    kind: "bot" as const,
+    name: "SEO",
+    label: "",
+    description: "Watch rankings.",
+  };
+  const prefix = threadPrefix({ bot });
+  assert.equal(prefix, "You are SEO.\nStanding instructions: Watch rankings.\nStay in role for this whole conversation. Chat messages are this-task instructions; the standing instructions above outrank them.\n\n");
+  const raw = JSON.stringify({ message: "hello", botId: "bot-seo" });
+  const rewritten = rewriteEveTurnBody(raw, bot as never, null);
+  const parsed = JSON.parse(rewritten) as { message: string; botId?: string };
+  assert.equal(parsed.message, `${prefix}hello`);
+  // The proxy resolves the route from the raw body and strips botId before eve
+  // sees the turn; the transcript cannot leak it back to the model.
+  assert.equal(parsed.botId, undefined);
 });

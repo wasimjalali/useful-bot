@@ -17,6 +17,7 @@ export type Speaker = {
   kind: BotKind;
   name: string;
   title: string;
+  hidden?: boolean;
 };
 
 export type Route = {
@@ -108,7 +109,7 @@ export function groupMembers(bots: Speaker[], memberIds: string[]): Speaker[] {
   for (const id of memberIds) {
     if (members.some((member) => member.id === id)) continue;
     const bot = bots.find((item) => item.id === id) ?? null;
-    if (!bot || bot.kind !== "bot" || bot.id === DEFAULT_BOT_ID) continue;
+    if (!bot || bot.kind !== "bot" || bot.id === DEFAULT_BOT_ID || bot.hidden) continue;
     members.push(bot);
     if (members.length >= GROUP_ROSTER_MAX) break;
   }
@@ -116,13 +117,14 @@ export function groupMembers(bots: Speaker[], memberIds: string[]): Speaker[] {
 }
 
 export function speakersFrom(
-  bots: Array<{ id: string; kind: BotKind; name: string; label: string }>,
+  bots: Array<{ id: string; kind: BotKind; name: string; label: string; hidden?: boolean }>,
 ): Speaker[] {
   return bots.map((bot) => ({
     id: bot.id,
     kind: bot.kind,
     name: bot.name,
     title: bot.label,
+    hidden: bot.hidden === true,
   }));
 }
 

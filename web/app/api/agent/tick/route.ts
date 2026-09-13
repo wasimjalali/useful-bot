@@ -26,10 +26,18 @@ function keyMatches(candidate: string | null): boolean {
 }
 
 function authorised(request: Request): boolean {
-  return keyMatches(request.headers.get("x-ub-agent-key")) || originAllowed(request);
+  if (keyMatches(request.headers.get("x-ub-agent-key"))) return true;
+  // Browser callers: the UI always sends Origin on its POST, so a request with
+  // no Origin is not the app and gets no pass. originAllowed() alone treats a
+  // missing Origin as same-origin, which any local script can fake.
+  const origin = request.headers.get("origin");
+  return Boolean(origin) && originAllowed(request);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!agentsEnabled() || !authorised(request)) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),
@@ -46,11 +54,9 @@ export async function POST(request: Request) {
   }
   const raw = Number(new URL(request.url).searchParams.get("limit") ?? "2");
   const limit = Number.isFinite(raw) ? Math.min(4, Math.max(1, Math.trunc(raw))) : 2;
-  try {
-    const result = await pumpHandoffs(limit);
-    return NextResponse.json({ ok: true, ...result });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "pump_failed";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
-  }
+  // Delivery can take up to two minutes. Answer now and let the pump run in the
+  // background: the UI poll would otherwise stay blocked and stop scheduling
+  // ticks, and queue state is durable anyway.
+  void pumpHandoffs(limit).catch(() => undefined);
+  return NextResponse.json({ ok: true, started: true, inFlight: handoffsInFlight() });
 }

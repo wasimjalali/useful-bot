@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import {
   appendAgentEvent,
+  claimProposal,
   clearThread,
   readProposal,
-  resolveProposal,
   threadIdFor,
+  type Proposal,
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
 import { applyShellAction, parseShell, type ShellAction } from "../../../../shared/shell-store.ts";
@@ -60,25 +61,30 @@ function applyFollowUp(action: ShellAction | undefined): number {
   return 0;
 }
 
-function noteProposal(
-  action: ShellAction | undefined,
-  proposalId: string | undefined,
-  status: "confirmed" | "dismissed",
-  queued: number,
-): void {
-  if (!proposalId) return;
-  const resolved = resolveProposal(proposalId, status);
-  if (!resolved) return;
-  const fallback = action && "botId" in action ? threadIdFor(action.botId) : "";
-  const threadId = resolved.threadId || fallback;
+/** Note that the proposal was answered, on the thread that raised it. */
+function noteProposal(claimed: Proposal, action: ShellAction | undefined, queued: number): void {
+  const fallback = action && "botId" in action && typeof action.botId === "string"
+    ? threadIdFor(action.botId)
+    : "";
+  const threadId = claimed.threadId || fallback;
   if (!threadId) return;
-  const label = status === "confirmed" ? "Confirmed" : "Dismissed";
+  const label = claimed.status === "confirmed" ? "Confirmed" : "Dismissed";
   const extra = queued > 0 ? ` and queued ${queued} handoff${queued === 1 ? "" : "s"}` : "";
   appendAgentEvent(threadId, {
     kind: "note",
-    text: `${label} ${resolved.kind}${extra}.`,
-    threadKind: resolved.kind === "fanout" && resolved.groupId ? "group" : "bot",
+    text: `${label} ${claimed.kind}${extra}.`,
+    threadKind: claimed.kind === "fanout" && claimed.groupId ? "group" : "bot",
   });
+}
+
+// Shell writes are read/apply/write over one JSON file. The client serializes
+// its own calls, but two tabs (or a retry) could still interleave, so requests
+// in this process run one at a time.
+let shellWriteChain: Promise<void> = Promise.resolve();
+function withShellWrite<T>(task: () => Promise<T>): Promise<T> {
+  const result = shellWriteChain.then(task);
+  shellWriteChain = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 export async function PUT(request: Request) {
@@ -88,6 +94,7 @@ export async function PUT(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
+  return withShellWrite(async () => {
   try {
     const body = await request.json() as {
       store?: unknown;
@@ -96,17 +103,28 @@ export async function PUT(request: Request) {
       proposalStatus?: "confirmed" | "dismissed";
     };
     const current = readShell();
-    // A proposal is confirmable once. A double click or a retried request must
-    // not apply the action again (the same createBot would land two bots).
+    // Validate and compute the next store before claiming, so an invalid
+    // action leaves a pending proposal pending.
+    const next = body.action
+      ? applyShellAction(current, body.action).store
+      : body.store !== undefined
+        ? parseShell(body.store)
+        : current;
+    // A proposal is confirmable once. claimProposal only returns to the caller
+    // that flips it out of pending, so two concurrent confirms cannot both
+    // apply the same createBot.
+    let claimed: Proposal | null = null;
     if (body.proposalId) {
-      const existing = readProposal(body.proposalId);
-      if (existing && existing.status !== "pending") {
+      const status = body.proposalStatus === "dismissed" ? "dismissed" : "confirmed";
+      claimed = claimProposal(body.proposalId, status);
+      if (!claimed) {
+        const existing = readProposal(body.proposalId);
+        if (!existing) {
+          return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
+        }
         return NextResponse.json({ ok: true, store: current, queued: 0, replay: true });
       }
     }
-    const next = body.action
-      ? applyShellAction(current, body.action).store
-      : parseShell(body.store);
     writeShell(next);
     let queued = 0;
     if (body.action) {
@@ -116,10 +134,9 @@ export async function PUT(request: Request) {
         /* the shell action already landed; the handoff pump reports the rest */
       }
     }
-    if (body.proposalId) {
-      const status = body.proposalStatus === "dismissed" ? "dismissed" : "confirmed";
+    if (claimed) {
       try {
-        noteProposal(body.action, body.proposalId, status, queued);
+        noteProposal(claimed, body.action, queued);
       } catch {
         /* the transcript note is best effort */
       }
@@ -129,4 +146,5 @@ export async function PUT(request: Request) {
     const message = err instanceof Error ? err.message : "invalid";
     return NextResponse.json({ ok: false, error: message }, { status: 400 });
   }
+  });
 }

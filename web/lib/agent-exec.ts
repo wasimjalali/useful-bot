@@ -1,10 +1,13 @@
 import { createHmac } from "node:crypto";
 import { appendAgentEvent, type ThreadKind } from "../../shared/agent-store.ts";
+import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import {
+  claimHandoff,
   listDeliverable,
   markDelivered,
   markFailed,
+  releaseHandoffClaim,
   HANDOFF_ATTEMPTS_MAX,
   type HandoffRecord,
 } from "../../shared/handoffs.ts";
@@ -23,7 +26,7 @@ const DELIVER_TIMEOUT_MS = 120_000;
 
 const inflight = new Set<string>();
 
-type EveEvent = { type?: string; data?: Record<string, unknown> };
+type EveEvent = { type?: string; data?: Record<string, unknown>; meta?: { id?: string; at?: string } };
 
 function signChannelJwt(secret: string, sub: string): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
@@ -68,12 +71,19 @@ function textField(data: Record<string, unknown> | undefined, key: string): stri
 export async function readHandoffStream(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  historyIds: Set<string> = new Set(),
+  expectedMessage = "",
 ): Promise<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   let text = "";
   let done = false;
+  // Events replayed from before this delivery are ignored; then the reader only
+  // starts collecting once eve echoes the exact envelope for this handoff, so a
+  // gap in the id skip set can never resolve with an older turn's reply.
+  let armed = expectedMessage.length === 0;
+  let seenNew = false;
   const onAbort = () => {
     void reader.cancel().catch(() => undefined);
   };
@@ -101,9 +111,21 @@ export async function readHandoffStream(
           continue;
         }
         if (!event || typeof event.type !== "string") continue;
+        const eventId = event.meta?.id;
+        if (eventId && historyIds.has(eventId)) continue;
+        if (!armed) {
+          if (event.type === "message.received" && textField(event.data, "message") === expectedMessage) {
+            armed = true;
+          }
+          continue;
+        }
+        if (event.type === "message.received" || event.type === "message.appended" || event.type === "step.started") {
+          seenNew = true;
+        }
         if (event.type === "message.appended") {
           text += textField(event.data, "messageDelta");
         } else if (event.type === "message.completed") {
+          seenNew = true;
           const full = textField(event.data, "message");
           if (full) text = full;
         } else if (
@@ -113,7 +135,7 @@ export async function readHandoffStream(
           || event.type === "session.failed"
           || event.type === "session.waiting"
         ) {
-          done = true;
+          if (seenNew) done = true;
         }
       }
     }
@@ -122,6 +144,56 @@ export async function readHandoffStream(
     try { await reader.cancel(); } catch { /* ignore */ }
   }
   return text.trim();
+}
+
+/**
+ * Every event id a session already holds. The post-send read uses this to skip
+ * the replayed history, so a second handoff into the same chat does not resolve
+ * with the previous turn's reply.
+ */
+async function sessionEventIds(sessionId: string, jwt: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  // The stream pauses after every turn with session.waiting but stays open, so
+  // "done" is a short quiet period after the last replayed event, not the first
+  // waiting marker. Stopping at the first marker misses later turns and makes
+  // the next delivery resolve with an older reply.
+  const controller = new AbortController();
+  const idleMs = 2_000;
+  let idle = setTimeout(() => controller.abort(), idleMs);
+  const hard = setTimeout(() => controller.abort(), 20_000);
+  const reset = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => controller.abort(), idleMs);
+  };
+  try {
+    const res = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
+      headers: { authorization: `Bearer ${jwt}` },
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) return ids;
+    reset();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      reset();
+      buf += decoder.decode(chunk.value, { stream: true });
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const event = parseEveStreamLine(line);
+        if (event?.meta?.id) ids.add(event.meta.id);
+      }
+    }
+  } catch {
+    /* idle timeout: whatever history was collected is enough */
+  } finally {
+    clearTimeout(idle);
+    clearTimeout(hard);
+  }
+  return ids;
 }
 
 function handoffEnvelope(handoff: HandoffRecord): string {
@@ -158,6 +230,7 @@ async function deliverOne(handoff: HandoffRecord): Promise<string> {
   const timer = setTimeout(() => controller.abort(), DELIVER_TIMEOUT_MS);
   let sessionId = bot.sessionId ?? "";
   let reply = "";
+  const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
   try {
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
@@ -174,7 +247,7 @@ async function deliverOne(handoff: HandoffRecord): Promise<string> {
       signal: controller.signal,
     });
     if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-    reply = await readHandoffStream(stream.body, controller.signal);
+    reply = await readHandoffStream(stream.body, controller.signal, historyIds, handoffEnvelope(handoff));
   } finally {
     clearTimeout(timer);
   }
@@ -228,6 +301,9 @@ export async function pumpHandoffs(limit = 2): Promise<{
   const candidates = listDeliverable().filter((record) => !inflight.has(record.id));
   const batch = candidates.slice(0, limit);
   for (const record of batch) {
+    // Cross-process claim: without it two web servers can both deliver the
+    // same record and append two replies to the receiver transcript.
+    if (!claimHandoff(record.id)) continue;
     inflight.add(record.id);
     try {
       await deliverOne(record);
@@ -243,6 +319,7 @@ export async function pumpHandoffs(limit = 2): Promise<{
       });
     } finally {
       inflight.delete(record.id);
+      releaseHandoffClaim(record.id);
     }
   }
   return { delivered, failed, queued: Math.max(0, candidates.length - batch.length) };

@@ -115,12 +115,21 @@ export function useShell(authed: boolean) {
           if (mine === gen.current) {
             dirty.current = false;
             setError(err instanceof Error ? err.message : "Shell save failed");
+            // The optimistic store may not exist on the server. Put the server
+            // snapshot back so the next poll cannot resurrect a rejected edit.
+            try {
+              const fresh = await load();
+              latest.current = fresh;
+              setStore(fresh);
+            } catch {
+              /* server unreachable: keep the last known view */
+            }
           }
         }
       })
       .catch(() => undefined);
     setStore(next);
-  }, [persist]);
+  }, [load, persist]);
 
   return {
     store,

@@ -301,6 +301,15 @@ test("thread prefix keeps the default bot prefix empty and describes a bot role"
   assert.match(prefix, /Standing instructions:/);
 });
 
+test("hidden bots drop out of group routing", () => {
+  let store = withBots();
+  const writer = store.bots.find((bot) => bot.name === "Writer");
+  assert.ok(writer);
+  store = applyShellAction(store, { type: "hide", botId: writer.id, hidden: true }).store;
+  const members = groupMembers(speakersFrom(store.bots), [writer.id, idOf(store, "Research")]);
+  assert.deepEqual(members.map((member) => member.id), [idOf(store, "Research")]);
+});
+
 test("stored turns lose the injected prefix and plain messages stay untouched", () => {
   const store = withBots();
   const research = store.bots.find((bot) => bot.name === "Research");

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendAgentEvent,
+  claimProposal,
   createProposal,
   isReserved,
   listThreadEvents,
@@ -17,6 +18,7 @@ import {
   threadSnapshot,
 } from "../shared/agent-store.ts";
 import {
+  claimHandoff,
   HANDOFF_ATTEMPTS_MAX,
   listDeliverable,
   listHandoffs,
@@ -32,14 +34,24 @@ function tempPaths() {
   return { dir, storePath: join(dir, "agents.json"), handoffDir: join(dir, "handoffs") };
 }
 
-test("unknown keys make a stored document unreadable instead of silently dropped", () => {
+test("unknown top-level keys are tolerated and a malformed thread is dropped", () => {
   const parsed = parseAgentStore({
     schemaVersion: 1,
     threads: [{ id: "b1", botId: "b1", kind: "bot", sessionId: "", updatedAt: "x", events: [], nope: 1 }],
     proposals: [],
     reserves: [],
+    futureField: true,
   });
   assert.equal(parsed.threads.length, 0);
+  // A newer build adding a top-level field must not wipe every transcript.
+  const kept = parseAgentStore({
+    schemaVersion: 1,
+    threads: [],
+    proposals: [],
+    reserves: [],
+    futureField: true,
+  });
+  assert.equal(kept.schemaVersion, 1);
 });
 
 test("thread events dedupe by id and stay capped", () => {
@@ -85,6 +97,32 @@ test("proposals are created pending, scoped to a thread, and resolved once", () 
   assert.equal(threadSnapshot("b2", storePath).proposals.length, 0);
 });
 
+test("a proposal can only be claimed once", () => {
+  const { storePath } = tempPaths();
+  const proposal = createProposal({
+    kind: "createBot",
+    name: "Once",
+    petname: "New Bot 1",
+    title: "",
+    description: "",
+    sectionId: null,
+    sourceBotId: null,
+    threadId: "b1",
+    brief: "",
+  }, storePath);
+  assert.equal(claimProposal(proposal.id, "confirmed", storePath)?.id, proposal.id);
+  assert.equal(claimProposal(proposal.id, "confirmed", storePath), null);
+  assert.equal(resolveProposal(proposal.id, "dismissed", storePath)?.status, "confirmed");
+});
+
+test("the same side of a handoff lands once per transcript", () => {
+  const { storePath } = tempPaths();
+  appendAgentEvent("b1", { kind: "post", text: "task", handoffId: "hnd_x", id: "e1" }, storePath);
+  appendAgentEvent("b1", { kind: "post", text: "task", handoffId: "hnd_x", id: "e2" }, storePath);
+  appendAgentEvent("b1", { kind: "assistant", text: "reply", handoffId: "hnd_x", id: "e3" }, storePath);
+  assert.equal(listThreadEvents("b1", storePath).length, 2);
+});
+
 test("agent tool sends are idempotent per request id", () => {
   const { storePath } = tempPaths();
   const key = reserveKey("handoff", "req-1");
@@ -128,6 +166,22 @@ test("handoff queue delivers oldest first, retries twice, then gives up", () => 
   assert.equal(readHandoff(first.id, handoffDir)?.status, "delivered");
   assert.deepEqual(listDeliverable(handoffDir), []);
   assert.equal(listHandoffs(handoffDir).length, 2);
+});
+
+test("a handoff record is claimed by one deliverer at a time", () => {
+  const { handoffDir } = tempPaths();
+  const record = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "claim me",
+  }, handoffDir);
+  assert.equal(claimHandoff(record.id, handoffDir), true);
+  assert.equal(claimHandoff(record.id, handoffDir), false);
+  // A failed attempt releases the claim so the retry can pick it up.
+  markFailed(record.id, "boom", handoffDir);
+  assert.equal(claimHandoff(record.id, handoffDir), true);
 });
 
 test("sendHandoff writes both sides of the transcript and one queue record", () => {

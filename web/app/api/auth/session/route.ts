@@ -2,14 +2,37 @@ import { NextResponse } from "next/server";
 import { originAllowed } from "../../../../lib/desktop-gate";
 import { createBrowserSession, destroySession, readSession, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
 
+function isLoopback(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost";
+}
+
+/**
+ * Auto-session is only for the local UI: the request host must be loopback and
+ * the caller must prove it is a same-origin page, through Origin when present
+ * or Referer otherwise. A bare request with neither header (a local script, or
+ * a remote page using no-cors) does not get a session.
+ */
 function isLocalDesktop(request: Request): boolean {
+  let self: URL;
   try {
-    const host = new URL(request.url).hostname;
-    if (host !== "127.0.0.1" && host !== "localhost") return false;
+    self = new URL(request.url);
   } catch {
     return false;
   }
-  return originAllowed(request);
+  if (!isLoopback(self.hostname)) return false;
+  const origin = request.headers.get("origin");
+  if (origin) return originAllowed(request);
+  const referer = request.headers.get("referer");
+  if (!referer) return false;
+  try {
+    const ref = new URL(referer);
+    // localhost and 127.0.0.1 are the same surface here; Next may normalise the
+    // request URL host, so compare only that both ends are loopback and the
+    // ports match.
+    return isLoopback(ref.hostname) && ref.port === self.port;
+  } catch {
+    return false;
+  }
 }
 
 /**

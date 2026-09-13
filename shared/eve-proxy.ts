@@ -58,33 +58,6 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
 }
 
 /**
- * Prompt prefix for a turn. Empty for the default Useful Bot so the verified
- * 1:1 path stays byte identical.
- */
-export function personaPrefix(bot: {
-  id: string;
-  kind: string;
-  name: string;
-  description: string;
-} | null): string {
-  if (!bot || bot.id === DEFAULT_BOT_ID) return "";
-  if (bot.kind === "group") {
-    return `Group chat: ${bot.name}. Reply as the Useful Bot orchestrator and do not claim to be a member bot.${bot.description.trim() ? `\nGroup instructions: ${bot.description.trim()}` : ""}\n\n`;
-  }
-  const job = bot.description.trim() || "Help the owner.";
-  return `You are ${bot.name}. Standing instructions: ${job}\n\n`;
-}
-
-export function rewriteEveSessionBody(
-  raw: string,
-  bot: { id: string; kind: string; name: string; description: string } | null,
-): string {
-  const json = JSON.parse(raw) as { message?: unknown };
-  if (typeof json.message !== "string") throw new Error("eve_message");
-  return JSON.stringify({ message: `${personaPrefix(bot)}${json.message}` });
-}
-
-/**
  * Full turn rewrite: bot or group identity, the resolved group roster, and the
  * targeted member when the owner used an @mention. Empty for the default bot, so
  * the verified 1:1 path is byte identical.

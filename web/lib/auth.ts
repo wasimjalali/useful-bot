@@ -66,7 +66,8 @@ export async function destroySession(): Promise<void> {
 }
 
 export function sessionCookie(token: string): string {
-  return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict`;
+  // 12h, matching the server-side session expiry, so the app survives a reload.
+  return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200`;
 }
 
 export function clearSessionCookie(): string {

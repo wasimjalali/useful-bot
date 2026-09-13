@@ -1,6 +1,13 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { appendAgentEvent, createProposal, nextPetname, threadIdFor } from "../../shared/agent-store.ts";
+import {
+  appendAgentEvent,
+  createProposal,
+  nextPetname,
+  releaseSend,
+  reserveSend,
+  threadIdFor,
+} from "../../shared/agent-store.ts";
 import { isAvatarColor, isAvatarShape } from "../../shared/bot-face.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
@@ -16,6 +23,7 @@ export default defineTool({
     avatarShape: z.string().max(20).optional(),
     avatarColor: z.string().max(20).optional(),
     reason: z.string().max(300).optional(),
+    requestId: z.string().min(1).max(120).optional(),
   }),
   execute(input) {
     const shell = readShell();
@@ -44,20 +52,30 @@ export default defineTool({
       return { status: "no_change", botId: target.id, note: "The profile already matches that." };
     }
     const threadId = threadIdFor(sourceBotId ?? target.id);
-    const proposal = createProposal({
-      kind: "updateBotProfile",
-      botId: target.id,
-      patch,
-      sourceBotId,
-      threadId,
-    });
-    appendAgentEvent(sourceBotId ?? target.id, {
-      kind: "proposal",
-      text: `Proposed profile edit for ${target.name}${input.reason ? `: ${input.reason.trim()}` : ""}`,
-      proposalId: proposal.id,
-      authorBotId: sourceBotId,
-      authorName: source?.name ?? null,
-    });
+    const requestId = input.requestId?.trim();
+    if (requestId && !reserveSend("proposal", requestId)) {
+      return { status: "duplicate", error: "that requestId was already proposed", requestId };
+    }
+    let proposal;
+    try {
+      proposal = createProposal({
+        kind: "updateBotProfile",
+        botId: target.id,
+        patch,
+        sourceBotId,
+        threadId,
+      });
+      appendAgentEvent(sourceBotId ?? target.id, {
+        kind: "proposal",
+        text: `Proposed profile edit for ${target.name}${input.reason ? `: ${input.reason.trim()}` : ""}`,
+        proposalId: proposal.id,
+        authorBotId: sourceBotId,
+        authorName: source?.name ?? null,
+      });
+    } catch (err) {
+      if (requestId) releaseSend("proposal", requestId);
+      throw err;
+    }
     return {
       status: "awaiting_owner_confirmation",
       proposalId: proposal.id,

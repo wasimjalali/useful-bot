@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { appendAgentEvent, createProposal } from "../../shared/agent-store.ts";
+import { appendAgentEvent, createProposal, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { GROUP_MAX_MEMBERS, GROUP_MIN_MEMBERS, DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
@@ -12,6 +12,7 @@ export default defineTool({
     name: z.string().min(1).max(80),
     memberIds: z.array(z.string().min(1).max(80)).min(GROUP_MIN_MEMBERS).max(GROUP_MAX_MEMBERS),
     description: z.string().max(500).optional(),
+    requestId: z.string().min(1).max(120).optional(),
   }),
   execute(input) {
     const shell = readShell();
@@ -26,21 +27,31 @@ export default defineTool({
     const sourceId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : null;
-    const proposal = createProposal({
-      kind: "createGroup",
-      name: input.name.trim(),
-      memberIds: members.map((member) => member.id),
-      sourceBotId,
-      threadId: sourceBotId ?? shell.selectedBotId,
-    });
-    appendAgentEvent(sourceBotId ?? shell.selectedBotId, {
-      kind: "proposal",
-      text: `Proposed group ${proposal.name} with ${members.map((member) => member.name).join(", ")}`,
-      proposalId: proposal.id,
-      authorBotId: sourceBotId,
-      authorName: source?.name ?? null,
-      targetBotIds: proposal.memberIds,
-    });
+    const requestId = input.requestId?.trim();
+    if (requestId && !reserveSend("proposal", requestId)) {
+      return { status: "duplicate", error: "that requestId was already proposed", requestId };
+    }
+    let proposal;
+    try {
+      proposal = createProposal({
+        kind: "createGroup",
+        name: input.name.trim(),
+        memberIds: members.map((member) => member.id),
+        sourceBotId,
+        threadId: sourceBotId ?? shell.selectedBotId,
+      });
+      appendAgentEvent(sourceBotId ?? shell.selectedBotId, {
+        kind: "proposal",
+        text: `Proposed group ${proposal.name} with ${members.map((member) => member.name).join(", ")}`,
+        proposalId: proposal.id,
+        authorBotId: sourceBotId,
+        authorName: source?.name ?? null,
+        targetBotIds: proposal.memberIds,
+      });
+    } catch (err) {
+      if (requestId) releaseSend("proposal", requestId);
+      throw err;
+    }
     return {
       status: "awaiting_owner_confirmation",
       proposalId: proposal.id,
