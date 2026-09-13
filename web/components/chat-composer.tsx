@@ -12,6 +12,7 @@ export function ChatComposer({
   onSend,
   onStop,
   pending,
+  placeholder = "Ask Useful Bot",
   value,
 }: {
   disabled: boolean;
@@ -19,6 +20,7 @@ export function ChatComposer({
   onSend: () => void;
   onStop?: () => void;
   pending: boolean;
+  placeholder?: string;
   value: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -78,7 +80,7 @@ export function ChatComposer({
             name="message"
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask Useful Bot"
+            placeholder={placeholder}
             ref={textareaRef}
             rows={1}
             value={value}
