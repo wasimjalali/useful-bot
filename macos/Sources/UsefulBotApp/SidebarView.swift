@@ -3,6 +3,7 @@ import UsefulBotCore
 
 struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var expanded: [String: Bool] = [:]
 
     var body: some View {
         List(selection: selection) {
@@ -14,10 +15,26 @@ struct SidebarView: View {
                     }
                 }
                 ForEach(store.sections.sorted { $0.order < $1.order }) { section in
-                    let bots = store.bots.filter { $0.sectionId == section.id && !$0.hidden }
+                    let bots = store.bots.filter {
+                        $0.sectionId == section.id && !$0.hidden && !$0.pinned
+                    }
                     if !bots.isEmpty {
-                        Section(section.name) {
-                            ForEach(bots) { bot in row(bot) }
+                        let isExpanded = expanded[section.id] ?? !section.collapsed
+                        Section {
+                            if isExpanded {
+                                ForEach(bots) { bot in row(bot) }
+                            }
+                        } header: {
+                            Button {
+                                expanded[section.id] = !isExpanded
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 9, weight: .semibold))
+                                    Text(section.name)
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }

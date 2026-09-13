@@ -3,27 +3,88 @@ import UniformTypeIdentifiers
 import UsefulBotCore
 
 /// Native profile editor: face picker (generate, upload, reset) plus the
-/// name, label and description fields. Saves through the same shell action
-/// the web UI uses, so both clients stay in sync.
+/// name, label and description fields. Reads the live bot from the model so
+/// store refreshes are reflected, and patches by id so a selection change
+/// can never target the wrong bot.
 struct BotSettingsView: View {
-    let bot: ShellBot
+    let botId: String
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var name: String
-    @State private var label: String
-    @State private var description: String
+    @State private var name = ""
+    @State private var label = ""
+    @State private var description = ""
     @State private var notice: String?
     @State private var showUpload = false
+    @State private var loaded = false
 
-    init(bot: ShellBot) {
-        self.bot = bot
-        _name = State(initialValue: bot.name)
-        _label = State(initialValue: bot.label)
-        _description = State(initialValue: bot.description)
+    private var bot: ShellBot? {
+        model.store?.bots.first { $0.id == botId }
     }
 
     var body: some View {
+        bodyContent
+            .onChange(of: model.selectedBotId) { _, _ in dismiss() }
+            .onChange(of: model.saveError) { _, _ in syncSaveError() }
+            .onAppear(perform: seedFields)
+            .fileImporter(
+                isPresented: $showUpload,
+                allowedContentTypes: [.png, .jpeg, .webP],
+                allowsMultipleSelection: false,
+                onCompletion: handleUpload
+            )
+    }
+
+    @ViewBuilder
+    private var bodyContent: some View {
+        if let live = bot {
+            content(live)
+        } else {
+            ContentUnavailableView("Bot removed", systemImage: "questionmark.circle")
+                .frame(width: 360, height: 300)
+        }
+    }
+
+    private func seedFields() {
+        guard !loaded, let live = bot else { return }
+        name = live.name
+        label = live.label
+        description = live.description
+        loaded = true
+    }
+
+    private func syncSaveError() {
+        if let error = model.saveError {
+            notice = error
+        }
+    }
+
+    private func handleUpload(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            applyUpload(Self.faceDataURL(from: url))
+        case .failure:
+            notice = "Upload failed."
+        }
+    }
+
+    private func applyUpload(_ outcome: Result<String, UploadFailure>) {
+        switch outcome {
+        case .success(let dataURL):
+            notice = nil
+            model.patchBot(botId: botId, [
+                "avatarImage": dataURL,
+                "avatarCustom": true,
+            ])
+        case .failure(.tooLarge):
+            notice = "That image is too large. Try a smaller file."
+        case .failure(.unreadable):
+            notice = "That image could not be read. Use a PNG, JPEG or WebP."
+        }
+    }
+
+    private func content(_ bot: ShellBot) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Text("Settings")
@@ -40,10 +101,11 @@ struct BotSettingsView: View {
             Divider()
             ScrollView {
                 VStack(spacing: 16) {
-                    preview
-                    tabs
-                    faceGrid
-                    colorDots
+                    BotAvatarView(bot: bot, size: 80)
+                        .frame(maxWidth: .infinity)
+                    tabs(bot)
+                    faceGrid(bot)
+                    colorDots(bot)
                     fields
                     if let notice {
                         Text(notice)
@@ -56,40 +118,14 @@ struct BotSettingsView: View {
             }
         }
         .frame(width: 360, height: 620)
-        .fileImporter(
-            isPresented: $showUpload,
-            allowedContentTypes: [.png, .jpeg, .webP],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                if let dataURL = Self.faceDataURL(from: url) {
-                    notice = nil
-                    model.patchSelectedBot([
-                        "avatarImage": dataURL,
-                        "avatarCustom": true,
-                    ])
-                } else {
-                    notice = "That image could not be read. Use a PNG, JPEG or WebP under 128 pixels."
-                }
-            case .failure:
-                notice = "Upload failed."
-            }
-        }
     }
 
-    private var preview: some View {
-        BotAvatarView(bot: bot, size: 80)
-            .frame(maxWidth: .infinity)
-    }
-
-    private var tabs: some View {
+    private func tabs(_ bot: ShellBot) -> some View {
         HStack(spacing: 0) {
             button("Generate") {
                 let face = FacePalette.randomFace()
                 notice = nil
-                model.patchSelectedBot([
+                model.patchBot(botId: bot.id, [
                     "avatarShape": face.shape,
                     "avatarColor": face.color,
                     "avatarImage": nil,
@@ -100,7 +136,7 @@ struct BotSettingsView: View {
             button("Reset") {
                 notice = nil
                 if bot.id == "bot-useful" {
-                    model.patchSelectedBot([
+                    model.patchBot(botId: bot.id, [
                         "avatarShape": "circle",
                         "avatarColor": "ink",
                         "avatarImage": nil,
@@ -108,7 +144,7 @@ struct BotSettingsView: View {
                     ])
                 } else {
                     let face = FacePalette.defaultFace(for: bot.id)
-                    model.patchSelectedBot([
+                    model.patchBot(botId: bot.id, [
                         "avatarShape": face.shape,
                         "avatarColor": face.color,
                         "avatarImage": nil,
@@ -134,13 +170,13 @@ struct BotSettingsView: View {
         .contentShape(Rectangle())
     }
 
-    private var faceGrid: some View {
+    private func faceGrid(_ bot: ShellBot) -> some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
             ForEach(FacePalette.shapes, id: \.self) { shape in
                 let selected = bot.avatarCustom && bot.avatarImage == nil && bot.avatarShape == shape
                 Button {
                     notice = nil
-                    model.patchSelectedBot([
+                    model.patchBot(botId: bot.id, [
                         "avatarShape": shape,
                         "avatarImage": nil,
                         "avatarCustom": true,
@@ -167,12 +203,12 @@ struct BotSettingsView: View {
         }
     }
 
-    private var colorDots: some View {
+    private func colorDots(_ bot: ShellBot) -> some View {
         HStack(spacing: 10) {
             ForEach(FacePalette.colors, id: \.self) { color in
                 Button {
                     notice = nil
-                    model.patchSelectedBot(["avatarColor": color, "avatarCustom": true])
+                    model.patchBot(botId: bot.id, ["avatarColor": color, "avatarCustom": true])
                 } label: {
                     Circle()
                         .fill(Color(hex: FacePalette.swatches[color] ?? "#171717"))
@@ -213,7 +249,7 @@ struct BotSettingsView: View {
             }
             Button("Save profile") {
                 notice = nil
-                model.patchSelectedBot([
+                model.patchBot(botId: botId, [
                     "name": name.trimmingCharacters(in: .whitespacesAndNewlines),
                     "label": label.trimmingCharacters(in: .whitespacesAndNewlines),
                     "description": description,
@@ -234,13 +270,18 @@ struct BotSettingsView: View {
         }
     }
 
-    /// Downscale to a 128px square JPEG and return it as a data URL, matching
-    /// the web picker and the server's 120k cap.
-    static func faceDataURL(from url: URL) -> String? {
+    enum UploadFailure: Error {
+        case tooLarge
+        case unreadable
+    }
+
+    /// Downscale to a 128px square JPEG data URL. The server caps the data URL
+    /// string at 120k characters, so that is what this checks, not the raw JPEG.
+    static func faceDataURL(from url: URL) -> Result<String, UploadFailure> {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         guard let image = NSImage(contentsOf: url), image.size.width > 0, image.size.height > 0 else {
-            return nil
+            return .failure(.unreadable)
         }
         let side: CGFloat = 128
         let scale = max(side / image.size.width, side / image.size.height)
@@ -264,10 +305,11 @@ struct BotSettingsView: View {
         target.unlockFocus()
         guard let tiff = target.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
-              let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82]),
-              jpeg.count <= 120_000 else {
-            return nil
+              let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else {
+            return .failure(.unreadable)
         }
-        return "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
+        let dataURL = "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
+        guard dataURL.count <= 120_000 else { return .failure(.tooLarge) }
+        return .success(dataURL)
     }
 }

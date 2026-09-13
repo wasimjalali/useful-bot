@@ -20,6 +20,7 @@
     "router:start": "/usr/local/bin/node scripts/service.mjs router",
     "web:dev": "/usr/local/bin/node node_modules/next/dist/bin/next dev web --hostname 127.0.0.1 --port 4320",
     "test:macos": "macos/test.sh",
+    "test:all": "npm test && macos/test.sh",
     "build:app": "macos/build-app.sh",
     "web:build": "/usr/local/bin/node node_modules/next/dist/bin/next build web"
   },

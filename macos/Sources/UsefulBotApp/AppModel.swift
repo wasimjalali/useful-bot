@@ -14,7 +14,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var selectedBotId: String?
     @Published private(set) var transcript: [TranscriptRow] = []
     @Published private(set) var pending = false
-    @Published private(set) var error: String?
+    /// Thread load and send failures surface near the composer.
+    @Published private(set) var threadError: String?
+    /// Profile save failures surface inside the settings sheet.
+    @Published private(set) var saveError: String?
 
     private let config = ServerConfig.resolved()
     private let services = LocalServices()
@@ -23,7 +26,11 @@ final class AppModel: ObservableObject {
     private var projection = StreamProjection()
     private var durableEvents: [AgentEvent] = []
     private var pollTask: Task<Void, Never>?
+    private var reloadTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
+    private var loadGeneration = 0
+    private var sendGeneration = 0
+    private var sendBotId: String?
     private var started = false
 
     var selectedBot: ShellBot? {
@@ -41,6 +48,8 @@ final class AppModel: ObservableObject {
         guard !started else { return }
         started = true
         phase = .starting
+        threadError = nil
+        saveError = nil
         _ = await services.ensure(config: config, timeoutSeconds: 40)
         guard await poller.check(config.healthURL) else {
             phase = .unavailable
@@ -54,15 +63,22 @@ final class AppModel: ObservableObject {
             phase = .ready
             await reloadThread()
             startPolling()
+        } catch is CancellationError {
+            return
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? "Could not reach the local server."
+            threadError = (error as? LocalizedError)?.errorDescription ?? "Could not reach the local server."
             phase = .unavailable
         }
     }
 
     func retry() async {
-        started = false
         pollTask?.cancel()
+        sendTask?.cancel()
+        reloadTask?.cancel()
+        pollTask = nil
+        sendTask = nil
+        reloadTask = nil
+        started = false
         await start()
     }
 
@@ -77,43 +93,73 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Selection
+    // MARK: - Selection and reload
 
     func select(_ botId: String) {
         guard botId != selectedBotId else { return }
+        cancelSend()
         selectedBotId = botId
-        Task { await reloadThread() }
+        startReload()
     }
 
     func reloadThread() async {
+        loadGeneration += 1
+        let generation = loadGeneration
+        reloadTask?.cancel()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performReload(generation)
+        }
+        reloadTask = task
+        await task.value
+    }
+
+    private func startReload() {
+        loadGeneration += 1
+        let generation = loadGeneration
+        reloadTask?.cancel()
+        reloadTask = Task { [weak self] in
+            guard let self else { return }
+            await self.performReload(generation)
+        }
+    }
+
+    private func performReload(_ generation: Int) async {
         guard let bot = selectedBot else { return }
         do {
-            durableEvents = try await client.events(botId: bot.id)
+            let events = try await client.events(botId: bot.id)
+            guard generation == loadGeneration else { return }
             var fresh = StreamProjection()
             if let sessionId = bot.sessionId, !sessionId.isEmpty {
-                for try await event in client.stream(sessionId: sessionId, expectedSuffix: nil) {
+                for try await event in client.stream(sessionId: sessionId) {
+                    guard generation == loadGeneration else { return }
                     fresh.apply(event)
                 }
             }
+            guard generation == loadGeneration else { return }
+            durableEvents = events
             projection = fresh
             rebuildTranscript()
-            error = nil
+            threadError = nil
+        } catch is CancellationError {
+            return
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? "Thread failed to load."
+            guard generation == loadGeneration else { return }
+            threadError = (error as? LocalizedError)?.errorDescription ?? "Thread failed to load."
         }
     }
 
     private func pollOnce() async {
-        guard let bot = selectedBot else { return }
+        guard phase == .ready else { return }
         do {
-            durableEvents = try await client.events(botId: bot.id)
-            if let sessionId = bot.sessionId, sessionId != store?.bots.first(where: { $0.id == bot.id })?.sessionId {
-                // The shell changed elsewhere; refresh the store too.
-                store = try await client.shell()
-            }
+            let fresh = try await client.shell()
+            store = fresh
+            guard let bot = selectedBot else { return }
+            let events = try await client.events(botId: bot.id)
+            durableEvents = events
             rebuildTranscript()
         } catch {
-            /* keep the last transcript; the next poll retries */
+            /* keep the last view; the next poll retries */
         }
     }
 
@@ -122,33 +168,67 @@ final class AppModel: ObservableObject {
     func send(_ text: String) {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty, !pending, let bot = selectedBot else { return }
+        cancelSend()
         pending = true
-        error = nil
+        threadError = nil
+        sendGeneration += 1
+        let generation = sendGeneration
+        sendBotId = bot.id
         projection = projectionForSend(message)
         rebuildTranscript()
-        sendTask?.cancel()
         sendTask = Task { [weak self] in
             guard let self else { return }
             do {
+                // Snapshot the turn ids first so a resend of identical text
+                // cannot arm on the earlier turn.
+                var history = Set<String>()
+                if let sessionId = bot.sessionId, !sessionId.isEmpty {
+                    history = await self.client.historyTurnIds(sessionId: sessionId)
+                }
+                guard generation == self.sendGeneration else { return }
                 let sessionId = try await self.client.send(
                     botId: bot.id,
                     sessionId: bot.sessionId,
                     message: message
                 )
+                guard generation == self.sendGeneration else { return }
                 self.updateSession(botId: bot.id, sessionId: sessionId)
-                for try await event in self.client.stream(sessionId: sessionId, expectedSuffix: message) {
+                for try await event in self.client.stream(
+                    sessionId: sessionId,
+                    expectedSuffix: message,
+                    historyTurnIds: history
+                ) {
+                    guard generation == self.sendGeneration, self.sendBotId == bot.id else { return }
                     self.projection.apply(event)
                     self.rebuildTranscript()
                 }
+                guard generation == self.sendGeneration else { return }
+                self.pending = false
                 self.projection = StreamProjection()
                 await self.reloadThread()
+            } catch is CancellationError {
+                return
             } catch {
-                self.pending = false
-                self.error = (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                guard generation == self.sendGeneration else { return }
+                self.threadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                self.projection = StreamProjection()
+                if let sessionId = self.selectedBot?.sessionId {
+                    await self.performReloadForSession(botId: bot.id, sessionId: sessionId)
+                }
                 self.rebuildTranscript()
             }
-            self.pending = false
+            if generation == self.sendGeneration {
+                self.pending = false
+            }
         }
+    }
+
+    private func cancelSend() {
+        sendGeneration += 1
+        sendTask?.cancel()
+        sendTask = nil
+        sendBotId = nil
+        if pending { pending = false }
     }
 
     private func projectionForSend(_ message: String) -> StreamProjection {
@@ -164,6 +244,18 @@ final class AppModel: ObservableObject {
         }
         fresh.apply(EveEvent(type: "message.received", id: "local-\(UUID().uuidString)", message: message))
         return fresh
+    }
+
+    private func performReloadForSession(botId: String, sessionId: String) async {
+        var fresh = StreamProjection()
+        do {
+            for try await event in client.stream(sessionId: sessionId) {
+                fresh.apply(event)
+            }
+        } catch {
+            /* keep whatever arrived before the stream failed */
+        }
+        projection = fresh
     }
 
     private func updateSession(botId: String, sessionId: String) {
@@ -184,15 +276,15 @@ final class AppModel: ObservableObject {
 
     // MARK: - Profile
 
-    func patchSelectedBot(_ patch: [String: Any?]) {
-        guard let bot = selectedBot else { return }
-        Task {
+    func patchBot(botId: String, _ patch: [String: Any?]) {
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                try await client.patchBot(botId: bot.id, patch: patch)
-                store = try await client.shell()
-                error = nil
+                try await self.client.patchBot(botId: botId, patch: patch)
+                self.store = try await self.client.shell()
+                self.saveError = nil
             } catch {
-                self.error = (error as? LocalizedError)?.errorDescription ?? "Save failed."
+                self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
             }
         }
     }

@@ -5,6 +5,7 @@ struct ChatView: View {
     @EnvironmentObject private var model: AppModel
     @State private var draft = ""
     @State private var showSettings = false
+    @State private var stickToBottom = true
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -16,6 +17,7 @@ struct ChatView: View {
                 Divider()
                 composer(bot)
             }
+            .defaultFocus($composerFocused, true)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -28,7 +30,7 @@ struct ChatView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                BotSettingsView(bot: bot)
+                BotSettingsView(botId: bot.id)
                     .environmentObject(model)
             }
         } else {
@@ -63,56 +65,80 @@ struct ChatView: View {
     }
 
     private func transcript(_ bot: ShellBot) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    if model.transcript.isEmpty && !model.pending {
-                        VStack(spacing: 6) {
-                            Text("What can I do for you?")
-                                .font(.system(size: 22, weight: .semibold))
-                            Text(
-                                bot.isGroup
-                                    ? "Untargeted messages go to the orchestrator; @name directs one bot."
-                                    : "Runs locally on this Mac. Writes and commands need your approval."
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        if model.transcript.isEmpty && !model.pending {
+                            VStack(spacing: 6) {
+                                Text("What can I do for you?")
+                                    .font(.system(size: 22, weight: .semibold))
+                                Text(
+                                    bot.isGroup
+                                        ? "Untargeted messages go to the orchestrator; @name directs one bot."
+                                        : "Runs locally on this Mac. Writes and commands need your approval."
+                                )
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 80)
+                        }
+                        ForEach(model.transcript) { row in
+                            TranscriptRowView(row: row, bot: bot)
+                        }
+                        if model.pending, model.transcript.last?.kind != .assistant {
+                            HStack(spacing: 8) {
+                                BotAvatarView(bot: bot, size: 20)
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                        Color.clear
+                            .frame(height: 1)
+                            .id("bottom")
+                            .background(
+                                GeometryReader { sentinel in
+                                    Color.clear.preference(
+                                        key: BottomYKey.self,
+                                        value: sentinel.frame(in: .global).maxY
+                                    )
+                                }
                             )
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 80)
                     }
-                    ForEach(model.transcript) { row in
-                        TranscriptRowView(row: row, bot: bot)
-                    }
-                    if model.pending, model.transcript.last?.kind != .assistant {
-                        HStack(spacing: 8) {
-                            BotAvatarView(bot: bot, size: 20)
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    }
-                    Color.clear.frame(height: 1).id("bottom")
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onAppear {
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            .onChange(of: model.transcript.count) {
-                withAnimation(.easeOut(duration: 0.18)) {
+                .onAppear {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
-            }
-            .onChange(of: model.pending) {
-                proxy.scrollTo("bottom", anchor: .bottom)
+                .onPreferenceChange(BottomYKey.self) { maxY in
+                    // Stick to the bottom only while the sentinel stays close
+                    // to the visible edge, so reading upward is not interrupted.
+                    stickToBottom = maxY < viewport.frame(in: .global).maxY + 80
+                }
+                .onChange(of: model.transcript.count) {
+                    guard stickToBottom else { return }
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: model.transcript.last?.text.count) {
+                    // Streaming deltas keep the count stable but grow the text.
+                    guard stickToBottom else { return }
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                .onChange(of: model.pending) {
+                    guard stickToBottom else { return }
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
         }
     }
 
     private func composer(_ bot: ShellBot) -> some View {
         VStack(spacing: 8) {
-            if let error = model.error {
+            if let error = model.threadError {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle")
                     Text(error).lineLimit(2)
@@ -162,6 +188,13 @@ struct ChatView: View {
         let text = draft
         draft = ""
         model.send(text)
+    }
+}
+
+private struct BottomYKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

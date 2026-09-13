@@ -35,9 +35,11 @@ public enum FacePalette {
     }
 
     public static func defaultFace(for id: String) -> Face {
+        // Walk UTF-16 code units like the web's charCodeAt so both clients
+        // derive the same face for the same id, including emoji ids.
         var hash: UInt32 = 0
-        for (index, scalar) in id.unicodeScalars.enumerated() {
-            hash = hash &+ (UInt32(scalar.value) &* UInt32(index + 3))
+        for (index, unit) in id.utf16.enumerated() {
+            hash = hash &+ (UInt32(unit) &* UInt32(index + 3))
         }
         return Face(
             shape: shapes[Int(hash % UInt32(shapes.count))],

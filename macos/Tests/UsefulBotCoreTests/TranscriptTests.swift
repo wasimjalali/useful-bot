@@ -23,6 +23,17 @@ import Testing
         #expect(rows.first?.author == "Echo")
     }
 
+    @Test func mergePairsPrefixedDurableUserTextWithItsLiveEcho() throws {
+        let durable = try JSONDecoder().decode(
+            AgentEvent.self,
+            from: Data(#"{"id":"u1","kind":"user","text":"You are Scout.\nStanding instructions: x\n\nhello","authorName":null,"targetBotIds":[],"handoffId":null}"#.utf8)
+        )
+        let messages = [ChatMessage(id: "live", role: .user, text: "hello")]
+        let rows = Transcript.merge(events: [durable], messages: messages, fallbackAuthor: "Scout")
+        #expect(rows.filter { $0.kind == .user }.count == 1)
+        #expect(rows.first?.text == "hello")
+    }
+
     @Test func mergeRendersHandoffsAndNotes() throws {
         let handoff = try JSONDecoder().decode(
             AgentEvent.self,

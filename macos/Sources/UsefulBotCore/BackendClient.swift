@@ -24,6 +24,37 @@ private struct ShellResponse: Decodable { let store: ShellStore }
 private struct StateResponse: Decodable { let events: [AgentEvent] }
 private struct SendResponse: Decodable { let sessionId: String? }
 
+private final class ActivityBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date()
+    func touch() {
+        lock.lock()
+        last = Date()
+        lock.unlock()
+    }
+    var idle: TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return Date().timeIntervalSince(last)
+    }
+}
+
+private final class TaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    func set(_ next: Task<Void, Never>?) {
+        lock.lock()
+        task = next
+        lock.unlock()
+    }
+    func cancel() {
+        lock.lock()
+        let current = task
+        lock.unlock()
+        current?.cancel()
+    }
+}
+
 /// Talks to the local web server on behalf of the native app: device-token
 /// sign-in, the shell store, durable thread events, turn sending and the
 /// session event stream. Cookies live in the shared storage, so the proxy
@@ -55,17 +86,27 @@ public actor BackendClient {
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
-        let (_, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw BackendError.unauthorized
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
+        guard (200...299).contains(http.statusCode) else {
+            throw http.statusCode == 401 ? BackendError.unauthorized : BackendError.http(http.statusCode)
         }
-        let (data, sessionResponse) = try await session.data(
+        if let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let token = body["csrfToken"] as? String, !token.isEmpty {
+            csrf = token
+            return
+        }
+        // Older servers may not echo the token, so read the session back.
+        let (sessionData, sessionResponse) = try await session.data(
             from: base.appendingPathComponent("api/auth/session")
         )
-        guard let sessionHttp = sessionResponse as? HTTPURLResponse, sessionHttp.statusCode == 200 else {
-            throw BackendError.unauthorized
+        guard let sessionHttp = sessionResponse as? HTTPURLResponse else {
+            throw BackendError.decoding
         }
-        let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard (200...299).contains(sessionHttp.statusCode) else {
+            throw BackendError.http(sessionHttp.statusCode)
+        }
+        let body = (try? JSONSerialization.jsonObject(with: sessionData)) as? [String: Any]
         csrf = body?["csrfToken"] as? String ?? ""
     }
 
@@ -77,6 +118,16 @@ public actor BackendClient {
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         try process.run()
+        // A locked Keychain can block the CLI behind a prompt; never stall the
+        // launch on it.
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline {
+            usleep(50_000)
+        }
+        if process.isRunning {
+            process.terminate()
+            throw BackendError.deviceTokenMissing
+        }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw BackendError.deviceTokenMissing }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -86,10 +137,25 @@ public actor BackendClient {
         return token
     }
 
+    /// Run a request and, on an expired or rotated session, sign in once more
+    /// and retry it. Without this a server restart leaves the app broken until
+    /// relaunch.
+    private func perform(_ build: (BackendClient, String) -> URLRequest) async throws -> (Data, URLResponse) {
+        var result = try await session.data(for: build(self, csrf))
+        if let http = result.1 as? HTTPURLResponse, http.statusCode == 401 || http.statusCode == 403 {
+            try await signIn()
+            // Rebuild with the fresh token, not the one from the failed try.
+            result = try await session.data(for: build(self, csrf))
+        }
+        return result
+    }
+
     // MARK: - Reads
 
     public func shell() async throws -> ShellStore {
-        let (data, response) = try await session.data(from: base.appendingPathComponent("api/shell"))
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/shell"))
+        }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
             throw BackendError.decoding
@@ -98,13 +164,14 @@ public actor BackendClient {
     }
 
     public func events(botId: String) async throws -> [AgentEvent] {
-        var components = URLComponents(
-            url: base.appendingPathComponent("api/agent/state"),
-            resolvingAgainstBaseURL: false
-        )
-        components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
-        guard let url = components?.url else { throw BackendError.decoding }
-        let (data, response) = try await session.data(from: url)
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/agent/state"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
+            return URLRequest(url: components?.url ?? client.base)
+        }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(StateResponse.self, from: data) else {
             throw BackendError.decoding
@@ -115,16 +182,18 @@ public actor BackendClient {
     // MARK: - Writes
 
     public func send(botId: String, sessionId: String?, message: String) async throws -> String {
-        let path = sessionId.map { "eve/v1/session/\($0)" } ?? "eve/v1/session"
-        var request = URLRequest(url: base.appendingPathComponent(path))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue(csrf, forHTTPHeaderField: "x-ub-csrf")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "message": message,
-            "botId": botId,
-        ])
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await perform { client, token in
+            let path = sessionId.map { "eve/v1/session/\($0)" } ?? "eve/v1/session"
+            var request = URLRequest(url: client.base.appendingPathComponent(path))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "message": message,
+                "botId": botId,
+            ])
+            return request
+        }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) else {
             throw BackendError.decoding
@@ -142,26 +211,53 @@ public actor BackendClient {
         for (key, value) in patch {
             clean[key] = value ?? NSNull()
         }
-        let action: [String: Any] = ["type": "updateBot", "botId": botId, "patch": clean]
-        var request = URLRequest(url: base.appendingPathComponent("api/shell"))
-        request.httpMethod = "PUT"
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue(csrf, forHTTPHeaderField: "x-ub-csrf")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["action": action])
-        let (_, response) = try await session.data(for: request)
+        let (_, response) = try await perform { client, token in
+            let action: [String: Any] = ["type": "updateBot", "botId": botId, "patch": clean]
+            var request = URLRequest(url: client.base.appendingPathComponent("api/shell"))
+            request.httpMethod = "PUT"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action])
+            return request
+        }
         try Self.expectOK(response)
     }
 
     // MARK: - Stream
 
-    /// Replay the session and yield events live. When `expectedSuffix` is set,
-    /// the stream ignores replay until it sees the turn carrying that text,
-    /// then finishes on that turn's completion.
-    public nonisolated func stream(sessionId: String, expectedSuffix: String? = nil) -> AsyncThrowingStream<EveEvent, Error> {
+    /// Turn ids the session already has. The next turn is the first with an id
+    /// outside this set, which keeps a resend of identical text from arming the
+    /// stream on the earlier turn.
+    public func historyTurnIds(sessionId: String) async -> Set<String> {
+        var ids = Set<String>()
+        do {
+            for try await event in stream(sessionId: sessionId, expectedSuffix: nil) {
+                if let turnId = event.turnId, !turnId.isEmpty {
+                    ids.insert(turnId)
+                }
+            }
+        } catch {
+            /* treat a failed snapshot as an empty history */
+        }
+        return ids
+    }
+
+    /// Replay the session and yield events live. With `expectedSuffix` set, the
+    /// stream ignores replay until it sees the turn carrying that text with a
+    /// turn id not in `historyTurnIds`, then finishes on that turn's completion.
+    /// Without it, the stream finishes after a short quiet period: history is
+    /// replayed instantly by the local server, and the connection otherwise
+    /// stays open forever.
+    public nonisolated func stream(
+        sessionId: String,
+        expectedSuffix: String? = nil,
+        historyTurnIds: Set<String> = []
+    ) -> AsyncThrowingStream<EveEvent, Error> {
         let base = self.base
         let session = self.session
         return AsyncThrowingStream { continuation in
-            let task = Task {
+            let activity = ActivityBox()
+            let reader = Task {
                 do {
                     var components = URLComponents(
                         url: base.appendingPathComponent("eve/v1/session/\(sessionId)/stream"),
@@ -177,12 +273,14 @@ public actor BackendClient {
                     }
                     var armed = expectedSuffix == nil
                     for try await line in bytes.lines {
+                        activity.touch()
                         guard let event = EveStream.parseLine(line) else { continue }
                         if !armed {
                             if event.type == "message.received",
                                let message = event.message,
                                let suffix = expectedSuffix,
-                               message.hasSuffix(suffix) {
+                               message.hasSuffix(suffix),
+                               event.turnId == nil || !historyTurnIds.contains(event.turnId!) {
                                 armed = true
                                 continuation.yield(event)
                             }
@@ -190,7 +288,7 @@ public actor BackendClient {
                         }
                         continuation.yield(event)
                         if ["turn.completed", "turn.cancelled", "turn.failed",
-                            "session.waiting", "session.failed"].contains(event.type) {
+                            "session.waiting", "session.completed", "session.failed"].contains(event.type) {
                             continuation.finish()
                             return
                         }
@@ -200,7 +298,22 @@ public actor BackendClient {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            let watchdog = TaskBox()
+            if expectedSuffix == nil {
+                watchdog.set(Task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        if activity.idle > 1.5 {
+                            continuation.finish()
+                            return
+                        }
+                    }
+                })
+            }
+            continuation.onTermination = { _ in
+                reader.cancel()
+                watchdog.cancel()
+            }
         }
     }
 

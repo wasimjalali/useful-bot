@@ -21,7 +21,7 @@ struct RootView: View {
                 Text(model.startingMessage)
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
-                if let error = model.error {
+                if let error = model.threadError {
                     Text(error)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)

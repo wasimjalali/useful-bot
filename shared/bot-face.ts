@@ -57,7 +57,9 @@ export function defaultFaceFor(id: string): BotFace {
   for (let i = 0; i < id.length; i += 1) hash = (hash + id.charCodeAt(i) * (i + 3)) >>> 0;
   return {
     shape: AVATAR_SHAPES[hash % AVATAR_SHAPES.length],
-    color: AVATAR_COLORS[(hash >> 3) % AVATAR_COLORS.length],
+    // Unsigned shift: `>>` wraps the hash back to a signed int32, which made
+    // colors undefined for hashes above 2^31.
+    color: AVATAR_COLORS[(hash >>> 3) % AVATAR_COLORS.length],
     image: null,
   };
 }
