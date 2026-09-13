@@ -13,6 +13,8 @@ export const UNASSIGNED_SECTION = "unassigned";
 export const HIDDEN_SECTION = "hidden";
 export const RECENTS_MAX = 40;
 export const PREVIEW_MAX = 160;
+export const GROUP_MIN_MEMBERS = 2;
+export const GROUP_MAX_MEMBERS = 6;
 
 const NAME_MAX = 80;
 const LABEL_MAX = 24;
@@ -24,6 +26,8 @@ export type ShellBot = {
   id: string;
   kind: BotKind;
   name: string;
+  /** Name while the bot is still being onboarded. Cleared once it has a real one. */
+  petname: string | null;
   label: string;
   description: string;
   notify: boolean;
@@ -46,6 +50,7 @@ export type BotProfilePatch = Partial<
   Pick<
     ShellBot,
     | "name"
+    | "petname"
     | "label"
     | "description"
     | "notify"
@@ -89,14 +94,23 @@ export type ShellAction =
   | {
       type: "createBot";
       name: string;
+      petname?: string;
       label?: string;
       description?: string;
       sectionId?: string | null;
       kind?: BotKind;
     }
-  | { type: "createGroup"; name: string; memberIds: string[]; sectionId?: string | null }
+  | {
+      type: "createGroup";
+      name: string;
+      memberIds: string[];
+      label?: string;
+      description?: string;
+      sectionId?: string | null;
+    }
   | { type: "createSection"; name: string }
   | { type: "renameBot"; botId: string; name: string }
+  | { type: "nameBot"; botId: string; name: string; label?: string; description?: string; avatarShape?: string; avatarColor?: string }
   | { type: "renameSection"; sectionId: string; name: string }
   | {
       type: "updateBot";
@@ -109,8 +123,10 @@ export type ShellAction =
   | { type: "deleteSection"; sectionId: string }
   | { type: "move"; botId: string; sectionId: string | null }
   | { type: "setSession"; botId: string; sessionId: string | null }
+  | { type: "sendToBot"; botId: string; message: string; sourceBotId?: string | null }
   | { type: "touchChat"; botId: string; preview: string; sessionId?: string | null }
   | { type: "newChat"; botId?: string }
+  | { type: "clearThread"; botId: string }
   | { type: "openRecent"; recentId: string }
   | { type: "toggleSection"; sectionId: string };
 
@@ -128,6 +144,7 @@ const BOT_KEYS = new Set([
   "id",
   "kind",
   "name",
+  "petname",
   "label",
   "description",
   "notify",
@@ -181,6 +198,7 @@ export function seedStore(at = new Date()): ShellStore {
         id: DEFAULT_BOT_ID,
         kind: "bot",
         name: "Useful Bot",
+        petname: null,
         label: "",
         description: "Local personal agent on this Mac. Creates other bots with a name and instructions.",
         notify: false,
@@ -236,6 +254,7 @@ function parseBot(raw: unknown): ShellBot {
     id: rec.id,
     kind: rec.kind,
     name: clip(rec.name, NAME_MAX) || rec.id,
+    petname: typeof rec.petname === "string" ? clip(rec.petname, NAME_MAX) || null : null,
     label: clip(rec.label, LABEL_MAX),
     description: clip(rec.description, DESCRIPTION_MAX),
     notify: rec.notify,
@@ -351,6 +370,27 @@ function nextOrder(store: ShellStore): number {
   return store.sections.reduce((max, section) => Math.max(max, section.order), -1) + 1;
 }
 
+/**
+ * A group member must be a real 1:1 bot: not the group itself, not the default
+ * Useful Bot (which answers untargeted group turns), not another group, and not
+ * a hidden bot. Order follows the caller so the roster stays stable.
+ */
+export function normalizeMembers(
+  store: ShellStore,
+  memberIds: string[],
+  selfId: string,
+): string[] {
+  const out: string[] = [];
+  for (const id of memberIds) {
+    if (out.includes(id) || id === selfId) continue;
+    const bot = store.bots.find((item) => item.id === id);
+    if (!bot || bot.kind !== "bot" || bot.id === DEFAULT_BOT_ID || bot.hidden) continue;
+    out.push(id);
+    if (out.length >= GROUP_MAX_MEMBERS) break;
+  }
+  return out;
+}
+
 function selectFallback(store: ShellStore, removedId: string): string {
   if (store.selectedBotId !== removedId && store.bots.some((bot) => bot.id === store.selectedBotId)) {
     return store.selectedBotId;
@@ -393,6 +433,7 @@ export function applyShellAction(
         id,
         kind: action.kind === "group" ? "group" : "bot",
         name: uniqueName(store, requireName(action.name)),
+        petname: action.petname !== undefined ? clip(action.petname, NAME_MAX) || null : null,
         label: clip(action.label ?? "", LABEL_MAX),
         description: clip(action.description ?? "", DESCRIPTION_MAX),
         notify: false,
@@ -418,17 +459,17 @@ export function applyShellAction(
       };
     }
     case "createGroup": {
-      const members = action.memberIds.filter((id, index, all) => (
-        all.indexOf(id) === index && store.bots.some((bot) => bot.id === id)
-      ));
       const id = crypto.randomUUID();
+      const members = normalizeMembers(store, action.memberIds, id);
+      if (members.length < GROUP_MIN_MEMBERS) throw new Error("shell_group_members");
       const face = defaultFaceFor(id);
       const group: ShellBot = {
         id,
         kind: "group",
         name: uniqueName(store, requireName(action.name)),
-        label: "Group",
-        description: "",
+        petname: null,
+        label: action.label !== undefined ? clip(action.label, LABEL_MAX) : "Group",
+        description: clip(action.description ?? "", DESCRIPTION_MAX),
         notify: false,
         pinned: false,
         hidden: false,
@@ -461,6 +502,27 @@ export function applyShellAction(
       };
       return { store: { ...store, sections: [...store.sections, section] }, createdId: id };
     }
+    case "nameBot": {
+      const name = clip(action.name, NAME_MAX);
+      if (!name) throw new Error("shell_name_required");
+      const patch: Partial<ShellBot> = { name };
+      if (action.label !== undefined) patch.label = clip(action.label, LABEL_MAX);
+      if (action.description !== undefined) patch.description = clip(action.description, DESCRIPTION_MAX);
+      if (action.avatarShape !== undefined && isAvatarShape(action.avatarShape)) {
+        patch.avatarShape = action.avatarShape;
+        patch.avatarCustom = true;
+      }
+      if (action.avatarColor !== undefined && isAvatarColor(action.avatarColor)) {
+        patch.avatarColor = action.avatarColor;
+        patch.avatarCustom = true;
+      }
+      return {
+        store: {
+          ...store,
+          bots: store.bots.map((bot) => (bot.id === action.botId ? touch(bot, stamp, patch) : bot)),
+        },
+      };
+    }
     case "renameBot": {
       return {
         store: {
@@ -487,6 +549,11 @@ export function applyShellAction(
         const name = clip(action.patch.name, NAME_MAX);
         if (name) patch.name = name;
       }
+      if (action.patch.petname !== undefined) {
+        patch.petname = typeof action.patch.petname === "string"
+          ? clip(action.patch.petname, NAME_MAX) || null
+          : null;
+      }
       if (action.patch.label !== undefined) patch.label = clip(action.patch.label, LABEL_MAX);
       if (action.patch.description !== undefined) patch.description = clip(action.patch.description, DESCRIPTION_MAX);
       if (action.patch.notify !== undefined) patch.notify = action.patch.notify;
@@ -495,9 +562,11 @@ export function applyShellAction(
         patch.lastAt = stamp;
       }
       if (action.patch.memberIds !== undefined) {
-        patch.memberIds = action.patch.memberIds.filter((id, index, all) => (
-          all.indexOf(id) === index && id !== action.botId && store.bots.some((bot) => bot.id === id)
-        ));
+        const bot = store.bots.find((item) => item.id === action.botId);
+        if (!bot) throw new Error("shell_bot_missing");
+        const members = normalizeMembers(store, action.patch.memberIds, action.botId);
+        if (members.length < GROUP_MIN_MEMBERS) throw new Error("shell_group_members");
+        patch.memberIds = members;
       }
       if (action.patch.avatarShape !== undefined && isAvatarShape(action.patch.avatarShape)) {
         patch.avatarShape = action.patch.avatarShape;
@@ -589,6 +658,30 @@ export function applyShellAction(
         },
       };
     }
+    case "sendToBot": {
+      const target = store.bots.find((bot) => bot.id === action.botId);
+      if (!target) throw new Error("shell_bot_missing");
+      const preview = clip(action.message, PREVIEW_MAX);
+      return {
+        store: {
+          ...store,
+          bots: store.bots.map((bot) => {
+            if (bot.id === action.botId) {
+              return touch(bot, stamp, { lastPreview: preview, lastAt: stamp, sessionId: null });
+            }
+            if (action.sourceBotId && bot.id === action.sourceBotId) {
+              return touch(bot, stamp, { lastPreview: `Handed off to ${target.name}`, lastAt: stamp });
+            }
+            return bot;
+          }),
+          recents: pushRecent(
+            store,
+            { ...target, lastPreview: preview, lastAt: stamp, sessionId: null },
+            stamp,
+          ),
+        },
+      };
+    }
     case "touchChat": {
       const preview = clip(action.preview, PREVIEW_MAX);
       return {
@@ -611,6 +704,8 @@ export function applyShellAction(
       const bot = store.bots.find((item) => item.id === botId);
       if (!bot) throw new Error("shell_bot_missing");
       const recents = pushRecent(store, bot, stamp);
+      // "New chat" clears the bot row, but the bot's agent transcript is the
+      // durable handoff log and is cleared separately.
       return {
         store: {
           ...store,
@@ -622,8 +717,23 @@ export function applyShellAction(
         },
       };
     }
-    case "openRecent": {
-      const recent = store.recents.find((item) => item.id === action.recentId);
+    case "clearThread": {
+      const bot = store.bots.find((item) => item.id === action.botId);
+      if (!bot) throw new Error("shell_bot_missing");
+      const recents = pushRecent(store, bot, stamp);
+      return {
+        store: {
+          ...store,
+          recents,
+          bots: store.bots.map((item) => (
+            item.id === action.botId
+              ? touch(item, stamp, { sessionId: null, lastPreview: "", lastAt: null })
+              : item
+          )),
+        },
+      };
+    }
+    case "openRecent": {      const recent = store.recents.find((item) => item.id === action.recentId);
       if (!recent) throw new Error("shell_recent_missing");
       const bot = store.bots.find((item) => item.id === recent.botId);
       if (!bot) {
