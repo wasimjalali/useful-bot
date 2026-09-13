@@ -83,11 +83,11 @@ model's answer. Two root causes, both already identified:
 
 ## Remaining PRs, in order
 
-1. **Release verification.** Full verify suite, seven-day usage trial begins
-   here.
+1. **Seven-day usage trial on the Mac.** Cloud release verify cannot complete
+   that trial on day one. Swift tests, live GLM workhorse/reviewer, and
+   `launchctl bootstrap` stay Mac-side.
 
-GitHub PRs 11, 12, 14, and 15 are on `main`. This branch adds launchd render/lint.
-Do not `launchctl bootstrap` from the cloud VM. PR 13 stays closed.
+GitHub PRs 11, 12, 14, 15, and 16 are on `main`. PR 13 stays closed.
 
 Then the deferring list from earlier PRs: 10k-note memory soak, Tailscale/phone
 (Phase 3), the `product-price-monitor`-style pricing checks. None of these block
