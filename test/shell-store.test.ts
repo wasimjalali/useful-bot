@@ -83,17 +83,29 @@ test("group members and persist roundtrip", () => {
   let store = seedStore();
   const bot = applyShellAction(store, { type: "createBot", name: "Reviewer", label: "Rev" });
   store = bot.store;
+  // The default Useful Bot answers untargeted group turns, so it is never a
+  // member. A group needs two real bots.
+  assert.throws(
+    () => applyShellAction(store, {
+      type: "createGroup",
+      name: "Desk",
+      memberIds: [DEFAULT_BOT_ID, bot.createdId!],
+    }),
+    /shell_group_members/,
+  );
+  const second = applyShellAction(store, { type: "createBot", name: "Writer" });
+  store = second.store;
   const group = applyShellAction(store, {
     type: "createGroup",
     name: "Desk",
-    memberIds: [DEFAULT_BOT_ID, bot.createdId!],
+    memberIds: [bot.createdId!, second.createdId!],
   });
   store = group.store;
   assert.equal(selectedBot(store).kind, "group");
   assert.equal(selectedBot(store).memberIds.length, 2);
   writeShell(store, path);
   const loaded = readShell(path);
-  assert.equal(loaded.bots.length, 3);
+  assert.equal(loaded.bots.length, 4);
   assert.equal(searchBots(loaded, "rev").some((item) => item.label === "Rev"), true);
   store = applyShellAction(loaded, { type: "setSession", botId: group.createdId!, sessionId: "sess-1" }).store;
   assert.equal(store.bots.find((item) => item.id === group.createdId)?.sessionId, "sess-1");

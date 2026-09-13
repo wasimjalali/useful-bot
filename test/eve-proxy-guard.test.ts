@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { eveGetAllowed, evePostAllowed, personaPrefix, rewriteEveSessionBody } from "../shared/eve-proxy.ts";
+import {
+  eveGetAllowed,
+  evePostAllowed,
+  personaPrefix,
+  rewriteEveSessionBody,
+  rewriteEveTurnBody,
+} from "../shared/eve-proxy.ts";
 import { DEFAULT_BOT_ID } from "../shared/shell-store.ts";
 
 test("eve proxy allowlists stream get and session posts", () => {
@@ -21,12 +27,25 @@ test("persona prefix is only for specialist bots", () => {
   assert.equal(personaPrefix({ id: DEFAULT_BOT_ID, kind: "bot", name: "Useful Bot", description: "Main" }), "");
   assert.equal(
     personaPrefix({ id: "bot-seo", kind: "bot", name: "SEO", description: "Watch rankings." }),
-    "You are SEO. Follow these instructions: Watch rankings.\n\n",
+    "You are SEO. Standing instructions: Watch rankings.\n\n",
   );
   const rewritten = rewriteEveSessionBody(
     JSON.stringify({ message: "hello", botId: "bot-seo" }),
     { id: "bot-seo", kind: "bot", name: "SEO", description: "Watch rankings." },
   );
   assert.equal(JSON.parse(rewritten).message.startsWith("You are SEO."), true);
-  assert.equal("botId" in JSON.parse(rewritten), false);
+  // The full turn rewrite keeps botId: the proxy reads it to pick the route.
+  assert.equal(JSON.parse(rewritten).botId, undefined);
+  const turned = rewriteEveTurnBody(
+    JSON.stringify({ message: "hello", botId: "bot-seo" }),
+    {
+      id: "bot-seo",
+      kind: "bot",
+      name: "SEO",
+      label: "",
+      description: "Watch rankings.",
+    } as never,
+    null,
+  );
+  assert.equal(JSON.parse(turned).message.startsWith("You are SEO."), true);
 });
