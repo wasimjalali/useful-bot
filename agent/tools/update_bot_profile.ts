@@ -3,7 +3,6 @@ import { z } from "zod";
 import {
   appendAgentEvent,
   createProposal,
-  nextPetname,
   releaseSend,
   reserveSend,
   threadIdFor,
@@ -37,7 +36,9 @@ export default defineTool({
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : null;
     const patch = {
       name: (input.name ?? target.name).trim(),
-      petname: nextPetname(shell),
+      // Profile edits keep the existing name; petname is only used while a new
+      // bot is being onboarded.
+      petname: target.petname ?? "",
       title: (input.title ?? target.label).trim(),
       description: (input.description ?? target.description).trim(),
       avatarShape: input.avatarShape && isAvatarShape(input.avatarShape) ? input.avatarShape : null,

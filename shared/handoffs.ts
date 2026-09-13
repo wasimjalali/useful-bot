@@ -187,9 +187,11 @@ function pruneHandoffs(dir: string): void {
     const id = name.endsWith(".json") ? name.slice(0, -5) : "";
     if (!id) {
       if (name.endsWith(".claim")) {
+        // A claim older than the takeover window is already considered dead,
+        // so it can go immediately rather than waiting for the record cutoff.
         try {
           const info = JSON.parse(readFileSync(join(dir, name), "utf8")) as { at?: unknown };
-          if (typeof info.at === "number" && info.at < cutoff) unlinkSync(join(dir, name));
+          if (typeof info.at === "number" && Date.now() - info.at > CLAIM_STALE_MS) unlinkSync(join(dir, name));
         } catch {
           try { unlinkSync(join(dir, name)); } catch { /* ignore */ }
         }
@@ -280,6 +282,7 @@ export function markDelivered(
   dir = handoffDir(),
   claimToken = "",
 ): HandoffRecord | null {
+  if (claimToken && !ownsHandoffClaim(id, claimToken, dir)) return null;
   const record = readHandoff(id, dir);
   if (!record) return null;
   const next: HandoffRecord = {
@@ -301,6 +304,7 @@ export function markFailed(
   dir = handoffDir(),
   claimToken = "",
 ): HandoffRecord | null {
+  if (claimToken && !ownsHandoffClaim(id, claimToken, dir)) return null;
   const record = readHandoff(id, dir);
   if (!record) return null;
   const attempts = record.attempts + 1;

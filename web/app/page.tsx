@@ -343,9 +343,9 @@ export default function Page() {
       if (!res.ok) {
         throw new Error(res.status === 503 ? "Agent unavailable" : "Send failed");
       }
-      setTranscriptUser((current) => (
-        current.some((item) => item.text === message) ? current : [...current, { id: `u-${nextSeq()}`, text: message }]
-      ));
+      // Always append: the merge pairs each optimistic entry against one
+      // projected message, so repeated identical sends stay countable.
+      setTranscriptUser((current) => [...current, { id: `u-${nextSeq()}`, text: message }]);
       const body = (await res.json()) as { sessionId?: string };
       const sid = body.sessionId ?? sessionId;
       if (sid) {

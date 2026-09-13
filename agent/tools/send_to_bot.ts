@@ -36,6 +36,9 @@ export default defineTool({
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
     if (target.kind === "group") {
       const members = groupMembers(speakersFrom(shell.bots), target.memberIds);
+      if (members.length === 0) {
+        return { status: "invalid", error: "that group has no member bots" };
+      }
       if (members.length > 1) {
         return {
           status: "needs_post_to_group",

@@ -48,7 +48,6 @@ export async function GET(request: Request) {
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),
-    started: false,
     inFlight: handoffsInFlight(),
   });
 }

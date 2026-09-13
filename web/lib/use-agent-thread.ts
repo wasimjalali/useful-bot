@@ -14,6 +14,7 @@ export function useAgentThread(authed: boolean, botId: string | null) {
   const [error, setError] = useState("");
   const loadedFor = useRef<string | null>(null);
   const busy = useRef(false);
+  const csrf = useRef("");
 
   const load = useCallback(async (id: string) => {
     const res = await fetch(`/api/agent/state?botId=${encodeURIComponent(id)}`, {
@@ -28,7 +29,18 @@ export function useAgentThread(authed: boolean, botId: string | null) {
     if (busy.current) return;
     busy.current = true;
     try {
-      await fetch("/api/agent/tick?limit=2", { method: "POST", credentials: "include" });
+      if (!csrf.current) {
+        const session = await fetch("/api/auth/session", { credentials: "include" });
+        if (session.ok) {
+          csrf.current = (await session.json() as { csrfToken?: string }).csrfToken ?? "";
+        }
+      }
+      const res = await fetch("/api/agent/tick?limit=2", {
+        method: "POST",
+        credentials: "include",
+        headers: csrf.current ? { "x-ub-csrf": csrf.current } : {},
+      });
+      if (res.status === 403) csrf.current = "";
     } catch {
       /* the next poll retries */
     } finally {

@@ -147,7 +147,8 @@ export function ProposalCard({
           });
         }}
         onDismiss={dismiss}
-        pending={pending || !targetId}
+        pending={pending}
+        confirmDisabled={!targetId}
       />
     </Card>
   );
@@ -201,18 +202,20 @@ function Actions({
   onConfirm,
   onDismiss,
   pending,
+  confirmDisabled = false,
 }: {
   confirmLabel: string;
   dismissLabel: string;
   onConfirm: () => void;
   onDismiss: () => void;
   pending: boolean;
+  confirmDisabled?: boolean;
 }) {
   return (
     <div className="mt-3.5 flex flex-wrap items-center gap-2">
       <button
         className="btn btn-primary min-h-9 px-3 text-sm"
-        disabled={pending}
+        disabled={pending || confirmDisabled}
         onClick={onConfirm}
         type="button"
       >

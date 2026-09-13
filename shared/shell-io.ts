@@ -31,6 +31,7 @@ export function readShell(path = defaultShellPath()): ShellStore {
   } catch {
     const bak = `${path}.invalid.${process.pid}.${Date.now()}`;
     try { renameSync(path, bak); } catch { /* ignore */ }
+    console.warn(`[useful-bot] shell store was unreadable; reseeded and backed up to ${bak}`);
     const seeded = seedStore();
     writeShell(seeded, path);
     return seeded;

@@ -330,7 +330,9 @@ function backupIncompatible(path: string): void {
   } catch {
     /* fall through to backup */
   }
-  try { renameSync(path, `${path}.invalid.${Date.now()}`); } catch { /* ignore */ }
+  try {
+    renameSync(path, `${path}.invalid.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}`);
+  } catch { /* ignore */ }
 }
 
 export function writeAgentStore(store: AgentStore, path = agentStorePath()): void {
