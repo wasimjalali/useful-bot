@@ -34,6 +34,17 @@ import Testing
         #expect(rows.first?.text == "hello")
     }
 
+    @Test func mergeSkipsMessagesWhoseIdIsAlreadyDurable() throws {
+        let durable = try JSONDecoder().decode(
+            AgentEvent.self,
+            from: Data(#"{"id":"evt_9","kind":"assistant","text":"final text","authorName":"Scout","targetBotIds":[],"handoffId":null}"#.utf8)
+        )
+        let messages = [ChatMessage(id: "evt_9", role: .assistant, text: "final tex")]
+        let rows = Transcript.merge(events: [durable], messages: messages, fallbackAuthor: "Scout")
+        #expect(rows.count == 1)
+        #expect(rows.first?.text == "final text")
+    }
+
     @Test func mergeRendersHandoffsAndNotes() throws {
         let handoff = try JSONDecoder().decode(
             AgentEvent.self,

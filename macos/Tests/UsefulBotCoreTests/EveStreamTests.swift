@@ -35,6 +35,16 @@ import Testing
         #expect(!projection.pending)
     }
 
+    @Test func projectionMarksFailedTurns() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        projection.apply(EveEvent(type: "turn.failed", id: "2"))
+        #expect(!projection.pending)
+        #expect(projection.failed)
+        projection.apply(EveEvent(type: "turn.started", id: "3"))
+        #expect(!projection.failed)
+    }
+
     @Test func projectionIgnoresReplayedEventIds() {
         var projection = StreamProjection()
         projection.apply(EveEvent(type: "message.received", id: "same", message: "hi"))

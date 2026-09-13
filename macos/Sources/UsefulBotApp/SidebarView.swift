@@ -19,14 +19,17 @@ struct SidebarView: View {
                         $0.sectionId == section.id && !$0.hidden && !$0.pinned
                     }
                     if !bots.isEmpty {
-                        let isExpanded = expanded[section.id] ?? !section.collapsed
+                        // Key the override by the server value so a change made
+                        // elsewhere resets the local expansion.
+                        let key = "\(section.id):\(section.collapsed)"
+                        let isExpanded = expanded[key] ?? !section.collapsed
                         Section {
                             if isExpanded {
                                 ForEach(bots) { bot in row(bot) }
                             }
                         } header: {
                             Button {
-                                expanded[section.id] = !isExpanded
+                                expanded[key] = !isExpanded
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")

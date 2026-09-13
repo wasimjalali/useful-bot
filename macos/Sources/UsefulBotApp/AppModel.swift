@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var reloadTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
+    private var saveChain: Task<Void, Never>?
     private var loadGeneration = 0
     private var sendGeneration = 0
     private var sendBotId: String?
@@ -73,11 +74,12 @@ final class AppModel: ObservableObject {
 
     func retry() async {
         pollTask?.cancel()
-        sendTask?.cancel()
         reloadTask?.cancel()
+        cancelSend()
         pollTask = nil
-        sendTask = nil
         reloadTask = nil
+        loadGeneration += 1
+        pending = false
         started = false
         await start()
     }
@@ -140,7 +142,7 @@ final class AppModel: ObservableObject {
             durableEvents = events
             projection = fresh
             rebuildTranscript()
-            threadError = nil
+            threadError = fresh.failed ? "The last turn failed." : nil
         } catch is CancellationError {
             return
         } catch {
@@ -150,7 +152,8 @@ final class AppModel: ObservableObject {
     }
 
     private func pollOnce() async {
-        guard phase == .ready else { return }
+        // A send owns the state while it runs; a poll must not race it.
+        guard phase == .ready, !pending else { return }
         do {
             let fresh = try await client.shell()
             store = fresh
@@ -192,7 +195,8 @@ final class AppModel: ObservableObject {
                     message: message
                 )
                 guard generation == self.sendGeneration else { return }
-                self.updateSession(botId: bot.id, sessionId: sessionId)
+                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: message)
+                guard generation == self.sendGeneration else { return }
                 for try await event in self.client.stream(
                     sessionId: sessionId,
                     expectedSuffix: message,
@@ -203,6 +207,9 @@ final class AppModel: ObservableObject {
                     self.rebuildTranscript()
                 }
                 guard generation == self.sendGeneration else { return }
+                if self.projection.failed {
+                    self.threadError = "The turn failed."
+                }
                 self.pending = false
                 self.projection = StreamProjection()
                 await self.reloadThread()
@@ -211,11 +218,9 @@ final class AppModel: ObservableObject {
             } catch {
                 guard generation == self.sendGeneration else { return }
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                self.pending = false
                 self.projection = StreamProjection()
-                if let sessionId = self.selectedBot?.sessionId {
-                    await self.performReloadForSession(botId: bot.id, sessionId: sessionId)
-                }
-                self.rebuildTranscript()
+                await self.reloadThread()
             }
             if generation == self.sendGeneration {
                 self.pending = false
@@ -246,23 +251,13 @@ final class AppModel: ObservableObject {
         return fresh
     }
 
-    private func performReloadForSession(botId: String, sessionId: String) async {
-        var fresh = StreamProjection()
-        do {
-            for try await event in client.stream(sessionId: sessionId) {
-                fresh.apply(event)
-            }
-        } catch {
-            /* keep whatever arrived before the stream failed */
-        }
-        projection = fresh
-    }
-
-    private func updateSession(botId: String, sessionId: String) {
+    private func updateSession(botId: String, sessionId: String, preview: String) async {
         guard var current = store,
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
         current.bots[index].sessionId = sessionId
+        current.bots[index].lastPreview = preview
         store = current
+        try? await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
     }
 
     private func rebuildTranscript() {
@@ -277,7 +272,10 @@ final class AppModel: ObservableObject {
     // MARK: - Profile
 
     func patchBot(botId: String, _ patch: [String: Any?]) {
-        Task { [weak self] in
+        // Serialize saves so rapid taps cannot land out of order.
+        let previous = saveChain
+        saveChain = Task { [weak self] in
+            _ = await previous?.value
             guard let self else { return }
             do {
                 try await self.client.patchBot(botId: botId, patch: patch)

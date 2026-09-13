@@ -8,8 +8,8 @@ BIN=".build/release/UsefulBotApp"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/UsefulBotApp"
 chmod +x "$APP/Contents/MacOS/UsefulBotApp"
-if [ ! -f "$APP/Contents/Info.plist" ]; then
-  cat > "$APP/Contents/Info.plist" <<'PLIST'
+# Always refresh the bundle metadata so version bumps never go stale.
+cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -31,6 +31,7 @@ if [ ! -f "$APP/Contents/Info.plist" ]; then
 </dict>
 </plist>
 PLIST
+if ! codesign --force --deep --sign - "$APP" >/dev/null 2>&1; then
+  echo "warning: ad-hoc codesign failed; the app may still run locally" >&2
 fi
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "built $APP"

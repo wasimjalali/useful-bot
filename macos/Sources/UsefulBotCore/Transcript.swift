@@ -30,7 +30,9 @@ public enum Transcript {
         var rows: [TranscriptRow] = []
         var durableUserCounts: [String: Int] = [:]
         var durableAssistantCounts: [String: Int] = [:]
+        var durableIds = Set<String>()
         for event in events {
+            durableIds.insert(event.id)
             let kind = kindFor(event.kind)
             // Strip on both sides of the merge: if a durable row ever stored
             // the proxy-injected prefix, it must still pair with its live echo.
@@ -48,6 +50,9 @@ public enum Transcript {
             }
         }
         for message in messages {
+            // The same event id must never render twice, even if the stream
+            // rewrote its text between the delta and the completion.
+            if durableIds.contains(message.id) { continue }
             switch message.role {
             case .user:
                 if consume(&durableUserCounts, message.text) { continue }

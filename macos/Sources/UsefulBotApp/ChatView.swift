@@ -101,7 +101,7 @@ struct ChatView: View {
                                 GeometryReader { sentinel in
                                     Color.clear.preference(
                                         key: BottomYKey.self,
-                                        value: sentinel.frame(in: .global).maxY
+                                        value: sentinel.frame(in: .named("transcriptViewport")).maxY
                                     )
                                 }
                             )
@@ -109,13 +109,14 @@ struct ChatView: View {
                     .padding(20)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .coordinateSpace(name: "transcriptViewport")
                 .onAppear {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onPreferenceChange(BottomYKey.self) { maxY in
                     // Stick to the bottom only while the sentinel stays close
                     // to the visible edge, so reading upward is not interrupted.
-                    stickToBottom = maxY < viewport.frame(in: .global).maxY + 80
+                    stickToBottom = maxY < viewport.size.height + 80
                 }
                 .onChange(of: model.transcript.count) {
                     guard stickToBottom else { return }

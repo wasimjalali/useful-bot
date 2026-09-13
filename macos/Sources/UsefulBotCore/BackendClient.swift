@@ -82,7 +82,11 @@ public actor BackendClient {
     // MARK: - Auth
 
     public func signIn() async throws {
-        let token = try Self.deviceToken(service: tokenService)
+        // Read the Keychain off the actor executor: the security CLI can take
+        // seconds behind a prompt and must not block other requests.
+        let token = try await Task.detached { [tokenService] in
+            try Self.deviceToken(service: tokenService)
+        }.value
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
@@ -117,7 +121,11 @@ public actor BackendClient {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            throw BackendError.deviceTokenMissing
+        }
         // A locked Keychain can block the CLI behind a prompt; never stall the
         // launch on it.
         let deadline = Date().addingTimeInterval(5)
@@ -204,6 +212,27 @@ public actor BackendClient {
         return sid
     }
 
+    /// Persist the session pointer and preview for a bot, the same shell
+    /// action the web client sends after a turn starts. Without it a poll
+    /// would read back a null session and the next send would start a new one.
+    public func touchChat(botId: String, preview: String, sessionId: String) async throws {
+        let (_, response) = try await perform { client, token in
+            let action: [String: Any] = [
+                "type": "touchChat",
+                "botId": botId,
+                "preview": preview,
+                "sessionId": sessionId,
+            ]
+            var request = URLRequest(url: client.base.appendingPathComponent("api/shell"))
+            request.httpMethod = "PUT"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action])
+            return request
+        }
+        try Self.expectOK(response)
+    }
+
     /// Apply a profile patch through the shell action endpoint. Nil values are
     /// sent as null: the server treats them as "clear this field".
     public func patchBot(botId: String, patch: [String: Any?]) async throws {
@@ -255,45 +284,69 @@ public actor BackendClient {
     ) -> AsyncThrowingStream<EveEvent, Error> {
         let base = self.base
         let session = self.session
+        let client = self
         return AsyncThrowingStream { continuation in
             let activity = ActivityBox()
             let reader = Task {
                 do {
-                    var components = URLComponents(
-                        url: base.appendingPathComponent("eve/v1/session/\(sessionId)/stream"),
-                        resolvingAgainstBaseURL: false
-                    )
-                    components?.queryItems = [URLQueryItem(name: "startIndex", value: "0")]
-                    guard let url = components?.url else { throw BackendError.decoding }
-                    var request = URLRequest(url: url)
-                    request.timeoutInterval = 180
-                    let (bytes, response) = try await session.bytes(for: request)
-                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                        throw BackendError.http((response as? HTTPURLResponse)?.statusCode ?? 0)
-                    }
-                    var armed = expectedSuffix == nil
-                    for try await line in bytes.lines {
-                        activity.touch()
-                        guard let event = EveStream.parseLine(line) else { continue }
-                        if !armed {
-                            if event.type == "message.received",
-                               let message = event.message,
-                               let suffix = expectedSuffix,
-                               message.hasSuffix(suffix),
-                               event.turnId == nil || !historyTurnIds.contains(event.turnId!) {
-                                armed = true
-                                continuation.yield(event)
-                            }
+                    for attempt in 0..<2 {
+                        var components = URLComponents(
+                            url: base.appendingPathComponent("eve/v1/session/\(sessionId)/stream"),
+                            resolvingAgainstBaseURL: false
+                        )
+                        components?.queryItems = [URLQueryItem(name: "startIndex", value: "0")]
+                        guard let url = components?.url else { throw BackendError.decoding }
+                        var request = URLRequest(url: url)
+                        request.timeoutInterval = 180
+                        let (bytes, response) = try await session.bytes(for: request)
+                        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        if (status == 401 || status == 403), attempt == 0 {
+                            // The session rotated (server restart); sign in and
+                            // rebuild the stream once.
+                            try await client.signIn()
                             continue
                         }
-                        continuation.yield(event)
-                        if ["turn.completed", "turn.cancelled", "turn.failed",
-                            "session.waiting", "session.completed", "session.failed"].contains(event.type) {
-                            continuation.finish()
-                            return
+                        guard (200...299).contains(status) else {
+                            throw BackendError.http(status)
                         }
+                        var armed = expectedSuffix == nil
+                        // In history mode a waiting marker ends every replayed
+                        // turn; only the idle watchdog may finish the read.
+                        let finishOnTerminal = expectedSuffix != nil
+                        for try await line in bytes.lines {
+                            activity.touch()
+                            guard let event = EveStream.parseLine(line) else { continue }
+                            if !armed {
+                                if event.type == "message.received",
+                                   let message = event.message,
+                                   let suffix = expectedSuffix {
+                                    let stripped = EveStream.stripThreadPrefix(message)
+                                    if stripped == suffix,
+                                       let turnId = event.turnId,
+                                       !historyTurnIds.contains(turnId) {
+                                        armed = true
+                                        continuation.yield(event)
+                                    } else if stripped == suffix,
+                                              event.turnId == nil,
+                                              historyTurnIds.isEmpty {
+                                        armed = true
+                                        continuation.yield(event)
+                                    }
+                                }
+                                continue
+                            }
+                            continuation.yield(event)
+                            if finishOnTerminal,
+                               ["turn.completed", "turn.cancelled", "turn.failed",
+                                "session.waiting", "session.completed", "session.failed"].contains(event.type) {
+                                continuation.finish()
+                                return
+                            }
+                        }
+                        continuation.finish()
+                        return
                     }
-                    continuation.finish()
+                    continuation.finish(throwing: BackendError.unauthorized)
                 } catch {
                     continuation.finish(throwing: error)
                 }

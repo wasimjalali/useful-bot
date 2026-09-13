@@ -54,9 +54,7 @@ struct BotSettingsView: View {
     }
 
     private func syncSaveError() {
-        if let error = model.saveError {
-            notice = error
-        }
+        notice = model.saveError
     }
 
     private func handleUpload(_ result: Result<[URL], Error>) {

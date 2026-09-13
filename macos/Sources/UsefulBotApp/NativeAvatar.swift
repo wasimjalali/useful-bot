@@ -5,7 +5,10 @@ extension Color {
     init(hex: String) {
         let clean = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         var value: UInt64 = 0
-        Scanner(string: clean).scanHexInt64(&value)
+        guard clean.count == 6, Scanner(string: clean).scanHexInt64(&value) else {
+            self = .black
+            return
+        }
         self.init(
             .sRGB,
             red: Double((value >> 16) & 0xFF) / 255,

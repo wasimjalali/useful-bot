@@ -74,6 +74,9 @@ public enum EveStream {
 public struct StreamProjection: Equatable, Sendable {
     public private(set) var messages: [ChatMessage] = []
     public private(set) var pending = false
+    /// Set when the turn or session failed, so callers can surface it instead
+    /// of treating the empty turn as a delivered reply.
+    public private(set) var failed = false
     private var seen = Set<String>()
     private var currentAssistantId: String?
 
@@ -87,6 +90,7 @@ public struct StreamProjection: Equatable, Sendable {
         switch event.type {
         case "turn.started":
             pending = true
+            failed = false
             currentAssistantId = nil
         case "message.received":
             let text = EveStream.stripThreadPrefix(event.message ?? "")
@@ -118,7 +122,11 @@ public struct StreamProjection: Equatable, Sendable {
                 }
             }
             currentAssistantId = nil
-        case "turn.completed", "turn.cancelled", "turn.failed", "session.waiting", "session.completed", "session.failed":
+        case "turn.failed", "session.failed":
+            pending = false
+            failed = true
+            currentAssistantId = nil
+        case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             pending = false
             currentAssistantId = nil
         default:
