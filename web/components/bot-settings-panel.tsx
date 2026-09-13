@@ -9,12 +9,14 @@ export function BotSettingsPanel({
   onClose,
   onCreateRoutine,
   onPatch,
+  routineNotice = false,
 }: {
   bot: ShellBot;
   store: ShellStore;
   onClose: () => void;
   onCreateRoutine: () => void;
   onPatch: (patch: Partial<Pick<ShellBot, "name" | "label" | "description" | "notify" | "memberIds">>) => void;
+  routineNotice?: boolean;
 }) {
   const members = store.bots.filter((item) => item.kind === "bot" && item.id !== bot.id && !item.hidden);
   return (
@@ -102,6 +104,11 @@ export function BotSettingsPanel({
             <button className="btn btn-secondary mt-3 min-h-9 px-3 text-sm" onClick={onCreateRoutine} type="button">
               Create routine
             </button>
+            {routineNotice ? (
+              <p className="mt-2 text-xs text-ink-muted">
+                Create routine is stubbed until the scheduler API ships.
+              </p>
+            ) : null}
           </div>
         </section>
       </div>

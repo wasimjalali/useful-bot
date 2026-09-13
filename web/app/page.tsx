@@ -180,6 +180,7 @@ export default function Page() {
   useEffect(() => {
     if (!hydrated.current || !selected) return;
     attachBot(selected);
+    setRoutineNotice(false);
   }, [selectedId]);
 
   async function signIn(event: React.FormEvent) {
@@ -511,16 +512,12 @@ export default function Page() {
                   }}
                   onCreateRoutine={() => setRoutineNotice(true)}
                   onPatch={(patch) => dispatch({ type: "updateBot", botId: bot.id, patch })}
+                  routineNotice={routineNotice}
                   store={store}
                 />
               ) : null}
             </div>
           )}
-          {routineNotice ? (
-            <p className="px-4 pb-3 text-xs text-ink-muted sm:px-6">
-              Create routine is stubbed until the scheduler API ships.
-            </p>
-          ) : null}
         </main>
       </div>
 

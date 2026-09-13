@@ -218,7 +218,9 @@ export function BotRail({
       </div>
 
       <div className="operator-row flex items-center gap-2.5 px-1.5 pt-3">
-        <span aria-hidden="true" className="operator-avatar shrink-0">WJ</span>
+        <span aria-hidden="true" className="operator-avatar size-7 shrink-0 rounded-full">
+          WJ
+        </span>
         <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">Wasim</p>
         <button
           aria-label="Account"
