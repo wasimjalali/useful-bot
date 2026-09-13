@@ -33,8 +33,10 @@
     "../shared/shell-store.ts",
     "../shared/shell-io.ts",
     "../shared/policy.ts",
+    "../shared/web-sessions.ts",
     "../agent/lib/approvals.ts",
-    "../agent/lib/memory.ts"
+    "../agent/lib/memory.ts",
+    "../shared/web-sessions.ts"
   ],
   "exclude": [
     "node_modules"

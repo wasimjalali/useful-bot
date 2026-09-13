@@ -392,7 +392,11 @@ export default function Page() {
   }
 
   if (!store || !bot) {
-    return <div className="flex h-screen w-full bg-canvas" />;
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-canvas text-ink">
+        {shellError ? <p className="text-sm text-danger" role="alert">{shellError}</p> : null}
+      </div>
+    );
   }
 
   const rail = (

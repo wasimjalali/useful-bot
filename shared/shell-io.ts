@@ -24,7 +24,15 @@ export function readShell(path = defaultShellPath()): ShellStore {
     writeShell(seeded, path);
     return seeded;
   }
-  return parseShell(JSON.parse(readFileSync(path, "utf8")));
+  try {
+    return parseShell(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    const bak = `${path}.invalid.${process.pid}`;
+    try { renameSync(path, bak); } catch { /* ignore */ }
+    const seeded = seedStore();
+    writeShell(seeded, path);
+    return seeded;
+  }
 }
 
 export function writeShell(store: ShellStore, path = defaultShellPath()): void {

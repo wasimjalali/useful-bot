@@ -6,7 +6,12 @@ import { readShell, writeShell } from "../../../../shared/shell-io.ts";
 export async function GET(request: Request) {
   const gate = await requireDesktop(request);
   if (isGateError(gate)) return gate.error;
-  return NextResponse.json({ ok: true, store: readShell() });
+  try {
+    return NextResponse.json({ ok: true, store: readShell() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "invalid";
+    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+  }
 }
 
 export async function PUT(request: Request) {
