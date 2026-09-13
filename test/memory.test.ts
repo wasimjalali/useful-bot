@@ -90,3 +90,32 @@ test("rebuild index from markdown", () => {
   assert.equal(rebuilt.indexed, 1);
   assert.equal(store.search("سلام", "desktop").length, 1);
 });
+
+test("list returns desktop notes and hides phone audience", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  store.upsert({
+    expectedRevision: null,
+    title: "Desktop note",
+    tags: ["pref"],
+    body: "Short sentences.",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  store.upsert({
+    expectedRevision: null,
+    title: "Phone note",
+    tags: ["phone"],
+    body: "Not for the Mac list.",
+    audience: "shared-phone",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  const listed = store.list("desktop");
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].title, "Desktop note");
+  assert.equal(listed[0].tags[0], "pref");
+  assert.equal(store.list("shared-phone").length, 1);
+});

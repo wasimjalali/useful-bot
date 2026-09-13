@@ -36,6 +36,11 @@ export interface MemoryExcerpt {
   truncated: boolean;
 }
 
+export interface MemoryNoteCard extends MemoryExcerpt {
+  tags: string[];
+  updatedAt: string;
+}
+
 function memoryRoot(): string {
   const fromEnv = process.env.UB_MEMORY_ROOT;
   if (fromEnv) return fromEnv;
@@ -119,6 +124,18 @@ export class MemoryStore {
       ).all(query, audience, now) as Array<{ id: string }>;
     }
     return rows.map((row) => this.read(row.id, audience));
+  }
+
+  list(audience: Audience, limit = 100): MemoryNoteCard[] {
+    const now = new Date().toISOString();
+    const rows = this.db.prepare(
+      "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT ?",
+    ).all(audience, now, limit) as Array<{ id: string }>;
+    return rows.map((row) => {
+      const excerpt = this.read(row.id, audience);
+      const { meta } = parseNote(readFileSync(join(this.notesDir, `${row.id}.md`), "utf8"));
+      return { ...excerpt, tags: meta.tags, updatedAt: meta.updatedAt };
+    });
   }
 
   read(id: string, audience: Audience): MemoryExcerpt {

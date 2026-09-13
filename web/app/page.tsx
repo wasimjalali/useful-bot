@@ -10,6 +10,7 @@ import { BotAvatar } from "../components/bot-avatar";
 import { BotSettingsPanel } from "../components/bot-settings-panel";
 import { CreateBotDialog, CreateGroupDialog } from "../components/create-dialogs";
 import { ConfirmDialog, PromptDialog } from "../components/confirm-dialog";
+import { MemoryPanel } from "../components/memory-panel";
 import {
   applyEveEvent,
   consumeEveNdjson,
@@ -56,7 +57,15 @@ export default function Page() {
   const [renameBot, setRenameBot] = useState<ShellBot | null>(null);
   const [deleteBot, setDeleteBot] = useState<ShellBot | null>(null);
   const [routineNotice, setRoutineNotice] = useState(false);
-  const [approval, setApproval] = useState<{ id: string; hash: string; preview: string } | null>(null);
+  const [approvals, setApprovals] = useState<Array<{ id: string; hash: string; preview: string; tool: string }>>([]);
+  const [notes, setNotes] = useState<Array<{
+    id: string;
+    title: string;
+    body: string;
+    tags: string[];
+    updatedAt: string;
+    truncated: boolean;
+  }> | null>(null);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
@@ -71,6 +80,62 @@ export default function Page() {
       .then((res) => setAuthed(res.ok))
       .catch(() => setAuthed(false));
   }, []);
+
+  useEffect(() => {
+    if (!authed) return;
+    let cancelled = false;
+    async function pollApprovals() {
+      try {
+        const res = await fetch("/api/approvals", { credentials: "include" });
+        if (!res.ok || cancelled) return;
+        const body = await res.json() as {
+          approvals?: Array<{ id: string; actionSha256: string; preview: string; tool: string }>;
+        };
+        setApprovals((body.approvals ?? []).map((item) => ({
+          id: item.id,
+          hash: item.actionSha256,
+          preview: item.preview,
+          tool: item.tool,
+        })));
+      } catch {
+        /* keep last */
+      }
+    }
+    void pollApprovals();
+    const timer = window.setInterval(() => void pollApprovals(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authed]);
+
+  useEffect(() => {
+    if (!authed || view !== "memory") return;
+    let cancelled = false;
+    async function loadNotes() {
+      try {
+        const res = await fetch("/api/memory", { credentials: "include" });
+        if (!res.ok || cancelled) return;
+        const body = await res.json() as { notes?: Array<{
+          id: string;
+          title: string;
+          body: string;
+          tags: string[];
+          updatedAt: string;
+          truncated: boolean;
+        }> };
+        setNotes(body.notes ?? []);
+      } catch {
+        if (!cancelled) setNotes([]);
+      }
+    }
+    void loadNotes();
+    const timer = window.setInterval(() => void loadNotes(), 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authed, view, approvals.length]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -268,17 +333,20 @@ export default function Page() {
     }
   }
 
-  async function decide(decision: "approve" | "deny") {
-    if (!approval) return;
+  async function decide(item: { id: string; hash: string }, decision: "approve" | "deny") {
     const res = await fetch("/api/auth/session", { credentials: "include" });
-    const session = await res.json();
-    await fetch(`/api/approvals/${approval.id}`, {
+    const session = await res.json() as { csrfToken?: string };
+    const out = await fetch(`/api/approvals/${item.id}`, {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json", "x-ub-csrf": session.csrfToken ?? "" },
-      body: JSON.stringify({ decision, actionSha256: approval.hash }),
+      body: JSON.stringify({ decision, actionSha256: item.hash }),
     });
-    setApproval(null);
+    if (!out.ok) {
+      setError("Approval failed");
+      return;
+    }
+    setApprovals((current) => current.filter((row) => row.id !== item.id));
   }
 
   const messages = proj.messages;
@@ -382,38 +450,28 @@ export default function Page() {
               {displayError}
             </div>
           ) : null}
-          {approval ? (
-            <div className="flex flex-wrap items-center gap-2 px-4 py-2 sm:px-6">
-              <span className="status-label status-warning">{approval.preview}</span>
-              <button className="btn btn-primary min-h-9 px-3 text-xs" onClick={() => void decide("approve")} type="button">
-                Approve
-              </button>
-              <button className="btn btn-danger min-h-9 px-3 text-xs" onClick={() => void decide("deny")} type="button">
-                Deny
-              </button>
+          {approvals.length > 0 ? (
+            <div className="flex flex-col gap-2 px-4 py-2 sm:px-6">
+              {approvals.map((item) => (
+                <div className="approval-card" key={item.id}>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-warning">Needs approval</div>
+                    <div className="truncate text-sm text-ink">{item.preview}</div>
+                    <div className="text-[12px] text-ink-muted">{item.tool}</div>
+                  </div>
+                  <button className="btn btn-primary min-h-9 px-3 text-xs" onClick={() => void decide(item, "approve")} type="button">
+                    Approve
+                  </button>
+                  <button className="btn btn-danger min-h-9 px-3 text-xs" onClick={() => void decide(item, "deny")} type="button">
+                    Deny
+                  </button>
+                </div>
+              ))}
             </div>
           ) : null}
 
           {view === "memory" ? (
-            <div className="flex min-h-0 flex-1 flex-col">
-              <header className="flex items-center gap-2 px-4 py-3 sm:px-6">
-                <button aria-label="Open rail" className="icon-btn size-8 lg:hidden" onClick={() => setRailOpen(true)} type="button">
-                  <MenuIcon className="size-4" />
-                </button>
-                <h1 className="text-[15px] font-semibold">Memory</h1>
-              </header>
-              <div className="uv-scroll min-h-0 flex-1 overflow-y-auto">
-                <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
-                  <div className="empty-state rise">
-                    <h2 className="text-lg font-semibold">Nothing remembered yet</h2>
-                    <p>
-                      Ask Useful Bot to remember a preference and it will land here after you
-                      approve it. Notes stay on this Mac.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <MemoryPanel notes={notes} onOpenRail={() => setRailOpen(true)} />
           ) : (
             <div className="relative flex min-h-0 flex-1">
               <div className="flex min-w-0 flex-1 flex-col">
