@@ -83,14 +83,11 @@ model's answer. Two root causes, both already identified:
 
 ## Remaining PRs, in order
 
-1. **launchd for real.** Render the three plists in `ops/launchd/` with the
-   substitute script; lint on Linux, `plutil -lint` if present. Do not install
-   on the Mac from this cloud VM.
-2. **Release verification.** Full verify suite, seven-day usage trial begins
+1. **Release verification.** Full verify suite, seven-day usage trial begins
    here.
 
-GitHub PRs 11 (stream), 12 (shell), and 14 (memory/approvals) are on `main`.
-This branch adds search chips and Ask reviewer. PR 13 stays closed.
+GitHub PRs 11, 12, 14, and 15 are on `main`. This branch adds launchd render/lint.
+Do not `launchctl bootstrap` from the cloud VM. PR 13 stays closed.
 
 Then the deferring list from earlier PRs: 10k-note memory soak, Tailscale/phone
 (Phase 3), the `product-price-monitor`-style pricing checks. None of these block

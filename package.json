@@ -12,7 +12,8 @@
   },
   "scripts": {
     "typecheck": "/usr/local/bin/node node_modules/typescript/bin/tsc --noEmit",
-    "test": "/usr/local/bin/node --experimental-strip-types --test test/contracts.test.ts test/write-approval.test.ts test/memory.test.ts test/session-owners.test.ts test/eve-stream.test.ts test/shell-store.test.ts test/approvals-persist.test.ts test/session-store.test.ts spikes/s3/approvals.test.ts router/test/contracts.test.ts",
+    "launchd:render": "/usr/local/bin/node --experimental-strip-types scripts/render-launchd.mjs",
+    "test": "/usr/local/bin/node --experimental-strip-types --test test/contracts.test.ts test/write-approval.test.ts test/memory.test.ts test/session-owners.test.ts test/eve-stream.test.ts test/shell-store.test.ts test/approvals-persist.test.ts test/session-store.test.ts test/launchd-render.test.ts spikes/s3/approvals.test.ts router/test/contracts.test.ts",
     "verify:phase0": "/usr/local/bin/node scripts/verify.mjs phase0",
     "s1": "/usr/local/bin/node spikes/s1/probe.mjs",
     "start": "/usr/local/bin/node scripts/service.mjs eve",
