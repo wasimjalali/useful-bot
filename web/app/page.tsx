@@ -153,7 +153,7 @@ export default function Page() {
     function onKey(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setSearchOpen(true);
+        setSearchOpen((open) => !open);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -241,6 +241,14 @@ export default function Page() {
     }
   }, [dispatch, proj.messages, selected]);
 
+  useEffect(() => {
+    if (!selected || proj.pending) return;
+    if ((selected.sessionId ?? null) !== active) return;
+    const last = proj.messages.at(-1);
+    if (!last?.text || last.text === selected.lastPreview) return;
+    dispatch({ type: "touchChat", botId: selected.id, preview: last.text });
+  }, [active, dispatch, proj.messages, proj.pending, selected]);
+
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/auth/session", { credentials: "include" });
     setAuthed(res.ok);
@@ -306,6 +314,7 @@ export default function Page() {
       error: "",
       messages: [...current.messages, { role: "user", text, id: nextId() }],
     }));
+    dispatch({ type: "touchChat", botId: selected.id, preview: text });
     try {
       const sessionId = selected.sessionId ?? active;
       const csrf = await csrfHeaders();
@@ -323,7 +332,7 @@ export default function Page() {
       if (sid) {
         projSession.current = sid;
         setActive(sid);
-        dispatch({ type: "setSession", botId: selected.id, sessionId: sid });
+        dispatch({ type: "touchChat", botId: selected.id, preview: text, sessionId: sid });
         setQuery(selected.id, sid);
       }
     } catch (err) {
@@ -460,7 +469,7 @@ export default function Page() {
           setActive(null);
           setProj(createProjection());
           setView("chat");
-          setQuery(null, null);
+          setQuery(store.selectedBotId, null);
           return;
         }
         setCreateSectionId(sectionId ?? null);
@@ -665,7 +674,6 @@ export default function Page() {
 
       {searchOpen ? (
         <ChatSearchDialog
-          bots={store.bots}
           onClose={() => setSearchOpen(false)}
           onNewChat={() => {
             dispatch({ type: "newChat" });
@@ -674,12 +682,24 @@ export default function Page() {
             setProj(createProjection());
             setView("chat");
             setSearchOpen(false);
-            setQuery(null, null);
+            setQuery(store.selectedBotId, null);
+          }}
+          onOpenRecent={(recentId) => {
+            const recent = store.recents.find((item) => item.id === recentId);
+            dispatch({ type: "openRecent", recentId });
+            setSearchOpen(false);
+            setView("chat");
+            setRailOpen(false);
+            projSession.current = null;
+            setProj(createProjection());
+            setActive(recent?.sessionId ?? null);
+            setQuery(recent?.botId ?? store.selectedBotId, recent?.sessionId ?? null);
           }}
           onSelect={(id) => {
             selectBot(id);
             setSearchOpen(false);
           }}
+          store={store}
         />
       ) : null}
 

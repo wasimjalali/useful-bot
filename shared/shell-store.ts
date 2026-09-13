@@ -2,6 +2,8 @@ export const SHELL_SCHEMA = 1;
 export const DEFAULT_BOT_ID = "bot-useful";
 export const UNASSIGNED_SECTION = "unassigned";
 export const HIDDEN_SECTION = "hidden";
+export const RECENTS_MAX = 40;
+export const PREVIEW_MAX = 160;
 
 const NAME_MAX = 80;
 const LABEL_MAX = 24;
@@ -21,7 +23,18 @@ export type ShellBot = {
   sectionId: string | null;
   sessionId: string | null;
   memberIds: string[];
+  lastPreview: string;
+  lastAt: string | null;
   createdAt: string;
+  updatedAt: string;
+};
+
+export type ShellRecent = {
+  id: string;
+  botId: string;
+  title: string;
+  sessionId: string | null;
+  preview: string;
   updatedAt: string;
 };
 
@@ -39,6 +52,7 @@ export type ShellStore = {
   collapsedHidden: boolean;
   bots: ShellBot[];
   sections: ShellSection[];
+  recents: ShellRecent[];
 };
 
 export type ShellAction =
@@ -58,7 +72,7 @@ export type ShellAction =
   | {
       type: "updateBot";
       botId: string;
-      patch: Partial<Pick<ShellBot, "name" | "label" | "description" | "notify" | "memberIds">>;
+      patch: Partial<Pick<ShellBot, "name" | "label" | "description" | "notify" | "memberIds" | "lastPreview">>;
     }
   | { type: "pin"; botId: string; pinned?: boolean }
   | { type: "hide"; botId: string; hidden?: boolean }
@@ -66,7 +80,9 @@ export type ShellAction =
   | { type: "deleteSection"; sectionId: string }
   | { type: "move"; botId: string; sectionId: string | null }
   | { type: "setSession"; botId: string; sessionId: string | null }
+  | { type: "touchChat"; botId: string; preview: string; sessionId?: string | null }
   | { type: "newChat"; botId?: string }
+  | { type: "openRecent"; recentId: string }
   | { type: "toggleSection"; sectionId: string };
 
 const STORE_KEYS = new Set([
@@ -76,6 +92,7 @@ const STORE_KEYS = new Set([
   "collapsedHidden",
   "bots",
   "sections",
+  "recents",
 ]);
 
 const BOT_KEYS = new Set([
@@ -90,9 +107,13 @@ const BOT_KEYS = new Set([
   "sectionId",
   "sessionId",
   "memberIds",
+  "lastPreview",
+  "lastAt",
   "createdAt",
   "updatedAt",
 ]);
+
+const RECENT_KEYS = new Set(["id", "botId", "title", "sessionId", "preview", "updatedAt"]);
 
 const SECTION_KEYS = new Set(["id", "name", "collapsed", "order"]);
 
@@ -135,10 +156,13 @@ export function seedStore(at = new Date()): ShellStore {
         sectionId: null,
         sessionId: null,
         memberIds: [],
+        lastPreview: "",
+        lastAt: null,
         createdAt: stamp,
         updatedAt: stamp,
       },
     ],
+    recents: [],
   };
 }
 
@@ -164,6 +188,12 @@ function parseBot(raw: unknown): ShellBot {
   if (typeof rec.createdAt !== "string" || typeof rec.updatedAt !== "string") {
     throw new Error("shell_bot_dates");
   }
+  if (rec.lastPreview !== undefined && typeof rec.lastPreview !== "string") {
+    throw new Error("shell_bot_preview");
+  }
+  if (rec.lastAt !== undefined && rec.lastAt !== null && typeof rec.lastAt !== "string") {
+    throw new Error("shell_bot_last_at");
+  }
   return {
     id: rec.id,
     kind: rec.kind,
@@ -176,7 +206,31 @@ function parseBot(raw: unknown): ShellBot {
     sectionId: rec.sectionId,
     sessionId: rec.sessionId,
     memberIds: rec.memberIds.filter((id, index, all) => all.indexOf(id) === index),
+    lastPreview: typeof rec.lastPreview === "string" ? clip(rec.lastPreview, PREVIEW_MAX) : "",
+    lastAt: typeof rec.lastAt === "string" ? rec.lastAt : null,
     createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt,
+  };
+}
+
+function parseRecent(raw: unknown): ShellRecent {
+  if (!raw || typeof raw !== "object") throw new Error("shell_recent_invalid");
+  const rec = raw as Record<string, unknown>;
+  for (const key of Object.keys(rec)) {
+    if (!RECENT_KEYS.has(key)) throw new Error(`shell_recent_unknown_key:${key}`);
+  }
+  if (!isId(rec.id)) throw new Error("shell_recent_id");
+  if (!isId(rec.botId)) throw new Error("shell_recent_bot");
+  if (typeof rec.title !== "string") throw new Error("shell_recent_title");
+  if (rec.sessionId !== null && typeof rec.sessionId !== "string") throw new Error("shell_recent_session");
+  if (typeof rec.preview !== "string") throw new Error("shell_recent_preview");
+  if (typeof rec.updatedAt !== "string") throw new Error("shell_recent_date");
+  return {
+    id: rec.id,
+    botId: rec.botId,
+    title: clip(rec.title, NAME_MAX) || "Chat",
+    sessionId: rec.sessionId,
+    preview: clip(rec.preview, PREVIEW_MAX),
     updatedAt: rec.updatedAt,
   };
 }
@@ -209,8 +263,10 @@ export function parseShell(raw: unknown): ShellStore {
   }
   if (rec.schemaVersion !== SHELL_SCHEMA) throw new Error("shell_schema");
   if (!Array.isArray(rec.bots) || !Array.isArray(rec.sections)) throw new Error("shell_shape");
+  if (rec.recents !== undefined && !Array.isArray(rec.recents)) throw new Error("shell_recents");
   const bots = rec.bots.map(parseBot);
   const sections = rec.sections.map(parseSection);
+  const recents = (rec.recents ?? []).map(parseRecent);
   if (bots.length === 0) throw new Error("shell_empty");
   const botIds = new Set(bots.map((bot) => bot.id));
   if (botIds.size !== bots.length) throw new Error("shell_bot_duplicate");
@@ -230,6 +286,10 @@ export function parseShell(raw: unknown): ShellStore {
     collapsedHidden: rec.collapsedHidden !== false,
     bots,
     sections: sections.slice().sort((a, b) => a.order - b.order || a.name.localeCompare(b.name)),
+    recents: recents.filter((item, index, all) => {
+      if (!botIds.has(item.botId)) return false;
+      return all.findIndex((other) => other.id === item.id) === index;
+    }).slice(0, RECENTS_MAX),
   };
 }
 
@@ -255,6 +315,22 @@ function selectFallback(store: ShellStore, removedId: string): string {
   }
   const visible = store.bots.find((bot) => !bot.hidden);
   return (visible ?? store.bots[0]).id;
+}
+
+function pushRecent(store: ShellStore, bot: ShellBot, stamp: string): ShellRecent[] {
+  if (!bot.sessionId && !bot.lastPreview) return store.recents;
+  const next: ShellRecent = {
+    id: crypto.randomUUID(),
+    botId: bot.id,
+    title: clip(bot.lastPreview, NAME_MAX) || bot.name,
+    sessionId: bot.sessionId,
+    preview: clip(bot.lastPreview, PREVIEW_MAX),
+    updatedAt: bot.lastAt ?? stamp,
+  };
+  const recents = store.recents.filter((item) => (
+    !(item.botId === bot.id && item.sessionId === bot.sessionId)
+  ));
+  return [next, ...recents].slice(0, RECENTS_MAX);
 }
 
 export function applyShellAction(
@@ -284,6 +360,8 @@ export function applyShellAction(
           : null,
         sessionId: null,
         memberIds: [],
+        lastPreview: "",
+        lastAt: null,
         createdAt: stamp,
         updatedAt: stamp,
       };
@@ -311,6 +389,8 @@ export function applyShellAction(
           : null,
         sessionId: null,
         memberIds: members,
+        lastPreview: "",
+        lastAt: null,
         createdAt: stamp,
         updatedAt: stamp,
       };
@@ -358,6 +438,10 @@ export function applyShellAction(
       if (action.patch.label !== undefined) patch.label = clip(action.patch.label, LABEL_MAX);
       if (action.patch.description !== undefined) patch.description = clip(action.patch.description, DESCRIPTION_MAX);
       if (action.patch.notify !== undefined) patch.notify = action.patch.notify;
+      if (action.patch.lastPreview !== undefined) {
+        patch.lastPreview = clip(action.patch.lastPreview, PREVIEW_MAX);
+        patch.lastAt = stamp;
+      }
       if (action.patch.memberIds !== undefined) {
         patch.memberIds = action.patch.memberIds.filter((id, index, all) => (
           all.indexOf(id) === index && id !== action.botId && store.bots.some((bot) => bot.id === id)
@@ -405,6 +489,7 @@ export function applyShellAction(
         ));
       const next = { ...store, bots };
       next.selectedBotId = selectFallback(next, action.botId);
+      next.recents = store.recents.filter((item) => item.botId !== action.botId);
       return { store: next };
     }
     case "deleteSection": {
@@ -442,26 +527,65 @@ export function applyShellAction(
         },
       };
     }
-    case "newChat": {
-      const id = crypto.randomUUID();
-      const bot: ShellBot = {
-        id,
-        kind: "bot",
-        name: uniqueName(store, "New chat"),
-        label: "Chat",
-        description: "",
-        notify: false,
-        pinned: false,
-        hidden: false,
-        sectionId: null,
-        sessionId: null,
-        memberIds: [],
-        createdAt: stamp,
-        updatedAt: stamp,
-      };
+    case "touchChat": {
+      const preview = clip(action.preview, PREVIEW_MAX);
       return {
-        store: { ...store, selectedBotId: id, bots: [bot, ...store.bots] },
-        createdId: id,
+        store: {
+          ...store,
+          bots: store.bots.map((bot) => (
+            bot.id === action.botId
+              ? touch(bot, stamp, {
+                lastPreview: preview,
+                lastAt: stamp,
+                sessionId: action.sessionId !== undefined ? action.sessionId : bot.sessionId,
+              })
+              : bot
+          )),
+        },
+      };
+    }
+    case "newChat": {
+      const botId = action.botId ?? store.selectedBotId;
+      const bot = store.bots.find((item) => item.id === botId);
+      if (!bot) throw new Error("shell_bot_missing");
+      const recents = pushRecent(store, bot, stamp);
+      return {
+        store: {
+          ...store,
+          selectedBotId: botId,
+          recents,
+          bots: store.bots.map((item) => (
+            item.id === botId ? touch(item, stamp, { sessionId: null, lastPreview: "", lastAt: null }) : item
+          )),
+        },
+      };
+    }
+    case "openRecent": {
+      const recent = store.recents.find((item) => item.id === action.recentId);
+      if (!recent) throw new Error("shell_recent_missing");
+      const bot = store.bots.find((item) => item.id === recent.botId);
+      if (!bot) {
+        return { store: { ...store, recents: store.recents.filter((item) => item.id !== action.recentId) } };
+      }
+      let recents = store.recents;
+      if (bot.sessionId && bot.sessionId !== recent.sessionId) {
+        recents = pushRecent(store, bot, stamp);
+      }
+      return {
+        store: {
+          ...store,
+          selectedBotId: bot.id,
+          recents,
+          bots: store.bots.map((item) => (
+            item.id === bot.id
+              ? touch(item, stamp, {
+                sessionId: recent.sessionId,
+                lastPreview: recent.preview,
+                lastAt: recent.updatedAt,
+              })
+              : item
+          )),
+        },
       };
     }
     case "toggleSection": {
@@ -505,7 +629,40 @@ export function searchBots(store: ShellStore, query: string): ShellBot[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return store.bots.filter((bot) => !bot.hidden);
   return store.bots.filter((bot) => {
-    const hay = `${bot.name} ${bot.label} ${bot.description}`.toLowerCase();
+    const hay = `${bot.name} ${bot.label} ${bot.description} ${bot.lastPreview}`.toLowerCase();
     return hay.includes(needle);
   });
+}
+
+export type ShellSearchHit =
+  | { kind: "new-chat" }
+  | { kind: "recent"; recent: ShellRecent; bot: ShellBot | null }
+  | { kind: "bot"; bot: ShellBot };
+
+function matchesNeedle(hay: string, needle: string): boolean {
+  return hay.toLowerCase().includes(needle);
+}
+
+export function searchShell(store: ShellStore, query: string): ShellSearchHit[] {
+  const needle = query.trim().toLowerCase();
+  const hits: ShellSearchHit[] = [{ kind: "new-chat" }];
+  const recents = store.recents.filter((recent) => {
+    if (!needle) return true;
+    const bot = store.bots.find((item) => item.id === recent.botId);
+    return matchesNeedle(`${recent.title} ${recent.preview} ${bot?.name ?? ""} ${bot?.label ?? ""}`, needle);
+  });
+  const recentCap = needle ? recents : recents.slice(0, 8);
+  for (const recent of recentCap) {
+    hits.push({
+      kind: "recent",
+      recent,
+      bot: store.bots.find((item) => item.id === recent.botId) ?? null,
+    });
+  }
+  const bots = store.bots.filter((bot) => {
+    if (!needle) return !bot.hidden;
+    return matchesNeedle(`${bot.name} ${bot.label} ${bot.description} ${bot.lastPreview}`, needle);
+  });
+  for (const bot of bots) hits.push({ kind: "bot", bot });
+  return hits;
 }
