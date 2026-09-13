@@ -1,4 +1,5 @@
 import { readSession } from "../../../../lib/auth";
+import { fixtureEnabled, fixtureHandle } from "../../../../lib/chat-fixture";
 
 const EVE = "http://127.0.0.1:4321";
 
@@ -25,6 +26,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   const allowed = suffix === "health" || suffix === "info" || suffix.startsWith("session");
   if (!allowed) {
     return Response.json({ ok: false, error: "not found" }, { status: 404 });
+  }
+  if (fixtureEnabled()) {
+    const handled = await fixtureHandle(method, suffix, request);
+    if (handled) return handled;
   }
   const url = new URL(request.url);
   const target = `${EVE}/eve/v1/${suffix}${url.search}`;

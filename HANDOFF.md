@@ -83,26 +83,14 @@ model's answer. Two root causes, both already identified:
 
 ## Remaining PRs, in order
 
-1. **PR 10: real replies.** Wire the eve SSE stream into the UI (above). Gate:
-   send "hi" in the app, see a real GLM-5.3-flash answer, cancel mid-turn stops
-   within 2s, reload resumes the session (`?session=<uuid>` is already in the
-   URL).
-2. **PR 11: memory in the chat.** The `memory_search`/`memory_read`/
-   `memory_upsert` tools exist; surface a Memory view that lists notes
-   (`audience: "desktop"`) and a small "remember this" flow driven by the agent.
-   The upsert tool already requires approval; make the approval card render in
-   the chat from a pending-approvals poll (route is
-   `web/app/api/approvals/[id]/route.ts`).
-3. **PR 12: search + reviewer in the chat.** `web_search` tool calls router
-   `/v1/search` (keyless Firecrawl). Show results as chips. "Ask reviewer" runs
-   the pinned reviewer subagent with the turn's text.
-4. **PR 13: launchd for real.** Render the three plists in `ops/launchd/` to
-   `~/Library/LaunchAgents` with the substitute script; `plutil -lint` first;
-   verify crash/restart and duplicate-process prevention. Note `service.mjs` eve
-   currently runs `eve dev` because `eve start` needs `eve build` output that
-   conflicts with the web subapp; revisit before going to production launchd.
-5. **PR 14: release verification.** Full verify suite, seven-day usage trial
-   begins here.
+GitHub numbering: PR 10 was the docs handoff (merged). Streaming replies is GitHub **PR 11**.
+
+1. **PR 11: stream real assistant replies.** Wire the eve NDJSON stream into the UI. Gate: send in the app, see a real answer, cancel mid-turn stops within 2s, reload resumes `?session=`. Merge this before the shell PR if the shell is stacked on it.
+2. **Multi-bot light-theme shell UI.** Grok Bot IA plus Cursor create patterns, Useful Brain tokens, light theme first. Rail: search, compact rows, section headers including Unassigned, pin cards, selected state, footer account. Bot context: pin, move, rename, hide/delete with confirm. Create bot / group chat. Per-bot settings. Persist `~/.useful-bot/shell.json`. Deferred: composer modes, marketplace, Cmd+K polish, dark theme, routines scheduler.
+3. **Memory in the chat.** Surface a Memory view that lists notes (`audience: "desktop"`) and a "remember this" flow. The upsert tool already requires approval; make the approval card render in the chat from a pending-approvals poll (`web/app/api/approvals/[id]/route.ts`).
+4. **Search + reviewer in the chat.** `web_search` tool calls router `/v1/search` (keyless Firecrawl). Show results as chips. "Ask reviewer" runs the pinned reviewer subagent with the turn's text.
+5. **launchd templates in-repo.** Render the three plists in `ops/launchd/` with the substitute script; `plutil -lint` or equivalent first. Do not install onto a cloud Linux VM or a Mac that is not the owner's. Note `service.mjs` eve currently runs `eve dev` because `eve start` needs `eve build` output that conflicts with the web subapp.
+6. **Release verification.** Full verify suite, screenshots and a screen recording of the final UI. The seven-day usage trial begins after this lands on `main`.
 
 Then the deferring list from earlier PRs: 10k-note memory soak, Tailscale/phone
 (Phase 3), the `product-price-monitor`-style pricing checks. None of these block

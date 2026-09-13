@@ -116,3 +116,67 @@ export function CheckIcon(props: IconProps) {
     </Icon>
   );
 }
+
+export function PinIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 17v4" />
+      <path d="M9 3h6l1 6 3 3H5l3-3Z" />
+    </Icon>
+  );
+}
+
+export function PlusIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 5v14M5 12h14" />
+    </Icon>
+  );
+}
+
+export function MoreIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="6" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="18" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function ChevronIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="m8 10 4 4 4-4" />
+    </Icon>
+  );
+}
+
+export function UsersIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M16 19v-1.2A2.8 2.8 0 0 0 13.2 15H8.8A2.8 2.8 0 0 0 6 17.8V19" />
+      <circle cx="11" cy="8.5" r="2.5" />
+      <path d="M18.5 15.5c1.2.3 2 1.2 2 2.3V19" />
+      <circle cx="17.5" cy="8.8" r="1.8" />
+    </Icon>
+  );
+}
+
+export function HideIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z" />
+      <path d="m4 4 16 16" />
+    </Icon>
+  );
+}
+
+export function BellIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6 16h12l-1.2-3V10a4.8 4.8 0 1 0-9.6 0v3Z" />
+      <path d="M10 16v.8a2 2 0 0 0 4 0V16" />
+    </Icon>
+  );
+}

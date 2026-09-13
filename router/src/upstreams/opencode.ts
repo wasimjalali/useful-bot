@@ -1,8 +1,22 @@
 import { createHash } from "node:crypto";
 import { RouterError } from "../errors.ts";
 import type { RegistryEntry } from "../registry.ts";
+import { resolveUpstreamModelId as resolveLiveModel } from "../../../shared/live-model.ts";
 
 const GO_DEFAULT = "https://opencode.ai/zen/go/v1";
+
+function resolveUpstreamModelId(entry: { upstreamModelId: string }): string {
+  try {
+    return resolveLiveModel(entry);
+  } catch {
+    throw new RouterError({
+      status: 503,
+      type: "internal_error",
+      code: "configuration_unverified",
+      message: "live upstream pin rejected",
+    });
+  }
+}
 
 export function sessionHeader(callerId: string, sessionId: string, role: string): string {
   return createHash("sha256").update(`${callerId}:${sessionId}:${role}`).digest("hex");
@@ -29,7 +43,7 @@ export async function completeUpstream(input: {
   const payload = input.body as Record<string, unknown>;
   const forwarded = {
     ...payload,
-    model: input.entry.upstreamModelId,
+    model: resolveUpstreamModelId(input.entry),
     max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : input.entry.maxOutputTokens,
   };
   const response = await fetch(url, {

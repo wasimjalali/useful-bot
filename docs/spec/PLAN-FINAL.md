@@ -1,6 +1,22 @@
 # Useful Bot: final v1 plan
 
-Status: final planning baseline, 2026-09-12. Implementation has not started and live gates have not passed. [SPEC.md](SPEC.md) is the implementation contract. This document supersedes v0.1. The draft and counsel files remain unchanged.
+Status: implementation in progress, 2026-09-13. SPEC.md remains the contract. This document is the planning baseline plus the live delivery sequence below.
+
+## Live delivery sequence (2026-09-13)
+
+Work after the original six-PR table, using GitHub numbers:
+
+| Order | GitHub | Scope | Notes |
+|---|---|---|---|
+| 1 | PRs 1-10 | Docs, spikes, router, macOS shell, memory store, local run, Useful Brain, Tailwind, handoff | Merged to `main` |
+| 2 | PR 11 | Stream real assistant replies from eve | Merge before the shell if the shell is stacked on this branch |
+| 3 | Shell PR | Multi-bot light-theme rail/stage UI (Grok Bot IA, Useful Brain tokens) | After streaming, before memory view |
+| 4 | Memory PR | Memory view plus approval cards in chat | |
+| 5 | Search PR | Search chips plus Ask reviewer in chat | |
+| 6 | launchd PR | In-repo templates, substitute script, lint. Do not install on a cloud VM or a Mac that is not the owner's | |
+| 7 | Release PR | Verify suite, screenshots, recording. Seven-day trial starts after merge | |
+
+Phone reachability stays Phase 3 / after the desktop gate.
 
 ## Goal
 

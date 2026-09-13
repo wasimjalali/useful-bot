@@ -110,11 +110,17 @@ async function main() {
   if (mode === "eve") {
     await waitReady("http://127.0.0.1:4319/health/live", 60_000);
     const env = { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" };
-    try {
-      env.UB_CHANNEL_JWT_SECRET = await keychain("com.usefulbot.channel.desktop");
-      env.UB_ROUTER_DESKTOP_TOKEN = await keychain("com.usefulbot.router.desktop");
-    } catch {
-      fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
+    if (process.env.UB_SKIP_KEYCHAIN === "1") {
+      if (!env.UB_CHANNEL_JWT_SECRET || !env.UB_ROUTER_DESKTOP_TOKEN) {
+        fail("credential_store_locked_or_missing", "UB_CHANNEL_JWT_SECRET");
+      }
+    } else {
+      try {
+        env.UB_CHANNEL_JWT_SECRET = await keychain("com.usefulbot.channel.desktop");
+        env.UB_ROUTER_DESKTOP_TOKEN = await keychain("com.usefulbot.router.desktop");
+      } catch {
+        fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
+      }
     }
     run([path.join(ROOT, "node_modules/eve/bin/eve.js"), "dev", "--no-ui", "--host", "127.0.0.1", "--port", "4321"], env);
     return;
@@ -125,11 +131,20 @@ async function main() {
       PATH: "/usr/local/bin:/usr/bin:/bin",
       UB_ROUTER_CONFIG: process.env.UB_ROUTER_CONFIG ?? path.join(process.env.HOME ?? "", ".useful-bot/config.json"),
     };
-    try {
-      const secret = await keychain("com.usefulbot.channel.desktop");
-      env.UB_CHANNEL_JWT = signChannelJwt(secret, "desktop-app");
-    } catch {
-      fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
+    if (process.env.UB_SKIP_KEYCHAIN === "1") {
+      if (!env.UB_CHANNEL_JWT && env.UB_CHANNEL_JWT_SECRET) {
+        env.UB_CHANNEL_JWT = signChannelJwt(env.UB_CHANNEL_JWT_SECRET, "desktop-app");
+      }
+      if (!env.UB_CHANNEL_JWT) {
+        fail("credential_store_locked_or_missing", "UB_CHANNEL_JWT");
+      }
+    } else {
+      try {
+        const secret = await keychain("com.usefulbot.channel.desktop");
+        env.UB_CHANNEL_JWT = signChannelJwt(secret, "desktop-app");
+      } catch {
+        fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
+      }
     }
     run([
       path.join(ROOT, "node_modules/next/dist/bin/next"),

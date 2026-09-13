@@ -206,6 +206,100 @@ html, body {
     box-shadow: var(--shadow-rail);
   }
 
+  .section-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 8px 4px;
+    color: var(--ink-faint);
+    font-size: 11px;
+    letter-spacing: 0.01em;
+  }
+  .bot-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: 0;
+    border-radius: 10px;
+    padding: 6px 8px;
+    background: transparent;
+    color: var(--ink);
+    text-align: left;
+    transition: background-color 150ms var(--ease-out);
+  }
+  .bot-row:hover { background-color: var(--sunken); }
+  .bot-row[aria-current="true"] {
+    background-color: var(--sunken);
+    font-weight: 550;
+  }
+  .bot-avatar {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    background: var(--sunken);
+    color: var(--ink);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    flex-shrink: 0;
+  }
+  .pin-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px;
+    background: var(--surface);
+    color: var(--ink);
+    text-align: left;
+    box-shadow: var(--shadow-sm);
+    transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out);
+  }
+  .pin-card:hover { border-color: var(--border-strong); }
+  .pin-card[aria-current="true"] {
+    background: var(--sunken);
+    border-color: var(--border-strong);
+  }
+  .menu-pop {
+    position: fixed;
+    z-index: 45;
+    min-width: 204px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: var(--shadow-pop);
+  }
+  .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: 0;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 13px;
+    text-align: left;
+  }
+  .menu-item:hover { background: var(--sunken); }
+  .menu-item:disabled { opacity: 0.5; }
+  .menu-danger { color: var(--danger); }
+  .settings-pane {
+    width: 320px;
+    max-width: 100%;
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    min-height: 0;
+  }
+
   .operator-row { border-top: 1px solid var(--border); }
   .operator-avatar {
     display: grid;
