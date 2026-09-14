@@ -48,4 +48,27 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".git",
   "LaunchAgents",
   "auth.json",
+  // Credential stores that sit under a home directory a grant may cover.
+  // read_file is ungated, so a folder grant on $HOME would otherwise hand
+  // these over with no approval card. The list cannot be exhaustive, which is
+  // why granting a home directory is a bad idea rather than a safe one; it
+  // covers what is both common and unambiguous. A file a project legitimately
+  // needs is still reachable through bash, which always shows a card.
+  // These earn a substring rule because the real files are named around them
+  // (`.env.local`, `id_rsa.pub`). Credential stores with one exact name are on
+  // FORBIDDEN_CHILD_SEGMENTS instead, so `.dockerignore` is not read as
+  // `.docker`.
+  "keychain",
+  "netrc",
+  ".npmrc",
+  ".pypirc",
+  ".authinfo",
+  // `.kubeconfig` holds cluster credentials as surely as `.kube/config`, so
+  // this one wants the substring. `.docker` is the exception that forced the
+  // segment screen: `.dockerignore` is not a credential store.
+  ".kube",
+  "library/cookies",
+  "id_rsa",
+  "id_ecdsa",
+  "id_ed25519",
 ] as const;

@@ -11,6 +11,13 @@ struct ComposerView: View {
     /// `chat-composer.tsx` textarea cap, matching the server clip.
     static let maxDraftLength = Attachments.messageMax
 
+    /// A chip label, clipped to what fits beside its chevron. Nil in, nil out,
+    /// so a chip with nothing selected keeps its own placeholder word.
+    static func chipLabel(_ name: String?, max: Int = 18) -> String? {
+        guard let name, !name.isEmpty else { return nil }
+        return name.count <= max ? name : String(name.prefix(max - 1)) + "…"
+    }
+
     let bot: ShellBot
     var onOpenConnectors: () -> Void
     var onOpenProviders: () -> Void
@@ -18,13 +25,21 @@ struct ComposerView: View {
     @State private var plusOpen = false
     @State private var modeOpen = false
     @State private var showFileImporter = false
+    @State private var showFolderImporter = false
+    @State private var projectOpen = false
+    @State private var permissionOpen = false
     @State private var plusButtonFrame = CGRect.zero
     @State private var modeChipFrame = CGRect.zero
-    @FocusState private var focused: Bool
+    @State private var projectChipFrame = CGRect.zero
+    @State private var permissionChipFrame = CGRect.zero
+    @State private var focused = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let error = model.attachError {
+            // Both, and in that order: a folder that would not attach and a
+            // permission that would not apply are separate failures, and a
+            // published error nothing renders is the same as no error at all.
+            if let error = model.attachError ?? model.workspaceError {
                 Text(error)
                     .font(.system(size: DesignTokens.FontSize.attachError))
                     .foregroundStyle(Theme.C.danger)
@@ -32,6 +47,7 @@ struct ComposerView: View {
                     .padding(.bottom, 8)
             }
             field
+            contextRow
         }
         .padding(.top, DesignTokens.Space.composerTop)
         .padding(.bottom, DesignTokens.Space.composerBottom)
@@ -45,14 +61,31 @@ struct ComposerView: View {
             case .failure: model.attachError = "That file could not be read."
             }
         }
+        .fileImporter(
+            isPresented: $showFolderImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    model.setWorkspaceFolder(url)
+                }
+            case .failure: model.workspaceError = "That folder could not be read."
+            }
+        }
         .onExitCommand {
             plusOpen = false
             modeOpen = false
+            projectOpen = false
+            permissionOpen = false
         }
         .onChange(of: bot.id) { _, _ in
             // The menus belong to the bot they opened for.
             plusOpen = false
             modeOpen = false
+            projectOpen = false
+            permissionOpen = false
         }
     }
 
@@ -64,7 +97,9 @@ struct ComposerView: View {
         !Attachments.formatMessage(model.draft, files: model.attachments).isEmpty
     }
 
-    private var stacked: Bool { !model.attachments.isEmpty }
+    private var workspace: BotWorkspace? { bot.workspace }
+
+    private var stacked: Bool { !model.attachments.isEmpty || workspace != nil }
 
     private var field: some View {
         VStack(spacing: 0) {
@@ -72,10 +107,8 @@ struct ComposerView: View {
                 if stacked { attachmentsRow }
                 HStack(alignment: .bottom, spacing: 8) {
                     plusButton
-                    if stacked { modeChip.padding(.bottom, 2) }
                     input
                     Spacer(minLength: 0)
-                    if !stacked { modeChip.padding(.bottom, 2) }
                     sendButton.padding(.bottom, 2)
                 }
             }
@@ -113,6 +146,10 @@ struct ComposerView: View {
                             onAttach: {
                                 plusOpen = false
                                 showFileImporter = true
+                            },
+                            onAttachFolder: {
+                                plusOpen = false
+                                showFolderImporter = true
                             },
                             onConnectors: {
                                 plusOpen = false
@@ -160,44 +197,92 @@ struct ComposerView: View {
             }
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: plusOpen)
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: modeOpen)
+            // `.composer-project-card` opens above the leading edge.
+            .overlay(alignment: .topLeading) {
+                if projectOpen {
+                    VStack(spacing: 0) {
+                        ProjectMenu(
+                            projects: model.workspaceProjects,
+                            currentPath: workspace?.path,
+                            onPick: { path in
+                                projectOpen = false
+                                model.setWorkspaceFolder(URL(fileURLWithPath: path))
+                            },
+                            onNew: {
+                                projectOpen = false
+                                showFolderImporter = true
+                            },
+                            onRemove: { id in
+                                model.removeWorkspaceProject(id: id)
+                            }
+                        )
+                        .fixedSize()
+                        .dismissOnOutsideClick(triggers: { [projectChipFrame] }) { projectOpen = false }
+                        Spacer(minLength: 8)
+                    }
+                    .frame(height: 0, alignment: .bottom)
+                    .transition(.opacity)
+                }
+            }
+            // `.composer-permission-card` opens beside it, above the composer.
+            .overlay(alignment: .topLeading) {
+                if permissionOpen {
+                    VStack(spacing: 0) {
+                        PermissionMenu(
+                            permission: workspace?.permission,
+                            finalConfirm: workspace?.finalConfirm ?? false,
+                            onPermission: { id in
+                                model.setWorkspacePermission(id)
+                                permissionOpen = false
+                            },
+                            onFinalConfirm: { model.setWorkspaceFinalConfirm(!(workspace?.finalConfirm ?? false)) }
+                        )
+                        .fixedSize()
+                        .dismissOnOutsideClick(triggers: { [permissionChipFrame] }) { permissionOpen = false }
+                        Spacer(minLength: 8)
+                    }
+                    .frame(height: 0, alignment: .bottom)
+                    .padding(.leading, 132)
+                    .transition(.opacity)
+                }
+            }
         }
+    }
+
+    /// The chip row under the composer: working folder, permission, and the
+    /// model/effort chip the reference layout keeps under the field.
+    private var contextRow: some View {
+        HStack(spacing: 10) {
+            projectChip
+            permissionChip
+            Spacer(minLength: 0)
+            modeChip
+        }
+        .padding(.top, 6)
+        .padding(.horizontal, 2)
     }
 
     private var input: some View {
         ZStack(alignment: .topLeading) {
-            if model.draft.isEmpty {
+            // Gone the moment the field takes focus, not only once a character
+            // lands: a caret sitting inside its own placeholder reads as text
+            // that will not delete.
+            if model.draft.isEmpty && !focused {
                 Text(placeholder)
                     .font(.system(size: DesignTokens.FontSize.chatBody))
                     .foregroundStyle(Theme.C.inkFaint)
-                    .padding(.top, 5)
+                    .padding(.top, 7)
                     .allowsHitTesting(false)
             }
-            TextField("", text: $model.draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: DesignTokens.FontSize.chatBody))
-                .foregroundStyle(Theme.C.ink)
-                .lineLimit(1...6)
-                .focused($focused)
-                // The web caps the composer at 2000 chars and the server clips
-                // to the same limit; capping here keeps the durable text equal
-                // to the live echo so the transcript merge can pair them.
-                .onChange(of: model.draft) { _, next in
-                    if next.utf16.count > Self.maxDraftLength {
-                        model.draft = ComposerDraft.clip(next, toUTF16: Self.maxDraftLength)
-                    }
-                }
-                // Plain Return sends when possible. With nothing to send it is
-                // swallowed; while a turn runs it falls through so the next
-                // draft can take a newline. Modified keys always fall through.
-                .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.isEmpty else { return .ignored }
-                    guard canSend else { return .handled }
-                    guard !model.pending else { return .ignored }
-                    send()
-                    return .handled
-                }
-                .accessibilityLabel(placeholder)
-                .padding(.vertical, 4)
+            ComposerTextView(
+                text: $model.draft,
+                returnSends: true,
+                canSend: { canSend },
+                pending: { model.pending },
+                onSend: { send() },
+                onFocusChange: { focused = $0 }
+            )
+            .accessibilityLabel(placeholder)
         }
         .frame(minHeight: DesignTokens.Control.composerInput, alignment: .leading)
     }
@@ -205,6 +290,8 @@ struct ComposerView: View {
     private var plusButton: some View {
         Button {
             modeOpen = false
+            projectOpen = false
+            permissionOpen = false
             plusOpen.toggle()
         } label: {
             Image(systemName: "plus")
@@ -217,12 +304,75 @@ struct ComposerView: View {
         .buttonStyle(PlusButtonStyle())
         .pointerOnHover()
         .trackWindowFrame($plusButtonFrame)
-        .accessibilityLabel("Attach a file or open connectors")
+        .accessibilityLabel("Attach a file, attach a folder, or open connectors")
+    }
+
+    private var projectChip: some View {
+        Button {
+            plusOpen = false
+            permissionOpen = false
+            modeOpen = false
+            if !projectOpen {
+                Task { await model.loadWorkspaceProjects() }
+            }
+            projectOpen.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "externalDrive.fill")
+                    .font(.system(size: 12))
+                // Clipped by characters rather than held in a fixed-width
+                // frame: a frame wide enough for a long name leaves a short
+                // one stranded from its chevron, which is what this chip did.
+                Text(ComposerView.chipLabel(workspace?.folderName) ?? "Project")
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
+            .foregroundStyle(Theme.C.inkMuted)
+            .frame(height: DesignTokens.Control.composerInput)
+        }
+        .buttonStyle(ModeChipStyle())
+        .pointerOnHover()
+        .trackWindowFrame($projectChipFrame)
+        .accessibilityLabel("Working folder for this conversation")
+    }
+
+    private var permissionChip: some View {
+        Button {
+            plusOpen = false
+            projectOpen = false
+            modeOpen = false
+            permissionOpen.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: permissionIcon(workspace?.permission))
+                    .font(.system(size: 12))
+                Text(workspace?.permissionLabel ?? "Permission")
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
+            .foregroundStyle(workspace?.isFullAccess == true ? Theme.C.accentStrong : Theme.C.inkMuted)
+            .frame(height: DesignTokens.Control.composerInput)
+        }
+        .buttonStyle(ModeChipStyle())
+        .pointerOnHover()
+        .trackWindowFrame($permissionChipFrame)
+        .accessibilityLabel("What the bot may do in the working folder")
+    }
+
+    private func permissionIcon(_ permission: String?) -> String {
+        guard let permission else { return "lock.shield" }
+        return PermissionMenu.options.first { $0.id == permission }?.icon ?? "lock.shield"
     }
 
     private var modeChip: some View {
         Button {
             plusOpen = false
+            projectOpen = false
+            permissionOpen = false
             modeOpen.toggle()
         } label: {
             HStack(spacing: 4) {
@@ -279,6 +429,43 @@ struct ComposerView: View {
         // Chips wrap like the transcript's search chips; a plain row clipped
         // once three or more files were attached.
         WrapHStack(spacing: 8) {
+            if let ws = workspace {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.C.accentStrong)
+                    VStack(alignment: .leading, spacing: 0) {
+                        // Same reason as the project chip: clip the string, do
+                        // not hold a fixed-width frame that strands the ×.
+                        Text(ComposerView.chipLabel(ws.folderName, max: 22) ?? "Folder")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.C.ink)
+                            .lineLimit(1)
+                        if !folderCountLabel.isEmpty {
+                            Text(folderCountLabel)
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.C.inkFaint)
+                                .lineLimit(1)
+                        }
+                    }
+                    Button {
+                        model.clearWorkspaceFolder()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Detach folder")
+                }
+                .padding(.leading, 10)
+                .padding(.trailing, 6)
+                .frame(height: 32)
+                .background(Theme.C.sunken)
+                .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
+                .clipShape(Capsule())
+            }
             ForEach(model.attachments) { file in
                 HStack(spacing: 6) {
                     Text(file.name)
@@ -308,9 +495,26 @@ struct ComposerView: View {
         .padding(.top, 2)
     }
 
+    /// Empty until the count arrives. The scan runs off the main actor, so
+    /// there is a moment with no number; repeating the folder name underneath
+    /// itself only makes the chip look broken, and a raw path would put a
+    /// filesystem-named string, newlines and all, into the layout.
+    private var folderCountLabel: String {
+        guard let botId = model.selectedBotId,
+              let count = model.folderItemCount[botId] else {
+            return ""
+        }
+        return "\(count) item\(count == 1 ? "" : "s")"
+    }
+
     private func send() {
         guard canSend, !model.pending else { return }
-        let message = Attachments.formatMessage(model.draft, files: model.attachments)
+        var message = Attachments.formatMessage(model.draft, files: model.attachments)
+        // The grant travels by session, not by message; this line tells the
+        // model the folder is there and what to do with it.
+        if let ws = workspace {
+            message += "\n\nAttached project folder: \(ws.folderName) — work inside \(ws.promptPath)"
+        }
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.
@@ -355,18 +559,25 @@ private struct ModeChipStyle: ButtonStyle {
     }
 }
 
-/// `.composer-plus-menu`: attach file and connectors, above the plus button.
+/// `.composer-plus-menu`: photos and files, a folder, and connectors.
 private struct PlusMenu: View {
     let onAttach: () -> Void
+    let onAttachFolder: () -> Void
     let onConnectors: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             item(
-                icon: "folder",
-                title: "Attach file",
-                subtitle: "Add a file to this message",
+                icon: "paperclip",
+                title: "Upload photos & file",
+                subtitle: "Add files to this message",
                 action: onAttach
+            )
+            item(
+                icon: "folder",
+                title: "Attach folder",
+                subtitle: "Let the bot work in a folder",
+                action: onAttachFolder
             )
             item(
                 icon: "square.grid.2x2",
@@ -410,6 +621,161 @@ private struct PlusMenu: View {
     }
 }
 
+/// `.composer-project-card`: the folder recents plus New project.
+private struct ProjectMenu: View {
+    let projects: [ProjectEntry]
+    let currentPath: String?
+    let onPick: (_ path: String) -> Void
+    let onNew: () -> Void
+    let onRemove: (_ id: String) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Projects")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.C.inkFaint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+            ScrollView {
+                VStack(spacing: 0) {
+                    if projects.isEmpty {
+                        Text("Folders you work in show up here")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.C.inkFaint)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(projects) { project in
+                        MenuRowButton(action: { onPick(project.path) }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.C.inkMuted)
+                                Text(project.name)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.C.ink)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                if project.path == currentPath {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.C.inkMuted)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+            Rectangle()
+                .fill(Theme.C.border)
+                .frame(height: 1)
+            MenuRowButton(action: onNew) {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Text("New project")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 248)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .popShadow()
+    }
+}
+
+/// `.composer-permission-card`: what the bot may do in the granted folder.
+private struct PermissionMenu: View {
+    let permission: String?
+    let finalConfirm: Bool
+    let onPermission: (_ id: String) -> Void
+    let onFinalConfirm: () -> Void
+
+    static let options: [(id: String, label: String, icon: String)] = [
+        ("read_only", "Read only", "book"),
+        ("guard", "Guard", "lock.shield"),
+        ("full_access", "Full access", "checkmark.shield"),
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Permission")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.C.inkFaint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+            ForEach(Self.options, id: \.id) { option in
+                MenuRowButton(action: { onPermission(option.id) }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: option.icon)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .frame(width: 18)
+                        Text(option.label)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.ink)
+                        Spacer(minLength: 0)
+                        if permission == option.id {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Rectangle()
+                .fill(Theme.C.border)
+                .frame(height: 1)
+            MenuRowButton(action: onFinalConfirm) {
+                HStack {
+                    Image(systemName: "flag")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Text("Final confirm")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                    Spacer(minLength: 0)
+                    SwitchVisual(isOn: finalConfirm)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 248)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .popShadow()
+    }
+}
+
 /// A menu-style row with the sunken hover the web uses on pop items.
 struct MenuRowButton<Label: View>: View {
     let action: () -> Void
@@ -438,18 +804,38 @@ private struct ComposerModeMenu: View {
     let onSave: (_ patch: ComposerPatch) -> Void
 
     @State private var flyout: Flyout?
+    @State private var hoverTask: Task<Void, Never>?
 
     enum Flyout {
         case effort
         case model
     }
 
+    /// Hover delay before the flyout opens; instant pops read as flicker.
+    private static let hoverDelay: Duration = .milliseconds(500)
+
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
+        HStack(alignment: .bottom, spacing: 6) {
             if flyout != nil {
                 flyoutCard
             }
             card
+        }
+        // The flyout persists on purpose: it opened because the pointer
+        // hovered a row, and it only leaves when a selection is made, the
+        // menu closes, or the pointer hovers the other row.
+        .onHover { hovering in
+            if !hovering { hoverTask?.cancel() }
+        }
+    }
+
+    /// Open (or switch) the flyout after the hover settles.
+    private func hover(_ target: Flyout) {
+        hoverTask?.cancel()
+        hoverTask = Task {
+            try? await Task.sleep(for: Self.hoverDelay)
+            guard !Task.isCancelled else { return }
+            flyout = target
         }
     }
 
@@ -471,7 +857,7 @@ private struct ComposerModeMenu: View {
                 }
             }
             if !composer.efforts.isEmpty {
-                MenuRowButton(action: { flyout = flyout == .effort ? nil : .effort }) {
+                MenuRowButton(action: { flyout = .effort }) {
                     HStack {
                         Text("Effort")
                             .font(.system(size: 13))
@@ -489,11 +875,15 @@ private struct ComposerModeMenu: View {
                     .frame(maxWidth: .infinity)
                     .background(flyout == .effort ? Theme.C.sunken : .clear)
                 }
+                .onHover { hovering in
+                    guard hovering else { return }
+                    hover(.effort)
+                }
             }
             Rectangle()
                 .fill(Theme.C.border)
                 .frame(height: 1)
-            MenuRowButton(action: { flyout = flyout == .model ? nil : .model }) {
+            MenuRowButton(action: { flyout = .model }) {
                 HStack {
                     Text("Model")
                         .font(.system(size: 13))
@@ -511,6 +901,10 @@ private struct ComposerModeMenu: View {
                 .frame(height: 36)
                 .frame(maxWidth: .infinity)
                 .background(flyout == .model ? Theme.C.sunken : .clear)
+            }
+            .onHover { hovering in
+                guard hovering else { return }
+                hover(.model)
             }
         }
         .frame(width: 232)
@@ -551,7 +945,7 @@ private struct ComposerModeMenu: View {
                         }
                     }
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: 240)
             case .model:
                 ModelFlyout(composer: composer, onSave: onSave, onOpenProviders: onOpenProviders)
             case .none:

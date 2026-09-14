@@ -24,6 +24,7 @@ import {
   type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
+import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
 /**
@@ -35,6 +36,58 @@ import type { ShellBot } from "../../shared/shell-store.ts";
 
 const EVE = "http://127.0.0.1:4321";
 const DELIVER_TIMEOUT_MS = 120_000;
+
+/**
+ * Stamp — or revoke — the workspace grant a turn's tools will read. Called
+ * from the eve proxy and from server-driven turns: the agent process
+ * resolves the grant per session, so it must be current before the turn
+ * reaches eve. A bot whose folder was detached revokes the grant here, so
+ * capability never outlives the owner's decision.
+ */
+export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
+  if (!sessionId) return;
+  if (!bot.workspace) {
+    removeSessionGrant(sessionId);
+    return;
+  }
+  upsertSessionGrant({
+    sessionId,
+    path: bot.workspace.path,
+    permission: bot.workspace.permission,
+    finalConfirm: bot.workspace.finalConfirm,
+  });
+}
+
+/**
+ * Stamp from the roster as it is right now, not from a snapshot taken before
+ * an await. `runEveTurn` reads the shell, then spends up to twenty seconds
+ * replaying the session stream; stamping the pre-await bot in that window
+ * resurrects a grant the owner detached while it ran. A bot that has since
+ * disappeared revokes rather than keeps its old capability.
+ */
+function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
+  if (!sessionId) return;
+  try {
+    let bot: ShellBot | undefined;
+    try {
+      bot = readShell().bots.find((item) => item.id === botId);
+    } catch {
+      // An unreadable roster is not permission to keep the grant.
+      removeSessionGrant(sessionId);
+      return;
+    }
+    if (!bot) {
+      removeSessionGrant(sessionId);
+      return;
+    }
+    syncSessionWorkspace(sessionId, bot);
+  } catch (err) {
+    // A contended grants store must not surface as a raw lock code in a
+    // routine's transcript note. The turn does not start: running it against a
+    // grant this process could not make current is the thing to avoid.
+    throw new Error("workspace_unavailable", { cause: err });
+  }
+}
 
 const inflight = new Set<string>();
 
@@ -250,6 +303,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
   let reply = "";
   try {
     const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
+    if (sessionId) syncSessionWorkspaceFresh(sessionId, bot.id);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
@@ -260,6 +314,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
     const body = await res.json() as { sessionId?: string };
     sessionId = body.sessionId ?? sessionId;
     if (!sessionId) throw new Error("eve_session_missing");
+    syncSessionWorkspaceFresh(sessionId, bot.id);
     const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
       headers: { authorization: `Bearer ${jwt}` },
       signal: controller.signal,

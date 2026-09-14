@@ -620,6 +620,46 @@ public actor BackendClient {
 
     // MARK: - Writes
 
+    /// Project recents for the composer's project chip. Best-effort reads: an
+    /// empty list only means the menu offers New project alone.
+    public func workspaceProjects() async throws -> [ProjectEntry] {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/workspace"))
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(WorkspaceProjectsResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.projects
+    }
+
+    @discardableResult
+    public func addWorkspaceProject(path: String) async throws -> [ProjectEntry] {
+        try await workspaceProjectCall(["action": "addProject", "path": path])
+    }
+
+    @discardableResult
+    public func removeWorkspaceProject(id: String) async throws -> [ProjectEntry] {
+        try await workspaceProjectCall(["action": "removeProject", "id": id])
+    }
+
+    private func workspaceProjectCall(_ body: [String: Any]) async throws -> [ProjectEntry] {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/workspace"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(WorkspaceProjectsResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.projects
+    }
+
+
     public func send(botId: String, sessionId: String?, message: String) async throws -> String {
         // An empty stored session means "start one", not a trailing-slash path
         // the proxy rejects.

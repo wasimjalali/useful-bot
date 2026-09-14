@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { workspaceRoot } from "../lib/workspace.ts";
+import { effectiveRoot } from "../lib/workspace.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
@@ -18,7 +18,19 @@ const INPUT_MAX_BYTES = 1024 * 1024;
  * out of the workspace. cwd/env confinement alone does not stop an absolute
  * path, so this is a tripwire in addition to the owner's per-command approval.
  */
-const BLOCKED_COMMAND_SUBSTRINGS = [...FORBIDDEN_PATH_SUBSTRINGS, "keychain", ".."];
+const BLOCKED_COMMAND_SUBSTRINGS = [
+  ...FORBIDDEN_PATH_SUBSTRINGS,
+  // Substrings that only ever name something outside the folder. `..` earns
+  // its place as a path traversal marker even though it costs the odd benign
+  // `echo "a..b"`: the owner still sees the command on a card, so a false
+  // block is a retype, while a miss is a read the card made look routine.
+  "..",
+  "/etc",
+  "/private/etc",
+  "/var/db",
+  "/library/keychains",
+  "/library/cookies",
+];
 
 function blockedReason(command: string): string | null {
   const lowered = command.toLowerCase();
@@ -39,7 +51,12 @@ export default defineTool({
     if (blocked) {
       return { status: "blocked", error: blocked };
     }
-    const root = workspaceRoot();
+    // One grant read for root AND permission: two reads could pair a root
+    // from before a permission change with the permission after it.
+    const { root, grant } = effectiveRoot(ctx?.session?.id);
+    if (grant?.permission === "read_only") {
+      return { status: "blocked", error: "workspace_read_only" };
+    }
     const hash = actionSha256({
       tool: "bash",
       canonicalArgs: JSON.stringify({ command: input.command }),
@@ -55,7 +72,28 @@ export default defineTool({
       actionSha256: hash,
       preview: input.command,
     });
+    // Commands always wait for the owner, in every permission: cwd and env
+    // confinement alone cannot keep a verbatim shell line inside the folder,
+    // so a card is the only honest gate. Final confirm changes nothing here.
     await waitUntilNotPending(store, rec.id);
+    // The workspace may have changed while the card sat open. The approval was
+    // granted against the cwd AND the posture at request time, so a changed
+    // root, a changed permission, or a revoked grant all refuse the approval
+    // rather than spend it on something the owner did not see. Same rule as
+    // the write path.
+    let refreshed;
+    try {
+      refreshed = effectiveRoot(ctx?.session?.id);
+    } catch {
+      // A grant revoked with no legacy root configured leaves nothing to run
+      // in. That is the workspace changing, not a tool crash.
+      return { status: "blocked", error: "workspace_changed" };
+    }
+    const permissionAtRequest = grant?.permission ?? null;
+    const permissionNow = refreshed.grant?.permission ?? null;
+    if (refreshed.root !== root || permissionNow !== permissionAtRequest) {
+      return { status: "blocked", error: "workspace_changed" };
+    }
     return executeIfApproved(store, rec.id, hash, async () => {
       const args = ["/bin/sh", "-c", input.command];
       const { stdout, stderr } = await execFileAsync(args[0], args.slice(1), {

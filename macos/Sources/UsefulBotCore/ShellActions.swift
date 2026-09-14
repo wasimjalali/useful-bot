@@ -36,6 +36,18 @@ public enum ShellActions {
         ["type": "clearThread", "botId": botId]
     }
 
+    /// Attach or detach the folder this conversation works in. `nil` detaches.
+    public static func setWorkspace(botId: String, workspace: BotWorkspace?) -> [String: Any] {
+        let payload: Any = workspace.map { ws in
+            [
+                "path": ws.path,
+                "permission": ws.permission,
+                "finalConfirm": ws.finalConfirm,
+            ] as [String: Any]
+        } ?? NSNull()
+        return ["type": "setWorkspace", "botId": botId, "workspace": payload]
+    }
+
     public static func openRecent(recentId: String) -> [String: Any] {
         ["type": "openRecent", "recentId": recentId]
     }

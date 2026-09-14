@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { lstatSync, realpathSync } from "node:fs";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import {
@@ -13,8 +14,9 @@ import {
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
-import { applyShellAction, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
+import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 
 export async function GET(request: Request) {
@@ -64,6 +66,28 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
     clearThread(action.botId);
   }
   return 0;
+}
+
+/**
+ * Drop the filesystem capabilities an action just took away. `staleSessionIds`
+ * works out which ones; this spends them.
+ *
+ * Best effort, like `detachBot`: the roster is the authority, and the stamp at
+ * the next turn is the backstop. It must not turn a locked grants store into a
+ * failed roster action the owner already saw succeed.
+ */
+function revokeGrantsFor(
+  action: ShellAction | undefined,
+  before: ShellStore,
+  after: ShellStore,
+): void {
+  for (const id of staleSessionIds(action, before, after)) {
+    try {
+      removeSessionGrant(id);
+    } catch {
+      /* the next turn's stamp revokes it; a locked store is not this action's failure */
+    }
+  }
 }
 
 /**
@@ -187,6 +211,30 @@ export async function PUT(request: Request) {
       }
     }
 
+    // A folder grant is an owner decision, but the path still has to be real
+    // and grantable: an absolute path to an existing directory that is not
+    // itself a symlink and whose own name is not a credential store.
+    if (body.action?.type === "setWorkspace" && body.action.workspace) {
+      const target = body.action.workspace.path;
+      try {
+        if (!isGrantableRootPath(target)) {
+          return NextResponse.json({ ok: false, error: "workspace_path_forbidden" }, { status: 400 });
+        }
+        const stat = lstatSync(target);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
+          return NextResponse.json({ ok: false, error: "workspace_not_directory" }, { status: 400 });
+        }
+        if (realpathSync(target) !== target) {
+          return NextResponse.json({ ok: false, error: "workspace_path_symlink" }, { status: 400 });
+        }
+        // Store the canonical path: the agent re-verifies at tool time, and
+        // a grant carrying a link path would fail there instead of working.
+        body.action.workspace.path = realpathSync(target);
+      } catch {
+        return NextResponse.json({ ok: false, error: "workspace_path_missing" }, { status: 400 });
+      }
+    }
+
     // A proposal is confirmable once. claimProposal only returns to the caller
     // that flips it out of pending, so two concurrent confirms cannot both
     // apply the same createBot.
@@ -230,6 +278,11 @@ export async function PUT(request: Request) {
     const next = action
       ? updateShell((shell) => applyShellAction(shell, action).store)
       : current;
+    // Revoking here, not only at the next turn stamp. `syncSessionWorkspace`
+    // runs when a turn starts, so without this a detach leaves the capability
+    // live for the rest of an in-flight turn and for any approval card still
+    // open — the owner's decision has to take effect when they make it.
+    revokeGrantsFor(action, current, next);
     // Only once the roster commit stood. A failure here is reported, not
     // swallowed, and the tick's sweep clears whatever was left behind.
     const detachError = action?.type === "deleteBot" ? detachBot(action.botId) : null;

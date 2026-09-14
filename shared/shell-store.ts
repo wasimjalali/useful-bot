@@ -7,6 +7,13 @@ import {
   type AvatarShape,
 } from "./bot-face.ts";
 
+/** Client-safe: this file must never pull in node builtins. */
+export type WorkspacePermission = "read_only" | "guard" | "full_access";
+
+export function parseWorkspacePermission(value: unknown): WorkspacePermission | null {
+  return value === "read_only" || value === "guard" || value === "full_access" ? value : null;
+}
+
 export const SHELL_SCHEMA = 1;
 export const DEFAULT_BOT_ID = "bot-useful";
 export const UNASSIGNED_SECTION = "unassigned";
@@ -21,6 +28,17 @@ const LABEL_MAX = 24;
 const DESCRIPTION_MAX = 500;
 
 export type BotKind = "bot" | "group";
+
+/**
+ * The folder this conversation works in. The path is a folder the owner
+ * picked in a desktop picker; the permission decides what the agent may do
+ * inside it (see `agent/lib/workspace.ts`).
+ */
+export type BotWorkspace = {
+  path: string;
+  permission: WorkspacePermission;
+  finalConfirm: boolean;
+};
 
 export type ShellBot = {
   id: string;
@@ -44,6 +62,7 @@ export type ShellBot = {
   avatarColor: AvatarColor;
   avatarImage: string | null;
   avatarCustom: boolean;
+  workspace: BotWorkspace | null;
 };
 
 export type BotProfilePatch = Partial<
@@ -123,6 +142,11 @@ export type ShellAction =
   | { type: "deleteSection"; sectionId: string }
   | { type: "move"; botId: string; sectionId: string | null }
   | { type: "setSession"; botId: string; sessionId: string | null }
+  | {
+      type: "setWorkspace";
+      botId: string;
+      workspace: BotWorkspace | null;
+    }
   | { type: "sendToBot"; botId: string; message: string; sourceBotId?: string | null }
   | { type: "touchChat"; botId: string; preview: string; sessionId?: string | null }
   | { type: "newChat"; botId?: string }
@@ -178,6 +202,7 @@ export function seedStore(at = new Date()): ShellStore {
         avatarColor: "ink",
         avatarImage: null,
         avatarCustom: false,
+        workspace: null,
       },
     ],
     recents: [],
@@ -233,8 +258,144 @@ function parseBot(raw: unknown): ShellBot {
     avatarColor: isAvatarColor(rec.avatarColor) ? rec.avatarColor : face.color,
     avatarImage: parseAvatarImage(rec.avatarImage),
     avatarCustom: typeof rec.avatarCustom === "boolean" ? rec.avatarCustom : rec.id !== DEFAULT_BOT_ID,
+    workspace: parseWorkspace(rec.workspace),
   };
 }
+
+/**
+ * Tolerant: a malformed workspace field is no workspace, never a failure.
+ *
+ * Screened the same way a write is. A hand-edited roster naming `/` or a
+ * credential folder would otherwise parse into a bot field the grants store
+ * then refuses, which turns one bot's chat into a turn that cannot start.
+ * Reading it as no folder is the honest answer: the owner reattaches.
+ */
+function parseWorkspace(raw: unknown): BotWorkspace | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.path !== "string" || !isGrantableRootPath(rec.path)) return null;
+  const permission = parseWorkspacePermission(rec.permission);
+  if (!permission) return null;
+  return { path: rec.path, permission, finalConfirm: rec.finalConfirm === true };
+}
+
+/**
+ * A grant path is a capability root: absolute, bounded, and not a folder whose
+ * own name says it holds credentials. The route validates the filesystem side
+ * (real directory, not a symlink); this is the shape rule, and it is the same
+ * rule the grants store applies, so a bot field can never carry a path the
+ * grant built from it would reject.
+ */
+function assertGrantableRootPath(path: unknown): string {
+  if (typeof path !== "string" || path.length > 1024 || !isGrantableRootPath(path)) {
+    throw new Error("workspace_path_invalid");
+  }
+  return path;
+}
+
+/**
+ * Strict on writes: an unknown permission word must fail the action, not
+ * silently become Guard. The read path above stays tolerant — a newer build's
+ * store stays readable — but a write with a value this build does not know is
+ * a caller bug.
+ */
+function parseWorkspacePermissionStrict(value: unknown): WorkspacePermission {
+  const parsed = parseWorkspacePermission(value);
+  if (!parsed) throw new Error("workspace_permission_invalid");
+  return parsed;
+}
+
+/**
+ * Screen a folder root by PATH SEGMENT before it becomes a grant. A folder
+ * named `my.github-project` is fine; one whose own name is `.ssh`, `secrets`
+ * or `auth.json` is where credentials live, so it is refused at attach time.
+ * Anything under the granted root keeps the substring screen in
+ * `resolveWorkspacePath`.
+ */
+/**
+ * The session ids whose folder grant an action just invalidated.
+ *
+ * A grant is keyed by eve session id, so it stops being the owner's decision
+ * the moment a bot stops holding that session. Rather than listing the actions
+ * that do it — `newChat`, `clearThread`, `deleteBot`, but also `sendToBot`,
+ * `touchChat`, `setSession` and `openRecent`, which rotate a session quietly —
+ * this diffs the roster: every session id a bot held before the commit and
+ * nobody holds after it. A session that simply moved between bots is still
+ * held, so it survives. A detach keeps its session id, which the diff cannot
+ * see, so that one case is named.
+ */
+export function staleSessionIds(
+  action: ShellAction | undefined,
+  before: ShellStore,
+  after: ShellStore,
+): string[] {
+  if (!action) return [];
+  const stale = new Set<string>();
+  const held = new Set(
+    after.bots.map((bot) => bot.sessionId).filter((id): id is string => Boolean(id)),
+  );
+  for (const bot of before.bots) {
+    if (bot.sessionId && !held.has(bot.sessionId)) stale.add(bot.sessionId);
+  }
+  if (action.type === "setWorkspace" && !action.workspace) {
+    const session = after.bots.find((bot) => bot.id === action.botId)?.sessionId;
+    if (session) stale.add(session);
+  }
+  return [...stale];
+}
+
+export function isGrantableRootPath(path: string): boolean {
+  if (!path.startsWith("/") || path.length > 1024) return false;
+  // The filesystem root has no segments to screen, so every check below would
+  // pass it while it covers every credential store on the machine. A grant is
+  // a folder the owner picked, never the whole disk.
+  if (path.replace(/\/+$/, "") === "") return false;
+  for (const segment of path.split("/")) {
+    if (!segment) continue;
+    if (segment === "..") return false;
+    const lowered = segment.toLowerCase();
+    if (FORBIDDEN_GRANT_SEGMENTS.has(lowered)) return false;
+  }
+  return true;
+}
+
+/**
+ * Credential stores with one exact name. Screened per path segment rather than
+ * as a substring, so `.dockerignore` at a project root stays readable while
+ * `.docker/config.json` does not. Used for the grant root and, in
+ * `resolveWorkspacePath`, for everything under it.
+ */
+export const FORBIDDEN_CHILD_SEGMENTS = new Set([
+  ".docker",
+  ".kube",
+  ".pypirc",
+  ".authinfo",
+  ".netrc",
+  ".npmrc",
+  "keychains",
+  "id_rsa",
+  "id_ecdsa",
+  "id_ed25519",
+]);
+
+const FORBIDDEN_GRANT_SEGMENTS = new Set([
+  ...FORBIDDEN_CHILD_SEGMENTS,
+  ".env",
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  ".git",
+  "auth.json",
+  "secrets",
+  "launchagents",
+  // Only the root gets these: `keychain` and `cookies` name real stores on
+  // macOS, and a folder called either is not a project. Under the root the
+  // substring screen already covers `Library/Keychains` and `Library/Cookies`
+  // without refusing a `cookies` directory in someone's source tree.
+  "keychain",
+  "netrc",
+  "cookies",
+]);
 
 function parseRecent(raw: unknown): ShellRecent {
   if (!raw || typeof raw !== "object") throw new Error("shell_recent_invalid");
@@ -405,6 +566,7 @@ export function applyShellAction(
         avatarColor: face.color,
         avatarImage: null,
         avatarCustom: true,
+        workspace: null,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [bot, ...store.bots] },
@@ -439,6 +601,7 @@ export function applyShellAction(
         avatarColor: face.color,
         avatarImage: null,
         avatarCustom: true,
+        workspace: null,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [group, ...store.bots] },
@@ -607,6 +770,24 @@ export function applyShellAction(
           ...store,
           bots: store.bots.map((bot) => (
             bot.id === action.botId ? touch(bot, stamp, { sessionId: action.sessionId }) : bot
+          )),
+        },
+      };
+    }
+    case "setWorkspace": {
+      if (!store.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
+      // The route validates the folder exists before calling; the store only
+      // enforces shape. An explicit null detaches the folder.
+      const workspace = action.workspace === null ? null : {
+        path: assertGrantableRootPath(action.workspace.path),
+        permission: parseWorkspacePermissionStrict(action.workspace.permission),
+        finalConfirm: action.workspace.finalConfirm === true,
+      } satisfies BotWorkspace | null;
+      return {
+        store: {
+          ...store,
+          bots: store.bots.map((bot) => (
+            bot.id === action.botId ? touch(bot, stamp, { workspace }) : bot
           )),
         },
       };

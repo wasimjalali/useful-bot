@@ -14,8 +14,58 @@ import {
   sectionBots,
   seedStore,
   selectedBot,
+  staleSessionIds,
 } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
+
+test("setWorkspace attaches, updates and detaches a conversation folder", () => {
+  let store = seedStore();
+  store = applyShellAction(store, {
+    type: "setWorkspace",
+    botId: DEFAULT_BOT_ID,
+    workspace: { path: "/tmp/project", permission: "guard", finalConfirm: false },
+  }).store;
+  const attached = store.bots[0].workspace;
+  assert.equal(attached?.path, "/tmp/project");
+  assert.equal(attached?.permission, "guard");
+  store = applyShellAction(store, {
+    type: "setWorkspace",
+    botId: DEFAULT_BOT_ID,
+    workspace: { path: "/tmp/project", permission: "full_access", finalConfirm: true },
+  }).store;
+  assert.equal(store.bots[0].workspace?.permission, "full_access");
+  assert.equal(store.bots[0].workspace?.finalConfirm, true);
+  store = applyShellAction(store, { type: "setWorkspace", botId: DEFAULT_BOT_ID, workspace: null }).store;
+  assert.equal(store.bots[0].workspace, null);
+});
+
+test("setWorkspace rejects an unknown bot and a malformed grant", () => {
+  const store = seedStore();
+  assert.throws(
+    () => applyShellAction(store, { type: "setWorkspace", botId: "nope", workspace: null }),
+    /shell_bot_missing/,
+  );
+  // A relative path is not a folder the desktop picker could have returned.
+  assert.throws(
+    () =>
+      applyShellAction(store, {
+        type: "setWorkspace",
+        botId: DEFAULT_BOT_ID,
+        workspace: { path: "relative/path", permission: "guard", finalConfirm: false },
+      }),
+    /workspace_path_invalid/,
+  );
+  // An unknown permission word fails the write instead of becoming Guard.
+  assert.throws(
+    () =>
+      applyShellAction(store, {
+        type: "setWorkspace",
+        botId: DEFAULT_BOT_ID,
+        workspace: { path: "/tmp/project", permission: "admin" as never, finalConfirm: false },
+      }),
+    /workspace_permission_invalid/,
+  );
+});
 
 test("seed store has compact Useful Bot in Unassigned", () => {
   const store = seedStore(new Date("2026-09-12T00:00:00Z"));
@@ -187,4 +237,86 @@ test("updateBot writes a custom face", () => {
   const bot = store.bots.find((item) => item.id === created.createdId);
   assert.equal(bot?.avatarShape, "drop");
   assert.equal(bot?.avatarColor, "gold");
+});
+
+test("a roster naming an ungrantable folder reads back with no workspace", () => {
+  const store = parseShell({
+    ...seedStore(),
+    bots: [{
+      ...seedStore().bots[0],
+      workspace: { path: "/", permission: "full_access", finalConfirm: false },
+    }],
+  });
+  // Tolerant, not fatal: the bot keeps working, it just has no folder.
+  assert.equal(store.bots[0].workspace, null);
+});
+
+test("setWorkspace refuses a root the grants store would reject", () => {
+  const base = seedStore();
+  const botId = base.bots[0].id;
+  for (const bad of ["/", "/Users/someone/.ssh", "/Users/someone/Library/Keychains"]) {
+    assert.throws(
+      () => applyShellAction(base, {
+        type: "setWorkspace",
+        botId,
+        workspace: { path: bad, permission: "guard", finalConfirm: false },
+      }),
+      /workspace_path_invalid/,
+      bad,
+    );
+  }
+});
+
+test("staleSessionIds revokes a session nobody holds after the commit", () => {
+  const base = seedStore();
+  const botId = base.bots[0].id;
+  const before = applyShellAction(base, { type: "setSession", botId, sessionId: "sess-old" }).store;
+  const after = applyShellAction(before, { type: "setSession", botId, sessionId: "sess-new" }).store;
+  const action = { type: "setSession", botId, sessionId: "sess-new" } as const;
+  assert.deepEqual(staleSessionIds(action, before, after), ["sess-old"]);
+});
+
+test("staleSessionIds leaves a session that only moved between bots", () => {
+  const base = applyShellAction(seedStore(), { type: "createBot", name: "Scout" }).store;
+  const [first, second] = base.bots;
+  const before = applyShellAction(base, { type: "setSession", botId: first.id, sessionId: "sess-1" }).store;
+  // The same session is now held by the other bot. Nobody lost the capability,
+  // so the diff must not revoke it.
+  const moved = applyShellAction(before, { type: "setSession", botId: first.id, sessionId: null }).store;
+  const after = applyShellAction(moved, { type: "setSession", botId: second.id, sessionId: "sess-1" }).store;
+  const action = { type: "setSession", botId: second.id, sessionId: "sess-1" } as const;
+  assert.deepEqual(staleSessionIds(action, before, after), []);
+});
+
+test("staleSessionIds catches a detach, where the session id never changes", () => {
+  const base = seedStore();
+  const botId = base.bots[0].id;
+  const withSession = applyShellAction(base, { type: "setSession", botId, sessionId: "sess-1" }).store;
+  const before = applyShellAction(withSession, {
+    type: "setWorkspace",
+    botId,
+    workspace: { path: "/tmp", permission: "guard", finalConfirm: false },
+  }).store;
+  const action = { type: "setWorkspace", botId, workspace: null } as const;
+  const after = applyShellAction(before, action).store;
+  assert.deepEqual(staleSessionIds(action, before, after), ["sess-1"]);
+});
+
+test("staleSessionIds revokes the deleted bot's session and nobody else's", () => {
+  const base = applyShellAction(seedStore(), { type: "createBot", name: "Scout" }).store;
+  const [keep, drop] = base.bots;
+  const a = applyShellAction(base, { type: "setSession", botId: keep.id, sessionId: "sess-keep" }).store;
+  const before = applyShellAction(a, { type: "setSession", botId: drop.id, sessionId: "sess-drop" }).store;
+  const action = { type: "deleteBot", botId: drop.id } as const;
+  const after = applyShellAction(before, action).store;
+  assert.deepEqual(staleSessionIds(action, before, after), ["sess-drop"]);
+});
+
+test("staleSessionIds revokes nothing when there is no action", () => {
+  const base = applyShellAction(seedStore(), {
+    type: "setSession",
+    botId: seedStore().bots[0].id,
+    sessionId: "sess-1",
+  }).store;
+  assert.deepEqual(staleSessionIds(undefined, base, base), []);
 });

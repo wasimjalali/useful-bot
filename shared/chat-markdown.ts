@@ -1,9 +1,62 @@
+export type MdAlign = "leading" | "center" | "trailing";
+
 export type MdBlock =
   | { type: "p"; text: string }
   | { type: "h"; level: 1 | 2 | 3; text: string }
   | { type: "ul"; items: string[] }
   | { type: "ol"; items: string[] }
-  | { type: "code"; lang: string; text: string };
+  | { type: "code"; lang: string; text: string }
+  | { type: "table"; headers: string[]; aligns: MdAlign[]; rows: string[][] }
+  | { type: "quote"; text: string }
+  | { type: "rule" };
+
+const QUOTE = /^\s*>\s?/;
+const RULE = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/;
+/** The row under a table header: pipes, dashes and optional alignment colons. */
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/** Cells of one table row. An escaped `\|` stays inside its cell. */
+function splitRow(line: string): string[] {
+  let trimmed = line.trim();
+  if (trimmed.startsWith("|")) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith("|") && !trimmed.endsWith("\\|")) trimmed = trimmed.slice(0, -1);
+  const cells: string[] = [];
+  let current = "";
+  let escaped = false;
+  for (const char of trimmed) {
+    if (escaped) {
+      current += char === "|" ? "|" : `\\${char}`;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function alignOf(cell: string): MdAlign {
+  const trimmed = cell.trim();
+  const left = trimmed.startsWith(":");
+  const right = trimmed.endsWith(":");
+  if (left && right) return "center";
+  if (right) return "trailing";
+  return "leading";
+}
+
+/** True when `line` starts a pipe table, which needs its delimiter row too. */
+function startsTable(line: string, next: string | undefined): boolean {
+  return line.includes("|") && next !== undefined && TABLE_DELIMITER.test(next);
+}
 
 export type InlineSegment =
   | { type: "text"; text: string }
@@ -58,6 +111,42 @@ export function blocksFromMarkdown(source: string): MdBlock[] {
       blocks.push({ type: "code", lang, text: buf.join("\n") });
       continue;
     }
+    if (startsTable(line, lines[i + 1])) {
+      const headers = splitRow(line);
+      // One column is a sentence with a pipe in it, not a table.
+      if (headers.length > 1) {
+        const aligns = splitRow(lines[i + 1] ?? "").map(alignOf);
+        while (aligns.length < headers.length) aligns.push("leading");
+        aligns.length = headers.length;
+        const rows: string[][] = [];
+        i += 2;
+        while (i < lines.length) {
+          const row = lines[i] ?? "";
+          if (!row.includes("|") || row.trim() === "") break;
+          const cells = splitRow(row);
+          while (cells.length < headers.length) cells.push("");
+          cells.length = headers.length;
+          rows.push(cells);
+          i += 1;
+        }
+        blocks.push({ type: "table", headers, aligns, rows });
+        continue;
+      }
+    }
+    if (RULE.test(line)) {
+      blocks.push({ type: "rule" });
+      i += 1;
+      continue;
+    }
+    if (QUOTE.test(line)) {
+      const quoted: string[] = [];
+      while (i < lines.length && QUOTE.test(lines[i] ?? "")) {
+        quoted.push((lines[i] ?? "").replace(QUOTE, ""));
+        i += 1;
+      }
+      blocks.push({ type: "quote", text: quoted.join("\n") });
+      continue;
+    }
     const heading = /^(#{1,3})\s+(.+)$/.exec(line);
     if (heading) {
       blocks.push({ type: "h", level: heading[1].length as 1 | 2 | 3, text: heading[2] });
@@ -95,6 +184,11 @@ export function blocksFromMarkdown(source: string): MdBlock[] {
       && !/^(#{1,3})\s+/.test(lines[i] ?? "")
       && !/^\s*[-*]\s+/.test(lines[i] ?? "")
       && !/^\s*\d+\.\s+/.test(lines[i] ?? "")
+      && !QUOTE.test(lines[i] ?? "")
+      && !RULE.test(lines[i] ?? "")
+      // A table's header row is an ordinary line until its delimiter proves
+      // otherwise, so the paragraph has to let go of it.
+      && !startsTable(lines[i] ?? "", lines[i + 1])
     ) {
       para.push(lines[i] ?? "");
       i += 1;

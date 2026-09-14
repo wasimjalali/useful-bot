@@ -26,6 +26,13 @@ import Testing
         )
     }
 
+    /// Dividers key to the day, never to the row that started it: the live
+    /// echo of the owner's turn replaces that row's id mid-stream, and a
+    /// divider keyed to it would tear the list down and reset the scroll.
+    private func dayID(_ iso: String) -> String {
+        "day-\(Int(calendar.startOfDay(for: date(iso)).timeIntervalSince1970))"
+    }
+
     @Test func dayDividerMarksNewDatedDays() {
         let rows = [
             TranscriptRow(id: "a", kind: .user, text: "one", at: date("2026-09-14T17:10:00Z")),
@@ -33,7 +40,7 @@ import Testing
             TranscriptRow(id: "c", kind: .assistant, text: "three", at: date("2026-09-12T09:17:00Z")),
         ]
         let blocks = build(rows)
-        #expect(blocks.map(\.id) == ["day-a", "a", "b", "day-c", "c"])
+        #expect(blocks.map(\.id) == [dayID("2026-09-14T00:00:00Z"), "a", "b", dayID("2026-09-12T00:00:00Z"), "c"])
         guard case .dayDivider(_, let first) = blocks[0],
               case .dayDivider(_, let second) = blocks[3] else {
             Issue.record("expected day dividers")
@@ -100,7 +107,7 @@ import Testing
             TranscriptRow(id: "h2", kind: .handoff, text: "ship it", authorBotId: "bot-useful", targetBotIds: ["growth"], at: date("2026-09-13T09:00:00Z")),
         ]
         let blocks = build(rows)
-        #expect(blocks.map(\.id) == ["day-h1", "h1", "day-h2", "h2"])
+        #expect(blocks.map(\.id) == [dayID("2026-09-12T00:00:00Z"), "h1", dayID("2026-09-13T00:00:00Z"), "h2"])
         guard case .message(let first, let firstTargets) = blocks[1],
               case .message(let second, let secondTargets) = blocks[3] else {
             Issue.record("expected two strips around the divider")

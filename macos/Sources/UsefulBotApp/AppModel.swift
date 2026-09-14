@@ -140,6 +140,10 @@ final class AppModel: ObservableObject {
     private var stickyThreadError: String?
     private var loadGeneration = 0
     private var sendGeneration = 0
+    /// Bumped once per owner-initiated send. The transcript watches it to jump
+    /// to the newest turn: sending is an explicit request to watch the answer,
+    /// so it overrides whatever the reader's scroll position was.
+    @Published private(set) var sendTick: UInt64 = 0
     private var chatGeneration = 0
     private var sendBotId: String?
     private var started = false
@@ -497,6 +501,15 @@ final class AppModel: ObservableObject {
         let sentAttachmentIds = Set(attachments.map(\.id))
         projection = projectionForSend(message)
         rebuildTranscript()
+        // The composer empties the moment the turn is committed, not when the
+        // server answers. Waiting for the round trip left the sent text sitting
+        // in the field for as long as the network took, which reads as a send
+        // that did not happen. `draftSnapshot` is what puts it back if the
+        // send fails below.
+        clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
+        // An explicit send is an explicit request to watch the answer, so the
+        // transcript follows it whatever the reader was doing before.
+        sendTick &+= 1
         sendTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -531,7 +544,6 @@ final class AppModel: ObservableObject {
                 self.activeSession = (bot.id, sessionId)
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
-                self.clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: message)
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 var sawUserTurn = false
@@ -561,6 +573,10 @@ final class AppModel: ObservableObject {
                 return
             } catch {
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                // The composer was cleared when the turn was committed, so a
+                // send that never reached the server has to give the text
+                // back. Anything typed since is kept ahead of it.
+                self.restoreUnsentDraft(draftSnapshot)
                 self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
                 self.threadError = self.stickyThreadError
                 self.activeSession = nil
@@ -602,6 +618,18 @@ final class AppModel: ObservableObject {
         draft = ComposerDraft.remainder(draft, afterSending: draftSnapshot)
         if !attachmentIds.isEmpty {
             attachments.removeAll { attachmentIds.contains($0.id) }
+        }
+    }
+
+    /// Put an unsent draft back after a send that never reached the server.
+    /// Whatever was typed in the meantime stays, and goes after the returned
+    /// text, so the field reads in the order it was written.
+    private func restoreUnsentDraft(_ draftSnapshot: String) {
+        guard !draftSnapshot.isEmpty else { return }
+        if draft.isEmpty {
+            draft = draftSnapshot
+        } else if !draft.hasPrefix(draftSnapshot) {
+            draft = draftSnapshot + "\n" + draft
         }
     }
 
@@ -855,6 +883,9 @@ final class AppModel: ObservableObject {
     private func applyStore(_ next: ShellStore) {
         store = next
         reconcileSelection(next)
+        if let bot = selectedBot {
+            refreshFolderCount(for: bot)
+        }
         rebuildTranscript()
     }
 
@@ -1353,5 +1384,150 @@ final class AppModel: ObservableObject {
     func clearAttachments() {
         attachments = []
         attachError = nil
+    }
+
+    // MARK: - Working folder
+
+    @Published private(set) var workspaceProjects: [ProjectEntry] = []
+    @Published var workspaceError: String?
+    /// Top-level item counts for the attached-folder chip, keyed by bot id.
+    /// Volatile on purpose: a count is cheap to recompute and never durable.
+    @Published private(set) var folderItemCount: [String: Int] = [:]
+
+    /// Attach a folder the bot works in. The owner picked it in a native
+    /// picker, so the absolute path is the grant; the permission carries over
+    /// from an earlier pick or starts at Guard.
+    func setWorkspaceFolder(_ url: URL) {
+        guard let bot = selectedBot else { return }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            workspaceError = "That folder could not be read."
+            return
+        }
+        workspaceError = nil
+        let existing = liveBot(bot).workspace
+        // The init is failable, and a nil here would reach dispatchWorkspace as
+        // a detach: the owner would see their folder vanish instead of an
+        // error. The picker only ever hands back absolute paths, so this is
+        // belt and braces, but a silent detach is the wrong belt.
+        guard let workspace = BotWorkspace(
+            path: url.path,
+            permission: existing?.permission ?? "guard",
+            finalConfirm: existing?.finalConfirm ?? false
+        ) else {
+            workspaceError = "That folder could not be attached."
+            return
+        }
+        // The count lands asynchronously: a big folder must not block the pick.
+        folderItemCount[bot.id] = nil
+        Task.detached { [weak self] in
+            let count = Self.folderEntryCount(atPath: url.path)
+            await MainActor.run { [weak self] in
+                guard let self, self.selectedBotId == bot.id else { return }
+                self.folderItemCount[bot.id] = count
+            }
+        }
+        dispatchWorkspace(workspace, botId: bot.id) { [weak self] in
+            // Recents are best effort: a missed write only loses a menu entry.
+            _ = try? await self?.client.addWorkspaceProject(path: url.path)
+            await self?.loadWorkspaceProjects()
+        }
+    }
+
+    func clearWorkspaceFolder() {
+        guard let bot = selectedBot else { return }
+        workspaceError = nil
+        folderItemCount[bot.id] = nil
+        dispatchWorkspace(nil, botId: bot.id)
+    }
+
+    func setWorkspacePermission(_ permission: String) {
+        guard let bot = selectedBot else { return }
+        guard let workspace = liveBot(bot).workspace else {
+            // A silent no-op would read as a broken chip; say why instead.
+            workspaceError = "Attach a folder first."
+            return
+        }
+        workspaceError = nil
+        dispatchWorkspace(
+            BotWorkspace(path: workspace.path, permission: permission, finalConfirm: workspace.finalConfirm),
+            botId: bot.id
+        )
+    }
+
+    func setWorkspaceFinalConfirm(_ on: Bool) {
+        guard let bot = selectedBot,
+              let workspace = liveBot(bot).workspace else { return }
+        workspaceError = nil
+        dispatchWorkspace(
+            BotWorkspace(path: workspace.path, permission: workspace.permission, finalConfirm: on),
+            botId: bot.id
+        )
+    }
+
+    private func dispatchWorkspace(
+        _ workspace: BotWorkspace?,
+        botId: String,
+        onSuccess: (@MainActor () async -> Void)? = nil,
+    ) {
+        let epoch = storeEpoch
+        enqueue { [weak self] in
+            guard let self else { return }
+            do {
+                let next = try await self.client.shellAction(
+                    ShellActions.setWorkspace(botId: botId, workspace: workspace)
+                )
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
+                self.applyStore(next)
+                // Only once the grant actually landed. A rejected folder that
+                // still showed up under Recents would offer the owner a pick
+                // that fails again every time.
+                await onSuccess?()
+            } catch {
+                self.workspaceError = (error as? LocalizedError)?.errorDescription ?? "That folder change failed."
+            }
+        }
+    }
+
+    func loadWorkspaceProjects() async {
+        if let projects = try? await client.workspaceProjects() {
+            workspaceProjects = projects
+        }
+    }
+
+    func removeWorkspaceProject(id: String) {
+        enqueue { [weak self] in
+            guard let self else { return }
+            _ = try? await self.client.removeWorkspaceProject(id: id)
+            await self.loadWorkspaceProjects()
+        }
+    }
+
+    /// Recompute a folder chip count the store came back without one, so a
+    /// restart shows "N items" again instead of a bare name.
+    func refreshFolderCount(for bot: ShellBot) {
+        guard let path = bot.workspace?.path, folderItemCount[bot.id] == nil else { return }
+        let botId = bot.id
+        // A directory scan never runs on the main actor: attaching a large
+        // folder must not jank the composer it is attached from.
+        Task.detached { [weak self] in
+            let count = Self.folderEntryCount(atPath: path)
+            await MainActor.run { [weak self] in
+                if let count, self?.folderItemCount[botId] == nil {
+                    self?.folderItemCount[botId] = count
+                }
+            }
+        }
+    }
+
+    /// Shallow count of a folder's entries; nil when it cannot be read.
+    private nonisolated static func folderEntryCount(atPath path: String) -> Int? {
+        let url = URL(fileURLWithPath: path)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil
+        ) else { return nil }
+        return entries.count
     }
 }

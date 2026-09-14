@@ -42,10 +42,21 @@ private struct OutsideClickDismissal: ViewModifier {
     let onClose: () -> Void
 
     @State private var hoveringInside = false
+    /// The popover's own window frame. Hover alone cannot prove a click is
+    /// inside: a popover that opens under a resting pointer gets no enter
+    /// event until the pointer moves, and a fast click on a menu row can land
+    /// before tracking catches up — that is the model chip's menu closing on
+    /// the very row that was clicked. The frame covers what hover misses.
+    @State private var cardFrame = CGRect.zero
     @State private var monitors: [Any] = []
 
     func body(content: Content) -> some View {
         content
+            .background(
+                WindowFrameReader { rect, _ in
+                    if cardFrame != rect { cardFrame = rect }
+                }
+            )
             .onHover { hoveringInside = $0 }
             .onAppear(perform: install)
             .onDisappear(perform: uninstall)
@@ -85,6 +96,7 @@ private struct OutsideClickDismissal: ViewModifier {
         if NSApp.modalWindow != nil || event.window?.sheetParent != nil { return false }
         // A click on the popover keeps it open so the row action can fire.
         if hoveringInside { return false }
+        if cardFrame.contains(event.locationInWindow) { return false }
         guard let triggers else { return true }
         let frames = triggers()
         if frames.contains(where: { $0.contains(event.locationInWindow) }) {

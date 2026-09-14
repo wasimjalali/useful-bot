@@ -1,6 +1,14 @@
 import { resolve, relative, isAbsolute, join } from "node:path";
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { FORBIDDEN_CHILD_SEGMENTS, isGrantableRootPath } from "../../shared/shell-store.ts";
+import {
+  readSessionGrant,
+  type SessionGrant,
+  type WorkspacePermission,
+} from "../../shared/workspace-store.ts";
+
+export type { WorkspacePermission };
 
 export function workspaceRoot(): string {
   const fromEnv = process.env.UB_WORKSPACE_ROOT;
@@ -8,6 +16,55 @@ export function workspaceRoot(): string {
     throw new Error("workspace_unconfigured");
   }
   return resolve(fromEnv);
+}
+
+/**
+ * The folder a conversation works in, verified at tool time. The grant is
+ * read ONCE here: pairing a root from one read with a permission from
+ * another is a race a concurrent permission change could exploit. A root
+ * that is itself a symlink, or whose path segments name a credential store,
+ * is refused here regardless of what any route accepted earlier.
+ */
+export function effectiveRoot(sessionId?: string): { root: string; grant: SessionGrant | null } {
+  const grant = sessionId ? readSessionGrant(sessionId) : null;
+  if (!grant) return { root: workspaceRoot(), grant: null };
+  assertSafeRoot(grant.path);
+  return { root: resolve(grant.path), grant };
+}
+
+/**
+ * The root is a capability, so the tool re-checks it at call time: not a
+ * symlink, a real directory, and not a folder whose own name is a
+ * credential store. The route validated this at attach time; paths can be
+ * swapped afterwards.
+ */
+export function assertSafeRoot(path: string): string {
+  if (!isGrantableRootPath(path)) throw new Error("workspace_path_forbidden");
+  let root = resolve(path);
+  let stat;
+  try {
+    stat = lstatSync(root);
+  } catch {
+    throw new Error("workspace_root_missing");
+  }
+  if (stat.isSymbolicLink()) throw new Error("workspace_root_symlink");
+  if (!stat.isDirectory()) throw new Error("workspace_root_not_directory");
+  // resolve() is lexical; realpath sees through anything a component above
+  // might hide. A root that is not what it says it is must not be used.
+  if (realpathSync(root) !== root) throw new Error("workspace_root_symlink");
+  return root;
+}
+
+/**
+ * Whether a mutating action may run without asking the owner. Only an
+ * explicit Full access grant skips the card, and Final confirm turns that
+ * back off; every other posture waits for the owner.
+ */
+export function autoApproved(
+  permission: WorkspacePermission | null,
+  finalConfirm: boolean,
+): boolean {
+  return permission === "full_access" && !finalConfirm;
 }
 
 /**
@@ -40,12 +97,25 @@ export function resolveWorkspacePath(inputPath: string, root: string = workspace
   }
   const resolved = resolve(root, inputPath);
   const rel = relative(root, resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
+  // A leading `..` SEGMENT is the escape; a file honestly named `..notes` is
+  // not, and a prefix test refuses it for no reason.
+  if (rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) {
     throw new Error("path_escape");
   }
-  const lowered = resolved.toLowerCase();
+  // Only the part under the root is screened. The root itself is a folder the
+  // owner picked (or configured) by name, so a project that happens to live in
+  // a path containing one of these words stays reachable; anything inside it
+  // — a `.env`, a `.git/config`, a `secrets/` directory — is still refused.
+  const loweredRel = rel.toLowerCase();
   for (const part of FORBIDDEN_PATH_SUBSTRINGS) {
-    if (lowered.includes(part.toLowerCase())) {
+    if (loweredRel.includes(part.toLowerCase())) {
+      throw new Error("path_forbidden");
+    }
+  }
+  // Exact segment names, so a credential store is refused without `.docker`
+  // also refusing the `.dockerignore` next to it.
+  for (const segment of loweredRel.split(/[/\\]/)) {
+    if (segment && FORBIDDEN_CHILD_SEGMENTS.has(segment)) {
       throw new Error("path_forbidden");
     }
   }

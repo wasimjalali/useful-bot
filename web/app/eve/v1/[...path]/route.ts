@@ -8,9 +8,11 @@ import {
   sessionRouteHeader,
   type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
-import { channelJwt } from "../../../../lib/agent-exec";
+import { channelJwt, syncSessionWorkspace } from "../../../../lib/agent-exec";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell } from "../../../../../shared/shell-io.ts";
+import type { ShellBot } from "../../../../../shared/shell-store.ts";
+import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
 const EVE = "http://127.0.0.1:4321";
@@ -69,6 +71,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       throw err;
     }
     if (isEveSessionPost(suffix)) {
+      let bot: ShellBot | null = null;
       try {
         const raw = new TextDecoder().decode(body);
         const shell = readShell();
@@ -76,7 +79,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         if (!route) {
           return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
         }
-        const bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
+        bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
         const members = bot && bot.kind === "group"
           ? groupMembers(speakersFrom(shell.bots), bot.memberIds)
           : [];
@@ -84,6 +87,27 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         headers.set("content-type", "application/json");
       } catch {
         /* keep the original body: a malformed turn must fail at eve, not here */
+      }
+      // Outside the body-rewrite try on purpose. The tools that run during
+      // this turn read the workspace grant for the session, so it has to be
+      // current — stamped or revoked — before the turn reaches eve. Sharing
+      // the catch above would turn a grants-store failure into a silent "keep
+      // going with whatever the file still says", which is the stale
+      // capability this stamp exists to prevent. A bot we could not resolve
+      // revokes rather than leaves the old grant standing: no grant falls
+      // back to the legacy root with approval cards, which is a narrowing.
+      // Continuation posts carry the session id in the path; a create is
+      // stamped from the response below.
+      if (suffix !== "session") {
+        const sessionId = suffix.split("/")[1] ?? "";
+        if (sessionId) {
+          try {
+            if (bot) syncSessionWorkspace(sessionId, bot);
+            else removeSessionGrant(sessionId);
+          } catch {
+            return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+          }
+        }
       }
     }
   }
@@ -107,6 +131,33 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);
     out.set("cache-control", "no-store");
+    // A session create answers with the fresh session id. Capture the small
+    // JSON body to stamp the grant before returning it: a tolerant parse that
+    // fails still passes the body through untouched. The shell is re-read so
+    // the stamp cannot come from a pre-request snapshot.
+    if (method === "POST" && suffix === "session" && route) {
+      const text = await upstream.text();
+      let created = "";
+      try {
+        created = (JSON.parse(text) as { sessionId?: string }).sessionId ?? "";
+      } catch {
+        /* a body this build cannot parse still belongs to the caller */
+      }
+      if (created) {
+        try {
+          const bot = readShell().bots.find((item) => item.id === route?.threadId) ?? null;
+          if (bot) syncSessionWorkspace(created, bot);
+          else removeSessionGrant(created);
+        } catch {
+          // The session exists upstream either way, so the body goes back. What
+          // must not survive is a grant row this build could not make current:
+          // without one the tools fall back to the legacy root with approval
+          // cards, which is the narrower posture.
+          try { removeSessionGrant(created); } catch { /* the next turn's stamp settles it */ }
+        }
+      }
+      return new Response(text, { status: upstream.status, headers: out });
+    }
     const encoded = sessionRouteHeader(route);
     // Tells the caller which bot or group answered, and which member an
     // @mention directed the turn at.
