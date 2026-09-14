@@ -8,13 +8,15 @@ export default defineTool({
   description: "Read a UTF-8 file from the Useful Bot workspace.",
   inputSchema: z.object({
     path: z.string(),
-    offset: z.number().int().optional(),
-    limit: z.number().int().optional(),
+    offset: z.number().int().min(0).optional(),
+    limit: z.number().int().min(0).optional(),
   }),
   execute(input) {
     const target = resolveWorkspacePath(input.path, workspaceRoot());
     const raw = readFileSync(target, "utf8");
-    const sliced = raw.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? READ_MAX_BYTES));
-    return sliced.slice(0, READ_MAX_BYTES);
+    const offset = input.offset ?? 0;
+    const end = Math.min(raw.length, offset + Math.min(input.limit ?? READ_MAX_BYTES, READ_MAX_BYTES));
+    const text = raw.slice(offset, end);
+    return { text, truncated: end < raw.length };
   },
 });

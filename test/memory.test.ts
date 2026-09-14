@@ -120,6 +120,114 @@ test("list returns desktop notes and hides phone audience", () => {
   assert.equal(store.list("shared-phone").length, 1);
 });
 
+test("fts operator characters in a query do not throw", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  store.upsert({
+    expectedRevision: null,
+    title: "Pricing",
+    tags: ["pricing"],
+    body: "Short sentences about pricing.",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  for (const query of ['"', "OR", "*", "(", "pricing AND"]) {
+    assert.doesNotThrow(() => store.search(query, "desktop"), `query ${query}`);
+  }
+  assert.equal(store.search("pricing", "desktop").length, 1);
+  assert.equal(store.search("*", "desktop").length, 0);
+});
+
+test("note ids cannot traverse out of the notes directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  assert.throws(() => store.read("../outside", "desktop"), /memory_id_invalid/);
+  assert.throws(
+    () => store.upsert({
+      id: "../outside",
+      expectedRevision: null,
+      title: "t",
+      tags: [],
+      body: "x",
+      audience: "desktop",
+      expiresAt: null,
+      sessionId: "s",
+    }),
+    /memory_id_invalid/,
+  );
+});
+
+test("an update cannot move a note across the audience boundary", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  const created = store.upsert({
+    expectedRevision: null,
+    title: "Private",
+    tags: [],
+    body: "desktop only",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  assert.throws(
+    () => store.upsert({
+      id: created.id,
+      expectedRevision: 1,
+      title: "Private",
+      tags: [],
+      body: "desktop only",
+      audience: "shared-phone",
+      expiresAt: null,
+      sessionId: "s",
+    }),
+    /memory_audience_change/,
+  );
+});
+
+test("revision is enforced across two stores on the same directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const first = new MemoryStore(root);
+  const second = new MemoryStore(root);
+  const created = first.upsert({
+    expectedRevision: null,
+    title: "Shared",
+    tags: [],
+    body: "one",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  second.upsert({
+    id: created.id,
+    expectedRevision: 1,
+    title: "Shared",
+    tags: [],
+    body: "two",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  assert.throws(
+    () => first.upsert({
+      id: created.id,
+      expectedRevision: 1,
+      title: "Shared",
+      tags: [],
+      body: "three",
+      audience: "desktop",
+      expiresAt: null,
+      sessionId: "s",
+    }),
+    /memory_revision_conflict/,
+  );
+  assert.equal(first.read(created.id, "desktop").body, "two");
+});
+
 test("list can isolate notes to one bot tag", () => {
   const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
   resetMemoryDir(root);

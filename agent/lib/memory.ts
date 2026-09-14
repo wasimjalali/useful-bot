@@ -5,7 +5,10 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   rmSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -41,6 +44,55 @@ export interface MemoryNoteCard extends MemoryExcerpt {
   updatedAt: string;
 }
 
+const NOTE_ID_PATTERN = /^[A-Za-z0-9-]{1,80}$/;
+const LOCK_TIMEOUT_MS = 4000;
+const LOCK_STALE_MS = 15_000;
+const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
+
+/** Note ids are file names; anything else is a path traversal or a bad key. */
+function assertNoteId(id: string): void {
+  if (!NOTE_ID_PATTERN.test(id)) {
+    throw new Error("memory_id_invalid");
+  }
+}
+
+function sleep(ms: number): void {
+  try {
+    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* fallback for runtimes without Atomics.wait */
+    }
+  }
+}
+
+/**
+ * Turn a free-text query into a safe FTS5 MATCH string. FTS5 operators (OR,
+ * NOT, quotes, parens, `*`) in a user query throw a syntax error and fail the
+ * whole turn; quoting every token makes the same string a literal phrase
+ * search. A query with no word characters has no terms and matches nothing.
+ */
+function ftsQuery(query: string): string {
+  const terms = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
+  return terms.map((term) => `"${term}"`).join(" ");
+}
+
+const SECRET_MARKERS = [
+  "api_key",
+  "api-key",
+  "apikey",
+  "begin private",
+  "password=",
+  "passwd=",
+  "secret=",
+  "token=",
+  "bearer ",
+  "authorization:",
+  "sk-",
+  "-----begin",
+];
+
 function memoryRoot(): string {
   const fromEnv = process.env.UB_MEMORY_ROOT;
   if (fromEnv) return fromEnv;
@@ -64,9 +116,11 @@ function serializeNote(meta: NoteMeta, body: string): string {
 export class MemoryStore {
   readonly notesDir: string;
   readonly indexPath: string;
+  private readonly root: string;
   private readonly db: DatabaseSync;
 
   constructor(root: string = memoryRoot()) {
+    this.root = root;
     this.notesDir = join(root, "notes");
     this.indexPath = join(root, "index.sqlite");
     mkdirSync(this.notesDir, { recursive: true, mode: 0o700 });
@@ -88,22 +142,50 @@ export class MemoryStore {
     `);
   }
 
-  rebuildIndex(): { indexed: number; rejected: number } {
-    this.db.exec("DELETE FROM notes; DELETE FROM notes_fts;");
-    let indexed = 0;
-    let rejected = 0;
-    for (const name of readdirSync(this.notesDir)) {
-      if (!name.endsWith(".md")) continue;
+  private acquire(): () => void {
+    const lock = join(this.root, "index.lock");
+    mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    let held = false;
+    while (!held) {
       try {
-        const raw = readFileSync(join(this.notesDir, name), "utf8");
-        const { meta, body } = parseNote(raw);
-        this.insertIndex(meta, body);
-        indexed += 1;
+        mkdirSync(lock, { mode: 0o700 });
+        held = true;
       } catch {
-        rejected += 1;
+        try {
+          if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
+        } catch { /* lock vanished; retry */ }
+        if (Date.now() > deadline) break;
+        sleep(15);
       }
     }
-    return { indexed, rejected };
+    if (!held) throw new Error("memory_store_locked");
+    return () => {
+      try { rmdirSync(lock); } catch { /* ignore */ }
+    };
+  }
+
+  rebuildIndex(): { indexed: number; rejected: number } {
+    const release = this.acquire();
+    try {
+      this.db.exec("DELETE FROM notes; DELETE FROM notes_fts;");
+      let indexed = 0;
+      let rejected = 0;
+      for (const name of readdirSync(this.notesDir)) {
+        if (!name.endsWith(".md")) continue;
+        try {
+          const raw = readFileSync(join(this.notesDir, name), "utf8");
+          const { meta, body } = parseNote(raw);
+          this.insertIndex(meta, body);
+          indexed += 1;
+        } catch {
+          rejected += 1;
+        }
+      }
+      return { indexed, rejected };
+    } finally {
+      release();
+    }
   }
 
   search(query: string, audience: Audience): MemoryExcerpt[] {
@@ -114,6 +196,8 @@ export class MemoryStore {
         "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT 5",
       ).all(audience, now) as Array<{ id: string }>;
     } else {
+      const match = ftsQuery(query);
+      if (match === "") return [];
       rows = this.db.prepare(
         `SELECT notes.id AS id FROM notes_fts
          JOIN notes ON notes.id = notes_fts.id
@@ -121,7 +205,7 @@ export class MemoryStore {
            AND (notes.expires_at IS NULL OR notes.expires_at > ?)
          ORDER BY rank, notes.updated_at DESC, notes.id
          LIMIT 5`,
-      ).all(query, audience, now) as Array<{ id: string }>;
+      ).all(match, audience, now) as Array<{ id: string }>;
     }
     return rows.map((row) => this.read(row.id, audience));
   }
@@ -141,6 +225,7 @@ export class MemoryStore {
   }
 
   read(id: string, audience: Audience): MemoryExcerpt {
+    assertNoteId(id);
     const path = join(this.notesDir, `${id}.md`);
     if (!existsSync(path)) {
       throw new Error("memory_not_found");
@@ -175,44 +260,67 @@ export class MemoryStore {
     if (input.title.length > 120 || input.tags.length > 8) {
       throw new Error("memory_meta");
     }
+    if (input.id !== undefined) assertNoteId(input.id);
     const lowered = `${input.title}\n${input.body}`.toLowerCase();
-    if (lowered.includes("api_key") || lowered.includes("begin private") || lowered.includes("password=")) {
+    if (SECRET_MARKERS.some((marker) => lowered.includes(marker))) {
       throw new Error("memory_secret_refused");
     }
-    const count = (this.db.prepare("SELECT COUNT(*) AS c FROM notes WHERE status = 'active'").get() as { c: number }).c;
-    const id = input.id ?? randomUUID();
-    const existingPath = join(this.notesDir, `${id}.md`);
-    let revision = 1;
-    const now = new Date().toISOString();
-    if (existsSync(existingPath)) {
-      const prev = parseNote(readFileSync(existingPath, "utf8"));
-      if (input.expectedRevision !== prev.meta.revision) {
-        throw new Error("memory_revision_conflict");
+    const release = this.acquire();
+    try {
+      const count = (this.db.prepare("SELECT COUNT(*) AS c FROM notes WHERE status = 'active'").get() as { c: number }).c;
+      const id = input.id ?? randomUUID();
+      const existingPath = join(this.notesDir, `${id}.md`);
+      let revision = 1;
+      const now = new Date().toISOString();
+      if (existsSync(existingPath)) {
+        const prev = parseNote(readFileSync(existingPath, "utf8"));
+        if (input.expectedRevision !== prev.meta.revision) {
+          throw new Error("memory_revision_conflict");
+        }
+        // Audience is an integrity boundary: a desktop note must not be
+        // rewritten as shared-phone without an explicit recreate.
+        if (input.audience !== prev.meta.audience) {
+          throw new Error("memory_audience_change");
+        }
+        revision = prev.meta.revision + 1;
+      } else if (count >= 10_000) {
+        throw new Error("memory_capacity");
       }
-      revision = prev.meta.revision + 1;
-    } else if (count >= 10_000) {
-      throw new Error("memory_capacity");
+      const meta: NoteMeta = {
+        schemaVersion: 1,
+        id,
+        revision,
+        title: input.title,
+        tags: input.tags,
+        audience: input.audience,
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: input.expiresAt,
+        sourceSessionId: input.sessionId,
+        approvedBy: "owner",
+        status: "active",
+      };
+      const raw = serializeNote(meta, input.body);
+      const tmp = join(this.notesDir, `.${id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+      try {
+        writeFileSync(tmp, raw, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error("memory_revision_conflict");
+        }
+        throw error;
+      }
+      try {
+        renameSync(tmp, existingPath);
+      } catch (error) {
+        try { unlinkSync(tmp); } catch { /* ignore */ }
+        throw error;
+      }
+      this.insertIndex(meta, input.body);
+      return { id, revision };
+    } finally {
+      release();
     }
-    const meta: NoteMeta = {
-      schemaVersion: 1,
-      id,
-      revision,
-      title: input.title,
-      tags: input.tags,
-      audience: input.audience,
-      createdAt: now,
-      updatedAt: now,
-      expiresAt: input.expiresAt,
-      sourceSessionId: input.sessionId,
-      approvedBy: "owner",
-      status: "active",
-    };
-    const raw = serializeNote(meta, input.body);
-    const tmp = join(this.notesDir, `.${id}.tmp`);
-    writeFileSync(tmp, raw, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    renameSync(tmp, existingPath);
-    this.insertIndex(meta, input.body);
-    return { id, revision };
   }
 
   private insertIndex(meta: NoteMeta, body: string): void {

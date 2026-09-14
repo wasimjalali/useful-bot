@@ -16,6 +16,28 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
 
+/**
+ * One boot epoch per process. Records carry the epoch that requested them, and
+ * consume rejects any other epoch, so an approval that was granted but not yet
+ * used when the agent restarted cannot be replayed after the restart. The UI
+ * process only decides; it never consumes, so its different epoch is harmless.
+ */
+const BOOT_EPOCH = randomUUID();
+const LOCK_TIMEOUT_MS = 4000;
+const LOCK_STALE_MS = 15_000;
+const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
+
+function sleep(ms: number): void {
+  try {
+    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* fallback for runtimes without Atomics.wait */
+    }
+  }
+}
+
 export type ApprovalTool = "bash" | "write_file" | "memory.upsert";
 export type ApprovalDecision = "approve" | "deny";
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
@@ -40,6 +62,8 @@ export interface StoredApproval {
   createdAt: number;
   expiresAt: number;
   status: ApprovalStatus;
+  /** Boot epoch of the process that requested the action. */
+  epoch?: string;
 }
 
 export type PendingApproval = Pick<
@@ -47,24 +71,27 @@ export type PendingApproval = Pick<
   "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt"
 >;
 
+/** The subset of an eve ToolContext an approval record needs for attribution. */
+export interface ApprovalActorContext {
+  session?: { id?: string; turn?: { id?: string } };
+  callId?: string;
+}
+
+export function approvalActor(ctx?: ApprovalActorContext): {
+  sessionId: string;
+  turnId: string;
+  toolCallId: string;
+} {
+  return {
+    sessionId: ctx?.session?.id ?? "live",
+    turnId: ctx?.session?.turn?.id ?? "live",
+    toolCallId: ctx?.callId ?? "live",
+  };
+}
+
 export function defaultApprovalsPath(): string {
   if (process.env.UB_APPROVALS_PATH) return process.env.UB_APPROVALS_PATH;
   return join(homedir(), ".useful-bot", "approvals.json");
-}
-
-const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
-const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
-
-function sleep(ms: number): void {
-  try {
-    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
-  } catch {
-    const until = Date.now() + ms;
-    while (Date.now() < until) {
-      /* fallback for runtimes without Atomics.wait */
-    }
-  }
 }
 
 /**
@@ -122,11 +149,21 @@ export class ApprovalStore {
   private seq = 0;
   private readonly now: () => number;
   private readonly persistPath: string | null;
+  private readonly epoch: string;
 
-  constructor(now: () => number = Date.now, persistPath: string | null = null) {
+  constructor(
+    now: () => number = Date.now,
+    persistPath: string | null = null,
+    epoch: string = BOOT_EPOCH,
+  ) {
     this.now = now;
     this.persistPath = persistPath;
+    this.epoch = epoch;
     this.load();
+  }
+
+  private locked<T>(fn: () => T): T {
+    return withFileLock(this.persistPath ? `${this.persistPath}.lock` : null, fn);
   }
 
   request(input: {
@@ -154,6 +191,7 @@ export class ApprovalStore {
         createdAt,
         expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
         status: "pending",
+        epoch: this.epoch,
       };
       this.records.set(record.id, record);
       this.persist();
@@ -203,6 +241,12 @@ export class ApprovalStore {
       }
       if (record.status !== "approved") {
         throw new Error(`approval_not_approved:${record.status}`);
+      }
+      // A record from a previous process boot is not valid after a restart.
+      if (record.epoch !== this.epoch) {
+        record.status = "expired";
+        this.persist();
+        throw new Error("approval_expired");
       }
       record.status = "consumed";
       this.persist();
@@ -258,10 +302,6 @@ export class ApprovalStore {
       }
       this.persist();
     });
-  }
-
-  private locked<T>(fn: () => T): T {
-    return withFileLock(this.persistPath ? `${this.persistPath}.lock` : null, fn);
   }
 
   private refreshExpiry(record: StoredApproval): void {

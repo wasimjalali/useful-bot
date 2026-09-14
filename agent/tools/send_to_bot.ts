@@ -1,7 +1,8 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { sendHandoff } from "../../shared/agents-send.ts";
-import { releaseSend, reserveSend } from "../../shared/agent-store.ts";
+import { listThreadEvents, releaseSend, reserveSend } from "../../shared/agent-store.ts";
+import { HANDOFF_DEPTH_MAX, readHandoff } from "../../shared/handoffs.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
@@ -17,17 +18,30 @@ export default defineTool({
   execute(input) {
     const shell = readShell();
     const requested = input.botId.trim();
-    const target = shell.bots.find((bot) => (
-      bot.id === requested
-      || bot.name.toLowerCase() === requested.toLowerCase()
-      || bot.label.toLowerCase() === requested.toLowerCase()
-    )) ?? null;
+    const exact = shell.bots.find((bot) => bot.id === requested) ?? null;
+    const named = exact
+      ? []
+      : shell.bots.filter((bot) => (
+        bot.name.toLowerCase() === requested.toLowerCase()
+        || bot.label.toLowerCase() === requested.toLowerCase()
+      ));
+    if (named.length > 1) {
+      return {
+        status: "ambiguous",
+        error: `several teammates match ${requested}; use an exact id`,
+        matches: named.map((bot) => ({ id: bot.id, name: bot.name })),
+      };
+    }
+    const target = exact ?? named[0] ?? null;
     if (!target) {
       return {
         status: "not_found",
         error: `no teammate matches ${requested}`,
         hint: "Call listBots for exact ids.",
       };
+    }
+    if (target.hidden) {
+      return { status: "invalid", error: `${target.name} is hidden; it cannot receive a handoff` };
     }
     const sourceId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
     if (target.id === sourceId) {
@@ -47,6 +61,22 @@ export default defineTool({
         };
       }
     }
+    // Forwarding a handoff this bot just received increments the hop count; a
+    // chain that bounces back and forth is refused rather than run forever.
+    let depth = 0;
+    const incoming = listThreadEvents(sourceId)
+      .filter((event) => event.kind === "post" && event.handoffId)
+      .at(-1);
+    if (incoming?.handoffId) {
+      const prior = readHandoff(incoming.handoffId);
+      if (prior && prior.targetBotId === sourceId) depth = prior.depth + 1;
+    }
+    if (depth > HANDOFF_DEPTH_MAX) {
+      return {
+        status: "loop_refused",
+        error: `handoff chain is ${depth} hops deep; answer in this chat instead`,
+      };
+    }
     const requestId = input.requestId?.trim();
     if (requestId && !reserveSend("handoff", requestId)) {
       return { status: "duplicate", error: "that requestId was already sent", requestId };
@@ -57,6 +87,7 @@ export default defineTool({
         source: source && source.id !== DEFAULT_BOT_ID ? { id: source.id, name: source.name } : null,
         target: { id: target.id, name: target.name },
         message: input.message.trim(),
+        depth,
       });
     } catch (err) {
       // A crash between reserve and queue must not burn the requestId.

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   ApprovalStore,
   actionSha256,
+  approvalActor,
   executeIfApproved,
   waitUntilNotPending,
 } from "../agent/lib/approvals.ts";
@@ -20,6 +21,14 @@ function hashFor(args: string) {
     toolVersion: "1",
   });
 }
+
+test("approval attribution falls back to live and threads tool context", () => {
+  assert.deepEqual(approvalActor(), { sessionId: "live", turnId: "live", toolCallId: "live" });
+  assert.deepEqual(
+    approvalActor({ session: { id: "ses_1", turn: { id: "turn_1" } }, callId: "call_1" }),
+    { sessionId: "ses_1", turnId: "turn_1", toolCallId: "call_1" },
+  );
+});
 
 test("file-backed store shares request decide and consume across instances", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
@@ -120,6 +129,30 @@ test("a mismatched action hash cannot decide an approval", () => {
     /approval_hash_mismatch/,
   );
   assert.equal(new ApprovalStore(Date.now, path).get(rec.id)?.status, "pending");
+});
+
+test("an approved record from an earlier boot cannot be consumed after restart", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"restart"}');
+  const before = new ApprovalStore(Date.now, path, "boot-a");
+  const rec = before.request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory restart",
+  });
+  // The UI process has its own epoch and may still record the decision.
+  new ApprovalStore(Date.now, path, "ui-boot").decide(rec.id, "approve", hash);
+  let ran = false;
+  await assert.rejects(
+    () => executeIfApproved(new ApprovalStore(Date.now, path, "boot-b"), rec.id, hash, () => {
+      ran = true;
+    }),
+    /approval_expired/,
+  );
+  assert.equal(ran, false);
 });
 
 test("denied wait does not execute", async () => {
