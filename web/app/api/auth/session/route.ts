@@ -1,6 +1,15 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { originAllowed } from "../../../../lib/desktop-gate";
+import { rateLimited } from "../../../../lib/api-guard";
 import { createBrowserSession, destroySession, readSession, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
+
+/** Opaque, bounded limiter key; never store the raw forwarded address. */
+function clientKey(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "";
+  const identity = forwarded || request.headers.get("host") || "local";
+  return createHash("sha256").update(identity).digest("hex").slice(0, 16);
+}
 
 function isLoopback(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
@@ -43,6 +52,9 @@ function isLocalDesktop(request: Request): boolean {
 export async function GET(request: Request) {
   let session = await readSession();
   if (!session && isLocalDesktop(request)) {
+    if (rateLimited(`auth:${clientKey(request)}`, 60)) {
+      return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+    }
     const created = createBrowserSession("desktop", "desktop");
     session = { callerId: "desktop", profile: "desktop", csrf: created.csrf, expiresAt: created.expiresAt };
     const response = NextResponse.json({
@@ -66,6 +78,9 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  if (rateLimited(`auth:${clientKey(request)}`, 30)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
   const header = request.headers.get("authorization") ?? "";
   if (!header.startsWith("Bearer ")) {
     return NextResponse.json({ ok: false }, { status: 401 });
@@ -89,6 +104,9 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  if (rateLimited(`auth:${clientKey(request)}`, 60)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
   const session = await readSession();
   if (session) {
     const csrf = request.headers.get("x-ub-csrf");
