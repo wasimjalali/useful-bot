@@ -1,25 +1,7 @@
 import SwiftUI
 import UsefulBotCore
 
-extension Color {
-    init(hex: String) {
-        let clean = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        var value: UInt64 = 0
-        guard clean.count == 6, Scanner(string: clean).scanHexInt64(&value) else {
-            self = .black
-            return
-        }
-        self.init(
-            .sRGB,
-            red: Double((value >> 16) & 0xFF) / 255,
-            green: Double((value >> 8) & 0xFF) / 255,
-            blue: Double(value & 0xFF) / 255,
-            opacity: 1
-        )
-    }
-}
-
-/// The eight face shapes from shared/bot-face.ts, drawn in a 64pt box.
+/// The eight face shapes from `shared/bot-face.ts`, drawn in a 64pt box.
 struct FaceShape: Shape {
     let name: String
 
@@ -119,13 +101,13 @@ struct BotFaceView: View {
             } else {
                 ZStack {
                     FaceShape(name: FacePalette.isShape(shape) ? shape : "circle")
-                        .fill(Color(hex: FacePalette.swatches[color] ?? "#171717"))
+                        .fill(Theme.color(FacePalette.swatches[color] ?? DesignTokens.Hex.ink))
                     Circle()
-                        .fill(Color(hex: FacePalette.eyeFill(for: color)))
+                        .fill(Theme.color(FacePalette.eyeFill(for: color)))
                         .frame(width: size * 0.131, height: size * 0.131)
                         .position(x: size * 0.375, y: eyeY)
                     Circle()
-                        .fill(Color(hex: FacePalette.eyeFill(for: color)))
+                        .fill(Theme.color(FacePalette.eyeFill(for: color)))
                         .frame(width: size * 0.131, height: size * 0.131)
                         .position(x: size * 0.625, y: eyeY)
                 }
@@ -162,20 +144,89 @@ struct UsefulCaretShape: Shape {
     }
 }
 
+/// Outline command card, the frame half of the mark.
+struct UsefulFrameShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width / 220, rect.height / 242)
+        var path = Path()
+        path.addRoundedRect(
+            in: CGRect(x: 0, y: 0, width: 220 * s, height: 242 * s),
+            cornerSize: CGSize(width: 20 * s, height: 20 * s)
+        )
+        path.addRoundedRect(
+            in: CGRect(x: 14 * s, y: 14 * s, width: 192 * s, height: 214 * s),
+            cornerSize: CGSize(width: 6 * s, height: 6 * s)
+        )
+        return path
+    }
+}
+
+struct UsefulBotMarkView: View {
+    enum Tone {
+        case dark // light glyph on a dark chip
+        case light // ink glyph on the canvas
+    }
+
+    var tone: Tone = .light
+    var height: CGFloat
+
+    var body: some View {
+        let ink = tone == .dark ? Theme.C.brandInk : Theme.C.ink
+        ZStack {
+            UsefulFrameShape()
+                .fill(ink, style: FillStyle(eoFill: true))
+            UsefulCaretShape()
+                .fill(ink)
+        }
+        .frame(width: height * 220 / 242, height: height)
+    }
+}
+
+struct UsefulBotLogoView: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            UsefulBotMarkView(tone: .light, height: 28)
+            Text("Useful Bot")
+                .font(Theme.font(14, .bold))
+                .tracking(-0.03 * 14)
+                .foregroundStyle(Theme.C.ink)
+                .offset(y: 0.5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Useful Bot")
+    }
+}
+
+/// The default Useful Bot shows the brand chip instead of a generated face.
+struct BrandAvatarView: View {
+    var size: CGFloat
+
+    private var markHeight: CGFloat {
+        if size <= 28 { return 14 }
+        if size >= 56 { return 36 }
+        return 20
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: Theme.R.avatar(size), style: .continuous)
+            .fill(Theme.C.brand)
+            .frame(width: size, height: size)
+            .overlay(UsefulBotMarkView(tone: .dark, height: markHeight))
+    }
+}
+
 struct BotAvatarView: View {
     let bot: ShellBot
     var size: CGFloat = 24
 
+    /// The default Useful Bot keeps the brand mark until it gets a custom face.
+    private var usesBrandMark: Bool {
+        bot.id == Threads.defaultBotId && !bot.avatarCustom && bot.avatarImage == nil
+    }
+
     var body: some View {
-        if bot.id == "bot-useful" && !bot.avatarCustom && bot.avatarImage == nil {
-            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-                .fill(Color.black)
-                .frame(width: size, height: size)
-                .overlay(
-                    UsefulCaretShape()
-                        .fill(.white)
-                        .frame(width: size * 0.55, height: size * 0.6)
-                )
+        if usesBrandMark {
+            BrandAvatarView(size: size)
         } else {
             BotFaceView(
                 shape: bot.avatarShape,
@@ -186,3 +237,5 @@ struct BotAvatarView: View {
         }
     }
 }
+
+
