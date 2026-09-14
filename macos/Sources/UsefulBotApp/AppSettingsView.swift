@@ -72,9 +72,15 @@ struct AppSettingsView: View {
             case .providers:
                 await model.loadProviders()
             case .usage:
+                var delay: UInt64 = 4_000_000_000
                 while !Task.isCancelled {
                     await model.loadUsage()
-                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    // Back off a failed poll so a server that is down is not
+                    // hit every 4s, and reset once it answers again.
+                    delay = model.usageError == nil
+                        ? 4_000_000_000
+                        : min(delay * 2, 30_000_000_000)
+                    try? await Task.sleep(nanoseconds: delay)
                 }
             default:
                 break

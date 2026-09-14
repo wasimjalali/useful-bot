@@ -14,16 +14,38 @@ elif [ -d "$CLT" ]; then
   FRAMEWORKS="$CLT"
 fi
 if [ -n "$FRAMEWORKS" ]; then
-  # The interop dylib sits next to the framework tree, under the same
-  # Developer root, so derive it from the resolved path rather than assuming
-  # the Command Line Tools tree.
-  INTEROP="$(dirname "$FRAMEWORKS")/usr/lib/lib_TestingInterop.dylib"
+  # The interop dylib lives under the same Developer root as Testing.framework
+  # but Xcode and the Command Line Tools lay that root out differently: the
+  # CLT keeps usr/lib under Library/Developer, while Xcode keeps it beside
+  # Library (Developer/usr/lib). Probe both layouts plus the default toolchain
+  # rather than assuming one, and report every path checked when none match.
+  INTEROP_PATHS="
+$(dirname "$FRAMEWORKS")/usr/lib/lib_TestingInterop.dylib
+$(dirname "$(dirname "$FRAMEWORKS")")/usr/lib/lib_TestingInterop.dylib
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/lib_TestingInterop.dylib
+"
+  INTEROP=""
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if [ -f "$candidate" ]; then
+      INTEROP="$candidate"
+      break
+    fi
+  done <<EOF
+$INTEROP_PATHS
+EOF
   if [ ! -f "$FRAMEWORKS/Testing.framework/Versions/A/Testing" ]; then
     echo "test.sh: Testing.framework missing under $FRAMEWORKS" >&2
     exit 1
   fi
-  if [ ! -f "$INTEROP" ]; then
-    echo "test.sh: lib_TestingInterop.dylib missing at $INTEROP" >&2
+  if [ -z "$INTEROP" ]; then
+    echo "test.sh: lib_TestingInterop.dylib not found; checked:" >&2
+    while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      echo "  $candidate" >&2
+    done <<EOF
+$INTEROP_PATHS
+EOF
     exit 1
   fi
   swift build --build-tests \

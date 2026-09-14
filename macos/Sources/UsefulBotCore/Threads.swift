@@ -23,6 +23,10 @@ public enum Threads {
     public static let groupMaxMembers = 6
     public static let groupRosterMax = 6
     public static let defaultBotId = "bot-useful"
+    /// Upper bound on the number of names and ids folded into the mention
+    /// regex. A pathological roster must not build an unbounded alternation.
+    /// Longest names sort first, so the most specific matches survive the cap.
+    public static let mentionSourceMax = 64
 
     public static func speakers(from bots: [ShellBot]) -> [Speaker] {
         bots.map {
@@ -55,10 +59,13 @@ public enum Threads {
             mentionIds.append(id)
         }
 
-        let named = bots
-            .map { (bot: $0, name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            .filter { !$0.name.isEmpty }
-            .sorted { $0.name.count > $1.name.count }
+        let named = Array(
+            bots
+                .map { (bot: $0, name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                .filter { !$0.name.isEmpty }
+                .sorted { $0.name.count > $1.name.count }
+                .prefix(mentionSourceMax)
+        )
 
         if !named.isEmpty {
             let pattern = named.map { NSRegularExpression.escapedPattern(for: $0.name) }.joined(separator: "|")
@@ -73,7 +80,11 @@ public enum Threads {
             }
         }
 
-        let ids = bots.filter { $0.id.range(of: "^[\\w.:-]+$", options: .regularExpression) != nil }
+        let ids = Array(
+            bots
+                .filter { $0.id.range(of: "^[\\w.:-]+$", options: .regularExpression) != nil }
+                .prefix(mentionSourceMax)
+        )
         if !ids.isEmpty {
             let pattern = ids.map { NSRegularExpression.escapedPattern(for: $0.id) }.joined(separator: "|")
             if let regex = try? NSRegularExpression(pattern: "@(\(pattern))(?![\\w-])", options: [.caseInsensitive]) {

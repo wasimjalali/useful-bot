@@ -11,6 +11,9 @@ final class AppModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .starting
+    /// Why startup failed when the reason is more specific than a dead server,
+    /// for example a missing node binary. Shown on the launch screen.
+    @Published private(set) var startupError: String?
     @Published private(set) var store: ShellStore?
     @Published private(set) var selectedBotId: String?
     @Published private(set) var transcript: [TranscriptRow] = []
@@ -131,7 +134,8 @@ final class AppModel: ObservableObject {
     }
 
     var startingMessage: String {
-        phase == .starting ? "Starting local server" : "Local server unavailable"
+        if phase == .starting { return "Starting local server" }
+        return startupError ?? "Local server unavailable"
     }
 
     // MARK: - Lifecycle
@@ -142,11 +146,21 @@ final class AppModel: ObservableObject {
         startAttempt += 1
         let attempt = startAttempt
         phase = .starting
+        startupError = nil
         threadError = nil
         stickyThreadError = nil
         saveError = nil
-        _ = await services.ensure(config: config, timeoutSeconds: 40)
+        let outcome = await services.ensure(config: config, timeoutSeconds: 40)
         guard attempt == startAttempt else { return }
+        if outcome == .nodeMissing {
+            // A missing interpreter is a different failure from a dead server:
+            // say so instead of making the owner wait for the retry.
+            startupError = "Node.js was not found at "
+                + ServiceSupervisor.nodeCandidates.joined(separator: " or ")
+                + ". Install Node 24, or run scripts/setup-local.mjs once."
+            phase = .unavailable
+            return
+        }
         guard await poller.check(config.healthURL) else {
             phase = .unavailable
             return
