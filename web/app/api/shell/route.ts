@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
-import { apiError, errorCode, readJson } from "../../../lib/api-guard";
+import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import {
   appendAgentEvent,
   claimProposal,
@@ -120,6 +120,9 @@ export async function PUT(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
+  if (rateLimited(`shell:${gate.session.callerId}`, 120)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
   let claimed: Proposal | null = null;
   try {
     const body = await readJson(request) as {
@@ -155,10 +158,11 @@ export async function PUT(request: Request) {
       const status = body.proposalStatus === "dismissed" ? "dismissed" : "confirmed";
       // A decision that lost the race is only a benign replay when the winner
       // matches it. If the other outcome won (dismiss vs confirm), report the
-      // conflict instead of telling the owner their click succeeded.
+      // conflict instead of telling the owner their click succeeded. The store
+      // is re-read so a race loser does not replay a pre-race snapshot.
       const settled = (existingStatus: Proposal["status"]) =>
         existingStatus === status
-          ? NextResponse.json({ ok: true, store: current, queued: 0, replay: true })
+          ? NextResponse.json({ ok: true, store: readShell(), queued: 0, replay: true })
           : NextResponse.json({ ok: false, error: "proposal_conflict", status: existingStatus }, { status: 409 });
       if (status === "confirmed") {
         const existing = readProposal(body.proposalId);
