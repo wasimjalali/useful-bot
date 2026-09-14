@@ -534,13 +534,25 @@ test("routine tools create, list, update and queue a run", async () => {
     assert.equal((await run<{ status: string }>(runRoutine, { routineId: created.routineId })).status, "paused");
     assert.equal(readRoutine(created.routineId)?.manualRunRequested, false);
 
-    await run(updateRoutine, { routineId: created.routineId, active: true });
+    // Resuming puts the routine back to running unattended, so it waits for
+    // the owner the same way the instruction rewrite does.
+    const resume = run(updateRoutine, { routineId: created.routineId, active: true });
+    const resumeCard = pendingApproval(approvals);
+    assert.equal(resumeCard.tool, "update_routine");
+    assert.equal(readRoutine(created.routineId)?.active, false);
+    approvals.decide(resumeCard.id, "approve", resumeCard.actionSha256);
+    await resume;
+    assert.equal(readRoutine(created.routineId)?.active, true);
+
     const queued = await run<{ status: string }>(runRoutine, { routineId: created.routineId });
     assert.equal(queued.status, "queued");
     assert.equal(readRoutine(created.routineId)?.manualRunRequested, true);
     // A second call while one is waiting must not queue a second run.
     assert.equal((await run<{ status: string }>(runRoutine, { routineId: created.routineId })).status, "duplicate");
     // Renaming, rescheduling and pausing never raise a card.
+    assert.equal(approvals.listPending().length, 0);
+    assert.equal((await run<{ status: string }>(updateRoutine, { routineId: created.routineId, name: "SEO" })).status, "updated");
+    assert.equal((await run<{ status: string }>(updateRoutine, { routineId: created.routineId, active: false })).status, "updated");
     assert.equal(approvals.listPending().length, 0);
   } finally {
     box.restore();

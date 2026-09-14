@@ -10,6 +10,14 @@ import {
   updateRoutine,
 } from "../../shared/routines-store.ts";
 
+const PREVIEW_MAX = 240;
+
+/** Fit an instruction onto the approval card without hiding that it was cut. */
+function clipPreview(value: string): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  return flat.length > PREVIEW_MAX ? `${flat.slice(0, PREVIEW_MAX)}...` : flat;
+}
+
 const schedule = z.object({
   kind: z.enum(["weekly", "daily", "once"]),
   days: z.array(z.number().int().min(0).max(6)).optional(),
@@ -76,15 +84,23 @@ export default defineTool({
       };
     };
 
-    // Rewriting the instruction changes what runs unattended from now on, the
-    // same class of change as a bot's standing description, so it waits for the
-    // owner. The reversible fields do not.
+    // Two transitions put the routine back to running something unattended:
+    // rewriting the instruction, and resuming one the owner paused. Both wait
+    // for the owner. Renaming, rescheduling and pausing do not, because they
+    // are reversible and visible in the pane.
     const rewrite = typeof patch.instruction === "string" && patch.instruction.trim() !== existing.instruction;
-    if (!rewrite) return apply();
+    const resume = patch.active === true && !existing.active;
+    if (!rewrite && !resume) return apply();
 
+    const reasons = [
+      rewrite ? `running: ${clipPreview(String(patch.instruction))}` : "",
+      resume ? "resumed" : "",
+    ].filter(Boolean).join("; ");
+    // The whole patch is hashed, not just the gated field: the owner approves
+    // every change this call makes, not a rewrite with a schedule riding along.
     const hash = actionSha256({
       tool: "update_routine",
-      canonicalArgs: JSON.stringify({ routineId: existing.id, instruction: String(patch.instruction).trim() }),
+      canonicalArgs: JSON.stringify({ routineId: existing.id, patch }),
       cwd: "routines",
       targetRevision: existing.updatedAt,
       backend: "routines-store",
@@ -95,7 +111,7 @@ export default defineTool({
       ...approvalActor(ctx),
       tool: "update_routine",
       actionSha256: hash,
-      preview: `rewrite routine ${existing.name} (${existing.id})`,
+      preview: `update routine ${existing.name} (${existing.id}), ${reasons}`,
     });
     await waitUntilNotPending(store, record.id);
     return executeIfApproved(store, record.id, hash, () => {

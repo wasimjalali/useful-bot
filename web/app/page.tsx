@@ -728,7 +728,7 @@ export default function Page() {
                 <div className="approval-card" key={item.id}>
                   <div className="min-w-0 flex-1">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.04em] text-warning">Needs approval</div>
-                    <div className="truncate text-sm text-ink">{item.preview}</div>
+                    <div className="line-clamp-4 text-sm break-words text-ink">{item.preview}</div>
                     <div className="text-[12px] text-ink-muted">{item.tool}</div>
                   </div>
                   <button

@@ -75,11 +75,15 @@ struct ChatView: View {
                             .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
                             .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                             .foregroundStyle(Theme.C.warning)
+                        // The preview is what the owner is approving; a single
+                        // truncated line hides the end of a command or an
+                        // instruction they are agreeing to run.
                         Text(item.preview)
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.C.ink)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                            .lineLimit(4)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
                         Text(item.tool)
                             .font(.system(size: 12))
                             .foregroundStyle(Theme.C.inkMuted)

@@ -11,6 +11,14 @@ import {
 } from "../../shared/routines-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 
+const PREVIEW_MAX = 240;
+
+/** Fit an instruction onto the approval card without hiding that it was cut. */
+function clipPreview(value: string): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  return flat.length > PREVIEW_MAX ? `${flat.slice(0, PREVIEW_MAX)}...` : flat;
+}
+
 const schedule = z.object({
   kind: z.enum(["weekly", "daily", "once"]),
   /** 0 is Sunday through 6 is Saturday. Weekly only. */
@@ -75,10 +83,19 @@ export default defineTool({
       ...approvalActor(ctx),
       tool: "create_routine",
       actionSha256: hash,
-      preview: `create routine ${draft.name} on ${bot.name}`,
+      // The instruction is what the owner is actually authorising, so it goes
+      // on the card; without it they would be approving only a name.
+      preview: `create routine ${draft.name} on ${bot.name}, running: ${clipPreview(draft.instruction)}`,
     });
     await waitUntilNotPending(store, record.id);
     return executeIfApproved(store, record.id, hash, () => {
+      // The bot can be deleted while the owner is deciding; a routine for a
+      // bot that no longer exists would fail on every tick forever. Its profile
+      // revision is deliberately not checked: the routine binds to the id, so
+      // a rename in the meantime changes nothing about what was approved.
+      if (!readShell().bots.some((item) => item.id === bot.id)) {
+        return { status: "not_found", error: `no bot with id ${bot.id}` };
+      }
       let routine;
       try {
         routine = createRoutine(draft);
