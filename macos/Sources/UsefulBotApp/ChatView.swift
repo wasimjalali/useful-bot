@@ -12,6 +12,10 @@ struct ChatView: View {
     /// column rather than 85% of the wider scroll container.
     @State private var columnWidth: CGFloat = 720
     @State private var infoButtonFrame = CGRect.zero
+    /// True while the transcript rests at its newest turn. Auto-scroll only
+    /// fires then: streaming replies append below and stay pinned, while a
+    /// scroll-up into history never yanks the reader back down.
+    @State private var pinnedToBottom = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -254,6 +258,8 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .uvScroll()
+                .defaultScrollAnchor(.bottom)
+                .modifier(ScrollPinnedTracker(pinned: $pinnedToBottom))
                 .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                 .task(id: bot.id) {
                     // Opening a chat lands at the newest turn.
@@ -261,16 +267,23 @@ struct ChatView: View {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 // The web pins to the newest turn on every content change.
+                // Each trigger scrolls only while the reader is pinned to the
+                // bottom; a jump to the top would mean the content changed
+                // under them, and dragging them back is not rendering.
                 .onChange(of: model.transcript.count) {
-                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                    guard pinnedToBottom else { return }
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onChange(of: model.transcript.last?.text.count) {
+                    guard pinnedToBottom else { return }
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onChange(of: model.pending) {
+                    guard pinnedToBottom else { return }
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onChange(of: model.openProposals.count) {
+                    guard pinnedToBottom else { return }
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
         }
@@ -590,8 +603,7 @@ private struct SearchChipView: View {
 }
 
 /// A minimal wrapping row so chips flow onto the next line like `flex-wrap`.
-struct WrapHStack: Layout {
-    var spacing: CGFloat = 8
+struct WrapHStack: Layout {    var spacing: CGFloat = 8
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let maxWidth = proposal.width ?? .infinity
@@ -625,6 +637,34 @@ struct WrapHStack: Layout {
             subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+/// Watches the transcript's scroll geometry and reports whether the viewport
+/// rests at the newest turn, so auto-scroll can tell "keep me pinned" apart
+/// from "I am reading history". Needs the scroll-geometry API of macOS 15;
+/// older systems keep the previous always-follow behavior, with the bottom
+/// default anchor still handling the short-content and open cases.
+private struct ScrollPinnedTracker: ViewModifier {
+    @Binding var pinned: Bool
+    /// Within half a line of the bottom counts as pinned, so a hair of
+    /// rubber-band or rounding cannot drop the pin while streaming.
+    private static let tolerance: CGFloat = 48
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollGeometryChange(for: Bool.self) { geometry in
+                let bottomEdge = geometry.contentOffset.y
+                    + geometry.containerSize.height
+                    - geometry.contentInsets.bottom
+                let distance = max(0, geometry.contentSize.height - bottomEdge)
+                return distance <= Self.tolerance
+            } action: { _, nowPinned in
+                pinned = nowPinned
+            }
+        } else {
+            content
         }
     }
 }
