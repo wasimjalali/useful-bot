@@ -100,3 +100,91 @@ public enum ChatMarkdownParser {
         )
     }
 }
+
+/// Parsed markdown, kept between renders.
+///
+/// A streamed reply republishes the whole transcript on every delta, and the
+/// eager `VStack` behind the chat rebuilds every row's body when it does. At
+/// 300 rows that measured about 80ms of main-thread work per publish, almost
+/// all of it in `AttributedString(markdown:)`, which is what made a streaming
+/// reply render in visible steps. Both layers are memoized on the text itself,
+/// so an unchanged row costs a dictionary lookup.
+public enum ChatMarkdownCache {
+    /// Room for a full transcript plus the inline spans inside it. Entries are
+    /// small, and a streamed reply only ever adds one new key per delta.
+    private static let capacity = 2048
+
+    /// One bounded cache. Eviction is first-in-first-out: a streamed reply
+    /// only ever adds one key per delta, so the stable rows stay resident.
+    private final class Cache<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private let capacity: Int
+        private var values: [String: Value] = [:]
+        private var order: [String] = []
+
+        init(capacity: Int) {
+            self.capacity = capacity
+        }
+
+        func value(for key: String, build: (String) -> Value) -> Value {
+            lock.lock()
+            if let hit = values[key] {
+                lock.unlock()
+                return hit
+            }
+            lock.unlock()
+            // Built outside the lock: parsing is the slow part and two callers
+            // racing on the same key only costs one duplicate parse.
+            let built = build(key)
+            lock.lock()
+            defer { lock.unlock() }
+            if values[key] == nil {
+                values[key] = built
+                order.append(key)
+                while order.count > capacity {
+                    values[order.removeFirst()] = nil
+                }
+            }
+            return built
+        }
+
+        func reset() {
+            lock.lock()
+            defer { lock.unlock() }
+            values.removeAll()
+            order.removeAll()
+        }
+
+        func count() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return order.count
+        }
+    }
+
+    private static let blockCache = Cache<[MarkdownBlock]>(capacity: capacity)
+    private static let inlineCache = Cache<AttributedString>(capacity: capacity)
+
+    public static func blocks(from source: String) -> [MarkdownBlock] {
+        blockCache.value(for: source, build: ChatMarkdownParser.blocks(from:))
+    }
+
+    /// The unstyled inline spans. The renderer applies its own fonts and colors
+    /// on top, which is a cheap pass over the runs.
+    public static func inline(from source: String) -> AttributedString {
+        inlineCache.value(for: source) { text in
+            (try? AttributedString(
+                markdown: text,
+                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+            )) ?? AttributedString(text)
+        }
+    }
+
+    /// Test hooks.
+    public static func reset() {
+        blockCache.reset()
+        inlineCache.reset()
+    }
+
+    public static func entryCount() -> Int { blockCache.count() + inlineCache.count() }
+}

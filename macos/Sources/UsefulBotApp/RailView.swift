@@ -652,9 +652,10 @@ private struct BotRowView: View {
         .overlay(alignment: .trailing) {
             // Hover-only like the web rail: the pointer is already over the row
             // when the control appears, and an open menu keeps it pinned.
-            RowActionsButton(
+            RowActionsOverlay(
                 label: "Actions for \(bot.name)",
-                visible: hovering || menuOpen,
+                rowHovering: hovering,
+                menuOpen: menuOpen,
                 onTap: onMenu
             )
             .padding(.trailing, 2)
@@ -674,11 +675,70 @@ private struct BotRowView: View {
     }
 }
 
+/// Keeps the ellipsis on screen long enough to be clicked.
+///
+/// The row and the button have separate tracking areas, so the pointer leaves
+/// one before it enters the other and the control used to vanish mid-travel.
+/// Visibility is the union of both hovers plus the open menu, and a short grace
+/// period covers the gap between them.
+private struct RowActionsOverlay: View {
+    let label: String
+    let rowHovering: Bool
+    let menuOpen: Bool
+    let onTap: (CGRect, CGRect) -> Void
+
+    @State private var state = RowActionsVisibility()
+    @State private var visible = false
+    @State private var hideTask: Task<Void, Never>?
+
+    var body: some View {
+        RowActionsButton(
+            label: label,
+            visible: visible,
+            onHoverChange: { inside in
+                state.controlHovering = inside
+                refresh()
+            },
+            onTap: onTap
+        )
+        .onAppear {
+            state.rowHovering = rowHovering
+            state.menuOpen = menuOpen
+            refresh()
+        }
+        .onChange(of: rowHovering) { _, next in
+            state.rowHovering = next
+            refresh()
+        }
+        .onChange(of: menuOpen) { _, next in
+            state.menuOpen = next
+            refresh()
+        }
+        .onDisappear { hideTask?.cancel() }
+    }
+
+    private func refresh() {
+        hideTask?.cancel()
+        hideTask = nil
+        if state.isEngaged {
+            visible = true
+            return
+        }
+        guard visible else { return }
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(RowActionsVisibility.hideGrace * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            visible = false
+        }
+    }
+}
+
 /// The rail's ellipsis affordance: invisible at rest, revealed on hover, and
 /// kept on screen while its popover is open.
 private struct RowActionsButton: View {
     let label: String
     let visible: Bool
+    let onHoverChange: (Bool) -> Void
     let onTap: (CGRect, CGRect) -> Void
 
     @State private var hovering = false
@@ -695,11 +755,17 @@ private struct RowActionsButton: View {
                 .frame(width: 24, height: 24)
                 .background(hovering ? Theme.C.accentSoft : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                // The pill stays 24pt, but the target around it is the full row
+                // height, so an approach that is a few points off still lands.
+                .frame(width: 30, height: DesignTokens.Space.botRow)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .pointerOnHover()
-        .onHover { hovering = $0 }
+        .onHover { inside in
+            hovering = inside
+            onHoverChange(inside)
+        }
         .opacity(visible ? 1 : 0)
         // Fade, but take the hidden control out of the click and VoiceOver
         // order too; the row's context menu stays as the keyboard path.
@@ -793,9 +859,10 @@ private struct PinnedCardView: View {
         .pointerOnHover()
         .onHover { hovering = $0 }
         .overlay(alignment: .trailing) {
-            RowActionsButton(
+            RowActionsOverlay(
                 label: "Actions for \(bot.name)",
-                visible: hovering || menuOpen,
+                rowHovering: hovering,
+                menuOpen: menuOpen,
                 onTap: onMenu
             )
             .padding(.trailing, 6)

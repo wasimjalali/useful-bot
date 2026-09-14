@@ -4,7 +4,7 @@ import UsefulBotCore
 /// Renders the blocks from `ChatMarkdownParser` with the web's `.chat-md`
 /// type scale: 15pt body at 1.65 line height, 13pt mono code on the sunken
 /// surface, 12pt block gaps.
-struct ChatMarkdownView: View {
+struct ChatMarkdownView: View, Equatable {
     let text: String
     var textColor: Color = Theme.C.ink
     /// Chat bubbles hug their content up to a cap; full-width surfaces such as
@@ -12,7 +12,7 @@ struct ChatMarkdownView: View {
     var expandsWidth = true
 
     var body: some View {
-        let blocks = ChatMarkdownParser.blocks(from: text)
+        let blocks = ChatMarkdownCache.blocks(from: text)
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
@@ -82,10 +82,8 @@ struct ChatMarkdownView: View {
 
     /// Inline spans via AttributedString: bold, italic, code, links.
     private func inline(_ source: String) -> AttributedString {
-        var attributed = (try? AttributedString(
-            markdown: source,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(source)
+        // Parsed once per distinct span; only the styling below is per render.
+        var attributed = ChatMarkdownCache.inline(from: source)
         for run in attributed.runs {
             let intent = run.inlinePresentationIntent
             if let link = run.link {

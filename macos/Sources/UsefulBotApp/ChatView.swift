@@ -181,6 +181,7 @@ struct ChatView: View {
                                     recipients: recipients,
                                     maxBubbleWidth: columnWidth * 0.85
                                 )
+                                .equatable()
                             case .summary(_, let count, let botIds):
                                 BotMetaRow(
                                     prefix: "\(count) messages with",
@@ -355,7 +356,9 @@ private struct BotMetaRow: View {
 /// One bubble row. User turns stay right-aligned; bot turns render as the
 /// left gray bubble from the reference, with the speaker's name and face only
 /// in a room where more than one bot can answer.
-struct TranscriptRowView: View {
+/// Equatable so a streamed publish only rebuilds the row whose text changed.
+/// Nothing here reads the environment, so skipping the body is safe.
+struct TranscriptRowView: View, Equatable {
     let row: TranscriptRow
     let bot: ShellBot
     var bots: [ShellBot] = []

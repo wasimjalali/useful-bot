@@ -74,6 +74,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var routinesError: String?
     /// Routine ids with a write in flight, so a double click cannot double-post.
     @Published private(set) var routineBusy: Set<String> = []
+    /// A create in flight. It has no id yet, so it needs its own flag; without
+    /// one a second click on Create routine makes a second routine.
+    @Published private(set) var routineCreateBusy = false
     /// The routine the pane has drilled into, or nil for the list.
     @Published var openRoutineId: String?
     /// The pane is showing the create form.
@@ -139,6 +142,11 @@ final class AppModel: ObservableObject {
     /// for every row; the replay of a long session contains thousands of
     /// events, so publishes are throttled and the final state is forced.
     private var lastTranscriptPublish = Date.distantPast
+    /// The trailing edge of the throttle. Without it a burst of deltas that
+    /// ends inside the window leaves the newest text unrendered until the next
+    /// event, which is what made a reply arrive in visible steps.
+    private var pendingPublish: Task<Void, Never>?
+    private static let publishInterval: TimeInterval = 0.1
 
     var selectedBot: ShellBot? {
         guard let store else { return nil }
@@ -657,12 +665,28 @@ final class AppModel: ObservableObject {
     }
 
     /// Throttled transcript publish: at most one view rebuild per 100ms while
-    /// events stream in, with a forced rebuild when the turn settles.
+    /// events stream in, with a forced rebuild when the turn settles. A delta
+    /// that arrives inside the window is coalesced onto one trailing rebuild
+    /// rather than dropped.
     private func publishTranscript(force: Bool = false) {
         let now = Date()
-        if !force, now.timeIntervalSince(lastTranscriptPublish) < 0.1 { return }
-        lastTranscriptPublish = now
-        rebuildTranscript()
+        let since = now.timeIntervalSince(lastTranscriptPublish)
+        if force || since >= Self.publishInterval {
+            pendingPublish?.cancel()
+            pendingPublish = nil
+            lastTranscriptPublish = now
+            rebuildTranscript()
+            return
+        }
+        guard pendingPublish == nil else { return }
+        let wait = Self.publishInterval - since
+        pendingPublish = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.pendingPublish = nil
+            self.lastTranscriptPublish = Date()
+            self.rebuildTranscript()
+        }
     }
 
     private func rebuildTranscript() {
@@ -1011,6 +1035,10 @@ final class AppModel: ObservableObject {
         cancelSend()
         loadGeneration += 1
         reloadTask?.cancel()
+        // A trailing publish queued for the old thread would rebuild over the
+        // cleared transcript.
+        pendingPublish?.cancel()
+        pendingPublish = nil
         durableEvents = []
         proposals = []
         projection = StreamProjection()
@@ -1138,6 +1166,10 @@ final class AppModel: ObservableObject {
         routines = []
         routinesError = nil
         routineBusy = []
+        // A pane left open on a bot switch would sit empty until the next poll.
+        if pane == .details, let botId = selectedBotId {
+            Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
+        }
     }
 
     func loadRoutines(botId: String) async {
@@ -1184,8 +1216,10 @@ final class AppModel: ObservableObject {
     }
 
     func createRoutine(name: String, instruction: String, schedules: [RoutineSchedule]) {
-        guard let botId = selectedBotId else { return }
+        guard let botId = selectedBotId, !routineCreateBusy else { return }
+        routineCreateBusy = true
         routineWrite(id: nil) { [weak self] client in
+            defer { self?.routineCreateBusy = false }
             let created = try await client.createRoutine(
                 botId: botId,
                 name: name,

@@ -296,7 +296,12 @@ private struct RoutineEditorView: View {
                         runHistory(routine)
                     }
                     if isNew {
-                        NativeButton("Create routine", kind: .primary, small: true, enabled: canCreate) {
+                        NativeButton(
+                            "Create routine",
+                            kind: .primary,
+                            small: true,
+                            enabled: canCreate && !model.routineCreateBusy
+                        ) {
                             model.createRoutine(name: trimmedName, instruction: trimmedInstruction, schedules: schedules)
                         }
                         .accessibilityIdentifier("routine-save")
@@ -436,7 +441,9 @@ private struct RoutineEditorView: View {
                         .foregroundStyle(Theme.C.inkFaint)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                ForEach(Array(schedules.enumerated()), id: \.element.id) { index, schedule in
+                // Keyed by position, not by value: two rows added in a row
+                // start identical, and duplicate ids make SwiftUI drop one.
+                ForEach(Array(schedules.enumerated()), id: \.offset) { index, schedule in
                     ScheduleRowView(
                         schedule: schedule,
                         onChange: { next in replace(index, with: next) },
