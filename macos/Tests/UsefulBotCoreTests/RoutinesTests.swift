@@ -37,19 +37,20 @@ import Testing
         #expect(sparse.timezone == TimeZone.current.identifier)
     }
 
-    @Test func decodeFallsBackOnAnUnknownScheduleKind() throws {
+    @Test func decodeDropsAnUnknownScheduleKind() throws {
         let routine = try decode("""
         {"id":"rtn_3","schedules":[
           {"kind":"monthly","time":"08:15"},
           {"kind":"weekly","days":[1,9,3],"time":"09:00"},
           {"kind":"once","date":"2026-12-24","time":"18:00"}]}
         """)
-        // An unknown kind degrades to a daily run at the same time rather than
-        // dropping the whole list.
-        #expect(routine.schedules[0] == .daily(time: "08:15"))
+        // The server drops a kind it does not know, so the pane drops it too:
+        // showing it as a daily run would invent a schedule that never fires.
+        // The rest of the list survives.
+        #expect(routine.schedules.count == 2)
         // Out-of-range weekdays are discarded, the rest keep their order.
-        #expect(routine.schedules[1] == .weekly(days: [1, 3], time: "09:00"))
-        #expect(routine.schedules[2] == .once(date: "2026-12-24", time: "18:00"))
+        #expect(routine.schedules[0] == .weekly(days: [1, 3], time: "09:00"))
+        #expect(routine.schedules[1] == .once(date: "2026-12-24", time: "18:00"))
     }
 
     @Test func aMalformedRunRowStillDecodes() throws {

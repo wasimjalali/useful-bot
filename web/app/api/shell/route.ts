@@ -5,6 +5,7 @@ import {
   appendAgentEvent,
   claimProposal,
   clearThread,
+  deleteThread,
   readProposal,
   reopenProposal,
   threadIdFor,
@@ -30,9 +31,10 @@ export async function GET(request: Request) {
  * Side effects the UI asks for alongside a shell action:
  *  - a confirmed fan-out (a bot proposed a group post) queues one handoff per
  *    member bot and touches both sides of every transcript;
- *  - clearing a thread drops that bot's agent transcript with its eve session;
- *  - deleting a bot drops the routines it owned, which would otherwise keep
- *    coming due for a bot that no longer exists.
+ *  - clearing a thread drops that bot's agent transcript with its eve session.
+ *
+ * Deleting a bot is not here: see `detachBot`, which has to run before the
+ * roster commit rather than after it.
  */
 function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): number {
   if (!action) return 0;
@@ -61,10 +63,19 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
   if (action.type === "clearThread") {
     clearThread(action.botId);
   }
-  if (action.type === "deleteBot") {
-    deleteRoutinesForBot(action.botId);
-  }
   return 0;
+}
+
+/**
+ * What a bot owns outside the shell store: its routines and its transcript.
+ * Both are torn down before the roster commit, so a store that will not open
+ * fails the request while the bot still exists. Doing it afterwards is how a
+ * routine ends up firing forever for a bot nobody can see, which is exactly
+ * what the swallowed `routines_locked` used to leave behind.
+ */
+function detachBot(botId: string): void {
+  deleteRoutinesForBot(botId);
+  deleteThread(botId);
 }
 
 /** The action a card sends must match every field the proposal carried. */
@@ -197,6 +208,16 @@ export async function PUT(request: Request) {
     }
 
     const action = body.action;
+    // Ordered ahead of the roster commit deliberately: this one throws on a
+    // locked store, and the error has to reach the owner instead of leaving a
+    // bot's routines running behind its back. The roster checks the commit
+    // would make run here first, so a refused delete never strips a bot that
+    // survives it.
+    if (action?.type === "deleteBot") {
+      if (current.bots.length <= 1) throw new Error("shell_last_bot");
+      if (!current.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
+      detachBot(action.botId);
+    }
     const next = action
       ? updateShell((shell) => applyShellAction(shell, action).store)
       : current;

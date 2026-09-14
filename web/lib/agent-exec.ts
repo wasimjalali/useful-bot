@@ -17,8 +17,8 @@ import {
   appendRoutineRun,
   claimDueRoutine,
   claimManualRun,
+  claimRunNow,
   pendingRoutines,
-  readRoutine,
   type Routine,
 } from "../../shared/routines-store.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
@@ -456,7 +456,22 @@ async function executeRoutine(
     sessionId: bot.sessionId ?? "",
     text: routine.instruction,
   });
-  const { sessionId, reply } = await runEveTurn(bot, routine.instruction);
+  // Every path out of the turn leaves an outcome row. The claim has already
+  // moved the anchor, so there is no retry: a turn that throws must say so in
+  // the transcript instead of leaving the note and the instruction hanging
+  // with nothing after them.
+  let sessionId: string;
+  let reply: string;
+  try {
+    ({ sessionId, reply } = await runEveTurn(bot, routine.instruction));
+  } catch (err) {
+    appendAgentEvent(bot.id, {
+      kind: "note",
+      threadKind,
+      text: `Routine "${routine.name}" failed: ${err instanceof Error ? err.message : "routine_failed"}`.slice(0, 300),
+    });
+    throw err;
+  }
   if (reply) {
     appendAgentEvent(bot.id, {
       kind: "assistant",
@@ -488,9 +503,13 @@ async function executeRoutine(
  * shares the in-flight set, so a manual run cannot overlap a scheduled one.
  */
 export async function runRoutineNow(routineId: string): Promise<RoutineRunResult> {
-  const routine = readRoutine(routineId);
-  if (!routine) throw new Error("routine_missing");
-  if (routinesInflight.has(routine.id)) throw new Error("routine_busy");
+  if (routinesInflight.has(routineId)) throw new Error("routine_busy");
+  // Take the durable ticket, not just the local one: a request an agent tool
+  // raised has to be consumed here, or the next tick claims it and runs the
+  // same routine a second time.
+  const claim = claimRunNow(routineId);
+  if (!claim) throw new Error("routine_missing");
+  const routine = claim.routine;
   routinesInflight.add(routine.id);
   try {
     const result = await executeRoutine(routine, "manual");
@@ -528,9 +547,18 @@ async function pumpRoutinesOnce(limit: number): Promise<{
   const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
   for (const candidate of candidates.slice(0, limit)) {
     // Both claims flip their marker inside the store lock, so a tick that raced
-    // this one finds the request already taken or nothing due.
-    const manual = claimManualRun(candidate.id);
-    const claim = manual ?? claimDueRoutine(candidate.id, now);
+    // this one finds the request already taken or nothing due. A contended
+    // lock is that race, not a fault in this routine: skip the candidate and
+    // leave the rest of the batch alone rather than failing the whole pump.
+    let manual: { routine: Routine } | null = null;
+    let claim: { routine: Routine } | null = null;
+    try {
+      manual = claimManualRun(candidate.id);
+      claim = manual ?? claimDueRoutine(candidate.id, now);
+    } catch (err) {
+      failed.push({ id: candidate.id, error: runFailure(err) });
+      continue;
+    }
     if (!claim) continue;
     routinesInflight.add(candidate.id);
     try {

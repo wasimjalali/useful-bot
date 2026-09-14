@@ -451,7 +451,8 @@ private struct RoutineEditorView: View {
                     )
                 }
                 Button {
-                    schedules.append(.weekly(days: [1], time: "09:00"))
+                    guard let next = nextSchedule() else { return }
+                    schedules.append(next)
                     commitSchedules()
                 } label: {
                     HStack(spacing: 6) {
@@ -467,6 +468,7 @@ private struct RoutineEditorView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerOnHover()
+                .disabled(nextSchedule() == nil)
                 .accessibilityIdentifier("routine-add-schedule")
             }
             .padding(10)
@@ -477,6 +479,17 @@ private struct RoutineEditorView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
         }
+    }
+
+    /// The next weekly slot nothing is using yet. The server dedupes exact
+    /// matches, so appending a second copy of an existing row adds a line that
+    /// disappears on the following poll.
+    private func nextSchedule() -> RoutineSchedule? {
+        for day in [1, 2, 3, 4, 5, 6, 0] {
+            let candidate = RoutineSchedule.weekly(days: [day], time: "09:00")
+            if !schedules.contains(candidate) { return candidate }
+        }
+        return nil
     }
 
     // MARK: Run history
@@ -492,7 +505,10 @@ private struct RoutineEditorView: View {
                     .foregroundStyle(Theme.C.inkFaint)
             } else {
                 // Newest first: the owner checks the last run, not the first.
-                ForEach(routine.runHistory.reversed()) { run in
+                // Keyed by position: two runs that land in the same millisecond
+                // with the same status share a `RoutineRun.id`, and SwiftUI
+                // drops one of a duplicated pair.
+                ForEach(Array(routine.runHistory.enumerated()).reversed(), id: \.offset) { _, run in
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: run.succeeded ? "checkmark.circle" : "exclamationmark.triangle")
                             .font(.system(size: 12))
@@ -621,10 +637,23 @@ private struct ScheduleRowView: View {
                     }
                 }
             }
-            if case .once(let date, _) = schedule {
-                Text("On \(date)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.inkFaint)
+            if case .once(let date, let time) = schedule {
+                // A picker rather than a field: it cannot produce 2026-02-31,
+                // which the server refuses, and a one-shot schedule with no way
+                // to change its date could only be deleted and made again.
+                DatePicker(
+                    "",
+                    selection: Binding(
+                        get: { Self.day(from: date) },
+                        set: { onChange(.once(date: Self.iso(from: $0), time: time)) }
+                    ),
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .datePickerStyle(.field)
+                .fixedSize()
+                .accessibilityLabel("Date")
+                .accessibilityIdentifier("routine-schedule-date")
             }
         }
         .onAppear { time = schedule.time }
@@ -690,9 +719,24 @@ private struct ScheduleRowView: View {
     }
 
     private static func today() -> String {
+        iso(from: Date())
+    }
+
+    /// The wire date is a civil day, not an instant. It is read and written in
+    /// the viewer's own zone, which is the one `DatePicker` renders in, so the
+    /// day the owner sees in the control is the day that goes on the wire.
+    private static let wireDate: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        return formatter
+    }()
+
+    private static func iso(from date: Date) -> String {
+        wireDate.string(from: date)
+    }
+
+    private static func day(from iso: String) -> Date {
+        wireDate.date(from: iso) ?? Date()
     }
 }

@@ -10,6 +10,10 @@ export const runtime = "nodejs";
  * Manual "Test run". A turn can take up to two minutes, which is longer than
  * the app's request timeout, so the run starts in the background and the pane
  * reads the outcome from the routine's run history on its next poll.
+ *
+ * A paused routine still runs from here. Pausing stops the schedule, and the
+ * owner pressing this button is not the schedule; refusing would leave no way
+ * to try a routine before turning it back on.
  */
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   if (!agentsEnabled()) {

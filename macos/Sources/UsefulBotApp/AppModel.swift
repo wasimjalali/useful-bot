@@ -17,6 +17,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var store: ShellStore?
     @Published private(set) var selectedBotId: String?
     @Published private(set) var transcript: [TranscriptRow] = []
+    /// The grouped render list for `transcript`. Derived once per change here
+    /// rather than in the view body: `ChatView` observes this model, so every
+    /// keystroke in the composer re-evaluates it, and regrouping the whole
+    /// transcript on each one is what made typing feel heavy.
+    @Published private(set) var transcriptBlocks: [TranscriptBlock] = []
     @Published private(set) var pending = false
     /// Thread load and send failures surface in the chat column.
     @Published private(set) var threadError: String?
@@ -702,6 +707,7 @@ final class AppModel: ObservableObject {
             rows = Transcript.attributeGroupReplies(rows, roster: roster)
         }
         transcript = rows
+        transcriptBlocks = TranscriptBlocks.build(rows: rows, selectedBotId: selectedBotId)
         searchHits = projection.searchHits
     }
 
@@ -1043,6 +1049,7 @@ final class AppModel: ObservableObject {
         proposals = []
         projection = StreamProjection()
         transcript = []
+        transcriptBlocks = []
         searchHits = []
         memoryNotes = nil
         memoryError = nil

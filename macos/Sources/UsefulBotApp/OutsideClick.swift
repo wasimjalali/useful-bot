@@ -23,8 +23,17 @@ extension View {
 
     /// Reports a view's frame in window coordinates into `frame`, using
     /// AppKit's own conversion so it stays correct across window moves.
+    ///
+    /// Only on a real change. The reader reports from `layout()`, and SwiftUI
+    /// invalidates on every write to a `@State` binding whether or not the
+    /// value moved, so an unconditional assignment here put the composer and
+    /// the rail into a layout/update feedback loop: report, rebuild, lay out,
+    /// report. That is what made clicking the field and the model chip feel
+    /// heavy.
     func trackWindowFrame(_ frame: Binding<CGRect>) -> some View {
-        background(WindowFrameReader { rect, _ in frame.wrappedValue = rect })
+        background(WindowFrameReader { rect, _ in
+            if frame.wrappedValue != rect { frame.wrappedValue = rect }
+        })
     }
 }
 

@@ -593,6 +593,20 @@ export function clearThread(botId: string, path = agentStorePath()): void {  wit
   }, path);
 }
 
+/**
+ * Drop a deleted bot's thread outright. `clearThread` is for a bot that stays:
+ * it empties the log and keeps the row. Nothing ever reads the row of a bot
+ * that no longer exists, so leaving one behind only grows the file.
+ */
+export function deleteThread(botId: string, path = agentStorePath()): boolean {
+  return withAgentStore((store) => {
+    const id = threadIdFor(botId);
+    const before = store.threads.length;
+    store.threads = store.threads.filter((item) => item.id !== id);
+    return store.threads.length !== before;
+  }, path);
+}
+
 export function threadSnapshot(botId: string, path = agentStorePath()): {
   events: AgentEvent[];
   proposals: Proposal[];

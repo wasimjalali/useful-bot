@@ -50,6 +50,12 @@ export default defineTool({
           // own chat; hiding it also makes handoffs to it fail.
           return { status: "refused", error: "the default Useful Bot cannot be hidden" };
         }
+        if (botId === (process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId)) {
+          // Hiding the chat the owner is standing in takes the thread they are
+          // talking to off the rail mid-conversation. `delete_bot` refuses the
+          // same move for the same reason.
+          return { status: "refused", error: "that is this bot; the owner hides it from the rail" };
+        }
         action = { type: "hide", botId, hidden: true };
         break;
       case "unhide":

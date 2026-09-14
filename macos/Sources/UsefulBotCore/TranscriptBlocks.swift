@@ -144,16 +144,15 @@ public enum TranscriptBlocks {
         timeZone: TimeZone = .current,
         locale: Locale = .current
     ) -> String {
-        let day: String
-        if calendar.isDate(date, inSameDayAs: now) {
-            day = "Today"
-        } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
-                  calendar.isDate(date, inSameDayAs: yesterday) {
-            day = "Yesterday"
-        } else {
-            day = string(from: date, format: "EEE, MMM d", calendar: calendar, timeZone: timeZone, locale: locale)
+        // The day, never the clock. A wall time on the rule reads as the time
+        // of the message under it, which it is not: it is the time of the
+        // first message of that day, and knowing it helps nobody.
+        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday"
         }
-        return "\(day) \(timeLabel(date, timeZone: timeZone, locale: locale))"
+        return string(from: date, format: "EEE, MMM d", calendar: calendar, timeZone: timeZone, locale: locale)
     }
 
     /// "5:10 PM" for a bubble's trailing stamp.

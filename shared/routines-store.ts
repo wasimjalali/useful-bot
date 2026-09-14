@@ -32,7 +32,13 @@ const NAME_MAX = 80;
 const INSTRUCTION_MAX = 4000;
 const ERROR_MAX = 300;
 const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
+/**
+ * Shorter than the timeout on purpose. Every critical section here is
+ * synchronous, so a lock older than this belongs to a process that died, and a
+ * stale window longer than the wait would make every writer fail for as long
+ * as it lasts instead of clearing the corpse and carrying on.
+ */
+const LOCK_STALE_MS = 2000;
 /** How far ahead a weekly search has to look to find the next matching day. */
 const SEARCH_DAYS = 8;
 
@@ -70,11 +76,19 @@ export type Routine = {
    * slot, so `lastRunAt` is left alone.
    */
   manualRunRequested: boolean;
+  /**
+   * Fields a newer build wrote that this one does not model. They ride through
+   * every read/write untouched, so running an older app for one session does
+   * not quietly strip a routine down to the keys it happens to understand.
+   */
+  extra?: Record<string, unknown>;
 };
 
 export type RoutinesStore = {
   schemaVersion: 1;
   routines: Routine[];
+  /** Document-level counterpart of `Routine.extra`. */
+  extra?: Record<string, unknown>;
 };
 
 export type RoutineDraft = {
@@ -105,6 +119,70 @@ export function newRoutineId(): string {
 
 function clip(value: unknown, max: number): string {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+/** Keys this build models; everything else on a routine is carried in `extra`. */
+const ROUTINE_KEYS = new Set([
+  "id",
+  "botId",
+  "name",
+  "instruction",
+  "schedules",
+  "timezone",
+  "active",
+  "createdAt",
+  "updatedAt",
+  "lastRunAt",
+  "runHistory",
+  "manualRunRequested",
+]);
+
+const STORE_KEYS = new Set(["schemaVersion", "routines"]);
+
+/**
+ * Unknown keys off one decoded object. An `extra` already on the record is
+ * merged rather than nested, so re-parsing a value this module produced is
+ * idempotent.
+ */
+function collectExtra(rec: Record<string, unknown>, known: Set<string>): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  const carried = rec.extra;
+  if (carried && typeof carried === "object" && !Array.isArray(carried)) {
+    Object.assign(out, carried as Record<string, unknown>);
+  }
+  for (const [key, value] of Object.entries(rec)) {
+    if (key === "extra" || known.has(key)) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** The on-disk shape of one routine: carried keys first, modelled keys win. */
+function plainRoutine(routine: Routine): Record<string, unknown> {
+  return {
+    ...(routine.extra ?? {}),
+    id: routine.id,
+    botId: routine.botId,
+    name: routine.name,
+    instruction: routine.instruction,
+    schedules: routine.schedules,
+    timezone: routine.timezone,
+    active: routine.active,
+    createdAt: routine.createdAt,
+    updatedAt: routine.updatedAt,
+    lastRunAt: routine.lastRunAt,
+    runHistory: routine.runHistory,
+    manualRunRequested: routine.manualRunRequested,
+  };
+}
+
+/** The on-disk shape of the whole document. */
+function plainRoutinesStore(store: RoutinesStore): Record<string, unknown> {
+  return {
+    ...(store.extra ?? {}),
+    schemaVersion: ROUTINES_SCHEMA,
+    routines: store.routines.map(plainRoutine),
+  };
 }
 
 function isId(value: unknown, max = 80): value is string {
@@ -213,6 +291,22 @@ export function zonedWallToUtc(
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE = /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
+/**
+ * The shape check above still passes 2026-02-31, and `Date.UTC` would roll it
+ * forward to 3 March and fire the routine on a day the owner never picked. A
+ * real civil date is the one that round-trips through the calendar unchanged.
+ */
+function parseCivilDate(value: string): { year: number; month: number; day: number } | null {
+  const match = DATE.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const at = new Date(Date.UTC(year, month - 1, day));
+  if (at.getUTCFullYear() !== year || at.getUTCMonth() !== month - 1 || at.getUTCDate() !== day) return null;
+  return { year, month, day };
+}
+
 export function parseSchedule(raw: unknown): RoutineSchedule | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
@@ -221,7 +315,7 @@ export function parseSchedule(raw: unknown): RoutineSchedule | null {
   if (rec.kind === "daily") return { kind: "daily", time };
   if (rec.kind === "once") {
     const date = typeof rec.date === "string" ? rec.date.trim() : "";
-    if (!DATE.test(date)) return null;
+    if (!parseCivilDate(date)) return null;
     return { kind: "once", date, time };
   }
   if (rec.kind === "weekly") {
@@ -256,9 +350,9 @@ export function nextOccurrence(schedule: RoutineSchedule, timeZone: string, afte
   const hh = Number(match[1]);
   const mm = Number(match[2]);
   if (schedule.kind === "once") {
-    const date = DATE.exec(schedule.date);
+    const date = parseCivilDate(schedule.date);
     if (!date) return null;
-    const at = zonedWallToUtc(Number(date[1]), Number(date[2]), Number(date[3]), hh, mm, timeZone);
+    const at = zonedWallToUtc(date.year, date.month, date.day, hh, mm, timeZone);
     return at.getTime() > after.getTime() ? at : null;
   }
   const start = zoneParts(after, timeZone);
@@ -342,6 +436,7 @@ export function parseRoutine(raw: unknown): Routine | null {
     lastRunAt: typeof rec.lastRunAt === "string" ? rec.lastRunAt : null,
     runHistory: history.slice(-RUN_HISTORY_MAX),
     manualRunRequested: rec.manualRunRequested === true,
+    extra: collectExtra(rec, ROUTINE_KEYS),
   };
 }
 
@@ -357,7 +452,7 @@ export function parseRoutinesStore(raw: unknown): RoutinesStore {
     seen.add(routine.id);
     routines.push(routine);
   }
-  return { schemaVersion: 1, routines };
+  return { schemaVersion: 1, routines, extra: collectExtra(rec, STORE_KEYS) };
 }
 
 // MARK: - Storage
@@ -389,12 +484,15 @@ function backupIncompatible(path: string): void {
 }
 
 export function writeRoutinesStore(store: RoutinesStore, path = routinesStorePath()): void {
-  const parsed = parseRoutinesStore(store);
+  writeSerialized(JSON.stringify(plainRoutinesStore(parseRoutinesStore(store))), path);
+}
+
+function writeSerialized(json: string, path: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   backupIncompatible(path);
   const tmp = `${path}.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}.tmp`;
   try {
-    writeFileSync(tmp, `${JSON.stringify(parsed)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    writeFileSync(tmp, `${json}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     const fd = openSync(tmp, "r");
     fsyncSync(fd);
     closeSync(fd);
@@ -442,10 +540,14 @@ export function withRoutinesStore<T>(fn: (store: RoutinesStore) => T, path = rou
   }
   if (!held) throw new Error("routines_locked");
   try {
-    const before = readRoutinesStore(path);
-    const scratch = parseRoutinesStore(JSON.parse(JSON.stringify(before)));
+    const before = JSON.stringify(plainRoutinesStore(readRoutinesStore(path)));
+    const scratch = parseRoutinesStore(JSON.parse(before));
     const result = fn(scratch);
-    writeRoutinesStore(scratch, path);
+    const after = JSON.stringify(plainRoutinesStore(scratch));
+    // A claim that found nothing due, or any other read-only pass, leaves the
+    // document byte-identical. Rewriting it would still cost an fsync and move
+    // the mtime, which is the signal the stale-lock sweep reads.
+    if (after !== before) writeSerialized(after, path);
     return result;
   } finally {
     try { rmdirSync(lock); } catch { /* ignore */ }
@@ -621,6 +723,27 @@ export function claimManualRun(id: string, path = routinesStorePath()): { routin
     if (!routine || !routine.manualRunRequested) return null;
     routine.manualRunRequested = false;
     routine.updatedAt = new Date().toISOString();
+    return {
+      routine: { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() },
+    };
+  }, path);
+}
+
+/**
+ * Take ownership of a run the owner started from the pane. The Test run button
+ * does not need a waiting request, but it has to consume one if there is one:
+ * otherwise the tick claims the same request a moment later and the routine
+ * runs twice. Taking the ticket inside the store lock is what serialises the
+ * two paths, since their in-flight sets live in different processes.
+ */
+export function claimRunNow(id: string, path = routinesStorePath()): { routine: Routine } | null {
+  return withRoutinesStore((store) => {
+    const routine = store.routines.find((item) => item.id === id);
+    if (!routine) return null;
+    if (routine.manualRunRequested) {
+      routine.manualRunRequested = false;
+      routine.updatedAt = new Date().toISOString();
+    }
     return {
       routine: { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() },
     };

@@ -45,8 +45,18 @@ public enum RoutineSchedule: Codable, Equatable, Sendable, Identifiable {
             self = .weekly(days: days.filter { (0...6).contains($0) }.sorted(), time: time)
         case "once":
             self = .once(date: (try? c.decode(String.self, forKey: .date)) ?? "", time: time)
-        default:
+        case "daily":
             self = .daily(time: time)
+        default:
+            // The server drops a kind it does not know. Reading it as a daily
+            // run here would show a schedule that does not exist on the other
+            // side and fire at a time nobody chose; `TolerantSchedule` turns
+            // this into the same drop without losing the rest of the list.
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind,
+                in: c,
+                debugDescription: "unknown schedule kind \(kind)"
+            )
         }
     }
 
@@ -65,6 +75,17 @@ public enum RoutineSchedule: Codable, Equatable, Sendable, Identifiable {
             try c.encode(date, forKey: .date)
             try c.encode(time, forKey: .time)
         }
+    }
+}
+
+/// One element of a `schedules` array, or nothing. Swift decodes an array all
+/// or nothing, so a single row this build cannot read would otherwise take the
+/// whole schedule with it.
+struct TolerantSchedule: Decodable {
+    let schedule: RoutineSchedule?
+
+    init(from decoder: Decoder) throws {
+        schedule = try? RoutineSchedule(from: decoder)
     }
 }
 
@@ -138,7 +159,7 @@ public struct Routine: Codable, Identifiable, Equatable, Sendable {
         botId = (try? c.decode(String.self, forKey: .botId)) ?? ""
         name = (try? c.decode(String.self, forKey: .name)) ?? "Routine"
         instruction = (try? c.decode(String.self, forKey: .instruction)) ?? ""
-        schedules = (try? c.decode([RoutineSchedule].self, forKey: .schedules)) ?? []
+        schedules = ((try? c.decode([TolerantSchedule].self, forKey: .schedules)) ?? []).compactMap(\.schedule)
         timezone = (try? c.decode(String.self, forKey: .timezone)) ?? TimeZone.current.identifier
         // The server only ever omits `active` on a row it could not parse; a
         // routine that exists is assumed live rather than silently paused.

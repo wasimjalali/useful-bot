@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { deleteThread } from "../../shared/agent-store.ts";
 import { deleteRoutinesForBot } from "../../shared/routines-store.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
 import { applyShellAction, DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
@@ -16,9 +17,21 @@ export default defineTool({
   async execute(input, ctx) {
     const shell = readShell();
     const requested = input.botId.trim();
-    const target = shell.bots.find((bot) => (
-      bot.id === requested || bot.name.toLowerCase() === requested.toLowerCase()
-    )) ?? null;
+    // An id is exact. A name is not: the roster allows two bots whose names
+    // differ only in case, and this call deletes something, so an ambiguous
+    // match has to come back as a question rather than a coin toss.
+    const byId = shell.bots.find((bot) => bot.id === requested) ?? null;
+    const byName = byId
+      ? []
+      : shell.bots.filter((bot) => bot.name.toLowerCase() === requested.toLowerCase());
+    if (byName.length > 1) {
+      return {
+        status: "ambiguous",
+        error: `${byName.length} bots are named ${requested}`,
+        hint: `Call delete_bot again with one of these ids: ${byName.map((bot) => bot.id).join(", ")}.`,
+      };
+    }
+    const target = byId ?? byName[0] ?? null;
     if (!target) {
       return { status: "not_found", error: `no bot matches ${requested}`, hint: "Call listBots for exact ids." };
     }
@@ -54,18 +67,24 @@ export default defineTool({
     });
     await waitUntilNotPending(store, record.id);
     return executeIfApproved(store, record.id, hash, () => {
-      // Re-read under the store lock: the roster can have changed while the
-      // owner was deciding. The approval belongs to the revision on the card,
-      // so a bot renamed or re-profiled in the meantime is not deleted.
+      // The approval belongs to the revision on the card, so a bot renamed or
+      // re-profiled while the owner was deciding is not deleted. Checked here
+      // and again inside the roster lock below.
+      const live = readShell().bots.find((bot) => bot.id === target.id);
+      if (!live) throw new Error("bot_missing");
+      if (live.updatedAt !== target.updatedAt) throw new Error("bot_changed");
+      // Routines and the transcript live in their own stores and outlive the
+      // bot. They go first: a store that will not open then fails the delete,
+      // where doing it afterwards left routines coming due forever for a bot
+      // nobody can see.
+      const routines = deleteRoutinesForBot(target.id);
+      deleteThread(target.id);
       const next = updateShell((current) => {
-        const live = current.bots.find((bot) => bot.id === target.id);
-        if (!live) throw new Error("bot_missing");
-        if (live.updatedAt !== target.updatedAt) throw new Error("bot_changed");
+        const inLock = current.bots.find((bot) => bot.id === target.id);
+        if (!inLock) throw new Error("bot_missing");
+        if (inLock.updatedAt !== target.updatedAt) throw new Error("bot_changed");
         return applyShellAction(current, { type: "deleteBot", botId: target.id }).store;
       });
-      // Routines outlive their bot in their own store and would keep coming
-      // due for a bot that no longer exists.
-      const routines = deleteRoutinesForBot(target.id);
       return {
         status: "deleted",
         botId: target.id,
