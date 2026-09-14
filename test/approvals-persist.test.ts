@@ -66,6 +66,30 @@ test("waitUntilNotPending settles when another process approves", async () => {
   assert.equal(settled.status, "approved");
 });
 
+test("an approved record from an earlier boot cannot be consumed after restart", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"restart"}');
+  const before = new ApprovalStore(Date.now, path, "boot-a");
+  const rec = before.request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory restart",
+  });
+  // The UI process has its own epoch and may still record the decision.
+  new ApprovalStore(Date.now, path, "ui-boot").decide(rec.id, "approve", hash);
+  let ran = false;
+  await assert.rejects(
+    () => executeIfApproved(new ApprovalStore(Date.now, path, "boot-b"), rec.id, hash, () => {
+      ran = true;
+    }),
+    /approval_expired/,
+  );
+  assert.equal(ran, false);
+});
+
 test("denied wait does not execute", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
   const hash = hashFor('{"title":"no"}');

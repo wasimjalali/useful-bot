@@ -7,12 +7,36 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
+
+/**
+ * One boot epoch per process. Records carry the epoch that requested them, and
+ * consume rejects any other epoch, so an approval that was granted but not yet
+ * used when the agent restarted cannot be replayed after the restart. The UI
+ * process only decides; it never consumes, so its different epoch is harmless.
+ */
+const BOOT_EPOCH = randomUUID();
+const LOCK_TIMEOUT_MS = 4000;
+const LOCK_STALE_MS = 15_000;
+const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
+
+function sleep(ms: number): void {
+  try {
+    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* fallback for runtimes without Atomics.wait */
+    }
+  }
+}
 
 export type ApprovalTool = "bash" | "write_file" | "memory.upsert";
 export type ApprovalDecision = "approve" | "deny";
@@ -38,6 +62,8 @@ export interface StoredApproval {
   createdAt: number;
   expiresAt: number;
   status: ApprovalStatus;
+  /** Boot epoch of the process that requested the action. */
+  epoch?: string;
 }
 
 export type PendingApproval = Pick<
@@ -74,11 +100,46 @@ export class ApprovalStore {
   private seq = 0;
   private readonly now: () => number;
   private readonly persistPath: string | null;
+  private readonly epoch: string;
 
-  constructor(now: () => number = Date.now, persistPath: string | null = null) {
+  constructor(
+    now: () => number = Date.now,
+    persistPath: string | null = null,
+    epoch: string = BOOT_EPOCH,
+  ) {
     this.now = now;
     this.persistPath = persistPath;
+    this.epoch = epoch;
     this.load();
+  }
+
+  /**
+   * Cross-process lock for the load/modify/persist cycle. The agent process and
+   * the web approval route both write the same file, and a plain
+   * read-mutate-write pair lets one overwrite the other's record or decision.
+   */
+  private acquire(): () => void {
+    if (!this.persistPath) return () => { /* in-memory store */ };
+    const lock = `${this.persistPath}.lock`;
+    mkdirSync(dirname(this.persistPath), { recursive: true, mode: 0o700 });
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    let held = false;
+    while (!held) {
+      try {
+        mkdirSync(lock, { mode: 0o700 });
+        held = true;
+      } catch {
+        try {
+          if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
+        } catch { /* lock vanished; retry */ }
+        if (Date.now() > deadline) break;
+        sleep(15);
+      }
+    }
+    if (!held) throw new Error("approval_store_locked");
+    return () => {
+      try { rmdirSync(lock); } catch { /* ignore */ }
+    };
   }
 
   request(input: {
@@ -89,115 +150,152 @@ export class ApprovalStore {
     actionSha256: string;
     preview: string;
   }): StoredApproval {
-    this.load();
-    this.seq += 1;
-    const createdAt = this.now();
-    const record: StoredApproval = {
-      id: this.persistPath
-        ? `apr_${randomUUID().replaceAll("-", "").slice(0, 16)}`
-        : `apr_${this.seq.toString().padStart(4, "0")}`,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      toolCallId: input.toolCallId,
-      tool: input.tool,
-      actionSha256: input.actionSha256,
-      preview: input.preview,
-      createdAt,
-      expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
-      status: "pending",
-    };
-    this.records.set(record.id, record);
-    this.persist();
-    return record;
+    const release = this.acquire();
+    try {
+      this.load();
+      this.seq += 1;
+      const createdAt = this.now();
+      const record: StoredApproval = {
+        id: this.persistPath
+          ? `apr_${randomUUID().replaceAll("-", "").slice(0, 16)}`
+          : `apr_${this.seq.toString().padStart(4, "0")}`,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        toolCallId: input.toolCallId,
+        tool: input.tool,
+        actionSha256: input.actionSha256,
+        preview: input.preview,
+        createdAt,
+        expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
+        status: "pending",
+        epoch: this.epoch,
+      };
+      this.records.set(record.id, record);
+      this.persist();
+      return record;
+    } finally {
+      release();
+    }
   }
 
   decide(id: string, decision: ApprovalDecision, presentedHash: string): StoredApproval {
-    this.load();
-    const record = this.records.get(id);
-    if (!record) {
-      throw new Error(`approval_not_found:${id}`);
+    const release = this.acquire();
+    try {
+      this.load();
+      const record = this.records.get(id);
+      if (!record) {
+        throw new Error(`approval_not_found:${id}`);
+      }
+      this.refreshExpiry(record);
+      if (record.status !== "pending") {
+        throw new Error(`approval_not_pending:${record.status}`);
+      }
+      if (!hashesEqual(record.actionSha256, presentedHash)) {
+        throw new Error("approval_hash_mismatch");
+      }
+      record.status = decision === "approve" ? "approved" : "denied";
+      this.persist();
+      return record;
+    } finally {
+      release();
     }
-    this.refreshExpiry(record);
-    if (record.status !== "pending") {
-      throw new Error(`approval_not_pending:${record.status}`);
-    }
-    if (!hashesEqual(record.actionSha256, presentedHash)) {
-      throw new Error("approval_hash_mismatch");
-    }
-    record.status = decision === "approve" ? "approved" : "denied";
-    this.persist();
-    return record;
   }
 
   consume(id: string, presentedHash: string): StoredApproval {
-    this.load();
-    const record = this.records.get(id);
-    if (!record) {
-      throw new Error(`approval_not_found:${id}`);
+    const release = this.acquire();
+    try {
+      this.load();
+      const record = this.records.get(id);
+      if (!record) {
+        throw new Error(`approval_not_found:${id}`);
+      }
+      this.refreshExpiry(record);
+      if (!hashesEqual(record.actionSha256, presentedHash)) {
+        throw new Error("approval_hash_mismatch");
+      }
+      if (record.status === "consumed") {
+        throw new Error("approval_replay");
+      }
+      if (record.status === "denied") {
+        throw new Error("approval_denied");
+      }
+      if (record.status === "expired") {
+        throw new Error("approval_expired");
+      }
+      if (record.status !== "approved") {
+        throw new Error(`approval_not_approved:${record.status}`);
+      }
+      // A record from a previous process boot is not valid after a restart.
+      if (record.epoch !== this.epoch) {
+        record.status = "expired";
+        this.persist();
+        throw new Error("approval_expired");
+      }
+      record.status = "consumed";
+      this.persist();
+      return record;
+    } finally {
+      release();
     }
-    this.refreshExpiry(record);
-    if (!hashesEqual(record.actionSha256, presentedHash)) {
-      throw new Error("approval_hash_mismatch");
-    }
-    if (record.status === "consumed") {
-      throw new Error("approval_replay");
-    }
-    if (record.status === "denied") {
-      throw new Error("approval_denied");
-    }
-    if (record.status === "expired") {
-      throw new Error("approval_expired");
-    }
-    if (record.status !== "approved") {
-      throw new Error(`approval_not_approved:${record.status}`);
-    }
-    record.status = "consumed";
-    this.persist();
-    return record;
   }
 
   get(id: string): StoredApproval | undefined {
-    this.load();
-    const record = this.records.get(id);
-    if (!record) return undefined;
-    const before = record.status;
-    this.refreshExpiry(record);
-    if (record.status !== before) this.persist();
-    return record;
+    const release = this.acquire();
+    try {
+      this.load();
+      const record = this.records.get(id);
+      if (!record) return undefined;
+      const before = record.status;
+      this.refreshExpiry(record);
+      if (record.status !== before) this.persist();
+      return record;
+    } finally {
+      release();
+    }
   }
 
   listPending(): PendingApproval[] {
-    this.load();
-    let changed = false;
-    const out: PendingApproval[] = [];
-    for (const record of this.records.values()) {
-      const before = record.status;
-      this.refreshExpiry(record);
-      if (record.status !== before) changed = true;
-      if (record.status === "pending") {
-        out.push({
-          id: record.id,
-          tool: record.tool,
-          preview: record.preview,
-          actionSha256: record.actionSha256,
-          createdAt: record.createdAt,
-          expiresAt: record.expiresAt,
-        });
+    const release = this.acquire();
+    try {
+      this.load();
+      let changed = false;
+      const out: PendingApproval[] = [];
+      for (const record of this.records.values()) {
+        const before = record.status;
+        this.refreshExpiry(record);
+        if (record.status !== before) changed = true;
+        if (record.status === "pending") {
+          out.push({
+            id: record.id,
+            tool: record.tool,
+            preview: record.preview,
+            actionSha256: record.actionSha256,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+          });
+        }
       }
+      if (changed) this.persist();
+      out.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+      return out;
+    } finally {
+      release();
     }
-    if (changed) this.persist();
-    out.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
-    return out;
   }
 
   invalidateOnRestart(): void {
-    this.load();
-    for (const record of this.records.values()) {
-      if (record.status === "pending" || record.status === "approved") {
-        record.status = "expired";
+    const release = this.acquire();
+    try {
+      this.load();
+      for (const record of this.records.values()) {
+        if (record.status === "pending" || record.status === "approved") {
+          record.status = "expired";
+        }
       }
+      this.persist();
+    } finally {
+      release();
     }
-    this.persist();
   }
 
   private refreshExpiry(record: StoredApproval): void {
