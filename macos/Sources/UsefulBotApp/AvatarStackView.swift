@@ -52,7 +52,9 @@ struct AvatarStackView: View {
         case 0: return "No members"
         case 1: return bots[0].name
         case 2, 3: return bots.map(\.name).joined(separator: ", ")
-        default: return "\(bots.count) bots"
+        default:
+            let named = bots.prefix(3).map(\.name).joined(separator: ", ")
+            return "\(named), and \(bots.count - 3) more"
         }
     }
 }

@@ -261,14 +261,16 @@ struct RailView: View {
     /// the reason instead of leaving a dead header behind. Unassigned uses the
     /// same rule, with its own fallback line for a genuinely empty bucket.
     private func emptySectionHint(_ store: ShellStore, _ sectionId: String?) -> String? {
+        var parts: [String] = []
         let pinned = store.pinnedBots.filter { $0.sectionId == sectionId }.count
         if pinned > 0 {
-            return pinned == 1 ? "1 pinned bot shows at the top." : "\(pinned) pinned bots show at the top."
+            parts.append(pinned == 1 ? "1 pinned bot shows at the top." : "\(pinned) pinned bots show at the top.")
         }
         let hidden = store.hiddenBots.filter { $0.sectionId == sectionId }.count
         if hidden > 0 {
-            return hidden == 1 ? "1 bot here is hidden." : "\(hidden) bots here are hidden."
+            parts.append(hidden == 1 ? "1 bot here is hidden." : "\(hidden) bots here are hidden.")
         }
+        if !parts.isEmpty { return parts.joined(separator: " ") }
         return sectionId == nil ? "Default home for new bots." : nil
     }
 

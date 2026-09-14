@@ -371,32 +371,40 @@ struct TranscriptRowView: View {
             userRow
         case .handoff:
             // The reference hides the dispatch text and marks the send itself.
-            if recipients.isEmpty, row.targetBotIds.isEmpty {
-                bubbleRow(showsSpeaker: true)
-            } else {
-                BotMetaRow(
-                    prefix: "Messaged",
-                    botIds: recipients.isEmpty ? row.targetBotIds : recipients,
-                    roster: bots
-                )
-            }
+            BotMetaRow(
+                prefix: "Messaged",
+                botIds: recipients.isEmpty ? row.targetBotIds : recipients,
+                names: ["a teammate"],
+                roster: bots
+            )
         case .post:
+            let attributed = row.authorBotId != nil || !(row.author ?? "").isEmpty
             VStack(alignment: .leading, spacing: 8) {
-                BotMetaRow(
-                    prefix: "Message from",
-                    botIds: row.authorBotId.map { [$0] } ?? [],
-                    names: [row.author ?? ""],
-                    roster: bots
-                )
+                if attributed {
+                    BotMetaRow(
+                        prefix: "Message from",
+                        botIds: row.authorBotId.map { [$0] } ?? [],
+                        names: [row.author ?? ""],
+                        roster: bots
+                    )
+                }
                 // The strip already names and faces the author.
                 bubbleRow(showsSpeaker: false)
             }
         case .note:
             HStack(alignment: .top, spacing: 12) {
                 BotAvatarView(bot: speaker ?? bot, size: 20)
-                Text(row.text)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.C.inkMuted)
+                VStack(alignment: .leading, spacing: 2) {
+                    if let speaker {
+                        Text(speaker.name.uppercased())
+                            .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
+                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
+                            .foregroundStyle(Theme.C.inkFaint)
+                    }
+                    Text(row.text)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
                 Spacer(minLength: 0)
             }
         case .assistant:
@@ -423,7 +431,7 @@ struct TranscriptRowView: View {
                         style: .continuous
                     )
                 )
-                .frame(maxWidth: max(160, maxBubbleWidth - timeReserve), alignment: .trailing)
+                .frame(maxWidth: max(160, maxBubbleWidth - (row.at == nil ? 0 : timeReserve)), alignment: .trailing)
                 .textSelection(.enabled)
             if let at = row.at {
                 Text(TranscriptBlocks.timeLabel(at))

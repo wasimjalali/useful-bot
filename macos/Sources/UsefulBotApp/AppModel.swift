@@ -349,11 +349,16 @@ final class AppModel: ObservableObject {
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
                     if !atLiveTail {
+                        let eventAt = TranscriptBlocks.date(fromISO8601: event.metaAt)
                         if let durableTailId, event.id == durableTailId {
                             atLiveTail = true
-                        } else if let durableTailAt,
-                                  let eventAt = TranscriptBlocks.date(fromISO8601: event.metaAt),
-                                  eventAt > durableTailAt {
+                        } else if let durableTailAt, let eventAt, eventAt >= durableTailAt {
+                            // The timeline moved past the newest durable row:
+                            // the replay has caught up.
+                            atLiveTail = true
+                        } else if durableTailAt == nil, eventAt != nil {
+                            // The tail carries no usable stamp (older store):
+                            // any stamped event is newer than it.
                             atLiveTail = true
                         }
                     }
