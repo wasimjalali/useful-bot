@@ -59,7 +59,7 @@ struct AvatarStackView: View {
     }
 }
 
-/// Resolve a group's member ids against the live store, in roster order.
+/// Resolve a group's member ids against the live store, in member order.
 func groupMemberBots(_ bot: ShellBot, store: ShellStore?) -> [ShellBot] {
     guard bot.isGroup, let store else { return [] }
     return bot.memberIds.compactMap { id in store.bots.first { $0.id == id } }
