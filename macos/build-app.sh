@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the native app and refresh the bundle in macos/dist.
+# Build the native app using the sole approved brand/ asset package.
 set -eu
 cd "$(dirname "$0")"
 swift build -c release
@@ -8,10 +8,16 @@ BIN=".build/release/UsefulBotApp"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/UsefulBotApp"
 chmod +x "$APP/Contents/MacOS/UsefulBotApp"
-# Single source for metadata and icon: bundle/Info.plist drives the version,
-# so this script and the Makefile target cannot drift apart.
 cp bundle/Info.plist "$APP/Contents/Info.plist"
-cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/AppIcon.icns"
+
+for asset in png/mark/useful-bot-128.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/motion.json app/macos/UsefulBot.icns; do
+  mkdir -p "$APP/Contents/Resources/Brand/$(dirname "$asset")"
+  cp "../brand/$asset" "$APP/Contents/Resources/Brand/$asset"
+done
+mkdir -p "$APP/Contents/Resources/Brand/avatars" "$APP/Contents/Resources/Brand/motion"
+cp ../brand/avatars/*-256.png "$APP/Contents/Resources/Brand/avatars/"
+cp -R ../brand/motion/native "$APP/Contents/Resources/Brand/motion/"
 # No nested code lives in the bundle, so signing the bundle directly is enough
 # and avoids the discouraged --deep flag.
 codesign --force --sign - "$APP" >/dev/null

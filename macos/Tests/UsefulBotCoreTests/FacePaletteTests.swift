@@ -36,4 +36,27 @@ import Testing
         #expect(FacePalette.isShape(face.shape))
         #expect(FacePalette.isColor(face.color))
     }
+
+    @Test func legacyProfilesUseMascotColorsWithoutRewritingStoredImages() throws {
+        let json = """
+        {"id":"bot-scout","avatarShape":"triangle","avatarColor":"blue","avatarImage":"saved-image","avatarCustom":true}
+        """
+        let bot = try JSONDecoder().decode(ShellBot.self, from: Data(json.utf8))
+        #expect(FacePalette.displayColor(for: bot) == "blue")
+        #expect(bot.avatarShape == "triangle")
+        #expect(bot.avatarImage == "saved-image")
+        var invalidColor = bot
+        invalidColor.avatarColor = "not-a-color"
+        #expect(FacePalette.displayColor(for: invalidColor) == "ink")
+    }
+
+    @Test func defaultBotIsOriginalUntilItsColorIsCustomized() throws {
+        let json = """
+        {"id":"bot-useful","avatarColor":"blue","avatarCustom":false}
+        """
+        var bot = try JSONDecoder().decode(ShellBot.self, from: Data(json.utf8))
+        #expect(FacePalette.displayColor(for: bot) == "ink")
+        bot.avatarCustom = true
+        #expect(FacePalette.displayColor(for: bot) == "blue")
+    }
 }

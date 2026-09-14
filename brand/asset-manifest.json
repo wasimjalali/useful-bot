@@ -234,6 +234,193 @@
       "family": "primary"
     },
     {
+      "path": "brand/avatars/blue-256.png",
+      "bytes": 14419,
+      "sha256": "261325ae516e000c0f4f87acd414f638a0d36ef860a3223db788779118739082",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "blue"
+    },
+    {
+      "path": "brand/avatars/blue.svg",
+      "bytes": 2923,
+      "sha256": "1ab4c7da1234e37eaf967a00a2eae5c8630c787ca0df0610fcb1c372a9abbc52",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/brown-256.png",
+      "bytes": 14526,
+      "sha256": "d2a15bea870dd6de7ee502bf1e66caab1c55b93dfd84a74b932225ff337d9932",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "brown"
+    },
+    {
+      "path": "brand/avatars/brown.svg",
+      "bytes": 2923,
+      "sha256": "40788070c51e880754840da3564922acc353ca0dfbe3c4ec32cf3d5d716ed6b6",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/gold-256.png",
+      "bytes": 14228,
+      "sha256": "d03f004976a58d1fa2908ee3c7ca3872d2f7313a2b387655a1e61268e49b6a3f",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "gold"
+    },
+    {
+      "path": "brand/avatars/gold.svg",
+      "bytes": 2923,
+      "sha256": "94b6492b830939f6e24978fb3921880295c2e266ee8cc0ff8a9edbe2396faa49",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/gray-256.png",
+      "bytes": 14037,
+      "sha256": "5e9b5b10d47f83f0219d7970748b183c906787b6f19c43a297c368fb7e16769f",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "gray"
+    },
+    {
+      "path": "brand/avatars/gray.svg",
+      "bytes": 2923,
+      "sha256": "a74efdd2bf9f3dd5cacdfc331d021769fb149a572a7e40b87b24eaf990858eb0",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/green-256.png",
+      "bytes": 14356,
+      "sha256": "9fd2d1b43771ccbfc12881fe2cedc4490c8794442b32ffadc2a5036885c90e92",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "green"
+    },
+    {
+      "path": "brand/avatars/green.svg",
+      "bytes": 2923,
+      "sha256": "5879c9a5b252d26e0c0b1534d28540c4e0776dcb1a457400e81983ef57e646c7",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/ink-256.png",
+      "bytes": 12644,
+      "sha256": "40b115a04d50d378b543a44527898177654699da3823eba12eab3778cf695faf",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "ink"
+    },
+    {
+      "path": "brand/avatars/ink.svg",
+      "bytes": 2920,
+      "sha256": "7fabfd02212530c1cd75d100d6c630bae9a35a857061c8661c8e9c885e10a036",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/orange-256.png",
+      "bytes": 14255,
+      "sha256": "8e3599130e3ccb582a3f75b7a781e3d9b40b4d08fcb23e1961dbae7d5e7d6f32",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "orange"
+    },
+    {
+      "path": "brand/avatars/orange.svg",
+      "bytes": 2923,
+      "sha256": "5cd52a5b066eb52157a1cc2d902e66e200beb40d8fa481b723c0ed80e508bb2c",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/pink-256.png",
+      "bytes": 14565,
+      "sha256": "f0e25570c5c4b6fd48124c4a91df68bada78c44dfde91d417ce689f662b20f20",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "pink"
+    },
+    {
+      "path": "brand/avatars/pink.svg",
+      "bytes": 2923,
+      "sha256": "f4f39c184e76a4f2d52f968cea78191b11bb5f6593de598eb5574d9d1760270c",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/purple-256.png",
+      "bytes": 14546,
+      "sha256": "82bfab9935ccb17a68a22440c8f92a69725dbc84afe9e1d72d9bb09cb190be28",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "purple"
+    },
+    {
+      "path": "brand/avatars/purple.svg",
+      "bytes": 2923,
+      "sha256": "c2dfc9e3e7b59efd3ad7eabdad460d5bdfd26ea90e0ee98fba0ad9c502c6278e",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/red-256.png",
+      "bytes": 14365,
+      "sha256": "1aec5a5d93c8e5d75fc19eb4643bb690993d0ffa0d2a0d582207263ae355600f",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "red"
+    },
+    {
+      "path": "brand/avatars/red.svg",
+      "bytes": 2923,
+      "sha256": "556775247f2f5235309f82255299fd010b5bde5f3eeef904443ac6d6981a1ccd",
+      "kind": "svg"
+    },
+    {
+      "path": "brand/avatars/teal-256.png",
+      "bytes": 13644,
+      "sha256": "5b02baa530c5b42a08a212397a09e425c556797d41db565d781ed74772de9d04",
+      "kind": "png",
+      "width": 256,
+      "height": 256,
+      "alpha": true,
+      "family": "avatar",
+      "avatarColor": "teal"
+    },
+    {
+      "path": "brand/avatars/teal.svg",
+      "bytes": 2923,
+      "sha256": "1a6c48ec2f1db86e931621f265c10c6005d176a87152dedb2600bc16a724623d",
+      "kind": "svg"
+    },
+    {
       "path": "brand/favicon/apple-touch-icon.png",
       "bytes": 20571,
       "sha256": "a4f20865506e94f48cc856cd16924e2a31008091f813ec1d31903bc0eb3da94b",
@@ -276,9 +463,97 @@
       "kind": "svg"
     },
     {
+      "path": "brand/motion/native/arm-left.png",
+      "bytes": 10964,
+      "sha256": "22ffae200f264aafbedd6c9645aa2ce5c8c280354ac8e320f5611f0aaf30abb5",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "arm-left"
+    },
+    {
+      "path": "brand/motion/native/arm-right.png",
+      "bytes": 10564,
+      "sha256": "e1e06cac92e00c2056c5bfb1499d755c9c9608c2df6bcaba8ebf3a05658cf315",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "arm-right"
+    },
+    {
+      "path": "brand/motion/native/avatar-head.png",
+      "bytes": 21326,
+      "sha256": "2637eaedd3a30a038ca9798d1af81fd81de19744721173abe13df6ca5aab7ddf",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "avatar-head"
+    },
+    {
+      "path": "brand/motion/native/body.png",
+      "bytes": 18838,
+      "sha256": "bac794f813ccdf670208e7bc4603ba38299225ee4d3dbeee50179bb6292c332b",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "body"
+    },
+    {
+      "path": "brand/motion/native/eye-left.png",
+      "bytes": 6980,
+      "sha256": "d5a79d85e9f8a4916879b43f2c542c4d36d427b29302071016e201def082a7a1",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "eye-left"
+    },
+    {
+      "path": "brand/motion/native/eye-right.png",
+      "bytes": 6952,
+      "sha256": "05ed68bc40e9b13a7c40c495659a71c87d42ab5b2e9b4b8a067ac02ff8d528bc",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "eye-right"
+    },
+    {
+      "path": "brand/motion/native/glasses.png",
+      "bytes": 13441,
+      "sha256": "eb96f198b1c1fc605a2a89115e4cad05e580558202f08391acede4125a7a59e1",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "glasses"
+    },
+    {
+      "path": "brand/motion/native/head.png",
+      "bytes": 27102,
+      "sha256": "8a592dc69154e328af5fc201a8d196a0e8a8eaaabd41afb8ad4fa4b193ac0f18",
+      "kind": "png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": true,
+      "family": "motion-layer",
+      "layer": "head"
+    },
+    {
       "path": "brand/motion/useful-bot-animated.svg",
-      "bytes": 5558,
-      "sha256": "07e5b52f634baa8ed10d0e08458e706e7eabfac5a9e716f26f47b0653dc48b37",
+      "bytes": 5563,
+      "sha256": "c62335dcc4a39f2d7791c59712b6f54663793122f5a3e45848bcb102b120ff00",
       "kind": "svg"
     },
     {
@@ -585,8 +860,8 @@
     },
     {
       "path": "brand/source/provenance.json",
-      "bytes": 2534,
-      "sha256": "21d8ca84eaaa10da9fa0a6528b92fe87ab55e3c06940001ee9750714d13367fe"
+      "bytes": 2719,
+      "sha256": "670ade5ba9f29043b46a0e3e30886024a23b5c17d56a724a033f5d92a9d9ffa9"
     },
     {
       "path": "brand/source/useful-bot-lockup-horizontal-badge-text.svg",
@@ -782,6 +1057,84 @@
       "height": 180,
       "alpha": false,
       "family": "primary"
+    },
+    {
+      "path": "web/public/brand/avatars/blue.svg",
+      "bytes": 2923,
+      "sha256": "1ab4c7da1234e37eaf967a00a2eae5c8630c787ca0df0610fcb1c372a9abbc52",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/brown.svg",
+      "bytes": 2923,
+      "sha256": "40788070c51e880754840da3564922acc353ca0dfbe3c4ec32cf3d5d716ed6b6",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/gold.svg",
+      "bytes": 2923,
+      "sha256": "94b6492b830939f6e24978fb3921880295c2e266ee8cc0ff8a9edbe2396faa49",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/gray.svg",
+      "bytes": 2923,
+      "sha256": "a74efdd2bf9f3dd5cacdfc331d021769fb149a572a7e40b87b24eaf990858eb0",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/green.svg",
+      "bytes": 2923,
+      "sha256": "5879c9a5b252d26e0c0b1534d28540c4e0776dcb1a457400e81983ef57e646c7",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/ink.svg",
+      "bytes": 2920,
+      "sha256": "7fabfd02212530c1cd75d100d6c630bae9a35a857061c8661c8e9c885e10a036",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/orange.svg",
+      "bytes": 2923,
+      "sha256": "5cd52a5b066eb52157a1cc2d902e66e200beb40d8fa481b723c0ed80e508bb2c",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/pink.svg",
+      "bytes": 2923,
+      "sha256": "f4f39c184e76a4f2d52f968cea78191b11bb5f6593de598eb5574d9d1760270c",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/purple.svg",
+      "bytes": 2923,
+      "sha256": "c2dfc9e3e7b59efd3ad7eabdad460d5bdfd26ea90e0ee98fba0ad9c502c6278e",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/red.svg",
+      "bytes": 2923,
+      "sha256": "556775247f2f5235309f82255299fd010b5bde5f3eeef904443ac6d6981a1ccd",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/avatars/teal.svg",
+      "bytes": 2923,
+      "sha256": "1a6c48ec2f1db86e931621f265c10c6005d176a87152dedb2600bc16a724623d",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/useful-bot-mark-flat.svg",
+      "bytes": 3589,
+      "sha256": "6e65cd1af7b5ecef17b9350a64dc1c15d00317efb21fe82c37d9007f4867002b",
+      "kind": "svg"
+    },
+    {
+      "path": "web/public/brand/useful-bot-mark.svg",
+      "bytes": 4729,
+      "sha256": "cd296b72ceb518915cc0e3a253c9c15c17b93c07e6babd2cde7f47435c9e35c4",
+      "kind": "svg"
     },
     {
       "path": "web/public/favicon-16x16.png",

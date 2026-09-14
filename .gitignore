@@ -1,5 +1,6 @@
 # dependencies
 node_modules/
+scripts/brand-tools/node_modules
 
 # secrets and local runtime config (never committed)
 .env

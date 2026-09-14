@@ -9,11 +9,8 @@ public enum FacePalette {
         "ink", "brown", "red", "orange", "gold", "green",
         "teal", "blue", "purple", "pink", "gray",
     ]
-    public static let swatches: [String: String] = [
-        "ink": "#171717", "brown": "#6b4a2b", "red": "#e11d48", "orange": "#f97316",
-        "gold": "#f5b301", "green": "#16a34a", "teal": "#0d9488", "blue": "#2563eb",
-        "purple": "#7c3aed", "pink": "#ec4899", "gray": "#9ca3af",
-    ]
+    // The authoritative tint palette is brand/source/avatar-palette.json.
+    // Legacy shape IDs remain decodable, but aren't selectable or rendered.
 
     public struct Face: Equatable, Sendable {
         public var shape: String
@@ -55,8 +52,9 @@ public enum FacePalette {
         )
     }
 
-    public static func eyeFill(for color: String) -> String {
-        ["ink", "brown", "blue", "purple", "red"].contains(color) ? "#fafafa" : "#171717"
+    public static func displayColor(for bot: ShellBot) -> String {
+        if bot.id == Threads.defaultBotId && !bot.avatarCustom { return "ink" }
+        return isColor(bot.avatarColor) ? bot.avatarColor : "ink"
     }
 
     private static func splitmix64(_ value: UInt64) -> UInt64 {

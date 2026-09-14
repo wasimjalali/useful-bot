@@ -1111,68 +1111,30 @@ html, body {
     gap: 12px;
     padding: 4px 0 2px;
   }
-  .face-picker-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--surface);
-  }
-  .face-picker-tab {
-    display: grid;
-    min-height: 36px;
-    padding: 0 2px;
-    place-items: center;
-    border: 0;
-    background: transparent;
-    color: var(--ink-muted);
-    font-size: 12px;
-    font-weight: 550;
-    text-align: center;
-    white-space: nowrap;
-  }
-  .face-picker-tab-active,
-  .face-picker-tab:hover { background: var(--sunken); color: var(--ink); }
-  .face-grid {
+  .avatar-colors {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
   }
-  .face-swatch {
-    display: grid;
-    height: 52px;
-    place-items: center;
-    border: 1px solid transparent;
-    border-radius: 12px;
-    background: transparent;
-  }
-  .face-swatch-on {
-    border-color: var(--border-strong);
-    background: var(--sunken);
-  }
-  .face-dots {
+  .avatar-color {
     display: flex;
-    flex-wrap: wrap;
+    min-width: 0;
+    min-height: 64px;
+    align-items: center;
+    flex-direction: column;
     justify-content: center;
-    gap: 8px;
-    padding: 2px 0 4px;
+    gap: 2px;
+    border: 1.5px solid transparent;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 10px;
+    transition: background-color 150ms ease-out, border-color 150ms ease-out;
   }
-  .face-dot {
-    position: relative;
-    width: 18px;
-    height: 18px;
-    border: 2px solid var(--surface);
-    border-radius: 999px;
-  }
-  .face-dot::after {
-    content: "";
-    position: absolute;
-    inset: -3px;
-    border-radius: 999px;
-  }
-  .face-dot-on {
-    box-shadow: 0 0 0 2px var(--ink);
+  .avatar-color:hover { background: var(--sunken); }
+  .avatar-color[aria-pressed="true"] {
+    border-color: var(--ink);
+    background: var(--sunken);
   }
 
   .settings-pane {

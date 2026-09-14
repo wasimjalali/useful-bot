@@ -75,7 +75,7 @@ The build copies these files to root `public/` for portability and `web/public/`
 
 `app/macos/UsefulBot.iconset/` contains the matching iconutil input set. `app/macos/UsefulBot.icns` is ready for a traditional macOS app bundle's Resources directory. Only these macOS exports add an inset black rounded square with transparent exterior. The platform plate spans 824 units at (100, 100); the primary master is scaled uniformly into that plate. App source masters remain black squares.
 
-The current project targets macOS 14 and builds a SwiftPM app bundle. No native app source or build script is modified by this package. To adopt the ICNS, copy it to the app's Resources directory as `AppIcon.icns` before signing. The bundle already declares `CFBundleIconFile = AppIcon`. A future native asset pipeline should make that copy part of its build.
+The project targets macOS 14 and builds a SwiftPM app bundle. `make -C macos bundle` and `macos/build-app.sh` use the same build pipeline. It copies the canonical ICNS to `Resources/AppIcon.icns`, packages the required `brand/` assets in `Resources/Brand` and signs the bundle. There is no separate native icon drawing or icon generator. `swift run` resolves the same assets from the checkout; packaged apps don't depend on a checkout.
 
 Apple also supports [Icon Composer](https://developer.apple.com/documentation/Xcode/creating-your-app-icon-using-icon-composer) for layered modern app icons. This package supplies reusable static masters and the [asset catalog workflow](https://developer.apple.com/documentation/xcode/configuring-your-app-icon) compatible with the project's existing deployment target. It does not claim to contain a native layered `.icon` document.
 
@@ -85,7 +85,21 @@ Apple also supports [Icon Composer](https://developer.apple.com/documentation/Xc
 
 Use `motion/animation-demo.html` to play or stop it. Static is the demo's default. Use a static mark for favicons, app icons, social avatars and persistent navigation. For embedded repeated animation, provide a stop control. When a consumer strips CSS, use `svg/useful-bot-mark.svg`. Animation is never required to recognize the brand.
 
+The macOS launch view plays one 2.8-second cycle while the local server starts in parallel. Reduced Motion skips that launch presentation. Server startup uses the full mascot. The live chat's Working row uses the head-only avatar with the same float and blink timing; all other avatars remain static. The Working row disappears when work completes or the user stops the turn. Animation pauses when the app is inactive and is static under Reduce Motion.
+
+`source/motion.json` is the shared timing authority for CSS and SwiftUI. Seven transparent 1024 px layers in `motion/native/` are generated from the existing SVG groups. Native composition uses those layers, not hand-copied geometry or a web view.
+
 Logical group IDs are preserved: `head`, `body`, `arm-left`, `arm-right`, `glasses`, `eye-left`, `eye-right`, `eye-highlight-left` and `eye-highlight-right`. Use an `<img>` for multiple independent logos. When inlining multiple SVGs into one document, prefix their IDs and URL references to prevent duplicate gradient IDs.
+
+## Product avatar colors
+
+The user's approved exception to monochrome is bot avatars only. `source/avatar-palette.json` defines Original plus ten bright head colors. Each `avatars/<id>.svg` and `avatars/<id>-256.png` contains only the approved head, glasses, eyes and white highlights, with transparent surroundings. Body and arms are removed. Head shading is reduced to 30% of its original depth to keep colors bright. The main logo, badge, app icon and social assets keep the full monochrome mascot.
+
+Avatar SVGs use the square viewBox `128 13.056 768 768` within the unchanged master coordinates. This enlarges and centers the head uniformly, retaining roughly 9% horizontal and 16% vertical breathing room. Native animated avatars use the same crop and the generated `motion/native/avatar-head.png` layer. No head or facial geometry is redrawn.
+
+Colors are selected only in bot/group settings, using actual mascot previews. Shapes, random face generation and image upload are no longer offered. Existing saved shape/image fields remain readable for compatibility but don't change the rendered mascot. Choosing a color clears the old image field explicitly; no background migration deletes saved user images. The historical color ID `ink` now means Original white, preserving the existing wire format. Other IDs are also unchanged. Reset restores Original for Useful Bot and the derived default color for another bot.
+
+These avatar colors are not general brand tokens. Don't reuse them to recolor the app shell or marketing marks. Web assets in `web/public/brand/` are deterministic copies of the canonical `brand/` outputs.
 
 ## Regeneration and inspection
 
@@ -105,4 +119,4 @@ Open `brand/preview.html` in a browser. Compare the original, raster, vector and
 
 `useful-bot-<size>.png` is square and named by raster pixels. `badge` is always secondary. `black` means an opaque black canvas; `mark` is transparent. `maskable` always includes the additional PWA margin. Editable source files live in `source/`; optimized or rendered files live in their usage folders.
 
-Never recolor the mascot arbitrarily, stretch it, rotate it, alter the eyes, replace the glasses, change the static arm positions, add facial features, add unrelated gradients/colors or place busy imagery directly behind it. The supplied minimal animation is the only approved transient pose exception in this package. Preserve aspect ratio and clear space.
+Never recolor the mascot outside the approved product-avatar palette, stretch it, rotate it, alter the eyes, replace the glasses, change the static arm positions, add facial features, add unrelated gradients/colors or place busy imagery directly behind it. The supplied minimal animation is the only approved transient pose exception in this package. Preserve aspect ratio and clear space.
