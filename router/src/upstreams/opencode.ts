@@ -45,7 +45,7 @@ export async function completeUpstream(input: {
   for (const [key, value] of Object.entries(payload)) {
     if (!CLIENT_CONTROLLED_KEYS.has(key)) forwardedBody[key] = value;
   }
-  const model = resolved.providerId === input.entry.upstream ? input.entry.upstreamModelId : resolved.model;
+  const model = input.entry.upstreamModelId;
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
     model,
