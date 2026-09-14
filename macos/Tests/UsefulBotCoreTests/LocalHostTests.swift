@@ -70,4 +70,11 @@ import Testing
         #expect(ComposerDraft.remainder("rewritten", afterSending: "hello") == "rewritten")
         #expect(ComposerDraft.remainder("", afterSending: "hello") == "")
     }
+
+    @Test func clipCountsUTF16UnitsWithoutSplittingGraphemes() {
+        #expect(ComposerDraft.clip("hello", toUTF16: 3) == "hel")
+        #expect(ComposerDraft.clip("a😀b", toUTF16: 3) == "a😀")
+        #expect(ComposerDraft.clip("a😀b", toUTF16: 2) == "a")
+        #expect(ComposerDraft.clip("abc", toUTF16: 10) == "abc")
+    }
 }

@@ -217,17 +217,13 @@ final class AppModel: ObservableObject {
 
     private func pollApprovals() async {
         guard phase == .ready else { return }
-        // Prune tombstones on every poll so an outage cannot grow them.
-        let now = Date()
-        decidedApprovals = decidedApprovals.filter { now.timeIntervalSince($0.value) < 5 }
         if let items = try? await client.approvals() {
             approvals = items.filter { decidedApprovals[$0.id] == nil }
-            // A decision in flight must survive a poll that already saw the
-            // server drop the row, or the buttons re-enable mid-request.
+            // A decided id stays hidden until the server stops returning it,
+            // so a slow poll cannot resurface the card. In-flight busy ids
+            // are owned by the decider, never by the poll.
             let live = Set(items.map(\.id))
-                .union(decidedApprovals.keys)
-                .union(busyApprovals)
-            busyApprovals.formIntersection(live)
+            decidedApprovals = decidedApprovals.filter { live.contains($0.key) }
         }
     }
 
@@ -360,6 +356,9 @@ final class AppModel: ObservableObject {
                 let fresh = try await client.shell()
                 guard generation == loadGeneration, polledBotId == selectedBotId else { return }
                 store = fresh
+                // A poll can be the first to see a server-side delete; repair
+                // the selection the same way an action echo does.
+                reconcileSelection(fresh)
             }
             guard let bot = selectedBot, bot.id == polledBotId else { return }
             let state = try await client.threadState(botId: bot.id)
@@ -521,10 +520,12 @@ final class AppModel: ObservableObject {
         let target = activeSession?.botId == bot.id ? activeSession?.sessionId : bot.sessionId
         cancelSend()
         pending = false
-        // Drop the optimistic row and re-read the durable turn so a stopped
-        // turn does not linger as a ghost.
-        resetThread()
-        startReload()
+        activeSession = nil
+        // Drop only the optimistic/live rows: the durable transcript stays
+        // until a reload actually succeeds.
+        projection = StreamProjection()
+        searchHits = []
+        rebuildTranscript()
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let target, !target.isEmpty {
@@ -586,6 +587,11 @@ final class AppModel: ObservableObject {
         store = current
         do {
             try await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
+            // A later success supersedes the pointer-failure notice.
+            if stickyThreadError == "The session pointer could not be saved." {
+                stickyThreadError = nil
+                threadError = nil
+            }
         } catch {
             // The turn still runs; only the stored pointer failed. Surface it
             // so the next poll's revert is not a mystery.
@@ -757,6 +763,14 @@ final class AppModel: ObservableObject {
     /// Never echoes a select back: the store already carries the selection.
     private func applyStore(_ next: ShellStore) {
         store = next
+        reconcileSelection(next)
+        rebuildTranscript()
+    }
+
+    /// Repair the local selection against a fresh store: the rail, the polls
+    /// and the action echoes all funnel here so a server-side delete or a
+    /// server-driven switch can never strand `selectedBotId`.
+    private func reconcileSelection(_ next: ShellStore) {
         if let selected = next.selectedBotId, next.bots.contains(where: { $0.id == selected }) {
             if selected != selectedBotId {
                 // A server-driven switch (proposal, create) stops the old
@@ -776,9 +790,7 @@ final class AppModel: ObservableObject {
                 selectedBotId = nil
                 resetThread()
             }
-            return
         }
-        rebuildTranscript()
     }
 
     func createBot(name: String, petname: String, label: String, description: String, sectionId: String?) {

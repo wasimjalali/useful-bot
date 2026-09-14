@@ -157,10 +157,9 @@ public actor BackendClient {
         tokenService: String = "com.usefulbot.device.desktop"
     ) {
         // The device token rides on every request: never let a non-loopback
-        // base carry it off the machine.
-        let host = base.host?.lowercased()
-        let loopback = host == "127.0.0.1" || host == "localhost" || host == "::1"
-        self.base = loopback ? base : ServerConfig.resolved().baseURL
+        // base carry it off the machine. The shared classifier handles the
+        // odd but valid loopback spellings (127.1, hex, [::1]).
+        self.base = LocalHost.isLocal(base.host) ? base : ServerConfig.resolved().baseURL
         self.tokenService = tokenService
         let config = URLSessionConfiguration.default
         config.httpCookieStorage = .shared

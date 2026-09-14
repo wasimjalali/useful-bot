@@ -175,8 +175,8 @@ struct ComposerView: View {
                 // to the same limit; capping here keeps the durable text equal
                 // to the live echo so the transcript merge can pair them.
                 .onChange(of: model.draft) { _, next in
-                    if next.count > Self.maxDraftLength {
-                        model.draft = String(next.prefix(Self.maxDraftLength))
+                    if next.utf16.count > Self.maxDraftLength {
+                        model.draft = ComposerDraft.clip(next, toUTF16: Self.maxDraftLength)
                     }
                 }
                 // Plain Return sends when possible. With nothing to send it is
