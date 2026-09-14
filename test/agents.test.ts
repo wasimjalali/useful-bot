@@ -189,6 +189,27 @@ test("handoff queue delivers oldest first, retries twice, then gives up", () => 
   assert.equal(listHandoffs(handoffDir).length, 2);
 });
 
+test("handoff records carry and default the hop depth", () => {
+  const { handoffDir } = tempPaths();
+  const shallow = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "one",
+  }, handoffDir);
+  const deep = queueHandoff({
+    sourceBotId: "b2",
+    sourceName: "Research",
+    targetBotId: "b1",
+    targetName: "CEO",
+    message: "two",
+    depth: 2,
+  }, handoffDir);
+  assert.equal(readHandoff(shallow.id, handoffDir)?.depth, 0);
+  assert.equal(readHandoff(deep.id, handoffDir)?.depth, 2);
+});
+
 test("a handoff record is claimed by one deliverer at a time", () => {
   const { handoffDir } = tempPaths();
   const record = queueHandoff({

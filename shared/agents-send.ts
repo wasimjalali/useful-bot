@@ -17,6 +17,8 @@ export function sendHandoff(input: {
    * fan-out shows one card in the room plus one copy per member thread.
    */
   receiver?: { id: string; name: string } | null;
+  /** Hop count; callers forwarding a received handoff increment it. */
+  depth?: number;
 }): HandoffRecord {
   const sourceId = input.source?.id ?? "bot-useful";
   const sourceName = input.source?.name ?? "Useful Bot";
@@ -31,6 +33,7 @@ export function sendHandoff(input: {
     groupName: input.group?.name ?? null,
     threadKind,
     message: input.message,
+    depth: input.depth,
   });
   appendAgentEvent(sourceId, {
     kind: "handoff",
