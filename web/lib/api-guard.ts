@@ -85,16 +85,58 @@ export async function readJson(request: Request, maxBytes = JSON_BODY_MAX): Prom
   }
 }
 
+const MULTIPART = "multipart/form-data";
+
+/**
+ * Parse a multipart body under the guard. The request is streamed into a
+ * bounded buffer first, so a chunked upload with no content-length cannot make
+ * `formData()` buffer an unbounded body before the per-file check runs.
+ */
+export async function readFormData(request: Request, maxBytes: number): Promise<FormData> {
+  const type = request.headers.get("content-type") ?? "";
+  if (!type.toLowerCase().startsWith(MULTIPART)) {
+    throw new ApiError(415, "unsupported_media_type");
+  }
+  const bytes = await readBody(request, maxBytes);
+  const rebuilt = new Request(request.url, {
+    method: "POST",
+    headers: { "content-type": type },
+    // readBody allocates an exact-length Uint8Array, so its backing buffer is
+    // the payload; the cast narrows ArrayBufferLike to the BodyInit type.
+    body: bytes.buffer as ArrayBuffer,
+  });
+  try {
+    return await rebuilt.formData();
+  } catch {
+    throw new ApiError(400, "invalid_multipart");
+  }
+}
+
 type Bucket = { tokens: number; updated: number };
 const buckets = new Map<string, Bucket>();
+const BUCKET_IDLE_MS = 10 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 60_000;
+let lastSweep = 0;
+
+function sweepIdle(now: number): void {
+  if (now - lastSweep < SWEEP_INTERVAL_MS) return;
+  lastSweep = now;
+  for (const [key, bucket] of buckets) {
+    if (now - bucket.updated > BUCKET_IDLE_MS) buckets.delete(key);
+  }
+}
 
 /**
  * Token bucket keyed by an opaque caller identity. Returns true when the caller
  * is over budget and the request should be answered 429. In-process only, which
  * is enough for the single loopback web server.
+ *
+ * `now` is injectable for tests; callers use the default. Idle buckets are
+ * swept so a rotating key (for example a per-login cookie hash) cannot grow the
+ * map without bound.
  */
-export function rateLimited(key: string, perMinute: number, burst = perMinute): boolean {
-  const now = Date.now();
+export function rateLimited(key: string, perMinute: number, burst = perMinute, now = Date.now()): boolean {
+  sweepIdle(now);
   const bucket = buckets.get(key);
   const capacity = Math.max(1, Math.floor(burst));
   if (!bucket) {
@@ -107,4 +149,9 @@ export function rateLimited(key: string, perMinute: number, burst = perMinute): 
   if (bucket.tokens < 1) return true;
   bucket.tokens -= 1;
   return false;
+}
+
+/** Number of live buckets; exported for the eviction test. */
+export function rateLimitBucketCount(): number {
+  return buckets.size;
 }

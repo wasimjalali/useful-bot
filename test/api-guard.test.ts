@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { errorCode, rateLimited, readBody, readJson } from "../web/lib/api-guard.ts";
+import { errorCode, rateLimitBucketCount, rateLimited, readBody, readFormData, readJson } from "../web/lib/api-guard.ts";
 
 const URL = "http://127.0.0.1:4320/api/x";
 
@@ -59,9 +59,45 @@ test("rateLimited throttles only after the burst", () => {
   assert.equal(rateLimited(key, 60, 2), true);
 });
 
+test("rateLimited evicts buckets idle for over ten minutes", () => {
+  const base = Date.now();
+  const idleA = `idle-a-${process.pid}-${base}`;
+  const idleB = `idle-b-${process.pid}-${base}`;
+  rateLimited(idleA, 60, 1, base);
+  rateLimited(idleB, 60, 1, base);
+  // A later call, past the idle window, sweeps both away before adding its own.
+  rateLimited(`idle-c-${process.pid}-${base}`, 60, 1, base + 11 * 60_000);
+  assert.equal(rateLimitBucketCount(), 1);
+});
+
+test("readFormData bounds a multipart body before it is parsed", async () => {
+  const form = new FormData();
+  form.set("file", new File([new Uint8Array(64)], "a.txt", { type: "text/plain" }));
+  const req = new Request(URL, { method: "POST", body: form });
+  const parsed = await readFormData(req, 4096);
+  const file = parsed.get("file");
+  assert.equal(file instanceof File, true);
+  assert.equal((file as File).name, "a.txt");
+
+  // A chunked upload carries no content-length, so readBody has to cap the
+  // stream; this is the path the old declared-length-only gate missed.
+  const big = new FormData();
+  big.set("file", new File([new Uint8Array(5000)], "b.txt", { type: "text/plain" }));
+  const bigReq = new Request(URL, { method: "POST", body: big });
+  await assert.rejects(() => readFormData(bigReq, 1024), /payload_too_large/);
+
+  const wrong = new Request(URL, {
+    method: "POST",
+    headers: { "content-type": "text/plain" },
+    body: "hi",
+  });
+  await assert.rejects(() => readFormData(wrong, 1024), /unsupported_media_type/);
+});
+
 test("errorCode keeps short codes and strips free-form errors", () => {
   assert.equal(errorCode(new Error("shell_bot_session")), "shell_bot_session");
   assert.equal(errorCode(new Error("approval_not_found:apr_1")), "approval_not_found:apr_1");
+  assert.equal(errorCode(new Error("approvals_locked"), "approval_error"), "approvals_locked");
   assert.equal(
     errorCode(new Error("ENOENT: no such file or directory, open '/Users/x/.useful-bot/shell.json'")),
     "invalid",

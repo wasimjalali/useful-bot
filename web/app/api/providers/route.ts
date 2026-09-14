@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
-import { apiError, errorCode, readJson } from "../../../lib/api-guard";
+import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { refreshProviderModels } from "../../../../shared/live-models.ts";
 import { isEffortId, isSpeedId } from "../../../../shared/models.ts";
 import {
@@ -53,6 +53,9 @@ export async function PUT(request: Request) {
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
+  }
+  if (rateLimited(`providers:${gate.session.callerId}`, 60)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   let body: {
     providerId?: unknown;
@@ -108,6 +111,9 @@ export async function DELETE(request: Request) {
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
+  }
+  if (rateLimited(`providers:${gate.session.callerId}`, 60)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   let body: { providerId?: unknown };
   try {
