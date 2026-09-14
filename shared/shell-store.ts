@@ -7,6 +7,13 @@ import {
   type AvatarShape,
 } from "./bot-face.ts";
 
+/** Client-safe: this file must never pull in node builtins. */
+export type WorkspacePermission = "read_only" | "guard" | "full_access";
+
+export function parseWorkspacePermission(value: unknown): WorkspacePermission | null {
+  return value === "read_only" || value === "guard" || value === "full_access" ? value : null;
+}
+
 export const SHELL_SCHEMA = 1;
 export const DEFAULT_BOT_ID = "bot-useful";
 export const UNASSIGNED_SECTION = "unassigned";
@@ -21,6 +28,17 @@ const LABEL_MAX = 24;
 const DESCRIPTION_MAX = 500;
 
 export type BotKind = "bot" | "group";
+
+/**
+ * The folder this conversation works in. The path is a folder the owner
+ * picked in a desktop picker; the permission decides what the agent may do
+ * inside it (see `agent/lib/workspace.ts`).
+ */
+export type BotWorkspace = {
+  path: string;
+  permission: WorkspacePermission;
+  finalConfirm: boolean;
+};
 
 export type ShellBot = {
   id: string;
@@ -44,6 +62,7 @@ export type ShellBot = {
   avatarColor: AvatarColor;
   avatarImage: string | null;
   avatarCustom: boolean;
+  workspace: BotWorkspace | null;
 };
 
 export type BotProfilePatch = Partial<
@@ -123,6 +142,11 @@ export type ShellAction =
   | { type: "deleteSection"; sectionId: string }
   | { type: "move"; botId: string; sectionId: string | null }
   | { type: "setSession"; botId: string; sessionId: string | null }
+  | {
+      type: "setWorkspace";
+      botId: string;
+      workspace: BotWorkspace | null;
+    }
   | { type: "sendToBot"; botId: string; message: string; sourceBotId?: string | null }
   | { type: "touchChat"; botId: string; preview: string; sessionId?: string | null }
   | { type: "newChat"; botId?: string }
@@ -178,6 +202,7 @@ export function seedStore(at = new Date()): ShellStore {
         avatarColor: "ink",
         avatarImage: null,
         avatarCustom: false,
+        workspace: null,
       },
     ],
     recents: [],
@@ -233,7 +258,18 @@ function parseBot(raw: unknown): ShellBot {
     avatarColor: isAvatarColor(rec.avatarColor) ? rec.avatarColor : face.color,
     avatarImage: parseAvatarImage(rec.avatarImage),
     avatarCustom: typeof rec.avatarCustom === "boolean" ? rec.avatarCustom : rec.id !== DEFAULT_BOT_ID,
+    workspace: parseWorkspace(rec.workspace),
   };
+}
+
+/** Tolerant: a malformed workspace field is no workspace, never a failure. */
+function parseWorkspace(raw: unknown): BotWorkspace | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.path !== "string" || !rec.path.startsWith("/")) return null;
+  const permission = parseWorkspacePermission(rec.permission);
+  if (!permission) return null;
+  return { path: rec.path, permission, finalConfirm: rec.finalConfirm === true };
 }
 
 function parseRecent(raw: unknown): ShellRecent {
@@ -405,6 +441,7 @@ export function applyShellAction(
         avatarColor: face.color,
         avatarImage: null,
         avatarCustom: true,
+        workspace: null,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [bot, ...store.bots] },
@@ -439,6 +476,7 @@ export function applyShellAction(
         avatarColor: face.color,
         avatarImage: null,
         avatarCustom: true,
+        workspace: null,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [group, ...store.bots] },
@@ -607,6 +645,27 @@ export function applyShellAction(
           ...store,
           bots: store.bots.map((bot) => (
             bot.id === action.botId ? touch(bot, stamp, { sessionId: action.sessionId }) : bot
+          )),
+        },
+      };
+    }
+    case "setWorkspace": {
+      if (!store.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
+      // The route validates the folder exists before calling; the store only
+      // enforces shape. An explicit null detaches the folder.
+      const workspace = action.workspace === null ? null : {
+        path: action.workspace.path,
+        permission: parseWorkspacePermission(action.workspace.permission) ?? "guard",
+        finalConfirm: action.workspace.finalConfirm === true,
+      } satisfies BotWorkspace | null;
+      if (workspace !== null && !workspace.path.startsWith("/")) {
+        throw new Error("workspace_path_invalid");
+      }
+      return {
+        store: {
+          ...store,
+          bots: store.bots.map((bot) => (
+            bot.id === action.botId ? touch(bot, stamp, { workspace }) : bot
           )),
         },
       };

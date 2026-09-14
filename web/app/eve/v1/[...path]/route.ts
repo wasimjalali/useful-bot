@@ -8,7 +8,7 @@ import {
   sessionRouteHeader,
   type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
-import { channelJwt } from "../../../../lib/agent-exec";
+import { channelJwt, syncSessionWorkspace } from "../../../../lib/agent-exec";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell } from "../../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
@@ -82,6 +82,14 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           : [];
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members));
         headers.set("content-type", "application/json");
+        // The tools that run during this turn read the workspace grant for
+        // the session, so it has to be current before the turn reaches eve.
+        // Continuation posts carry the session id in the path; a create gets
+        // its grant stamped from the response below.
+        if (suffix !== "session") {
+          const sessionId = suffix.split("/")[1] ?? "";
+          if (sessionId && bot) syncSessionWorkspace(sessionId, bot);
+        }
       } catch {
         /* keep the original body: a malformed turn must fail at eve, not here */
       }
@@ -107,6 +115,22 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);
     out.set("cache-control", "no-store");
+    // A session create answers with the fresh session id. Capture the small
+    // JSON body to stamp the grant before returning it: a tolerant parse that
+    // fails still passes the body through untouched.
+    if (method === "POST" && suffix === "session" && route) {
+      const text = await upstream.text();
+      try {
+        const parsed = JSON.parse(text) as { sessionId?: string };
+        if (parsed.sessionId) {
+          const bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
+          if (bot) syncSessionWorkspace(parsed.sessionId, bot);
+        }
+      } catch {
+        /* grant stamping is best effort; the body itself is intact */
+      }
+      return new Response(text, { status: upstream.status, headers: out });
+    }
     const encoded = sessionRouteHeader(route);
     // Tells the caller which bot or group answered, and which member an
     // @mention directed the turn at.

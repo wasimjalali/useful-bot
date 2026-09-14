@@ -1,19 +1,20 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
-import { resolveWorkspacePath, workspaceRoot } from "../lib/workspace.ts";
+import { effectiveRoot, resolveWorkspacePath } from "../lib/workspace.ts";
 import { READ_MAX_BYTES } from "../../shared/policy.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 export default defineTool({
-  description: "Read a UTF-8 file from the Useful Bot workspace.",
+  description: "Read a UTF-8 file from the workspace this conversation works in.",
   inputSchema: z.object({
     path: z.string(),
     offset: z.number().int().min(0).optional(),
     limit: z.number().int().min(0).optional(),
   }),
-  execute(input) {
-    const target = resolveWorkspacePath(input.path, workspaceRoot());
+  execute(input, ctx) {
+    const { root } = effectiveRoot(ctx?.session?.id);
+    const target = resolveWorkspacePath(input.path, root);
     const raw = readFileSync(target, "utf8");
     const offset = input.offset ?? 0;
     // An offset past the end returns no text; without a flag that is

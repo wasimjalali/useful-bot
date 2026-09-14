@@ -24,6 +24,7 @@ import {
   type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
+import { upsertSessionGrant } from "../../shared/workspace-store.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
 /**
@@ -35,6 +36,22 @@ import type { ShellBot } from "../../shared/shell-store.ts";
 
 const EVE = "http://127.0.0.1:4321";
 const DELIVER_TIMEOUT_MS = 120_000;
+
+/**
+ * Stamp the workspace grant a turn's tools will read. Called from the eve
+ * proxy and from server-driven turns: the agent process resolves the grant
+ * per session, so it must be current before the turn reaches eve. A bot
+ * without a workspace clears nothing here — the legacy root still applies.
+ */
+export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
+  if (!sessionId || !bot.workspace) return;
+  upsertSessionGrant({
+    sessionId,
+    path: bot.workspace.path,
+    permission: bot.workspace.permission,
+    finalConfirm: bot.workspace.finalConfirm,
+  });
+}
 
 const inflight = new Set<string>();
 
@@ -250,6 +267,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
   let reply = "";
   try {
     const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
+    if (sessionId) syncSessionWorkspace(sessionId, bot);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
@@ -260,6 +278,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
     const body = await res.json() as { sessionId?: string };
     sessionId = body.sessionId ?? sessionId;
     if (!sessionId) throw new Error("eve_session_missing");
+    syncSessionWorkspace(sessionId, bot);
     const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
       headers: { authorization: `Bearer ${jwt}` },
       signal: controller.signal,

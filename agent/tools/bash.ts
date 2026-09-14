@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { workspaceRoot } from "../lib/workspace.ts";
+import { autoApproved, effectiveRoot, sessionPermission } from "../lib/workspace.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
@@ -39,7 +39,11 @@ export default defineTool({
     if (blocked) {
       return { status: "blocked", error: blocked };
     }
-    const root = workspaceRoot();
+    const { root, grant } = effectiveRoot(ctx?.session?.id);
+    const permission = sessionPermission(ctx?.session?.id);
+    if (permission === "read_only") {
+      return { status: "blocked", error: "workspace_read_only" };
+    }
     const hash = actionSha256({
       tool: "bash",
       canonicalArgs: JSON.stringify({ command: input.command }),
@@ -55,7 +59,14 @@ export default defineTool({
       actionSha256: hash,
       preview: input.command,
     });
-    await waitUntilNotPending(store, rec.id);
+    // Full access skips the card for commands inside the granted folder;
+    // Final confirm turns that back off, and guard always asks. The tripwire
+    // list and the confined env above apply in every mode.
+    if (grant && autoApproved(permission, grant.finalConfirm)) {
+      store.decide(rec.id, "approve", hash);
+    } else {
+      await waitUntilNotPending(store, rec.id);
+    }
     return executeIfApproved(store, rec.id, hash, async () => {
       const args = ["/bin/sh", "-c", input.command];
       const { stdout, stderr } = await execFileAsync(args[0], args.slice(1), {

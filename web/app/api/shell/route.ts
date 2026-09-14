@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { statSync } from "node:fs";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import {
@@ -184,6 +185,19 @@ export async function PUT(request: Request) {
         if (members.length === 0) {
           return NextResponse.json({ ok: false, error: "fanout_empty" }, { status: 400 });
         }
+      }
+    }
+
+    // A folder grant is an owner decision, but the path still has to be real:
+    // an absolute path to an existing directory, not a file or a wish.
+    if (body.action?.type === "setWorkspace" && body.action.workspace) {
+      const target = body.action.workspace.path;
+      try {
+        if (!statSync(target).isDirectory()) {
+          return NextResponse.json({ ok: false, error: "workspace_not_directory" }, { status: 400 });
+        }
+      } catch {
+        return NextResponse.json({ ok: false, error: "workspace_path_missing" }, { status: 400 });
       }
     }
 

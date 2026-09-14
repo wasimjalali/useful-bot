@@ -1,6 +1,14 @@
 import { resolve, relative, isAbsolute, join } from "node:path";
 import { lstatSync } from "node:fs";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import {
+  parseWorkspacePermission,
+  readSessionGrant,
+  type SessionGrant,
+  type WorkspacePermission,
+} from "../../shared/workspace-store.ts";
+
+export type { WorkspacePermission };
 
 export function workspaceRoot(): string {
   const fromEnv = process.env.UB_WORKSPACE_ROOT;
@@ -8,6 +16,41 @@ export function workspaceRoot(): string {
     throw new Error("workspace_unconfigured");
   }
   return resolve(fromEnv);
+}
+
+/**
+ * The folder a conversation works in. A session grant (a folder the owner
+ * picked in the desktop app) wins; without one the legacy process-global
+ * `UB_WORKSPACE_ROOT` applies, and without either the file tools refuse.
+ */
+export function effectiveRoot(sessionId?: string): {
+  root: string;
+  grant: SessionGrant | null;
+} {
+  const grant = sessionId ? readSessionGrant(sessionId) : null;
+  if (grant) return { root: resolve(grant.path), grant };
+  return { root: workspaceRoot(), grant: null };
+}
+
+/**
+ * The permission a session holds, `null` when no grant exists (the legacy
+ * workspace keeps the always-approval posture).
+ */
+export function sessionPermission(sessionId?: string): WorkspacePermission | null {
+  const grant = sessionId ? readSessionGrant(sessionId) : null;
+  return grant ? parseWorkspacePermission(grant.permission) : null;
+}
+
+/**
+ * Whether a mutating action may run without asking the owner. Only an
+ * explicit Full access grant skips the card, and Final confirm turns that
+ * back off; every other posture waits for the owner.
+ */
+export function autoApproved(
+  permission: WorkspacePermission | null,
+  finalConfirm: boolean,
+): boolean {
+  return permission === "full_access" && !finalConfirm;
 }
 
 /**
@@ -43,9 +86,13 @@ export function resolveWorkspacePath(inputPath: string, root: string = workspace
   if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error("path_escape");
   }
-  const lowered = resolved.toLowerCase();
+  // Only the part under the root is screened. The root itself is a folder the
+  // owner picked (or configured) by name, so a project that happens to live in
+  // a path containing one of these words stays reachable; anything inside it
+  // — a `.env`, a `.git/config`, a `secrets/` directory — is still refused.
+  const loweredRel = rel.toLowerCase();
   for (const part of FORBIDDEN_PATH_SUBSTRINGS) {
-    if (lowered.includes(part.toLowerCase())) {
+    if (loweredRel.includes(part.toLowerCase())) {
       throw new Error("path_forbidden");
     }
   }

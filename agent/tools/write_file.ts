@@ -4,7 +4,7 @@ import { approvalActor } from "../lib/approvals.ts";
 import { approvedWrite } from "../lib/write.ts";
 
 export default defineTool({
-  description: "Write a UTF-8 file in the Useful Bot workspace. Requires desktop approval.",
+  description: "Write a UTF-8 file in the workspace this conversation works in. Gated by the conversation's permission.",
   inputSchema: z.object({
     path: z.string(),
     content: z.string(),

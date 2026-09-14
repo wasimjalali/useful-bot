@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
-import { resolveWorkspacePath, workspaceRoot } from "./workspace.ts";
+import { autoApproved, effectiveRoot, resolveWorkspacePath, sessionPermission } from "./workspace.ts";
 import { WRITE_MAX_BYTES } from "../../shared/policy.ts";
 
 let store: ApprovalStore | null = null;
@@ -23,12 +23,18 @@ export async function approvedWrite(input: {
   sessionId: string;
   turnId: string;
   toolCallId: string;
+  /** Full access on a granted folder: the permission set by the owner decides. */
+  grantFinalConfirm?: boolean;
   autoDecision?: "approve" | "deny";
 }): Promise<{ bytes: number; path: string; approvalId: string; actionSha256: string }> {
   if (Buffer.byteLength(input.content, "utf8") > WRITE_MAX_BYTES) {
     throw new Error("write_too_large");
   }
-  const root = workspaceRoot();
+  const { root, grant } = effectiveRoot(input.sessionId || undefined);
+  const permission = sessionPermission(input.sessionId || undefined);
+  if (permission === "read_only") {
+    throw new Error("workspace_read_only");
+  }
   // Reject a bad path before it ever reaches the owner.
   resolveWorkspacePath(input.path, root);
   const hash = actionSha256({
@@ -50,6 +56,8 @@ export async function approvedWrite(input: {
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);
+  } else if (grant && autoApproved(permission, input.grantFinalConfirm ?? grant.finalConfirm)) {
+    approvals.decide(rec.id, "approve", hash);
   } else {
     await waitUntilNotPending(approvals, rec.id);
   }

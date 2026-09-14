@@ -17,6 +17,45 @@ import {
 } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 
+test("setWorkspace attaches, updates and detaches a conversation folder", () => {
+  let store = seedStore();
+  store = applyShellAction(store, {
+    type: "setWorkspace",
+    botId: DEFAULT_BOT_ID,
+    workspace: { path: "/tmp/project", permission: "guard", finalConfirm: false },
+  }).store;
+  const attached = store.bots[0].workspace;
+  assert.equal(attached?.path, "/tmp/project");
+  assert.equal(attached?.permission, "guard");
+  store = applyShellAction(store, {
+    type: "setWorkspace",
+    botId: DEFAULT_BOT_ID,
+    workspace: { path: "/tmp/project", permission: "full_access", finalConfirm: true },
+  }).store;
+  assert.equal(store.bots[0].workspace?.permission, "full_access");
+  assert.equal(store.bots[0].workspace?.finalConfirm, true);
+  store = applyShellAction(store, { type: "setWorkspace", botId: DEFAULT_BOT_ID, workspace: null }).store;
+  assert.equal(store.bots[0].workspace, null);
+});
+
+test("setWorkspace rejects an unknown bot and a malformed grant", () => {
+  const store = seedStore();
+  assert.throws(
+    () => applyShellAction(store, { type: "setWorkspace", botId: "nope", workspace: null }),
+    /shell_bot_missing/,
+  );
+  // A relative path is not a folder the desktop picker could have returned.
+  assert.throws(
+    () =>
+      applyShellAction(store, {
+        type: "setWorkspace",
+        botId: DEFAULT_BOT_ID,
+        workspace: { path: "relative/path", permission: "guard", finalConfirm: false },
+      }),
+    /workspace_path_invalid/,
+  );
+});
+
 test("seed store has compact Useful Bot in Unassigned", () => {
   const store = seedStore(new Date("2026-09-12T00:00:00Z"));
   assert.equal(store.bots.length, 1);

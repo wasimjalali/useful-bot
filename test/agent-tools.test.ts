@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { applyShellAction, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 import {
@@ -32,7 +32,9 @@ import createRoutine from "../agent/tools/create_routine.ts";
 import updateRoutine from "../agent/tools/update_routine.ts";
 import runRoutine from "../agent/tools/run_routine.ts";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
-import { setApprovalStore } from "../agent/lib/write.ts";
+import { approvedWrite, setApprovalStore } from "../agent/lib/write.ts";
+import listDir from "../agent/tools/list_dir.ts";
+import { upsertSessionGrant } from "../shared/workspace-store.ts";
 import {
   createRoutine as storeCreateRoutine,
   listRoutines as storedRoutines,
@@ -41,8 +43,12 @@ import {
 
 type Tool = { execute: (input: never, context: never) => unknown };
 
-async function run<T>(tool: Tool, input: Record<string, unknown>): Promise<T> {
-  return await tool.execute(input as never, {} as never) as T;
+async function run<T>(
+  tool: Tool,
+  input: Record<string, unknown>,
+  context: Record<string, unknown> = {},
+): Promise<T> {
+  return await tool.execute(input as never, context as never) as T;
 }
 
 function sandbox() {
@@ -432,6 +438,200 @@ test("listBots fences bot profile text as untrusted data", async () => {
     }
   } finally {
     box.restore();
+  }
+});
+
+// MARK: - Workspace grants
+
+/**
+ * A granted project folder for one session. The grant store is what the
+ * agent's tools read, so these tests exercise the exact production posture:
+ * write the grant, then call the tool the model would call.
+ */
+function grantFixture(mode: "read_only" | "guard" | "full_access", finalConfirm = false) {
+  const dir = mkdtempSync(join(tmpdir(), "ub-grant-"));
+  const project = join(dir, "project");
+  mkdirSync(project, { recursive: true });
+  const previous = {
+    store: process.env.UB_WORKSPACE_STORE_PATH,
+    approvals: process.env.UB_APPROVALS_PATH,
+    root: process.env.UB_WORKSPACE_ROOT,
+  };
+  process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+  process.env.UB_APPROVALS_PATH = join(dir, "approvals.json");
+  delete process.env.UB_WORKSPACE_ROOT;
+  const approvals = new ApprovalStore(Date.now, join(dir, "approvals.json"));
+  setApprovalStore(approvals);
+  upsertSessionGrant(
+    { sessionId: "sess-1", path: project, permission: mode, finalConfirm },
+    new Date(),
+    process.env.UB_WORKSPACE_STORE_PATH,
+  );
+  writeFileSync(join(project, "note.txt"), "hello from the project\n", "utf8");
+  return {
+    project,
+    approvals,
+    restore() {
+      const put = (key: string, value: string | undefined) => {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      };
+      put("UB_WORKSPACE_STORE_PATH", previous.store);
+      put("UB_APPROVALS_PATH", previous.approvals);
+      put("UB_WORKSPACE_ROOT", previous.root);
+      setApprovalStore(new ApprovalStore(() => 1_000));
+    },
+  };
+}
+
+test("read_file and list_dir work inside a granted folder, in every mode", async () => {
+  const box = grantFixture("read_only");
+  try {
+    const read = await run<{ text: string }>(readFile, { path: "note.txt" }, { session: { id: "sess-1" } });
+    assert.equal(read.text.includes("hello from the project"), true);
+    const listing = await run<{ rows: string[]; truncated: boolean }>(listDir, { path: "." }, { session: { id: "sess-1" } });
+    assert.equal(listing.rows.some((row: string) => row.includes("note.txt")), true);
+  } finally {
+    box.restore();
+  }
+});
+
+test("read_only refuses writes and commands inside the folder", async () => {
+  const box = grantFixture("read_only");
+  try {
+    await assert.rejects(
+      () =>
+        approvedWrite({
+          path: "out.txt",
+          content: "x",
+          expectedSha256: null,
+          sessionId: "sess-1",
+          turnId: "t",
+          toolCallId: "c",
+        }),
+      /workspace_read_only/,
+    );
+    const result = await run<{ status: string; error: string }>(bash, { command: "echo hi" }, { session: { id: "sess-1" } });
+    assert.equal(result.status, "blocked");
+    assert.equal(result.error, "workspace_read_only");
+  } finally {
+    box.restore();
+  }
+});
+
+test("guard keeps the approval card; full access writes without one", async () => {
+  const box = grantFixture("guard");
+  try {
+    let settled = false;
+    const write = approvedWrite({
+      path: "guard.txt",
+      content: "guarded",
+      expectedSha256: null,
+      sessionId: "sess-1",
+      turnId: "t",
+      toolCallId: "c",
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(settled, false, "guard must wait for the owner");
+    const pending = box.approvals.listPending();
+    assert.equal(pending.length, 1);
+    box.approvals.decide(pending[0].id, "approve", pending[0].actionSha256);
+    const result = await write;
+    assert.equal(result.path, join(box.project, "guard.txt"));
+  } finally {
+    box.restore();
+  }
+
+  const full = grantFixture("full_access");
+  try {
+    await approvedWrite({
+      path: "out.txt",
+      content: "full",
+      expectedSha256: null,
+      sessionId: "sess-1",
+      turnId: "t",
+      toolCallId: "c",
+    });
+    assert.equal(readFileSync(join(full.project, "out.txt"), "utf8"), "full");
+    assert.equal(full.approvals.listPending().length, 0);
+  } finally {
+    full.restore();
+  }
+});
+
+test("final confirm asks again even under full access", async () => {
+  const box = grantFixture("full_access", true);
+  try {
+    const write = approvedWrite({
+      path: "out2.txt",
+      content: "confirm",
+      expectedSha256: null,
+      sessionId: "sess-1",
+      turnId: "t",
+      toolCallId: "c",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(box.approvals.listPending().length, 1, "final confirm must show the card");
+    const pending = box.approvals.listPending()[0];
+    box.approvals.decide(pending.id, "approve", pending.actionSha256);
+    const result = await write;
+    assert.equal(result.path, join(box.project, "out2.txt"));
+  } finally {
+    box.restore();
+  }
+});
+
+test("bash runs inside the granted folder and skips the card under full access", async () => {
+  const box = grantFixture("full_access");
+  try {
+    const result = await run<{ stdout: string; stderr: string }>(bash, { command: "pwd" }, { session: { id: "sess-1" } });
+    assert.equal(result.stdout.includes(basename(box.project)), true);
+  } finally {
+    box.restore();
+  }
+});
+
+test("list_dir refuses escapes and non-directories", async () => {
+  const box = grantFixture("read_only");
+  try {
+    await assert.rejects(() => run(listDir, { path: "../" }, { session: { id: "sess-1" } }), /path_escape|path_invalid/);
+    await assert.rejects(() => run(listDir, { path: "note.txt" }, { session: { id: "sess-1" } }), /path_not_directory/);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a root chosen by the owner may sit in a screened path; children may not", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-git-root-"));
+  // The folder itself carries a word on the forbidden list; the owner picked
+  // it, so the root is reachable while anything inside it is not.
+  const project = join(dir, "my.github-project");
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "readme.md"), "ok", "utf8");
+  const previous = {
+    store: process.env.UB_WORKSPACE_STORE_PATH,
+    root: process.env.UB_WORKSPACE_ROOT,
+  };
+  process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+  delete process.env.UB_WORKSPACE_ROOT;
+  upsertSessionGrant(
+    { sessionId: "sess-git", path: project, permission: "read_only", finalConfirm: false },
+    new Date(),
+  );
+  try {
+    const readme = await run<{ text: string }>(readFile, { path: "readme.md" }, { session: { id: "sess-git" } });
+    assert.equal(readme.text.includes("ok"), true);
+    await assert.rejects(() => run(readFile, { path: ".env" }, { session: { id: "sess-git" } }), /path_forbidden/);
+  } finally {
+    const put = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    put("UB_WORKSPACE_STORE_PATH", previous.store);
+    put("UB_WORKSPACE_ROOT", previous.root);
   }
 });
 
