@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { RouterError } from "./errors.ts";
+import { retryAfterMs } from "./retry-after.ts";
 import type { AuthedCaller } from "./auth.ts";
 
 const FIRECRAWL = "https://api.firecrawl.dev/v2/search";
@@ -23,7 +24,8 @@ export async function search(caller: AuthedCaller, body: unknown): Promise<unkno
   }
   const query = (body as { query?: unknown }).query;
   const countRaw = (body as { count?: unknown }).count;
-  if (typeof query !== "string" || query.length < 1 || query.length > 512) {
+  const queryLength = typeof query === "string" ? [...query].length : 0;
+  if (typeof query !== "string" || queryLength < 1 || queryLength > 512) {
     throw new RouterError({
       status: 400,
       type: "invalid_request_error",
@@ -54,15 +56,13 @@ export async function search(caller: AuthedCaller, body: unknown): Promise<unkno
     clearTimeout(timer);
   }
   if (response.status === 429) {
-    const header = response.headers.get("retry-after");
-    const seconds = header ? Number(header) : NaN;
     throw new RouterError({
       status: 429,
       type: "rate_limit_error",
       code: "upstream_rate_limited",
       message: "search rate limited",
       retryable: true,
-      retryAfterMs: Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined,
+      retryAfterMs: retryAfterMs(response),
     });
   }
   if (!response.ok) {
