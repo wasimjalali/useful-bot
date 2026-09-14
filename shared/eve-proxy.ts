@@ -3,19 +3,28 @@ import type { ShellBot, ShellStore } from "./shell-store.ts";
 import { resolveRoute, speakersFrom, threadPrefix, type Route, type Speaker } from "./threads.ts";
 import type { ThreadKind } from "./agent-store.ts";
 
+/**
+ * Session ids are opaque eve identifiers (uuid-shaped). The charset is pinned
+ * and dots are excluded so a suffix like `session/..` cannot be interpolated
+ * into the upstream URL and normalised into a different path.
+ */
+const SESSION_ID = "[A-Za-z0-9_-]+";
+const SESSION_STREAM = new RegExp(`^session/${SESSION_ID}/stream$`);
+const SESSION_ONE = new RegExp(`^session/${SESSION_ID}$`);
+const SESSION_CANCEL = new RegExp(`^session/${SESSION_ID}/cancel$`);
+
 export function eveGetAllowed(suffix: string): boolean {
   if (suffix === "health" || suffix === "info") return true;
-  return /^session\/[^/]+\/stream$/.test(suffix);
+  return SESSION_STREAM.test(suffix);
 }
 
 export function evePostAllowed(suffix: string): boolean {
   if (suffix === "session") return true;
-  if (/^session\/[^/]+$/.test(suffix)) return true;
-  return /^session\/[^/]+\/cancel$/.test(suffix);
+  return SESSION_ONE.test(suffix) || SESSION_CANCEL.test(suffix);
 }
 
 export function isEveSessionPost(suffix: string): boolean {
-  return suffix === "session" || /^session\/[^/]+$/.test(suffix);
+  return suffix === "session" || SESSION_ONE.test(suffix);
 }
 
 export type SessionRoute = Route & { mentionNames: string[] };

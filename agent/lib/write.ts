@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
 import { resolveWorkspacePath, workspaceRoot } from "./workspace.ts";
@@ -29,7 +29,8 @@ export async function approvedWrite(input: {
     throw new Error("write_too_large");
   }
   const root = workspaceRoot();
-  const target = resolveWorkspacePath(input.path, root);
+  // Reject a bad path before it ever reaches the owner.
+  resolveWorkspacePath(input.path, root);
   const hash = actionSha256({
     tool: "write_file",
     canonicalArgs: JSON.stringify({ path: input.path, content: input.content, expectedSha256: input.expectedSha256 }),
@@ -53,13 +54,40 @@ export async function approvedWrite(input: {
     await waitUntilNotPending(approvals, rec.id);
   }
   return executeIfApproved(approvals, rec.id, hash, () => {
+    // The path is resolved again after consume: a parent directory could have
+    // been swapped for a symlink while the owner was reviewing, so the check
+    // that ran before the approval is not enough. Writing to the re-resolved
+    // target closes that window.
+    const target = resolveWorkspacePath(input.path, root);
+    // expectedSha256 is optimistic concurrency: the owner approved a write
+    // against a known revision, so a file that changed since the proposal must
+    // not be silently clobbered.
+    if (input.expectedSha256 !== null) {
+      let current: string | null = null;
+      try {
+        current = createHash("sha256").update(readFileSync(target)).digest("hex");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (current !== input.expectedSha256) {
+        throw new Error("write_revision_conflict");
+      }
+    }
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    const tmp = join(dirname(target), `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.tmp`);
-    writeFileSync(tmp, input.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    const fd = openSync(tmp, "r");
-    fsyncSync(fd);
-    closeSync(fd);
-    renameSync(tmp, target);
+    const tmp = join(
+      dirname(target),
+      `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`,
+    );
+    try {
+      writeFileSync(tmp, input.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      const fd = openSync(tmp, "r");
+      fsyncSync(fd);
+      closeSync(fd);
+      renameSync(tmp, target);
+    } catch (error) {
+      try { unlinkSync(tmp); } catch { /* ignore */ }
+      throw error;
+    }
     return { bytes: Buffer.byteLength(input.content, "utf8"), path: target, approvalId: rec.id, actionSha256: hash };
   });
 }

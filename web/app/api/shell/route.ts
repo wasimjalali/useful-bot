@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import {
   appendAgentEvent,
   claimProposal,
@@ -20,8 +21,7 @@ export async function GET(request: Request) {
   try {
     return NextResponse.json({ ok: true, store: readShell() });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "invalid";
-    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+    return NextResponse.json({ ok: false, error: errorCode(err, "shell_unavailable") }, { status: 400 });
   }
 }
 
@@ -120,9 +120,12 @@ export async function PUT(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
+  if (rateLimited(`shell:${gate.session.callerId}`, 120)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
   let claimed: Proposal | null = null;
   try {
-    const body = await request.json() as {
+    const body = await readJson(request) as {
       action?: ShellAction;
       proposalId?: string;
       proposalStatus?: "confirmed" | "dismissed";
@@ -153,14 +156,20 @@ export async function PUT(request: Request) {
     // apply the same createBot.
     if (body.proposalId) {
       const status = body.proposalStatus === "dismissed" ? "dismissed" : "confirmed";
+      // A decision that lost the race is only a benign replay when the winner
+      // matches it. If the other outcome won (dismiss vs confirm), report the
+      // conflict instead of telling the owner their click succeeded. The store
+      // is re-read so a race loser does not replay a pre-race snapshot.
+      const settled = (existingStatus: Proposal["status"]) =>
+        existingStatus === status
+          ? NextResponse.json({ ok: true, store: readShell(), queued: 0, replay: true })
+          : NextResponse.json({ ok: false, error: "proposal_conflict", status: existingStatus }, { status: 409 });
       if (status === "confirmed") {
         const existing = readProposal(body.proposalId);
         if (!existing) {
           return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
         }
-        if (existing.status !== "pending") {
-          return NextResponse.json({ ok: true, store: current, queued: 0, replay: true });
-        }
+        if (existing.status !== "pending") return settled(existing.status);
         if (Date.parse(existing.expiresAt) <= Date.now()) {
           return NextResponse.json({ ok: false, error: "proposal_expired" }, { status: 410 });
         }
@@ -174,10 +183,10 @@ export async function PUT(request: Request) {
         if (!existing) {
           return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
         }
-        if (existing.status !== "pending") {
-          return NextResponse.json({ ok: true, store: current, queued: 0, replay: true });
+        if (existing.status === "pending") {
+          return NextResponse.json({ ok: false, error: "proposal_expired" }, { status: 410 });
         }
-        return NextResponse.json({ ok: false, error: "proposal_expired" }, { status: 410 });
+        return settled(existing.status);
       }
     }
 
@@ -202,12 +211,13 @@ export async function PUT(request: Request) {
     }
     return NextResponse.json({ ok: true, store: next, queued });
   } catch (err) {
+    const guarded = apiError(err);
+    if (guarded) return guarded;
     // Applying the action failed after the claim; give the card back so the
     // owner can retry instead of losing the proposal to a 400.
     if (claimed) {
       try { reopenProposal(claimed.id); } catch { /* best effort */ }
     }
-    const message = err instanceof Error ? err.message : "invalid";
-    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+    return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
   }
 }

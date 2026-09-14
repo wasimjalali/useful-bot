@@ -27,6 +27,8 @@ export const HANDOFF_SCHEMA = 1;
 export const HANDOFF_ATTEMPTS_MAX = 3;
 export const HANDOFF_TEXT_MAX = 4000;
 export const HANDOFF_LIST_MAX = 50;
+/** Refuse a bot-to-bot chain past this many hops; A to B to A cannot ping-pong. */
+export const HANDOFF_DEPTH_MAX = 3;
 /** Delivered records are pruned after this; failed ones keep longer. */
 const HANDOFF_KEEP_MS = 14 * 24 * 60 * 60 * 1000;
 /** Longer than the 120s deliver timeout, so a crashed claim can be retried. */
@@ -52,6 +54,8 @@ export type HandoffRecord = {
   attempts: number;
   lastError: string;
   response: string;
+  /** Hops from the owner's turn: 0 for an owner-triggered handoff. */
+  depth: number;
 };
 
 export type HandoffDraft = Pick<
@@ -61,6 +65,7 @@ export type HandoffDraft = Pick<
   groupId?: string | null;
   groupName?: string | null;
   threadKind?: ThreadKind;
+  depth?: number;
 };
 
 export function handoffDir(): string {
@@ -108,6 +113,9 @@ function parseHandoff(raw: unknown): HandoffRecord | null {
       : 0,
     lastError: clip(rec.lastError, 300),
     response: clip(rec.response, 8000),
+    depth: typeof rec.depth === "number" && Number.isInteger(rec.depth) && rec.depth >= 0
+      ? Math.min(rec.depth, 100)
+      : 0,
   };
 }
 
@@ -239,6 +247,9 @@ export function queueHandoff(input: HandoffDraft, dir = handoffDir()): HandoffRe
     attempts: 0,
     lastError: "",
     response: "",
+    depth: typeof input.depth === "number" && Number.isInteger(input.depth) && input.depth >= 0
+      ? Math.min(input.depth, 100)
+      : 0,
   };
   writeHandoff(record, dir);
   try { pruneHandoffs(dir); } catch { /* pruning is best effort */ }

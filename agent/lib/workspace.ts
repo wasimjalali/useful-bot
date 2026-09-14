@@ -1,4 +1,4 @@
-import { resolve, relative, isAbsolute } from "node:path";
+import { resolve, relative, isAbsolute, join } from "node:path";
 import { lstatSync } from "node:fs";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
 
@@ -8,6 +8,30 @@ export function workspaceRoot(): string {
     throw new Error("workspace_unconfigured");
   }
   return resolve(fromEnv);
+}
+
+/**
+ * Reject any path whose existing components include a symlink. Lexical resolve
+ * and relative cannot see through a parent component, so `link/pwned.txt` with
+ * `link -> /` would pass a resolve-only check while the file is written outside
+ * the workspace. Walking each component with lstat closes that hole. Components
+ * that do not exist yet are left to mkdir/write, which create real directories.
+ */
+function assertNoSymlinkComponents(root: string, rel: string): void {
+  let current = resolve(root);
+  for (const part of rel.split(/[/\\]/).filter(Boolean)) {
+    current = join(current, part);
+    let stat;
+    try {
+      stat = lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error("path_symlink");
+    }
+  }
 }
 
 export function resolveWorkspacePath(inputPath: string, root: string = workspaceRoot()): string {
@@ -25,15 +49,6 @@ export function resolveWorkspacePath(inputPath: string, root: string = workspace
       throw new Error("path_forbidden");
     }
   }
-  try {
-    const stat = lstatSync(resolved);
-    if (stat.isSymbolicLink()) {
-      throw new Error("path_symlink");
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      if (error instanceof Error && error.message.startsWith("path_")) throw error;
-    }
-  }
+  assertNoSymlinkComponents(root, rel);
   return resolved;
 }

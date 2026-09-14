@@ -49,10 +49,18 @@ export function useAgentThread(authed: boolean, botId: string | null) {
   }, []);
 
   const refresh = useCallback(async (id: string) => {
-    const next = await load(id);
-    setEvents(next.events);
-    setProposals(next.proposals);
-    return next;
+    // Callers fire this as a side effect of a mutation; a transient failure must
+    // not become an unhandled rejection and must still surface the error.
+    try {
+      const next = await load(id);
+      setEvents(next.events);
+      setProposals(next.proposals);
+      setError("");
+      return next;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Thread failed");
+      return null;
+    }
   }, [load]);
 
   useEffect(() => {

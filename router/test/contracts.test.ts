@@ -1,11 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRouter } from "../src/index.ts";
+import { LimitStore } from "../src/limits.ts";
+import { ConcurrencyGate } from "../src/concurrency.ts";
+import { retryAfterMs } from "../src/retry-after.ts";
+import { upstreamConfigError } from "../src/upstreams/opencode.ts";
+import { loadRuntimeConfig } from "../../shared/runtime.ts";
+
+type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
+
+const jsonFixture: UpstreamHandler = (_req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({
+    id: "cmpl_test",
+    object: "chat.completion",
+    model: "glm-5.3-flash",
+    choices: [{ index: 0, message: { role: "assistant", content: "fixture-ok" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
+  }));
+};
 
 function sha256hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -15,11 +33,15 @@ function token(): string {
   return randomBytes(32).toString("base64url");
 }
 
-async function withRouter(fn: (base: string, tokens: Record<string, string>) => Promise<void>) {
+async function withRouter(
+  fn: (base: string, tokens: Record<string, string>) => Promise<void>,
+  handler: UpstreamHandler = jsonFixture,
+) {
   const desktop = token();
   const phone = token();
   const ops = token();
   const expired = token();
+  const device = token();
   const dir = mkdtempSync(join(tmpdir(), "ub-router-"));
   const configPath = join(dir, "config.json");
   const dbPath = join(dir, "usage.sqlite");
@@ -37,21 +59,27 @@ async function withRouter(fn: (base: string, tokens: Record<string, string>) => 
       { id: "p", kind: "router", sha256: sha256hex(phone), callerId: "phone", profile: "phone", expiresAt: future, revokedAt: null },
       { id: "o", kind: "router", sha256: sha256hex(ops), callerId: "ops", profile: "ops", expiresAt: future, revokedAt: null },
       { id: "e", kind: "router", sha256: sha256hex(expired), callerId: "old", profile: "desktop", expiresAt: past, revokedAt: null },
+      { id: "dev", kind: "device", sha256: sha256hex(device), callerId: "desktop-device", profile: "desktop", expiresAt: future, revokedAt: null },
     ],
   }));
 
-  const upstream = createServer((req, res) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({
-      id: "cmpl_test",
-      object: "chat.completion",
-      model: "glm-5.3-flash",
-      choices: [{ index: 0, message: { role: "assistant", content: "fixture-ok" }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
-    }));
-  });
+  const upstream = createServer(handler);
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const upPort = (upstream.address() as { port: number }).port;
+  const savedEnv = {
+    key: process.env.UB_OPENCODE_GO_KEY,
+    base: process.env.UB_OPENCODE_GO_BASE,
+    providers: process.env.UB_PROVIDERS_PATH,
+  };
+  const restoreEnv = () => {
+    const restore = (name: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    };
+    restore("UB_OPENCODE_GO_KEY", savedEnv.key);
+    restore("UB_OPENCODE_GO_BASE", savedEnv.base);
+    restore("UB_PROVIDERS_PATH", savedEnv.providers);
+  };
   process.env.UB_OPENCODE_GO_KEY = "test-upstream-key";
   process.env.UB_OPENCODE_GO_BASE = `http://127.0.0.1:${upPort}/v1`;
   process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
@@ -71,7 +99,7 @@ async function withRouter(fn: (base: string, tokens: Record<string, string>) => 
     const addr = router.address();
     if (!addr || typeof addr === "string") throw new Error("no listen address");
     const base = `http://127.0.0.1:${addr.port}`;
-    await fn(base, { desktop, phone, ops, expired });
+    await fn(base, { desktop, phone, ops, expired, device });
   } finally {
     await new Promise<void>((resolve) => {
       if (!router) {
@@ -81,6 +109,7 @@ async function withRouter(fn: (base: string, tokens: Record<string, string>) => 
       router.close(() => resolve());
     });
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    restoreEnv();
   }
 }
 
@@ -190,4 +219,491 @@ test("completion maps model to alias", async () => {
     assert.equal(meter.observed_output_tokens, 4);
     assert.equal(meter.by_model[0]?.model, "glm-5.3-flash");
   });
+});
+
+test("opencode-go forwards the registry upstream model id", async () => {
+  let forwarded: Record<string, unknown> = {};
+  await withRouter(async (base, tokens) => {
+    writeFileSync(process.env.UB_PROVIDERS_PATH!, JSON.stringify({
+      schemaVersion: 1,
+      activeProviderId: "opencode-go",
+      keys: { "opencode-go": { key: "test-upstream-key", updatedAt: new Date().toISOString() } },
+      selectedModel: "glm-5.3",
+      effort: "high",
+      speed: "standard",
+    }));
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("x-useful-upstream-model"), "glm-5.3-flash");
+    assert.equal(forwarded.model, "glm-5.3-flash");
+    assert.equal(forwarded.reasoning_effort, "high");
+  }, (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        id: "cmpl_test",
+        object: "chat.completion",
+        model: "glm-5.3-flash",
+        choices: [{ index: 0, message: { role: "assistant", content: "fixture-ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
+      }));
+    });
+  });
+});
+
+test("device credential cannot authenticate to router", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/models`, { headers: { authorization: `Bearer ${tokens.device}` } });
+    assert.equal(res.status, 401);
+  });
+});
+
+test("malformed json body is 400", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: "{ this is not json",
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.error.code, "invalid_request");
+  });
+});
+
+test("request id is scoped per caller", async () => {
+  await withRouter(async (base, tokens) => {
+    const shared = ids();
+    const body = JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] });
+    const run = (token: string) => fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...shared },
+      body,
+    });
+    assert.equal((await run(tokens.desktop)).status, 200);
+    assert.equal((await run(tokens.phone)).status, 200);
+  });
+});
+
+test("upstream 5xx is normalized to a redacted 502", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 502);
+    const text = await res.text();
+    assert.equal(JSON.parse(text).error.code, "upstream_protocol_error");
+    assert.equal(text.includes("secret provider detail"), false);
+  }, (_req, res) => {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "secret provider detail" } }));
+  });
+});
+
+test("upstream 429 maps to a retryable rate limit", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 429);
+    const body = await res.json();
+    assert.equal(body.error.code, "upstream_rate_limited");
+    assert.equal(body.error.retryable, true);
+    assert.equal(body.error.retry_after_ms, 2000);
+  }, (_req, res) => {
+    res.writeHead(429, { "content-type": "application/json", "retry-after": "2" });
+    res.end("{}");
+  });
+});
+
+test("upstream model 404 maps to model_unavailable", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 502);
+    assert.equal((await res.json()).error.code, "model_unavailable");
+  }, (_req, res) => {
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end("{}");
+  });
+});
+
+test("streaming proxies sse and records usage", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], stream: true }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "text/event-stream");
+    const text = await res.text();
+    assert.equal(text.includes("fixture-ok"), true);
+    assert.equal(text.includes("data: [DONE]"), true);
+    const usage = await fetch(`${base}/v1/usage`, { headers: { authorization: `Bearer ${tokens.desktop}` } });
+    const meter = await usage.json() as { requests: number; observed_input_tokens: number };
+    assert.equal(meter.requests, 1);
+    assert.equal(meter.observed_input_tokens, 11);
+  }, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "fixture-ok" } }] })}\r\n\r\n`);
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 11, completion_tokens: 4 } })}\n\n`);
+    res.write("data: [DONE]\n\n");
+    res.end();
+  });
+});
+
+test("client abort cancels the upstream stream", async () => {
+  let upstreamClosed = false;
+  await withRouter(async (base, tokens) => {
+    const controller = new AbortController();
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], stream: true }),
+      signal: controller.signal,
+    });
+    assert.equal(res.status, 200);
+    if (!res.body) throw new Error("no stream body");
+    const reader = res.body.getReader();
+    await reader.read();
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`);
+    res.on("close", () => {
+      upstreamClosed = true;
+    });
+    setTimeout(() => res.end(), 1500);
+  });
+  assert.equal(upstreamClosed, true);
+});
+
+test("ops sees aggregate usage labeled aggregate", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 200);
+    const usage = await fetch(`${base}/v1/usage`, { headers: { authorization: `Bearer ${tokens.ops}` } });
+    const meter = await usage.json() as { requests: number; caller_id: string };
+    assert.equal(meter.requests, 1);
+    assert.equal(meter.caller_id, "aggregate");
+  });
+});
+
+test("ops sees every registry model", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/models`, { headers: { authorization: `Bearer ${tokens.ops}` } });
+    assert.equal(res.status, 200);
+    const body = await res.json() as { data: Array<{ id: string }> };
+    assert.equal(body.data.length, 2);
+    assert.deepEqual(body.data.map((entry) => entry.id).sort(), ["reviewer", "workhorse"]);
+  });
+});
+
+test("unknown completion options are rejected", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [{ role: "user", content: "hi" }],
+        reasoning_effort: "high",
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "unsupported_parameter");
+  });
+});
+
+test("caller-supplied effort and service tier are rejected", async () => {
+  await withRouter(async (base, tokens) => {
+    for (const extra of [{ service_tier: "priority" }, { reasoning_effort: "high" }]) {
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+        body: JSON.stringify({
+          model: "workhorse",
+          messages: [{ role: "user", content: "hi" }],
+          ...extra,
+        }),
+      });
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).error.code, "unsupported_parameter");
+    }
+  });
+});
+
+test("wrong method on a known route is 405 with Allow", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/models`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${tokens.desktop}` },
+    });
+    assert.equal(res.status, 405);
+    assert.equal(res.headers.get("allow"), "GET");
+  });
+});
+
+test("unknown route is 404", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/nope`, { headers: { authorization: `Bearer ${tokens.desktop}` } });
+    assert.equal(res.status, 404);
+  });
+});
+
+test("three protocol failures open the alias circuit", async () => {
+  await withRouter(async (base, tokens) => {
+    const call = () => fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    for (let i = 0; i < 3; i += 1) {
+      const res = await call();
+      assert.equal(res.status, 502);
+      await res.text();
+    }
+    const opened = await call();
+    assert.equal(opened.status, 503);
+    assert.equal((await opened.json()).error.code, "circuit_open");
+  }, (_req, res) => {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end("{}");
+  });
+});
+
+test("oversize stream event is rejected", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], stream: true }),
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.equal(text.includes("upstream_protocol_error"), true);
+  }, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`);
+    res.write(`data: ${"a".repeat(300 * 1024)}`);
+    res.end();
+  });
+});
+
+test("shared retry-after parser accepts seconds and http dates", () => {
+  assert.equal(retryAfterMs(new Response(null, { headers: { "retry-after": "2" } })), 2000);
+  const dated = retryAfterMs(new Response(null, { headers: { "retry-after": new Date(Date.now() + 3000).toUTCString() } }));
+  assert.equal(typeof dated, "number");
+  assert.equal((dated ?? 0) > 0, true);
+  assert.equal(retryAfterMs(new Response(null)), undefined);
+});
+
+test("request ids expire after 24h", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const path = join(dir, "usage.sqlite");
+  const now = Date.now();
+  const store = new LimitStore(path);
+  store.rememberRequest("step-1", "desktop", now - 25 * 60 * 60 * 1000);
+  const reopened = new LimitStore(path);
+  reopened.rememberRequest("step-1", "desktop", now);
+});
+
+test("hit enforces 24h token budgets", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  store.recordUsage({ callerId: "desktop", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 0, outputTokens: 200_000, at: now });
+  assert.throws(() => store.hit(caller, now), /caller_budget_exhausted/);
+});
+
+test("hit enforces the aggregate 24h token budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "phone", profile: "phone" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  store.recordUsage({ callerId: "ghost", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 3_000_000, outputTokens: 0, at: now });
+  assert.throws(() => store.hit(caller, now), /global_budget_exhausted/);
+});
+
+test("reserve charges a ledger entry and reconcile records observed usage", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  const id = store.reserve({ caller, alias: "workhorse", inputUnits: 1000, outputUnits: 4096, now });
+  let meter = store.summarize("desktop", now);
+  assert.equal(meter.reserved_input_tokens, 1000);
+  assert.equal(meter.reserved_output_tokens, 4096);
+  const reconciled = store.reconcile(id, { inputTokens: 11, outputTokens: 4 }, { provider: "opencode-go", model: "glm-5.3-flash" }, now);
+  assert.equal(reconciled.overrun, false);
+  meter = store.summarize("desktop", now);
+  assert.equal(meter.reserved_input_tokens, 0);
+  assert.equal(meter.observed_input_tokens, 11);
+  assert.equal(meter.observed_output_tokens, 4);
+});
+
+test("observed usage above a reservation is an overrun", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  const id = store.reserve({ caller, alias: "workhorse", inputUnits: 10, outputUnits: 10, now });
+  const reconciled = store.reconcile(id, { inputTokens: 10, outputTokens: 99 }, { provider: "opencode-go", model: "glm-5.3-flash" }, now);
+  assert.equal(reconciled.overrun, true);
+  assert.equal(reconciled.alias, "workhorse");
+});
+
+test("concurrency gate allows two upstream requests and one per caller", () => {
+  const gate = new ConcurrencyGate();
+  gate.acquire("a");
+  assert.throws(() => gate.acquire("a"), /session_busy/);
+  gate.acquire("b");
+  assert.throws(() => gate.acquire("c"), /global_budget_exhausted/);
+  gate.release("a");
+  gate.acquire("c");
+  gate.release("b");
+  gate.release("c");
+  gate.acquire("d");
+  gate.release("d");
+});
+
+test("multimodal message content is rejected", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "http://127.0.0.1/x.png" } }] }],
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "unsupported_parameter");
+  });
+});
+
+test("a tool message without an outstanding call is invalid history", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [{ role: "tool", tool_call_id: randomUUID(), content: "result" }],
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "invalid_tool_history");
+  });
+});
+
+test("duplicate tool call ids are invalid history", async () => {
+  await withRouter(async (base, tokens) => {
+    const callId = randomUUID();
+    const call = { id: callId, type: "function", function: { name: "f", arguments: "{}" } };
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [
+          { role: "assistant", tool_calls: [call, call] },
+        ],
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "invalid_tool_history");
+  });
+});
+
+test("more than 32 tool schemas is rejected", async () => {
+  const tools = Array.from({ length: 33 }, (_, index) => ({
+    type: "function",
+    function: { name: `f${index}`, parameters: {} },
+  }));
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], tools }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "unsupported_parameter");
+  });
+});
+
+test("a well formed tool call and result is accepted", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [
+          { role: "assistant", tool_calls: [{ id: "call-1", type: "function", function: { name: "f", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "call-1", content: "result" },
+          { role: "user", content: "continue" },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+  });
+});
+
+test("upstream config errors keep their distinct code", () => {
+  assert.equal(upstreamConfigError(new Error("provider_unknown")).code, "provider_unknown");
+  assert.equal(upstreamConfigError(new Error("provider_disconnected")).code, "provider_disconnected");
+  assert.equal(upstreamConfigError(new Error("providers_schema")).code, "configuration_unverified");
+});
+
+test("runtime config rejects malformed credentials", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-cfg-"));
+  const write = (credential: Record<string, unknown>) => {
+    const path = join(dir, `${randomUUID()}.json`);
+    writeFileSync(path, JSON.stringify({
+      schemaVersion: 1,
+      phoneEnabled: false,
+      tailnet: null,
+      sandbox: { backend: "just-bash", evidenceId: "s3-non-vm-default", imageDigest: null },
+      goBalanceDisabledConfirmedAt: null,
+      searchKeyRequired: false,
+      credentials: [credential],
+    }));
+    return path;
+  };
+  const base = {
+    id: "x",
+    kind: "router",
+    sha256: sha256hex("token"),
+    callerId: "desktop",
+    profile: "desktop",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    revokedAt: null,
+  };
+  assert.doesNotThrow(() => loadRuntimeConfig(write(base)));
+  assert.throws(() => loadRuntimeConfig(write({ ...base, sha256: "nothex" })), /runtime_config_credential/);
+  assert.throws(() => loadRuntimeConfig(write({ ...base, expiresAt: "whenever" })), /runtime_config_credential/);
+  assert.throws(() => loadRuntimeConfig(write({ ...base, kind: "bogus" })), /runtime_config_credential/);
+  assert.throws(() => loadRuntimeConfig(write({ ...base, profile: "bogus" })), /runtime_config_credential/);
 });

@@ -10,6 +10,7 @@ import {
   ownsHandoffClaim,
   releaseHandoffClaim,
   HANDOFF_ATTEMPTS_MAX,
+  HANDOFF_DEPTH_MAX,
   type HandoffRecord,
 } from "../../shared/handoffs.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
@@ -207,6 +208,7 @@ function handoffEnvelope(handoff: HandoffRecord): string {
     `Handoff from ${handoff.sourceName}.`,
     handoff.groupName ? `This belongs to the group chat ${handoff.groupName}.` : "This arrives in your own chat.",
     "Do the work and answer here. The owner reads this transcript.",
+    ...(handoff.depth > 0 ? [`This is relay hop ${handoff.depth} of at most ${HANDOFF_DEPTH_MAX}.`] : []),
     "",
     handoff.message,
   ];
@@ -223,6 +225,7 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
 }
 
 async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
+  if (handoff.depth > HANDOFF_DEPTH_MAX) throw new Error("handoff_depth_exceeded");
   const jwt = channelJwt();
   if (!jwt) throw new Error("channel_credential_missing");
   const shell = readShell();

@@ -19,8 +19,13 @@ export function NewChatPicker({
   store: ShellStore;
 }) {
   const [query, setQuery] = useState("");
+  const [modifier, setModifier] = useState("Ctrl+");
   const inputRef = useRef<HTMLInputElement>(null);
   const bots = useMemo(() => searchBots(store, query).filter((bot) => !bot.hidden), [query, store]);
+
+  useEffect(() => {
+    setModifier(/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl+");
+  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -67,12 +72,12 @@ export function NewChatPicker({
           <button className="search-hit" onClick={onCreateBot} type="button">
             <PlusIcon className="size-4 shrink-0" />
             <span className="flex-1 text-left">New Bot</span>
-            <kbd className="search-kbd">⌘1</kbd>
+            <kbd className="search-kbd">{modifier}1</kbd>
           </button>
           <button className="search-hit" onClick={onCreateGroup} type="button">
             <UsersIcon className="size-4 shrink-0" />
             <span className="flex-1 text-left">Create group chat</span>
-            <kbd className="search-kbd">⌘2</kbd>
+            <kbd className="search-kbd">{modifier}2</kbd>
           </button>
           {bots.map((bot) => (
             <ToBotRow bot={bot} key={bot.id} onSelect={() => onSelectBot(bot.id)} />

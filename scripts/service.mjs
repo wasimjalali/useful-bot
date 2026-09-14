@@ -4,19 +4,41 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
+import { createServer } from "node:net";
 
 const NODE = "/usr/local/bin/node";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2];
 
-if (Number(process.versions.node.split(".")[0]) !== 24) {
-  process.stderr.write(`service refuses Node ${process.versions.node}\n`);
+const [NODE_MAJOR, NODE_MINOR, NODE_PATCH] = process.versions.node.split(".").map(Number);
+if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1)) {
+  process.stderr.write(`service refuses Node ${process.versions.node}, need >=24.11.1 <25\n`);
   process.exit(2);
 }
+
+const KEYCHAIN_TIMEOUT_MS = 15_000;
+
+const SERVICE_PORTS = {
+  router: { host: "127.0.0.1", port: 4319 },
+  eve: { host: "127.0.0.1", port: 4321 },
+  web: { host: "127.0.0.1", port: 4320 },
+};
 
 function fail(code, item) {
   process.stderr.write(`${JSON.stringify({ error: code, item })}\n`);
   process.exit(1);
+}
+
+function preflightPort(host, port) {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", (error) => {
+      reject(new Error(error && error.code === "EADDRINUSE" ? "port_in_use" : "port_check_failed"));
+    });
+    probe.listen(port, host, () => {
+      probe.close(() => resolve());
+    });
+  });
 }
 
 function keychain(service) {
@@ -25,16 +47,27 @@ function keychain(service) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
+    let settled = false;
+    let timer;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      out = "";
+      if (error) reject(error);
+      else resolve(value);
+    };
+    timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error("timeout"));
+    }, KEYCHAIN_TIMEOUT_MS);
     child.stdout.on("data", (chunk) => { out += chunk.toString(); });
     child.stderr.on("data", () => {});
+    child.on("error", () => finish(new Error("missing")));
     child.on("close", (status) => {
       const value = out.trim();
-      out = "";
-      if (status !== 0 || !value) {
-        reject(new Error("missing"));
-        return;
-      }
-      resolve(value);
+      if (status !== 0 || !value) finish(new Error("missing"));
+      else finish(null, value);
     });
   });
 }
@@ -99,6 +132,14 @@ async function waitReady(url, timeoutMs) {
 
 async function main() {
   if (!existsSync(NODE)) fail("interpreter_missing", NODE);
+  const target = SERVICE_PORTS[mode];
+  if (target) {
+    try {
+      await preflightPort(target.host, target.port);
+    } catch (error) {
+      fail(error.message, `${target.host}:${target.port}`);
+    }
+  }
   if (mode === "router") {
     const env = await childEnv();
     if (!env.UB_ROUTER_CONFIG) {
@@ -109,7 +150,11 @@ async function main() {
   }
   if (mode === "eve") {
     await waitReady("http://127.0.0.1:4319/health/live", 60_000);
-    const env = { ...process.env, PATH: "/usr/local/bin:/usr/bin:/bin" };
+    const env = {
+      ...process.env,
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      NODE_ENV: process.env.NODE_ENV || "production",
+    };
     try {
       env.UB_CHANNEL_JWT_SECRET = await keychain("com.usefulbot.channel.desktop");
       env.UB_ROUTER_DESKTOP_TOKEN = await keychain("com.usefulbot.router.desktop");

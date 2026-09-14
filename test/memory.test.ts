@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { MemoryStore, botTag, resetMemoryDir, tagsForBot } from "../agent/lib/memory.ts";
 
 test("upsert search read and revision conflict", () => {
@@ -120,6 +121,114 @@ test("list returns desktop notes and hides phone audience", () => {
   assert.equal(store.list("shared-phone").length, 1);
 });
 
+test("fts operator characters in a query do not throw", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  store.upsert({
+    expectedRevision: null,
+    title: "Pricing",
+    tags: ["pricing"],
+    body: "Short sentences about pricing.",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  for (const query of ['"', "OR", "*", "(", "pricing AND"]) {
+    assert.doesNotThrow(() => store.search(query, "desktop"), `query ${query}`);
+  }
+  assert.equal(store.search("pricing", "desktop").length, 1);
+  assert.equal(store.search("*", "desktop").length, 0);
+});
+
+test("note ids cannot traverse out of the notes directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  assert.throws(() => store.read("../outside", "desktop"), /memory_id_invalid/);
+  assert.throws(
+    () => store.upsert({
+      id: "../outside",
+      expectedRevision: null,
+      title: "t",
+      tags: [],
+      body: "x",
+      audience: "desktop",
+      expiresAt: null,
+      sessionId: "s",
+    }),
+    /memory_id_invalid/,
+  );
+});
+
+test("an update cannot move a note across the audience boundary", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  const created = store.upsert({
+    expectedRevision: null,
+    title: "Private",
+    tags: [],
+    body: "desktop only",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  assert.throws(
+    () => store.upsert({
+      id: created.id,
+      expectedRevision: 1,
+      title: "Private",
+      tags: [],
+      body: "desktop only",
+      audience: "shared-phone",
+      expiresAt: null,
+      sessionId: "s",
+    }),
+    /memory_audience_change/,
+  );
+});
+
+test("revision is enforced across two stores on the same directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const first = new MemoryStore(root);
+  const second = new MemoryStore(root);
+  const created = first.upsert({
+    expectedRevision: null,
+    title: "Shared",
+    tags: [],
+    body: "one",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  second.upsert({
+    id: created.id,
+    expectedRevision: 1,
+    title: "Shared",
+    tags: [],
+    body: "two",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  assert.throws(
+    () => first.upsert({
+      id: created.id,
+      expectedRevision: 1,
+      title: "Shared",
+      tags: [],
+      body: "three",
+      audience: "desktop",
+      expiresAt: null,
+      sessionId: "s",
+    }),
+    /memory_revision_conflict/,
+  );
+  assert.equal(first.read(created.id, "desktop").body, "two");
+});
+
 test("list can isolate notes to one bot tag", () => {
   const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
   resetMemoryDir(root);
@@ -150,4 +259,138 @@ test("list can isolate notes to one bot tag", () => {
   assert.equal(seo.length, 1);
   assert.equal(seo[0].title, "SEO pref");
   assert.equal(store.list("desktop", 100, "missing").length, 0);
+});
+
+test("ordinary text with sk- is saved; a real key shape is still refused", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  for (const body of ["my task-list for today", "desk-setup notes", "risk-taking is fine"]) {
+    assert.doesNotThrow(
+      () => store.upsert({
+        expectedRevision: null,
+        title: "Notes",
+        tags: [],
+        body,
+        audience: "desktop",
+        expiresAt: null,
+        sessionId: "s",
+      }),
+      `body ${body}`,
+    );
+  }
+  assert.throws(
+    () => store.upsert({
+      expectedRevision: null,
+      title: "Key",
+      tags: [],
+      body: "sk-abcdefghijklmnopqrst",
+      audience: "desktop",
+      expiresAt: null,
+      sessionId: "s",
+    }),
+    /memory_secret_refused/,
+  );
+});
+
+test("a legacy invalid note id is skipped instead of poisoning list and search", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  store.upsert({
+    expectedRevision: null,
+    title: "Good",
+    tags: [],
+    body: "searchable target",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  // A pre-existing index row whose id is unsafe as a file name, as an older
+  // build could have written before ids were validated.
+  const db = new DatabaseSync(join(root, "index.sqlite"));
+  db.exec(
+    "INSERT INTO notes (id, revision, body_sha, audience, tags, title, updated_at, expires_at, status) " +
+      "VALUES ('my_note', 1, 'x', 'desktop', '', 'Legacy', '2020-01-01T00:00:00.000Z', NULL, 'active')",
+  );
+  db.exec("INSERT INTO notes_fts (title, tags, body, id) VALUES ('Legacy', '', 'legacy body', 'my_note')");
+  db.close();
+
+  assert.doesNotThrow(() => store.list("desktop"));
+  assert.equal(store.list("desktop").length, 1);
+  assert.equal(store.search("searchable", "desktop").length, 1);
+  assert.equal(store.search("legacy", "desktop").length, 0);
+  assert.equal(store.skippedRowCount() > 0, true);
+});
+
+test("rebuild counts an invalid id as rejected and keeps the good rows", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  store.upsert({
+    expectedRevision: null,
+    title: "Good",
+    tags: [],
+    body: "kept",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  const meta = {
+    schemaVersion: 1,
+    id: "my_note",
+    revision: 1,
+    title: "Legacy",
+    tags: [],
+    audience: "desktop",
+    createdAt: "x",
+    updatedAt: "x",
+    expiresAt: null,
+    sourceSessionId: "s",
+    approvedBy: "owner",
+    status: "active",
+  };
+  writeFileSync(join(root, "notes", "my_note.md"), `---\n${JSON.stringify(meta)}\n---\nlegacy body`);
+  const rebuilt = store.rebuildIndex();
+  assert.equal(rebuilt.indexed, 1);
+  assert.equal(rebuilt.rejected, 1);
+  assert.equal(store.list("desktop").length, 1);
+});
+
+test("a crash between note rename and index insert is repaired on the next open", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  const created = store.upsert({
+    expectedRevision: null,
+    title: "Crash",
+    tags: [],
+    body: "before the crash",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  // Simulate the crash window: the markdown rename landed with new content but
+  // the index was never updated, and the dirty marker was never cleared.
+  const meta = {
+    schemaVersion: 1,
+    id: created.id,
+    revision: 1,
+    title: "Crash",
+    tags: [],
+    audience: "desktop",
+    createdAt: "x",
+    updatedAt: "x",
+    expiresAt: null,
+    sourceSessionId: "s",
+    approvedBy: "owner",
+    status: "active",
+  };
+  writeFileSync(join(root, "notes", `${created.id}.md`), `---\n${JSON.stringify(meta)}\n---\nrecovered body`);
+  writeFileSync(join(root, "index.dirty"), `${created.id}\n`);
+  assert.equal(store.search("recovered", "desktop").length, 0, "index is stale before repair");
+
+  const reopened = new MemoryStore(root);
+  assert.equal(reopened.search("recovered", "desktop").length, 1);
+  assert.equal(existsSync(join(root, "index.dirty")), false);
 });

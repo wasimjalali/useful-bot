@@ -10,7 +10,7 @@ export async function requireDesktop(request: Request): Promise<
   { error: NextResponse } | { session: { callerId: string; profile: string; csrf: string } }
 > {
   const session = await readSession();
-  if (!session) return { error: NextResponse.json({ ok: false }, { status: 401 }) };
+  if (!session) return { error: NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 }) };
   if (session.profile !== "desktop") {
     return { error: NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 }) };
   }

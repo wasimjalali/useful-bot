@@ -99,4 +99,15 @@ import Testing
         #expect(BackendError.shell("custom_thing").errorDescription == "Custom Thing")
         #expect(BackendError.shell("proposal_missing").shellCode == "proposal_missing")
     }
+
+    @Test func keychainExitCodesMapToDistinctErrors() {
+        // 44 (errSecItemNotFound) is the only status that really means the
+        // token is absent; the interactive failures are distinct.
+        #expect(BackendClient.keychainFailure(for: 44) == .deviceTokenMissing)
+        #expect(BackendClient.keychainFailure(for: 36) == .keychainLocked)
+        #expect(BackendClient.keychainFailure(for: 51) == .keychainDenied)
+        #expect(BackendClient.keychainFailure(for: 128) == .keychainCancelled)
+        #expect(BackendClient.keychainFailure(for: 1) == .deviceTokenMissing)
+        #expect(BackendError.keychainLocked.errorDescription != BackendError.deviceTokenMissing.errorDescription)
+    }
 }

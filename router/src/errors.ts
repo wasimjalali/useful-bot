@@ -6,6 +6,7 @@ export class RouterError extends Error {
   readonly code: string;
   readonly retryable: boolean;
   readonly alias?: Alias;
+  readonly retryAfterMs?: number;
 
   constructor(input: {
     status: number;
@@ -14,6 +15,7 @@ export class RouterError extends Error {
     message: string;
     retryable?: boolean;
     alias?: Alias;
+    retryAfterMs?: number;
   }) {
     super(input.message);
     this.status = input.status;
@@ -21,6 +23,7 @@ export class RouterError extends Error {
     this.code = input.code;
     this.retryable = input.retryable === true;
     this.alias = input.alias;
+    this.retryAfterMs = input.retryAfterMs;
   }
 }
 
@@ -33,6 +36,7 @@ export function errorBody(err: RouterError, requestId: string) {
       request_id: requestId,
       alias: err.alias,
       retryable: err.retryable,
+      ...(err.retryAfterMs !== undefined ? { retry_after_ms: err.retryAfterMs } : {}),
     },
   };
 }

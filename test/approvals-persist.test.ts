@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   ApprovalStore,
   actionSha256,
+  approvalActor,
   executeIfApproved,
   waitUntilNotPending,
 } from "../agent/lib/approvals.ts";
@@ -20,6 +21,14 @@ function hashFor(args: string) {
     toolVersion: "1",
   });
 }
+
+test("approval attribution falls back to live and threads tool context", () => {
+  assert.deepEqual(approvalActor(), { sessionId: "live", turnId: "live", toolCallId: "live" });
+  assert.deepEqual(
+    approvalActor({ session: { id: "ses_1", turn: { id: "turn_1" } }, callId: "call_1" }),
+    { sessionId: "ses_1", turnId: "turn_1", toolCallId: "call_1" },
+  );
+});
 
 test("file-backed store shares request decide and consume across instances", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
@@ -66,6 +75,86 @@ test("waitUntilNotPending settles when another process approves", async () => {
   assert.equal(settled.status, "approved");
 });
 
+test("a second decision on a settled approval is rejected", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"once"}');
+  const rec = new ApprovalStore(Date.now, path).request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory once",
+  });
+  const first = new ApprovalStore(Date.now, path).decide(rec.id, "approve", hash);
+  assert.equal(first.status, "approved");
+  // The loser must see the winner's status, not overwrite it.
+  assert.throws(
+    () => new ApprovalStore(Date.now, path).decide(rec.id, "deny", hash),
+    /approval_not_pending:approved/,
+  );
+  assert.equal(new ApprovalStore(Date.now, path).get(rec.id)?.status, "approved");
+});
+
+test("deciding an expired approval is rejected", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"old"}');
+  const rec = new ApprovalStore(() => 0, path).request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory old",
+  });
+  assert.throws(
+    () => new ApprovalStore(Date.now, path).decide(rec.id, "approve", hash),
+    /approval_not_pending:expired/,
+  );
+});
+
+test("a mismatched action hash cannot decide an approval", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"real"}');
+  const rec = new ApprovalStore(Date.now, path).request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory real",
+  });
+  assert.throws(
+    () => new ApprovalStore(Date.now, path).decide(rec.id, "approve", hashFor('{"title":"other"}')),
+    /approval_hash_mismatch/,
+  );
+  assert.equal(new ApprovalStore(Date.now, path).get(rec.id)?.status, "pending");
+});
+
+test("an approved record from an earlier boot cannot be consumed after restart", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"restart"}');
+  const before = new ApprovalStore(Date.now, path, "boot-a");
+  const rec = before.request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory restart",
+  });
+  // The UI process has its own epoch and may still record the decision.
+  new ApprovalStore(Date.now, path, "ui-boot").decide(rec.id, "approve", hash);
+  let ran = false;
+  await assert.rejects(
+    () => executeIfApproved(new ApprovalStore(Date.now, path, "boot-b"), rec.id, hash, () => {
+      ran = true;
+    }),
+    /approval_expired/,
+  );
+  assert.equal(ran, false);
+});
+
 test("denied wait does not execute", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
   const hash = hashFor('{"title":"no"}');
@@ -92,4 +181,18 @@ test("denied wait does not execute", async () => {
     /approval_denied/,
   );
   assert.equal(ran, false);
+});
+
+test("waitUntilNotPending retries a transient lock error instead of aborting", async () => {
+  let calls = 0;
+  const stub = {
+    get() {
+      calls += 1;
+      if (calls === 1) throw new Error("approvals_locked");
+      return { id: "apr_x", status: "approved" };
+    },
+  } as unknown as ApprovalStore;
+  const settled = await waitUntilNotPending(stub, "apr_x", 1000, 5);
+  assert.equal(calls, 2);
+  assert.equal(settled.status, "approved");
 });

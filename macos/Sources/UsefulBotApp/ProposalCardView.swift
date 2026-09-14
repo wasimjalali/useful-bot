@@ -45,20 +45,26 @@ struct ProposalCardView: View {
                 actions(confirm: "Add teammate", dismiss: "Not now")
             }
         case .createGroup:
+            // Show only the real roster the server would accept, so a pruned
+            // or stale member id is not rendered as "a bot".
+            let members = Threads.groupMembers(
+                Threads.speakers(from: bots),
+                memberIds: proposal.memberIds
+            )
             card(title: "New group chat", tone: .accent) {
                 Text(proposal.name ?? "")
                     .font(Theme.font(15, .semibold))
                 HStack(spacing: 6) {
                     Image(systemName: "person.2")
                         .font(.system(size: 13))
-                    Text("\(proposal.memberIds.count) members")
+                    Text("\(members.count) members")
                         .font(.system(size: 13))
                 }
                 .foregroundStyle(Theme.C.inkMuted)
                 .padding(.top, 4)
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(proposal.memberIds, id: \.self) { id in
-                        Text(nameOf(id))
+                    ForEach(members, id: \.id) { member in
+                        Text(member.name)
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.C.inkMuted)
                     }
@@ -93,7 +99,9 @@ struct ProposalCardView: View {
                     .foregroundStyle(Theme.C.inkMuted)
                     .padding(.top, 8)
                 actions(
-                    confirm: targetId != nil ? "Send to \(proposal.targetIds.count)" : "Nothing to send",
+                    confirm: targetId != nil
+                        ? (proposal.groupId != nil ? "Send to group" : "Send to \(proposal.targetIds.count)")
+                        : "Nothing to send",
                     dismiss: "Cancel",
                     confirmDisabled: targetId == nil
                 )

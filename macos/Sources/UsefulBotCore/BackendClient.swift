@@ -2,6 +2,13 @@ import Foundation
 
 public enum BackendError: Error, LocalizedError, Equatable {
     case deviceTokenMissing
+    /// The Keychain was locked or blocked an interaction prompt, so the CLI
+    /// could not return the token.
+    case keychainLocked
+    /// The Keychain refused access to the stored token.
+    case keychainDenied
+    /// The owner dismissed the Keychain prompt.
+    case keychainCancelled
     case unauthorized
     case http(Int)
     case decoding
@@ -16,6 +23,12 @@ public enum BackendError: Error, LocalizedError, Equatable {
         switch self {
         case .deviceTokenMissing:
             return "The device token is missing from the Keychain. Run scripts/setup-local.mjs once."
+        case .keychainLocked:
+            return "The Keychain is locked or waiting on a prompt, so the device token could not be read. Unlock it and retry."
+        case .keychainDenied:
+            return "The Keychain refused access to the device token. Allow Useful Bot in Keychain Access, or run scripts/setup-local.mjs again."
+        case .keychainCancelled:
+            return "The Keychain prompt was dismissed. Retry and approve it to continue."
         case .unauthorized:
             return "The local server rejected the device token."
         case .http(let status):
@@ -228,15 +241,43 @@ public actor BackendClient {
         }
         if process.isRunning {
             process.terminate()
-            throw BackendError.deviceTokenMissing
+            // A Keychain unlock prompt ignores SIGTERM; give it a short grace
+            // then make sure the CLI cannot leak into the next launch.
+            let killDeadline = Date().addingTimeInterval(1)
+            while process.isRunning, Date() < killDeadline {
+                usleep(50_000)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            // Still running past the deadline means it was waiting on an
+            // interaction prompt, not that the item is absent.
+            throw BackendError.keychainLocked
         }
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw BackendError.deviceTokenMissing }
+        guard process.terminationStatus == 0 else {
+            throw Self.keychainFailure(for: process.terminationStatus)
+        }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let token = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !token.isEmpty else { throw BackendError.deviceTokenMissing }
         return token
+    }
+
+    /// Maps the `security` CLI exit status to a specific Keychain failure.
+    /// The CLI truncates the OSStatus to a process exit code, so the values
+    /// are the low byte of the matching `errSec*`: 36 is
+    /// `errSecInteractionNotAllowed`, 51 `errSecAuthFailed`, 128
+    /// `errSecUserCanceled`, and 44 `errSecItemNotFound` (the only one that
+    /// genuinely means the token is missing).
+    static func keychainFailure(for status: Int32) -> BackendError {
+        switch status {
+        case 36: return .keychainLocked
+        case 51: return .keychainDenied
+        case 128: return .keychainCancelled
+        default: return .deviceTokenMissing
+        }
     }
 
     /// Run a request and, on an expired or rotated session, sign in once more

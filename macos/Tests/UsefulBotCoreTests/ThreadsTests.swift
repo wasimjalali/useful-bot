@@ -31,6 +31,17 @@ import Testing
         #expect(mentions.mentionIds == ["b3"])
     }
 
+    @Test func mentionScanCapsTheRegexSourceWithoutLosingLongNames() {
+        // A large roster must not build an unbounded alternation; the cap
+        // keeps the longest names, so the most specific mention still wins.
+        var roster: [Speaker] = (0..<200).map {
+            Speaker(id: "b\($0)", kind: "bot", name: "Bot\($0)", title: "")
+        }
+        roster.append(Speaker(id: "long", kind: "bot", name: "A Very Long Name", title: ""))
+        let mentions = Threads.parseMentions("@A Very Long Name go", bots: roster)
+        #expect(mentions.mentionIds == ["long"])
+    }
+
     @Test func groupMembersExcludeTheDefaultBotGroupsAndHiddenBots() {
         let roster = [
             Speaker(id: "bot-useful", kind: "bot", name: "Useful Bot", title: ""),

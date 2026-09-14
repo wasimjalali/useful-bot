@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { MemoryStore, tagsForBot } from "../lib/memory.ts";
-import { actionSha256, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 
 export default defineTool({
@@ -16,7 +16,8 @@ export default defineTool({
     expiresAt: z.string().nullable(),
     botId: z.string().optional(),
   }),
-  execute: async (input) => {
+  execute: async (input, ctx) => {
+    const actor = approvalActor(ctx);
     const hash = actionSha256({
       tool: "memory.upsert",
       canonicalArgs: JSON.stringify(input),
@@ -26,9 +27,7 @@ export default defineTool({
       toolVersion: "1",
     });
     const rec = getApprovalStore().request({
-      sessionId: "live",
-      turnId: "live",
-      toolCallId: "live",
+      ...actor,
       tool: "memory.upsert",
       actionSha256: hash,
       preview: `memory ${input.title}`,
@@ -45,7 +44,7 @@ export default defineTool({
         body: input.body,
         audience: input.audience,
         expiresAt: input.expiresAt,
-        sessionId: "live",
+        sessionId: actor.sessionId,
       });
     });
   },

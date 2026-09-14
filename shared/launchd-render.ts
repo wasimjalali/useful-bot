@@ -1,4 +1,4 @@
-import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 export const LAUNCHD_LABELS = [
@@ -9,6 +9,26 @@ export const LAUNCHD_LABELS = [
 
 const SECRET_KEY = /<key>[^<]*(TOKEN|SECRET|PASSWORD|OPENCODE)[^<]*<\/key>/i;
 
+function hasUnsafeRootChars(value: string): boolean {
+  return value.includes("~") || value.includes("$") || value.includes("\0") || value.split("/").includes("..");
+}
+
+function canonicalizeRoot(label: string, value: string): string {
+  if (!existsSync(value)) {
+    return value;
+  }
+  let resolved: string;
+  try {
+    resolved = realpathSync(value);
+  } catch {
+    throw new Error(`${label}_unresolved`);
+  }
+  if (!isAbsolute(resolved) || hasUnsafeRootChars(resolved)) {
+    throw new Error(`${label}_unsafe`);
+  }
+  return resolved;
+}
+
 export function assertSafeRoot(label: string, value: string): string {
   if (typeof value !== "string" || !value) {
     throw new Error(`${label}_required`);
@@ -16,21 +36,27 @@ export function assertSafeRoot(label: string, value: string): string {
   if (!isAbsolute(value)) {
     throw new Error(`${label}_not_absolute`);
   }
-  if (value.includes("~") || value.includes("$") || value.includes("\0")) {
+  if (hasUnsafeRootChars(value)) {
     throw new Error(`${label}_unsafe`);
   }
-  if (value.includes("..")) {
-    throw new Error(`${label}_unsafe`);
-  }
-  return value;
+  return canonicalizeRoot(label, value);
+}
+
+export function xmlEscape(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 export function renderPlist(template: string, projectRoot: string, stateRoot: string): string {
   const project = assertSafeRoot("project_root", projectRoot);
   const state = assertSafeRoot("state_root", stateRoot);
   const rendered = template
-    .replaceAll("@@PROJECT_ROOT@@", project)
-    .replaceAll("@@STATE_ROOT@@", state);
+    .replaceAll("@@PROJECT_ROOT@@", xmlEscape(project))
+    .replaceAll("@@STATE_ROOT@@", xmlEscape(state));
   if (rendered.includes("@@")) {
     throw new Error("plist_unresolved_token");
   }
@@ -75,6 +101,7 @@ export function renderLaunchdTemplates(input: {
   stateRoot: string;
 }): { files: string[]; lints: Record<string, string[]> } {
   mkdirSync(input.outDir, { recursive: true, mode: 0o700 });
+  chmodSync(input.outDir, 0o700);
   const files: string[] = [];
   const lints: Record<string, string[]> = {};
   for (const label of LAUNCHD_LABELS) {
@@ -88,6 +115,7 @@ export function renderLaunchdTemplates(input: {
     }
     const dest = join(input.outDir, name);
     writeFileSync(dest, rendered, { encoding: "utf8", mode: 0o600 });
+    chmodSync(dest, 0o600);
     files.push(dest);
   }
   return { files, lints };

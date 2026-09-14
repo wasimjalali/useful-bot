@@ -1,15 +1,39 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const NODE = "/usr/local/bin/node";
 const ROOT = dirname(fileURLToPath(new URL(".", import.meta.url)));
 
-if (Number(process.versions.node.split(".")[0]) !== 24) {
-  process.stderr.write(`verify-release refuses Node ${process.versions.node}\n`);
+const [NODE_MAJOR, NODE_MINOR, NODE_PATCH] = process.versions.node.split(".").map(Number);
+if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1)) {
+  process.stderr.write(`verify-release refuses Node ${process.versions.node}, need >=24.11.1 <25\n`);
   process.exit(2);
+}
+
+function unitSuites() {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  const suites = (pkg.scripts?.test ?? "")
+    .split(/\s+/)
+    .map((token) => token.replace(/^["']|["']$/g, ""))
+    .filter((token) => token.endsWith(".test.ts"));
+  if (suites.length === 0) {
+    throw new Error("unit_suites_unresolved");
+  }
+  return suites;
+}
+
+const TMP_ROOT = mkdtempSync(join(tmpdir(), "ub-release-"));
+process.on("exit", () => {
+  rmSync(TMP_ROOT, { recursive: true, force: true });
+});
+
+function tail(text) {
+  if (!text) return "";
+  return text.length > 4000 ? text.slice(-4000) : text;
 }
 
 function run(args, timeoutMs) {
@@ -23,6 +47,8 @@ function run(args, timeoutMs) {
     ok: result.status === 0,
     status: result.status,
     signal: result.signal,
+    stdout: tail(result.stdout),
+    stderr: tail(result.stderr),
   };
 }
 
@@ -50,22 +76,14 @@ function skipped() {
 
 step("tsc", ["node_modules/typescript/bin/tsc", "--noEmit"], 60_000);
 step("tsc_web", ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "web/tsconfig.json"], 60_000);
+step("tsc_router", ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "router/tsconfig.json"], 60_000);
 step("unit", [
   "--experimental-strip-types",
   "--test",
   "--test-timeout",
   "15000",
-  "test/contracts.test.ts",
-  "test/write-approval.test.ts",
-  "test/memory.test.ts",
-  "test/session-owners.test.ts",
-  "test/eve-stream.test.ts",
-  "test/shell-store.test.ts",
-  "test/approvals-persist.test.ts",
-  "test/session-store.test.ts",
-  "test/launchd-render.test.ts",
-  "spikes/s3/approvals.test.ts",
-], 60_000);
+  ...unitSuites(),
+], 360_000);
 step("next_build", ["node_modules/next/dist/bin/next", "build", "web"], 180_000);
 step("launchd_render", [
   "--experimental-strip-types",
@@ -73,9 +91,9 @@ step("launchd_render", [
   "--project-root",
   ROOT,
   "--state-root",
-  "/tmp/ub-release-state",
+  join(TMP_ROOT, "state"),
   "--out",
-  "/tmp/ub-release-launchd",
+  join(TMP_ROOT, "launchd"),
 ], 15_000);
 
 const report = {

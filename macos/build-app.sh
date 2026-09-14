@@ -18,5 +18,7 @@ done
 mkdir -p "$APP/Contents/Resources/Brand/avatars" "$APP/Contents/Resources/Brand/motion"
 cp ../brand/avatars/*-256.png "$APP/Contents/Resources/Brand/avatars/"
 cp -R ../brand/motion/native "$APP/Contents/Resources/Brand/motion/"
-codesign --force --deep --sign - "$APP"
+# No nested code lives in the bundle, so signing the bundle directly is enough
+# and avoids the discouraged --deep flag.
+codesign --force --sign - "$APP" >/dev/null
 echo "built $APP"

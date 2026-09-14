@@ -391,7 +391,7 @@ function BotRow({
       </button>
       <button
         aria-label={`${bot.name} actions`}
-        className="icon-btn absolute right-0.5 top-1.5 size-6 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+        className="bot-row-actions icon-btn absolute right-0.5 top-1.5 size-6 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
         onClick={onMenu}
         type="button"
       >

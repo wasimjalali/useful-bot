@@ -7,7 +7,7 @@ import {
   reserveSend,
   threadIdFor,
 } from "../../shared/agent-store.ts";
-import { isAvatarColor, isAvatarShape } from "../../shared/bot-face.ts";
+import { AVATAR_COLORS, AVATAR_SHAPES, isAvatarColor, isAvatarShape } from "../../shared/bot-face.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 
@@ -31,6 +31,12 @@ export default defineTool({
     if (!target) {
       return { status: "not_found", error: `no bot with id ${requested}` };
     }
+    if (input.avatarShape !== undefined && !isAvatarShape(input.avatarShape)) {
+      return { status: "invalid", error: "unknown avatarShape", allowed: [...AVATAR_SHAPES] };
+    }
+    if (input.avatarColor !== undefined && !isAvatarColor(input.avatarColor)) {
+      return { status: "invalid", error: "unknown avatarColor", allowed: [...AVATAR_COLORS] };
+    }
     const sourceId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : null;
@@ -41,8 +47,8 @@ export default defineTool({
       petname: target.petname ?? "",
       title: (input.title ?? target.label).trim(),
       description: (input.description ?? target.description).trim(),
-      avatarShape: input.avatarShape && isAvatarShape(input.avatarShape) ? input.avatarShape : null,
-      avatarColor: input.avatarColor && isAvatarColor(input.avatarColor) ? input.avatarColor : null,
+      avatarShape: input.avatarShape ?? null,
+      avatarColor: input.avatarColor ?? null,
     };
     const changed = patch.name !== target.name
       || patch.title !== target.label

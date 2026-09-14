@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { approvalActor } from "../lib/approvals.ts";
 import { approvedWrite } from "../lib/write.ts";
 
 export default defineTool({
@@ -9,14 +10,12 @@ export default defineTool({
     content: z.string(),
     expectedSha256: z.string().nullable(),
   }),
-  execute(input) {
+  execute(input, ctx) {
     return approvedWrite({
       path: input.path,
       content: input.content,
       expectedSha256: input.expectedSha256,
-      sessionId: "live",
-      turnId: "live",
-      toolCallId: "live",
+      ...approvalActor(ctx),
     });
   },
 });

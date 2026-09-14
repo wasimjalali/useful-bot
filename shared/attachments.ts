@@ -61,6 +61,20 @@ export function isTextAttachment(name: string, type: string): boolean {
   return TEXT_EXT.has(attachmentExt(name));
 }
 
+/**
+ * A fence must be strictly longer than the longest backtick run in the body, or
+ * a file containing ``` can close its own block and inject text after it. The
+ * file name is flattened to one line so it cannot forge a new header.
+ */
+function fenceFor(text: string): string {
+  const longest = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
+function displayName(name: string): string {
+  return name.replace(/[\r\n\t]+/g, " ").slice(0, 120);
+}
+
 export function formatAttachedMessage(
   text: string,
   files: Array<{ name: string; text?: string; bytes: number }>,
@@ -68,9 +82,12 @@ export function formatAttachedMessage(
   const parts = [text.trim()];
   for (const file of files) {
     if (file.text) {
-      parts.push(`\n\nAttached file: ${file.name}\n\`\`\`\n${file.text}\n\`\`\``);
+      const fence = fenceFor(file.text);
+      parts.push(`\n\nAttached file: ${displayName(file.name)}\n${fence}\n${file.text}\n${fence}`);
     } else {
-      parts.push(`\n\nAttached file: ${file.name} (${file.bytes} bytes). Contents are not readable as text.`);
+      parts.push(
+        `\n\nAttached file: ${displayName(file.name)} (${file.bytes} bytes). Contents are not readable as text.`,
+      );
     }
   }
   return parts.join("").trim();
