@@ -67,11 +67,15 @@ export async function POST(request: Request) {
       active: body.active,
     });
     // The two stores have separate locks, so the bot can be deleted between the
-    // check above and the write. Deleting a bot sweeps its routines, but not one
-    // that did not exist yet: close the window here instead of leaving an orphan
-    // that fails every tick with `routine_bot_missing`.
+    // check above and the write. Narrow that window here; a rollback that
+    // cannot take the lock is not worth failing twice over, because the tick's
+    // orphan sweep collects whatever this misses.
     if (!readShell().bots.some((bot) => bot.id === routine.botId)) {
-      deleteRoutine(routine.id);
+      try {
+        deleteRoutine(routine.id);
+      } catch {
+        /* swept on the next tick */
+      }
       return NextResponse.json({ ok: false, error: "bot_missing" }, { status: 400 });
     }
     return NextResponse.json({ ok: true, routine });

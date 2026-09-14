@@ -136,7 +136,7 @@ public enum TranscriptBlocks {
         return blocks
     }
 
-    /// "Today 5:10 PM" / "Yesterday 9:04 AM" / "Wed, Aug 26 9:17 PM".
+    /// "Today" / "Yesterday" / "Wed, Aug 26".
     public static func dayLabel(
         _ date: Date,
         now: Date = Date(),
@@ -153,18 +153,6 @@ public enum TranscriptBlocks {
             return "Yesterday"
         }
         return string(from: date, format: "EEE, MMM d", calendar: calendar, timeZone: timeZone, locale: locale)
-    }
-
-    /// "5:10 PM" for a bubble's trailing stamp.
-    public static func timeLabel(
-        _ date: Date,
-        timeZone: TimeZone = .current,
-        locale: Locale = .current
-    ) -> String {
-        DateFormatterCache.shared.string(
-            from: date,
-            key: .init(template: nil, calendar: nil, timeZone: timeZone, locale: locale)
-        )
     }
 
     /// Parse the server's `new Date().toISOString()`, with and without the

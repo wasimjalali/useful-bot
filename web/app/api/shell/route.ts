@@ -68,14 +68,26 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
 
 /**
  * What a bot owns outside the shell store: its routines and its transcript.
- * Both are torn down before the roster commit, so a store that will not open
- * fails the request while the bot still exists. Doing it afterwards is how a
- * routine ends up firing forever for a bot nobody can see, which is exactly
- * what the swallowed `routines_locked` used to leave behind.
+ *
+ * This runs after the roster commit, not before it. Before means a commit that
+ * throws (a contended shell lock, a guard inside `applyShellAction`) has
+ * already destroyed the routines and the transcript of a bot that still
+ * exists, which is worse than the orphan it was trying to avoid. Nothing here
+ * can be atomic with the roster write anyway: three stores, three locks. So
+ * the roster is the authority, this is best effort, and `sweepOrphans` on the
+ * tick is what makes a failure here temporary instead of permanent.
+ *
+ * Returns the error when it could not finish, so the caller can say so rather
+ * than swallow it the way this path used to.
  */
-function detachBot(botId: string): void {
-  deleteRoutinesForBot(botId);
-  deleteThread(botId);
+function detachBot(botId: string): string | null {
+  try {
+    deleteRoutinesForBot(botId);
+    deleteThread(botId);
+    return null;
+  } catch (err) {
+    return errorCode(err, "detach_failed");
+  }
 }
 
 /** The action a card sends must match every field the proposal carried. */
@@ -208,19 +220,12 @@ export async function PUT(request: Request) {
     }
 
     const action = body.action;
-    // Ordered ahead of the roster commit deliberately: this one throws on a
-    // locked store, and the error has to reach the owner instead of leaving a
-    // bot's routines running behind its back. The roster checks the commit
-    // would make run here first, so a refused delete never strips a bot that
-    // survives it.
-    if (action?.type === "deleteBot") {
-      if (current.bots.length <= 1) throw new Error("shell_last_bot");
-      if (!current.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
-      detachBot(action.botId);
-    }
     const next = action
       ? updateShell((shell) => applyShellAction(shell, action).store)
       : current;
+    // Only once the roster commit stood. A failure here is reported, not
+    // swallowed, and the tick's sweep clears whatever was left behind.
+    const detachError = action?.type === "deleteBot" ? detachBot(action.botId) : null;
     let queued = 0;
     if (action) {
       try {
@@ -236,7 +241,7 @@ export async function PUT(request: Request) {
         /* the transcript note is best effort */
       }
     }
-    return NextResponse.json({ ok: true, store: next, queued });
+    return NextResponse.json({ ok: true, store: next, queued, detachError });
   } catch (err) {
     const guarded = apiError(err);
     if (guarded) return guarded;

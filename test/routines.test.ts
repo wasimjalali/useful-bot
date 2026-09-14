@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,16 +12,19 @@ import {
   dueRoutines,
   listRoutines,
   claimManualRun,
+  claimRunNow,
   nextOccurrence,
   parseRoutinesStore,
   pendingRoutines,
   requestRoutineRun,
+  parseSchedule,
   parseSchedules,
   readRoutine,
   readRoutinesStore,
   routineDueAt,
   routineNextRun,
   RUN_HISTORY_MAX,
+  sweepOrphanRoutines,
   updateRoutine,
   zonedWallToUtc,
   type Routine,
@@ -410,6 +413,138 @@ test("pendingRoutines puts a requested run before the scheduled backlog", () => 
     requestRoutineRun(asked.id);
     const now = new Date("2026-09-14T12:00:00.000Z");
     assert.deepEqual(pendingRoutines(now).map((item) => item.name), ["Asked", "Scheduled"]);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a key a newer build wrote survives a read, a write and a re-parse", () => {
+  const box = sandbox();
+  try {
+    const routine = createRoutine({
+      botId: "bot-a",
+      name: "Keep",
+      instruction: "x",
+      schedules: [{ kind: "daily", time: "09:00" }],
+    });
+    const raw = JSON.parse(readFileSync(box.path, "utf8")) as Record<string, unknown>;
+    (raw.routines as Record<string, unknown>[])[0].futureField = { nested: true };
+    raw.futureDoc = "keep me";
+    writeFileSync(box.path, JSON.stringify(raw));
+
+    updateRoutine(routine.id, { name: "Renamed" });
+
+    const after = JSON.parse(readFileSync(box.path, "utf8")) as Record<string, unknown>;
+    const first = (after.routines as Record<string, unknown>[])[0];
+    assert.deepEqual(first.futureField, { nested: true });
+    assert.equal(after.futureDoc, "keep me");
+    assert.equal(first.name, "Renamed");
+    // The carrier itself never reaches the file, and re-parsing what we wrote
+    // must not nest one `extra` inside another.
+    assert.ok(!("extra" in first));
+    assert.ok(!("extra" in after));
+    assert.deepEqual(readRoutinesStore().routines[0].extra, { futureField: { nested: true } });
+  } finally {
+    box.restore();
+  }
+});
+
+test("a modelled key smuggled into extra is refused, not silently dropped", () => {
+  const box = sandbox();
+  try {
+    createRoutine({ botId: "bot-a", name: "Real", instruction: "x", schedules: [] });
+    const raw = JSON.parse(readFileSync(box.path, "utf8")) as Record<string, unknown>;
+    (raw.routines as Record<string, unknown>[])[0].extra = { name: "Impostor", other: 1 };
+    writeFileSync(box.path, JSON.stringify(raw));
+    const parsed = readRoutinesStore().routines[0];
+    assert.equal(parsed.name, "Real");
+    assert.deepEqual(parsed.extra, { other: 1 });
+  } finally {
+    box.restore();
+  }
+});
+
+test("a pass that changes nothing does not rewrite the file", () => {
+  const box = sandbox();
+  try {
+    createRoutine({
+      botId: "bot-a",
+      name: "Idle",
+      instruction: "x",
+      schedules: [{ kind: "daily", time: "09:00" }],
+    });
+    const before = statSync(box.path).mtimeMs;
+    const bytes = readFileSync(box.path, "utf8");
+    // Nothing is due, so the claim returns null without touching the document.
+    assert.equal(claimDueRoutine("rtn_missing", new Date("2026-09-14T12:00:00.000Z")), null);
+    assert.equal(statSync(box.path).mtimeMs, before);
+    assert.equal(readFileSync(box.path, "utf8"), bytes);
+  } finally {
+    box.restore();
+  }
+});
+
+test("claimRunNow consumes a waiting request so the tick cannot claim it too", () => {
+  const box = sandbox();
+  try {
+    const routine = createRoutine({ botId: "bot-a", name: "Manual", instruction: "x", schedules: [] });
+    assert.equal(requestRoutineRun(routine.id), true);
+    const claim = claimRunNow(routine.id);
+    assert.equal(claim?.routine.id, routine.id);
+    // The ticket is spent: the pump's own claim finds nothing waiting.
+    assert.equal(claimManualRun(routine.id), null);
+    assert.equal(readRoutine(routine.id)?.manualRunRequested, false);
+  } finally {
+    box.restore();
+  }
+});
+
+test("claimRunNow works without a waiting request and leaves the schedule alone", () => {
+  const box = sandbox();
+  try {
+    const routine = createRoutine({
+      botId: "bot-a",
+      name: "Tested",
+      instruction: "x",
+      schedules: [{ kind: "daily", time: "09:00" }],
+      timezone: "Europe/Berlin",
+    });
+    assert.equal(claimRunNow(routine.id)?.routine.name, "Tested");
+    // A Test run never consumes the next scheduled slot.
+    assert.equal(readRoutine(routine.id)?.lastRunAt, null);
+    assert.equal(claimRunNow("rtn_missing"), null);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a date the calendar does not have is refused", () => {
+  assert.equal(parseSchedule({ kind: "once", date: "2026-02-31", time: "09:00" }), null);
+  assert.equal(parseSchedule({ kind: "once", date: "2025-02-29", time: "09:00" }), null);
+  assert.equal(parseSchedule({ kind: "once", date: "2026-04-31", time: "09:00" }), null);
+  assert.deepEqual(
+    parseSchedule({ kind: "once", date: "2024-02-29", time: "09:00" }),
+    { kind: "once", date: "2024-02-29", time: "09:00" },
+  );
+  // And it never reaches the scheduler through a hand-edited file either.
+  assert.equal(
+    nextOccurrence({ kind: "once", date: "2026-02-31", time: "09:00" }, "UTC", new Date("2026-01-01T00:00:00.000Z")),
+    null,
+  );
+});
+
+test("routines whose bot is gone are swept, and an empty roster sweeps nothing", () => {
+  const box = sandbox();
+  try {
+    const live = createRoutine({ botId: "bot-a", name: "Live", instruction: "x", schedules: [] });
+    const orphan = createRoutine({ botId: "bot-gone", name: "Orphan", instruction: "x", schedules: [] });
+    // An empty roster reads as a failed shell load, never as "delete it all".
+    assert.deepEqual(sweepOrphanRoutines([]), []);
+    assert.equal(readRoutinesStore().routines.length, 2);
+    assert.deepEqual(sweepOrphanRoutines(["bot-a"]), [orphan.id]);
+    assert.deepEqual(readRoutinesStore().routines.map((item) => item.id), [live.id]);
+    // Idempotent: a second sweep finds nothing and rewrites nothing.
+    assert.deepEqual(sweepOrphanRoutines(["bot-a"]), []);
   } finally {
     box.restore();
   }

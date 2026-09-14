@@ -607,6 +607,25 @@ export function deleteThread(botId: string, path = agentStorePath()): boolean {
   }, path);
 }
 
+/**
+ * Drop every thread whose bot is gone from the roster. Same reason as
+ * `sweepOrphanRoutines`: the roster and this store have separate locks, so a
+ * delete that fails between them would otherwise leave the transcript behind
+ * for good, and the delete dialog promises it is gone.
+ */
+export function sweepOrphanThreads(liveBotIds: Iterable<string>, path = agentStorePath()): string[] {
+  const live = new Set<string>();
+  for (const botId of liveBotIds) live.add(threadIdFor(botId));
+  // An empty roster reads as a failed shell load, not as an empty app.
+  if (live.size === 0) return [];
+  return withAgentStore((store) => {
+    const orphans = store.threads.filter((thread) => !live.has(thread.id));
+    if (orphans.length === 0) return [];
+    store.threads = store.threads.filter((thread) => live.has(thread.id));
+    return orphans.map((thread) => thread.id);
+  }, path);
+}
+
 export function threadSnapshot(botId: string, path = agentStorePath()): {
   events: AgentEvent[];
   proposals: Proposal[];

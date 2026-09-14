@@ -67,29 +67,35 @@ export default defineTool({
     });
     await waitUntilNotPending(store, record.id);
     return executeIfApproved(store, record.id, hash, () => {
-      // The approval belongs to the revision on the card, so a bot renamed or
-      // re-profiled while the owner was deciding is not deleted. Checked here
-      // and again inside the roster lock below.
-      const live = readShell().bots.find((bot) => bot.id === target.id);
-      if (!live) throw new Error("bot_missing");
-      if (live.updatedAt !== target.updatedAt) throw new Error("bot_changed");
-      // Routines and the transcript live in their own stores and outlive the
-      // bot. They go first: a store that will not open then fails the delete,
-      // where doing it afterwards left routines coming due forever for a bot
-      // nobody can see.
-      const routines = deleteRoutinesForBot(target.id);
-      deleteThread(target.id);
+      // Re-read under the store lock: the roster can have changed while the
+      // owner was deciding. The approval belongs to the revision on the card,
+      // so a bot renamed or re-profiled in the meantime is not deleted.
       const next = updateShell((current) => {
-        const inLock = current.bots.find((bot) => bot.id === target.id);
-        if (!inLock) throw new Error("bot_missing");
-        if (inLock.updatedAt !== target.updatedAt) throw new Error("bot_changed");
+        const live = current.bots.find((bot) => bot.id === target.id);
+        if (!live) throw new Error("bot_missing");
+        if (live.updatedAt !== target.updatedAt) throw new Error("bot_changed");
         return applyShellAction(current, { type: "deleteBot", botId: target.id }).store;
       });
+      // Routines and the transcript outlive their bot in their own stores, and
+      // none of the three locks can be taken together. So the roster commits
+      // first and this follows: tearing down ahead of it would destroy the
+      // data of a bot the revision check then refuses to delete. A failure
+      // here is reported rather than swallowed, and the tick's sweep clears
+      // anything this could not.
+      let routines = 0;
+      let detachError: string | null = null;
+      try {
+        routines = deleteRoutinesForBot(target.id);
+        deleteThread(target.id);
+      } catch (err) {
+        detachError = err instanceof Error ? err.message : "detach_failed";
+      }
       return {
         status: "deleted",
         botId: target.id,
         name: target.name,
         routinesRemoved: routines,
+        detachError,
         remaining: next.bots.length,
       };
     });

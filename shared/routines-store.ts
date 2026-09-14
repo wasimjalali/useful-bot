@@ -31,14 +31,19 @@ export const SCHEDULES_MAX = 10;
 const NAME_MAX = 80;
 const INSTRUCTION_MAX = 4000;
 const ERROR_MAX = 300;
-const LOCK_TIMEOUT_MS = 4000;
 /**
- * Shorter than the timeout on purpose. Every critical section here is
- * synchronous, so a lock older than this belongs to a process that died, and a
- * stale window longer than the wait would make every writer fail for as long
- * as it lasts instead of clearing the corpse and carrying on.
+ * Stale must stay below timeout: a waiter that gives up before it is allowed
+ * to clear a dead lock turns one crashed process into a store nobody can write
+ * to for the whole stale window. That inversion (4s wait, 15s stale) is what
+ * these two used to have.
+ *
+ * The gap between them is the margin a live holder gets. Every critical
+ * section here is synchronous and small, but it ends in an fsync, and a loaded
+ * disk can make that take longer than it reads on paper. Three seconds is far
+ * past any healthy write and still well inside the eight a waiter will sit for.
  */
-const LOCK_STALE_MS = 2000;
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 3000;
 /** How far ahead a weekly search has to look to find the next matching day. */
 const SEARCH_DAYS = 8;
 
@@ -148,7 +153,13 @@ function collectExtra(rec: Record<string, unknown>, known: Set<string>): Record<
   const out: Record<string, unknown> = {};
   const carried = rec.extra;
   if (carried && typeof carried === "object" && !Array.isArray(carried)) {
-    Object.assign(out, carried as Record<string, unknown>);
+    for (const [key, value] of Object.entries(carried as Record<string, unknown>)) {
+      // A modelled key smuggled in here would be dropped on the next write
+      // without a word, since `plainRoutine` spreads extras first and then
+      // overwrites them. Refusing it keeps that silent loss impossible.
+      if (known.has(key)) continue;
+      out[key] = value;
+    }
   }
   for (const [key, value] of Object.entries(rec)) {
     if (key === "extra" || known.has(key)) continue;
@@ -547,6 +558,13 @@ export function withRoutinesStore<T>(fn: (store: RoutinesStore) => T, path = rou
     // A claim that found nothing due, or any other read-only pass, leaves the
     // document byte-identical. Rewriting it would still cost an fsync and move
     // the mtime, which is the signal the stale-lock sweep reads.
+    //
+    // The snapshot is taken after decoding, so junk on disk (an over-long
+    // name, an unknown timezone, a routine with no id) is already gone from
+    // both sides of the comparison and no longer gets rewritten away by a pass
+    // that changes nothing else. That is deliberate: every read normalises the
+    // same way, so nothing downstream ever sees the junk, and healing the file
+    // is not worth an fsync on every tick.
     if (after !== before) writeSerialized(after, path);
     return result;
   } finally {
@@ -646,6 +664,27 @@ export function deleteRoutinesForBot(botId: string, path = routinesStorePath()):
     const before = store.routines.length;
     store.routines = store.routines.filter((routine) => routine.botId !== botId);
     return before - store.routines.length;
+  }, path);
+}
+
+/**
+ * Drop every routine whose bot is gone from the roster. The delete path
+ * already sweeps a bot's routines, but it cannot be atomic with the roster
+ * write: the two stores have separate locks, so a crash or a contended lock
+ * between them leaves a routine that comes due forever for a bot nobody can
+ * see. The tick calls this, which makes that state self-healing instead of
+ * permanent.
+ */
+export function sweepOrphanRoutines(liveBotIds: Iterable<string>, path = routinesStorePath()): string[] {
+  const live = new Set(liveBotIds);
+  // An empty roster is not a reason to delete everything; that reads as a
+  // failed shell load, not as every bot having been removed.
+  if (live.size === 0) return [];
+  return withRoutinesStore((store) => {
+    const orphans = store.routines.filter((routine) => !live.has(routine.botId));
+    if (orphans.length === 0) return [];
+    store.routines = store.routines.filter((routine) => live.has(routine.botId));
+    return orphans.map((routine) => routine.id);
   }, path);
 }
 

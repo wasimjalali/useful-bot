@@ -4,7 +4,7 @@ import { readRoutine, requestRoutineRun } from "../../shared/routines-store.ts";
 
 export default defineTool({
   description:
-    "Run a routine now, outside its schedule, the way the owner's Test run button does. The run starts within a few seconds and lands as a turn in the owning bot's chat, so do not wait for it here. A manual run does not consume the next scheduled slot, and a paused routine still runs when asked by hand. Call listRoutines for the id.",
+    "Run a routine now, outside its schedule, the way the owner's Test run button does. The run starts within a few seconds and lands as a turn in the owning bot's chat, so do not wait for it here. A manual run does not consume the next scheduled slot. A paused routine stays paused from here: ask the owner to resume it rather than promising them a run. Call listRoutines for the id.",
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
   }),

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyShellAction, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
-import { appendAgentEvent, listThreadEvents, readProposal } from "../shared/agent-store.ts";
+import { appendAgentEvent, listThreadEvents, readProposal, sweepOrphanThreads } from "../shared/agent-store.ts";
 import { HANDOFF_DEPTH_MAX, listHandoffs, queueHandoff } from "../shared/handoffs.ts";
 import { UNTRUSTED_PREAMBLE, wrapUntrusted } from "../shared/untrusted.ts";
 import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
@@ -785,4 +785,86 @@ test("new tool schemas reject the arguments a model gets wrong", () => {
   assert.equal(parse(deleteRoutine, { routineId: "rtn_a" }), true);
   assert.equal(parse(deleteRoutine, {}), false);
   assert.equal(parse(listRoutines, {}), true);
+});
+
+test("deleteBot refuses an ambiguous name instead of guessing which bot", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(shell, "CEO");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    // `uniqueName` stops the app itself from making two names that differ only
+    // in case, so this is the shape a hand-edited or migrated store arrives in.
+    const withTwin = readShell();
+    const original = withTwin.bots.find((bot) => bot.name === "Research")!;
+    withTwin.bots = [...withTwin.bots, { ...original, id: `${original.id}-twin`, name: "research" }];
+    writeShell(withTwin);
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+
+    const result = await run<{ status: string; hint?: string }>(deleteBot, { botId: "RESEARCH" });
+    assert.equal(result.status, "ambiguous");
+    // The hint has to carry the ids, or the model cannot resolve it.
+    assert.match(result.hint ?? "", /delete_bot again with one of these ids/);
+    // Nothing was proposed, so nothing can be approved by mistake.
+    assert.equal(approvals.listPending().length, 0);
+    assert.equal(readShell().bots.length, 4);
+
+    // An exact id still resolves, even while the names collide.
+    const exact = run<{ status: string }>(deleteBot, { botId: original.id });
+    const card = pendingApproval(approvals);
+    approvals.decide(card.id, "approve", card.actionSha256);
+    assert.equal((await exact).status, "deleted");
+  } finally {
+    box.restore();
+  }
+});
+
+test("deleteBot takes the bot's transcript with it", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(shell, "CEO");
+    const research = idOf(shell, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    appendAgentEvent(research, { kind: "assistant", text: "something it said" });
+    assert.equal(listThreadEvents(research).length, 1);
+
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+    const approved = run<{ status: string; detachError: string | null }>(deleteBot, { botId: research });
+    const card = pendingApproval(approvals);
+    approvals.decide(card.id, "approve", card.actionSha256);
+    const result = await approved;
+
+    assert.equal(result.status, "deleted");
+    assert.equal(result.detachError, null);
+    // The card promises the transcript goes too, so the row must be gone, not
+    // just emptied.
+    assert.equal(listThreadEvents(research).length, 0);
+    assert.deepEqual(sweepOrphanThreads(readShell().bots.map((bot) => bot.id)), []);
+  } finally {
+    box.restore();
+  }
+});
+
+test("railAction refuses to hide the bot the owner is talking to", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(shell, "CEO");
+    const research = idOf(shell, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+
+    const self = await run<{ status: string }>(railAction, { action: "hide", botId: ceo });
+    assert.equal(self.status, "refused");
+    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.hidden, false);
+
+    // Hiding a different bot is still ordinary, reversible work.
+    const other = await run<{ status: string }>(railAction, { action: "hide", botId: research });
+    assert.equal(other.status, "applied");
+    assert.equal(readShell().bots.find((bot) => bot.id === research)?.hidden, true);
+  } finally {
+    box.restore();
+  }
 });

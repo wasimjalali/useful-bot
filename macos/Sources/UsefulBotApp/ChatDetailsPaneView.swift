@@ -270,6 +270,11 @@ private struct RoutineEditorView: View {
 
     private enum Field: Hashable { case name, instruction }
 
+    /// The zone the server reads this routine's wall clock in. A new routine
+    /// has none yet, and the server stamps the host's, so that is what the
+    /// editor shows until it comes back.
+    private var routineZone: String { routine?.timezone ?? TimeZone.current.identifier }
+
     private var isNew: Bool { routine == nil }
     private var busy: Bool { routine.map { model.routineBusy.contains($0.id) } ?? false }
 
@@ -446,6 +451,7 @@ private struct RoutineEditorView: View {
                 ForEach(Array(schedules.enumerated()), id: \.offset) { index, schedule in
                     ScheduleRowView(
                         schedule: schedule,
+                        timezone: routineZone,
                         onChange: { next in replace(index, with: next) },
                         onRemove: { remove(index) }
                     )
@@ -583,6 +589,10 @@ private struct RoutineEditorView: View {
 /// One editable schedule: repeat kind, the day it lands on, and the time.
 private struct ScheduleRowView: View {
     let schedule: RoutineSchedule
+    /// The zone the server fires this routine in. The picker is read and
+    /// written in it, not in the viewer's own zone: a one-shot edited from
+    /// another zone near midnight would otherwise move a day.
+    let timezone: String
     let onChange: (RoutineSchedule) -> Void
     let onRemove: () -> Void
 
@@ -606,7 +616,7 @@ private struct ScheduleRowView: View {
                 Menu {
                     Button("Every week") { onChange(.weekly(days: days.isEmpty ? [1] : days, time: schedule.time)) }
                     Button("Every day") { onChange(.daily(time: schedule.time)) }
-                    Button("Once") { onChange(.once(date: Self.today(), time: schedule.time)) }
+                    Button("Once") { onChange(.once(date: today(), time: schedule.time)) }
                 } label: {
                     Text(kindLabel)
                         .font(.system(size: 13))
@@ -644,13 +654,14 @@ private struct ScheduleRowView: View {
                 DatePicker(
                     "",
                     selection: Binding(
-                        get: { Self.day(from: date) },
-                        set: { onChange(.once(date: Self.iso(from: $0), time: time)) }
+                        get: { day(from: date) },
+                        set: { onChange(.once(date: iso(from: $0), time: time)) }
                     ),
                     displayedComponents: .date
                 )
                 .labelsHidden()
                 .datePickerStyle(.field)
+                .environment(\.timeZone, zone)
                 .fixedSize()
                 .accessibilityLabel("Date")
                 .accessibilityIdentifier("routine-schedule-date")
@@ -718,25 +729,31 @@ private struct ScheduleRowView: View {
         }
     }
 
-    private static func today() -> String {
+    private func today() -> String {
         iso(from: Date())
     }
 
-    /// The wire date is a civil day, not an instant. It is read and written in
-    /// the viewer's own zone, which is the one `DatePicker` renders in, so the
-    /// day the owner sees in the control is the day that goes on the wire.
-    private static let wireDate: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
-    private static func iso(from date: Date) -> String {
-        wireDate.string(from: date)
+    private var zone: TimeZone {
+        TimeZone(identifier: timezone) ?? .current
     }
 
-    private static func day(from iso: String) -> Date {
-        wireDate.date(from: iso) ?? Date()
+    /// The wire date is a civil day, not an instant, so it is read and written
+    /// in the routine's own zone. The picker renders in the same zone, so the
+    /// day the owner sees in the control is the day that goes on the wire and
+    /// the day the server fires on.
+    private func wireDate() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
+
+    private func iso(from date: Date) -> String {
+        wireDate().string(from: date)
+    }
+
+    private func day(from iso: String) -> Date {
+        wireDate().date(from: iso) ?? Date()
     }
 }

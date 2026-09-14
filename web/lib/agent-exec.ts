@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { appendAgentEvent, type ThreadKind } from "../../shared/agent-store.ts";
+import { appendAgentEvent, sweepOrphanThreads, type ThreadKind } from "../../shared/agent-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import {
@@ -19,6 +19,7 @@ import {
   claimManualRun,
   claimRunNow,
   pendingRoutines,
+  sweepOrphanRoutines,
   type Routine,
 } from "../../shared/routines-store.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
@@ -439,23 +440,30 @@ async function executeRoutine(
   if (!bot) throw new Error("routine_bot_missing");
   if (bot.hidden) throw new Error("routine_bot_hidden");
   const threadKind: ThreadKind = bot.kind === "group" ? "group" : "bot";
-  // The note keeps the transcript honest: without it a scheduled turn reads as
-  // something the owner typed.
-  appendAgentEvent(bot.id, {
-    kind: "note",
-    threadKind,
-    text: trigger === "manual"
-      ? `Test run of routine "${routine.name}".`
-      : `Routine "${routine.name}" ran.`,
-  });
-  // The instruction is stored verbatim and sent verbatim, so the live stream
-  // echo pairs with this durable row instead of rendering a second bubble.
-  appendAgentEvent(bot.id, {
-    kind: "user",
-    threadKind,
-    sessionId: bot.sessionId ?? "",
-    text: routine.instruction,
-  });
+  // These two go in before the turn so the live stream echo pairs with the
+  // durable row rather than rendering a second bubble. If the agent store
+  // itself will not open, there is no transcript to leave hanging and no point
+  // spending an eve turn nobody will see, so that fails the run outright.
+  try {
+    // The note keeps the transcript honest: without it a scheduled turn reads
+    // as something the owner typed.
+    appendAgentEvent(bot.id, {
+      kind: "note",
+      threadKind,
+      text: trigger === "manual"
+        ? `Test run of routine "${routine.name}".`
+        : `Routine "${routine.name}" ran.`,
+    });
+    // The instruction is stored verbatim and sent verbatim.
+    appendAgentEvent(bot.id, {
+      kind: "user",
+      threadKind,
+      sessionId: bot.sessionId ?? "",
+      text: routine.instruction,
+    });
+  } catch (err) {
+    throw new Error(`routine_transcript_unavailable: ${err instanceof Error ? err.message : "unknown"}`);
+  }
   // Every path out of the turn leaves an outcome row. The claim has already
   // moved the anchor, so there is no retry: a turn that throws must say so in
   // the transcript instead of leaving the note and the instruction hanging
@@ -504,13 +512,22 @@ async function executeRoutine(
  */
 export async function runRoutineNow(routineId: string): Promise<RoutineRunResult> {
   if (routinesInflight.has(routineId)) throw new Error("routine_busy");
-  // Take the durable ticket, not just the local one: a request an agent tool
-  // raised has to be consumed here, or the next tick claims it and runs the
-  // same routine a second time.
-  const claim = claimRunNow(routineId);
-  if (!claim) throw new Error("routine_missing");
-  const routine = claim.routine;
-  routinesInflight.add(routine.id);
+  // Claimed before anything can yield. The pump re-reads this set immediately
+  // before its own claim, and both paths run to their `add` without an await,
+  // so the single-threaded runtime makes this an actual mutex: a Test run and
+  // a tick can no longer hold two eve turns open on one routine.
+  routinesInflight.add(routineId);
+  let routine: Routine;
+  try {
+    // Take the durable ticket too: a request an agent tool raised has to be
+    // consumed here, or the next tick claims it and runs this a second time.
+    const claim = claimRunNow(routineId);
+    if (!claim) throw new Error("routine_missing");
+    routine = claim.routine;
+  } catch (err) {
+    routinesInflight.delete(routineId);
+    throw err;
+  }
   try {
     const result = await executeRoutine(routine, "manual");
     appendRoutineRun(routine.id, { status: "ok", sessionId: result.sessionId });
@@ -528,35 +545,51 @@ export async function runRoutineNow(routineId: string): Promise<RoutineRunResult
 // once, so callers queue behind the run in progress.
 let routineQueue: Promise<unknown> = Promise.resolve();
 
-export function pumpRoutines(limit = 2): Promise<{
+export type RoutinePumpResult = {
   ran: Array<{ id: string; name: string }>;
   failed: Array<{ id: string; error: string }>;
-}> {
+  /** Candidates a contended store lock made someone else's turn this tick. */
+  skipped: Array<{ id: string; reason: string }>;
+  /** Routines dropped because the bot that owned them is gone. */
+  swept: string[];
+};
+
+export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
   const run = routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
   routineQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
-async function pumpRoutinesOnce(limit: number): Promise<{
-  ran: Array<{ id: string; name: string }>;
-  failed: Array<{ id: string; error: string }>;
-}> {
+async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
   const ran: Array<{ id: string; name: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
+  const skipped: Array<{ id: string; reason: string }> = [];
+  // Before anything is claimed: a routine whose bot is gone can never run, and
+  // it would otherwise take a slot in every tick forever.
+  const swept = sweepOrphans();
   const now = new Date();
   const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
   for (const candidate of candidates.slice(0, limit)) {
+    // Re-checked here, not only when the list was built: a Test run can have
+    // started on this routine since, and it marks the set before it yields.
+    if (routinesInflight.has(candidate.id)) continue;
     // Both claims flip their marker inside the store lock, so a tick that raced
     // this one finds the request already taken or nothing due. A contended
     // lock is that race, not a fault in this routine: skip the candidate and
-    // leave the rest of the batch alone rather than failing the whole pump.
+    // leave the rest of the batch alone. It is not a failed run either, so it
+    // does not go in `failed`, where it would read as the routine misbehaving.
     let manual: { routine: Routine } | null = null;
     let claim: { routine: Routine } | null = null;
     try {
       manual = claimManualRun(candidate.id);
       claim = manual ?? claimDueRoutine(candidate.id, now);
     } catch (err) {
-      failed.push({ id: candidate.id, error: runFailure(err) });
+      const error = runFailure(err);
+      if (error === "routines_locked") {
+        skipped.push({ id: candidate.id, reason: error });
+      } else {
+        failed.push({ id: candidate.id, error });
+      }
       continue;
     }
     if (!claim) continue;
@@ -573,7 +606,27 @@ async function pumpRoutinesOnce(limit: number): Promise<{
       routinesInflight.delete(candidate.id);
     }
   }
-  return { ran, failed };
+  return { ran, failed, skipped, swept };
+}
+
+/**
+ * Drop routines and transcripts belonging to bots the roster no longer has.
+ * Deleting a bot sweeps its own, but the roster, the routines and the agent
+ * store have three separate locks: a delete that failed between them, or a
+ * routine created for a bot deleted in the same moment, leaves work nothing
+ * can ever complete. Running it on the tick makes that state temporary.
+ */
+function sweepOrphans(): string[] {
+  try {
+    const live = readShell().bots.map((bot) => bot.id);
+    const routines = sweepOrphanRoutines(live);
+    sweepOrphanThreads(live);
+    return routines;
+  } catch {
+    // A locked or unreadable store is the next tick's problem, never this
+    // tick's failure: the sweep is maintenance, not the work.
+    return [];
+  }
 }
 
 export function routinesInFlight(): string[] {
