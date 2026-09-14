@@ -12,6 +12,9 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var authorBotId: String?
     public var targetBotIds: [String]
     public var handoffId: String?
+    /// Parsed server write time. Live stream rows have none until the durable
+    /// event lands, so the transcript renders timestamps only when dated.
+    public var at: Date?
 
     public init(
         id: String,
@@ -20,7 +23,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         author: String? = nil,
         authorBotId: String? = nil,
         targetBotIds: [String] = [],
-        handoffId: String? = nil
+        handoffId: String? = nil,
+        at: Date? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -29,6 +33,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         self.authorBotId = authorBotId
         self.targetBotIds = targetBotIds
         self.handoffId = handoffId
+        self.at = at
     }
 }
 
@@ -59,7 +64,8 @@ public enum Transcript {
                 author: event.authorName,
                 authorBotId: event.authorBotId,
                 targetBotIds: event.targetBotIds,
-                handoffId: event.handoffId
+                handoffId: event.handoffId,
+                at: TranscriptBlocks.date(fromISO8601: event.at)
             ))
             if kind == .user {
                 durableUserCounts[text, default: 0] += 1
@@ -74,13 +80,14 @@ public enum Transcript {
             switch message.role {
             case .user:
                 if consume(&durableUserCounts, message.text) { continue }
-                rows.append(TranscriptRow(id: message.id, kind: .user, text: message.text))
+                rows.append(TranscriptRow(id: message.id, kind: .user, text: message.text, at: message.at))
             case .assistant:
                 if consume(&durableAssistantCounts, message.text) { continue }
                 rows.append(TranscriptRow(
                     id: message.id,
                     kind: .assistant,
-                    text: message.text
+                    text: message.text,
+                    at: message.at
                 ))
             }
         }

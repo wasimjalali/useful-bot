@@ -11,8 +11,7 @@ struct ChatView: View {
     /// Measured width of the chat column, so user bubbles cap at 85% of the
     /// column rather than 85% of the wider scroll container.
     @State private var columnWidth: CGFloat = 720
-    @State private var settingsGearFrame = CGRect.zero
-    @State private var routinesButtonFrame = CGRect.zero
+    @State private var infoButtonFrame = CGRect.zero
 
     var body: some View {
         HStack(spacing: 0) {
@@ -42,16 +41,16 @@ struct ChatView: View {
 
             if model.settingsOpen, let bot = model.selectedBot {
                 SettingsPaneView(bot: bot, onDeleteRequest: { onDeleteRequest(bot) })
-                    .dismissOnOutsideClick(triggers: { [settingsGearFrame] }) {
+                    .dismissOnOutsideClick(triggers: { [infoButtonFrame] }) {
                         model.settingsOpen = false
                     }
                     .onExitCommand(perform: closePanes)
             }
 
-            if model.routinesOpen, let bot = model.selectedBot {
-                RoutinesPaneView(bot: bot)
-                    .dismissOnOutsideClick(triggers: { [routinesButtonFrame] }) {
-                        model.routinesOpen = false
+            if model.detailsOpen, let bot = model.selectedBot {
+                ChatDetailsPaneView(bot: bot)
+                    .dismissOnOutsideClick(triggers: { [infoButtonFrame] }) {
+                        model.detailsOpen = false
                     }
                     .onExitCommand(perform: closePanes)
             }
@@ -60,8 +59,7 @@ struct ChatView: View {
     }
 
     private func closePanes() {
-        model.settingsOpen = false
-        model.routinesOpen = false
+        model.pane = .none
     }
 
     // MARK: - Approvals
@@ -121,32 +119,23 @@ struct ChatView: View {
 
     private func header(_ bot: ShellBot) -> some View {
         HStack(spacing: DesignTokens.Space.headerGap) {
-            BotAvatarView(bot: bot, size: 24)
-            HStack(spacing: 8) {
-                Text(bot.name)
-                    .font(.system(size: DesignTokens.FontSize.chatName, weight: .semibold))
-                    .foregroundStyle(Theme.C.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if bot.isGroup, !memberNames(bot).isEmpty {
-                    Text("\(memberNames(bot).count) members")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkFaint)
-                }
+            if bot.isGroup, !members(bot).isEmpty {
+                AvatarStackView(bots: members(bot), size: 24, maxVisible: 3)
+            } else {
+                BotAvatarView(bot: bot, size: 24)
             }
+            Text(bot.name)
+                .font(.system(size: DesignTokens.FontSize.chatName, weight: .semibold))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: 0)
-            NativeIconButton(systemImage: "calendar.badge.clock", size: 32, iconSize: 15) {
-                model.routinesOpen.toggle()
+            NativeIconButton(systemImage: "info.circle", size: 32, iconSize: 15) {
+                model.detailsOpen.toggle()
             }
-            .help("Routines")
-            .accessibilityLabel("Routines")
-            .trackWindowFrame($routinesButtonFrame)
-            NativeIconButton(systemImage: "gearshape", size: 32, iconSize: 15) {
-                model.settingsOpen.toggle()
-            }
-            .help("Bot settings")
-            .accessibilityLabel("Bot settings")
-            .trackWindowFrame($settingsGearFrame)
+            .help("Chat details")
+            .accessibilityLabel("Chat details")
+            .trackWindowFrame($infoButtonFrame)
         }
         .padding(.horizontal, 16)
         .frame(minHeight: DesignTokens.Space.chatHead)
@@ -154,16 +143,16 @@ struct ChatView: View {
         .overlay(alignment: .bottom) { Hairline() }
     }
 
-    private func memberNames(_ bot: ShellBot) -> [String] {
-        guard let store = model.store else { return [] }
-        return bot.memberIds.compactMap { id in store.bots.first { $0.id == id }?.name }
-            .filter { !$0.isEmpty }
+    private func members(_ bot: ShellBot) -> [ShellBot] {
+        groupMemberBots(bot, store: model.store)
     }
 
     // MARK: - Transcript
 
     private func transcript(_ bot: ShellBot) -> some View {
-        ScrollViewReader { proxy in
+        let roster = model.store?.bots ?? []
+        let blocks = TranscriptBlocks.build(rows: model.transcript, selectedBotId: bot.id)
+        return ScrollViewReader { proxy in
             ScrollView {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.transcriptGap) {
                         if model.showOnboarding {
@@ -176,13 +165,25 @@ struct ChatView: View {
                                 onDismiss: { model.dismissOnboarding(botId: bot.id) }
                             )
                         }
-                        ForEach(model.transcript) { row in
-                            TranscriptRowView(
-                                row: row,
-                                bot: bot,
-                                bots: model.store?.bots ?? [],
-                                maxBubbleWidth: columnWidth * 0.85
-                            )
+                        ForEach(blocks) { block in
+                            switch block {
+                            case .dayDivider(_, let label):
+                                DayDividerRow(label: label)
+                            case .message(let row, let recipients):
+                                TranscriptRowView(
+                                    row: row,
+                                    bot: bot,
+                                    bots: roster,
+                                    recipients: recipients,
+                                    maxBubbleWidth: columnWidth * 0.85
+                                )
+                            case .summary(_, let count, let botIds):
+                                BotMetaRow(
+                                    prefix: "\(count) messages with",
+                                    botIds: botIds,
+                                    roster: roster
+                                )
+                            }
                         }
                         ForEach(model.openProposals) { proposal in
                             if let store = model.store {
@@ -267,7 +268,7 @@ struct ChatView: View {
 
     private func emptyCopy(_ bot: ShellBot) -> String {
         if bot.isGroup {
-            let names = memberNames(bot)
+            let names = members(bot).map(\.name)
             return "Group chat with \(names.isEmpty ? "no members yet" : names.joined(separator: ", ")). Untargeted messages go to the orchestrator; @name directs one bot."
         }
         return "Runs locally on this Mac. Writes and commands need your approval."
@@ -294,81 +295,223 @@ private struct ChatColumnWidthKey: PreferenceKey {
     }
 }
 
+/// The centered date rule from the Grok Bot reference: "Today 5:10 PM".
+private struct DayDividerRow: View {
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Text(label)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(Theme.C.inkFaint)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// The centered cross-bot strip: "Messaged Growth", "Message from CEO",
+/// "2 messages with 2 Bots". Avatars come from the live roster; a deleted bot
+/// falls back to a plain count.
+private struct BotMetaRow: View {
+    let prefix: String
+    let botIds: [String]
+    var names: [String] = []
+    let roster: [ShellBot]
+
+    private var bots: [ShellBot] {
+        botIds.compactMap { id in roster.first { $0.id == id } }
+    }
+
+    private var label: String {
+        ChatAttribution.metaLabel(idCount: botIds.count, resolved: bots.map(\.name), names: names)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: 6) {
+                Text(prefix)
+                if !bots.isEmpty {
+                    AvatarStackView(bots: bots, size: 16, maxVisible: 2)
+                }
+                Text(label)
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(Theme.C.inkMuted)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// One bubble row. User turns stay right-aligned; bot turns render as the
+/// left gray bubble from the reference, with the speaker's name and face only
+/// in a room where more than one bot can answer.
 struct TranscriptRowView: View {
     let row: TranscriptRow
     let bot: ShellBot
     var bots: [ShellBot] = []
+    var recipients: [String] = []
     var maxBubbleWidth: CGFloat = 612
 
+    private let bubbleRadius: CGFloat = 18
+    private let timeReserve: CGFloat = 58
+    private let avatarReserve: CGFloat = 34
+
     var body: some View {
-        if row.kind == .user {
-            HStack(alignment: .top, spacing: 0) {
-                Spacer(minLength: 60)
-                Text(row.text)
-                    .font(.system(size: DesignTokens.FontSize.chatBody))
-                    .lineSpacing(7)
-                    .foregroundStyle(Theme.C.ink)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Theme.C.sunken)
-                    .clipShape(
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: 16,
-                            bottomTrailingRadius: 6,
-                            topTrailingRadius: 16,
-                            style: .continuous
-                        )
+        switch row.kind {
+        case .user:
+            userRow
+        case .handoff:
+            // The reference hides the dispatch text and marks the send itself.
+            BotMetaRow(
+                prefix: "Messaged",
+                botIds: recipients.isEmpty ? row.targetBotIds : recipients,
+                names: ["a teammate"],
+                roster: bots
+            )
+        case .post:
+            let author = row.author ?? ""
+            let attributed = row.authorBotId != nil || !author.isEmpty
+            VStack(alignment: .leading, spacing: 8) {
+                if attributed {
+                    BotMetaRow(
+                        prefix: "Message from",
+                        botIds: row.authorBotId.map { [$0] } ?? [],
+                        // A deleted bot that stored no name still reads as a
+                        // teammate rather than as "1 Bot".
+                        names: [author.isEmpty ? "a teammate" : author],
+                        roster: bots
                     )
-                    .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
-                    .textSelection(.enabled)
+                }
+                // The strip already names and faces the author.
+                bubbleRow(showsSpeaker: false)
             }
-        } else {
+        case .note:
             HStack(alignment: .top, spacing: 12) {
-                BotAvatarView(bot: speaker, size: 24)
-                VStack(alignment: .leading, spacing: 4) {
-                    if showLabel {
-                        Text(label.uppercased())
+                noteAvatar
+                VStack(alignment: .leading, spacing: 2) {
+                    if let label = ChatAttribution.label(speakerName: speaker?.name, author: row.author) {
+                        Text(label)
                             .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
                             .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                             .foregroundStyle(Theme.C.inkFaint)
                     }
-                    if row.kind == .note {
-                        Text(row.text)
-                            .font(.system(size: 13))
-                            .foregroundStyle(Theme.C.inkMuted)
-                    } else {
-                        ChatMarkdownView(text: row.text)
-                    }
+                    Text(row.text)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
                 }
-                .padding(.top, 2)
                 Spacer(minLength: 0)
+            }
+        case .assistant:
+            bubbleRow(showsSpeaker: true)
+        }
+    }
+
+    private var userRow: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Spacer(minLength: 60)
+            Text(row.text)
+                .font(.system(size: DesignTokens.FontSize.chatBody))
+                .lineSpacing(7)
+                .foregroundStyle(Theme.C.ink)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Theme.C.sunken)
+                .clipShape(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 16,
+                        bottomLeadingRadius: 16,
+                        bottomTrailingRadius: 6,
+                        topTrailingRadius: 16,
+                        style: .continuous
+                    )
+                )
+                .frame(maxWidth: max(160, maxBubbleWidth - (row.at == nil ? 0 : timeReserve)), alignment: .trailing)
+                .textSelection(.enabled)
+            if let at = row.at {
+                Text(TranscriptBlocks.timeLabel(at))
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.C.inkFaint)
+                    .padding(.bottom, 3)
+                    .fixedSize()
             }
         }
     }
 
-    private var speaker: ShellBot {
-        guard let id = row.authorBotId else { return bot }
-        return bots.first { $0.id == id } ?? bot
-    }
-
-    private var showLabel: Bool {
-        row.kind == .handoff || row.kind == .post || row.kind == .note || !(row.author ?? "").isEmpty
-    }
-
-    private var label: String {
-        if row.kind == .handoff, !targetNames.isEmpty {
-            return "Handoff to \(targetNames.joined(separator: ", "))"
+    private func bubbleRow(showsSpeaker: Bool) -> some View {
+        let attributed = showsSpeaker && row.authorBotId != nil && row.authorBotId != bot.id
+        return HStack(alignment: .bottom, spacing: 8) {
+            if attributed, let speaker {
+                BotAvatarView(bot: speaker, size: 24)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                if attributed, let speakerLabel {
+                    Text(speakerLabel)
+                        .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
+                        .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
+                        .foregroundStyle(Theme.C.inkFaint)
+                }
+                bubble(showsAvatar: attributed && speaker != nil)
+            }
+            Spacer(minLength: 4)
+            if let at = row.at {
+                Text(TranscriptBlocks.timeLabel(at))
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.C.inkFaint)
+                    .padding(.bottom, 3)
+                    .fixedSize()
+            }
         }
-        if row.kind == .post {
-            return "\(row.author ?? "A bot") to this chat"
-        }
-        return row.author ?? bot.name
     }
 
-    private var targetNames: [String] {
-        row.targetBotIds.compactMap { id in bots.first { $0.id == id }?.name }
-            .filter { !$0.isEmpty }
+    private func bubble(showsAvatar: Bool) -> some View {
+        // Only reserve room for chrome that actually renders: an undated
+        // replay has no trailing time, a strip-attributed post has no avatar.
+        let chrome = (row.at == nil ? 0 : timeReserve) + (showsAvatar ? avatarReserve : 0)
+        return ChatMarkdownView(text: row.text, expandsWidth: false)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Theme.C.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: bubbleRadius, style: .continuous))
+            .frame(maxWidth: max(160, maxBubbleWidth - chrome), alignment: .leading)
+    }
+
+    /// A note's face: the speaker's, the chat owner's for its own note, and
+    /// none at all when the author id names a bot the roster no longer has.
+    @ViewBuilder
+    private var noteAvatar: some View {
+        switch ChatAttribution.face(
+            authorBotId: row.authorBotId,
+            ownerBotId: bot.id,
+            speakerResolved: speaker != nil
+        ) {
+        case .speaker:
+            if let speaker { BotAvatarView(bot: speaker, size: 20) }
+        case .owner:
+            BotAvatarView(bot: bot, size: 20)
+        case .unknown:
+            // Keep the gutter so the note still lines up with its neighbours.
+            Color.clear.frame(width: 20, height: 20)
+        }
+    }
+
+    /// The bot that spoke, when the row is attributed and it is not the chat
+    /// owner itself.
+    private var speaker: ShellBot? {
+        guard let id = row.authorBotId, id != bot.id else { return nil }
+        return bots.first { $0.id == id }
+    }
+
+    private var speakerLabel: String? {
+        guard speaker != nil || (row.authorBotId != nil && row.authorBotId != bot.id) else { return nil }
+        return ChatAttribution.label(speakerName: speaker?.name, author: row.author)
     }
 }
 
@@ -376,14 +519,16 @@ private struct WorkingRow: View {
     let bot: ShellBot
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .bottom, spacing: 8) {
             BrandMotionView(size: 24, color: BrandAssets.colorID(for: bot), avatar: true)
-            HStack(spacing: 10) {
-                Text("Working.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.inkMuted)
-            }
-            .padding(.top, 1)
+            Text("Working.")
+                .font(.system(size: DesignTokens.FontSize.chatBody))
+                .foregroundStyle(Theme.C.inkMuted)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Theme.C.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            Spacer(minLength: 0)
         }
     }
 }

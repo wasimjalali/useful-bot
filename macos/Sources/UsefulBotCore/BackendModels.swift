@@ -124,6 +124,8 @@ public struct ShellStore: Codable, Equatable, Sendable {
 
 public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
     public let id: String
+    /// Server write time, ISO 8601. Older stores omit it, so it stays optional.
+    public let at: String?
     public let kind: String
     public let text: String
     public let authorBotId: String?
@@ -133,12 +135,13 @@ public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
     public let handoffId: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text, authorBotId, authorName, targetBotIds, proposalId, handoffId
+        case id, at, kind, text, authorBotId, authorName, targetBotIds, proposalId, handoffId
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        at = try? c.decodeIfPresent(String.self, forKey: .at)
         kind = try c.decode(String.self, forKey: .kind)
         text = (try? c.decode(String.self, forKey: .text)) ?? ""
         authorBotId = try? c.decodeIfPresent(String.self, forKey: .authorBotId)

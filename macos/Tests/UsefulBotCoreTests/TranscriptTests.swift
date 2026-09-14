@@ -92,4 +92,38 @@ import Testing
         let rows = Transcript.merge(events: [handoff, note], messages: [])
         #expect(rows.map(\.kind) == [.handoff, .note])
     }
+
+    @Test func durableEventTimeLandsOnTheRow() throws {
+        let event = try JSONDecoder().decode(
+            AgentEvent.self,
+            from: Data(#"{"id":"a1","at":"2026-09-14T17:10:00.000Z","kind":"assistant","text":"done","targetBotIds":[]}"#.utf8)
+        )
+        let rows = Transcript.merge(events: [event], messages: [])
+        #expect(rows.first?.at == TranscriptBlocks.date(fromISO8601: "2026-09-14T17:10:00Z"))
+    }
+
+    @Test func undatedEventAndLiveMessageHaveNoTime() throws {
+        let event = try JSONDecoder().decode(
+            AgentEvent.self,
+            from: Data(#"{"id":"a1","kind":"assistant","text":"done","targetBotIds":[]}"#.utf8)
+        )
+        let rows = Transcript.merge(
+            events: [event],
+            messages: [ChatMessage(id: "m1", role: .assistant, text: "live")]
+        )
+        #expect(rows.count == 2)
+        #expect(rows.allSatisfy { $0.at == nil })
+    }
+
+    @Test func liveMessageTimeSurvivesTheMerge() throws {
+        let stamp = TranscriptBlocks.date(fromISO8601: "2026-09-14T17:10:00Z")
+        let rows = Transcript.merge(
+            events: [],
+            messages: [
+                ChatMessage(id: "u1", role: .user, text: "hi", at: stamp),
+                ChatMessage(id: "a1", role: .assistant, text: "hello", at: stamp),
+            ]
+        )
+        #expect(rows.map(\.at) == [stamp, stamp])
+    }
 }

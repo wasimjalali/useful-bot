@@ -7,6 +7,9 @@ import UsefulBotCore
 struct ChatMarkdownView: View {
     let text: String
     var textColor: Color = Theme.C.ink
+    /// Chat bubbles hug their content up to a cap; full-width surfaces such as
+    /// proposal cards keep the expand-to-fill behavior.
+    var expandsWidth = true
 
     var body: some View {
         let blocks = ChatMarkdownParser.blocks(from: text)
@@ -18,7 +21,7 @@ struct ChatMarkdownView: View {
         .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
         .foregroundStyle(textColor)
         .lineSpacing(7)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: expandsWidth ? .infinity : nil, alignment: .leading)
         .textSelection(.enabled)
     }
 

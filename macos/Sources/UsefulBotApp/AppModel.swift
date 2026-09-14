@@ -51,32 +51,32 @@ final class AppModel: ObservableObject {
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
 
-    /// Which inline pane is open. One value, so settings and routines can
-    /// never fight over the 320pt sidebar.
+    /// Which inline pane is open. One value, so settings and the details pane
+    /// can never fight over the 320pt sidebar.
     enum Pane: Equatable {
         case none
         case settings
-        case routines
+        case details
     }
 
     @Published var pane: Pane = .none {
         didSet {
             // The create stub notice is per visit, not per bot.
-            if pane != .routines { routineNotice = false }
+            if pane != .details { routineNotice = false }
         }
     }
     @Published var routineNotice = false
 
-    /// Inline settings pane, toggled from the chat header.
+    /// Inline settings pane, opened from the details pane's gear.
     var settingsOpen: Bool {
         get { pane == .settings }
         set { pane = newValue ? .settings : (pane == .settings ? .none : pane) }
     }
 
-    /// Inline routines pane, toggled from the header button next to settings.
-    var routinesOpen: Bool {
-        get { pane == .routines }
-        set { pane = newValue ? .routines : (pane == .routines ? .none : pane) }
+    /// Inline chat details pane, toggled from the info button in the header.
+    var detailsOpen: Bool {
+        get { pane == .details }
+        set { pane = newValue ? .details : (pane == .details ? .none : pane) }
     }
     /// ⌘K palette.
     @Published var searchOpen = false
@@ -131,6 +131,13 @@ final class AppModel: ObservableObject {
     var selectedBot: ShellBot? {
         guard let store else { return nil }
         return store.bots.first { $0.id == selectedBotId } ?? store.bots.first
+    }
+
+    /// The live row behind a rendered snapshot. A menu that toggles a flag has
+    /// to read it here: the snapshot can be an echo behind, and acting on a
+    /// stale value would undo the tap.
+    func liveBot(_ bot: ShellBot) -> ShellBot {
+        store?.bots.first { $0.id == bot.id } ?? bot
     }
 
     var startingMessage: String {
@@ -331,19 +338,17 @@ final class AppModel: ObservableObject {
             projection = StreamProjection()
             rebuildTranscript()
             if let sessionId = bot.sessionId, !sessionId.isEmpty {
-                // The durable rows already render the whole history. Replaying
-                // the session must not republish them row by row: that makes
-                // the transcript look like it is generating again and jitters
-                // the scroll. Apply the replay silently and only start
-                // publishing once it reaches the live tail.
-                let durableTailId = state.events.last?.id
-                var atLiveTail = durableTailId == nil
+                // The durable rows already render the whole history, so the
+                // replay is applied silently and only starts publishing once
+                // `ReplayGate` says it reached the live tail.
+                let durable = ReplayGate.Durable(events: state.events)
+                var atLiveTail = durable.startsLive
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
-                    projection.apply(event)
-                    if !atLiveTail, let durableTailId, event.id == durableTailId {
-                        atLiveTail = true
+                    if !atLiveTail {
+                        atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
+                    projection.apply(event, live: atLiveTail)
                     if atLiveTail {
                         publishTranscript()
                     }
@@ -509,7 +514,7 @@ final class AppModel: ObservableObject {
                 ) {
                     guard generation == self.sendGeneration, chatGen == self.chatGeneration, self.sendBotId == bot.id else { return }
                     if event.type == "message.received" { sawUserTurn = true }
-                    self.projection.apply(event)
+                    self.projection.apply(event, live: true)
                     self.publishTranscript()
                 }
                 self.publishTranscript(force: true)
@@ -587,6 +592,7 @@ final class AppModel: ObservableObject {
             fresh.apply(EveEvent(
                 type: event.kind == "user" ? "message.received" : "message.completed",
                 id: event.id,
+                metaAt: event.at,
                 message: event.text,
                 messageDelta: nil,
                 turnId: nil
@@ -596,7 +602,7 @@ final class AppModel: ObservableObject {
             type: "message.received",
             id: "\(EveStream.optimisticUserPrefix)\(UUID().uuidString)",
             message: message
-        ))
+        ), live: true)
         return fresh
     }
 
@@ -947,7 +953,7 @@ final class AppModel: ObservableObject {
             self.memoryError = nil
             self.rebuildTranscript()
             self.settingsOpen = false
-            self.routinesOpen = false
+            self.detailsOpen = false
             self.routineNotice = false
             // Reload outside the chain: an SSE replay must not block writes.
             self.startReload()
