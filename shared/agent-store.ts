@@ -24,8 +24,13 @@ import { dirname, join } from "node:path";
 export const AGENT_SCHEMA = 1;
 export const EVENT_CAP_PER_THREAD = 300;
 export const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
-const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
+/**
+ * Stale below timeout, or one crashed holder makes every writer fail for the
+ * whole stale window instead of clearing the corpse. The gap between them is
+ * the margin a live holder gets before its lock is stolen mid-fsync.
+ */
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 3000;
 const TEXT_MAX = 4000;
 
 export type ThreadKind = "bot" | "group";
@@ -590,6 +595,51 @@ export function clearThread(botId: string, path = agentStorePath()): void {  wit
       thread.sessionId = "";
       thread.updatedAt = new Date().toISOString();
     }
+  }, path);
+}
+
+/**
+ * Drop a deleted bot's thread outright. `clearThread` is for a bot that stays:
+ * it empties the log and keeps the row. Nothing ever reads the row of a bot
+ * that no longer exists, so leaving one behind only grows the file.
+ */
+export function deleteThread(botId: string, path = agentStorePath()): boolean {
+  return withAgentStore((store) => {
+    const id = threadIdFor(botId);
+    const before = store.threads.length;
+    // Keyed on `id`, like every other lookup here. `sweepOrphanThreads` keeps a
+    // row when either field is live, and the asymmetry is on purpose: in a
+    // hand-edited store where the two diverge, `{id: live, botId: deleted}` is
+    // operationally the live bot's thread, so deleting the other bot must not
+    // take it. A row both of whose bots are gone is the sweep's to collect.
+    store.threads = store.threads.filter((item) => item.id !== id);
+    return store.threads.length !== before;
+  }, path);
+}
+
+/**
+ * Drop every thread whose bot is gone from the roster. Same reason as
+ * `sweepOrphanRoutines`: the roster and this store have separate locks, so a
+ * delete that fails between them would otherwise leave the transcript behind
+ * for good, and the delete dialog promises it is gone.
+ */
+export function sweepOrphanThreads(liveBotIds: Iterable<string>, path = agentStorePath()): string[] {
+  const live = new Set<string>();
+  for (const botId of liveBotIds) {
+    live.add(botId);
+    live.add(threadIdFor(botId));
+  }
+  // An empty roster reads as a failed shell load, not as an empty app.
+  if (live.size === 0) return [];
+  // Either field is enough, which is looser than `deleteThread` on purpose: a
+  // sweep deletes rows nobody asked it to, so it errs towards keeping, and a
+  // hand-edited row that still names one live bot is not an orphan.
+  const owned = (thread: AgentThread) => live.has(thread.id) || live.has(thread.botId);
+  return withAgentStore((store) => {
+    const orphans = store.threads.filter((thread) => !owned(thread));
+    if (orphans.length === 0) return [];
+    store.threads = store.threads.filter(owned);
+    return orphans.map((thread) => thread.id);
   }, path);
 }
 

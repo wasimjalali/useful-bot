@@ -58,6 +58,18 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "There is nobody left to send this to."
         case "csrf":
             return "The local server rejected that write. Try again."
+        case "routine_missing":
+            return "That routine no longer exists."
+        case "routine_busy":
+            return "That routine is already running."
+        case "routine_name_required":
+            return "Give the routine a name."
+        case "routine_instruction_required":
+            return "Give the routine an instruction."
+        case "routine_limit":
+            return "This bot already has the maximum number of routines."
+        case "agent_credential_missing":
+            return "Routines need the agent credential. Restart the local services."
         default:
             return code.replacingOccurrences(of: "_", with: " ").capitalized
         }
@@ -88,7 +100,13 @@ public enum ApprovalDecision: String, Sendable {
     case deny
 }
 
-private struct ShellResponse: Decodable { let store: ShellStore }
+private struct ShellResponse: Decodable {
+    let store: ShellStore
+    /// Set when the server committed the roster change but could not finish
+    /// what hangs off it (a deleted bot's routines or transcript). The tick
+    /// sweeps the remainder, so this is a warning, never a failure.
+    let detachError: String?
+}
 private struct StateResponse: Decodable {
     let events: [AgentEvent]?
     let proposals: [Proposal]?
@@ -101,6 +119,8 @@ private struct ProvidersResponse: Decodable {
     let error: String?
 }
 private struct ApprovalsResponse: Decodable { let approvals: [ApprovalItem] }
+private struct RoutinesResponse: Decodable { let routines: [Routine]? }
+private struct RoutineResponse: Decodable { let routine: Routine? }
 private struct MemoryResponse: Decodable { let notes: [MemoryNote] }
 private struct AttachmentResponse: Decodable {
     let name: String?
@@ -444,6 +464,115 @@ public actor BackendClient {
         try Self.expectOK(response)
     }
 
+    // MARK: - Routines
+
+    public func routines(botId: String) async throws -> [Routine] {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/routines"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        try Self.expectShellOK(data, response)
+        guard let decoded = try? JSONDecoder().decode(RoutinesResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.routines ?? []
+    }
+
+    @discardableResult
+    public func createRoutine(
+        botId: String,
+        name: String,
+        instruction: String,
+        schedules: [RoutineSchedule],
+        timezone: String = TimeZone.current.identifier
+    ) async throws -> Routine {
+        let body: [String: Any] = [
+            "botId": botId,
+            "name": name,
+            "instruction": instruction,
+            "schedules": schedules.map(\.wire),
+            "timezone": timezone,
+        ]
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/routines"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        try Self.expectShellOK(data, response)
+        guard let routine = (try? JSONDecoder().decode(RoutineResponse.self, from: data))?.routine else {
+            throw BackendError.decoding
+        }
+        return routine
+    }
+
+    /// Patch one routine. Only the keys the caller passes are sent, so a form
+    /// that edits the name cannot blank the schedule.
+    @discardableResult
+    public func updateRoutine(
+        id: String,
+        name: String? = nil,
+        instruction: String? = nil,
+        schedules: [RoutineSchedule]? = nil,
+        active: Bool? = nil,
+        timezone: String? = nil
+    ) async throws -> Routine {
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let instruction { body["instruction"] = instruction }
+        if let schedules { body["schedules"] = schedules.map(\.wire) }
+        if let active { body["active"] = active }
+        if let timezone { body["timezone"] = timezone }
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(
+                url: client.base.appendingPathComponent("api/routines/\(Self.pathComponent(id))")
+            )
+            request.httpMethod = "PATCH"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        try Self.expectShellOK(data, response)
+        guard let routine = (try? JSONDecoder().decode(RoutineResponse.self, from: data))?.routine else {
+            throw BackendError.decoding
+        }
+        return routine
+    }
+
+    public func deleteRoutine(id: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(
+                url: client.base.appendingPathComponent("api/routines/\(Self.pathComponent(id))")
+            )
+            request.httpMethod = "DELETE"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectShellOK(data, response)
+    }
+
+    /// Start a manual run. The server answers as soon as the turn is queued;
+    /// the outcome lands in the routine's run history.
+    public func runRoutine(id: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(
+                url: client.base.appendingPathComponent("api/routines/\(Self.pathComponent(id))/run")
+            )
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectShellOK(data, response)
+    }
+
     public func memoryNotes(botId: String) async throws -> [MemoryNote] {
         let (data, response) = try await perform { client, _ in
             var components = URLComponents(
@@ -552,12 +681,27 @@ public actor BackendClient {
 
     /// Send any shell action, optionally resolving a proposal in the same
     /// write. Returns the authoritative store the server echoed back.
+    /// A shell action's full answer: the new store plus anything the server
+    /// could not finish alongside it.
+    public struct ShellActionResult: Sendable {
+        public let store: ShellStore
+        public let detachError: String?
+    }
+
     @discardableResult
     public func shellAction(
         _ action: [String: Any],
         proposalId: String? = nil,
         proposalStatus: String? = nil
     ) async throws -> ShellStore {
+        try await shellActionResult(action, proposalId: proposalId, proposalStatus: proposalStatus).store
+    }
+
+    public func shellActionResult(
+        _ action: [String: Any],
+        proposalId: String? = nil,
+        proposalStatus: String? = nil
+    ) async throws -> ShellActionResult {
         var body: [String: Any] = ["action": action]
         if let proposalId { body["proposalId"] = proposalId }
         if let proposalStatus { body["proposalStatus"] = proposalStatus }
@@ -577,7 +721,7 @@ public actor BackendClient {
             }
             throw BackendError.decoding
         }
-        return decoded.store
+        return ShellActionResult(store: decoded.store, detachError: decoded.detachError)
     }
 
     /// Resolve a proposal without a shell action (the dismiss path).

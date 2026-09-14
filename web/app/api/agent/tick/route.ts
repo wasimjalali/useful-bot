@@ -6,13 +6,17 @@ import {
   agentsEnabled,
   handoffsInFlight,
   pumpHandoffs,
+  pumpRoutines,
+  routinesInFlight,
+  sweepOrphanState,
 } from "../../../../lib/agent-exec";
 
 /**
- * Handoff pump. The sending agent tool only queues a record, so delivery is
- * driven from here: the UI poll POSTs every few seconds and wakePump() POSTs
- * once right after a send. The agent key reaches this route as a header; the
- * browser reaches it as a same-origin desktop request.
+ * Handoff pump and routine scheduler. The sending agent tool only queues a
+ * record, so delivery is driven from here: the UI poll POSTs every few seconds
+ * and wakePump() POSTs once right after a send. The same tick is where due
+ * routines fire. The agent key reaches this route as a header; the browser
+ * reaches it as a same-origin desktop request.
  */
 
 function keyMatches(candidate: string | null): boolean {
@@ -50,22 +54,31 @@ export async function GET(request: Request) {
     ok: true,
     enabled: agentsEnabled(),
     inFlight: handoffsInFlight(),
+    routinesInFlight: routinesInFlight(),
   });
 }
 
 export async function POST(request: Request) {
-  if (!agentsEnabled()) {
-    return NextResponse.json({ ok: false, error: "agent_credential_missing" }, { status: 503 });
-  }
+  // Authorisation first: an unauthorised caller should not learn from the
+  // status code whether this app has an agent credential.
   if (!(await authorised(request))) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   // The UI polls this every few seconds; the bucket is generous but stops a
   // runaway loop from piling up pump work. Key on a hash, never the raw token.
+  // Ahead of the sweep as well as the pumps: both take file locks.
   const identity = request.headers.get("x-ub-agent-key") ?? request.headers.get("cookie") ?? "local";
   const key = createHash("sha256").update(identity).digest("hex").slice(0, 16);
   if (rateLimited(`tick:${key}`, 120)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
+  // Ahead of the credential gate on purpose. Routines whose bot is gone are
+  // visible through the routines route, which needs no credential, and a
+  // teardown that failed before a key was revoked would otherwise wait for one
+  // to come back before it healed.
+  const swept = sweepOrphanState();
+  if (!agentsEnabled()) {
+    return NextResponse.json({ ok: false, error: "agent_credential_missing", swept: swept.length }, { status: 503 });
   }
   const raw = Number(new URL(request.url).searchParams.get("limit") ?? "2");
   const limit = Number.isFinite(raw) ? Math.min(4, Math.max(1, Math.trunc(raw))) : 2;
@@ -73,10 +86,15 @@ export async function POST(request: Request) {
   // background: the UI poll would otherwise stay blocked and stop scheduling
   // ticks, and queue state is durable anyway.
   void pumpHandoffs(limit).catch(() => undefined);
+  // Routines share the tick so the owner needs nothing running but the app.
+  // Both pumps are single-flight, so a fast poll cannot stack work.
+  void pumpRoutines(limit).catch(() => undefined);
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),
     started: true,
+    swept: swept.length,
     inFlight: handoffsInFlight(),
+    routinesInFlight: routinesInFlight(),
   });
 }

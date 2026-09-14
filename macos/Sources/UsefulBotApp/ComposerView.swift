@@ -88,7 +88,9 @@ struct ComposerView: View {
                     cornerRadius: stacked || focused ? DesignTokens.Radius.composerExpanded : 26,
                     style: .continuous
                 )
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                // The caret is thin and the placeholder greys out either way,
+                // so the edge is what tells you the field is live.
+                .strokeBorder(focused ? Theme.C.borderStrong : Theme.C.border, lineWidth: 1)
             )
             .clipShape(
                 RoundedRectangle(
@@ -98,6 +100,11 @@ struct ComposerView: View {
             )
             .raiseShadow()
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: stacked)
+            // The corner radius also tracks focus, and without this the shape
+            // snapped the instant the field took the caret. Clicking into the
+            // composer is the most common interaction in the app; it should
+            // ease like everything else.
+            .animation(.easeOut(duration: DesignTokens.Motion.fast), value: focused)
             // `.composer-plus-menu` sits at the leading edge, above the field.
             .overlay(alignment: .topLeading) {
                 if plusOpen {
@@ -311,26 +318,40 @@ struct ComposerView: View {
     }
 }
 
-private struct PlusButtonStyle: ButtonStyle {
+/// `@State` inside a `ButtonStyle` has no view identity to hang off, so the
+/// hover flag these used to keep there was shared and went stale: the plus and
+/// the chip would stay lit after the pointer left, or light up a beat late.
+/// The flag belongs to a real view, which is what these wrappers are.
+private struct HoverBox<Content: View>: View {
+    @ViewBuilder var content: (Bool) -> Content
+
     @State private var hovering = false
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(hovering ? Theme.C.borderStrong : Theme.C.sunken)
-            .clipShape(Circle())
+    var body: some View {
+        content(hovering)
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: hovering)
             .onHover { hovering = $0 }
     }
 }
 
-private struct ModeChipStyle: ButtonStyle {
-    @State private var hovering = false
-
+private struct PlusButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(hovering ? Theme.C.ink : Theme.C.inkMuted)
-            .animation(.easeOut(duration: DesignTokens.Motion.fast), value: hovering)
-            .onHover { hovering = $0 }
+        HoverBox { hovering in
+            configuration.label
+                .background(hovering ? Theme.C.borderStrong : Theme.C.sunken)
+                .clipShape(Circle())
+                .opacity(configuration.isPressed ? 0.75 : 1)
+        }
+    }
+}
+
+private struct ModeChipStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HoverBox { hovering in
+            configuration.label
+                .foregroundStyle(hovering ? Theme.C.ink : Theme.C.inkMuted)
+                .opacity(configuration.isPressed ? 0.75 : 1)
+        }
     }
 }
 

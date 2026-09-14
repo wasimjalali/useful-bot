@@ -61,8 +61,13 @@ function save(sessions: Record<string, BrowserSession>, path = defaultWebSession
   }
 }
 
-const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
+/**
+ * Stale below timeout, or one crashed holder makes every writer fail for the
+ * whole stale window instead of clearing the corpse. The gap between them is
+ * the margin a live holder gets before its lock is stolen mid-fsync.
+ */
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 3000;
 const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 
 function sleep(ms: number): void {

@@ -39,10 +39,10 @@ import Testing
             Issue.record("expected day dividers")
             return
         }
-        // Compare against the formatter's own time output: the ICU spacing
-        // before AM/PM is the locale's, not the test's, to pin.
-        #expect(first == "Today \(TranscriptBlocks.timeLabel(date("2026-09-14T17:10:00Z"), timeZone: utc, locale: locale))")
-        #expect(second == "Sat, Sep 12 \(TranscriptBlocks.timeLabel(date("2026-09-12T09:17:00Z"), timeZone: utc, locale: locale))")
+        // The rule carries the day and nothing else; a wall clock there reads
+        // as the time of the message below it, which it is not.
+        #expect(first == "Today")
+        #expect(second == "Sat, Sep 12")
     }
 
     @Test func undatedRowsDoNotSplitOrMarkDays() {

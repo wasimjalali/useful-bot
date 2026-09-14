@@ -126,4 +126,79 @@ import Testing
         )
         #expect(rows.map(\.at) == [stamp, stamp])
     }
+
+    // MARK: - Chronological merge
+
+    private func event(_ id: String, kind: String, text: String, at: String?) throws -> AgentEvent {
+        let stamp = at.map { "\"at\":\"\($0)\"," } ?? ""
+        let json = "{\"id\":\"\(id)\",\(stamp)\"kind\":\"\(kind)\",\"text\":\"\(text)\",\"targetBotIds\":[]}"
+        return try JSONDecoder().decode(AgentEvent.self, from: Data(json.utf8))
+    }
+
+    private func date(_ iso: String) -> Date {
+        RailClock.date(from: iso)!
+    }
+
+    @Test func aDurableRowWrittenNowLandsAtTheBottomNotTheTop() throws {
+        // The bug: every durable row was emitted before every live row, so a
+        // handoff or routine run that just landed rendered at the very top.
+        let handoff = try event("evt_new", kind: "post", text: "From SEO", at: "2026-09-14T12:00:00.000Z")
+        let messages = [
+            ChatMessage(id: "u1", role: .user, text: "hello", at: date("2026-09-14T10:00:00.000Z")),
+            ChatMessage(id: "a1", role: .assistant, text: "hi", at: date("2026-09-14T10:00:05.000Z")),
+        ]
+        let rows = Transcript.merge(events: [handoff], messages: messages)
+        #expect(rows.map(\.id) == ["u1", "a1", "evt_new"])
+    }
+
+    @Test func durableAndLiveRowsInterleaveByTime() throws {
+        let events = [
+            try event("d1", kind: "user", text: "first", at: "2026-09-14T09:00:00.000Z"),
+            try event("d2", kind: "post", text: "middle", at: "2026-09-14T11:00:00.000Z"),
+            try event("d3", kind: "note", text: "last", at: "2026-09-14T13:00:00.000Z"),
+        ]
+        let messages = [
+            ChatMessage(id: "l1", role: .user, text: "ten", at: date("2026-09-14T10:00:00.000Z")),
+            ChatMessage(id: "l2", role: .assistant, text: "twelve", at: date("2026-09-14T12:00:00.000Z")),
+        ]
+        let rows = Transcript.merge(events: events, messages: messages)
+        #expect(rows.map(\.id) == ["d1", "l1", "d2", "l2", "d3"])
+    }
+
+    @Test func undatedDurableHistoryStaysBeforeTheLiveTurn() throws {
+        // Older stores wrote no timestamp; that history is still history.
+        let events = [
+            try event("d1", kind: "user", text: "old", at: nil),
+            try event("d2", kind: "assistant", text: "older reply", at: nil),
+        ]
+        let messages = [
+            ChatMessage(id: "l1", role: .user, text: "now", at: date("2026-09-14T10:00:00.000Z")),
+        ]
+        #expect(Transcript.merge(events: events, messages: messages).map(\.id) == ["d1", "d2", "l1"])
+    }
+
+    @Test func anUndatedLiveRowRendersLast() throws {
+        // A stream row with no stamp is the turn happening right now.
+        let events = [try event("d1", kind: "user", text: "old", at: "2026-09-14T09:00:00.000Z")]
+        let messages = [ChatMessage(id: "l1", role: .assistant, text: "streaming")]
+        #expect(Transcript.merge(events: events, messages: messages).map(\.id) == ["d1", "l1"])
+    }
+
+    @Test func rowsWithTheSameStampKeepTheDurableSideFirst() throws {
+        let events = [try event("d1", kind: "post", text: "durable", at: "2026-09-14T10:00:00.000Z")]
+        let messages = [ChatMessage(id: "l1", role: .assistant, text: "live", at: date("2026-09-14T10:00:00.000Z"))]
+        #expect(Transcript.merge(events: events, messages: messages).map(\.id) == ["d1", "l1"])
+    }
+
+    @Test func aDurableSideIsOrderedEvenWhenTheServerStampsGoBackwards() throws {
+        // The store appends in order; a clock that steps back must not reorder
+        // rows relative to each other.
+        let events = [
+            try event("d1", kind: "user", text: "one", at: "2026-09-14T10:00:00.000Z"),
+            try event("d2", kind: "assistant", text: "two", at: "2026-09-14T09:00:00.000Z"),
+        ]
+        let messages = [ChatMessage(id: "l1", role: .user, text: "three", at: date("2026-09-14T11:00:00.000Z"))]
+        #expect(Transcript.merge(events: events, messages: messages).map(\.id) == ["d1", "d2", "l1"])
+    }
 }
+

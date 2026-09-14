@@ -5,12 +5,14 @@ import {
   appendAgentEvent,
   claimProposal,
   clearThread,
+  deleteThread,
   readProposal,
   reopenProposal,
   threadIdFor,
   type Proposal,
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
+import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
@@ -30,6 +32,9 @@ export async function GET(request: Request) {
  *  - a confirmed fan-out (a bot proposed a group post) queues one handoff per
  *    member bot and touches both sides of every transcript;
  *  - clearing a thread drops that bot's agent transcript with its eve session.
+ *
+ * Deleting a bot is not here: see `detachBot`, which runs after the roster
+ * commit and reports its own failure rather than being swallowed.
  */
 function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): number {
   if (!action) return 0;
@@ -59,6 +64,37 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
     clearThread(action.botId);
   }
   return 0;
+}
+
+/**
+ * What a bot owns outside the shell store: its routines and its transcript.
+ *
+ * This runs after the roster commit, not before it. Before means a commit that
+ * throws (a contended shell lock, a guard inside `applyShellAction`) has
+ * already destroyed the routines and the transcript of a bot that still
+ * exists, which is worse than the orphan it was trying to avoid. Nothing here
+ * can be atomic with the roster write anyway: three stores, three locks. So
+ * the roster is the authority, this is best effort, and `sweepOrphanState` on the
+ * tick is what makes a failure here temporary instead of permanent.
+ *
+ * Returns the error when it could not finish, so the caller can say so rather
+ * than swallow it the way this path used to.
+ */
+function detachBot(botId: string): string | null {
+  const errors: string[] = [];
+  // Independently: a locked routines store is no reason to leave the
+  // transcript behind as well, and the caller needs to hear about both.
+  try {
+    deleteRoutinesForBot(botId);
+  } catch (err) {
+    errors.push(`routines:${errorCode(err, "detach_failed")}`);
+  }
+  try {
+    deleteThread(botId);
+  } catch (err) {
+    errors.push(`transcript:${errorCode(err, "detach_failed")}`);
+  }
+  return errors.length > 0 ? errors.join(",") : null;
 }
 
 /** The action a card sends must match every field the proposal carried. */
@@ -194,6 +230,9 @@ export async function PUT(request: Request) {
     const next = action
       ? updateShell((shell) => applyShellAction(shell, action).store)
       : current;
+    // Only once the roster commit stood. A failure here is reported, not
+    // swallowed, and the tick's sweep clears whatever was left behind.
+    const detachError = action?.type === "deleteBot" ? detachBot(action.botId) : null;
     let queued = 0;
     if (action) {
       try {
@@ -202,14 +241,20 @@ export async function PUT(request: Request) {
         /* the shell action already landed; the handoff pump reports the rest */
       }
     }
-    if (claimed) {
+    // `appendAgentEvent` upserts, so noting a confirmed delete on the deleted
+    // bot's own thread rebuilds the row the teardown just removed. Only that
+    // thread is skipped: a delete confirmed from another bot's chat still
+    // gets its receipt, on a thread that survives.
+    const notesDeletedThread = action?.type === "deleteBot"
+      && (claimed?.threadId || threadIdFor(action.botId)) === threadIdFor(action.botId);
+    if (claimed && !notesDeletedThread) {
       try {
         noteProposal(claimed, body.action, queued);
       } catch {
         /* the transcript note is best effort */
       }
     }
-    return NextResponse.json({ ok: true, store: next, queued });
+    return NextResponse.json({ ok: true, store: next, queued, detachError });
   } catch (err) {
     const guarded = apiError(err);
     if (guarded) return guarded;

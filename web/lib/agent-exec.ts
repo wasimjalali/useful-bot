@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { appendAgentEvent, type ThreadKind } from "../../shared/agent-store.ts";
+import { appendAgentEvent, sweepOrphanThreads, type ThreadKind } from "../../shared/agent-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import {
@@ -13,7 +13,17 @@ import {
   HANDOFF_DEPTH_MAX,
   type HandoffRecord,
 } from "../../shared/handoffs.ts";
-import { readShell, updateShell } from "../../shared/shell-io.ts";
+import {
+  appendRoutineRun,
+  claimDueRoutine,
+  claimManualRun,
+  claimRunNow,
+  pendingRoutines,
+  sweepOrphanRoutines,
+  type Routine,
+  type RoutineRunStatus,
+} from "../../shared/routines-store.ts";
+import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
 /**
@@ -224,27 +234,26 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
   return target ? { bot: target, kind: "bot" } : null;
 }
 
-async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
-  if (handoff.depth > HANDOFF_DEPTH_MAX) throw new Error("handoff_depth_exceeded");
+/**
+ * Open (or reuse) a bot's eve session, send one message and wait for the reply.
+ * Shared by handoff delivery and by routine runs so both reach eve the same
+ * way: the same envelope-matched stream read, the same timeout, the same
+ * history skip that keeps a second send from resolving with an older turn.
+ */
+async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: string; reply: string }> {
   const jwt = channelJwt();
   if (!jwt) throw new Error("channel_credential_missing");
-  const shell = readShell();
-  const receiver = receiverOf(handoff, shell.bots);
-  if (!receiver) throw new Error("receiver_missing");
-  const { bot, kind } = receiver;
-  if (bot.hidden) throw new Error("receiver_hidden");
-
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DELIVER_TIMEOUT_MS);
   let sessionId = bot.sessionId ?? "";
   let reply = "";
-  const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
   try {
+    const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
-      body: JSON.stringify({ message: handoffEnvelope(handoff), botId: bot.id }),
+      body: JSON.stringify({ message, botId: bot.id }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`eve_send_${res.status}`);
@@ -256,10 +265,22 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
       signal: controller.signal,
     });
     if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-    reply = await readHandoffStream(stream.body, controller.signal, historyIds, handoffEnvelope(handoff));
+    reply = await readHandoffStream(stream.body, controller.signal, historyIds, message);
   } finally {
     clearTimeout(timer);
   }
+  return { sessionId, reply };
+}
+
+async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
+  if (handoff.depth > HANDOFF_DEPTH_MAX) throw new Error("handoff_depth_exceeded");
+  const shell = readShell();
+  const receiver = receiverOf(handoff, shell.bots);
+  if (!receiver) throw new Error("receiver_missing");
+  const { bot, kind } = receiver;
+  if (bot.hidden) throw new Error("receiver_hidden");
+
+  const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff));
 
   // A stale takeover may have handed this record to another process; only the
   // token holder may write the transcript, or both would append a reply.
@@ -393,4 +414,261 @@ export function fanOut(input: {
     });
   }
   return count;
+}
+
+/**
+ * Routine runs. A routine is owner-initiated work on a schedule, so it enters
+ * the bot's own 1:1 chat as a turn at depth 0: a note saying which routine
+ * fired, the instruction as the owner's message, and the bot's reply. Delivery
+ * uses the same eve path as a handoff.
+ */
+
+const routinesInflight = new Set<string>();
+
+export type RoutineRunResult = { routineId: string; sessionId: string; reply: string };
+
+function runFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : "routine_failed";
+  return message.slice(0, 300);
+}
+
+async function executeRoutine(
+  routine: Routine,
+  trigger: "schedule" | "manual",
+): Promise<RoutineRunResult> {
+  const shell = readShell();
+  const bot = shell.bots.find((item) => item.id === routine.botId);
+  if (!bot) throw new Error("routine_bot_missing");
+  if (bot.hidden) throw new Error("routine_bot_hidden");
+  const threadKind: ThreadKind = bot.kind === "group" ? "group" : "bot";
+  // These two go in before the turn so the live stream echo pairs with the
+  // durable row rather than rendering a second bubble. If the agent store
+  // itself will not open, there is no transcript to leave hanging and no point
+  // spending an eve turn nobody will see, so that fails the run outright.
+  try {
+    // The note keeps the transcript honest: without it a scheduled turn reads
+    // as something the owner typed.
+    appendAgentEvent(bot.id, {
+      kind: "note",
+      threadKind,
+      text: trigger === "manual"
+        ? `Test run of routine "${routine.name}".`
+        : `Routine "${routine.name}" ran.`,
+    });
+    // The instruction is stored verbatim and sent verbatim.
+    appendAgentEvent(bot.id, {
+      kind: "user",
+      threadKind,
+      sessionId: bot.sessionId ?? "",
+      text: routine.instruction,
+    });
+  } catch (err) {
+    // The note can land and the instruction fail, which leaves the same
+    // dangling row this whole path exists to avoid. Say so where it shows.
+    try {
+      appendAgentEvent(bot.id, {
+        kind: "note",
+        threadKind,
+        text: `Routine "${routine.name}" could not start: the transcript was unavailable.`,
+      });
+    } catch {
+      /* the store is what failed; the run history still records it */
+    }
+    throw new Error(`routine_transcript_unavailable: ${err instanceof Error ? err.message : "unknown"}`);
+  }
+  // Every path out of the turn leaves an outcome row. The claim has already
+  // moved the anchor, so there is no retry: a turn that throws must say so in
+  // the transcript instead of leaving the note and the instruction hanging
+  // with nothing after them.
+  let sessionId: string;
+  let reply: string;
+  try {
+    ({ sessionId, reply } = await runEveTurn(bot, routine.instruction));
+  } catch (err) {
+    // Best effort, like the pre-append note: a locked store must not become
+    // the error the caller sees in place of whatever eve actually did.
+    try {
+      appendAgentEvent(bot.id, {
+        kind: "note",
+        threadKind,
+        text: `Routine "${routine.name}" failed: ${err instanceof Error ? err.message : "routine_failed"}`.slice(0, 300),
+      });
+    } catch { /* the run history still records the failure */ }
+    throw err;
+  }
+  if (reply) {
+    appendAgentEvent(bot.id, {
+      kind: "assistant",
+      threadKind,
+      sessionId,
+      text: reply,
+    });
+  }
+  const stamp = new Date().toISOString();
+  updateShell((current) => ({
+    ...current,
+    bots: current.bots.map((item) => (
+      item.id === bot.id
+        ? {
+          ...item,
+          sessionId,
+          lastPreview: reply ? reply.slice(0, 160) : item.lastPreview,
+          lastAt: stamp,
+          updatedAt: stamp,
+        }
+        : item
+    )),
+  }));
+  return { routineId: routine.id, sessionId, reply };
+}
+
+/**
+ * Run one routine now, the way the pane's Test run button does. The scheduler
+ * shares the in-flight set, so a manual run cannot overlap a scheduled one.
+ */
+export async function runRoutineNow(routineId: string): Promise<RoutineRunResult> {
+  if (routinesInflight.has(routineId)) throw new Error("routine_busy");
+  // Claimed before anything can yield. The pump re-reads this set immediately
+  // before its own claim, and both paths run to their `add` without an await,
+  // so the single-threaded runtime makes this an actual mutex: a Test run and
+  // a tick can no longer hold two eve turns open on one routine.
+  routinesInflight.add(routineId);
+  let routine: Routine;
+  try {
+    // Take the durable ticket too: a request an agent tool raised has to be
+    // consumed here, or the next tick claims it and runs this a second time.
+    const claim = claimRunNow(routineId);
+    if (!claim) throw new Error("routine_missing");
+    routine = claim.routine;
+  } catch (err) {
+    routinesInflight.delete(routineId);
+    throw err;
+  }
+  try {
+    const result = await executeRoutine(routine, "manual");
+    recordRun(routine.id, { status: "ok", sessionId: result.sessionId });
+    return result;
+  } catch (err) {
+    recordRun(routine.id, { status: "failed", error: runFailure(err) });
+    throw err;
+  } finally {
+    routinesInflight.delete(routine.id);
+  }
+}
+
+/**
+ * Write one run-history row. The store can be locked, and that must not become
+ * the error the caller sees: losing the history line is a smaller loss than
+ * replacing a real eve failure with `routines_locked`, or than aborting a pump
+ * batch that still has candidates to get through.
+ */
+function recordRun(
+  id: string,
+  run: { status: RoutineRunStatus; sessionId?: string | null; error?: string },
+): void {
+  try {
+    appendRoutineRun(id, run);
+  } catch (err) {
+    // The pane polls run history, so a lost row is invisible there. Say it
+    // here rather than nowhere.
+    console.warn(`[useful-bot] routine ${id} ran but its history row was lost:`, err);
+  }
+}
+
+// Like the handoff pump: overlapping runs would hold several eve turns open at
+// once, so callers queue behind the run in progress.
+let routineQueue: Promise<unknown> = Promise.resolve();
+
+export type RoutinePumpResult = {
+  ran: Array<{ id: string; name: string }>;
+  failed: Array<{ id: string; error: string }>;
+  /** Candidates a contended store lock made someone else's turn this tick. */
+  skipped: Array<{ id: string; reason: string }>;
+};
+
+export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
+  const run = routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
+  routineQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
+  const ran: Array<{ id: string; name: string }> = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  const skipped: Array<{ id: string; reason: string }> = [];
+  const now = new Date();
+  const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
+  for (const candidate of candidates.slice(0, limit)) {
+    // Re-checked here, not only when the list was built: a Test run can have
+    // started on this routine since, and it marks the set before it yields.
+    if (routinesInflight.has(candidate.id)) continue;
+    // Both claims flip their marker inside the store lock, so a tick that raced
+    // this one finds the request already taken or nothing due. A contended
+    // lock is that race, not a fault in this routine: skip the candidate and
+    // leave the rest of the batch alone. It is not a failed run either, so it
+    // does not go in `failed`, where it would read as the routine misbehaving.
+    let manual: { routine: Routine } | null = null;
+    let claim: { routine: Routine } | null = null;
+    try {
+      manual = claimManualRun(candidate.id);
+      claim = manual ?? claimDueRoutine(candidate.id, now);
+    } catch (err) {
+      const error = runFailure(err);
+      if (error === "routines_locked") {
+        skipped.push({ id: candidate.id, reason: error });
+      } else {
+        failed.push({ id: candidate.id, error });
+      }
+      continue;
+    }
+    if (!claim) continue;
+    routinesInflight.add(candidate.id);
+    try {
+      const result = await executeRoutine(claim.routine, manual ? "manual" : "schedule");
+      recordRun(candidate.id, { status: "ok", sessionId: result.sessionId });
+      ran.push({ id: candidate.id, name: claim.routine.name });
+    } catch (err) {
+      const error = runFailure(err);
+      recordRun(candidate.id, { status: "failed", error });
+      failed.push({ id: candidate.id, error });
+    } finally {
+      routinesInflight.delete(candidate.id);
+    }
+  }
+  return { ran, failed, skipped };
+}
+
+/**
+ * Drop routines and transcripts belonging to bots the roster no longer has.
+ * Deleting a bot sweeps its own, but the roster, the routines and the agent
+ * store have three separate locks: a delete that failed between them, or a
+ * routine created for a bot deleted in the same moment, leaves work nothing
+ * can ever complete. The tick calls this, which makes that state temporary.
+ *
+ * Returns the routine ids it dropped.
+ */
+export function sweepOrphanState(): string[] {
+  try {
+    // `peekShell`, never `readShell`. A roster this process could not parse is
+    // reseeded by `readShell` to a single default bot, and sweeping against
+    // that would read every other bot's routines and transcripts as orphans
+    // and delete all of them. No roster means no sweep, and neither does a
+    // roster another process already replaced with that stub: a reseed leaves
+    // valid JSON, so only the marker can tell the two apart.
+    if (shellWasReseeded()) return [];
+    const shell = peekShell();
+    if (!shell) return [];
+    const live = shell.bots.map((bot) => bot.id);
+    const routines = sweepOrphanRoutines(live);
+    sweepOrphanThreads(live);
+    return routines;
+  } catch {
+    // A locked or unreadable store is the next tick's problem, never this
+    // tick's failure: the sweep is maintenance, not the work.
+    return [];
+  }
+}
+
+export function routinesInFlight(): string[] {
+  return [...routinesInflight];
 }

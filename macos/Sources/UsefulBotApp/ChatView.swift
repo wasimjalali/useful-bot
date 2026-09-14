@@ -24,9 +24,6 @@ struct ChatView: View {
                         .padding(.horizontal, 24)
                         .padding(.vertical, 8)
                 }
-                if !model.approvals.isEmpty {
-                    approvals
-                }
                 if let bot = model.selectedBot {
                     header(bot)
                     if model.hasThreadContent || model.pending {
@@ -34,6 +31,10 @@ struct ChatView: View {
                     } else {
                         emptyState(bot)
                     }
+                    // Anything the bot needs an answer to docks here, between
+                    // the transcript and the composer, so the question sits
+                    // where the reply is typed instead of scrolling away.
+                    askColumn(bot)
                     composerColumn(bot)
                 }
             }
@@ -62,57 +63,97 @@ struct ChatView: View {
         model.pane = .none
     }
 
-    // MARK: - Approvals
+    // MARK: - Asks
 
-    private var approvals: some View {
-        VStack(spacing: 8) {
-            ForEach(model.approvals) { item in
-                let busy = model.busyApprovals.contains(item.id)
-                let canDecide = !busy && !item.actionSha256.isEmpty
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Needs approval")
-                            .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
-                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
-                            .foregroundStyle(Theme.C.warning)
-                        Text(item.preview)
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.C.ink)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Text(item.tool)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.C.inkMuted)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    NativeButton("Approve", kind: .primary, small: true, enabled: canDecide) {
-                        model.decideApproval(item, decision: .approve)
-                    }
-                    .accessibilityIdentifier("approval-approve")
-                    NativeButton("Deny", kind: .danger, small: true, enabled: canDecide) {
-                        model.decideApproval(item, decision: .deny)
-                    }
-                    .accessibilityIdentifier("approval-deny")
+    /// Every open question, docked above the composer in the chat column:
+    /// approvals the bot is waiting on and proposals it wants confirmed. Each
+    /// one states what it is asking and puts its answers on the same row, the
+    /// way a coding agent prompts before it acts.
+    @ViewBuilder
+    private func askColumn(_ bot: ShellBot) -> some View {
+        let hasAsk = !model.approvals.isEmpty
+            || !model.openProposals.isEmpty
+            || model.approvalError != nil
+        if hasAsk {
+            VStack(spacing: 8) {
+                ForEach(model.approvals) { item in
+                    approvalAsk(item)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Theme.C.warningSoft)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                        .strokeBorder(Theme.C.border, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-                .opacity(busy ? 0.7 : 1)
+                if let store = model.store {
+                    ForEach(model.openProposals) { proposal in
+                        ProposalCardView(
+                            proposal: proposal,
+                            bots: store.bots,
+                            pending: model.busyProposals.contains(proposal.id),
+                            onDecision: { confirmed in
+                                model.decideProposal(proposal, confirmed: confirmed)
+                            }
+                        )
+                    }
+                }
+                if let error = model.approvalError {
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            if let error = model.approvalError {
-                Text(error)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.danger)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: DesignTokens.Space.chatColumnMax)
+            .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
+            .padding(.top, 8)
+            .frame(maxWidth: .infinity)
+            .transition(.opacity)
+        }
+    }
+
+    private func approvalAsk(_ item: ApprovalItem) -> some View {
+        let busy = model.busyApprovals.contains(item.id)
+        let canDecide = !busy && !item.actionSha256.isEmpty
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "hand.raised")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Needs approval")
+                    .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
+                    .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
+                Spacer(minLength: 0)
+                Text(item.tool)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            .foregroundStyle(Theme.C.warning)
+            // The preview is what the owner is approving; a single truncated
+            // line hides the end of a command or an instruction they are
+            // agreeing to run.
+            Text(item.preview)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(6)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                NativeButton("Deny", kind: .danger, small: true, enabled: canDecide) {
+                    model.decideApproval(item, decision: .deny)
+                }
+                .accessibilityIdentifier("approval-deny")
+                NativeButton("Approve", kind: .primary, small: true, enabled: canDecide) {
+                    model.decideApproval(item, decision: .approve)
+                }
+                .accessibilityIdentifier("approval-approve")
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Theme.C.warningSoft)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .opacity(busy ? 0.7 : 1)
     }
 
     // MARK: - Header
@@ -151,7 +192,10 @@ struct ChatView: View {
 
     private func transcript(_ bot: ShellBot) -> some View {
         let roster = model.store?.bots ?? []
-        let blocks = TranscriptBlocks.build(rows: model.transcript, selectedBotId: bot.id)
+        // Built once per transcript change in the model, not once per body.
+        // This view re-evaluates on every keystroke in the composer, and
+        // regrouping several hundred rows there is what made typing stutter.
+        let blocks = model.transcriptBlocks
         return ScrollViewReader { proxy in
             ScrollView {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.transcriptGap) {
@@ -177,28 +221,13 @@ struct ChatView: View {
                                     recipients: recipients,
                                     maxBubbleWidth: columnWidth * 0.85
                                 )
+                                .equatable()
                             case .summary(_, let count, let botIds):
                                 BotMetaRow(
                                     prefix: "\(count) messages with",
                                     botIds: botIds,
                                     roster: roster
                                 )
-                            }
-                        }
-                        ForEach(model.openProposals) { proposal in
-                            if let store = model.store {
-                                HStack(alignment: .top, spacing: 12) {
-                                    BotAvatarView(bot: bot, size: 24)
-                                    ProposalCardView(
-                                        proposal: proposal,
-                                        bots: store.bots,
-                                        pending: model.busyProposals.contains(proposal.id),
-                                        onDecision: { confirmed in
-                                            model.decideProposal(proposal, confirmed: confirmed)
-                                        }
-                                    )
-                                    .padding(.top, 2)
-                                }
                             }
                         }
                         if model.pending {
@@ -348,19 +377,19 @@ private struct BotMetaRow: View {
     }
 }
 
-/// One bubble row. User turns stay right-aligned; bot turns render as the
-/// left gray bubble from the reference, with the speaker's name and face only
-/// in a room where more than one bot can answer.
-struct TranscriptRowView: View {
+/// One transcript row. The two sides are deliberately asymmetric: what the
+/// owner said is a right-aligned bubble, and what a bot said is set straight
+/// onto the chat background at full column width. The reply is the page; the
+/// owner's line is the interruption. It also gives code blocks and tables the
+/// whole column instead of 85% of it.
+/// Equatable so a streamed publish only rebuilds the row whose text changed.
+/// Nothing here reads the environment, so skipping the body is safe.
+struct TranscriptRowView: View, Equatable {
     let row: TranscriptRow
     let bot: ShellBot
     var bots: [ShellBot] = []
     var recipients: [String] = []
     var maxBubbleWidth: CGFloat = 612
-
-    private let bubbleRadius: CGFloat = 18
-    private let timeReserve: CGFloat = 58
-    private let avatarReserve: CGFloat = 34
 
     var body: some View {
         switch row.kind {
@@ -389,7 +418,7 @@ struct TranscriptRowView: View {
                     )
                 }
                 // The strip already names and faces the author.
-                bubbleRow(showsSpeaker: false)
+                replyRow(showsSpeaker: false)
             }
         case .note:
             HStack(alignment: .top, spacing: 12) {
@@ -408,12 +437,12 @@ struct TranscriptRowView: View {
                 Spacer(minLength: 0)
             }
         case .assistant:
-            bubbleRow(showsSpeaker: true)
+            replyRow(showsSpeaker: true)
         }
     }
 
     private var userRow: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(spacing: 0) {
             Spacer(minLength: 60)
             Text(row.text)
                 .font(.system(size: DesignTokens.FontSize.chatBody))
@@ -431,23 +460,18 @@ struct TranscriptRowView: View {
                         style: .continuous
                     )
                 )
-                .frame(maxWidth: max(160, maxBubbleWidth - (row.at == nil ? 0 : timeReserve)), alignment: .trailing)
+                .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
                 .textSelection(.enabled)
-            if let at = row.at {
-                Text(TranscriptBlocks.timeLabel(at))
-                    .font(.system(size: 10))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.C.inkFaint)
-                    .padding(.bottom, 3)
-                    .fixedSize()
-            }
         }
     }
 
-    private func bubbleRow(showsSpeaker: Bool) -> some View {
+    /// A bot's turn, set on the background. No bubble, no width cap: only the
+    /// avatar gutter in a room where more than one bot can answer.
+    private func replyRow(showsSpeaker: Bool) -> some View {
         let attributed = showsSpeaker && row.authorBotId != nil && row.authorBotId != bot.id
-        return HStack(alignment: .bottom, spacing: 8) {
-            if attributed, let speaker {
+        let showsAvatar = attributed && speaker != nil
+        return HStack(alignment: .top, spacing: 10) {
+            if showsAvatar, let speaker {
                 BotAvatarView(bot: speaker, size: 24)
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -457,30 +481,10 @@ struct TranscriptRowView: View {
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                bubble(showsAvatar: attributed && speaker != nil)
+                ChatMarkdownView(text: row.text)
             }
-            Spacer(minLength: 4)
-            if let at = row.at {
-                Text(TranscriptBlocks.timeLabel(at))
-                    .font(.system(size: 10))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.C.inkFaint)
-                    .padding(.bottom, 3)
-                    .fixedSize()
-            }
+            Spacer(minLength: 0)
         }
-    }
-
-    private func bubble(showsAvatar: Bool) -> some View {
-        // Only reserve room for chrome that actually renders: an undated
-        // replay has no trailing time, a strip-attributed post has no avatar.
-        let chrome = (row.at == nil ? 0 : timeReserve) + (showsAvatar ? avatarReserve : 0)
-        return ChatMarkdownView(text: row.text, expandsWidth: false)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Theme.C.sunken)
-            .clipShape(RoundedRectangle(cornerRadius: bubbleRadius, style: .continuous))
-            .frame(maxWidth: max(160, maxBubbleWidth - chrome), alignment: .leading)
     }
 
     /// A note's face: the speaker's, the chat owner's for its own note, and
@@ -519,15 +523,13 @@ private struct WorkingRow: View {
     let bot: ShellBot
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        // Sits where the reply will, so the text does not jump sideways when
+        // the first token lands.
+        HStack(alignment: .center, spacing: 10) {
             BrandMotionView(size: 24, color: BrandAssets.colorID(for: bot), avatar: true)
             Text("Working.")
                 .font(.system(size: DesignTokens.FontSize.chatBody))
                 .foregroundStyle(Theme.C.inkMuted)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Theme.C.sunken)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             Spacer(minLength: 0)
         }
     }
