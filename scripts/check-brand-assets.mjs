@@ -18,6 +18,7 @@ const required = [
   'brand/README.md', 'brand/preview.html', 'brand/tokens.css', 'BRAND_ASSET_REPORT.md',
   'brand/motion/animation-demo.html', 'brand/motion/useful-bot-animated.svg',
   'brand/source/useful-bot-master.svg', 'brand/source/raster-edge-mask.svg',
+  'brand/source/avatar-palette.json', 'brand/source/motion.json',
   'brand/source/useful-bot-raster-master-1024.png', 'brand/source/useful-bot-raster-clean-1254.png',
   'brand/source/fonts/Inter-SemiBold.ttf', 'brand/source/fonts/Inter-SemiBold.woff2', 'brand/source/fonts/LICENSE.txt',
   'brand/app/AppIcon.appiconset/Contents.json', 'brand/app/macos/UsefulBot.icns',
@@ -126,6 +127,8 @@ for (const hex of sourceMaster.match(/#[A-Fa-f0-9]{6}\b/g)) assert(palette.has(h
 const provenance = JSON.parse(await read('brand/source/provenance.json'));
 assert.equal(createHash('sha256').update(await read('brand/source/useful-bot-master.svg')).digest('hex'), provenance.vectorMasterSha256, 'Vector source changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/raster-edge-mask.svg')).digest('hex'), provenance.edgeMaskSha256, 'Edge mask changed: rebuild assets');
+assert.equal(createHash('sha256').update(await read('brand/source/avatar-palette.json')).digest('hex'), provenance.avatarPaletteSha256, 'Avatar palette changed: rebuild assets');
+assert.equal(createHash('sha256').update(await read('brand/source/motion.json')).digest('hex'), provenance.motionTimingSha256, 'Motion timing changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/fonts/Inter-SemiBold.ttf')).digest('hex'), provenance.font.sha256, 'Font changed: rebuild assets');
 for (const source of provenance.sources) assert.equal(createHash('sha256').update(await read(source.path)).digest('hex'), source.sha256, `Original source changed: ${source.path}`);
 const pwa = JSON.parse(await read('public/site.webmanifest'));
@@ -174,13 +177,54 @@ for (let i = 3; i < raster.length; i += 4) {
   const r = raster[i] > 127, v = vector[i] > 127; intersection += r && v; union += r || v;
 }
 assert(intersection / union > .97, `Raster/vector silhouette mismatch: ${intersection / union}`);
+
+// Avatar tints must never alter eyes, glasses, highlights or geometry.
+function eyeGeometry(svg) {
+  const groups = {};
+  optimize(svg, { plugins: [{ name: 'inspectImmutableFeatures', fn: () => ({ element: {
+    enter(node) {
+      if (['glasses', 'eye-left', 'eye-right'].includes(node.attributes.id)) groups[node.attributes.id] = JSON.stringify(node);
+    },
+  } }) }] });
+  return groups;
+}
+const markSvg = (await read('brand/svg/useful-bot-mark.svg')).toString();
+const features = eyeGeometry(markSvg);
+assert.equal(Object.keys(features).length, 3);
+const headOnly = optimize(markSvg, { plugins: [{ name: 'expectedAvatarSilhouette', fn: () => ({ element: {
+  enter(node) {
+    if (node.name === 'svg') node.attributes.viewBox = '128 13.056 768 768';
+    if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && ['head', 'glasses', 'eye-left', 'eye-right'].includes(child.attributes.id));
+  },
+} }) }] }).data;
+const headPixels = await sharp(Buffer.from(headOnly)).resize(1024, 1024).ensureAlpha().raw().toBuffer();
+const avatarPalette = JSON.parse(await read('brand/source/avatar-palette.json'));
+assert.equal(Object.keys(avatarPalette).length, 11);
+for (const color of Object.keys(avatarPalette)) {
+  const svg = (await read(`brand/avatars/${color}.svg`)).toString();
+  assert(svg.includes('viewBox="128 13.056 768 768"'), `Avatar crop/centering changed: ${color}`);
+  assert(!/id="(?:body|arm-left|arm-right)"/.test(svg), `Avatar includes body or arms: ${color}`);
+  assert.deepEqual(eyeGeometry(svg), features, `Avatar changed eyes or glasses: ${color}`);
+  assert((await read(`web/public/brand/avatars/${color}.svg`)).equals(Buffer.from(svg)), `Web avatar differs: ${color}`);
+  const tinted = await sharp(Buffer.from(svg)).resize(1024, 1024).ensureAlpha().raw().toBuffer();
+  for (let i = 3; i < tinted.length; i += 4) assert.equal(tinted[i], headPixels[i], `Avatar head silhouette/alpha changed: ${color}`);
+}
+
+// Reassembled native layers must look like the vector, not a separate mascot.
+const layers = ['arm-left', 'arm-right', 'body', 'head', 'glasses', 'eye-left', 'eye-right'];
+const inputs = await Promise.all(layers.map(async part => ({ input: await read(`brand/motion/native/${part}.png`), left: 0, top: 0 })));
+const assembled = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: '#00000000' } }).composite(inputs).raw().toBuffer();
+const expected = await sharp(Buffer.from(markSvg.replace('<svg ', '<svg width="3072" height="3072" '))).resize(1024, 1024).ensureAlpha().raw().toBuffer();
+let error = 0;
+for (let i = 0; i < assembled.length; i++) error += Math.abs(assembled[i] - expected[i]);
+assert(error / assembled.length < .3, `Native layers differ from vector: ${error / assembled.length}`);
 // Catch stale/unregistered generated files and incomplete source SVGs.
 async function walk(folder) {
   for (const item of await readdir(resolve(root, folder), { withFileTypes: true })) {
     const path = `${folder}/${item.name}`;
     if (item.isDirectory()) await walk(path);
     else if (item.name.endsWith('.svg')) checkSvg((await read(path)).toString(), path);
-    if (item.isFile() && /^brand\/(svg|png|app|favicon|pwa|social)\//.test(path)) assert(indexed.has(path), `Unregistered generated asset: ${path}`);
+    if (item.isFile() && /^brand\/(svg|png|app|favicon|pwa|social|avatars|motion\/native)\//.test(path)) assert(indexed.has(path), `Unregistered generated asset: ${path}`);
   }
 }
 await walk('brand');

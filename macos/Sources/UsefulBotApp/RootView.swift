@@ -16,6 +16,8 @@ enum CreateKind: Identifiable {
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var launchFinished = false
 
     @State private var pickerOpen = false
     @State private var newChatTrigger = CGRect.zero
@@ -25,7 +27,48 @@ struct RootView: View {
     @State private var deleteBot: ShellBot?
     @State private var connectorsOpen = false
 
+    private var showingLaunch: Bool {
+        !launchFinished && model.phase != .unavailable && !reduceMotion
+    }
+
     var body: some View {
+        ZStack {
+            if showingLaunch {
+                VStack(spacing: 16) {
+                    BrandMotionView(size: 168, repeating: false)
+                    Image(nsImage: BrandAssets.image("svg/useful-bot-wordmark.svg"))
+                        .resizable().scaledToFit().frame(width: 168, height: 39)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Starting Useful Bot")
+                .accessibilityIdentifier("brand-launch")
+            } else {
+                applicationContent
+            }
+        }
+        .background(Theme.C.canvas)
+        .environment(\.colorScheme, .light)
+        .onAppear {
+            NSApp.appearance = NSAppearance(named: .aqua)
+            ThinScrollbar.install()
+            InputModality.shared.install()
+            NSApp.applicationIconImage = BrandAssets.image("app/macos/UsefulBot.icns")
+        }
+        .task(id: reduceMotion) {
+            guard !reduceMotion else { launchFinished = true; return }
+            // The local server starts in parallel; this only owns the launch view.
+            do { try await Task.sleep(for: .seconds(BrandAssets.motion.duration)) }
+            catch { return }
+            launchFinished = true
+        }
+        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.searchOpen)
+        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
+        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
+    }
+
+    private var applicationContent: some View {
         ZStack {
             switch model.phase {
             case .ready:
@@ -146,16 +189,6 @@ struct RootView: View {
                 .transition(.opacity)
             }
         }
-        .background(Theme.C.canvas)
-        .environment(\.colorScheme, .light)
-        .onAppear {
-            NSApp.appearance = NSAppearance(named: .aqua)
-            ThinScrollbar.install()
-            InputModality.shared.install()
-        }
-        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.searchOpen)
-        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
-        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
     }
 
     private func deleteMessage(_ bot: ShellBot) -> String {
@@ -246,9 +279,9 @@ struct RootView: View {
     private var starting: some View {
         VStack(spacing: 12) {
             if model.phase == .starting {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(Theme.C.accent)
+                BrandMotionView(size: 72)
+            } else {
+                BotFaceView(color: "ink", size: 72)
             }
             Text(model.startingMessage)
                 .font(.system(size: 14))

@@ -375,26 +375,10 @@ struct TranscriptRowView: View {
 private struct WorkingRow: View {
     let bot: ShellBot
 
-    @State private var spin = false
-
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            BotAvatarView(bot: bot, size: 24)
+            BrandMotionView(size: 24, color: BrandAssets.colorID(for: bot), avatar: true)
             HStack(spacing: 10) {
-                Circle()
-                    .strokeBorder(Theme.C.accent.opacity(0.3), lineWidth: 2)
-                    .overlay(
-                        Circle()
-                            .trim(from: 0, to: 0.25)
-                            .stroke(Theme.C.accent, lineWidth: 2)
-                            .rotationEffect(.degrees(spin ? 360 : 0))
-                    )
-                    .frame(width: 16, height: 16)
-                    .onAppear {
-                        withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
-                            spin = true
-                        }
-                    }
                 Text("Working.")
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.C.inkMuted)

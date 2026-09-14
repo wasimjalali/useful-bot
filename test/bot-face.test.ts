@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AVATAR_COLORS,
+  AVATAR_PALETTE,
   defaultFaceFor,
   isAvatarColor,
   isAvatarShape,
   randomFace,
 } from "../shared/bot-face.ts";
+
+test("avatar palette keeps legacy ids and tints only the approved mascot", () => {
+  assert.deepEqual(Object.keys(AVATAR_PALETTE), [...AVATAR_COLORS]);
+  assert.deepEqual(AVATAR_PALETTE.ink, { label: "Original", fill: "#FFFFFF" });
+  for (const color of AVATAR_COLORS) {
+    assert.match(AVATAR_PALETTE[color].fill, /^#[A-F0-9]{6}$/);
+    assert.ok(AVATAR_PALETTE[color].label.length > 0);
+  }
+});
 
 test("random faces always produce a known shape and color", () => {
   // The old signed-bitwise implementation produced negative indices for large
