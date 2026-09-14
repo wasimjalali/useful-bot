@@ -85,3 +85,83 @@ import Testing
         #expect(ChatInline.parse("2 * 3 = 6") == [InlineSpan(kind: .text, text: "2 * 3 = 6")])
     }
 }
+
+@Suite struct MarkdownBlockCoverageTests {
+    @Test func aPipeTableBecomesAGrid() throws {
+        let blocks = ChatMarkdownParser.blocks(from: """
+        | Tool | Cost | Notes |
+        |------|-----:|:-----:|
+        | bash | 0 | needs a card |
+        | read | 0 | free |
+        """)
+        #expect(blocks.count == 1)
+        guard case .table(let table) = blocks[0] else {
+            Issue.record("expected a table, got \(blocks)")
+            return
+        }
+        #expect(table.headers == ["Tool", "Cost", "Notes"])
+        #expect(table.alignments == [.leading, .trailing, .center])
+        #expect(table.rows.count == 2)
+        #expect(table.rows[0] == ["bash", "0", "needs a card"])
+    }
+
+    @Test func aShortRowIsPaddedAndALongOneTrimmed() throws {
+        let blocks = ChatMarkdownParser.blocks(from: """
+        | A | B |
+        |---|---|
+        | one |
+        | one | two | three |
+        """)
+        guard case .table(let table) = blocks[0] else {
+            Issue.record("expected a table")
+            return
+        }
+        #expect(table.rows[0] == ["one", ""])
+        #expect(table.rows[1] == ["one", "two"])
+    }
+
+    @Test func aSentenceWithAPipeIsNotATable() {
+        let blocks = ChatMarkdownParser.blocks(from: "Run a | b to pipe it.")
+        #expect(blocks == [.paragraph("Run a | b to pipe it.")])
+    }
+
+    @Test func aParagraphLetsGoOfTheTableUnderIt() throws {
+        let blocks = ChatMarkdownParser.blocks(from: """
+        Here are the results.
+        | A | B |
+        |---|---|
+        | 1 | 2 |
+        """)
+        #expect(blocks.count == 2)
+        #expect(blocks[0] == .paragraph("Here are the results."))
+        guard case .table = blocks[1] else {
+            Issue.record("expected the table to survive the paragraph")
+            return
+        }
+    }
+
+    @Test func blockquotesAndRulesParse() {
+        let blocks = ChatMarkdownParser.blocks(from: """
+        > first
+        > second
+
+        ---
+
+        after
+        """)
+        #expect(blocks == [.quote("first\nsecond"), .rule, .paragraph("after")])
+    }
+
+    @Test func anEscapedPipeStaysInsideItsCell() throws {
+        let blocks = ChatMarkdownParser.blocks(from: """
+        | Pattern | Use |
+        |---|---|
+        | a \\| b | either |
+        """)
+        guard case .table(let table) = blocks[0] else {
+            Issue.record("expected a table")
+            return
+        }
+        #expect(table.rows[0] == ["a | b", "either"])
+    }
+}

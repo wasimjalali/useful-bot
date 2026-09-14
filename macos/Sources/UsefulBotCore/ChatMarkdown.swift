@@ -8,12 +8,41 @@ public enum MarkdownBlock: Equatable, Sendable {
     case unorderedList([String])
     case orderedList([String])
     case code(lang: String, text: String)
+    case table(MarkdownTable)
+    case quote(String)
+    case rule
+}
+
+/// A pipe table. Every row is padded to the header's column count, so the
+/// renderer can lay out a grid without re-checking each row.
+public struct MarkdownTable: Equatable, Sendable {
+    public enum Alignment: Equatable, Sendable {
+        case leading, center, trailing
+    }
+
+    public var headers: [String]
+    public var alignments: [Alignment]
+    public var rows: [[String]]
+
+    public init(headers: [String], alignments: [Alignment], rows: [[String]]) {
+        self.headers = headers
+        self.alignments = alignments
+        self.rows = rows
+    }
 }
 
 public enum ChatMarkdownParser {
     private static let heading = try! NSRegularExpression(pattern: "^(#{1,3})\\s+(.+)$")
     private static let unordered = try! NSRegularExpression(pattern: "^\\s*[-*]\\s+")
     private static let ordered = try! NSRegularExpression(pattern: "^\\s*\\d+\\.\\s+")
+    private static let quote = try! NSRegularExpression(pattern: "^\\s*>\\s?")
+    /// Three or more of the same mark, alone on the line.
+    private static let rule = try! NSRegularExpression(pattern: "^\\s*(-{3,}|\\*{3,}|_{3,})\\s*$")
+    /// The row under a table header: pipes, dashes, and optional alignment
+    /// colons, and nothing else.
+    private static let tableDelimiter = try! NSRegularExpression(
+        pattern: "^\\s*\\|?\\s*:?-{1,}:?\\s*(\\|\\s*:?-{1,}:?\\s*)*\\|?\\s*$"
+    )
 
     public static func blocks(from source: String) -> [MarkdownBlock] {
         let lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
@@ -31,6 +60,28 @@ public enum ChatMarkdownParser {
                 }
                 if i < lines.count { i += 1 }
                 blocks.append(.code(lang: lang, text: buffer.joined(separator: "\n")))
+                continue
+            }
+            // A pipe table is the header row plus the delimiter under it; both
+            // have to be there, or a sentence containing a pipe becomes a
+            // one-column table.
+            if i + 1 < lines.count,
+               let table = parseTable(lines, from: &i) {
+                blocks.append(.table(table))
+                continue
+            }
+            if matches(rule, in: line) {
+                blocks.append(.rule)
+                i += 1
+                continue
+            }
+            if matches(quote, in: line) {
+                var quoted: [String] = []
+                while i < lines.count, matches(quote, in: lines[i]) {
+                    quoted.append(replace(quote, in: lines[i], with: ""))
+                    i += 1
+                }
+                blocks.append(.quote(quoted.joined(separator: "\n")))
                 continue
             }
             if let match = firstMatch(heading, in: line) {
@@ -71,12 +122,97 @@ public enum ChatMarkdownParser {
                 if firstMatch(heading, in: next) != nil { break }
                 if matches(unordered, in: next) { break }
                 if matches(ordered, in: next) { break }
+                if matches(quote, in: next) { break }
+                if matches(rule, in: next) { break }
+                // A table's header row is an ordinary line until the delimiter
+                // under it proves otherwise, so the paragraph has to let go of
+                // it rather than swallow the whole table as prose.
+                if i + 1 < lines.count, next.contains("|"), matches(tableDelimiter, in: lines[i + 1]) { break }
                 paragraph.append(next)
                 i += 1
             }
             blocks.append(.paragraph(paragraph.joined(separator: "\n")))
         }
         return blocks
+    }
+
+    /// Read a pipe table starting at `i`, or leave `i` alone and return nil.
+    ///
+    /// A table is a header row, a delimiter row, then body rows until the first
+    /// line that is not one. Rows are padded or trimmed to the header's column
+    /// count so the renderer never has to check a row's length.
+    private static func parseTable(_ lines: [String], from i: inout Int) -> MarkdownTable? {
+        let header = lines[i]
+        guard header.contains("|"), matches(tableDelimiter, in: lines[i + 1]) else { return nil }
+        let headers = splitRow(header)
+        guard headers.count > 1 else { return nil }
+        let alignments = splitRow(lines[i + 1]).map { cell -> MarkdownTable.Alignment in
+            let trimmed = cell.trimmingCharacters(in: .whitespaces)
+            let left = trimmed.hasPrefix(":")
+            let right = trimmed.hasSuffix(":")
+            if left && right { return .center }
+            if right { return .trailing }
+            return .leading
+        }
+        var rows: [[String]] = []
+        var j = i + 2
+        while j < lines.count {
+            let line = lines[j]
+            if !line.contains("|") || line.trimmingCharacters(in: .whitespaces).isEmpty { break }
+            var cells = splitRow(line)
+            if cells.count < headers.count {
+                cells.append(contentsOf: Array(repeating: "", count: headers.count - cells.count))
+            } else if cells.count > headers.count {
+                cells = Array(cells.prefix(headers.count))
+            }
+            rows.append(cells)
+            j += 1
+        }
+        i = j
+        return MarkdownTable(
+            headers: headers,
+            alignments: normalized(alignments, to: headers.count),
+            rows: rows
+        )
+    }
+
+    /// Cells of one table row, without the outer pipes. An escaped `\|` stays
+    /// inside its cell rather than splitting it.
+    private static func splitRow(_ line: String) -> [String] {
+        var trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("|") { trimmed.removeFirst() }
+        if trimmed.hasSuffix("|") && !trimmed.hasSuffix("\\|") { trimmed.removeLast() }
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        for character in trimmed {
+            if escaped {
+                current.append(character == "|" ? "|" : character)
+                escaped = false
+                continue
+            }
+            if character == "\\" {
+                escaped = true
+                continue
+            }
+            if character == "|" {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+                continue
+            }
+            current.append(character)
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    private static func normalized(
+        _ alignments: [MarkdownTable.Alignment],
+        to count: Int
+    ) -> [MarkdownTable.Alignment] {
+        if alignments.count == count { return alignments }
+        if alignments.count > count { return Array(alignments.prefix(count)) }
+        return alignments + Array(repeating: .leading, count: count - alignments.count)
     }
 
     private static func firstMatch(_ regex: NSRegularExpression, in line: String) -> NSTextCheckingResult? {

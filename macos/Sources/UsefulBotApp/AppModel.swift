@@ -140,6 +140,10 @@ final class AppModel: ObservableObject {
     private var stickyThreadError: String?
     private var loadGeneration = 0
     private var sendGeneration = 0
+    /// Bumped once per owner-initiated send. The transcript watches it to jump
+    /// to the newest turn: sending is an explicit request to watch the answer,
+    /// so it overrides whatever the reader's scroll position was.
+    @Published private(set) var sendTick: UInt64 = 0
     private var chatGeneration = 0
     private var sendBotId: String?
     private var started = false
@@ -497,6 +501,15 @@ final class AppModel: ObservableObject {
         let sentAttachmentIds = Set(attachments.map(\.id))
         projection = projectionForSend(message)
         rebuildTranscript()
+        // The composer empties the moment the turn is committed, not when the
+        // server answers. Waiting for the round trip left the sent text sitting
+        // in the field for as long as the network took, which reads as a send
+        // that did not happen. `draftSnapshot` is what puts it back if the
+        // send fails below.
+        clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
+        // An explicit send is an explicit request to watch the answer, so the
+        // transcript follows it whatever the reader was doing before.
+        sendTick &+= 1
         sendTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -531,7 +544,6 @@ final class AppModel: ObservableObject {
                 self.activeSession = (bot.id, sessionId)
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
-                self.clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: message)
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 var sawUserTurn = false
@@ -561,6 +573,10 @@ final class AppModel: ObservableObject {
                 return
             } catch {
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                // The composer was cleared when the turn was committed, so a
+                // send that never reached the server has to give the text
+                // back. Anything typed since is kept ahead of it.
+                self.restoreUnsentDraft(draftSnapshot)
                 self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
                 self.threadError = self.stickyThreadError
                 self.activeSession = nil
@@ -602,6 +618,18 @@ final class AppModel: ObservableObject {
         draft = ComposerDraft.remainder(draft, afterSending: draftSnapshot)
         if !attachmentIds.isEmpty {
             attachments.removeAll { attachmentIds.contains($0.id) }
+        }
+    }
+
+    /// Put an unsent draft back after a send that never reached the server.
+    /// Whatever was typed in the meantime stays, and goes after the returned
+    /// text, so the field reads in the order it was written.
+    private func restoreUnsentDraft(_ draftSnapshot: String) {
+        guard !draftSnapshot.isEmpty else { return }
+        if draft.isEmpty {
+            draft = draftSnapshot
+        } else if !draft.hasPrefix(draftSnapshot) {
+            draft = draftSnapshot + "\n" + draft
         }
     }
 

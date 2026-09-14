@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
-import { blocksFromMarkdown, parseInline } from "../../shared/chat-markdown.ts";
+import { blocksFromMarkdown, parseInline, type MdAlign } from "../../shared/chat-markdown.ts";
+
+function align(value: MdAlign | undefined): "left" | "center" | "right" {
+  if (value === "center") return "center";
+  if (value === "trailing") return "right";
+  return "left";
+}
 
 function Inline({ text }: { text: string }) {
   return (
@@ -56,6 +62,40 @@ export function ChatMarkdown({ text }: { text: string }) {
             </pre>
           );
         }
+        if (block.type === "table") {
+          return (
+            // Wrapped so a wide table scrolls inside its own box rather than
+            // pushing the transcript column past the edge.
+            <div className="chat-md-table" key={index}>
+              <table>
+                <thead>
+                  <tr>
+                    {block.headers.map((cell, cellIndex) => (
+                      <th key={cellIndex} style={{ textAlign: align(block.aligns[cellIndex]) }}>
+                        <Inline text={cell} />
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr key={rowIndex}>
+                      {row.map((cell, cellIndex) => (
+                        <td key={cellIndex} style={{ textAlign: align(block.aligns[cellIndex]) }}>
+                          <Inline text={cell} />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        if (block.type === "quote") {
+          return <blockquote key={index}><Inline text={block.text} /></blockquote>;
+        }
+        if (block.type === "rule") return <hr key={index} />;
         return <p key={index}><Inline text={block.text} /></p>;
       })}
     </div>

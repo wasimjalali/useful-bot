@@ -11,6 +11,13 @@ struct ComposerView: View {
     /// `chat-composer.tsx` textarea cap, matching the server clip.
     static let maxDraftLength = Attachments.messageMax
 
+    /// A chip label, clipped to what fits beside its chevron. Nil in, nil out,
+    /// so a chip with nothing selected keeps its own placeholder word.
+    static func chipLabel(_ name: String?, max: Int = 18) -> String? {
+        guard let name, !name.isEmpty else { return nil }
+        return name.count <= max ? name : String(name.prefix(max - 1)) + "…"
+    }
+
     let bot: ShellBot
     var onOpenConnectors: () -> Void
     var onOpenProviders: () -> Void
@@ -257,7 +264,10 @@ struct ComposerView: View {
 
     private var input: some View {
         ZStack(alignment: .topLeading) {
-            if model.draft.isEmpty {
+            // Gone the moment the field takes focus, not only once a character
+            // lands: a caret sitting inside its own placeholder reads as text
+            // that will not delete.
+            if model.draft.isEmpty && !focused {
                 Text(placeholder)
                     .font(.system(size: DesignTokens.FontSize.chatBody))
                     .foregroundStyle(Theme.C.inkFaint)
@@ -310,11 +320,11 @@ struct ComposerView: View {
             HStack(spacing: 4) {
                 Image(systemName: "externalDrive.fill")
                     .font(.system(size: 12))
-                Text(workspace?.folderName ?? "Project")
+                // Clipped by characters rather than held in a fixed-width
+                // frame: a frame wide enough for a long name leaves a short
+                // one stranded from its chevron, which is what this chip did.
+                Text(ComposerView.chipLabel(workspace?.folderName) ?? "Project")
                     .lineLimit(1)
-                    // The cap belongs to a real folder name only; a bare
-                    // "Project" chip keeps its label and chevron adjacent.
-                    .frame(maxWidth: workspace != nil ? 140 : nil, alignment: .leading)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .medium))
             }
@@ -425,15 +435,18 @@ struct ComposerView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.C.accentStrong)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(ws.folderName)
+                        // Same reason as the project chip: clip the string, do
+                        // not hold a fixed-width frame that strands the ×.
+                        Text(ComposerView.chipLabel(ws.folderName, max: 22) ?? "Folder")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(Theme.C.ink)
                             .lineLimit(1)
-                            .frame(maxWidth: 160, alignment: .leading)
-                        Text(folderCountLabel)
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.C.inkFaint)
-                            .lineLimit(1)
+                        if !folderCountLabel.isEmpty {
+                            Text(folderCountLabel)
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.C.inkFaint)
+                                .lineLimit(1)
+                        }
                     }
                     Button {
                         model.clearWorkspaceFolder()
@@ -482,19 +495,16 @@ struct ComposerView: View {
         .padding(.top, 2)
     }
 
+    /// Empty until the count arrives. The scan runs off the main actor, so
+    /// there is a moment with no number; repeating the folder name underneath
+    /// itself only makes the chip look broken, and a raw path would put a
+    /// filesystem-named string, newlines and all, into the layout.
     private var folderCountLabel: String {
         guard let botId = model.selectedBotId,
               let count = model.folderItemCount[botId] else {
-            return wsPathLabel
+            return ""
         }
         return "\(count) item\(count == 1 ? "" : "s")"
-    }
-
-    /// The count has not landed yet. A raw path would put a filesystem-named
-    /// string straight into the chip, newlines and all, so the sanitized name
-    /// stands in until the real count arrives.
-    private var wsPathLabel: String {
-        workspace?.folderName ?? ""
     }
 
     private func send() {

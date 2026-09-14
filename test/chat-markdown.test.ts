@@ -60,3 +60,60 @@ test("parseInline handles code, bold, and emphasis together", () => {
     { type: "em", text: "em" },
   ]);
 });
+
+test("a pipe table becomes a table block with its alignments", () => {
+  const blocks = blocksFromMarkdown([
+    "| Tool | Cost | Notes |",
+    "|------|-----:|:-----:|",
+    "| bash | 0 | needs a card |",
+    "| read | 0 | free |",
+  ].join("\n"));
+  assert.equal(blocks.length, 1);
+  const table = blocks[0];
+  assert.equal(table.type, "table");
+  if (table.type !== "table") return;
+  assert.deepEqual(table.headers, ["Tool", "Cost", "Notes"]);
+  assert.deepEqual(table.aligns, ["leading", "trailing", "center"]);
+  assert.deepEqual(table.rows, [["bash", "0", "needs a card"], ["read", "0", "free"]]);
+});
+
+test("table rows are padded and trimmed to the header's width", () => {
+  const blocks = blocksFromMarkdown("| A | B |\n|---|---|\n| one |\n| one | two | three |");
+  const table = blocks[0];
+  assert.equal(table.type, "table");
+  if (table.type !== "table") return;
+  assert.deepEqual(table.rows, [["one", ""], ["one", "two"]]);
+});
+
+test("a sentence with a pipe is not a table", () => {
+  assert.deepEqual(
+    blocksFromMarkdown("Run a | b to pipe it."),
+    [{ type: "p", text: "Run a | b to pipe it." }],
+  );
+});
+
+test("a paragraph lets go of the table under it", () => {
+  const blocks = blocksFromMarkdown("Here are the results.\n| A | B |\n|---|---|\n| 1 | 2 |");
+  assert.equal(blocks.length, 2);
+  assert.deepEqual(blocks[0], { type: "p", text: "Here are the results." });
+  assert.equal(blocks[1].type, "table");
+});
+
+test("an escaped pipe stays inside its cell", () => {
+  const blocks = blocksFromMarkdown("| Pattern | Use |\n|---|---|\n| a \\| b | either |");
+  const table = blocks[0];
+  assert.equal(table.type, "table");
+  if (table.type !== "table") return;
+  assert.deepEqual(table.rows, [["a | b", "either"]]);
+});
+
+test("blockquotes and rules parse as their own blocks", () => {
+  assert.deepEqual(
+    blocksFromMarkdown("> first\n> second\n\n---\n\nafter"),
+    [
+      { type: "quote", text: "first\nsecond" },
+      { type: "rule" },
+      { type: "p", text: "after" },
+    ],
+  );
+});

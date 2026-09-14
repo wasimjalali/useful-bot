@@ -1033,6 +1033,42 @@ html, body {
     padding: 0;
     background: transparent;
   }
+  .chat-md blockquote {
+    margin: 0 0 0.8em;
+    border-left: 2px solid var(--border-strong);
+    padding-left: 12px;
+    color: var(--ink-muted);
+  }
+  .chat-md hr {
+    margin: 1em 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+  }
+  /* A wide table scrolls inside its own box; the transcript column never
+     grows to fit one. */
+  .chat-md-table {
+    overflow-x: auto;
+    margin: 0 0 0.8em;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .chat-md-table table {
+    border-collapse: collapse;
+    width: max-content;
+    min-width: 100%;
+  }
+  .chat-md-table th,
+  .chat-md-table td {
+    border-bottom: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .chat-md-table th {
+    background: var(--sunken);
+    font-weight: 600;
+  }
+  .chat-md-table tr:last-child td { border-bottom: 0; }
 
   .bot-label {
     display: inline-flex;

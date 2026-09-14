@@ -125,7 +125,10 @@ struct ChatView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkMuted)
             }
-            .foregroundStyle(Theme.C.warning)
+            // The card sits on the app's own surface, not a warning wash. An
+            // approval is the normal way this app works, and a yellow panel
+            // over the composer reads as something having gone wrong.
+            .foregroundStyle(Theme.C.inkMuted)
             // The preview is what the owner is approving; a single truncated
             // line hides the end of a command or an instruction they are
             // agreeing to run.
@@ -151,11 +154,12 @@ struct ChatView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(Theme.C.warningSoft)
+        .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
                 .strokeBorder(Theme.C.border, lineWidth: 1)
         )
+        .popShadow()
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .opacity(busy ? 0.7 : 1)
     }
@@ -193,6 +197,30 @@ struct ChatView: View {
     }
 
     // MARK: - Transcript
+
+    /// Scroll to the newest turn now and once more after layout settles.
+    ///
+    /// A row added or a transcript replaced changes the content height a frame
+    /// after the change that triggered this, so a single scroll lands short.
+    /// Both passes are untransacted: the transcript belongs at its newest turn,
+    /// and animating the trip there is what makes opening a chat look like it
+    /// started at the top and fell.
+    private func stickToBottom(_ proxy: ScrollViewProxy) {
+        jumpToBottom(proxy)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard pinnedToBottom else { return }
+            jumpToBottom(proxy)
+        }
+    }
+
+    private func jumpToBottom(_ proxy: ScrollViewProxy) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+    }
 
     private func transcript(_ bot: ShellBot) -> some View {
         let roster = model.store?.bots ?? []
@@ -260,19 +288,38 @@ struct ChatView: View {
                 .uvScroll()
                 .defaultScrollAnchor(.bottom)
                 .modifier(ScrollPinnedTracker(pinned: $pinnedToBottom))
-                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .onAppear { jumpToBottom(proxy) }
+                // A chat opens at its newest turn, and gets there before the
+                // frame is drawn. The delayed scroll this replaces was visible
+                // as a jump: the transcript rendered at the top, then travelled
+                // down once the rows had loaded. The pin is re-armed because a
+                // different chat is a different reading position, and the
+                // transcript for this one arrives after the switch, which the
+                // row-count trigger then lands.
                 .task(id: bot.id) {
-                    // Opening a chat lands at the newest turn.
-                    try? await Task.sleep(nanoseconds: 120_000_000)
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    pinnedToBottom = true
+                    jumpToBottom(proxy)
+                }
+                // Sending is the one trigger that ignores the pin. The owner
+                // asked for this answer, so the transcript goes to it even if
+                // they were reading history a moment earlier, and stays there
+                // for the reply that streams in after.
+                .onChange(of: model.sendTick) {
+                    pinnedToBottom = true
+                    stickToBottom(proxy)
                 }
                 // The web pins to the newest turn on every content change.
                 // Each trigger scrolls only while the reader is pinned to the
                 // bottom; a jump to the top would mean the content changed
                 // under them, and dragging them back is not rendering.
+                //
+                // The row count is also what changes when a finished turn
+                // reloads the durable transcript, which swaps a short list for
+                // the full history: that needs the settle pass too, or the
+                // viewport lands wherever the taller content put it.
                 .onChange(of: model.transcript.count) {
                     guard pinnedToBottom else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    stickToBottom(proxy)
                 }
                 .onChange(of: model.transcript.last?.text.count) {
                     guard pinnedToBottom else { return }
@@ -662,16 +709,52 @@ private struct ScrollPinnedTracker: ViewModifier {
     /// rubber-band or rounding cannot drop the pin while streaming.
     private static let tolerance: CGFloat = 48
 
+    /// Offset and content height together, because the pin can only be judged
+    /// from the pair: the same distance-from-bottom means "the reader scrolled
+    /// up" when the offset moved and "a row was appended" when the content grew.
+    private struct Geometry: Equatable {
+        var offset: CGFloat
+        var contentHeight: CGFloat
+        var distance: CGFloat
+    }
+
+    /// True only while the reader's own hand is on the transcript. Every other
+    /// offset change belongs to the app.
+    @State private var dragging = false
+
     func body(content: Content) -> some View {
         if #available(macOS 15.0, *) {
-            content.onScrollGeometryChange(for: Bool.self) { geometry in
+            content
+            .onScrollPhaseChange { _, phase in
+                switch phase {
+                case .tracking, .interacting, .decelerating:
+                    dragging = true
+                default:
+                    dragging = false
+                }
+            }
+            .onScrollGeometryChange(for: Geometry.self) { geometry in
                 let bottomEdge = geometry.contentOffset.y
                     + geometry.containerSize.height
                     - geometry.contentInsets.bottom
-                let distance = max(0, geometry.contentSize.height - bottomEdge)
-                return distance <= Self.tolerance
-            } action: { _, nowPinned in
-                pinned = nowPinned
+                return Geometry(
+                    offset: geometry.contentOffset.y,
+                    contentHeight: geometry.contentSize.height,
+                    distance: max(0, geometry.contentSize.height - bottomEdge)
+                )
+            } action: { _, new in
+                // Only the reader's own gesture may break the pin.
+                //
+                // Everything else that moves this geometry is the app's doing
+                // and used to read as "they scrolled away": a new row makes the
+                // content taller a frame before anything scrolls, and the
+                // durable reload after a turn replaces a short transcript with
+                // a tall one. Both left the viewport a long way from the bottom
+                // for one frame, the pin dropped, and every auto-scroll below
+                // is gated on the pin — which is how sending a message stranded
+                // the reader in the middle of the history.
+                guard dragging else { return }
+                pinned = new.distance <= Self.tolerance
             }
         } else {
             content

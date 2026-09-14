@@ -40,7 +40,10 @@ struct ComposerTextView: NSViewRepresentable {
         // this one only shows it once the field actually scrolls.
         ThinScrollbar.install()
 
-        let textView = NSTextView()
+        let textView = FocusReportingTextView()
+        textView.onFocusChange = { [weak coordinator = context.coordinator] focused in
+            coordinator?.onFocusChange(focused)
+        }
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.allowsUndo = true
@@ -163,12 +166,31 @@ struct ComposerTextView: NSViewRepresentable {
             text = next
         }
 
-        func textDidBeginEditing(_ notification: Notification) {
-            onFocusChange(true)
-        }
+        // `textDidBeginEditing` and `textDidEndEditing` are not focus: AppKit
+        // posts them around the first edit, so a field clicked into but not
+        // yet typed in never reported focus at all. `FocusReportingTextView`
+        // reports the first-responder change instead, which is what a caret
+        // in the field actually means.
+    }
+}
 
-        func textDidEndEditing(_ notification: Notification) {
-            onFocusChange(false)
-        }
+/// An `NSTextView` that says when it holds the caret.
+///
+/// The placeholder has to disappear the moment the field is clicked, not on
+/// the first character; a caret blinking inside grey placeholder text reads as
+/// content that will not delete.
+private final class FocusReportingTextView: NSTextView {
+    var onFocusChange: (Bool) -> Void = { _ in }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocusChange(true) }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onFocusChange(false) }
+        return resigned
     }
 }

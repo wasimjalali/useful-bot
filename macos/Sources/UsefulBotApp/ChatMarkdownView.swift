@@ -61,6 +61,24 @@ struct ChatMarkdownView: View, Equatable {
             .padding(.leading, 18)
         case .code(_, let body):
             CodeBlockView(text: body)
+        case .table(let table):
+            MarkdownTableView(table: table) { inline($0) }
+        case .quote(let content):
+            HStack(alignment: .top, spacing: 10) {
+                // The bar carries the quote; no tint, so a quoted line stays
+                // as readable as the prose around it.
+                Rectangle()
+                    .fill(Theme.C.borderStrong)
+                    .frame(width: 2)
+                Text(inline(content))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        case .rule:
+            Rectangle()
+                .fill(Theme.C.border)
+                .frame(height: 1)
+                .padding(.vertical, 2)
         }
     }
 
@@ -116,6 +134,75 @@ struct ChatMarkdownView: View, Equatable {
               scheme == "http" || scheme == "https",
               !LocalHost.isLocal(url.host) else { return nil }
         return url
+    }
+}
+
+/// A pipe table as a real grid.
+///
+/// `Grid` keeps the columns aligned across rows without measuring anything by
+/// hand, and the whole table scrolls sideways inside its own scroll view so a
+/// wide one never pushes the transcript column out past the window edge.
+struct MarkdownTableView: View {
+    let table: MarkdownTable
+    /// The row renderer's inline parser, passed in so the table draws bold,
+    /// code and links inside cells exactly like the prose around it.
+    let inline: (String) -> AttributedString
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    ForEach(Array(table.headers.enumerated()), id: \.offset) { index, cell in
+                        cellView(cell, column: index, header: true)
+                    }
+                }
+                .background(Theme.C.sunken)
+                ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIndex, row in
+                    Divider().gridCellUnsizedAxes(.horizontal)
+                    GridRow {
+                        ForEach(Array(row.enumerated()), id: \.offset) { index, cell in
+                            cellView(cell, column: index, header: false)
+                        }
+                    }
+                    .background(rowIndex.isMultiple(of: 2) ? Color.clear : Theme.C.sunken.opacity(0.4))
+                }
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Theme.C.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func cellView(_ cell: String, column: Int, header: Bool) -> some View {
+        let alignment = table.alignments.indices.contains(column)
+            ? table.alignments[column]
+            : .leading
+        return Text(inline(cell))
+            .font(header ? Theme.font(DesignTokens.FontSize.chatBody, .semibold) : nil)
+            .multilineTextAlignment(textAlignment(alignment))
+            .frame(minWidth: 64, maxWidth: 360, alignment: frameAlignment(alignment))
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+    }
+
+    private func textAlignment(_ alignment: MarkdownTable.Alignment) -> TextAlignment {
+        switch alignment {
+        case .leading: return .leading
+        case .center: return .center
+        case .trailing: return .trailing
+        }
+    }
+
+    private func frameAlignment(_ alignment: MarkdownTable.Alignment) -> Alignment {
+        switch alignment {
+        case .leading: return .leading
+        case .center: return .center
+        case .trailing: return .trailing
+        }
     }
 }
 
