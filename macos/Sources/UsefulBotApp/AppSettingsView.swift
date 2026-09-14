@@ -293,7 +293,11 @@ struct AppSettingsView: View {
                                 let key = (drafts[item.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                                 Task {
                                     await model.connectProvider(id: item.id, key: key)
-                                    drafts[item.id] = ""
+                                    // Keep the key on screen when the connect
+                                    // failed so it can be corrected and retried.
+                                    if model.providersError == nil {
+                                        drafts[item.id] = ""
+                                    }
                                 }
                             }
                             if item.connected && item.source == "settings" {

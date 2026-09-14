@@ -5,28 +5,10 @@ import Foundation
 /// defence.
 public enum Attachments {
     public static let maxBytes = 1_048_576
-    public static let textMax = 64 * 1024
     public static let maxFiles = 5
-
-    private static let textTypes: Set<String> = [
-        "text/plain", "text/markdown", "text/csv", "text/html", "text/css", "text/xml",
-        "application/json", "application/xml", "application/javascript", "application/typescript",
-    ]
-
-    private static let textExtensions: Set<String> = [
-        ".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".xml", ".html", ".css",
-        ".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".rs", ".swift", ".yml", ".yaml",
-        ".toml", ".sh", ".log",
-    ]
 
     public enum NameError: Error, Equatable {
         case forbidden
-    }
-
-    public static func extensionOf(_ name: String) -> String {
-        let base = name.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
-        guard let dot = base.lastIndex(of: ".") else { return "" }
-        return String(base[dot...]).lowercased()
     }
 
     public static func safeName(_ name: String) throws -> String {
@@ -44,14 +26,6 @@ public enum Attachments {
             throw NameError.forbidden
         }
         return safe
-    }
-
-    public static func isText(name: String, type: String) -> Bool {
-        // Browsers hand file.type over bare, but native UTType strings can
-        // carry parameters ("text/plain; charset=utf-8"); compare the essence.
-        let essence = type.split(separator: ";").first.map(String.init) ?? type
-        if textTypes.contains(essence.trimmingCharacters(in: .whitespaces).lowercased()) { return true }
-        return textExtensions.contains(extensionOf(name))
     }
 
     /// A MIME type that is safe to interpolate into a multipart header: the

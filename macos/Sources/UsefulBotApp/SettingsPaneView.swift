@@ -254,6 +254,12 @@ enum FaceUpload {
     static func dataURL(from url: URL) -> Result<String, Failure> {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        // Decode only reasonably sized source files; the resize below is the
+        // real cap, but a huge original should never be decoded first.
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+        if let size, size > 8 * 1024 * 1024 {
+            return .failure(.tooLarge)
+        }
         guard let image = NSImage(contentsOf: url), image.size.width > 0, image.size.height > 0 else {
             return .failure(.unreadable)
         }
@@ -662,6 +668,8 @@ private struct GroupSettingsFields: View {
                 notice = "A group holds at most \(Threads.groupMaxMembers) bots."
                 return
             }
+            // The roster can be one echo behind a double tap; never add twice.
+            guard !members.contains(id) else { return }
             members.append(id)
         }
         model.patchBot(botId: bot.id, ["memberIds": members])

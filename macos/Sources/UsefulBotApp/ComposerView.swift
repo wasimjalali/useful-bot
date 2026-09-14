@@ -168,10 +168,12 @@ struct ComposerView: View {
                 .foregroundStyle(Theme.C.ink)
                 .lineLimit(1...6)
                 .focused($focused)
-                // Plain Return sends; modified Return and unsendable states
-                // fall through so the field handles the key normally.
+                // Plain Return sends; when there is nothing to send it is
+                // swallowed rather than inserting a newline. Modified keys
+                // fall through to the field.
                 .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.isEmpty, canSend, !model.pending else { return .ignored }
+                    guard press.modifiers.isEmpty else { return .ignored }
+                    guard canSend, !model.pending else { return .handled }
                     send()
                     return .handled
                 }
@@ -255,7 +257,9 @@ struct ComposerView: View {
 
     @ViewBuilder
     private var attachmentsRow: some View {
-        HStack(spacing: 8) {
+        // Chips wrap like the transcript's search chips; a plain row clipped
+        // once three or more files were attached.
+        WrapHStack(spacing: 8) {
             ForEach(model.attachments) { file in
                 HStack(spacing: 6) {
                     Text(file.name)
@@ -542,7 +546,9 @@ private struct ModelFlyout: View {
     private var models: [ComposerState.Option] {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !needle.isEmpty else { return composer.models }
-        return composer.models.filter { $0.label.lowercased().contains(needle) }
+        return composer.models.filter {
+            $0.label.lowercased().contains(needle) || $0.id.lowercased().contains(needle)
+        }
     }
 
     var body: some View {

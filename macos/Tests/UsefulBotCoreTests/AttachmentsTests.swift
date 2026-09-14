@@ -22,12 +22,6 @@ import Testing
         }
     }
 
-    @Test func textDetectionUsesTypeOrExtension() {
-        #expect(Attachments.isText(name: "notes.md", type: "application/octet-stream"))
-        #expect(Attachments.isText(name: "blob.bin", type: "text/plain; charset=utf-8"))
-        #expect(!Attachments.isText(name: "photo.png", type: "image/png"))
-    }
-
     @Test func messageEmbedsReadableTextAndDescribesBinary() {
         let files = [
             Attachment(id: "1", name: "notes.md", bytes: 12, text: "hi there"),

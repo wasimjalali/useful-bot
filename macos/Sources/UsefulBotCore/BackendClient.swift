@@ -629,7 +629,11 @@ public actor BackendClient {
                             continue
                         }
                         guard (200...299).contains(status) else {
-                            throw BackendError.http(status)
+                            // A 401/403 after the re-sign-in attempt is an
+                            // auth failure, not a generic HTTP error.
+                            throw status == 401 || status == 403
+                                ? BackendError.unauthorized
+                                : BackendError.http(status)
                         }
                         var armed = expectedSuffix == nil
                         if armed { armedBox.set() }

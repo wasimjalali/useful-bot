@@ -242,6 +242,9 @@ final class AppModel: ObservableObject {
         let outgoing = activeSession
         cancelSend()
         attachError = nil
+        threadError = nil
+        memoryNotes = nil
+        memoryError = nil
         selectedBotId = botId
         routineNotice = false
         // The draft and its attachments are page-level on the web, so they
@@ -258,9 +261,8 @@ final class AppModel: ObservableObject {
     /// Persist the selection the way the web's select action does, without
     /// applying the echoed store (that would re-enter this method).
     private func persistSelection(_ botId: String) {
-        Task { [weak self] in
-            guard let self else { return }
-            _ = try? await self.client.shellAction(ShellActions.select(botId: botId))
+        enqueue { [weak self] in
+            _ = try? await self?.client.shellAction(ShellActions.select(botId: botId))
         }
     }
 
@@ -351,7 +353,8 @@ final class AppModel: ObservableObject {
             if !pending {
                 durableEvents = state.events
                 rebuildTranscript()
-                threadError = nil
+                // A sticky turn-failure banner is cleared by send/select, not
+                // by an idle poll that knows nothing new.
             }
             await refreshComposer()
         } catch {
@@ -647,12 +650,20 @@ final class AppModel: ObservableObject {
 
     // MARK: - Profile and shell actions
 
-    func patchBot(botId: String, _ patch: [String: Any?]) {
-        // Serialize saves so rapid taps cannot land out of order.
+    /// Serialise every shell mutation on one chain so rapid actions cannot
+    /// land out of order and a stale echo cannot overwrite newer state.
+    private func enqueue(_ work: @escaping @MainActor () async -> Void) {
         let previous = saveChain
-        saveChain = Task { [weak self] in
+        saveChain = Task { @MainActor in
             _ = await previous?.value
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled else { return }
+            await work()
+        }
+    }
+
+    func patchBot(botId: String, _ patch: [String: Any?]) {
+        enqueue { [weak self] in
+            guard let self else { return }
             do {
                 let next = try await self.client.shellAction(ShellActions.updateBot(botId: botId, patch: patch))
                 guard !Task.isCancelled else { return }
@@ -665,12 +676,8 @@ final class AppModel: ObservableObject {
     }
 
     func perform(_ action: [String: Any]) {
-        // Every shell write shares the save chain so two rapid actions cannot
-        // land out of order and stale echoes cannot overwrite newer state.
-        let previous = saveChain
-        saveChain = Task { [weak self] in
-            _ = await previous?.value
-            guard !Task.isCancelled, let self else { return }
+        enqueue { [weak self] in
+            guard let self else { return }
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled else { return }
@@ -707,7 +714,7 @@ final class AppModel: ObservableObject {
     }
 
     func createBot(name: String, petname: String, label: String, description: String, sectionId: String?) {
-        Task { [weak self] in
+        enqueue { [weak self] in
             guard let self else { return }
             let action = ShellActions.createBot(
                 name: name,
@@ -718,6 +725,7 @@ final class AppModel: ObservableObject {
             )
             do {
                 let next = try await self.client.shellAction(action)
+                guard !Task.isCancelled else { return }
                 self.resetThread()
                 self.applyStore(next)
             } catch {
@@ -727,11 +735,12 @@ final class AppModel: ObservableObject {
     }
 
     func createGroup(name: String, memberIds: [String], sectionId: String?) {
-        Task { [weak self] in
+        enqueue { [weak self] in
             guard let self else { return }
             let action = ShellActions.createGroup(name: name, memberIds: memberIds, sectionId: sectionId)
             do {
                 let next = try await self.client.shellAction(action)
+                guard !Task.isCancelled else { return }
                 self.resetThread()
                 self.applyStore(next)
                 self.settingsOpen = true
@@ -795,10 +804,11 @@ final class AppModel: ObservableObject {
     }
 
     func openRecent(_ recentId: String) {
-        Task { [weak self] in
+        enqueue { [weak self] in
             guard let self else { return }
             do {
                 let next = try await self.client.shellAction(ShellActions.openRecent(recentId: recentId))
+                guard !Task.isCancelled else { return }
                 let switched = next.selectedBotId != self.selectedBotId
                 self.applyStore(next)
                 if !switched {
@@ -832,7 +842,7 @@ final class AppModel: ObservableObject {
     func decideProposal(_ proposal: Proposal, confirmed: Bool) {
         guard !busyProposals.contains(proposal.id) else { return }
         busyProposals.insert(proposal.id)
-        Task { [weak self] in
+        enqueue { [weak self] in
             guard let self else { return }
             do {
                 if confirmed {
