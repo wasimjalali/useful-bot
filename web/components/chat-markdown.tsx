@@ -1,29 +1,24 @@
 import type { ReactNode } from "react";
-import { blocksFromMarkdown } from "../../shared/chat-markdown.ts";
+import { blocksFromMarkdown, parseInline } from "../../shared/chat-markdown.ts";
 
 function Inline({ text }: { text: string }) {
-  const nodes: ReactNode[] = [];
-  let rest = text;
-  let key = 0;
-  while (rest.length > 0) {
-    const match = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/.exec(rest);
-    if (!match || match.index === undefined) {
-      nodes.push(rest);
-      break;
-    }
-    if (match.index > 0) nodes.push(rest.slice(0, match.index));
-    if (match[1] !== undefined) nodes.push(<code key={key}>{match[1]}</code>);
-    else if (match[2] !== undefined) nodes.push(<strong key={key}>{match[2]}</strong>);
-    else if (match[3] !== undefined) nodes.push(<strong key={key}>{match[3]}</strong>);
-    else if (match[4] !== undefined) nodes.push(<em key={key}>{match[4]}</em>);
-    else if (match[5] !== undefined) nodes.push(<em key={key}>{match[5]}</em>);
-    else if (match[6] !== undefined && match[7] !== undefined) {
-      nodes.push(<a href={match[7]} key={key} rel="noreferrer" target="_blank">{match[6]}</a>);
-    }
-    rest = rest.slice(match.index + match[0].length);
-    key += 1;
-  }
-  return <>{nodes}</>;
+  return (
+    <>
+      {parseInline(text).map((segment, index): ReactNode => {
+        if (segment.type === "code") return <code key={index}>{segment.text}</code>;
+        if (segment.type === "strong") return <strong key={index}>{segment.text}</strong>;
+        if (segment.type === "em") return <em key={index}>{segment.text}</em>;
+        if (segment.type === "link") {
+          return (
+            <a href={segment.href} key={index} rel="noreferrer noopener" target="_blank">
+              {segment.text}
+            </a>
+          );
+        }
+        return segment.text;
+      })}
+    </>
+  );
 }
 
 export function ChatMarkdown({ text }: { text: string }) {
