@@ -84,10 +84,15 @@ export default function Page() {
 
   const [transcriptUser, setTranscriptUser] = useState<Array<{ id: string; text: string }>>([]);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [failedSend, setFailedSend] = useState<string | null>(null);
   const [busyProposals, setBusyProposals] = useState<ReadonlySet<string>>(() => new Set());
+  const [busyApprovals, setBusyApprovals] = useState<ReadonlySet<string>>(() => new Set());
+  const busyApprovalsRef = useRef<Set<string>>(new Set());
   const projSession = useRef<string | null>(null);
   const activeRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
   const hydrated = useRef(false);
   const sendLock = useRef(false);
   const { store, error: shellError, dispatch, resolveOnly, selected } = useShell(Boolean(authed));
@@ -213,6 +218,7 @@ export default function Page() {
     if (!authed || !active) return;
     if (projSession.current !== active) {
       projSession.current = active;
+      stickRef.current = true;
       setProj(createProjection());
     }
     let cancelled = false;
@@ -257,8 +263,18 @@ export default function Page() {
   }, [authed, active]);
 
   useEffect(() => {
+    // Only follow the stream while the reader is already parked at the bottom;
+    // scrolling up to read history must not be yanked back on every chunk.
+    if (!stickRef.current) return;
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [proj.messages, proj.pending]);
+
+  function onScroll() {
+    const node = scrollRef.current;
+    if (!node) return;
+    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
+    stickRef.current = distance < 80;
+  }
 
   useEffect(() => {
     const first = proj.messages.find((message) => message.role === "user");
@@ -285,6 +301,7 @@ export default function Page() {
     const sid = bot.sessionId;
     if (sid !== activeRef.current) {
       projSession.current = null;
+      stickRef.current = true;
       setActive(sid);
       setProj(createProjection());
     }
@@ -303,6 +320,7 @@ export default function Page() {
     if (id) dispatch({ type: "clearThread", botId: id });
     setTranscriptUser([]);
     projSession.current = null;
+    stickRef.current = true;
     setActive(null);
     setProj(createProjection());
     setPickerOpen(false);
@@ -322,13 +340,16 @@ export default function Page() {
     if (!message || proj.pending || sendLock.current || !selected) return;
     sendLock.current = true;
     setError("");
+    setFailedSend(null);
     setDraft("");
     setPickerOpen(false);
+    const optimisticId = nextId();
+    stickRef.current = true;
     setProj((current) => ({
       ...current,
       pending: true,
       error: "",
-      messages: [...current.messages, { role: "user", text: message, id: nextId() }],
+      messages: [...current.messages, { role: "user", text: message, id: optimisticId }],
     }));
     dispatch({ type: "touchChat", botId: selected.id, preview: message });
     try {
@@ -356,10 +377,18 @@ export default function Page() {
       }
       void refreshThread(selected.id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Send failed";
-      if (message === "unauthorized") setAuthed(false);
-      setError(message === "unauthorized" ? "Sign in expired" : message);
-      setProj((current) => ({ ...current, pending: false }));
+      const reason = err instanceof Error ? err.message : "Send failed";
+      if (reason === "unauthorized") setAuthed(false);
+      setError(reason === "unauthorized" ? "Sign in expired" : reason);
+      // The POST never landed: drop the optimistic bubble and give the text back
+      // so the message is not lost.
+      setFailedSend(message);
+      setProj((current) => ({
+        ...current,
+        pending: false,
+        messages: current.messages.filter((entry) => entry.id !== optimisticId),
+      }));
+      setDraft(message);
     } finally {
       sendLock.current = false;
     }
@@ -384,19 +413,44 @@ export default function Page() {
   }
 
   async function decide(item: { id: string; hash: string }, decision: "approve" | "deny") {
-    const res = await fetch("/api/auth/session", { credentials: "include" });
-    const session = await res.json() as { csrfToken?: string };
-    const out = await fetch(`/api/approvals/${item.id}`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json", "x-ub-csrf": session.csrfToken ?? "" },
-      body: JSON.stringify({ decision, actionSha256: item.hash }),
-    });
-    if (!out.ok) {
-      setError("Approval failed");
-      return;
+    // Guard synchronously: the disabled attribute only lands on the next render,
+    // so a fast double click would otherwise send two decisions.
+    if (busyApprovalsRef.current.has(item.id)) return;
+    busyApprovalsRef.current.add(item.id);
+    setBusyApprovals((current) => new Set(current).add(item.id));
+    try {
+      let csrf: Record<string, string>;
+      try {
+        csrf = await csrfHeaders();
+      } catch (err) {
+        if (err instanceof Error && err.message === "unauthorized") {
+          setAuthed(false);
+          setError("Sign in expired");
+        } else {
+          setError("Approval failed");
+        }
+        return;
+      }
+      const out = await fetch(`/api/approvals/${item.id}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json", ...csrf },
+        body: JSON.stringify({ decision, actionSha256: item.hash }),
+      });
+      if (!out.ok) {
+        setError("Approval failed");
+        return;
+      }
+      setApprovals((current) => current.filter((row) => row.id !== item.id));
+    } finally {
+      busyApprovalsRef.current.delete(item.id);
+      setBusyApprovals((current) => {
+        if (!current.has(item.id)) return current;
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
     }
-    setApprovals((current) => current.filter((row) => row.id !== item.id));
   }
 
   const messages = proj.messages;
@@ -650,8 +704,22 @@ export default function Page() {
       <div className="flex min-w-0 flex-1 p-2.5 lg:pl-0">
         <main className="stage flex min-w-0 flex-1 flex-col">
           {displayError ? (
-            <div className="px-4 py-2 text-sm text-danger sm:px-6" role="alert">
-              {displayError}
+            <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm text-danger sm:px-6" role="alert">
+              <span className="min-w-0">{displayError}</span>
+              {failedSend ? (
+                <button
+                  className="btn btn-secondary min-h-8 px-3 text-xs"
+                  onClick={() => {
+                    const retry = failedSend;
+                    setFailedSend(null);
+                    setError("");
+                    void send(retry);
+                  }}
+                  type="button"
+                >
+                  Retry
+                </button>
+              ) : null}
             </div>
           ) : null}
           {approvals.length > 0 ? (
@@ -663,10 +731,20 @@ export default function Page() {
                     <div className="truncate text-sm text-ink">{item.preview}</div>
                     <div className="text-[12px] text-ink-muted">{item.tool}</div>
                   </div>
-                  <button className="btn btn-primary min-h-9 px-3 text-xs" onClick={() => void decide(item, "approve")} type="button">
+                  <button
+                    className="btn btn-primary min-h-9 px-3 text-xs"
+                    disabled={busyApprovals.has(item.id)}
+                    onClick={() => void decide(item, "approve")}
+                    type="button"
+                  >
                     Approve
                   </button>
-                  <button className="btn btn-danger min-h-9 px-3 text-xs" onClick={() => void decide(item, "deny")} type="button">
+                  <button
+                    className="btn btn-danger min-h-9 px-3 text-xs"
+                    disabled={busyApprovals.has(item.id)}
+                    onClick={() => void decide(item, "deny")}
+                    type="button"
+                  >
                     Deny
                   </button>
                 </div>
@@ -734,7 +812,7 @@ export default function Page() {
                     </p>
                   </div>
                 ) : (
-                  <div className="uv-scroll min-h-0 flex-1 overflow-y-auto">
+                  <div className="uv-scroll min-h-0 flex-1 overflow-y-auto" onScroll={onScroll} ref={scrollRef}>
                     <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
                       <div className="flex flex-col gap-6">
                         {showOnboarding ? (

@@ -5,6 +5,41 @@ export type MdBlock =
   | { type: "ol"; items: string[] }
   | { type: "code"; lang: string; text: string };
 
+export type InlineSegment =
+  | { type: "text"; text: string }
+  | { type: "code"; text: string }
+  | { type: "strong"; text: string }
+  | { type: "em"; text: string }
+  | { type: "link"; text: string; href: string };
+
+// Note: single underscores are deliberately not emphasis. They turn snake_case
+// identifiers (my_var_name) into accidental italics, so only ** and __ bold and
+// * emphasis are recognized. Links allow https/http only, which keeps
+// javascript:, data: and vbscript: URLs from ever becoming anchors.
+const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/;
+
+export function parseInline(source: string): InlineSegment[] {
+  const segments: InlineSegment[] = [];
+  let rest = source;
+  while (rest.length > 0) {
+    const match = INLINE.exec(rest);
+    if (!match || match.index === undefined) {
+      segments.push({ type: "text", text: rest });
+      break;
+    }
+    if (match.index > 0) segments.push({ type: "text", text: rest.slice(0, match.index) });
+    if (match[1] !== undefined) segments.push({ type: "code", text: match[1] });
+    else if (match[2] !== undefined) segments.push({ type: "strong", text: match[2] });
+    else if (match[3] !== undefined) segments.push({ type: "strong", text: match[3] });
+    else if (match[4] !== undefined) segments.push({ type: "em", text: match[4] });
+    else if (match[5] !== undefined && match[6] !== undefined) {
+      segments.push({ type: "link", text: match[5], href: match[6] });
+    }
+    rest = rest.slice(match.index + match[0].length);
+  }
+  return segments;
+}
+
 export function blocksFromMarkdown(source: string): MdBlock[] {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const blocks: MdBlock[] = [];

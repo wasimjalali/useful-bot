@@ -11,7 +11,7 @@ export function SearchChips({ hits }: { hits: SearchChip[] }) {
           className="search-chip"
           href={hit.url}
           key={hit.url}
-          rel="noreferrer"
+          rel="noreferrer noopener"
           role="listitem"
           target="_blank"
           title={hit.snippet || hit.title}

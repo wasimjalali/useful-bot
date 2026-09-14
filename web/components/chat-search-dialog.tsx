@@ -124,14 +124,28 @@ export function ChatSearchDialog({
             value={query}
           />
         </div>
-        <div className="search-tabs" role="tablist">
+        <div
+          className="search-tabs"
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const current = TABS.findIndex((item) => item.id === tab);
+            const delta = event.key === "ArrowRight" ? 1 : -1;
+            const next = TABS[(current + delta + TABS.length) % TABS.length];
+            setTab(next.id);
+            event.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.id}"]`)?.focus();
+          }}
+          role="tablist"
+        >
           {TABS.map((item) => (
             <button
               aria-selected={tab === item.id}
               className={tab === item.id ? "search-tab search-tab-active" : "search-tab"}
+              data-tab={item.id}
               key={item.id}
               onClick={() => setTab(item.id)}
               role="tab"
+              tabIndex={tab === item.id ? 0 : -1}
               type="button"
             >
               {item.label}
@@ -144,7 +158,7 @@ export function ChatSearchDialog({
             const prev = hits[index - 1];
             const heading = headingFor(hit, prev, tab);
             return (
-              <div key={hitKey(hit, index)}>
+              <div aria-label={heading ?? undefined} key={hitKey(hit, index)} role="group">
                 {heading ? <p className="search-palette-label">{heading}</p> : null}
                 <SearchHitRow
                   active={index === active}
