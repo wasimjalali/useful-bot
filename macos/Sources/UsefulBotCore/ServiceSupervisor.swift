@@ -31,7 +31,13 @@ public struct ServiceSupervisor: Sendable {
     public static let routerHealthURL = URL(string: "http://127.0.0.1:4319/health/live")!
     public static let eveHealthURL = URL(string: "http://127.0.0.1:4321/eve/v1/health")!
 
-    public init() {}
+    /// Executable check, injectable so a test can exercise the node-missing
+    /// path without touching the filesystem.
+    private let nodeExists: @Sendable (String) -> Bool
+
+    public init(nodeExists: @escaping @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }) {
+        self.nodeExists = nodeExists
+    }
 
     /// First candidate that exists, or the preferred path when none do. The
     /// predicate is injectable so the order is testable without a filesystem.
@@ -42,7 +48,7 @@ public struct ServiceSupervisor: Sendable {
     }
 
     public var isNodeAvailable: Bool {
-        FileManager.default.isExecutableFile(atPath: Self.resolveNodePath())
+        nodeExists(Self.resolveNodePath())
     }
 
     public func scriptPath(repoPath: String) -> String {

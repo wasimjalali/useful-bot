@@ -95,4 +95,26 @@ private final class FakeRunner: ProcessRunner, @unchecked Sendable {
         #expect(!modes(runner).contains("router"))
         #expect(modes(runner) == ["web"])
     }
+
+    @Test func ensureReportsNodeMissingWithoutSpawning() async {
+        let runner = FakeRunner()
+        let supervisor = ServiceSupervisor(nodeExists: { _ in false })
+        let services = LocalServices(runner: runner, probe: FakeProbe(), supervisor: supervisor)
+        let outcome = await services.ensure(config: ServerConfig(repoPath: "/repo", port: 4320))
+        #expect(outcome == .nodeMissing)
+        #expect(runner.started.isEmpty)
+    }
+
+    @Test func ensureIsReadyWhenHealthAlreadyAnswers() async {
+        let runner = FakeRunner()
+        let config = ServerConfig(repoPath: "/repo", port: 4320)
+        let services = LocalServices(
+            runner: runner,
+            probe: FakeProbe(healthy: [config.healthURL.absoluteString]),
+            supervisor: ServiceSupervisor(nodeExists: { _ in true })
+        )
+        let outcome = await services.ensure(config: config)
+        #expect(outcome == .ready)
+        #expect(runner.started.isEmpty)
+    }
 }
