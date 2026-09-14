@@ -6,6 +6,7 @@ import { deleteThread } from "../../shared/agent-store.ts";
 import { deleteRoutinesForBot } from "../../shared/routines-store.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
 import { applyShellAction, DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
+import { removeSessionGrant } from "../../shared/workspace-store.ts";
 
 export default defineTool({
   description:
@@ -76,6 +77,18 @@ export default defineTool({
         if (live.updatedAt !== target.updatedAt) throw new Error("bot_changed");
         return applyShellAction(current, { type: "deleteBot", botId: target.id }).store;
       });
+      // The web route revokes on its own delete path; this one commits
+      // straight to the roster, so a folder grant would outlive the bot that
+      // held it. Best effort: the roster is the authority and the grant window
+      // is capped either way, but a capability with no owner should not sit
+      // in the store waiting for the prune.
+      if (target.sessionId) {
+        try {
+          removeSessionGrant(target.sessionId);
+        } catch {
+          /* the store's own prune is the backstop */
+        }
+      }
       // Routines and the transcript outlive their bot in their own stores, and
       // none of the three locks can be taken together. So the roster commits
       // first and this follows: tearing down ahead of it would destroy the

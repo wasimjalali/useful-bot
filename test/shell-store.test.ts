@@ -14,6 +14,7 @@ import {
   sectionBots,
   seedStore,
   selectedBot,
+  staleSessionIds,
 } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 
@@ -264,4 +265,58 @@ test("setWorkspace refuses a root the grants store would reject", () => {
       bad,
     );
   }
+});
+
+test("staleSessionIds revokes a session nobody holds after the commit", () => {
+  const base = seedStore();
+  const botId = base.bots[0].id;
+  const before = applyShellAction(base, { type: "setSession", botId, sessionId: "sess-old" }).store;
+  const after = applyShellAction(before, { type: "setSession", botId, sessionId: "sess-new" }).store;
+  const action = { type: "setSession", botId, sessionId: "sess-new" } as const;
+  assert.deepEqual(staleSessionIds(action, before, after), ["sess-old"]);
+});
+
+test("staleSessionIds leaves a session that only moved between bots", () => {
+  const base = applyShellAction(seedStore(), { type: "createBot", name: "Scout" }).store;
+  const [first, second] = base.bots;
+  const before = applyShellAction(base, { type: "setSession", botId: first.id, sessionId: "sess-1" }).store;
+  // The same session is now held by the other bot. Nobody lost the capability,
+  // so the diff must not revoke it.
+  const moved = applyShellAction(before, { type: "setSession", botId: first.id, sessionId: null }).store;
+  const after = applyShellAction(moved, { type: "setSession", botId: second.id, sessionId: "sess-1" }).store;
+  const action = { type: "setSession", botId: second.id, sessionId: "sess-1" } as const;
+  assert.deepEqual(staleSessionIds(action, before, after), []);
+});
+
+test("staleSessionIds catches a detach, where the session id never changes", () => {
+  const base = seedStore();
+  const botId = base.bots[0].id;
+  const withSession = applyShellAction(base, { type: "setSession", botId, sessionId: "sess-1" }).store;
+  const before = applyShellAction(withSession, {
+    type: "setWorkspace",
+    botId,
+    workspace: { path: "/tmp", permission: "guard", finalConfirm: false },
+  }).store;
+  const action = { type: "setWorkspace", botId, workspace: null } as const;
+  const after = applyShellAction(before, action).store;
+  assert.deepEqual(staleSessionIds(action, before, after), ["sess-1"]);
+});
+
+test("staleSessionIds revokes the deleted bot's session and nobody else's", () => {
+  const base = applyShellAction(seedStore(), { type: "createBot", name: "Scout" }).store;
+  const [keep, drop] = base.bots;
+  const a = applyShellAction(base, { type: "setSession", botId: keep.id, sessionId: "sess-keep" }).store;
+  const before = applyShellAction(a, { type: "setSession", botId: drop.id, sessionId: "sess-drop" }).store;
+  const action = { type: "deleteBot", botId: drop.id } as const;
+  const after = applyShellAction(before, action).store;
+  assert.deepEqual(staleSessionIds(action, before, after), ["sess-drop"]);
+});
+
+test("staleSessionIds revokes nothing when there is no action", () => {
+  const base = applyShellAction(seedStore(), {
+    type: "setSession",
+    botId: seedStore().bots[0].id,
+    sessionId: "sess-1",
+  }).store;
+  assert.deepEqual(staleSessionIds(undefined, base, base), []);
 });

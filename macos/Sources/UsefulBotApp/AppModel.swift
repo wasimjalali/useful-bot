@@ -1379,11 +1379,18 @@ final class AppModel: ObservableObject {
         }
         workspaceError = nil
         let existing = liveBot(bot).workspace
-        let workspace = BotWorkspace(
+        // The init is failable, and a nil here would reach dispatchWorkspace as
+        // a detach: the owner would see their folder vanish instead of an
+        // error. The picker only ever hands back absolute paths, so this is
+        // belt and braces, but a silent detach is the wrong belt.
+        guard let workspace = BotWorkspace(
             path: url.path,
             permission: existing?.permission ?? "guard",
             finalConfirm: existing?.finalConfirm ?? false
-        )
+        ) else {
+            workspaceError = "That folder could not be attached."
+            return
+        }
         // The count lands asynchronously: a big folder must not block the pick.
         folderItemCount[bot.id] = nil
         Task.detached { [weak self] in

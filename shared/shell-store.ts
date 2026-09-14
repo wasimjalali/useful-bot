@@ -312,6 +312,38 @@ function parseWorkspacePermissionStrict(value: unknown): WorkspacePermission {
  * Anything under the granted root keeps the substring screen in
  * `resolveWorkspacePath`.
  */
+/**
+ * The session ids whose folder grant an action just invalidated.
+ *
+ * A grant is keyed by eve session id, so it stops being the owner's decision
+ * the moment a bot stops holding that session. Rather than listing the actions
+ * that do it — `newChat`, `clearThread`, `deleteBot`, but also `sendToBot`,
+ * `touchChat`, `setSession` and `openRecent`, which rotate a session quietly —
+ * this diffs the roster: every session id a bot held before the commit and
+ * nobody holds after it. A session that simply moved between bots is still
+ * held, so it survives. A detach keeps its session id, which the diff cannot
+ * see, so that one case is named.
+ */
+export function staleSessionIds(
+  action: ShellAction | undefined,
+  before: ShellStore,
+  after: ShellStore,
+): string[] {
+  if (!action) return [];
+  const stale = new Set<string>();
+  const held = new Set(
+    after.bots.map((bot) => bot.sessionId).filter((id): id is string => Boolean(id)),
+  );
+  for (const bot of before.bots) {
+    if (bot.sessionId && !held.has(bot.sessionId)) stale.add(bot.sessionId);
+  }
+  if (action.type === "setWorkspace" && !action.workspace) {
+    const session = after.bots.find((bot) => bot.id === action.botId)?.sessionId;
+    if (session) stale.add(session);
+  }
+  return [...stale];
+}
+
 export function isGrantableRootPath(path: string): boolean {
   if (!path.startsWith("/") || path.length > 1024) return false;
   // The filesystem root has no segments to screen, so every check below would
@@ -327,7 +359,27 @@ export function isGrantableRootPath(path: string): boolean {
   return true;
 }
 
+/**
+ * Credential stores with one exact name. Screened per path segment rather than
+ * as a substring, so `.dockerignore` at a project root stays readable while
+ * `.docker/config.json` does not. Used for the grant root and, in
+ * `resolveWorkspacePath`, for everything under it.
+ */
+export const FORBIDDEN_CHILD_SEGMENTS = new Set([
+  ".docker",
+  ".kube",
+  ".pypirc",
+  ".authinfo",
+  ".netrc",
+  ".npmrc",
+  "keychains",
+  "id_rsa",
+  "id_ecdsa",
+  "id_ed25519",
+]);
+
 const FORBIDDEN_GRANT_SEGMENTS = new Set([
+  ...FORBIDDEN_CHILD_SEGMENTS,
   ".env",
   ".ssh",
   ".aws",
@@ -336,18 +388,12 @@ const FORBIDDEN_GRANT_SEGMENTS = new Set([
   "auth.json",
   "secrets",
   "launchagents",
-  // Credential stores, as folder names this time: the substring screen in
-  // `resolveWorkspacePath` only covers what sits under the root, so the root
-  // itself needs its own list.
-  "keychains",
+  // Only the root gets these: `keychain` and `cookies` name real stores on
+  // macOS, and a folder called either is not a project. Under the root the
+  // substring screen already covers `Library/Keychains` and `Library/Cookies`
+  // without refusing a `cookies` directory in someone's source tree.
   "keychain",
   "netrc",
-  ".netrc",
-  ".npmrc",
-  ".docker",
-  ".kube",
-  ".pypirc",
-  ".authinfo",
   "cookies",
 ]);
 

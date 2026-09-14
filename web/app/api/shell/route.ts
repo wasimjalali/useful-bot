@@ -14,7 +14,7 @@ import {
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
-import { applyShellAction, isGrantableRootPath, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
@@ -69,6 +69,28 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
 }
 
 /**
+ * Drop the filesystem capabilities an action just took away. `staleSessionIds`
+ * works out which ones; this spends them.
+ *
+ * Best effort, like `detachBot`: the roster is the authority, and the stamp at
+ * the next turn is the backstop. It must not turn a locked grants store into a
+ * failed roster action the owner already saw succeed.
+ */
+function revokeGrantsFor(
+  action: ShellAction | undefined,
+  before: ShellStore,
+  after: ShellStore,
+): void {
+  for (const id of staleSessionIds(action, before, after)) {
+    try {
+      removeSessionGrant(id);
+    } catch {
+      /* the next turn's stamp revokes it; a locked store is not this action's failure */
+    }
+  }
+}
+
+/**
  * What a bot owns outside the shell store: its routines and its transcript.
  *
  * This runs after the roster commit, not before it. Before means a commit that
@@ -82,51 +104,6 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
  * Returns the error when it could not finish, so the caller can say so rather
  * than swallow it the way this path used to.
  */
-/**
- * Drop the filesystem capabilities an action just took away.
- *
- * A grant is keyed by eve session id, so it stops being the owner's decision
- * the moment a bot stops holding that session. Rather than listing the actions
- * that do it — `newChat`, `clearThread`, `deleteBot`, but also `sendToBot`,
- * `touchChat`, `setSession` and `openRecent`, which rotate a session quietly —
- * this diffs the roster and revokes every session id that a bot held before
- * the commit and no longer holds after it. A detach keeps the session, so that
- * one is caught by its own check below.
- *
- * Best effort, like `detachBot`: the roster is the authority, and the stamp at
- * the next turn is the backstop. It must not turn a locked grants store into a
- * failed roster action the owner already saw succeed.
- */
-function revokeGrantsFor(
-  action: ShellAction | undefined,
-  before: ShellStore,
-  after: ShellStore,
-): void {
-  if (!action) return;
-  const stale = new Set<string>();
-  const held = new Set(
-    after.bots.map((bot) => bot.sessionId).filter((id): id is string => Boolean(id)),
-  );
-  for (const bot of before.bots) {
-    // Held by nobody after the commit: the conversation it belonged to is
-    // gone, cleared, or moved to a different session.
-    if (bot.sessionId && !held.has(bot.sessionId)) stale.add(bot.sessionId);
-  }
-  // The folder was detached but the conversation continues, so the session id
-  // is unchanged and the diff above cannot see it.
-  if (action.type === "setWorkspace" && !action.workspace) {
-    const session = after.bots.find((bot) => bot.id === action.botId)?.sessionId;
-    if (session) stale.add(session);
-  }
-  for (const id of stale) {
-    try {
-      removeSessionGrant(id);
-    } catch {
-      /* the next turn's stamp revokes it; a locked store is not this action's failure */
-    }
-  }
-}
-
 function detachBot(botId: string): string | null {
   const errors: string[] = [];
   // Independently: a locked routines store is no reason to leave the

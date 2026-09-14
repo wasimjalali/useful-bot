@@ -54,13 +54,13 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   // why granting a home directory is a bad idea rather than a safe one; it
   // covers what is both common and unambiguous. A file a project legitimately
   // needs is still reachable through bash, which always shows a card.
+  // These earn a substring rule because the real files are named around them
+  // (`.env.local`, `id_rsa.pub`). Credential stores with one exact name are on
+  // FORBIDDEN_CHILD_SEGMENTS instead, so `.dockerignore` is not read as
+  // `.docker`.
   "keychain",
   "netrc",
   ".npmrc",
-  ".docker",
-  ".kube",
-  ".pypirc",
-  ".authinfo",
   "library/cookies",
   "id_rsa",
   "id_ecdsa",

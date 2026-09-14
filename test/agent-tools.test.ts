@@ -1165,3 +1165,49 @@ test("bash refuses an approval granted before the owner dropped to read_only", a
     box.restore();
   }
 });
+
+test("an exact credential folder name is refused without blocking its lookalikes", async () => {
+  const box = grantFixture("read_only");
+  try {
+    // The store itself: refused, by segment name rather than by substring.
+    mkdirSync(join(box.project, ".docker"), { recursive: true });
+    writeFileSync(join(box.project, ".docker", "config.json"), "{}", "utf8");
+    await assert.rejects(
+      () => run(readFile, { path: ".docker/config.json" }, { session: { id: "sess-1" } }),
+      /path_forbidden/,
+    );
+    // The file nearly every Docker project has: readable, because the screen
+    // matches a whole segment and not a prefix.
+    writeFileSync(join(box.project, ".dockerignore"), "node_modules\n", "utf8");
+    const ignore = await run<{ text: string }>(
+      readFile,
+      { path: ".dockerignore" },
+      { session: { id: "sess-1" } },
+    );
+    assert.equal(ignore.text.includes("node_modules"), true);
+  } finally {
+    box.restore();
+  }
+});
+
+test("reads work in every permission, because reading is what a grant is for", async () => {
+  for (const mode of ["read_only", "guard", "full_access"] as const) {
+    const box = grantFixture(mode);
+    try {
+      const note = await run<{ text: string }>(
+        readFile,
+        { path: "note.txt" },
+        { session: { id: "sess-1" } },
+      );
+      assert.equal(note.text.includes("hello from the project"), true, mode);
+      const listing = await run<{ rows: string[] }>(
+        listDir,
+        { path: "." },
+        { session: { id: "sess-1" } },
+      );
+      assert.equal(listing.rows.some((row) => row.includes("note.txt")), true, mode);
+    } finally {
+      box.restore();
+    }
+  }
+});

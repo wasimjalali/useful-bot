@@ -67,19 +67,26 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
  */
 function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
   if (!sessionId) return;
-  let bot: ShellBot | undefined;
   try {
-    bot = readShell().bots.find((item) => item.id === botId);
-  } catch {
-    // An unreadable roster is not permission to keep the grant.
-    removeSessionGrant(sessionId);
-    return;
+    let bot: ShellBot | undefined;
+    try {
+      bot = readShell().bots.find((item) => item.id === botId);
+    } catch {
+      // An unreadable roster is not permission to keep the grant.
+      removeSessionGrant(sessionId);
+      return;
+    }
+    if (!bot) {
+      removeSessionGrant(sessionId);
+      return;
+    }
+    syncSessionWorkspace(sessionId, bot);
+  } catch (err) {
+    // A contended grants store must not surface as a raw lock code in a
+    // routine's transcript note. The turn does not start: running it against a
+    // grant this process could not make current is the thing to avoid.
+    throw new Error("workspace_unavailable", { cause: err });
   }
-  if (!bot) {
-    removeSessionGrant(sessionId);
-    return;
-  }
-  syncSessionWorkspace(sessionId, bot);
 }
 
 const inflight = new Set<string>();
