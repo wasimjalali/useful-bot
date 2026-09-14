@@ -331,36 +331,15 @@ final class AppModel: ObservableObject {
             projection = StreamProjection()
             rebuildTranscript()
             if let sessionId = bot.sessionId, !sessionId.isEmpty {
-                // The durable rows already render the whole history. Replaying
-                // the session must not republish them row by row: that makes
-                // the transcript look like it is generating again and jitters
-                // the scroll. Apply the replay silently and only start
-                // publishing once it reaches the live tail.
-                //
-                // The stream only carries user/assistant turns, so a durable
-                // handoff/post/note can never appear in it; gate on the newest
-                // durable message. A pruned or replaced session may never
-                // replay that row, so the first event stamped after it also
-                // proves the replay caught up.
-                let sessionTail = state.events.last { $0.kind == "user" || $0.kind == "assistant" }
-                let durableTailId = sessionTail?.id
-                let durableTailAt = TranscriptBlocks.date(fromISO8601: sessionTail?.at)
-                var atLiveTail = durableTailId == nil
+                // The durable rows already render the whole history, so the
+                // replay is applied silently and only starts publishing once
+                // `ReplayGate` says it reached the live tail.
+                let durable = ReplayGate.Durable(events: state.events)
+                var atLiveTail = durable.startsLive
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
                     if !atLiveTail {
-                        let eventAt = TranscriptBlocks.date(fromISO8601: event.metaAt)
-                        if let durableTailId, event.id == durableTailId {
-                            atLiveTail = true
-                        } else if let durableTailAt, let eventAt, eventAt >= durableTailAt {
-                            // The timeline moved past the newest durable row:
-                            // the replay has caught up.
-                            atLiveTail = true
-                        } else if durableTailAt == nil, eventAt != nil {
-                            // The tail carries no usable stamp (older store):
-                            // any stamped event is newer than it.
-                            atLiveTail = true
-                        }
+                        atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
                     projection.apply(event, live: atLiveTail)
                     if atLiveTail {
