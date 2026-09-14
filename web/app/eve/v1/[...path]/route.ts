@@ -91,7 +91,9 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     const signal = method === "GET"
       ? request.signal
       : AbortSignal.any([request.signal, AbortSignal.timeout(180_000)]);
-    const upstream = await fetch(target, { method, headers, body, signal });
+    // readBody allocates an exact-length Uint8Array, so its backing buffer is
+    // the payload; the cast narrows ArrayBufferLike to the BodyInit type.
+    const upstream = await fetch(target, { method, headers, body: body?.buffer as ArrayBuffer | undefined, signal });
     if (!upstream.ok) {
       // Keep the upstream status but never relay eve's internal error body to
       // the caller; it can carry runtime and prompt detail.
