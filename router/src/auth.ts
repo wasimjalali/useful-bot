@@ -53,11 +53,11 @@ export class AuthTable {
     const presented = digest(token);
     let matched: CredentialDigest | null = null;
     for (const cred of this.credentials) {
+      if (cred.kind !== "router") continue;
       const stored = Buffer.from(cred.sha256, "hex");
       if (stored.length !== 32) continue;
       if (equalDigest(presented, stored)) {
         matched = cred;
-        break;
       }
     }
     if (!matched) {
@@ -76,7 +76,8 @@ export class AuthTable {
         message: "unauthorized",
       });
     }
-    if (Date.parse(matched.expiresAt) <= now.getTime()) {
+    const expiresAt = Date.parse(matched.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now.getTime()) {
       throw new RouterError({
         status: 401,
         type: "authentication_error",

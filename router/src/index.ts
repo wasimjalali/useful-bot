@@ -33,42 +33,83 @@ function send(res: ServerResponse, status: number, body: unknown, extra: Record<
   res.end(payload);
 }
 
+const UPSTREAM_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    const timer = setTimeout(() => {
-      reject(new RouterError({
+    let settled = false;
+    let timer: NodeJS.Timeout;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    timer = setTimeout(() => {
+      finish(() => reject(new RouterError({
         status: 400,
         type: "invalid_request_error",
         code: "invalid_request",
         message: "body timeout",
-      }));
+      })));
     }, 10_000);
     req.on("data", (chunk: Buffer) => {
+      if (settled) return;
       size += chunk.length;
       if (size > BODY_LIMIT_BYTES) {
-        clearTimeout(timer);
-        reject(new RouterError({
+        finish(() => reject(new RouterError({
           status: 413,
           type: "invalid_request_error",
           code: "body_too_large",
           message: "body_too_large",
-        }));
-        req.destroy();
+        })));
+        req.resume();
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => {
-      clearTimeout(timer);
-      resolve(Buffer.concat(chunks));
-    });
-    req.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
+    req.on("end", () => finish(() => resolve(Buffer.concat(chunks))));
+    req.on("error", (error) => finish(() => reject(error)));
   });
+}
+
+function parseJsonBody(raw: Buffer): unknown {
+  try {
+    return JSON.parse(raw.toString("utf8") || "null");
+  } catch {
+    throw new RouterError({
+      status: 400,
+      type: "invalid_request_error",
+      code: "invalid_request",
+      message: "invalid_request",
+    });
+  }
+}
+
+async function readCapped(response: Response, limit: number): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      throw new RouterError({
+        status: 502,
+        type: "upstream_error",
+        code: "upstream_protocol_error",
+        message: "upstream body too large",
+      });
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 function assertHost(req: IncomingMessage, port: number): void {
@@ -210,7 +251,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           throw new RouterError({ status: 415, type: "invalid_request_error", code: "unsupported_media_type", message: "unsupported_media_type" });
         }
         const raw = await readBody(req);
-        const body = JSON.parse(raw.toString("utf8") || "null");
+        const body = parseJsonBody(raw);
         const result = await search(caller, body);
         send(res, 200, result, { "x-useful-request-id": requestId });
         return;
@@ -223,18 +264,22 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         const turnId = headerUuid(req, "x-useful-turn-id");
         const stepId = headerUuid(req, "x-useful-request-id");
         const raw = await readBody(req);
-        const body = JSON.parse(raw.toString("utf8") || "null");
+        const body = parseJsonBody(raw);
         const parsed = validateCompletion(body);
         const alias = auth.assertAlias(caller, parsed.model);
         limits.rememberRequest(stepId, caller.callerId, Date.now());
         limits.hit(caller, Date.now());
         const entry = entryFor(registry, alias);
+        const disconnect = new AbortController();
+        res.on("close", () => {
+          if (!res.writableEnded) disconnect.abort();
+        });
         const upstream = await completeUpstream({
           entry,
           body,
           sessionId,
           callerId: caller.callerId,
-          signal: AbortSignal.timeout(180_000),
+          signal: AbortSignal.any([AbortSignal.timeout(180_000), disconnect.signal]),
         });
         const outHeaders: Record<string, string> = {
           "x-useful-request-id": stepId,
@@ -268,9 +313,11 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            res.write(Buffer.from(value));
+            if (!res.write(Buffer.from(value))) {
+              await new Promise<void>((resolve) => res.once("drain", resolve));
+            }
             leftover += decoder.decode(value, { stream: true });
-            const parts = leftover.split("\n\n");
+            const parts = leftover.split(/\r?\n\r?\n/);
             leftover = parts.pop() ?? "";
             for (const part of parts) {
               const usage = usageFromSseBlock(part);
@@ -280,7 +327,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           res.end();
           return;
         }
-        const text = await upstream.response.text();
+        const text = await readCapped(upstream.response, UPSTREAM_BODY_LIMIT_BYTES);
         let json: unknown = text;
         try { json = JSON.parse(text); } catch { /* keep */ }
         if (json && typeof json === "object" && json !== null && "model" in json) {
@@ -291,27 +338,35 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/usage") {
-        send(res, 200, limits.summarize(caller.callerId));
+        send(res, 200, caller.profile === "ops" ? limits.summarize() : limits.summarize(caller.callerId));
         return;
       }
       res.setHeader("allow", "GET, POST");
       throw new RouterError({ status: 404, type: "invalid_request_error", code: "invalid_request", message: "not found" });
     } catch (error) {
-      if (error instanceof RouterError) {
-        log({ request_id: requestId, status: error.status, code: error.code });
-        send(res, error.status, errorBody(error, requestId), { "x-useful-request-id": requestId });
+      const body = error instanceof RouterError
+        ? errorBody(error, requestId)
+        : {
+          error: {
+            type: "internal_error",
+            code: "internal_error",
+            message: "internal_error",
+            request_id: requestId,
+            retryable: false,
+          },
+        };
+      const status = error instanceof RouterError ? error.status : 500;
+      log({ request_id: requestId, status, code: error instanceof RouterError ? error.code : "internal_error" });
+      if (res.headersSent) {
+        try {
+          res.write(`data: ${JSON.stringify(body)}\n\n`);
+          res.end();
+        } catch {
+          res.destroy();
+        }
         return;
       }
-      log({ request_id: requestId, status: 500, code: "internal_error" });
-      send(res, 500, {
-        error: {
-          type: "internal_error",
-          code: "internal_error",
-          message: "internal_error",
-          request_id: requestId,
-          retryable: false,
-        },
-      });
+      send(res, status, body, { "x-useful-request-id": requestId });
     }
   });
 
