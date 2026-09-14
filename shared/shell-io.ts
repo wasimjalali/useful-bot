@@ -36,25 +36,62 @@ function reseedMarkerPath(path: string): string {
   return `${path}.reseeded`;
 }
 
-type ReseedMark = { at: string; botIds: string[] };
+/**
+ * Each stub bot as `id@createdAt`. The id alone is not enough: a reseed always
+ * produces the same default bot id, so a single-bot owner restoring their
+ * backup would look identical to the stub forever. The creation stamp is what
+ * separates them, because the stub's is the moment of the reseed and the
+ * backup's is whenever that bot was really made.
+ */
+type ReseedMark = { at: string; bots: string[] };
 
-function writeReseedMark(path: string, botIds: string[]): void {
+function botFingerprint(bot: { id: string; createdAt: string }): string {
+  return `${bot.id}@${bot.createdAt}`;
+}
+
+function writeReseedMark(path: string, bots: string[]): void {
+  const marker = reseedMarkerPath(path);
+  const tmp = `${marker}.${process.pid}.${Date.now()}.tmp`;
   try {
-    const mark: ReseedMark = { at: new Date().toISOString(), botIds };
-    writeFileSync(reseedMarkerPath(path), `${JSON.stringify(mark)}\n`, { encoding: "utf8", mode: 0o600 });
-  } catch { /* see shellWasReseeded: an unwritable mark is handled there */ }
+    const mark: ReseedMark = { at: new Date().toISOString(), bots };
+    // Atomically, like the store itself: a half-written mark reads as corrupt,
+    // and a corrupt mark is treated as a stub, which stops the sweep until
+    // someone looks. Better than a torn file deciding it by accident.
+    writeFileSync(tmp, `${JSON.stringify(mark)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    renameSync(tmp, marker);
+  } catch {
+    // Nothing recorded the reseed, so `shellWasReseeded` will say false and a
+    // sweep may run against the stub. The window is a failed write to a
+    // directory the store itself was just written to, and the alternative is
+    // failing the app's own recovery, so it is left to the caller's own
+    // guards: with no shell file yet, `peekShell` already returns null.
+    try { unlinkSync(tmp); } catch { /* nothing to clean */ }
+  }
 }
 
 function clearReseedMark(path: string): void {
   try { unlinkSync(reseedMarkerPath(path)); } catch { /* nothing to clear */ }
 }
 
-function readReseedMark(path: string): ReseedMark | null {
+/**
+ * The mark, or `"unreadable"` when a file is there but cannot be trusted.
+ * Those are different answers: no file means no reseed, whereas a file this
+ * build cannot parse is a reseed whose details are lost, and the safe reading
+ * of that is "still a stub".
+ */
+function readReseedMark(path: string): ReseedMark | "unreadable" | null {
+  if (!existsSync(reseedMarkerPath(path))) return null;
   try {
     const raw = JSON.parse(readFileSync(reseedMarkerPath(path), "utf8")) as Partial<ReseedMark>;
-    return Array.isArray(raw?.botIds) ? { at: String(raw.at ?? ""), botIds: raw.botIds } : null;
+    const bots = Array.isArray(raw?.bots)
+      ? raw.bots.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : [];
+    // An empty list would match nothing and so clear the mark on the next
+    // read, which is the fail-open this whole path exists to avoid.
+    if (bots.length === 0) return "unreadable";
+    return { at: typeof raw.at === "string" ? raw.at : "", bots };
   } catch {
-    return null;
+    return "unreadable";
   }
 }
 
@@ -69,11 +106,13 @@ function readReseedMark(path: string): ReseedMark | null {
 export function shellWasReseeded(path = defaultShellPath()): boolean {
   const mark = readReseedMark(path);
   if (!mark) return false;
+  // A mark that exists but says nothing legible still says a reseed happened.
+  if (mark === "unreadable") return true;
   const shell = peekShell(path);
   // No readable roster is its own reason for a deleting caller to stop.
   if (!shell) return true;
-  const stub = new Set(mark.botIds);
-  if (shell.bots.every((bot) => stub.has(bot.id))) return true;
+  const stub = new Set(mark.bots);
+  if (shell.bots.every((bot) => stub.has(botFingerprint(bot)))) return true;
   clearReseedMark(path);
   return false;
 }
@@ -117,7 +156,7 @@ export function readShell(path = defaultShellPath()): ShellStore {
     // deleting caller act, so a crash between the two has to leave a mark with
     // no stub (one sweep suppressed) rather than a stub with no mark (every
     // other bot's routines and transcripts read as orphans).
-    writeReseedMark(path, seeded.bots.map((bot) => bot.id));
+    writeReseedMark(path, seeded.bots.map(botFingerprint));
     writeShell(seeded, path);
     return seeded;
   }

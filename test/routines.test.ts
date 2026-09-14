@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -645,5 +645,41 @@ test("the sweep stands down while the roster is a recovery stub", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test("the reseed mark tells a restored single-bot backup from the stub", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-reseed-id-"));
+  const path = join(dir, "shell.json");
+  // One bot, made long before any reseed: the shape a single-bot owner's
+  // backup has, and the shape the stub also has.
+  const backup = readShell(path);
+  backup.bots = [{ ...backup.bots[0], createdAt: "2020-01-01T00:00:00.000Z" }];
+  writeShell(backup, path);
+  assert.equal(shellWasReseeded(path), false);
+
+  writeFileSync(path, "{ not json");
+  readShell(path);
+  assert.equal(shellWasReseeded(path), true);
+
+  // Restoring it brings back the same bot id, so only the creation stamp can
+  // say this is the owner's roster and not the stub.
+  writeShell(backup, path);
+  assert.equal(shellWasReseeded(path), false);
+});
+
+test("a mark that cannot be read is treated as a reseed, not as none", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-reseed-bad-"));
+  const path = join(dir, "shell.json");
+  readShell(path);
+  assert.equal(shellWasReseeded(path), false);
+
+  // Corrupt, empty, and structurally valid but naming nothing: each one is a
+  // mark whose details are lost, and the safe reading is "still a stub".
+  for (const content of ["{ not json", "", '{"at":"x","bots":[]}', '{"at":"x","bots":[1,null]}']) {
+    writeFileSync(`${path}.reseeded`, content);
+    assert.equal(shellWasReseeded(path), true, `expected a stub for: ${content}`);
+    // And it is never cleared on the way past, or the next read would fail open.
+    assert.equal(existsSync(`${path}.reseeded`), true);
   }
 });
