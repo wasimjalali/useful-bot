@@ -1,4 +1,4 @@
-import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 export const LAUNCHD_LABELS = [
@@ -19,18 +19,27 @@ export function assertSafeRoot(label: string, value: string): string {
   if (value.includes("~") || value.includes("$") || value.includes("\0")) {
     throw new Error(`${label}_unsafe`);
   }
-  if (value.includes("..")) {
+  if (value.split("/").includes("..")) {
     throw new Error(`${label}_unsafe`);
   }
   return value;
+}
+
+export function xmlEscape(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 export function renderPlist(template: string, projectRoot: string, stateRoot: string): string {
   const project = assertSafeRoot("project_root", projectRoot);
   const state = assertSafeRoot("state_root", stateRoot);
   const rendered = template
-    .replaceAll("@@PROJECT_ROOT@@", project)
-    .replaceAll("@@STATE_ROOT@@", state);
+    .replaceAll("@@PROJECT_ROOT@@", xmlEscape(project))
+    .replaceAll("@@STATE_ROOT@@", xmlEscape(state));
   if (rendered.includes("@@")) {
     throw new Error("plist_unresolved_token");
   }
@@ -75,6 +84,7 @@ export function renderLaunchdTemplates(input: {
   stateRoot: string;
 }): { files: string[]; lints: Record<string, string[]> } {
   mkdirSync(input.outDir, { recursive: true, mode: 0o700 });
+  chmodSync(input.outDir, 0o700);
   const files: string[] = [];
   const lints: Record<string, string[]> = {};
   for (const label of LAUNCHD_LABELS) {
@@ -88,6 +98,7 @@ export function renderLaunchdTemplates(input: {
     }
     const dest = join(input.outDir, name);
     writeFileSync(dest, rendered, { encoding: "utf8", mode: 0o600 });
+    chmodSync(dest, 0o600);
     files.push(dest);
   }
   return { files, lints };

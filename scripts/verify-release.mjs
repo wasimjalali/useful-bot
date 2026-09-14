@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const NODE = "/usr/local/bin/node";
 const ROOT = dirname(fileURLToPath(new URL(".", import.meta.url)));
+const TMP_ROOT = mkdtempSync(join(tmpdir(), "ub-release-"));
 
-if (Number(process.versions.node.split(".")[0]) !== 24) {
-  process.stderr.write(`verify-release refuses Node ${process.versions.node}\n`);
+const [NODE_MAJOR, NODE_MINOR, NODE_PATCH] = process.versions.node.split(".").map(Number);
+if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1)) {
+  process.stderr.write(`verify-release refuses Node ${process.versions.node}, need >=24.11.1 <25\n`);
   process.exit(2);
+}
+
+function tail(text) {
+  if (!text) return "";
+  return text.length > 4000 ? text.slice(-4000) : text;
 }
 
 function run(args, timeoutMs) {
@@ -23,6 +31,8 @@ function run(args, timeoutMs) {
     ok: result.status === 0,
     status: result.status,
     signal: result.signal,
+    stdout: tail(result.stdout),
+    stderr: tail(result.stderr),
   };
 }
 
@@ -50,6 +60,7 @@ function skipped() {
 
 step("tsc", ["node_modules/typescript/bin/tsc", "--noEmit"], 60_000);
 step("tsc_web", ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "web/tsconfig.json"], 60_000);
+step("tsc_router", ["node_modules/typescript/bin/tsc", "--noEmit", "-p", "router/tsconfig.json"], 60_000);
 step("unit", [
   "--experimental-strip-types",
   "--test",
@@ -61,11 +72,23 @@ step("unit", [
   "test/session-owners.test.ts",
   "test/eve-stream.test.ts",
   "test/shell-store.test.ts",
+  "test/bot-face.test.ts",
+  "test/attachments.test.ts",
   "test/approvals-persist.test.ts",
   "test/session-store.test.ts",
   "test/launchd-render.test.ts",
+  "test/eve-proxy-guard.test.ts",
+  "test/registry-lock.test.ts",
+  "test/origin.test.ts",
+  "test/providers.test.ts",
+  "test/live-models.test.ts",
+  "test/chat-markdown.test.ts",
+  "test/agents.test.ts",
+  "test/multi-agent.test.ts",
+  "test/agent-tools.test.ts",
   "spikes/s3/approvals.test.ts",
-], 60_000);
+  "router/test/contracts.test.ts",
+], 300_000);
 step("next_build", ["node_modules/next/dist/bin/next", "build", "web"], 180_000);
 step("launchd_render", [
   "--experimental-strip-types",
@@ -73,9 +96,9 @@ step("launchd_render", [
   "--project-root",
   ROOT,
   "--state-root",
-  "/tmp/ub-release-state",
+  join(TMP_ROOT, "state"),
   "--out",
-  "/tmp/ub-release-launchd",
+  join(TMP_ROOT, "launchd"),
 ], 15_000);
 
 const report = {

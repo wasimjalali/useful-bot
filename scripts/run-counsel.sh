@@ -6,6 +6,13 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p docs/counsel
 
+for input in docs/counsel/BRIEF.md docs/plan/PLAN-v0.1.md; do
+  if [[ ! -f "$input" ]]; then
+    echo "missing input: $input" >&2
+    exit 1
+  fi
+done
+
 PROMPT="$(cat docs/counsel/BRIEF.md)
 
 ## The plan under review
@@ -13,17 +20,34 @@ PROMPT="$(cat docs/counsel/BRIEF.md)
 $(cat docs/plan/PLAN-v0.1.md)"
 
 seat() {
-  local out="$1" model="$2"
+  local out="$1" model="$2" status
   echo "start $model -> $out"
   opencode run -m "$model" "$PROMPT" > "docs/counsel/$out" 2>&1
-  echo "exit=$? $model"
+  status=$?
+  echo "exit=$status $model"
+  return "$status"
 }
 
-seat 01-muse-spark-1.3.md opencode-go/muse-spark-1.3-contributor &
-seat 02-glm-5.3-flash.md  opencode-go/glm-5.3-flash &
-seat 03-hy4-preview.md    opencode-go/hy4-preview &
-seat 04-grok-4.6.md       opencode-go/grok-4.6 &
-wait
+names=(01-muse-spark-1.3.md 02-glm-5.3-flash.md 03-hy4-preview.md 04-grok-4.6.md)
+models=(opencode-go/muse-spark-1.3-contributor opencode-go/glm-5.3-flash opencode-go/hy4-preview opencode-go/grok-4.6)
+pids=()
+for i in "${!names[@]}"; do
+  seat "${names[$i]}" "${models[$i]}" &
+  pids+=("$!")
+done
+
+failed=0
+for i in "${!pids[@]}"; do
+  if ! wait "${pids[$i]}"; then
+    echo "seat failed: ${names[$i]}" >&2
+    failed=1
+  fi
+done
+
+if [[ "$failed" -ne 0 ]]; then
+  echo "ONE OR MORE SEATS FAILED" >&2
+  exit 1
+fi
 
 echo "ALL FOUR SEATS FINISHED"
 wc -c docs/counsel/0*.md

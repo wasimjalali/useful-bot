@@ -33,7 +33,13 @@ const result = renderLaunchdTemplates({
 
 const plutil = spawnSync("plutil", ["-lint", ...result.files], { encoding: "utf8" });
 if (plutil.error?.code === "ENOENT") {
-  process.stdout.write(`${JSON.stringify({ ok: true, linter: "node", files: result.files })}\n`);
+  process.stdout.write(`${JSON.stringify({
+    ok: true,
+    linter: "node-fallback",
+    warning: "plist_not_validated",
+    detail: "plutil is unavailable; rendered plists passed node lint only",
+    files: result.files,
+  })}\n`);
   process.exit(0);
 }
 if (plutil.status !== 0) {

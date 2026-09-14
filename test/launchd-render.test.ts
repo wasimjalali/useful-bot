@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,31 @@ test("render substitutes roots and lints three plists", () => {
 test("relative and home paths are refused", () => {
   assert.throws(() => renderPlist("@@PROJECT_ROOT@@", "relative", "/tmp/state"), /not_absolute/);
   assert.throws(() => renderPlist("@@PROJECT_ROOT@@", "/tmp/proj", "/tmp/~/state"), /unsafe/);
+});
+
+test("dot-dot segments are refused but dot-dot substrings are allowed", () => {
+  assert.throws(() => renderPlist("@@PROJECT_ROOT@@", "/tmp/../etc", "/tmp/state"), /unsafe/);
+  assert.doesNotThrow(() => renderPlist("@@PROJECT_ROOT@@", "/tmp/my..dir", "/tmp/state"));
+});
+
+test("XML-significant characters in roots are escaped", () => {
+  const rendered = renderPlist("<string>@@PROJECT_ROOT@@</string>", "/tmp/R&D/<x>", "/tmp/state");
+  assert.match(rendered, /\/tmp\/R&amp;D\/&lt;x&gt;/);
+  assert.doesNotMatch(rendered, /<x>/);
+});
+
+test("rendered plists and their directory are owner-only", () => {
+  const outDir = mkdtempSync(join(tmpdir(), "ub-launchd-mode-"));
+  const result = renderLaunchdTemplates({
+    templatesDir: join(ROOT, "ops/launchd"),
+    outDir,
+    projectRoot: "/Users/wasim/useful-bot",
+    stateRoot: "/Users/wasim/.useful-bot",
+  });
+  assert.equal(statSync(outDir).mode & 0o777, 0o700);
+  for (const file of result.files) {
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+  }
 });
 
 test("unresolved placeholders fail", () => {
