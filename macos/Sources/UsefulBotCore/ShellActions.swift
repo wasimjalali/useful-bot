@@ -77,7 +77,13 @@ public enum ShellActions {
     public static func updateBot(botId: String, patch: [String: Any?]) -> [String: Any] {
         var clean: [String: Any] = [:]
         for (key, value) in patch {
-            clean[key] = value ?? NSNull()
+            if let value {
+                clean[key] = value
+            } else if key == "petname" || key == "avatarImage" {
+                // Only these fields clear on null server-side; a null name or
+                // description would reach string clipping the wrong way.
+                clean[key] = NSNull()
+            }
         }
         return ["type": "updateBot", "botId": botId, "patch": clean]
     }
@@ -89,18 +95,20 @@ public enum ProposalActions {
     public static func confirm(_ proposal: Proposal) -> [String: Any]? {
         switch proposal.kind {
         case .createBot:
+            guard let name = proposal.name, !name.isEmpty else { return nil }
             return [
                 "type": "createBot",
-                "name": proposal.name ?? "",
+                "name": name,
                 "petname": proposal.petname ?? "",
                 "label": proposal.title ?? "",
                 "description": proposal.description ?? "",
                 "sectionId": proposal.sectionId ?? NSNull(),
             ]
         case .createGroup:
+            guard let name = proposal.name, !name.isEmpty else { return nil }
             return [
                 "type": "createGroup",
-                "name": proposal.name ?? "",
+                "name": name,
                 "memberIds": proposal.memberIds,
             ]
         case .updateBotProfile:
@@ -112,6 +120,9 @@ public enum ProposalActions {
                 "label": proposalPatch.title,
                 "description": proposalPatch.description,
             ]
+            if let petname = proposalPatch.petname, !petname.isEmpty {
+                patch["petname"] = petname
+            }
             if let shape = proposalPatch.avatarShape, FacePalette.isShape(shape) {
                 patch["avatarShape"] = shape
             }

@@ -163,9 +163,10 @@ struct ComposerView: View {
                 .foregroundStyle(Theme.C.ink)
                 .lineLimit(1...6)
                 .focused($focused)
-                // Return sends, Shift+Return inserts a newline, matching the web.
+                // Plain Return sends; modified Return and unsendable states
+                // fall through so the field handles the key normally.
                 .onKeyPress(.return, phases: .down) { press in
-                    if press.modifiers.contains(.shift) { return .ignored }
+                    guard press.modifiers.isEmpty, canSend, !model.pending else { return .ignored }
                     send()
                     return .handled
                 }

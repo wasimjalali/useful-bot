@@ -45,22 +45,33 @@ final class AppModel: ObservableObject {
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
 
-    /// Inline settings pane, toggled from the chat header.
-    @Published var settingsOpen = false {
-        didSet { if settingsOpen { routinesOpen = false } }
+    /// Which inline pane is open. One value, so settings and routines can
+    /// never fight over the 320pt sidebar.
+    enum Pane: Equatable {
+        case none
+        case settings
+        case routines
     }
-    /// Inline routines pane, toggled from the header button next to settings.
-    @Published var routinesOpen = false {
+
+    @Published var pane: Pane = .none {
         didSet {
-            if routinesOpen {
-                settingsOpen = false
-            } else {
-                // The create stub notice is per visit, not per bot.
-                routineNotice = false
-            }
+            // The create stub notice is per visit, not per bot.
+            if pane != .routines { routineNotice = false }
         }
     }
     @Published var routineNotice = false
+
+    /// Inline settings pane, toggled from the chat header.
+    var settingsOpen: Bool {
+        get { pane == .settings }
+        set { pane = newValue ? .settings : (pane == .settings ? .none : pane) }
+    }
+
+    /// Inline routines pane, toggled from the header button next to settings.
+    var routinesOpen: Bool {
+        get { pane == .routines }
+        set { pane = newValue ? .routines : (pane == .routines ? .none : pane) }
+    }
     /// ⌘K palette.
     @Published var searchOpen = false
     /// Composer draft is page-level on the web, so it survives a bot switch.
@@ -88,6 +99,7 @@ final class AppModel: ObservableObject {
     private var reloadTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
     private var saveChain: Task<Void, Never>?
+    private var uploadChain: Task<Void, Never>?
     private var loadGeneration = 0
     private var sendGeneration = 0
     private var sendBotId: String?
@@ -184,6 +196,9 @@ final class AppModel: ObservableObject {
         guard phase == .ready else { return }
         if let items = try? await client.approvals() {
             approvals = items
+            // An approval that vanished server-side must not leave its buttons
+            // disabled forever.
+            busyApprovals.formIntersection(items.map(\.id))
         }
     }
 
@@ -486,7 +501,7 @@ final class AppModel: ObservableObject {
                 )
                 self.approvals.removeAll { $0.id == item.id }
             } catch {
-                self.approvalError = "Approval failed"
+                self.approvalError = (error as? LocalizedError)?.errorDescription ?? "Approval failed"
             }
             self.busyApprovals.remove(item.id)
         }
@@ -708,7 +723,14 @@ final class AppModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                if confirmed, let action = ProposalActions.confirm(proposal) {
+                if confirmed {
+                    guard let action = ProposalActions.confirm(proposal) else {
+                        // Never mark an action confirmed that this build could
+                        // not build; the card offers dismiss for those.
+                        self.busyProposals.remove(proposal.id)
+                        self.threadError = "This proposal cannot be confirmed by this app. Dismiss it instead."
+                        return
+                    }
                     let next = try await self.client.shellAction(
                         action,
                         proposalId: proposal.id,
@@ -718,7 +740,7 @@ final class AppModel: ObservableObject {
                 } else {
                     let next = try await self.client.resolveProposal(
                         proposalId: proposal.id,
-                        status: confirmed ? "confirmed" : "dismissed"
+                        status: "dismissed"
                     )
                     self.applyStore(next)
                 }
@@ -773,12 +795,21 @@ final class AppModel: ObservableObject {
     func addAttachments(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         attachError = nil
-        let room = max(Attachments.maxFiles - attachments.count, 0)
-        let incoming = Array(urls.prefix(room))
-        Task { [weak self] in
+        // Serialise uploads so two picks cannot race the attachment list, and
+        // re-check the cap after every completion instead of up front.
+        let previous = uploadChain
+        uploadChain = Task { [weak self] in
+            _ = await previous?.value
             guard let self else { return }
-            var next = self.attachments
-            for url in incoming {
+            for url in urls {
+                guard self.attachments.count < Attachments.maxFiles else {
+                    self.attachError = "You can attach up to \(Attachments.maxFiles) files."
+                    return
+                }
+                if url.hasDirectoryPath {
+                    self.attachError = "Folders cannot be attached."
+                    continue
+                }
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                 // Check the size before reading so a huge pick never lands in
@@ -792,7 +823,7 @@ final class AppModel: ObservableObject {
                     ?? "application/octet-stream"
                 do {
                     let attachment = try await self.client.uploadAttachment(fileURL: url, mimeType: type)
-                    next.append(attachment)
+                    self.attachments.append(attachment)
                     self.attachError = nil
                 } catch is Attachments.NameError {
                     self.attachError = "That file name is not allowed."
@@ -802,7 +833,6 @@ final class AppModel: ObservableObject {
                     self.attachError = "Attach failed."
                 }
             }
-            self.attachments = next
         }
     }
 

@@ -48,8 +48,8 @@ public enum ApprovalDecision: String, Sendable {
 
 private struct ShellResponse: Decodable { let store: ShellStore }
 private struct StateResponse: Decodable {
-    let events: [AgentEvent]
-    let proposals: [Proposal]
+    let events: [AgentEvent]?
+    let proposals: [Proposal]?
 }
 private struct SendResponse: Decodable { let sessionId: String? }
 private struct ProvidersResponse: Decodable {
@@ -78,6 +78,21 @@ private final class ActivityBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Date().timeIntervalSince(last)
+    }
+}
+
+private final class FlagBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return flag
+    }
+    func set() {
+        lock.lock()
+        flag = true
+        lock.unlock()
     }
 }
 
@@ -226,7 +241,7 @@ public actor BackendClient {
         guard let decoded = try? JSONDecoder().decode(StateResponse.self, from: data) else {
             throw BackendError.decoding
         }
-        return (decoded.events, decoded.proposals)
+        return (decoded.events ?? [], decoded.proposals ?? [])
     }
 
     public func events(botId: String) async throws -> [AgentEvent] {
@@ -396,7 +411,7 @@ public actor BackendClient {
         // the proxy rejects.
         let normalized = sessionId.flatMap { $0.isEmpty ? nil : $0 }
         let (data, response) = try await perform { client, token in
-            let path = normalized.map { "eve/v1/session/\($0)" } ?? "eve/v1/session"
+            let path = normalized.map { "eve/v1/session/\(Self.pathComponent($0))" } ?? "eve/v1/session"
             var request = URLRequest(url: client.base.appendingPathComponent(path))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -517,6 +532,11 @@ public actor BackendClient {
     /// the extension/size checks in `Attachments`.
     public func uploadAttachment(fileURL: URL, mimeType: String) async throws -> Attachment {
         let data = try Data(contentsOf: fileURL)
+        // Backstop for a file whose size could not be read up front (cloud
+        // placeholder, swapped symlink): never upload past the cap.
+        guard data.count <= Attachments.maxBytes else {
+            throw BackendError.attachment("attachment_size")
+        }
         let name = try Attachments.safeName(fileURL.lastPathComponent)
         // `UTType.identifier` is a UTI, not a MIME type; only an allow-listed
         // `type/subtype` may reach the multipart header. The server falls back
@@ -544,8 +564,11 @@ public actor BackendClient {
         guard let decoded, let resolvedName = decoded.name, let bytes = decoded.bytes else {
             throw BackendError.decoding
         }
-        // The server owns the stored name, so it is the identity for removal.
-        return Attachment(id: resolvedName, name: resolvedName, bytes: bytes, text: decoded.text)
+        // The server echo is sanitised again before it can reach the composer
+        // or the prompt, and the local id is unique per attachment so two
+        // picks that normalise to the same name cannot collapse into one.
+        let displayName = (try? Attachments.safeName(resolvedName)) ?? name
+        return Attachment(id: UUID().uuidString, name: displayName, bytes: bytes, text: decoded.text)
     }
 
     // MARK: - Stream
@@ -579,6 +602,7 @@ public actor BackendClient {
         let client = self
         return AsyncThrowingStream { continuation in
             let activity = ActivityBox()
+            let armedBox = FlagBox()
             let reader = Task {
                 do {
                     for attempt in 0..<2 {
@@ -602,6 +626,7 @@ public actor BackendClient {
                             throw BackendError.http(status)
                         }
                         var armed = expectedSuffix == nil
+                        if armed { armedBox.set() }
                         // In history mode a waiting marker ends every replayed
                         // turn; only the idle watchdog may finish the read.
                         let finishOnTerminal = expectedSuffix != nil
@@ -617,11 +642,13 @@ public actor BackendClient {
                                        let turnId = event.turnId,
                                        !historyTurnIds.contains(turnId) {
                                         armed = true
+                                        armedBox.set()
                                         continuation.yield(event)
                                     } else if stripped == suffix,
                                               event.turnId == nil,
                                               historyTurnIds.isEmpty {
                                         armed = true
+                                        armedBox.set()
                                         continuation.yield(event)
                                     }
                                 }
@@ -654,6 +681,19 @@ public actor BackendClient {
                         }
                     }
                 })
+            } else {
+                // A send whose expected turn never appears in the replay must
+                // not hang the composer: finish once the stream goes quiet
+                // without ever arming.
+                watchdog.set(Task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        if !armedBox.value, activity.idle > 20 {
+                            continuation.finish()
+                            return
+                        }
+                    }
+                })
             }
             continuation.onTermination = { _ in
                 reader.cancel()
@@ -670,11 +710,11 @@ public actor BackendClient {
         }
     }
 
-    /// Percent-encode one path segment so an id can never add a path, a query
-    /// or a fragment to the request URL.
+    /// Percent-encode one path segment with a strict alphabet so an id can
+    /// never add a path, a query, a fragment or a percent-decoded separator.
     static func pathComponent(_ value: String) -> String {
-        var allowed = CharacterSet.urlPathAllowed
-        allowed.remove(charactersIn: "/?#")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+        guard !value.isEmpty, value != ".", value != ".." else { return "_" }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "_"
     }
 }

@@ -78,4 +78,36 @@ import Testing
         #expect(proposal.patch == nil)
         #expect(ProposalActions.confirm(proposal) == nil)
     }
+
+    @Test func unparseableExpiryIsClosed() throws {
+        let proposal = try decode("""
+        {"id":"p9","kind":"createBot","status":"pending","expiresAt":"not a date","name":"Scout"}
+        """)
+        #expect(!proposal.isOpen())
+    }
+
+    @Test func profileConfirmCarriesAPetnameAndDropsTheEmptyOne() throws {
+        let withPetname = try decode("""
+        {"id":"p10","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "botId":"b1","patch":{"name":"Scout","petname":"Scout Two","title":"Research","description":"Owns it"}}
+        """)
+        let action = try #require(ProposalActions.confirm(withPetname))
+        let patch = try #require(action["patch"] as? [String: Any])
+        #expect(patch["petname"] as? String == "Scout Two")
+
+        let withoutPetname = try decode("""
+        {"id":"p11","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "botId":"b1","patch":{"name":"Scout","petname":"","title":"Research","description":"Owns it"}}
+        """)
+        let plain = try #require(ProposalActions.confirm(withoutPetname))
+        let plainPatch = try #require(plain["patch"] as? [String: Any])
+        #expect(plainPatch["petname"] == nil)
+    }
+
+    @Test func createConfirmRequiresAName() throws {
+        let proposal = try decode("""
+        {"id":"p12","kind":"createBot","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z"}
+        """)
+        #expect(ProposalActions.confirm(proposal) == nil)
+    }
 }

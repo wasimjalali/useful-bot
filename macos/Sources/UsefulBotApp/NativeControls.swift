@@ -90,10 +90,8 @@ struct NativeButton<Label: View>: View {
             .focusable()
             .focused($focused)
             .focusEffectDisabled()
-            .onHover { inside in
-                hovering = inside
-                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            }
+            .onHover { hovering = $0 }
+            .pointerOnHover()
     }
 }
 
@@ -158,10 +156,8 @@ struct NativeIconButton: View {
         .focused($focused)
         .focusEffectDisabled()
         .focusRing(focused)
-        .onHover { inside in
-            hovering = inside
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .onHover { hovering = $0 }
+        .pointerOnHover()
     }
 }
 

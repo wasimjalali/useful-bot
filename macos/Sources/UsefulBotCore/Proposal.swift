@@ -18,6 +18,7 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         public var name: String
         public var title: String
         public var description: String
+        public var petname: String?
         public var avatarShape: String?
         public var avatarColor: String?
     }
@@ -71,10 +72,11 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         case sectionId, brief, memberIds, botId, patch, message, targetIds, groupId, sourceBotId
     }
 
-    /// Same filter as the web: pending and not past its TTL.
+    /// Same filter as the web: pending and not past its TTL. A date that does
+    /// not parse is treated as closed, matching the web's `Date.parse` filter.
     public func isOpen(now: Date = Date()) -> Bool {
         guard status == "pending" else { return false }
-        guard let expiry = RailClock.date(from: expiresAt) else { return true }
+        guard let expiry = RailClock.date(from: expiresAt) else { return false }
         return expiry > now
     }
 

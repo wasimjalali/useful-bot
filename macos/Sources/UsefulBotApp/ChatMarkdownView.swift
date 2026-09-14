@@ -85,9 +85,13 @@ struct ChatMarkdownView: View {
         )) ?? AttributedString(source)
         for run in attributed.runs {
             let intent = run.inlinePresentationIntent
-            if run.link != nil {
-                attributed[run.range].foregroundColor = Theme.C.ink
-                attributed[run.range].underlineStyle = .single
+            if let link = run.link {
+                if Self.allowed(link) {
+                    attributed[run.range].foregroundColor = Theme.C.ink
+                    attributed[run.range].underlineStyle = .single
+                } else {
+                    attributed[run.range].link = nil
+                }
             }
             if intent?.contains(.code) == true {
                 attributed[run.range].font = .system(size: 13, design: .monospaced)
@@ -99,5 +103,14 @@ struct ChatMarkdownView: View {
             }
         }
         return attributed
+    }
+
+    /// Model output may only link to the public web; `file://` and local
+    /// server links must not become tap targets.
+    private static func allowed(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return false
+        }
+        return !LocalHost.isLocal(url.host)
     }
 }

@@ -152,8 +152,9 @@ struct ProposalCardView: View {
 
     @ViewBuilder
     private func actions(confirm: String, dismiss: String, confirmDisabled: Bool = false) -> some View {
+        let actionable = ProposalActions.confirm(proposal) != nil
         HStack(spacing: 8) {
-            NativeButton(kind: .primary, small: true, enabled: !pending && !confirmDisabled) {
+            NativeButton(kind: .primary, small: true, enabled: !pending && !confirmDisabled && actionable) {
                 onDecision(true)
             } label: {
                 HStack(spacing: 8) {

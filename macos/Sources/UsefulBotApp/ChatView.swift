@@ -452,25 +452,9 @@ private struct SearchChipView: View {
             let url = URL(string: string),
             let scheme = url.scheme?.lowercased(),
             scheme == "http" || scheme == "https",
-            let host = url.host,
-            !Self.isLocal(host)
+            !LocalHost.isLocal(url.host)
         else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    private static func isLocal(_ host: String) -> Bool {
-        let lowered = host.lowercased()
-        if lowered == "localhost" || lowered.hasSuffix(".localhost") || lowered.hasSuffix(".local") {
-            return true
-        }
-        if lowered == "::1" { return true }
-        let parts = lowered.split(separator: ".").compactMap { Int($0) }
-        guard parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else { return false }
-        if parts[0] == 0 || parts[0] == 10 || parts[0] == 127 { return true }
-        if parts[0] == 192, parts[1] == 168 { return true }
-        if parts[0] == 172, (16...31).contains(parts[1]) { return true }
-        if parts[0] == 169, parts[1] == 254 { return true }
-        return false
     }
 }
 

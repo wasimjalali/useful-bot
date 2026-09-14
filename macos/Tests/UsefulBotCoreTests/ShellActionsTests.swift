@@ -64,4 +64,27 @@ import Testing
         #expect(action["message"] as? String == "ship it")
         #expect(action["sourceBotId"] as? String == "b9")
     }
+
+    @Test func updateBotOmitsNilForFieldsThatDoNotClear() throws {
+        let action = ShellActions.updateBot(botId: "b1", patch: [
+            "name": nil,
+            "label": nil,
+            "petname": nil,
+            "avatarImage": nil,
+        ])
+        let patch = try #require(action["patch"] as? [String: Any])
+        #expect(patch["name"] == nil)
+        #expect(patch["label"] == nil)
+        #expect(patch["petname"] is NSNull)
+        #expect(patch["avatarImage"] is NSNull)
+    }
+
+    @Test func pathComponentsEncodeSeparatorsAndPercent() {
+        #expect(BackendClient.pathComponent("abc-123_x.y~z") == "abc-123_x.y~z")
+        #expect(BackendClient.pathComponent("a/b") == "a%2Fb")
+        #expect(BackendClient.pathComponent("a?b#c") == "a%3Fb%23c")
+        #expect(BackendClient.pathComponent("%2F") == "%252F")
+        #expect(BackendClient.pathComponent("..") == "_")
+        #expect(BackendClient.pathComponent("") == "_")
+    }
 }
