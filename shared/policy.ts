@@ -61,6 +61,12 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   "keychain",
   "netrc",
   ".npmrc",
+  ".pypirc",
+  ".authinfo",
+  // `.kubeconfig` holds cluster credentials as surely as `.kube/config`, so
+  // this one wants the substring. `.docker` is the exception that forced the
+  // segment screen: `.dockerignore` is not a credential store.
+  ".kube",
   "library/cookies",
   "id_rsa",
   "id_ecdsa",
