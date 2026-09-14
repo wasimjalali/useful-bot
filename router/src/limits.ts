@@ -82,6 +82,9 @@ export class LimitStore {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode=WAL");
+    // Writers serialize through BEGIN IMMEDIATE; wait briefly for a held lock
+    // instead of surfacing SQLITE_BUSY as a 500.
+    this.db.exec("PRAGMA busy_timeout=5000");
     this.migrate();
     this.prune(Date.now());
   }
@@ -212,8 +215,12 @@ export class LimitStore {
       throw this.policyError("caller_budget_exhausted");
     }
     const callerTokens = this.chargedTokens(caller.callerId, dayAgo);
-    if ((limits.input24h > 0 && callerTokens.input >= limits.input24h)
-      || (limits.output24h > 0 && callerTokens.output >= limits.output24h)) {
+    const incomingInput = reservation?.inputUnits ?? 0;
+    const incomingOutput = reservation?.outputUnits ?? 0;
+    if ((limits.input24h > 0
+        && (callerTokens.input >= limits.input24h || callerTokens.input + incomingInput > limits.input24h))
+      || (limits.output24h > 0
+        && (callerTokens.output >= limits.output24h || callerTokens.output + incomingOutput > limits.output24h))) {
       throw this.policyError("caller_budget_exhausted");
     }
     const totalDay = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE ts > ?").get(dayAgo) as { c: number };
@@ -221,8 +228,10 @@ export class LimitStore {
       throw this.policyError("global_budget_exhausted");
     }
     const totalTokens = this.chargedTokens(null, dayAgo);
-    if ((AGGREGATE_LIMITS.input24h > 0 && totalTokens.input >= AGGREGATE_LIMITS.input24h)
-      || (AGGREGATE_LIMITS.output24h > 0 && totalTokens.output >= AGGREGATE_LIMITS.output24h)) {
+    if ((AGGREGATE_LIMITS.input24h > 0
+        && (totalTokens.input >= AGGREGATE_LIMITS.input24h || totalTokens.input + incomingInput > AGGREGATE_LIMITS.input24h))
+      || (AGGREGATE_LIMITS.output24h > 0
+        && (totalTokens.output >= AGGREGATE_LIMITS.output24h || totalTokens.output + incomingOutput > AGGREGATE_LIMITS.output24h))) {
       throw this.policyError("global_budget_exhausted");
     }
     this.db.prepare("INSERT INTO hits (caller_id, ts) VALUES (?, ?)").run(caller.callerId, now);
