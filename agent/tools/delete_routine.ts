@@ -31,10 +31,17 @@ export default defineTool({
       ...approvalActor(ctx),
       tool: "delete_routine",
       actionSha256: hash,
-      preview: `delete routine ${routine.name}`,
+      // The id is in the preview because a routine's name is editable by a
+      // tool; the owner has to be able to tell two "Weekly report" cards apart.
+      preview: `delete routine ${routine.name} (${routine.id})`,
     });
     await waitUntilNotPending(store, record.id);
     return executeIfApproved(store, record.id, hash, () => {
+      // The routine could have been edited while the owner was reading the
+      // card; the approval belongs to the revision they saw, not to the id.
+      const current = readRoutine(routine.id);
+      if (!current) return { status: "already_gone", routineId: routine.id, name: routine.name };
+      if (current.updatedAt !== routine.updatedAt) throw new Error("routine_changed");
       const removed = deleteRoutine(routine.id);
       return {
         status: removed ? "deleted" : "already_gone",

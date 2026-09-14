@@ -1,5 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { getApprovalStore } from "../lib/write.ts";
 import {
   createRoutine,
   hostTimeZone,
@@ -21,7 +23,7 @@ const schedule = z.object({
 
 export default defineTool({
   description:
-    "Create a routine: a standing instruction a bot runs on a schedule. Use it when the owner asks for recurring work (\"check this every Monday morning\"). Times are wall clock in the routine's timezone, so 09:00 stays 09:00 across a clock change. Defaults to this bot. The routine starts active, and the owner can pause or edit it in the chat details pane.",
+    "Create a routine: a standing instruction a bot runs on a schedule. Use it when the owner asks for recurring work (\"check this every Monday morning\"). Times are wall clock in the routine's timezone, so 09:00 stays 09:00 across a clock change. Defaults to this bot. The owner approves the card before the routine exists, because it then runs on its own; after that they can pause or edit it in the chat details pane.",
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     instruction: z.string().min(1).max(4000),
@@ -30,7 +32,7 @@ export default defineTool({
     /** IANA zone, for example Europe/Berlin. Defaults to this Mac's zone. */
     timezone: z.string().max(80).optional(),
   }),
-  execute(input) {
+  async execute(input, ctx) {
     const shell = readShell();
     const botId = input.botId?.trim() || process.env.UB_ACTIVE_BOT_ID || shell.selectedBotId;
     const bot = shell.bots.find((item) => item.id === botId) ?? null;
@@ -51,27 +53,48 @@ export default defineTool({
       };
     }
     const timezone = input.timezone ?? hostTimeZone();
-    let routine;
-    try {
-      routine = createRoutine({
-        botId: bot.id,
-        name: input.name,
-        instruction: input.instruction,
-        schedules,
-        timezone,
-      });
-    } catch (err) {
-      const code = err instanceof Error ? err.message : "routine_create_failed";
-      return { status: "invalid", error: code };
-    }
-    return {
-      status: "created",
-      routineId: routine.id,
-      bot: { id: bot.id, name: bot.name },
-      name: routine.name,
-      timezone: routine.timezone,
-      nextRunAt: routineNextRun(routine, new Date())?.toISOString() ?? null,
-      note: "The owner sees this routine in the chat details pane and can pause or delete it there.",
+    // A routine is a standing instruction that runs on its own afterwards, the
+    // same class of change as a bot profile, so the owner confirms it first.
+    const draft = {
+      botId: bot.id,
+      name: input.name.trim(),
+      instruction: input.instruction.trim(),
+      schedules,
+      timezone,
     };
+    const hash = actionSha256({
+      tool: "create_routine",
+      canonicalArgs: JSON.stringify(draft),
+      cwd: "routines",
+      targetRevision: null,
+      backend: "routines-store",
+      toolVersion: "1",
+    });
+    const store = getApprovalStore();
+    const record = store.request({
+      ...approvalActor(ctx),
+      tool: "create_routine",
+      actionSha256: hash,
+      preview: `create routine ${draft.name} on ${bot.name}`,
+    });
+    await waitUntilNotPending(store, record.id);
+    return executeIfApproved(store, record.id, hash, () => {
+      let routine;
+      try {
+        routine = createRoutine(draft);
+      } catch (err) {
+        const code = err instanceof Error ? err.message : "routine_create_failed";
+        return { status: "invalid", error: code };
+      }
+      return {
+        status: "created",
+        routineId: routine.id,
+        bot: { id: bot.id, name: bot.name },
+        name: routine.name,
+        timezone: routine.timezone,
+        nextRunAt: routineNextRun(routine, new Date())?.toISOString() ?? null,
+        note: "The owner sees this routine in the chat details pane and can pause or delete it there.",
+      };
+    });
   },
 });

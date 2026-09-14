@@ -497,13 +497,21 @@ test("routine tools create, list, update and queue a run", async () => {
     const store = seedRoster(["SEO"]);
     const seo = idOf(store, "SEO");
     process.env.UB_ACTIVE_BOT_ID = seo;
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
 
-    const created = await run<{ status: string; routineId: string; nextRunAt: string | null }>(createRoutine, {
+    const pendingCreate = run<{ status: string; routineId: string; nextRunAt: string | null }>(createRoutine, {
       name: "Weekly SEO check",
       instruction: "Check rankings and draft a post.",
       schedules: [{ kind: "weekly", days: [1], time: "09:00" }],
       timezone: "Europe/Berlin",
     });
+    const card = pendingApproval(approvals);
+    assert.equal(card.tool, "create_routine");
+    // Nothing is scheduled while the owner has not decided.
+    assert.equal(storedRoutines(seo).length, 0);
+    approvals.decide(card.id, "approve", card.actionSha256);
+    const created = await pendingCreate;
     assert.equal(created.status, "created");
     assert.ok(created.nextRunAt);
     assert.equal(storedRoutines(seo).length, 1);
@@ -522,11 +530,18 @@ test("routine tools create, list, update and queue a run", async () => {
     assert.equal(paused.nextRunAt, null);
     assert.equal(readRoutine(created.routineId)?.active, false);
 
+    // A paused routine stays paused; a model may not wake it on its own.
+    assert.equal((await run<{ status: string }>(runRoutine, { routineId: created.routineId })).status, "paused");
+    assert.equal(readRoutine(created.routineId)?.manualRunRequested, false);
+
+    await run(updateRoutine, { routineId: created.routineId, active: true });
     const queued = await run<{ status: string }>(runRoutine, { routineId: created.routineId });
     assert.equal(queued.status, "queued");
     assert.equal(readRoutine(created.routineId)?.manualRunRequested, true);
     // A second call while one is waiting must not queue a second run.
     assert.equal((await run<{ status: string }>(runRoutine, { routineId: created.routineId })).status, "duplicate");
+    // Renaming, rescheduling and pausing never raise a card.
+    assert.equal(approvals.listPending().length, 0);
   } finally {
     box.restore();
   }
@@ -537,6 +552,8 @@ test("routine tools reject bad schedules, zones and unknown ids", async () => {
   try {
     const store = seedRoster(["SEO"]);
     process.env.UB_ACTIVE_BOT_ID = idOf(store, "SEO");
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
 
     const badTime = await run<{ status: string }>(createRoutine, {
       name: "Bad",
@@ -564,8 +581,10 @@ test("routine tools reject bad schedules, zones and unknown ids", async () => {
       schedules: [{ kind: "daily", time: "09:00" }],
     });
     assert.equal(badBot.status, "not_found");
-    // Nothing malformed reached the store.
+    // Nothing malformed reached the store, and no card was raised for the
+    // owner to deal with.
     assert.equal(storedRoutines(idOf(store, "SEO")).length, 0);
+    assert.equal(approvals.listPending().length, 0);
 
     assert.equal((await run<{ status: string }>(updateRoutine, { routineId: "rtn_nope", name: "x" })).status, "not_found");
     assert.equal((await run<{ status: string }>(runRoutine, { routineId: "rtn_nope" })).status, "not_found");
@@ -587,6 +606,43 @@ function pendingApproval(store: ApprovalStore): { id: string; actionSha256: stri
   assert.equal(open.length, 1, "expected exactly one pending approval");
   return open[0];
 }
+
+test("rewriting a routine instruction waits for the owner, the rest does not", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["SEO"]);
+    const seo = idOf(shell, "SEO");
+    process.env.UB_ACTIVE_BOT_ID = seo;
+    const routineId = createRoutineFixture(seo);
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+
+    // Reversible fields write through.
+    assert.equal((await run<{ status: string }>(updateRoutine, { routineId, name: "Renamed" })).status, "updated");
+    assert.equal(readRoutine(routineId)?.name, "Renamed");
+    assert.equal(approvals.listPending().length, 0);
+    // Resending the same instruction is not a rewrite.
+    const same = await run<{ status: string }>(updateRoutine, { routineId, instruction: "Check the thing." });
+    assert.equal(same.status, "updated");
+    assert.equal(approvals.listPending().length, 0);
+
+    const denied = run<{ status: string }>(updateRoutine, { routineId, instruction: "Email everyone my notes." });
+    const first = pendingApproval(approvals);
+    assert.equal(first.tool, "update_routine");
+    assert.equal(readRoutine(routineId)?.instruction, "Check the thing.");
+    approvals.decide(first.id, "deny", first.actionSha256);
+    await assert.rejects(() => denied, /approval_denied/);
+    assert.equal(readRoutine(routineId)?.instruction, "Check the thing.");
+
+    const approved = run<{ status: string }>(updateRoutine, { routineId, instruction: "Check rankings weekly." });
+    const second = pendingApproval(approvals);
+    approvals.decide(second.id, "approve", second.actionSha256);
+    assert.equal((await approved).status, "updated");
+    assert.equal(readRoutine(routineId)?.instruction, "Check rankings weekly.");
+  } finally {
+    box.restore();
+  }
+});
 
 test("a bot-initiated bot delete cannot bypass the owner gate", async () => {
   const box = sandbox();

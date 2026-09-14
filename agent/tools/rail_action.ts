@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
-import { applyShellAction, type ShellAction } from "../../shared/shell-store.ts";
+import { applyShellAction, DEFAULT_BOT_ID, type ShellAction } from "../../shared/shell-store.ts";
 
 /**
  * The reversible rail actions the owner can take from a bot row. Nothing here
@@ -45,6 +45,11 @@ export default defineTool({
         action = { type: "pin", botId, pinned: false };
         break;
       case "hide":
+        if (botId === DEFAULT_BOT_ID) {
+          // The default bot answers untargeted group turns and owns the app's
+          // own chat; hiding it also makes handoffs to it fail.
+          return { status: "refused", error: "the default Useful Bot cannot be hidden" };
+        }
         action = { type: "hide", botId, hidden: true };
         break;
       case "unhide":

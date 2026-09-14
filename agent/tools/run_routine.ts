@@ -13,6 +13,17 @@ export default defineTool({
     if (!routine) {
       return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call listRoutines." };
     }
+    if (!routine.active) {
+      // Paused means paused for the agent path. The owner's own Test run
+      // button is an explicit click on that routine; a model deciding to wake
+      // a routine the owner switched off is not the same thing.
+      return {
+        status: "paused",
+        routineId: routine.id,
+        error: "that routine is paused",
+        hint: "Ask the owner to resume it, or call updateRoutine with active true once they agree.",
+      };
+    }
     // The web server owns delivery; this only raises the request flag, which
     // the next tick claims. A second call while one is waiting is a no-op.
     if (!requestRoutineRun(routine.id)) {

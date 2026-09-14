@@ -48,16 +48,21 @@ export default defineTool({
       ...approvalActor(ctx),
       tool: "delete_bot",
       actionSha256: hash,
-      preview: `delete ${target.kind === "group" ? "group" : "bot"} ${target.name}`,
+      // The id is in the preview because a bot's name is editable; the owner
+      // has to be able to tell two similarly named cards apart.
+      preview: `delete ${target.kind === "group" ? "group" : "bot"} ${target.name} (${target.id})`,
     });
     await waitUntilNotPending(store, record.id);
     return executeIfApproved(store, record.id, hash, () => {
       // Re-read under the store lock: the roster can have changed while the
-      // owner was deciding, and applyShellAction refuses a missing bot.
-      const next = updateShell((current) => applyShellAction(current, {
-        type: "deleteBot",
-        botId: target.id,
-      }).store);
+      // owner was deciding. The approval belongs to the revision on the card,
+      // so a bot renamed or re-profiled in the meantime is not deleted.
+      const next = updateShell((current) => {
+        const live = current.bots.find((bot) => bot.id === target.id);
+        if (!live) throw new Error("bot_missing");
+        if (live.updatedAt !== target.updatedAt) throw new Error("bot_changed");
+        return applyShellAction(current, { type: "deleteBot", botId: target.id }).store;
+      });
       // Routines outlive their bot in their own store and would keep coming
       // due for a bot that no longer exists.
       const routines = deleteRoutinesForBot(target.id);
