@@ -43,7 +43,7 @@ function putKeychain(service, token) {
 }
 
 function hasKeychain(service) {
-  const result = spawnSync("/usr/bin/security", ["find-generic-password", "-s", service], {
+  const result = spawnSync("/usr/bin/security", ["find-generic-password", "-s", service, "-a", "useful-bot"], {
     stdio: ["ignore", "ignore", "ignore"],
   });
   return result.status === 0;
