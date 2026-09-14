@@ -73,7 +73,7 @@ export function BotFacePicker({
         ref={fileRef}
         type="file"
       />
-      <div className="face-picker-tabs" role="tablist">
+      <div aria-label="Avatar options" className="face-picker-tabs" role="group">
         <span className="face-picker-tab face-picker-tab-active">Bot</span>
         <button
           className="face-picker-tab"

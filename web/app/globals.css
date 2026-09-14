@@ -493,6 +493,12 @@ html, body {
     background: rgb(23 23 23 / 0.72);
     color: #fff;
   }
+  .composer-thumb-x::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    border-radius: 999px;
+  }
   .composer-file {
     display: inline-flex;
     align-items: center;
@@ -1153,9 +1159,16 @@ html, body {
     padding: 2px 0 4px;
   }
   .face-dot {
+    position: relative;
     width: 18px;
     height: 18px;
     border: 2px solid var(--surface);
+    border-radius: 999px;
+  }
+  .face-dot::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
     border-radius: 999px;
   }
   .face-dot-on {
@@ -1217,6 +1230,32 @@ html, body {
     width: 100%;
     border-left: 0;
   }
+}
+
+@media (max-width: 640px) {
+  .settings-modal {
+    flex-direction: column;
+    height: auto;
+    max-height: min(88vh, 640px);
+  }
+  .settings-nav {
+    flex-direction: row;
+    width: 100%;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 8px 10px;
+  }
+  .settings-nav-item {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .settings-row { flex-wrap: wrap; }
+  .settings-main { padding: 16px 14px 20px; }
+}
+
+@media (hover: none) {
+  .bot-row-actions { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
