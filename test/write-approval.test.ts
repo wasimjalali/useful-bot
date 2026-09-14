@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,4 +120,29 @@ test("expectedSha256 refuses to clobber a changed file", async () => {
     autoDecision: "approve",
   });
   assert.equal(readFileSync(wrote.path, "utf8"), "updated");
+});
+
+test("a directory swapped for a symlink during review is rejected after consume", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
+  const outside = mkdtempSync(join(tmpdir(), "ub-out-"));
+  process.env.UB_WORKSPACE_ROOT = root;
+  const store = new ApprovalStore(() => 1_000);
+  setApprovalStore(store);
+  mkdirSync(join(root, "sub"), { recursive: true });
+  const pending = approvedWrite({
+    path: "sub/file.txt",
+    content: "nope",
+    expectedSha256: null,
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c7",
+  });
+  const [record] = store.listPending();
+  assert.ok(record, "approval should be pending");
+  // The owner is reviewing while the parent directory is swapped for a link.
+  rmSync(join(root, "sub"), { recursive: true, force: true });
+  symlinkSync(outside, join(root, "sub"));
+  store.decide(record.id, "approve", record.actionSha256);
+  await assert.rejects(pending, /path_symlink/);
+  assert.equal(existsSync(join(outside, "file.txt")), false);
 });

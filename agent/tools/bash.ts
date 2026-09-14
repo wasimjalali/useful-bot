@@ -6,6 +6,7 @@ import { workspaceRoot } from "../lib/workspace.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -68,10 +69,11 @@ export default defineTool({
           LANG: "C",
         },
       });
+      const truncated = stdout.length > OUTPUT_MAX_BYTES || stderr.length > OUTPUT_MAX_BYTES;
       return {
-        stdout: stdout.slice(0, OUTPUT_MAX_BYTES),
-        stderr: stderr.slice(0, OUTPUT_MAX_BYTES),
-        truncated: stdout.length > OUTPUT_MAX_BYTES || stderr.length > OUTPUT_MAX_BYTES,
+        stdout: wrapUntrusted("bash stdout", stdout.slice(0, OUTPUT_MAX_BYTES)),
+        stderr: wrapUntrusted("bash stderr", stderr.slice(0, OUTPUT_MAX_BYTES)),
+        truncated,
       };
     });
   },

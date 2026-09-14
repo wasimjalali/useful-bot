@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { readShell } from "../../shared/shell-io.ts";
 import { rosterLine, speakersFrom } from "../../shared/threads.ts";
+import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 export default defineTool({
   description:
@@ -18,8 +19,8 @@ export default defineTool({
         .map((bot) => ({
           id: bot.id,
           name: bot.name,
-          title: bot.label,
-          description: bot.description,
+          title: wrapUntrusted(`bot:${bot.id} title`, bot.label),
+          description: wrapUntrusted(`bot:${bot.id} description`, bot.description),
           section: shell.sections.find((section) => section.id === bot.sectionId)?.name ?? null,
           pinned: bot.pinned,
           hidden: bot.hidden,

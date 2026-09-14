@@ -23,8 +23,13 @@ import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
  * process only decides; it never consumes, so its different epoch is harmless.
  */
 const BOOT_EPOCH = randomUUID();
-const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
+const LOCK_TIMEOUT_MS = 5000;
+/**
+ * A crashed holder must be reclaimable well before the acquire deadline, or
+ * every caller blocks for the difference and then throws. Stale stays under the
+ * timeout so a reclaim plus a retry still fits inside it.
+ */
+const LOCK_STALE_MS = 2000;
 const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 
 function sleep(ms: number): void {
@@ -352,14 +357,30 @@ export async function waitUntilNotPending(
 ): Promise<StoredApproval> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const record = store.get(id);
+    const record = readWhileWaiting(store, id);
+    // A transient lock timeout is not a decision; keep waiting instead of
+    // treating it as a missing approval or aborting the wait.
+    if (record === "locked") {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      continue;
+    }
     if (!record) throw new Error(`approval_not_found:${id}`);
     if (record.status !== "pending") return record;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
-  const expired = store.get(id);
+  const expired = readWhileWaiting(store, id);
+  if (expired === "locked") throw new Error("approval_expired");
   if (expired && expired.status !== "pending") return expired;
   throw new Error("approval_expired");
+}
+
+function readWhileWaiting(store: ApprovalStore, id: string): StoredApproval | undefined | "locked" {
+  try {
+    return store.get(id);
+  } catch (error) {
+    if ((error as Error).message === "approvals_locked") return "locked";
+    throw error;
+  }
 }
 
 export async function executeIfApproved<T>(

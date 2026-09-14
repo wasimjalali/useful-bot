@@ -182,3 +182,17 @@ test("denied wait does not execute", async () => {
   );
   assert.equal(ran, false);
 });
+
+test("waitUntilNotPending retries a transient lock error instead of aborting", async () => {
+  let calls = 0;
+  const stub = {
+    get() {
+      calls += 1;
+      if (calls === 1) throw new Error("approvals_locked");
+      return { id: "apr_x", status: "approved" };
+    },
+  } as unknown as ApprovalStore;
+  const settled = await waitUntilNotPending(stub, "apr_x", 1000, 5);
+  assert.equal(calls, 2);
+  assert.equal(settled.status, "approved");
+});
