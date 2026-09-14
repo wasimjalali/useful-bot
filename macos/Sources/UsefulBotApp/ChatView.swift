@@ -179,7 +179,7 @@ struct ChatView: View {
                                 )
                             case .summary(_, let count, let botIds):
                                 BotMetaRow(
-                                    prefix: count == 1 ? "1 message with" : "\(count) messages with",
+                                    prefix: "\(count) messages with",
                                     botIds: botIds,
                                     roster: roster
                                 )
@@ -326,10 +326,7 @@ private struct BotMetaRow: View {
     }
 
     private var label: String {
-        if botIds.count > 1 { return "\(botIds.count) Bots" }
-        if let bot = bots.first { return bot.name }
-        if let name = names.first, !name.isEmpty { return name }
-        return botIds.count == 1 ? "1 Bot" : "Bot"
+        ChatAttribution.metaLabel(idCount: botIds.count, resolved: bots.map(\.name), names: names)
     }
 
     var body: some View {
@@ -378,13 +375,16 @@ struct TranscriptRowView: View {
                 roster: bots
             )
         case .post:
-            let attributed = row.authorBotId != nil || !(row.author ?? "").isEmpty
+            let author = row.author ?? ""
+            let attributed = row.authorBotId != nil || !author.isEmpty
             VStack(alignment: .leading, spacing: 8) {
                 if attributed {
                     BotMetaRow(
                         prefix: "Message from",
                         botIds: row.authorBotId.map { [$0] } ?? [],
-                        names: [row.author ?? ""],
+                        // A deleted bot that stored no name still reads as a
+                        // teammate rather than as "1 Bot".
+                        names: [author.isEmpty ? "a teammate" : author],
                         roster: bots
                     )
                 }
@@ -393,10 +393,10 @@ struct TranscriptRowView: View {
             }
         case .note:
             HStack(alignment: .top, spacing: 12) {
-                BotAvatarView(bot: speaker ?? bot, size: 20)
+                noteAvatar
                 VStack(alignment: .leading, spacing: 2) {
-                    if let speaker {
-                        Text(speaker.name.uppercased())
+                    if let label = ChatAttribution.label(speakerName: speaker?.name, author: row.author) {
+                        Text(label)
                             .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
                             .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                             .foregroundStyle(Theme.C.inkFaint)
@@ -483,6 +483,25 @@ struct TranscriptRowView: View {
             .frame(maxWidth: max(160, maxBubbleWidth - chrome), alignment: .leading)
     }
 
+    /// A note's face: the speaker's, the chat owner's for its own note, and
+    /// none at all when the author id names a bot the roster no longer has.
+    @ViewBuilder
+    private var noteAvatar: some View {
+        switch ChatAttribution.face(
+            authorBotId: row.authorBotId,
+            ownerBotId: bot.id,
+            speakerResolved: speaker != nil
+        ) {
+        case .speaker:
+            if let speaker { BotAvatarView(bot: speaker, size: 20) }
+        case .owner:
+            BotAvatarView(bot: bot, size: 20)
+        case .unknown:
+            // Keep the gutter so the note still lines up with its neighbours.
+            Color.clear.frame(width: 20, height: 20)
+        }
+    }
+
     /// The bot that spoke, when the row is attributed and it is not the chat
     /// owner itself.
     private var speaker: ShellBot? {
@@ -492,8 +511,7 @@ struct TranscriptRowView: View {
 
     private var speakerLabel: String? {
         guard speaker != nil || (row.authorBotId != nil && row.authorBotId != bot.id) else { return nil }
-        let name = speaker?.name ?? row.author ?? ""
-        return name.isEmpty ? nil : name.uppercased()
+        return ChatAttribution.label(speakerName: speaker?.name, author: row.author)
     }
 }
 
