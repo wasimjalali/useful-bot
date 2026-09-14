@@ -133,6 +133,13 @@ final class AppModel: ObservableObject {
         return store.bots.first { $0.id == selectedBotId } ?? store.bots.first
     }
 
+    /// The live row behind a rendered snapshot. A menu that toggles a flag has
+    /// to read it here: the snapshot can be an echo behind, and acting on a
+    /// stale value would undo the tap.
+    func liveBot(_ bot: ShellBot) -> ShellBot {
+        store?.bots.first { $0.id == bot.id } ?? bot
+    }
+
     var startingMessage: String {
         if phase == .starting { return "Starting local server" }
         return startupError ?? "Local server unavailable"

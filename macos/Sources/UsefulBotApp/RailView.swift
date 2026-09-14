@@ -80,10 +80,7 @@ struct RailView: View {
                     page: $rowMenuPage,
                     canDelete: (model.store?.bots.count ?? 0) > 1,
                     onPin: {
-                        // Resolve the live flags: the snapshot can be an echo
-                        // behind, and an inverted stale value would undo a tap.
-                        let live = model.store?.bots.first { $0.id == bot.id } ?? bot
-                        model.perform(ShellActions.pin(botId: bot.id, pinned: !live.pinned))
+                        model.perform(ShellActions.pin(botId: bot.id, pinned: !model.liveBot(bot).pinned))
                         closeRowMenu()
                     },
                     onMove: { sectionId in
@@ -99,8 +96,7 @@ struct RailView: View {
                         onRenameRequest(bot)
                     },
                     onHide: {
-                        let live = model.store?.bots.first { $0.id == bot.id } ?? bot
-                        model.perform(ShellActions.hide(botId: bot.id, hidden: !live.hidden))
+                        model.perform(ShellActions.hide(botId: bot.id, hidden: !model.liveBot(bot).hidden))
                         closeRowMenu()
                     },
                     onNewSection: {
@@ -202,6 +198,7 @@ struct RailView: View {
                         bot: bot,
                         selected: bot.id == model.selectedBotId,
                         sectionName: store.sections.first { $0.id == bot.sectionId }?.name,
+                        sections: store.sections,
                         canDelete: (model.store?.bots.count ?? 0) > 1,
                         menuOpen: rowMenuBot?.id == bot.id,
                         onSelect: { model.select(bot.id) },
@@ -246,8 +243,8 @@ struct RailView: View {
                     }
                 }
                 .padding(.top, 2)
-                if bots.isEmpty, let hint = emptySectionHint(store, section.id) {
-                    Text(hint)
+                if bots.isEmpty {
+                    Text(emptySectionHint(store, section.id))
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.C.inkFaint)
                         .padding(.horizontal, 8)
@@ -257,21 +254,12 @@ struct RailView: View {
         }
     }
 
-    /// A pinned or hidden bot leaves its section with nothing to show; name
-    /// the reason instead of leaving a dead header behind. Unassigned uses the
-    /// same rule, with its own fallback line for a genuinely empty bucket.
-    private func emptySectionHint(_ store: ShellStore, _ sectionId: String?) -> String? {
-        var parts: [String] = []
-        let pinned = store.pinnedBots.filter { $0.sectionId == sectionId }.count
-        if pinned > 0 {
-            parts.append(pinned == 1 ? "1 pinned bot shows at the top." : "\(pinned) pinned bots show at the top.")
-        }
-        let hidden = store.hiddenBots.filter { $0.sectionId == sectionId }.count
-        if hidden > 0 {
-            parts.append(hidden == 1 ? "1 bot here is hidden." : "\(hidden) bots here are hidden.")
-        }
-        if !parts.isEmpty { return parts.joined(separator: " ") }
-        return sectionId == nil ? "Default home for new bots." : nil
+    private func emptySectionHint(_ store: ShellStore, _ sectionId: String?) -> String {
+        RailCopy.emptySectionHint(
+            pinned: store.pinnedBots.filter { $0.sectionId == sectionId }.count,
+            hidden: store.hiddenBots.filter { $0.sectionId == sectionId }.count,
+            isUnassigned: sectionId == nil
+        )
     }
 
     @ViewBuilder
@@ -284,7 +272,7 @@ struct RailView: View {
             if !store.collapsedUnassigned {
                 VStack(alignment: .leading, spacing: 2) {
                     if bots.isEmpty {
-                        Text(emptySectionHint(store, nil) ?? "Default home for new bots.")
+                        Text(emptySectionHint(store, nil))
                             .font(.system(size: 12))
                             .foregroundStyle(Theme.C.inkFaint)
                             .padding(.horizontal, 8)
@@ -548,6 +536,48 @@ struct RowMenuPopover: View {
 
 // MARK: - Rows
 
+/// The right-click menu behind both a rail row and a pinned card: one
+/// definition, so the two can never drift apart. Flags come from the live
+/// store rather than the rendered row, because a racing echo can leave that
+/// snapshot a beat behind and an inverted stale value would undo the tap.
+@MainActor
+@ViewBuilder
+private func rowContextMenu(
+    bot: ShellBot,
+    model: AppModel,
+    sections: [ShellSection],
+    canDelete: Bool,
+    onOpenSettings: @escaping () -> Void,
+    onRenameRequest: @escaping () -> Void,
+    onDeleteRequest: @escaping () -> Void,
+    onCreateSection: @escaping () -> Void
+) -> some View {
+    let live = model.liveBot(bot)
+    Button(live.pinned ? "Unpin" : "Pin") {
+        model.perform(ShellActions.pin(botId: bot.id, pinned: !model.liveBot(bot).pinned))
+    }
+    Menu("Move to section") {
+        Button("Unassigned") {
+            model.perform(ShellActions.move(botId: bot.id, sectionId: nil))
+        }
+        ForEach(sections) { section in
+            Button(section.name) {
+                model.perform(ShellActions.move(botId: bot.id, sectionId: section.id))
+            }
+        }
+        Divider()
+        Button("New section", action: onCreateSection)
+    }
+    Button("Settings", action: onOpenSettings)
+    Button("Rename", action: onRenameRequest)
+    Button(live.hidden ? "Unhide" : "Hide") {
+        model.perform(ShellActions.hide(botId: bot.id, hidden: !model.liveBot(bot).hidden))
+    }
+    Divider()
+    Button("Delete", role: .destructive, action: onDeleteRequest)
+        .disabled(!canDelete)
+}
+
 private struct BotRowView: View {
     let bot: ShellBot
     let selected: Bool
@@ -629,34 +659,18 @@ private struct BotRowView: View {
             )
             .padding(.trailing, 2)
         }
-        .contextMenu { rowMenu }
-    }
-
-    @ViewBuilder
-    private var rowMenu: some View {
-        Button(bot.pinned ? "Unpin" : "Pin") {
-            model.perform(ShellActions.pin(botId: bot.id, pinned: !bot.pinned))
+        .contextMenu {
+            rowContextMenu(
+                bot: bot,
+                model: model,
+                sections: sections,
+                canDelete: canDelete,
+                onOpenSettings: onOpenSettings,
+                onRenameRequest: onRenameRequest,
+                onDeleteRequest: onDeleteRequest,
+                onCreateSection: onCreateSection
+            )
         }
-        Menu("Move to section") {
-            Button("Unassigned") {
-                model.perform(ShellActions.move(botId: bot.id, sectionId: nil))
-            }
-            ForEach(sections) { section in
-                Button(section.name) {
-                    model.perform(ShellActions.move(botId: bot.id, sectionId: section.id))
-                }
-            }
-            Divider()
-            Button("New section", action: onCreateSection)
-        }
-        Button("Settings", action: onOpenSettings)
-        Button("Rename", action: onRenameRequest)
-        Button(bot.hidden ? "Unhide" : "Hide") {
-            model.perform(ShellActions.hide(botId: bot.id, hidden: !bot.hidden))
-        }
-        Divider()
-        Button("Delete", role: .destructive, action: onDeleteRequest)
-            .disabled(!canDelete)
     }
 }
 
@@ -710,6 +724,7 @@ private struct PinnedCardView: View {
     let bot: ShellBot
     let selected: Bool
     var sectionName: String?
+    var sections: [ShellSection] = []
     var canDelete = true
     var menuOpen = false
     let onSelect: () -> Void
@@ -786,17 +801,16 @@ private struct PinnedCardView: View {
             .padding(.trailing, 6)
         }
         .contextMenu {
-            Button(bot.pinned ? "Unpin" : "Pin") {
-                model.perform(ShellActions.pin(botId: bot.id, pinned: !bot.pinned))
-            }
-            Button("Settings", action: onOpenSettings)
-            Button("Rename", action: onRenameRequest)
-            Button("Hide") {
-                model.perform(ShellActions.hide(botId: bot.id, hidden: true))
-            }
-            Divider()
-            Button("Delete", role: .destructive, action: onDeleteRequest)
-                .disabled(!canDelete)
+            rowContextMenu(
+                bot: bot,
+                model: model,
+                sections: sections,
+                canDelete: canDelete,
+                onOpenSettings: onOpenSettings,
+                onRenameRequest: onRenameRequest,
+                onDeleteRequest: onDeleteRequest,
+                onCreateSection: onCreateSection
+            )
         }
     }
 }
