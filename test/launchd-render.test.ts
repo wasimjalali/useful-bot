@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,17 @@ test("XML-significant characters in roots are escaped", () => {
   const rendered = renderPlist("<string>@@PROJECT_ROOT@@</string>", "/tmp/R&D/<x>", "/tmp/state");
   assert.match(rendered, /\/tmp\/R&amp;D\/&lt;x&gt;/);
   assert.doesNotMatch(rendered, /<x>/);
+});
+
+test("symlinked roots are canonicalized to their real path", () => {
+  const real = mkdtempSync(join(tmpdir(), "ub-launchd-real-"));
+  const linkRoot = mkdtempSync(join(tmpdir(), "ub-launchd-link-"));
+  const link = join(linkRoot, "link");
+  symlinkSync(real, link);
+  const canonical = realpathSync(real);
+  const rendered = renderPlist("<string>@@PROJECT_ROOT@@</string>", link, join(linkRoot, "state"));
+  assert.ok(rendered.includes(canonical), rendered);
+  assert.ok(!rendered.includes(link), rendered);
 });
 
 test("rendered plists and their directory are owner-only", () => {
