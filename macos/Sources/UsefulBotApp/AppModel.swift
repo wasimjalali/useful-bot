@@ -27,8 +27,30 @@ final class AppModel: ObservableObject {
     @Published private(set) var composer: ComposerState?
     @Published private(set) var memoryNotes: [MemoryNote]?
 
+    /// Pending approvals from `/api/approvals`, shown above the chat.
+    @Published private(set) var approvals: [ApprovalItem] = []
+    @Published private(set) var approvalError: String?
+    /// Web results the live turn surfaced, shown as chips under the transcript.
+    @Published private(set) var searchHits: [SearchChip] = []
+    /// Operator identity plus build info for the settings dialog.
+    @Published private(set) var appStatus: AppStatus?
+    /// App settings dialog, opened from the rail account row or the composer.
+    @Published var appSettingsOpen = false
+    @Published var appSettingsTab: AppSettingsTab = .general
+    @Published private(set) var providers: [ProviderPublic]?
+    @Published var providersError: String?
+    @Published private(set) var providerBusy: String?
+    @Published private(set) var usage: UsagePayload?
+    @Published var usageError: String?
+
     /// Inline settings pane, toggled from the chat header.
-    @Published var settingsOpen = false
+    @Published var settingsOpen = false {
+        didSet { if settingsOpen { routinesOpen = false } }
+    }
+    /// Inline routines pane, toggled from the header button next to settings.
+    @Published var routinesOpen = false {
+        didSet { if routinesOpen { settingsOpen = false } }
+    }
     @Published var routineNotice = false
     /// ⌘K palette.
     @Published var searchOpen = false
@@ -53,6 +75,7 @@ final class AppModel: ObservableObject {
     private var projection = StreamProjection()
     private var durableEvents: [AgentEvent] = []
     private var pollTask: Task<Void, Never>?
+    private var approvalPollTask: Task<Void, Never>?
     private var reloadTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
     private var saveChain: Task<Void, Never>?
@@ -101,6 +124,7 @@ final class AppModel: ObservableObject {
             await loadOperator()
             await refreshComposer()
             await reloadThread()
+            await pollApprovals()
             startPolling()
         } catch is CancellationError {
             return
@@ -113,11 +137,13 @@ final class AppModel: ObservableObject {
 
     func retry() async {
         pollTask?.cancel()
+        approvalPollTask?.cancel()
         reloadTask?.cancel()
         saveChain?.cancel()
         saveChain = nil
         cancelSend()
         pollTask = nil
+        approvalPollTask = nil
         reloadTask = nil
         loadGeneration += 1
         pending = false
@@ -134,10 +160,27 @@ final class AppModel: ObservableObject {
                 await self.pollOnce()
             }
         }
+        // The web polls approvals every 1.5s while the shell is open.
+        approvalPollTask?.cancel()
+        approvalPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self else { return }
+                await self.pollApprovals()
+            }
+        }
+    }
+
+    private func pollApprovals() async {
+        guard phase == .ready else { return }
+        if let items = try? await client.approvals() {
+            approvals = items
+        }
     }
 
     private func loadOperator() async {
         guard let status = try? await client.status() else { return }
+        appStatus = status
         if let name = status.name, !name.isEmpty, let initials = status.initials, !initials.isEmpty {
             operatorName = name
             operatorInitials = initials
@@ -206,10 +249,22 @@ final class AppModel: ObservableObject {
             projection = StreamProjection()
             rebuildTranscript()
             if let sessionId = bot.sessionId, !sessionId.isEmpty {
+                // The durable rows already render the whole history. Replaying
+                // the session must not republish them row by row: that makes
+                // the transcript look like it is generating again and jitters
+                // the scroll. Apply the replay silently and only start
+                // publishing once it reaches the live tail.
+                let durableTailId = state.events.last?.id
+                var atLiveTail = durableTailId == nil
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
                     projection.apply(event)
-                    publishTranscript()
+                    if !atLiveTail, let durableTailId, event.id == durableTailId {
+                        atLiveTail = true
+                    }
+                    if atLiveTail {
+                        publishTranscript()
+                    }
                 }
             }
             guard generation == loadGeneration else { return }
@@ -400,6 +455,85 @@ final class AppModel: ObservableObject {
             rows = Transcript.attributeGroupReplies(rows, roster: roster)
         }
         transcript = rows
+        searchHits = projection.searchHits
+    }
+
+    // MARK: - Approvals
+
+    /// Approve or deny one pending action. The card disappears on success.
+    func decideApproval(_ item: ApprovalItem, decision: String) {
+        approvalError = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.client.decideApproval(id: item.id, decision: decision, hash: item.actionSha256)
+                self.approvals.removeAll { $0.id == item.id }
+            } catch {
+                self.approvalError = "Approval failed"
+            }
+        }
+    }
+
+    // MARK: - App settings
+
+    func openAppSettings(_ tab: AppSettingsTab) {
+        appSettingsTab = tab
+        appSettingsOpen = true
+    }
+
+    func loadProviders() async {
+        providersError = nil
+        do {
+            providers = try await client.providers()
+        } catch {
+            providersError = "Could not load providers."
+        }
+    }
+
+    func connectProvider(id: String, key: String) async {
+        providerBusy = id
+        providersError = nil
+        do {
+            providers = try await client.connectProvider(id: id, key: key)
+        } catch {
+            let code = (error as? BackendError)?.providerCode
+            providersError = code == "provider_key" ? "That key looks invalid." : "Could not save the key."
+        }
+        providerBusy = nil
+    }
+
+    func activateProvider(id: String) async {
+        providerBusy = id
+        providersError = nil
+        do {
+            providers = try await client.activateProvider(id: id)
+        } catch {
+            let code = (error as? BackendError)?.providerCode
+            providersError = code == "provider_incompatible"
+                ? "This build routes OpenAI-compatible APIs. Use OpenRouter for Claude."
+                : "Could not switch provider."
+        }
+        providerBusy = nil
+    }
+
+    func disconnectProvider(id: String) async {
+        providerBusy = id
+        providersError = nil
+        do {
+            providers = try await client.disconnectProvider(id: id)
+        } catch {
+            providersError = "Could not disconnect."
+        }
+        providerBusy = nil
+    }
+
+    func loadUsage() async {
+        do {
+            usage = try await client.usage()
+            usageError = nil
+        } catch {
+            usageError = "Could not load usage."
+        }
     }
 
     // MARK: - Profile and shell actions
@@ -511,6 +645,7 @@ final class AppModel: ObservableObject {
             self.selectedBotId = id
             self.rebuildTranscript()
             self.settingsOpen = false
+            self.routinesOpen = false
             self.routineNotice = false
         }
     }

@@ -13,21 +13,42 @@ struct RailView: View {
     var onDeleteRequest: (ShellBot) -> Void
     var onCreateSection: () -> Void
     var onConnectors: () -> Void
+    var onOpenAppSettings: (AppSettingsTab) -> Void
+    /// Window frame of the New Bot plus button, so overlays outside the rail
+    /// can treat clicks on it as the toggle rather than "outside".
+    @Binding var newChatTriggerFrame: CGRect
 
     @State private var searchHovering = false
-    @State private var newBotHovering = false
+    @State private var accountOpen = false
+    @State private var accountAnchor: CGRect = .zero
+    @State private var accountButtonFrame = CGRect.zero
+    @State private var rowMenuBot: ShellBot?
+    @State private var rowMenuAnchor: CGRect = .zero
+    @State private var rowMenuTrigger: CGRect = .zero
+    @State private var rowMenuPage: RowMenuPage = .root
 
     var body: some View {
         VStack(spacing: 12) {
             HStack {
                 UsefulBotLogoView()
                 Spacer(minLength: 0)
+                // The New Bot affordance is one minimal plus beside the logo.
+                Button(action: onNewChat) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .trackWindowFrame($newChatTriggerFrame)
+                .accessibilityLabel("New Bot")
             }
             .padding(.horizontal, 4)
             .padding(.top, 4)
 
             searchTrigger
-            newChatTrigger
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -51,6 +72,63 @@ struct RailView: View {
         .frame(width: DesignTokens.Space.railWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.C.rail)
+        .coordinateSpace(name: "rail")
+        .overlay(alignment: .topLeading) {
+            if let bot = rowMenuBot {
+                RowMenuPopover(
+                    bot: bot,
+                    page: $rowMenuPage,
+                    onPin: {
+                        model.perform(ShellActions.pin(botId: bot.id, pinned: !bot.pinned))
+                        closeRowMenu()
+                    },
+                    onMove: { sectionId in
+                        model.perform(ShellActions.move(botId: bot.id, sectionId: sectionId))
+                        closeRowMenu()
+                    },
+                    onSettings: {
+                        closeRowMenu()
+                        onOpenSettings(bot.id)
+                    },
+                    onRename: {
+                        closeRowMenu()
+                        onRenameRequest(bot)
+                    },
+                    onHide: {
+                        model.perform(ShellActions.hide(botId: bot.id, hidden: !bot.hidden))
+                        closeRowMenu()
+                    },
+                    onNewSection: {
+                        closeRowMenu()
+                        onCreateSection()
+                    },
+                    onDelete: {
+                        closeRowMenu()
+                        onDeleteRequest(bot)
+                    }
+                )
+                .frame(width: 200)
+                .offset(x: max(8, rowMenuAnchor.maxX - 200), y: rowMenuAnchor.maxY + 4)
+                .dismissOnOutsideClick(triggers: { [rowMenuTrigger] }) { closeRowMenu() }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if accountOpen {
+                accountPopover
+                    .frame(width: 220)
+                    .offset(x: 12, y: max(8, accountAnchor.minY - 84))
+                    .dismissOnOutsideClick(triggers: { [accountButtonFrame] }) { accountOpen = false }
+            }
+        }
+        .onExitCommand {
+            accountOpen = false
+            closeRowMenu()
+        }
+    }
+
+    private func closeRowMenu() {
+        rowMenuBot = nil
+        rowMenuPage = .root
     }
 
     // MARK: - Triggers
@@ -94,29 +172,6 @@ struct RailView: View {
         .onHover { searchHovering = $0 }
     }
 
-    private var newChatTrigger: some View {
-        Button(action: onNewChat) {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.bubble")
-                    .font(.system(size: 15, weight: .regular))
-                Text("New Bot")
-                    .font(.system(size: DesignTokens.FontSize.newBotTrigger, weight: .semibold))
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: DesignTokens.Control.newBotTrigger)
-            .background(newBotHovering ? Theme.C.surface : Theme.C.sunken)
-            .overlay(Capsule().strokeBorder(newBotHovering ? Theme.C.borderStrong : Theme.C.border, lineWidth: 1))
-            .clipShape(Capsule())
-            .smShadow()
-            .contentShape(Capsule())
-            .animation(.easeOut(duration: DesignTokens.Motion.fast), value: newBotHovering)
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .onHover { newBotHovering = $0 }
-    }
-
     // MARK: - Groups
 
     @ViewBuilder
@@ -158,7 +213,13 @@ struct RailView: View {
                             onDeleteRequest: { onDeleteRequest(bot) },
                             sections: store.sections,
                             canDelete: store.bots.count > 1,
-                            onCreateSection: onCreateSection
+                            onCreateSection: onCreateSection,
+                            onMenu: { frame, trigger in
+                                rowMenuAnchor = frame
+                                rowMenuTrigger = trigger
+                                rowMenuBot = bot
+                                rowMenuPage = .root
+                            }
                         )
                     }
                 }
@@ -193,7 +254,13 @@ struct RailView: View {
                                 onDeleteRequest: { onDeleteRequest(bot) },
                                 sections: store.sections,
                                 canDelete: store.bots.count > 1,
-                                onCreateSection: onCreateSection
+                                onCreateSection: onCreateSection,
+                                onMenu: { frame, trigger in
+                                    rowMenuAnchor = frame
+                                    rowMenuTrigger = trigger
+                                    rowMenuBot = bot
+                                    rowMenuPage = .root
+                                }
                             )
                         }
                     }
@@ -223,7 +290,13 @@ struct RailView: View {
                                 onDeleteRequest: { onDeleteRequest(bot) },
                                 sections: store.sections,
                                 canDelete: store.bots.count > 1,
-                                onCreateSection: onCreateSection
+                                onCreateSection: onCreateSection,
+                                onMenu: { frame, trigger in
+                                    rowMenuAnchor = frame
+                                    rowMenuTrigger = trigger
+                                    rowMenuBot = bot
+                                    rowMenuPage = .root
+                                }
                             )
                         }
                     }
@@ -240,22 +313,83 @@ struct RailView: View {
             Hairline()
                 .padding(.bottom, 8)
             connectorsRow
-            HStack(spacing: 10) {
-                Text(model.operatorInitials)
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(DesignTokens.Tracking.operatorAvatar * 10)
+            Button {
+                accountOpen.toggle()
+            } label: {
+                HStack(spacing: 10) {
+                    Text(model.operatorInitials)
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(DesignTokens.Tracking.operatorAvatar * 10)
+                        .foregroundStyle(Theme.C.ink)
+                        .frame(width: DesignTokens.Control.operatorAvatar, height: DesignTokens.Control.operatorAvatar)
+                        .background(Theme.C.sunken)
+                        .clipShape(Circle())
+                    Text(model.operatorName)
+                        .font(.system(size: DesignTokens.FontSize.railName, weight: .medium))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .trackWindowFrame($accountButtonFrame)
+            .accessibilityLabel("Account")
+            .accessibilityIdentifier("account-row")
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { accountAnchor = proxy.frame(in: .named("rail")) }
+                        .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
+                            accountAnchor = next
+                        }
+                }
+            )
+        }
+    }
+
+    private var accountPopover: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            popItem(icon: "chart.bar", title: "Token usage") {
+                accountOpen = false
+                onOpenAppSettings(.usage)
+            }
+            .accessibilityIdentifier("account-usage")
+            popItem(icon: "gearshape", title: "Settings") {
+                accountOpen = false
+                onOpenAppSettings(.general)
+            }
+            .accessibilityIdentifier("account-settings")
+        }
+        .padding(6)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .popShadow()
+    }
+
+    private func popItem(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        MenuRowButton(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 13))
                     .foregroundStyle(Theme.C.ink)
-                    .frame(width: DesignTokens.Control.operatorAvatar, height: DesignTokens.Control.operatorAvatar)
-                    .background(Theme.C.sunken)
-                    .clipShape(Circle())
-                Text(model.operatorName)
-                    .font(.system(size: DesignTokens.FontSize.railName, weight: .medium))
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 13))
                     .foregroundStyle(Theme.C.ink)
-                    .lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -278,6 +412,96 @@ struct RailView: View {
     }
 }
 
+private struct AccountAnchorKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
+/// Which panel the row menu shows: the actions or the section picker.
+enum RowMenuPage {
+    case root
+    case sections
+}
+
+/// The on-brand replacement for the system `Menu` on a bot row: the same
+/// white card, hairline border and sunken hover as every other popover.
+struct RowMenuPopover: View {
+    let bot: ShellBot
+    @Binding var page: RowMenuPage
+    let onPin: () -> Void
+    let onMove: (String?) -> Void
+    let onSettings: () -> Void
+    let onRename: () -> Void
+    let onHide: () -> Void
+    let onNewSection: () -> Void
+    let onDelete: () -> Void
+
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            switch page {
+            case .root:
+                item(icon: bot.pinned ? "pin.slash" : "pin", title: bot.pinned ? "Unpin" : "Pin", action: onPin)
+                item(icon: "folder", title: "Move to section", action: { page = .sections })
+                item(icon: "gearshape", title: "Settings", action: onSettings)
+                item(icon: "pencil", title: "Rename", action: onRename)
+                item(icon: bot.hidden ? "eye" : "eye.slash", title: bot.hidden ? "Unhide" : "Hide", action: onHide)
+                Divider()
+                    .overlay(Theme.C.border)
+                    .padding(.vertical, 2)
+                item(icon: "trash", title: "Delete", danger: true, action: onDelete)
+            case .sections:
+                item(icon: "chevron.left", title: "Move to section", action: { page = .root })
+                Divider()
+                    .overlay(Theme.C.border)
+                    .padding(.vertical, 2)
+                item(icon: "tray", title: "Unassigned", action: { onMove(nil) })
+                ForEach(model.store?.sections ?? []) { section in
+                    item(icon: "folder", title: section.name, action: { onMove(section.id) })
+                }
+                Divider()
+                    .overlay(Theme.C.border)
+                    .padding(.vertical, 2)
+                item(icon: "plus", title: "New section", action: onNewSection)
+            }
+        }
+        .padding(6)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .popShadow()
+    }
+
+    private func item(
+        icon: String,
+        title: String,
+        danger: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        MenuRowButton(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 13))
+                    .foregroundStyle(danger ? Theme.C.danger : Theme.C.ink)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(danger ? Theme.C.danger : Theme.C.ink)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 // MARK: - Rows
 
 private struct BotRowView: View {
@@ -290,16 +514,18 @@ private struct BotRowView: View {
     let sections: [ShellSection]
     let canDelete: Bool
     let onCreateSection: () -> Void
+    let onMenu: (CGRect, CGRect) -> Void
 
     @EnvironmentObject private var model: AppModel
     @State private var hovering = false
+    @State private var ellipsisFrame: CGRect = .zero
+    @State private var ellipsisWindowFrame: CGRect = .zero
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(alignment: .top, spacing: 8) {
-                BotAvatarView(bot: bot, size: 24)
-                    .padding(.top, 1)
-                VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                BotAvatarView(bot: bot, size: 36)
+                VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(bot.name)
                             .font(.system(size: DesignTokens.FontSize.railName, weight: selected ? .semibold : .regular))
@@ -312,28 +538,19 @@ private struct BotRowView: View {
                                 .foregroundStyle(Theme.C.inkFaint)
                                 .fixedSize()
                         }
-                        if !bot.label.isEmpty {
-                            BotLabelChip(text: bot.label)
-                                .layoutPriority(2)
-                        }
                     }
-                    if !preview.isEmpty {
-                        Text(preview)
-                            .font(.system(size: DesignTokens.FontSize.railPreview))
-                            .foregroundStyle(Theme.C.inkMuted)
+                    // The label lives under the name; the row stays clean, so
+                    // no preview and no timestamp.
+                    if !bot.label.isEmpty {
+                        Text(bot.label.uppercased())
+                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .semibold))
+                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
+                            .foregroundStyle(Theme.C.inkFaint)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
                 }
                 Spacer(minLength: 0)
-                if !time.isEmpty {
-                    Text(time)
-                        .font(.system(size: DesignTokens.FontSize.railTime))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.C.inkFaint)
-                        .padding(.top, 2)
-                        .fixedSize()
-                }
             }
             .padding(.leading, 8)
             .padding(.trailing, 28)
@@ -347,9 +564,11 @@ private struct BotRowView: View {
         .buttonStyle(.plain)
         .pointerOnHover()
         .onHover { hovering = $0 }
-        .overlay(alignment: .topTrailing) {
-            Menu {
-                rowMenu
+        .overlay(alignment: .trailing) {
+            // Always visible so the pointer never has to chase a control that
+            // appears and disappears under it.
+            Button {
+                onMenu(ellipsisFrame, ellipsisWindowFrame)
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 12, weight: .medium))
@@ -357,13 +576,22 @@ private struct BotRowView: View {
                     .frame(width: 24, height: 24)
                     .background(hovering ? Theme.C.accentSoft : .clear)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { ellipsisFrame = proxy.frame(in: .named("rail")) }
+                        .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
+                            ellipsisFrame = next
+                        }
+                }
+            )
+            .trackWindowFrame($ellipsisWindowFrame)
             .fixedSize()
             .padding(.trailing, 2)
-            .padding(.top, 6)
-            .opacity(hovering ? 1 : 0)
         }
         .contextMenu { rowMenu }
     }
@@ -394,14 +622,6 @@ private struct BotRowView: View {
         Button("Delete", role: .destructive, action: onDeleteRequest)
             .disabled(!canDelete)
     }
-
-    private var preview: String {
-        bot.lastPreview.isEmpty ? bot.description : bot.lastPreview
-    }
-
-    private var time: String {
-        RailClock.label(iso: bot.lastAt)
-    }
 }
 
 private struct PinnedCardView: View {
@@ -418,24 +638,20 @@ private struct PinnedCardView: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(alignment: .top, spacing: 10) {
-                BotAvatarView(bot: bot, size: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(bot.name)
-                            .font(.system(size: DesignTokens.FontSize.railName, weight: .semibold))
-                            .foregroundStyle(Theme.C.ink)
+            HStack(spacing: 10) {
+                BotAvatarView(bot: bot, size: 60)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(bot.name)
+                        .font(.system(size: DesignTokens.FontSize.railName, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    if !bot.label.isEmpty {
+                        Text(bot.label.uppercased())
+                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .semibold))
+                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
+                            .foregroundStyle(Theme.C.inkFaint)
                             .lineLimit(1)
-                        if !bot.label.isEmpty {
-                            BotLabelChip(text: bot.label)
-                                .layoutPriority(2)
-                        }
                     }
-                    Text(preview)
-                        .font(.system(size: DesignTokens.FontSize.railPreview))
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 0)
             }
@@ -468,11 +684,5 @@ private struct PinnedCardView: View {
             Divider()
             Button("Delete", role: .destructive, action: onDeleteRequest)
         }
-    }
-
-    private var preview: String {
-        if !bot.lastPreview.isEmpty { return bot.lastPreview }
-        if !bot.description.isEmpty { return bot.description }
-        return "Pinned"
     }
 }

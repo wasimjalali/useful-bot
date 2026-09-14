@@ -10,10 +10,13 @@ struct ComposerView: View {
 
     let bot: ShellBot
     var onOpenConnectors: () -> Void
+    var onOpenProviders: () -> Void
 
     @State private var plusOpen = false
     @State private var modeOpen = false
     @State private var showFileImporter = false
+    @State private var plusButtonFrame = CGRect.zero
+    @State private var modeChipFrame = CGRect.zero
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -39,6 +42,10 @@ struct ComposerView: View {
             case .failure: model.attachError = "That file could not be read."
             }
         }
+        .onExitCommand {
+            plusOpen = false
+            modeOpen = false
+        }
     }
 
     private var placeholder: String {
@@ -53,80 +60,90 @@ struct ComposerView: View {
 
     private var field: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .bottomTrailing) {
-                VStack(alignment: .leading, spacing: 8) {
-                    if stacked { attachmentsRow }
-                    HStack(alignment: .bottom, spacing: 8) {
-                        plusButton
-                        if stacked { modeChip.padding(.bottom, 2) }
-                        input
-                        Spacer(minLength: 0)
-                        if !stacked { modeChip.padding(.bottom, 2) }
-                        sendButton.padding(.bottom, 2)
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                if stacked { attachmentsRow }
+                HStack(alignment: .bottom, spacing: 8) {
+                    plusButton
+                    if stacked { modeChip.padding(.bottom, 2) }
+                    input
+                    Spacer(minLength: 0)
+                    if !stacked { modeChip.padding(.bottom, 2) }
+                    sendButton.padding(.bottom, 2)
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, stacked ? 10 : 8)
-                .padding(.bottom, 8)
-                .background(Theme.C.surface)
-                .overlay(
-                    RoundedRectangle(
-                        cornerRadius: stacked || focused ? DesignTokens.Radius.composerExpanded : 26,
-                        style: .continuous
-                    )
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, stacked ? 10 : 8)
+            .padding(.bottom, 8)
+            .background(Theme.C.surface)
+            .overlay(
+                RoundedRectangle(
+                    cornerRadius: stacked || focused ? DesignTokens.Radius.composerExpanded : 26,
+                    style: .continuous
                 )
-                .clipShape(
-                    RoundedRectangle(
-                        cornerRadius: stacked || focused ? DesignTokens.Radius.composerExpanded : 26,
-                        style: .continuous
-                    )
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: stacked || focused ? DesignTokens.Radius.composerExpanded : 26,
+                    style: .continuous
                 )
-                .raiseShadow()
-                .animation(.easeOut(duration: DesignTokens.Motion.fast), value: stacked)
-
+            )
+            .raiseShadow()
+            .animation(.easeOut(duration: DesignTokens.Motion.fast), value: stacked)
+            // `.composer-plus-menu` sits at the leading edge, above the field.
+            .overlay(alignment: .topLeading) {
                 if plusOpen {
-                    PlusMenu(
-                        onAttach: {
-                            plusOpen = false
-                            showFileImporter = true
-                        },
-                        onConnectors: {
-                            plusOpen = false
-                            onOpenConnectors()
-                        }
-                    )
-                    .fixedSize()
-                    .offset(x: -44, y: -46)
-                    .transition(.opacity)
-                }
-
-                if modeOpen, let composer = model.composer {
-                    ComposerModeMenu(
-                        composer: composer,
-                        onClose: { modeOpen = false },
-                        onSave: { patch in
-                            Task {
-                                await model.saveComposer(
-                                    modelId: patch.modelId,
-                                    effort: patch.effort,
-                                    speed: patch.speed
-                                )
+                    VStack(spacing: 0) {
+                        PlusMenu(
+                            onAttach: {
+                                plusOpen = false
+                                showFileImporter = true
+                            },
+                            onConnectors: {
+                                plusOpen = false
+                                onOpenConnectors()
                             }
-                        }
-                    )
-                    .fixedSize()
-                    .offset(x: -36, y: -46)
+                        )
+                        .fixedSize()
+                        .dismissOnOutsideClick(triggers: { [plusButtonFrame] }) { plusOpen = false }
+                        Spacer(minLength: 8)
+                    }
+                    .frame(height: 0, alignment: .bottom)
                     .transition(.opacity)
                 }
             }
+            // `.composer-mode-card` opens above the chip at the trailing edge.
             .overlay(alignment: .topTrailing) {
-                if modeOpen {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { modeOpen = false }
+                if modeOpen, let composer = model.composer {
+                    VStack(spacing: 0) {
+                        ComposerModeMenu(
+                            composer: composer,
+                            onClose: { modeOpen = false },
+                            onOpenProviders: {
+                                modeOpen = false
+                                onOpenProviders()
+                            },
+                            onSave: { patch in
+                                Task {
+                                    await model.saveComposer(
+                                        modelId: patch.modelId,
+                                        effort: patch.effort,
+                                        speed: patch.speed
+                                    )
+                                }
+                            }
+                        )
+                        .fixedSize()
+                        .dismissOnOutsideClick(triggers: { [modeChipFrame] }) { modeOpen = false }
+                        Spacer(minLength: 8)
+                    }
+                    .frame(height: 0, alignment: .bottom)
+                    .padding(.trailing, 44)
+                    .transition(.opacity)
                 }
             }
+            .animation(.easeOut(duration: DesignTokens.Motion.fast), value: plusOpen)
+            .animation(.easeOut(duration: DesignTokens.Motion.fast), value: modeOpen)
         }
     }
 
@@ -165,6 +182,7 @@ struct ComposerView: View {
         }
         .buttonStyle(PlusButtonStyle())
         .pointerOnHover()
+        .trackWindowFrame($plusButtonFrame)
         .accessibilityLabel("Attach a file or open connectors")
     }
 
@@ -185,6 +203,7 @@ struct ComposerView: View {
         }
         .buttonStyle(ModeChipStyle())
         .pointerOnHover()
+        .trackWindowFrame($modeChipFrame)
         .accessibilityLabel("Effort, speed, and model")
     }
 
@@ -207,13 +226,11 @@ struct ComposerView: View {
             Button(action: send) {
                 ZStack {
                     Circle()
-                        .fill(Theme.C.brand)
+                        .fill(canSend ? Theme.C.brand : Theme.C.borderStrong)
                         .frame(width: DesignTokens.Control.composerButton, height: DesignTokens.Control.composerButton)
-                        .opacity(canSend ? 1 : 0.28)
                     Image(systemName: "arrow.up")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.C.brandInk)
-                        .opacity(canSend ? 1 : 0.28)
+                        .foregroundStyle(canSend ? Theme.C.brandInk : Theme.C.inkMuted)
                 }
             }
             .buttonStyle(.plain)
@@ -367,6 +384,7 @@ struct MenuRowButton<Label: View>: View {
 private struct ComposerModeMenu: View {
     let composer: ComposerState
     let onClose: () -> Void
+    let onOpenProviders: () -> Void
     let onSave: (_ patch: ComposerPatch) -> Void
 
     @State private var flyout: Flyout?
@@ -485,7 +503,7 @@ private struct ComposerModeMenu: View {
                 }
                 .frame(maxHeight: 360)
             case .model:
-                ModelFlyout(composer: composer, onSave: onSave)
+                ModelFlyout(composer: composer, onSave: onSave, onOpenProviders: onOpenProviders)
             case .none:
                 EmptyView()
             }
@@ -504,6 +522,7 @@ private struct ComposerModeMenu: View {
 private struct ModelFlyout: View {
     let composer: ComposerState
     let onSave: (_ patch: ComposerPatch) -> Void
+    let onOpenProviders: () -> Void
 
     @State private var query = ""
 
@@ -535,9 +554,12 @@ private struct ModelFlyout: View {
                     } else {
                         ForEach(models, id: \.id) { item in
                             let selected = composer.modelId == item.id
+                            let meta = [selected ? composer.effortLabel : nil, composer.speed == "fast" ? "Fast" : nil]
+                                .compactMap { $0 }
+                                .joined(separator: " ")
                             MenuRowButton(action: { onSave(ComposerPatch(modelId: item.id)) }) {
                                 HStack {
-                                    Text(item.label)
+                                    Text(selected && !meta.isEmpty ? "\(item.label) \(meta)" : item.label)
                                         .font(.system(size: 13))
                                         .foregroundStyle(Theme.C.ink)
                                         .lineLimit(1)
@@ -558,6 +580,17 @@ private struct ModelFlyout: View {
                 }
             }
             .frame(maxHeight: 320)
+
+            // `.composer-mode-add`: the web puts the settings link under the list.
+            MenuRowButton(action: onOpenProviders) {
+                Text("Add models")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.ink)
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .overlay(alignment: .top) { Hairline() }
         }
     }
 }

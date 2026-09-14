@@ -223,3 +223,126 @@ public struct Attachment: Codable, Identifiable, Equatable, Sendable {
         self.text = text
     }
 }
+
+/// One pending write or command from `/api/approvals`, shown above the chat.
+public struct ApprovalItem: Codable, Identifiable, Equatable, Sendable {
+    public let id: String
+    public let actionSha256: String
+    public let preview: String
+    public let tool: String
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        actionSha256 = (try? c.decode(String.self, forKey: .actionSha256)) ?? ""
+        preview = (try? c.decode(String.self, forKey: .preview)) ?? ""
+        tool = (try? c.decode(String.self, forKey: .tool)) ?? ""
+    }
+
+    public init(id: String, actionSha256: String, preview: String, tool: String) {
+        self.id = id
+        self.actionSha256 = actionSha256
+        self.preview = preview
+        self.tool = tool
+    }
+
+    enum CodingKeys: String, CodingKey { case id, actionSha256, preview, tool }
+}
+
+/// `/api/providers` row, mirrored from `ProviderPublic`.
+public struct ProviderPublic: Codable, Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let kind: String
+    public let hint: String
+    public let compatible: Bool
+    public let connected: Bool
+    public let last4: String?
+    public let source: String?
+    public let active: Bool
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = (try? c.decode(String.self, forKey: .name)) ?? id
+        kind = (try? c.decode(String.self, forKey: .kind)) ?? "api"
+        hint = (try? c.decode(String.self, forKey: .hint)) ?? ""
+        compatible = (try? c.decode(Bool.self, forKey: .compatible)) ?? true
+        connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
+        last4 = try? c.decodeIfPresent(String.self, forKey: .last4)
+        source = try? c.decodeIfPresent(String.self, forKey: .source)
+        active = (try? c.decode(Bool.self, forKey: .active)) ?? false
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, hint, compatible, connected, last4, source, active
+    }
+}
+
+/// `/api/usage` payload.
+public struct UsagePayload: Codable, Equatable, Sendable {
+    public struct ModelRow: Codable, Identifiable, Equatable, Sendable {
+        public let provider: String
+        public let model: String
+        public let requests: Int
+        public let inputTokens: Int
+        public let outputTokens: Int
+
+        public var id: String { "\(provider)-\(model)" }
+
+        enum CodingKeys: String, CodingKey {
+            case provider, model, requests, inputTokens, outputTokens
+        }
+    }
+
+    public struct Caps: Codable, Equatable, Sendable {
+        public let requests24h: Int
+        public let input24h: Int
+        public let output24h: Int
+    }
+
+    public let observedInputTokens: Int
+    public let observedOutputTokens: Int
+    public let requests: Int
+    public let byModel: [ModelRow]
+    public let caps: Caps
+
+    public var totalTokens: Int { observedInputTokens + observedOutputTokens }
+    public var totalCap: Int { caps.input24h + caps.output24h }
+
+    enum CodingKeys: String, CodingKey {
+        case observedInputTokens = "observed_input_tokens"
+        case observedOutputTokens = "observed_output_tokens"
+        case requests
+        case byModel = "by_model"
+        case caps
+    }
+}
+
+/// `/api/status` identity plus build info for the settings dialog.
+public struct AppStatus: Codable, Equatable, Sendable {
+    public let name: String?
+    public let initials: String?
+    public let version: String?
+    public let theme: String?
+
+    public init(name: String?, initials: String?, version: String?, theme: String?) {
+        self.name = name
+        self.initials = initials
+        self.version = version
+        self.theme = theme
+    }
+
+    enum CodingKeys: String, CodingKey { case name, initials, version, theme }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: TopKeys.self)
+        let operatorRow = try? c.nestedContainer(keyedBy: CodingKeys.self, forKey: .`operator`)
+        name = try? operatorRow?.decodeIfPresent(String.self, forKey: .name)
+        initials = try? operatorRow?.decodeIfPresent(String.self, forKey: .initials)
+        version = try? c.decodeIfPresent(String.self, forKey: .version)
+        theme = try? c.decodeIfPresent(String.self, forKey: .theme)
+    }
+
+    enum TopKeys: String, CodingKey { case `operator`, version, theme }
+}

@@ -1,0 +1,149 @@
+import Foundation
+import Testing
+@testable import UsefulBotCore
+
+@Suite struct SearchChipsTests {
+    private func value(_ json: String) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+    }
+
+    @Test func parsesAnArrayPayload() throws {
+        let chips = EveStream.parseSearchChips(try value("""
+        [{"title":"Coffee prices","url":"https://example.com/coffee","snippet":"A survey"}]
+        """))
+        #expect(chips.count == 1)
+        #expect(chips[0].title == "Coffee prices")
+        #expect(chips[0].url == "https://example.com/coffee")
+        #expect(chips[0].snippet == "A survey")
+    }
+
+    @Test func parsesResultsObject() throws {
+        let chips = EveStream.parseSearchChips(try value("""
+        {"results":[{"title":"One","url":"http://example.com/1"}]}
+        """))
+        #expect(chips.count == 1)
+        #expect(chips[0].title == "One")
+    }
+
+    @Test func parsesNestedResultAndOutputShapes() throws {
+        let nested = EveStream.parseSearchChips(try value("""
+        {"result":{"results":[{"url":"https://example.com/a"}]}}
+        """))
+        #expect(nested.first?.title == "https://example.com/a")
+        let output = EveStream.parseSearchChips(try value("""
+        {"output":{"results":[{"url":"https://example.com/b","description":"desc"}]}}
+        """))
+        #expect(output.first?.snippet == "desc")
+    }
+
+    @Test func parsesAStringPayload() throws {
+        let chips = EveStream.parseSearchChips(try value("""
+        "{\\"results\\":[{\\"title\\":\\"From string\\",\\"url\\":\\"https://example.com/s\\"}]}"
+        """))
+        #expect(chips.count == 1)
+        #expect(chips[0].title == "From string")
+    }
+
+    @Test func refusesNonHttpRows() throws {
+        let chips = EveStream.parseSearchChips(try value("""
+        {"results":[{"title":"Local","url":"file:///etc/passwd"},{"title":"Bad","url":"javascript:alert(1)"}]}
+        """))
+        #expect(chips.isEmpty)
+    }
+
+    @Test func capsAtFiveRows() throws {
+        let rows = (1...8).map { "{\"url\":\"https://example.com/\($0)\"}" }.joined(separator: ",")
+        let chips = EveStream.parseSearchChips(try value("{\"results\":[\(rows)]}"))
+        #expect(chips.count == 5)
+        #expect(chips.last?.url == "https://example.com/5")
+    }
+
+    @Test func eventDataSurvivesDecoding() throws {
+        let event = try JSONDecoder().decode(EveEvent.self, from: Data("""
+        {"type":"action.result","meta":{"id":"e1"},
+         "data":{"results":[{"title":"Hit","url":"https://example.com/hit"}]}}
+        """.utf8))
+        let chips = EveStream.parseSearchChips(event.data)
+        #expect(chips.count == 1)
+        #expect(chips[0].title == "Hit")
+    }
+
+    @Test func projectionStoresChipsAndClearsOnNewTurn() throws {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(
+            type: "action.result",
+            id: "e1",
+            data: try value("""
+            {"results":[{"title":"Hit","url":"https://example.com/hit"}]}
+            """)
+        ))
+        #expect(projection.searchHits.count == 1)
+        projection.apply(EveEvent(type: "turn.started", id: "e2"))
+        #expect(projection.searchHits.isEmpty)
+    }
+
+    @Test func projectionIgnoresEmptyChipPayloads() throws {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "action.result", id: "e1", data: try value("""
+        {"results":[{"title":"Local","url":"file:///tmp/x"}]}
+        """)))
+        #expect(projection.searchHits.isEmpty)
+    }
+}
+
+@Suite struct ApprovalAndSettingsDecodingTests {
+    @Test func decodesApprovals() throws {
+        let data = Data("""
+        {"ok":true,"approvals":[{"id":"a1","actionSha256":"abc123","preview":"rm -rf build","tool":"bash"}]}
+        """.utf8)
+        struct Response: Decodable { let approvals: [ApprovalItem] }
+        let rows = try JSONDecoder().decode(Response.self, from: data).approvals
+        #expect(rows.count == 1)
+        #expect(rows[0].id == "a1")
+        #expect(rows[0].actionSha256 == "abc123")
+        #expect(rows[0].preview == "rm -rf build")
+        #expect(rows[0].tool == "bash")
+    }
+
+    @Test func decodesProviders() throws {
+        let data = Data("""
+        {"providers":[
+          {"id":"openai","name":"OpenAI","kind":"api","hint":"API key","compatible":true,
+           "connected":true,"last4":"1234","source":"settings","active":true,
+           "models":{"workhorse":"gpt-5","reviewer":"gpt-5-mini"}}
+        ]}
+        """.utf8)
+        struct Response: Decodable { let providers: [ProviderPublic] }
+        let rows = try JSONDecoder().decode(Response.self, from: data).providers
+        #expect(rows.count == 1)
+        #expect(rows[0].active)
+        #expect(rows[0].last4 == "1234")
+        #expect(rows[0].source == "settings")
+    }
+
+    @Test func decodesUsage() throws {
+        let data = Data("""
+        {"observed_input_tokens":1200,"observed_output_tokens":800,"requests":7,
+         "window_start":"2026-09-01T00:00:00.000Z",
+         "by_model":[{"provider":"openai","model":"gpt-5","requests":7,"inputTokens":1200,"outputTokens":800}],
+         "caps":{"requests24h":200,"input24h":5000,"output24h":5000}}
+        """.utf8)
+        let usage = try JSONDecoder().decode(UsagePayload.self, from: data)
+        #expect(usage.totalTokens == 2000)
+        #expect(usage.totalCap == 10000)
+        #expect(usage.byModel.first?.model == "gpt-5")
+        #expect(usage.byModel.first?.id == "openai-gpt-5")
+    }
+
+    @Test func decodesStatus() throws {
+        let data = Data("""
+        {"ok":true,"eve":"available","operator":{"name":"Wasim","initials":"WA"},
+         "version":"0.2.0","theme":"light"}
+        """.utf8)
+        let status = try JSONDecoder().decode(AppStatus.self, from: data)
+        #expect(status.name == "Wasim")
+        #expect(status.initials == "WA")
+        #expect(status.version == "0.2.0")
+        #expect(status.theme == "light")
+    }
+}

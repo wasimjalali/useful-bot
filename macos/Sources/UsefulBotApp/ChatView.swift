@@ -11,6 +11,8 @@ struct ChatView: View {
     /// Measured width of the chat column, so user bubbles cap at 85% of the
     /// column rather than 85% of the wider scroll container.
     @State private var columnWidth: CGFloat = 720
+    @State private var settingsGearFrame = CGRect.zero
+    @State private var routinesButtonFrame = CGRect.zero
 
     var body: some View {
         HStack(spacing: 0) {
@@ -22,6 +24,9 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 8)
+                }
+                if !model.approvals.isEmpty {
+                    approvals
                 }
                 if let bot = model.selectedBot {
                     header(bot)
@@ -37,9 +42,68 @@ struct ChatView: View {
 
             if model.settingsOpen, let bot = model.selectedBot {
                 SettingsPaneView(bot: bot, onDeleteRequest: { onDeleteRequest(bot) })
+                    .dismissOnOutsideClick(triggers: { [settingsGearFrame] }) {
+                        model.settingsOpen = false
+                    }
+            }
+
+            if model.routinesOpen, let bot = model.selectedBot {
+                RoutinesPaneView(bot: bot)
+                    .dismissOnOutsideClick(triggers: { [routinesButtonFrame] }) {
+                        model.routinesOpen = false
+                        model.routineNotice = false
+                    }
             }
         }
         .background(Theme.C.surface)
+    }
+
+    // MARK: - Approvals
+
+    private var approvals: some View {
+        VStack(spacing: 8) {
+            ForEach(model.approvals) { item in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Needs approval")
+                            .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
+                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
+                            .foregroundStyle(Theme.C.warning)
+                        Text(item.preview)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Theme.C.ink)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(item.tool)
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    NativeButton("Approve", kind: .primary, small: true) {
+                        model.decideApproval(item, decision: "approve")
+                    }
+                    NativeButton("Deny", kind: .danger, small: true) {
+                        model.decideApproval(item, decision: "deny")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Theme.C.warningSoft)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                        .strokeBorder(Theme.C.warningSoft, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+            }
+            if let error = model.approvalError {
+                Text(error)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.danger)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 8)
     }
 
     // MARK: - Header
@@ -60,12 +124,19 @@ struct ChatView: View {
                 }
             }
             Spacer(minLength: 0)
+            NativeIconButton(systemImage: "calendar.badge.clock", size: 32, iconSize: 15) {
+                model.routineNotice = false
+                model.routinesOpen.toggle()
+            }
+            .help("Routines")
+            .accessibilityLabel("Routines")
+            .trackWindowFrame($routinesButtonFrame)
             NativeIconButton(systemImage: "gearshape", size: 32, iconSize: 15) {
                 model.settingsOpen.toggle()
-                model.routineNotice = false
             }
             .help("Bot settings")
             .accessibilityLabel("Bot settings")
+            .trackWindowFrame($settingsGearFrame)
         }
         .padding(.horizontal, 16)
         .frame(minHeight: DesignTokens.Space.chatHead)
@@ -121,6 +192,9 @@ struct ChatView: View {
                         }
                         if model.pending {
                             WorkingRow(bot: bot)
+                        }
+                        if !model.searchHits.isEmpty {
+                            SearchChipsRow(chips: model.searchHits)
                         }
                         Color.clear
                             .frame(height: 1)
@@ -192,10 +266,14 @@ struct ChatView: View {
     // MARK: - Composer column
 
     private func composerColumn(_ bot: ShellBot) -> some View {
-        ComposerView(bot: bot, onOpenConnectors: onOpenConnectors)
-            .frame(maxWidth: DesignTokens.Space.chatColumnMax)
-            .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
-            .frame(maxWidth: .infinity)
+        ComposerView(
+            bot: bot,
+            onOpenConnectors: onOpenConnectors,
+            onOpenProviders: { model.openAppSettings(.providers) }
+        )
+        .frame(maxWidth: DesignTokens.Space.chatColumnMax)
+        .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -275,7 +353,6 @@ struct TranscriptRowView: View {
         if row.kind == .post {
             return "\(row.author ?? "A bot") to this chat"
         }
-        if row.kind == .note { return "Note" }
         return row.author ?? bot.name
     }
 
@@ -313,6 +390,89 @@ private struct WorkingRow: View {
                     .foregroundStyle(Theme.C.inkMuted)
             }
             .padding(.top, 1)
+        }
+    }
+}
+
+/// `.search-chip` row: wrapped pills that open the result in the browser.
+struct SearchChipsRow: View {
+    let chips: [SearchChip]
+
+    var body: some View {
+        WrapHStack(spacing: 8) {
+            ForEach(chips, id: \.url) { chip in
+                SearchChipView(chip: chip)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct SearchChipView: View {
+    let chip: SearchChip
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            if let url = URL(string: chip.url) {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            Text(chip.title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(hovering ? Theme.C.sunken : Theme.C.surface)
+                .overlay(Capsule().strokeBorder(Theme.C.borderStrong, lineWidth: 1))
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
+        .help(chip.snippet.isEmpty ? chip.url : chip.snippet)
+    }
+}
+
+/// A minimal wrapping row so chips flow onto the next line like `flex-wrap`.
+struct WrapHStack: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: maxWidth == .infinity ? x : maxWidth, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
         }
     }
 }

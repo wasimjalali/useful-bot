@@ -19,7 +19,6 @@ struct SettingsPaneView: View {
                 Spacer(minLength: 0)
                 NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15) {
                     model.settingsOpen = false
-                    model.routineNotice = false
                 }
                 .accessibilityLabel("Close settings")
             }
@@ -43,7 +42,7 @@ struct SettingsPaneView: View {
         .frame(width: DesignTokens.Space.settingsPaneWidth)
         .frame(maxHeight: .infinity)
         .background(Theme.C.surface)
-        .overlay(alignment: .leading) { Hairline() }
+        .overlay(alignment: .leading) { VerticalHairline() }
     }
 
     // MARK: - Bot fields
@@ -351,8 +350,6 @@ private struct BotSettingsFields: View {
 
             memorySection
 
-            routinesSection
-
             if let error = model.saveError {
                 Text(error)
                     .font(.system(size: 13))
@@ -433,37 +430,6 @@ private struct BotSettingsFields: View {
                 await model.loadMemory(botId: bot.id)
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
             }
-        }
-    }
-
-    private var routinesSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Routines")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(Theme.C.inkMuted)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("No routines yet. Scheduler is not wired.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.inkMuted)
-                NativeButton("Create routine", kind: .secondary, small: true) {
-                    model.routineNotice = true
-                }
-                .padding(.top, 12)
-                if model.routineNotice {
-                    Text("Create routine is stubbed until the scheduler API ships.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .padding(.top, 8)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
-            )
-            .padding(.top, 8)
         }
     }
 

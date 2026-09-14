@@ -5,6 +5,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case unauthorized
     case http(Int)
     case decoding
+    /// `/api/providers` answered with its own error code.
+    case provider(String)
 
     public var errorDescription: String? {
         switch self {
@@ -16,7 +18,15 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The local server answered with status \(status)."
         case .decoding:
             return "The local server sent data this app could not read."
+        case .provider(let code):
+            return code
         }
+    }
+
+    /// The `/api/providers` error code, when the failure came from that route.
+    public var providerCode: String? {
+        if case .provider(let code) = self { return code }
+        return nil
     }
 }
 
@@ -26,7 +36,12 @@ private struct StateResponse: Decodable {
     let proposals: [Proposal]
 }
 private struct SendResponse: Decodable { let sessionId: String? }
-private struct ProvidersResponse: Decodable { let composer: ComposerState? }
+private struct ProvidersResponse: Decodable {
+    let composer: ComposerState?
+    let providers: [ProviderPublic]?
+    let error: String?
+}
+private struct ApprovalsResponse: Decodable { let approvals: [ApprovalItem] }
 private struct MemoryResponse: Decodable { let notes: [MemoryNote] }
 private struct AttachmentResponse: Decodable {
     let name: String?
@@ -202,15 +217,104 @@ public actor BackendClient {
         try await threadState(botId: botId).events
     }
 
-    /// The operator identity shown in the rail's account row.
-    public func status() async throws -> (name: String?, initials: String?) {
+    /// The operator identity and build info shown in the rail and settings.
+    public func status() async throws -> AppStatus {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/status"))
         }
         try Self.expectOK(response)
-        let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        let operatorRow = body?["operator"] as? [String: Any]
-        return (operatorRow?["name"] as? String, operatorRow?["initials"] as? String)
+        guard let decoded = try? JSONDecoder().decode(AppStatus.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
+    /// Pending approvals the agent is waiting on.
+    public func approvals() async throws -> [ApprovalItem] {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/approvals"))
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(ApprovalsResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.approvals
+    }
+
+    /// Approve or deny one pending action; the hash must match the row.
+    public func decideApproval(id: String, decision: String, hash: String) async throws {
+        let (_, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/approvals/\(id)"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "decision": decision,
+                "actionSha256": hash,
+            ])
+            return request
+        }
+        try Self.expectOK(response)
+    }
+
+    /// Provider rows for the settings dialog.
+    public func providers() async throws -> [ProviderPublic] {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/providers"))
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.providers ?? []
+    }
+
+    @discardableResult
+    public func connectProvider(id: String, key: String) async throws -> [ProviderPublic] {
+        try await providerWrite(method: "PUT", body: ["providerId": id, "key": key])
+    }
+
+    @discardableResult
+    public func activateProvider(id: String) async throws -> [ProviderPublic] {
+        try await providerWrite(method: "PUT", body: ["activeProviderId": id])
+    }
+
+    @discardableResult
+    public func disconnectProvider(id: String) async throws -> [ProviderPublic] {
+        try await providerWrite(method: "DELETE", body: ["providerId": id])
+    }
+
+    private func providerWrite(method: String, body: [String: Any]) async throws -> [ProviderPublic] {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/providers"))
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            // The route reports its own code in the body; surface that so the
+            // dialog can say why a key was refused.
+            let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data)
+            throw BackendError.provider(decoded?.error ?? "provider_failed")
+        }
+        guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded.providers ?? []
+    }
+
+    /// Observed token traffic for the settings Usage tab.
+    public func usage() async throws -> UsagePayload {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/usage"))
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(UsagePayload.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
     }
 
     /// Ask the proxy to cancel the active turn on a session.

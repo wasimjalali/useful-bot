@@ -9,8 +9,12 @@ struct NewChatPickerView: View {
     let onCreateBot: () -> Void
     let onCreateGroup: () -> Void
     let onSelectBot: (String) -> Void
+    /// Window frame of the rail's New Bot plus button, tolerated as the
+    /// picker's toggle trigger.
+    var plusTrigger: (() -> CGRect)? = nil
 
     @State private var query = ""
+    @State private var headerFrame = CGRect.zero
     @FocusState private var focused: Bool
 
     private var bots: [ShellBot] {
@@ -62,6 +66,7 @@ struct NewChatPickerView: View {
             .padding(.horizontal, 20)
             .frame(minHeight: DesignTokens.Space.chatHead)
             .overlay(alignment: .bottom) { Hairline() }
+            .trackWindowFrame($headerFrame)
 
             VStack(spacing: 0) {
                 ScrollView {
@@ -129,6 +134,9 @@ struct NewChatPickerView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .raiseShadow()
+            .dismissOnOutsideClick(triggers: { [headerFrame] + (plusTrigger.map { [$0()] } ?? []) }) {
+                onClose()
+            }
             .padding(.horizontal, 20)
             .padding(.top, 16)
             .frame(maxWidth: .infinity, alignment: .leading)

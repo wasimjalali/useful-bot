@@ -1,5 +1,68 @@
 import Foundation
 
+/// Minimal JSON tree so event payloads with unknown shapes (search results,
+/// tool output) can be walked the way the web's `parseSearchChips` walks them.
+public enum JSONValue: Decodable, Equatable, Sendable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case array([JSONValue])
+    case object([String: JSONValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() {
+            self = .null
+        } else if let value = try? c.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? c.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? c.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? c.decode([JSONValue].self) {
+            self = .array(value)
+        } else if let value = try? c.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else {
+            throw DecodingError.dataCorruptedError(in: c, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    public subscript(key: String) -> JSONValue? {
+        if case .object(let dict) = self { return dict[key] }
+        return nil
+    }
+
+    public var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    public var arrayValue: [JSONValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+
+    public var objectValue: [String: JSONValue]? {
+        if case .object(let value) = self { return value }
+        return nil
+    }
+}
+
+/// One web result chip from an `action.result` event.
+public struct SearchChip: Equatable, Sendable {
+    public let title: String
+    public let url: String
+    public let snippet: String
+
+    public init(title: String, url: String, snippet: String) {
+        self.title = title
+        self.url = url
+        self.snippet = snippet
+    }
+}
+
 /// One NDJSON event from an eve session stream.
 public struct EveEvent: Decodable, Equatable, Sendable {
     public let type: String
@@ -7,6 +70,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     public let message: String?
     public let messageDelta: String?
     public let turnId: String?
+    public let data: JSONValue?
 
     enum CodingKeys: String, CodingKey { case type, data, meta }
     enum DataKeys: String, CodingKey { case message, messageDelta, turnId }
@@ -21,14 +85,23 @@ public struct EveEvent: Decodable, Equatable, Sendable {
         message = try? data?.decodeIfPresent(String.self, forKey: .message)
         messageDelta = try? data?.decodeIfPresent(String.self, forKey: .messageDelta)
         turnId = try? data?.decodeIfPresent(String.self, forKey: .turnId)
+        self.data = try? c.decodeIfPresent(JSONValue.self, forKey: .data)
     }
 
-    public init(type: String, id: String? = nil, message: String? = nil, messageDelta: String? = nil, turnId: String? = nil) {
+    public init(
+        type: String,
+        id: String? = nil,
+        message: String? = nil,
+        messageDelta: String? = nil,
+        turnId: String? = nil,
+        data: JSONValue? = nil
+    ) {
         self.type = type
         self.id = id
         self.message = message
         self.messageDelta = messageDelta
         self.turnId = turnId
+        self.data = data
     }
 }
 
@@ -67,6 +140,41 @@ public enum EveStream {
         guard let range = text.range(of: "\n\n") else { return text }
         return String(text[range.upperBound...])
     }
+
+    /// Port of `parseSearchChips` from `shared/eve-stream.ts`: accept a result
+    /// payload as an array, `{results}`, `{result:{results}}` or
+    /// `{output:{results}}`, keep up to five http(s) rows.
+    public static func parseSearchChips(_ value: JSONValue?) -> [SearchChip] {
+        guard var payload = value else { return [] }
+        if case .string(let text) = payload {
+            guard let data = text.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode(JSONValue.self, from: data) else { return [] }
+            payload = parsed
+        }
+        let record = payload.objectValue
+        let nested = record?["result"]?.objectValue ?? record?["output"]?.objectValue
+        let list: [JSONValue]
+        if let array = payload.arrayValue {
+            list = array
+        } else if let results = record?["results"]?.arrayValue {
+            list = results
+        } else if let results = nested?["results"]?.arrayValue {
+            list = results
+        } else {
+            list = []
+        }
+        var chips: [SearchChip] = []
+        for item in list {
+            guard let row = item.objectValue else { continue }
+            let url = (row["url"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard url.hasPrefix("https://") || url.hasPrefix("http://") else { continue }
+            let title = String((row["title"]?.stringValue ?? url).prefix(200))
+            let snippet = String((row["snippet"]?.stringValue ?? row["description"]?.stringValue ?? "").prefix(800))
+            chips.append(SearchChip(title: title, url: String(url.prefix(2048)), snippet: snippet))
+            if chips.count >= 5 { break }
+        }
+        return chips
+    }
 }
 
 /// Live projection of a session stream, mirroring the web UI: a delta stream
@@ -77,6 +185,8 @@ public struct StreamProjection: Equatable, Sendable {
     /// Set when the turn or session failed, so callers can surface it instead
     /// of treating the empty turn as a delivered reply.
     public private(set) var failed = false
+    /// Web results the turn surfaced, shown as chips under the transcript.
+    public private(set) var searchHits: [SearchChip] = []
     private var seen = Set<String>()
     private var currentAssistantId: String?
 
@@ -92,6 +202,7 @@ public struct StreamProjection: Equatable, Sendable {
             pending = true
             failed = false
             currentAssistantId = nil
+            searchHits = []
         case "message.received":
             let text = EveStream.stripThreadPrefix(event.message ?? "")
             if let last = messages.last, last.role == .user, last.text == text { return }
@@ -128,6 +239,9 @@ public struct StreamProjection: Equatable, Sendable {
             pending = false
             failed = true
             currentAssistantId = nil
+        case "action.result", "action.partial":
+            let chips = EveStream.parseSearchChips(event.data)
+            if !chips.isEmpty { searchHits = chips }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             pending = false
             currentAssistantId = nil

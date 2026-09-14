@@ -18,6 +18,7 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
 
     @State private var pickerOpen = false
+    @State private var newChatTrigger = CGRect.zero
     @State private var createKind: CreateKind?
     @State private var createSectionId: String?
     @State private var renameBot: ShellBot?
@@ -55,6 +56,13 @@ struct RootView: View {
             if connectorsOpen {
                 ConnectorsDialog(onClose: { connectorsOpen = false })
                     .transition(.opacity)
+            }
+
+            if model.appSettingsOpen {
+                AppSettingsView(initialTab: model.appSettingsTab) {
+                    model.appSettingsOpen = false
+                }
+                .transition(.opacity)
             }
 
             if let kind = createKind {
@@ -127,11 +135,12 @@ struct RootView: View {
         .environment(\.colorScheme, .light)
         .onAppear {
             NSApp.appearance = NSAppearance(named: .aqua)
-            // `.uv-scroll`: overlay knobs that appear only while scrolling.
-            UserDefaults.standard.register(defaults: ["AppleShowScrollBars": "WhenScrolling"])
+            ThinScrollbar.install()
+            InputModality.shared.install()
         }
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.searchOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
+        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
     }
 
     private func deleteMessage(_ bot: ShellBot) -> String {
@@ -146,7 +155,7 @@ struct RootView: View {
             RailView(
                 onSearch: { model.searchOpen = true },
                 onNewChat: {
-                    pickerOpen = true
+                    pickerOpen.toggle()
                     model.settingsOpen = false
                 },
                 onOpenSettings: { id in
@@ -159,7 +168,9 @@ struct RootView: View {
                     createSectionId = nil
                     promptForSection()
                 },
-                onConnectors: { connectorsOpen = true }
+                onConnectors: { connectorsOpen = true },
+                onOpenAppSettings: { model.openAppSettings($0) },
+                newChatTriggerFrame: $newChatTrigger
             )
 
             stage
@@ -203,7 +214,8 @@ struct RootView: View {
                     onSelectBot: { id in
                         pickerOpen = false
                         model.startNewChat(botId: id)
-                    }
+                    },
+                    plusTrigger: { newChatTrigger }
                 )
             } else {
                 ChatView(

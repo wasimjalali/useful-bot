@@ -1,4 +1,5 @@
 import AppKit
+import ObjectiveC.runtime
 import SwiftUI
 import UsefulBotCore
 
@@ -28,6 +29,7 @@ enum Theme {
         static let border = color(DesignTokens.Hex.border)
         static let borderStrong = color(DesignTokens.Hex.borderStrong)
         static let scrollKnob = color(DesignTokens.Hex.scrollKnob)
+        static let scrollKnobActive = color(DesignTokens.Hex.scrollKnobActive)
         static let success = color(DesignTokens.Hex.success)
         static let successSoft = color(DesignTokens.Hex.successSoft)
         static let warning = color(DesignTokens.Hex.warning)
@@ -91,41 +93,198 @@ struct Hairline: View {
     }
 }
 
+/// 1pt vertical hairline, the web's `border-l border-border`. A `Hairline`
+/// is a horizontal rule: any edge overlay that wants a side border needs this
+/// one, or the flexible rectangle collapses into a line across the middle.
+struct VerticalHairline: View {
+    var color: Color = Theme.C.border
+    var body: some View {
+        Rectangle()
+            .fill(color)
+            .frame(width: DesignTokens.Control.railHairline)
+    }
+}
+
 /// Walks the AppKit hierarchy and switches the enclosing scroll views to
 /// overlay scrollers, the closest system match to `.uv-scroll`'s thin knob
 /// that only appears while scrolling.
-struct OverlayScrollers: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        view.postsFrameChangedNotifications = false
-        DispatchQueue.main.async { configure(from: view) }
-        return view
+/// The Useful Voice thin scroller (`design-law.md`): 5px knob, 8px gutter,
+/// overlay style, hidden until the content scrolls, then faded out after a
+/// beat. Replaces the system scroller, which is wide and dark.
+final class ThinScroller: NSScroller {
+    private static let thickness: CGFloat = 5
+    private static let gutter: CGFloat = 8
+
+    override class func scrollerWidth(
+        for controlSize: NSControl.ControlSize,
+        scrollerStyle: NSScroller.Style
+    ) -> CGFloat {
+        gutter
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { configure(from: nsView) }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
     }
 
-    private func configure(from view: NSView) {
-        var current: NSView? = view
-        while let node = current {
-            if let scroll = node as? NSScrollView {
-                if scroll.scrollerStyle != .overlay {
-                    scroll.scrollerStyle = .overlay
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    private func configure() {
+        controlSize = .mini
+        scrollerStyle = .overlay
+        knobStyle = .default
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        drawKnob()
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+
+    override func drawKnob() {
+        var knob = rect(for: .knob)
+        guard !knob.isEmpty else { return }
+
+        if bounds.width >= bounds.height {
+            knob = NSRect(
+                x: knob.minX + 3,
+                y: knob.midY - Self.thickness / 2,
+                width: max(0, knob.width - 6),
+                height: Self.thickness
+            )
+        } else {
+            knob = NSRect(
+                x: knob.midX - Self.thickness / 2,
+                y: knob.minY + 3,
+                width: Self.thickness,
+                height: max(0, knob.height - 6)
+            )
+        }
+
+        let path = NSBezierPath(roundedRect: knob, xRadius: Self.thickness / 2, yRadius: Self.thickness / 2)
+        let color = isHighlighted ? NSColor(Theme.C.scrollKnobActive) : NSColor(Theme.C.scrollKnob)
+        color.setFill()
+        path.fill()
+    }
+}
+
+enum ThinScrollbar {
+    private static var installed = false
+
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        guard
+            let original = class_getInstanceMethod(NSScrollView.self, #selector(NSScrollView.tile)),
+            let swizzled = class_getInstanceMethod(NSScrollView.self, #selector(NSScrollView.ub_tile))
+        else { return }
+        method_exchangeImplementations(original, swizzled)
+    }
+}
+
+private var ubApplyingThinChrome: UInt8 = 0
+private var ubScrollObserver: UInt8 = 0
+private var ubHideWork: UInt8 = 0
+private var ubLastOrigin: UInt8 = 0
+private var ubRevealed: UInt8 = 0
+
+extension NSScrollView {
+    @objc fileprivate func ub_tile() {
+        ub_tile()
+        ub_applyThinChrome()
+    }
+
+    fileprivate func ub_applyThinChrome() {
+        if objc_getAssociatedObject(self, &ubApplyingThinChrome) as? Bool == true { return }
+        objc_setAssociatedObject(self, &ubApplyingThinChrome, true, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        defer {
+            objc_setAssociatedObject(self, &ubApplyingThinChrome, false, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+
+        if scrollerStyle != .overlay {
+            scrollerStyle = .overlay
+        }
+        autohidesScrollers = true
+        if !(verticalScroller is ThinScroller) {
+            verticalScroller = ThinScroller(frame: verticalScroller?.frame ?? .zero)
+        }
+        if !(horizontalScroller is ThinScroller) {
+            horizontalScroller = ThinScroller(frame: horizontalScroller?.frame ?? .zero)
+        }
+        ub_installScrollFade()
+        if objc_getAssociatedObject(self, &ubRevealed) as? Bool != true {
+            ub_setScrollersHidden(true)
+        }
+    }
+
+    fileprivate func ub_installScrollFade() {
+        contentView.postsBoundsChangedNotifications = true
+        if objc_getAssociatedObject(self, &ubScrollObserver) as? Bool == true { return }
+        objc_setAssociatedObject(self, &ubScrollObserver, true, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(ub_contentBoundsDidChange),
+            name: NSView.boundsDidChangeNotification,
+            object: contentView
+        )
+        ub_setScrollersHidden(true)
+    }
+
+    @objc fileprivate func ub_contentBoundsDidChange() {
+        ub_revealScrollers()
+    }
+
+    fileprivate func ub_revealScrollers() {
+        let origin = contentView.bounds.origin
+        if let previous = objc_getAssociatedObject(self, &ubLastOrigin) as? NSValue {
+            if previous.pointValue == origin { return }
+        } else {
+            objc_setAssociatedObject(self, &ubLastOrigin, NSValue(point: origin), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            return
+        }
+        objc_setAssociatedObject(self, &ubLastOrigin, NSValue(point: origin), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(self, &ubRevealed, true, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        ub_setScrollersHidden(false)
+
+        if let previous = objc_getAssociatedObject(self, &ubHideWork) as? DispatchWorkItem {
+            previous.cancel()
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            objc_setAssociatedObject(self, &ubRevealed, false, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                self.verticalScroller?.animator().alphaValue = 0
+                self.horizontalScroller?.animator().alphaValue = 0
+            } completionHandler: {
+                if objc_getAssociatedObject(self, &ubRevealed) as? Bool != true {
+                    self.ub_setScrollersHidden(true)
                 }
-                scroll.autohidesScrollers = true
-                scroll.verticalScroller?.controlSize = .small
             }
-            current = node.superview
+        }
+        objc_setAssociatedObject(self, &ubHideWork, work, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85, execute: work)
+    }
+
+    fileprivate func ub_setScrollersHidden(_ hidden: Bool) {
+        for scroller in [verticalScroller, horizontalScroller] {
+            guard let scroller else { continue }
+            scroller.isHidden = hidden
+            scroller.alphaValue = hidden ? 0 : 1
         }
     }
 }
 
 extension View {
-    /// Web's `.uv-scroll`: a thin overlay knob that only shows while the user
-    /// is in the surface.
+    /// Web's `.uv-scroll`: the thin scroller standard, installed app-wide.
     func uvScroll() -> some View {
-        background(OverlayScrollers().frame(width: 0, height: 0))
+        ThinScrollbar.install()
+        return self
     }
 
     func pointerOnHover() -> some View {
@@ -157,8 +316,38 @@ extension View {
     }
 }
 
-/// The web focus ring: 2px accent at a 2px offset, radius 4.
+/// Tracks whether the latest input came from the pointer or the keyboard.
+/// The web focus ring is a `:focus-visible` treatment, but macOS also focuses
+/// a control on a plain click, so drawing the ring for any focus leaves a
+/// black outline behind every click. Only keyboard-driven focus draws it.
+final class InputModality: ObservableObject {
+    static let shared = InputModality()
+
+    /// True while the latest input was a pointer gesture.
+    @Published private(set) var pointerDriven = true
+
+    private var monitor: Any?
+
+    private init() {}
+
+    func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+        ) { [weak self] event in
+            let pointer = event.type != .keyDown
+            if self?.pointerDriven != pointer {
+                self?.pointerDriven = pointer
+            }
+            return event
+        }
+    }
+}
+
+/// The web focus ring: 2px accent at a 2px offset, radius 4. Only drawn when
+/// focus arrived from the keyboard, so pointer clicks stay clean.
 struct FocusRing: ViewModifier {
+    @ObservedObject private var modality = InputModality.shared
     let focused: Bool
 
     func body(content: Content) -> some View {
@@ -166,7 +355,7 @@ struct FocusRing: ViewModifier {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .strokeBorder(Theme.C.accent, lineWidth: 2)
                 .padding(-2)
-                .opacity(focused ? 1 : 0)
+                .opacity(focused && !modality.pointerDriven ? 1 : 0)
         )
     }
 }
