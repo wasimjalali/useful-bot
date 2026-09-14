@@ -11,6 +11,8 @@
     "node": ">=24.11.1 <25"
   },
   "scripts": {
+    "brand:build": "/usr/local/bin/node scripts/build-brand-assets.mjs",
+    "brand:check": "/usr/local/bin/node scripts/check-brand-assets.mjs",
     "typecheck": "/usr/local/bin/node node_modules/typescript/bin/tsc --noEmit",
     "launchd:render": "/usr/local/bin/node --experimental-strip-types scripts/render-launchd.mjs",
     "test": "/usr/local/bin/node --experimental-strip-types --test test/contracts.test.ts test/write-approval.test.ts test/memory.test.ts test/session-owners.test.ts test/eve-stream.test.ts test/shell-store.test.ts test/bot-face.test.ts test/attachments.test.ts test/approvals-persist.test.ts test/session-store.test.ts test/launchd-render.test.ts test/eve-proxy-guard.test.ts test/registry-lock.test.ts test/origin.test.ts test/providers.test.ts test/live-models.test.ts test/chat-markdown.test.ts test/agents.test.ts test/multi-agent.test.ts test/agent-tools.test.ts spikes/s3/approvals.test.ts router/test/contracts.test.ts",

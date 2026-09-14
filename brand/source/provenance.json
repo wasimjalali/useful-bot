@@ -1,0 +1,75 @@
+{
+  "rasterSource": "ChatGPT Image Sep 14, 2026, 01_40_55 AM.png",
+  "sourceScale": 0.7679425837320574,
+  "rasterTranslation": [
+    31,
+    32
+  ],
+  "vectorScale": 0.768,
+  "vectorTranslation": [
+    30.72,
+    31.744
+  ],
+  "vectorMasterSha256": "893d4fc787b01fa37448566dbebe47bdc57824dfa5faad50f76c3bb5087e12af",
+  "edgeMaskSha256": "45e21c45de2fd7990e3d05896d2889a94be2d1beff7204cfefe2cd4225ca3eb6",
+  "note": "Interior RGB retained; a hand-authored silhouette and narrow edge RGB decontamination remove extraction debris. Interior alpha normalized. No AI enhancement or bitmap trace.",
+  "font": {
+    "family": "Inter",
+    "weight": 600,
+    "version": "4.1",
+    "license": "SIL OFL 1.1",
+    "source": "https://github.com/rsms/inter/releases/tag/v4.1",
+    "sha256": "78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3"
+  },
+  "sources": [
+    {
+      "path": "brand/source/ChatGPT Image Sep 14, 2026, 01_40_55 AM.png",
+      "sha256": "1664d5bbd6f873d64a8fd613aa802e0f2a75382a97cb4da6d07cc0f70d58e1b3",
+      "width": 1254,
+      "height": 1254,
+      "alpha": true
+    },
+    {
+      "path": "brand/source/ChatGPT Image Sep 14, 2026, 01_41_09 AM (1).png",
+      "sha256": "1664d5bbd6f873d64a8fd613aa802e0f2a75382a97cb4da6d07cc0f70d58e1b3",
+      "width": 1254,
+      "height": 1254,
+      "alpha": true
+    },
+    {
+      "path": "brand/source/ChatGPT Image Sep 14, 2026, 01_41_09 AM (2).png",
+      "sha256": "bce4e7bbdcc820679114df7680c70a2d9bfc6128a20b3931fd9830a224b1afd4",
+      "width": 1254,
+      "height": 1254,
+      "alpha": false
+    },
+    {
+      "path": "brand/source/ChatGPT Image Sep 14, 2026, 01_41_09 AM (3).png",
+      "sha256": "d7240bb5da100b9833c34ae9d0a5ed6504d7a309bb71138921cdd50c56a09957",
+      "width": 1254,
+      "height": 1254,
+      "alpha": false
+    },
+    {
+      "path": "brand/source/ChatGPT Image Sep 14, 2026, 01_41_09 AM (4).png",
+      "sha256": "bf5b76488830dc27a700274d545c975624e241e5068d6059b4fda3c163f70ac9",
+      "width": 1254,
+      "height": 1254,
+      "alpha": false
+    },
+    {
+      "path": "brand/source/ChatGPT Image Sep 14, 2026, 01_41_09 AM (5).png",
+      "sha256": "b3182c3bfa1dad32d1b776b969f152a4f80e051d95e8d7b01e964f827c15a66e",
+      "width": 2172,
+      "height": 724,
+      "alpha": false
+    },
+    {
+      "path": "brand/source/ChatGPT Image Sep 14, 2026, 01_41_09 AM (6).png",
+      "sha256": "7b30c0405aebd2aa84107e80a27bedc753f9d83b0178bef42f619e18df603244",
+      "width": 1731,
+      "height": 909,
+      "alpha": false
+    }
+  ]
+}

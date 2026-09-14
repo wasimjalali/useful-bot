@@ -36,3 +36,15 @@ open "macos/dist/Useful Bot.app"
 ```
 
 Web is `http://127.0.0.1:4320`. Chat needs eve as well (`service.mjs eve`) after the Go key is in Keychain. Sleeping the Mac is downtime.
+
+## Brand assets
+
+The approved mascot package, usage guidelines and visual comparison are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).
+
+```sh
+npm ci --prefix scripts/brand-tools
+npm run brand:build
+npm run brand:check
+```
+
+Use the Node 24 runtime above. Brand tooling has its own lockfile to preserve the router's verified root dependency lock. The build creates `useful-bot-brand-assets.zip`; see [BRAND_ASSET_REPORT.md](BRAND_ASSET_REPORT.md) for the output inventory and verification results.

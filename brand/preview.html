@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Useful Bot brand assets</title>
+  <link rel="icon" href="favicon/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="tokens.css">
+  <style>
+    @font-face{font-family:Inter;src:url(source/fonts/Inter-SemiBold.woff2) format("woff2");font-weight:600;font-display:swap}
+    *{box-sizing:border-box}body{margin:0;background:var(--ub-surface-shade);color:var(--ub-black);font:15px/1.5 system-ui,sans-serif}
+    main{max-width:1360px;margin:auto;padding:48px 32px 80px}h1,h2,h3,button{font-family:Inter,system-ui,sans-serif;font-weight:600}
+    h1{font-size:clamp(30px,4vw,48px);letter-spacing:-.045em;line-height:1.1;margin:0}h2{font-size:24px;letter-spacing:-.025em;margin:0 0 24px}h3{font-size:15px;margin:0}
+    header{display:flex;align-items:center;justify-content:space-between;gap:24px;padding-bottom:32px;border-bottom:1px solid var(--ub-edge-shade)}
+    a{color:inherit;text-underline-offset:4px;overflow-wrap:anywhere}nav{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:24px}nav a{display:inline-flex;align-items:center;min-height:44px}
+    section{margin-top:56px}figure{margin:0;min-width:0}figcaption{padding:12px 0 0;overflow-wrap:anywhere;font-size:13px}
+    .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:24px 0}button{border:1px solid var(--ub-edge-shade);border-radius:6px;background:var(--ub-white);color:var(--ub-black);padding:10px 16px;min-height:44px;font-size:13px;cursor:pointer;transition:background-color 150ms ease-out}
+    button:hover{background:var(--ub-edge-shade)}button:active,button[aria-pressed=true]{background:var(--ub-black);color:var(--ub-white)}button:disabled{opacity:.5;cursor:default}
+    :focus-visible{outline:2px solid currentColor;outline-offset:4px}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}.grid.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+    .surface{position:relative;display:flex;align-items:center;justify-content:center;min-width:0;aspect-ratio:1;background:var(--ub-black);border:1px solid var(--ub-edge-shade)}
+    .surface img{display:block;width:100%;height:100%;object-fit:contain}.surface.white{background:var(--ub-white)}
+    /* Checker pattern is a transparency inspection aid, never brand artwork. */
+    .surface.checker{background-color:var(--ub-white);background-image:conic-gradient(var(--ub-edge-shade) 25%,transparent 0 50%,var(--ub-edge-shade) 0 75%,transparent 0);background-size:24px 24px}
+    .surface.original img{position:absolute;left:3.02734375%;top:3.125%;width:94.04296875%;height:94.04296875%}
+    .wide .surface{aspect-ratio:2.8}.wide img{width:92%;height:80%}.wide figure:last-child .surface{aspect-ratio:4/5}.wide figure:last-child img{width:100%;height:100%}.social .surface{aspect-ratio:1200/630}
+    .sample-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:32px;padding:24px;background:var(--ub-white);border:1px solid var(--ub-edge-shade)}
+    .sample-row figure{display:grid;justify-items:start;gap:8px}.sample-row img{display:block;max-width:100%;height:auto}.sample-row figcaption{padding:0}
+    .zoom img{image-rendering:pixelated;width:128px;height:128px}.navbar{display:flex;align-items:center;min-height:80px;padding:16px 24px;background:var(--ub-black);border:1px solid var(--ub-edge-shade)}
+    .navbar img{width:240px;max-width:100%;height:auto}.note{max-width:76ch;margin:16px 0 0;font-size:14px}
+    .overlay{isolation:isolate}.overlay img{position:absolute;inset:0}.overlay img+img{opacity:.5}.overlay input{position:absolute;bottom:12px;width:80%;min-height:44px;accent-color:var(--ub-white)}
+    .file-list{columns:3;column-gap:32px;padding-left:20px}.file-list li{break-inside:avoid;margin-bottom:12px}.file-list a{display:inline-block;min-height:32px}
+    .error{padding:16px;background:var(--ub-white);color:var(--ub-black);border:2px solid var(--ub-black)}
+    footer{margin-top:56px;border-top:1px solid var(--ub-edge-shade);padding-top:24px}html{scrollbar-width:thin;scrollbar-color:var(--ub-edge-shade) transparent}
+    @media(max-width:900px){.grid.four{grid-template-columns:repeat(2,minmax(0,1fr))}.file-list{columns:2}}
+    @media(max-width:600px){main{padding:28px 20px 48px}header{display:block}header>a{display:inline-block;margin-top:20px;min-height:44px}.grid,.grid.four{grid-template-columns:1fr}.file-list{columns:1}section{margin-top:40px}.sample-row{gap:24px;padding:16px}}
+    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>Useful Bot brand assets</h1><a href="README.md">Read the guidelines</a></header>
+    <nav aria-label="Asset sections"><a href="#masters">Compare masters</a><a href="#marks">Marks and lockups</a><a href="#small">Small sizes</a><a href="#app">App icons</a><a href="#social">Social</a><a href="#motion">Motion</a></nav>
+    <section id="masters">
+      <h2>Compare masters</h2>
+      <div class="toolbar" role="group" aria-label="Inspection background">
+        <button type="button" data-background="black" aria-pressed="true">Black</button>
+        <button type="button" data-background="white" aria-pressed="false">White</button>
+        <button type="button" data-background="checker" aria-pressed="false">Transparency</button>
+      </div>
+      <div class="grid four">
+        <figure><div class="surface original"><img src="source/ChatGPT%20Image%20Sep%2014,%202026,%2001_40_55%20AM.png" alt="Supplied approved mascot with original extraction debris" width="1254" height="1254"></div><figcaption>Approved source</figcaption></figure>
+        <figure><div class="surface"><img src="source/useful-bot-raster-master-1024.png" alt="Cleaned raster master" width="1024" height="1024"></div><figcaption>Raster master</figcaption></figure>
+        <figure><div class="surface"><img src="svg/useful-bot-mark.svg" alt="Hand-reconstructed vector master" width="1024" height="1024"></div><figcaption>Native vector</figcaption></figure>
+        <figure><div class="surface"><img src="svg/useful-bot-mark-flat.svg" alt="Flat tiny-size master" width="1024" height="1024"></div><figcaption>Flat master</figcaption></figure>
+      </div>
+      <p class="note">The supplied PNG has white extraction debris at its edge. The cleaned raster retains its original shading. The vector uses intentional curves, pure black glasses and simpler surface shading.</p>
+      <div class="grid" style="margin-top:32px">
+        <figure><div class="surface overlay"><img src="source/useful-bot-raster-master-1024.png" alt="Raster baseline" width="1024" height="1024"><img id="vector-overlay" src="svg/useful-bot-mark.svg" alt="Vector overlay" width="1024" height="1024"><input id="overlay-opacity" type="range" min="0" max="100" value="50" aria-label="Vector overlay opacity"></div><figcaption><label for="overlay-opacity">Raster/vector overlay</label></figcaption></figure>
+        <figure><div class="surface white fixed"><img src="svg/useful-bot-mark.svg" alt="Vector on white" width="1024" height="1024"></div><figcaption>White background check</figcaption></figure>
+        <figure><div class="surface checker fixed"><img src="source/useful-bot-raster-master-1024.png" alt="Raster alpha on checkerboard" width="1024" height="1024"></div><figcaption>Alpha check</figcaption></figure>
+      </div>
+    </section>
+    <section id="marks"><h2>Marks and lockups</h2><div class="grid" id="mark-gallery"></div><div class="grid wide" id="lockup-gallery" style="margin-top:32px"></div></section>
+    <section id="small"><h2>Small sizes</h2>
+      <h3>Favicons at actual CSS pixels</h3><div class="sample-row" id="favicon-sizes" style="margin-top:16px"></div>
+      <h3 style="margin-top:32px">16 px and 32 px enlarged for edge inspection</h3><div class="sample-row zoom" style="margin-top:16px"><figure><img src="favicon/favicon-16x16.png" alt="16 pixel favicon enlarged"><figcaption>16 px</figcaption></figure><figure><img src="favicon/favicon-32x32.png" alt="32 pixel favicon enlarged"><figcaption>32 px</figcaption></figure></div>
+      <h3 style="margin-top:32px">Website navbar</h3><div class="navbar" style="margin-top:16px"><img src="svg/useful-bot-lockup-horizontal.svg" alt="Useful Bot navbar lockup"></div>
+    </section>
+    <section id="app"><h2>App icons</h2><div class="sample-row" id="app-sizes"></div>
+      <div class="grid" style="margin-top:32px">
+        <figure><div class="surface"><img src="app/useful-bot-app-icon-1024.png" alt="Square app pipeline master" width="1024" height="1024"></div><figcaption>Square source master</figcaption></figure>
+        <figure><div class="surface checker fixed"><img src="app/AppIcon.appiconset/icon_512x512@2x.png" alt="macOS app icon with platform margins" width="1024" height="1024"></div><figcaption>macOS asset set</figcaption></figure>
+        <figure><div class="surface"><img src="pwa/icon-maskable-512.png" alt="PWA maskable icon with generous padding" width="512" height="512"></div><figcaption>Maskable PWA</figcaption></figure>
+      </div>
+    </section>
+    <section id="social"><h2>Social</h2><div class="grid" id="avatar-gallery"></div><div class="grid social" style="margin-top:32px"><figure><div class="surface"><img src="social/og-image.png" alt="Useful Bot Open Graph image" width="1200" height="630"></div><figcaption>Open Graph · 1200 × 630</figcaption></figure><figure><div class="surface"><img src="social/github-social-preview.png" alt="Useful Bot GitHub social preview" width="1280" height="640"></div><figcaption>GitHub · 1280 × 640</figcaption></figure></div></section>
+    <section id="motion"><h2>Motion</h2><p><a href="motion/animation-demo.html">Open the motion demo</a></p></section>
+    <section><h2>Download assets</h2><ul class="file-list" id="downloads"></ul></section>
+    <footer>Primary mark: bot without circle. Secondary mark: bot inside white circle.</footer>
+  </main>
+  <script>
+    const galleries = {
+      'mark-gallery': [['svg/useful-bot-mark.svg','Primary mark'],['svg/useful-bot-badge.svg','Secondary badge'],['svg/useful-bot-badge-transparent.svg','Badge with transparent exterior']],
+      'lockup-gallery': [['svg/useful-bot-wordmark.svg','Inter Semibold wordmark'],['svg/useful-bot-lockup-horizontal.svg','Horizontal lockup'],['svg/useful-bot-lockup-horizontal-badge.svg','Badge lockup'],['svg/useful-bot-lockup-stacked.svg','Stacked lockup']],
+      'avatar-gallery': [['social/avatar-1024.png','Primary avatar'],['social/avatar-badge-1024.png','Badge avatar'],['social/x-profile.png','X profile'],['social/linkedin-profile.png','LinkedIn profile']]
+    };
+    function figure(src, label, size, surface = false) {
+      const figure = document.createElement('figure'), img = document.createElement('img'), caption = document.createElement('figcaption');
+      img.src = src; img.alt = label; if (size) { img.width = size; img.height = size; }
+      const link = document.createElement('a'); link.href = src; link.textContent = label; caption.append(link);
+      if (surface) { const panel = document.createElement('div'); panel.className = 'surface'; panel.append(img); figure.append(panel); } else figure.append(img);
+      figure.append(caption); return figure;
+    }
+    for (const [id, assets] of Object.entries(galleries)) for (const [src,label] of assets) document.getElementById(id).append(figure(src,label,null,true));
+    for (const size of [16,32,48,64]) document.getElementById('favicon-sizes').append(figure(size < 48 ? `favicon/favicon-${size}x${size}.png` : 'favicon/favicon.svg', `${size} px`, size));
+    for (const [src,label,size] of [['favicon/apple-touch-icon.png','iOS · 60 pt',60],['pwa/icon-192.png','PWA · 64 px',64],['app/AppIcon.appiconset/icon_32x32.png','macOS · 32 pt',32],['app/AppIcon.appiconset/icon_128x128.png','macOS · 128 pt',128]]) document.getElementById('app-sizes').append(figure(src,label,size));
+    for (const button of document.querySelectorAll('[data-background]')) button.addEventListener('click', () => {
+      for (const control of document.querySelectorAll('[data-background]')) control.setAttribute('aria-pressed', String(control === button));
+      for (const panel of document.querySelectorAll('.surface:not(.fixed)')) { panel.classList.remove('white','checker'); if (button.dataset.background !== 'black') panel.classList.add(button.dataset.background); }
+    });
+    document.getElementById('overlay-opacity').addEventListener('input', event => { document.getElementById('vector-overlay').style.opacity = Number(event.target.value) / 100; });
+    const downloads = [...Object.values(galleries).flat(), ['source/useful-bot-raster-master-1024.png','Raster master'],['favicon/favicon.ico','Multi-size favicon ICO'],['pwa/site.webmanifest','PWA manifest'],['app/macos/UsefulBot.icns','macOS ICNS'],['asset-manifest.json','Exact output inventory']];
+    for (const [src,label] of downloads) { const li = document.createElement('li'), a = document.createElement('a'); a.href = src; a.textContent = label; li.append(a); document.getElementById('downloads').append(li); }
+    for (const img of document.images) img.addEventListener('error', () => { const error = document.createElement('p'); error.className = 'error'; error.textContent = `Missing asset: ${img.getAttribute('src')}. Run npm run brand:build.`; img.replaceWith(error); });
+  </script>
+</body>
+</html>
