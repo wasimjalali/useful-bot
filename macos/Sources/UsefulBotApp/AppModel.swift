@@ -61,11 +61,23 @@ final class AppModel: ObservableObject {
 
     @Published var pane: Pane = .none {
         didSet {
-            // The create stub notice is per visit, not per bot.
-            if pane != .details { routineNotice = false }
+            // The pane opens on the list, never on the row it showed last time.
+            if pane != .details { closeRoutineDetail() }
+            if pane == .details, let botId = selectedBotId {
+                Task { @MainActor [weak self] in await self?.loadRoutines(botId: botId) }
+            }
         }
     }
-    @Published var routineNotice = false
+
+    /// Routines for the open bot, plus the pane's own navigation state.
+    @Published private(set) var routines: [Routine] = []
+    @Published private(set) var routinesError: String?
+    /// Routine ids with a write in flight, so a double click cannot double-post.
+    @Published private(set) var routineBusy: Set<String> = []
+    /// The routine the pane has drilled into, or nil for the list.
+    @Published var openRoutineId: String?
+    /// The pane is showing the create form.
+    @Published var routineCreating = false
 
     /// Inline settings pane, opened from the details pane's gear.
     var settingsOpen: Bool {
@@ -283,7 +295,7 @@ final class AppModel: ObservableObject {
         memoryNotes = nil
         memoryError = nil
         selectedBotId = botId
-        routineNotice = false
+        clearRoutineState()
         // Clear the old thread synchronously so the new bot never flashes the
         // previous transcript while its state loads.
         resetThread()
@@ -399,6 +411,9 @@ final class AppModel: ObservableObject {
                 // by an idle poll that knows nothing new.
             }
             await refreshComposer()
+            // Only while the pane is open: a routine run that lands mid-poll
+            // has to show up without the owner reopening the pane.
+            if pane == .details { await loadRoutines(botId: bot.id) }
             pollAuthFailures = 0
         } catch let error as BackendError where error == .unauthorized {
             // Never leave the shell silently stuck on a rejected session.
@@ -833,7 +848,7 @@ final class AppModel: ObservableObject {
         let outgoing = activeSession
         resetThread()
         selectedBotId = id
-        routineNotice = false
+        clearRoutineState()
         clearPerThreadState()
         startReload()
         if let outgoing, !outgoing.sessionId.isEmpty {
@@ -954,7 +969,7 @@ final class AppModel: ObservableObject {
             self.rebuildTranscript()
             self.settingsOpen = false
             self.detailsOpen = false
-            self.routineNotice = false
+            self.clearRoutineState()
             // Reload outside the chain: an SSE replay must not block writes.
             self.startReload()
         }
@@ -1101,6 +1116,119 @@ final class AppModel: ObservableObject {
             // Keep the last notes and show the failure instead of pretending
             // this bot remembers nothing.
             memoryError = "Could not load memory."
+        }
+    }
+
+    // MARK: - Routines
+
+    /// The routine the pane has drilled into, resolved against the live list so
+    /// a poll that renamed it does not strand the detail view on a stale copy.
+    var openRoutine: Routine? {
+        guard let openRoutineId else { return nil }
+        return routines.first { $0.id == openRoutineId }
+    }
+
+    func closeRoutineDetail() {
+        openRoutineId = nil
+        routineCreating = false
+    }
+
+    private func clearRoutineState() {
+        closeRoutineDetail()
+        routines = []
+        routinesError = nil
+        routineBusy = []
+    }
+
+    func loadRoutines(botId: String) async {
+        do {
+            let next = try await client.routines(botId: botId)
+            // A slow response from the previous bot must not land on this one.
+            guard botId == selectedBotId else { return }
+            routines = next
+            routinesError = nil
+            if let openRoutineId, !next.contains(where: { $0.id == openRoutineId }) {
+                // The routine was deleted elsewhere; fall back to the list
+                // instead of showing an empty detail view.
+                closeRoutineDetail()
+            }
+        } catch {
+            guard botId == selectedBotId else { return }
+            routinesError = (error as? LocalizedError)?.errorDescription ?? "Could not load routines."
+        }
+    }
+
+    /// Apply one routine write and fold the server's row back into the list.
+    private func routineWrite(
+        id: String?,
+        _ work: @escaping @MainActor (BackendClient) async throws -> Void
+    ) {
+        if let id {
+            guard !routineBusy.contains(id) else { return }
+            routineBusy.insert(id)
+        }
+        let botId = selectedBotId
+        enqueue { [weak self] in
+            guard let self else { return }
+            do {
+                try await work(self.client)
+                self.routinesError = nil
+            } catch {
+                self.routinesError = (error as? LocalizedError)?.errorDescription ?? "That routine change failed."
+            }
+            if let id { self.routineBusy.remove(id) }
+            // Re-read rather than trusting the local copy: a scheduled run may
+            // have appended history while this write was in flight.
+            if let botId, botId == self.selectedBotId { await self.loadRoutines(botId: botId) }
+        }
+    }
+
+    func createRoutine(name: String, instruction: String, schedules: [RoutineSchedule]) {
+        guard let botId = selectedBotId else { return }
+        routineWrite(id: nil) { [weak self] client in
+            let created = try await client.createRoutine(
+                botId: botId,
+                name: name,
+                instruction: instruction,
+                schedules: schedules
+            )
+            guard let self, botId == self.selectedBotId else { return }
+            self.routineCreating = false
+            self.openRoutineId = created.id
+        }
+    }
+
+    func updateRoutine(
+        id: String,
+        name: String? = nil,
+        instruction: String? = nil,
+        schedules: [RoutineSchedule]? = nil,
+        active: Bool? = nil
+    ) {
+        routineWrite(id: id) { client in
+            try await client.updateRoutine(
+                id: id,
+                name: name,
+                instruction: instruction,
+                schedules: schedules,
+                active: active
+            )
+        }
+    }
+
+    func deleteRoutine(id: String) {
+        routineWrite(id: id) { [weak self] client in
+            try await client.deleteRoutine(id: id)
+            guard let self else { return }
+            if self.openRoutineId == id { self.closeRoutineDetail() }
+        }
+    }
+
+    /// Test run. The server answers as soon as the turn is queued, so the
+    /// outcome shows up in run history on the next poll, not in this call.
+    func runRoutine(id: String) {
+        routineWrite(id: id) { client in
+            try await client.runRoutine(id: id)
         }
     }
 

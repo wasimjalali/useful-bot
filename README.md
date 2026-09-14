@@ -37,6 +37,18 @@ open "macos/dist/Useful Bot.app"
 
 Web is `http://127.0.0.1:4320`. Chat needs eve as well (`service.mjs eve`) after the Go key is in Keychain. Sleeping the Mac is downtime.
 
+## Routines
+
+A routine is a recurring instruction one bot runs on a schedule. Create and edit
+them in the chat details pane (the info button in the chat header). Schedules are
+weekly, daily or one-shot, stored as wall-clock time in an IANA zone, so 09:00
+stays 09:00 across a DST change.
+
+Routines are stored in `~/.useful-bot/routines.json` and fire from the same tick
+the handoff pump uses, so nothing extra has to run. A run enters the bot's own
+chat as a turn and its outcome is kept in the routine's run history. Sleeping the
+Mac means a missed window catches up with one run, not one per window missed.
+
 ## Brand assets
 
 The approved mascot package, usage guidelines and visual comparison are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).

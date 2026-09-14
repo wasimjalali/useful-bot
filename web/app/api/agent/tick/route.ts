@@ -6,13 +6,16 @@ import {
   agentsEnabled,
   handoffsInFlight,
   pumpHandoffs,
+  pumpRoutines,
+  routinesInFlight,
 } from "../../../../lib/agent-exec";
 
 /**
- * Handoff pump. The sending agent tool only queues a record, so delivery is
- * driven from here: the UI poll POSTs every few seconds and wakePump() POSTs
- * once right after a send. The agent key reaches this route as a header; the
- * browser reaches it as a same-origin desktop request.
+ * Handoff pump and routine scheduler. The sending agent tool only queues a
+ * record, so delivery is driven from here: the UI poll POSTs every few seconds
+ * and wakePump() POSTs once right after a send. The same tick is where due
+ * routines fire. The agent key reaches this route as a header; the browser
+ * reaches it as a same-origin desktop request.
  */
 
 function keyMatches(candidate: string | null): boolean {
@@ -50,6 +53,7 @@ export async function GET(request: Request) {
     ok: true,
     enabled: agentsEnabled(),
     inFlight: handoffsInFlight(),
+    routinesInFlight: routinesInFlight(),
   });
 }
 
@@ -73,10 +77,14 @@ export async function POST(request: Request) {
   // background: the UI poll would otherwise stay blocked and stop scheduling
   // ticks, and queue state is durable anyway.
   void pumpHandoffs(limit).catch(() => undefined);
+  // Routines share the tick so the owner needs nothing running but the app.
+  // Both pumps are single-flight, so a fast poll cannot stack work.
+  void pumpRoutines(limit).catch(() => undefined);
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),
     started: true,
     inFlight: handoffsInFlight(),
+    routinesInFlight: routinesInFlight(),
   });
 }

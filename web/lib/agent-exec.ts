@@ -13,6 +13,13 @@ import {
   HANDOFF_DEPTH_MAX,
   type HandoffRecord,
 } from "../../shared/handoffs.ts";
+import {
+  appendRoutineRun,
+  claimDueRoutine,
+  dueRoutines,
+  readRoutine,
+  type Routine,
+} from "../../shared/routines-store.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
@@ -224,27 +231,26 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
   return target ? { bot: target, kind: "bot" } : null;
 }
 
-async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
-  if (handoff.depth > HANDOFF_DEPTH_MAX) throw new Error("handoff_depth_exceeded");
+/**
+ * Open (or reuse) a bot's eve session, send one message and wait for the reply.
+ * Shared by handoff delivery and by routine runs so both reach eve the same
+ * way: the same envelope-matched stream read, the same timeout, the same
+ * history skip that keeps a second send from resolving with an older turn.
+ */
+async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: string; reply: string }> {
   const jwt = channelJwt();
   if (!jwt) throw new Error("channel_credential_missing");
-  const shell = readShell();
-  const receiver = receiverOf(handoff, shell.bots);
-  if (!receiver) throw new Error("receiver_missing");
-  const { bot, kind } = receiver;
-  if (bot.hidden) throw new Error("receiver_hidden");
-
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DELIVER_TIMEOUT_MS);
   let sessionId = bot.sessionId ?? "";
   let reply = "";
-  const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
   try {
+    const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
-      body: JSON.stringify({ message: handoffEnvelope(handoff), botId: bot.id }),
+      body: JSON.stringify({ message, botId: bot.id }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`eve_send_${res.status}`);
@@ -256,10 +262,22 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
       signal: controller.signal,
     });
     if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-    reply = await readHandoffStream(stream.body, controller.signal, historyIds, handoffEnvelope(handoff));
+    reply = await readHandoffStream(stream.body, controller.signal, historyIds, message);
   } finally {
     clearTimeout(timer);
   }
+  return { sessionId, reply };
+}
+
+async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<string> {
+  if (handoff.depth > HANDOFF_DEPTH_MAX) throw new Error("handoff_depth_exceeded");
+  const shell = readShell();
+  const receiver = receiverOf(handoff, shell.bots);
+  if (!receiver) throw new Error("receiver_missing");
+  const { bot, kind } = receiver;
+  if (bot.hidden) throw new Error("receiver_hidden");
+
+  const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff));
 
   // A stale takeover may have handed this record to another process; only the
   // token holder may write the transcript, or both would append a reply.
@@ -393,4 +411,141 @@ export function fanOut(input: {
     });
   }
   return count;
+}
+
+/**
+ * Routine runs. A routine is owner-initiated work on a schedule, so it enters
+ * the bot's own 1:1 chat as a turn at depth 0: a note saying which routine
+ * fired, the instruction as the owner's message, and the bot's reply. Delivery
+ * uses the same eve path as a handoff.
+ */
+
+const routinesInflight = new Set<string>();
+
+export type RoutineRunResult = { routineId: string; sessionId: string; reply: string };
+
+function runFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : "routine_failed";
+  return message.slice(0, 300);
+}
+
+async function executeRoutine(
+  routine: Routine,
+  trigger: "schedule" | "manual",
+): Promise<RoutineRunResult> {
+  const shell = readShell();
+  const bot = shell.bots.find((item) => item.id === routine.botId);
+  if (!bot) throw new Error("routine_bot_missing");
+  if (bot.hidden) throw new Error("routine_bot_hidden");
+  const threadKind: ThreadKind = bot.kind === "group" ? "group" : "bot";
+  // The note keeps the transcript honest: without it a scheduled turn reads as
+  // something the owner typed.
+  appendAgentEvent(bot.id, {
+    kind: "note",
+    threadKind,
+    text: trigger === "manual"
+      ? `Test run of routine "${routine.name}".`
+      : `Routine "${routine.name}" ran.`,
+  });
+  // The instruction is stored verbatim and sent verbatim, so the live stream
+  // echo pairs with this durable row instead of rendering a second bubble.
+  appendAgentEvent(bot.id, {
+    kind: "user",
+    threadKind,
+    sessionId: bot.sessionId ?? "",
+    text: routine.instruction,
+  });
+  const { sessionId, reply } = await runEveTurn(bot, routine.instruction);
+  if (reply) {
+    appendAgentEvent(bot.id, {
+      kind: "assistant",
+      threadKind,
+      sessionId,
+      text: reply,
+    });
+  }
+  const stamp = new Date().toISOString();
+  updateShell((current) => ({
+    ...current,
+    bots: current.bots.map((item) => (
+      item.id === bot.id
+        ? {
+          ...item,
+          sessionId,
+          lastPreview: reply ? reply.slice(0, 160) : item.lastPreview,
+          lastAt: stamp,
+          updatedAt: stamp,
+        }
+        : item
+    )),
+  }));
+  return { routineId: routine.id, sessionId, reply };
+}
+
+/**
+ * Run one routine now, the way the pane's Test run button does. The scheduler
+ * shares the in-flight set, so a manual run cannot overlap a scheduled one.
+ */
+export async function runRoutineNow(routineId: string): Promise<RoutineRunResult> {
+  const routine = readRoutine(routineId);
+  if (!routine) throw new Error("routine_missing");
+  if (routinesInflight.has(routine.id)) throw new Error("routine_busy");
+  routinesInflight.add(routine.id);
+  try {
+    const result = await executeRoutine(routine, "manual");
+    appendRoutineRun(routine.id, { status: "ok", sessionId: result.sessionId });
+    return result;
+  } catch (err) {
+    const error = runFailure(err);
+    appendRoutineRun(routine.id, { status: "failed", error });
+    throw err;
+  } finally {
+    routinesInflight.delete(routine.id);
+  }
+}
+
+// Like the handoff pump: overlapping runs would hold several eve turns open at
+// once, so callers queue behind the run in progress.
+let routineQueue: Promise<unknown> = Promise.resolve();
+
+export function pumpRoutines(limit = 2): Promise<{
+  ran: Array<{ id: string; name: string }>;
+  failed: Array<{ id: string; error: string }>;
+}> {
+  const run = routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
+  routineQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function pumpRoutinesOnce(limit: number): Promise<{
+  ran: Array<{ id: string; name: string }>;
+  failed: Array<{ id: string; error: string }>;
+}> {
+  const ran: Array<{ id: string; name: string }> = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  const now = new Date();
+  const candidates = dueRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
+  for (const candidate of candidates.slice(0, limit)) {
+    // The claim moves lastRunAt inside the store lock, so a tick that raced
+    // this one recomputes the schedule and finds nothing due.
+    const claim = claimDueRoutine(candidate.id, now);
+    if (!claim) continue;
+    routinesInflight.add(candidate.id);
+    try {
+      const result = await executeRoutine(claim.routine, "schedule");
+      appendRoutineRun(candidate.id, { status: "ok", sessionId: result.sessionId });
+      ran.push({ id: candidate.id, name: claim.routine.name });
+    } catch (err) {
+      const error = runFailure(err);
+      appendRoutineRun(candidate.id, { status: "failed", error });
+      failed.push({ id: candidate.id, error });
+    } finally {
+      routinesInflight.delete(candidate.id);
+    }
+  }
+  return { ran, failed };
+}
+
+export function routinesInFlight(): string[] {
+  return [...routinesInflight];
 }

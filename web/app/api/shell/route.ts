@@ -11,6 +11,7 @@ import {
   type Proposal,
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
+import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
@@ -29,7 +30,9 @@ export async function GET(request: Request) {
  * Side effects the UI asks for alongside a shell action:
  *  - a confirmed fan-out (a bot proposed a group post) queues one handoff per
  *    member bot and touches both sides of every transcript;
- *  - clearing a thread drops that bot's agent transcript with its eve session.
+ *  - clearing a thread drops that bot's agent transcript with its eve session;
+ *  - deleting a bot drops the routines it owned, which would otherwise keep
+ *    coming due for a bot that no longer exists.
  */
 function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): number {
   if (!action) return 0;
@@ -57,6 +60,9 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
   }
   if (action.type === "clearThread") {
     clearThread(action.botId);
+  }
+  if (action.type === "deleteBot") {
+    deleteRoutinesForBot(action.botId);
   }
   return 0;
 }
