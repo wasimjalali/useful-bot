@@ -9,7 +9,7 @@ struct ComposerView: View {
     @EnvironmentObject private var model: AppModel
 
     /// `chat-composer.tsx` textarea cap, matching the server clip.
-    static let maxDraftLength = 2000
+    static let maxDraftLength = Attachments.messageMax
 
     let bot: ShellBot
     var onOpenConnectors: () -> Void

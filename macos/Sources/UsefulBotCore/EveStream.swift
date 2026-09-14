@@ -214,9 +214,27 @@ public struct StreamProjection: Equatable, Sendable {
     /// Web results the turn surfaced, shown as chips under the transcript.
     public private(set) var searchHits: [SearchChip] = []
     private var seen = Set<String>()
+    private var seenOrder: [String] = []
+    private var seenCursor = 0
+    private static let seenCap = 2000
     private var currentAssistantId: String?
 
     public init() {}
+
+    /// Dedupe identity with a bounded FIFO: the oldest remembered id is
+    /// evicted first, so a long replay can neither grow without bound nor
+    /// re-apply the events it already saw.
+    private mutating func remember(_ id: String) {
+        seen.insert(id)
+        if seenOrder.count < Self.seenCap {
+            seenOrder.append(id)
+        } else {
+            let evicted = seenOrder[seenCursor]
+            seenOrder[seenCursor] = id
+            seen.remove(evicted)
+            seenCursor = (seenCursor + 1) % Self.seenCap
+        }
+    }
 
     public mutating func apply(_ event: EveEvent) {
         // Deltas are content, not identity: an id reused across appended
@@ -224,10 +242,7 @@ public struct StreamProjection: Equatable, Sendable {
         // reset periodically so a long replay cannot grow without bound.
         if let id = event.id, event.type != "message.appended", event.type != "action.partial" {
             if seen.contains(id) { return }
-            seen.insert(id)
-            if seen.count > 2000 {
-                seen.removeAll()
-            }
+            remember(id)
         }
         switch event.type {
         case "turn.started":

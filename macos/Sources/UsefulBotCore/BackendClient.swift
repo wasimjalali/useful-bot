@@ -488,6 +488,12 @@ public actor BackendClient {
             return request
         }
         try Self.expectShellOK(data, response)
+        // A 200 body can still carry {ok:false,error}; never treat that as a
+        // persisted session pointer.
+        if let failure = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
+           let code = failure.error, !code.isEmpty {
+            throw BackendError.shell(code)
+        }
     }
 
     /// Apply a profile patch through the shell action endpoint. Nil values are

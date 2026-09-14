@@ -252,12 +252,10 @@ final class AppModel: ObservableObject {
         }
         // A turn that belongs to the outgoing bot keeps burning server-side
         // unless it is cancelled here; Stop can no longer reach it after the
-        // switch.
+        // switch. `resetThread()` below cancels the local stream.
         let outgoing = activeSession
-        cancelSend()
         attachError = nil
         threadError = nil
-attachError = nil
         stickyThreadError = nil
         memoryNotes = nil
         memoryError = nil
@@ -420,7 +418,16 @@ attachError = nil
     // MARK: - Send
 
     func send(_ text: String) {
-        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = String(
+            text.trimmingCharacters(in: .whitespacesAndNewlines)
+                .prefix(Attachments.messageMax)
+        )
+        // The composer can fall back to the first bot before a selection is
+        // stored; adopt it so the turn belongs to a real bot.
+        if selectedBotId == nil, let fallback = selectedBot {
+            selectedBotId = fallback.id
+            persistSelection(fallback.id)
+        }
         // Never send through the selectedBot fallback: the turn must belong to
         // the bot the composer is showing.
         guard !message.isEmpty, !pending,
@@ -612,6 +619,7 @@ attachError = nil
                 )
                 self.approvals.removeAll { $0.id == item.id }
                 self.decidedApprovals[item.id] = Date()
+                self.approvalError = nil
             } catch {
                 self.approvalError = (error as? LocalizedError)?.errorDescription ?? "Approval failed"
             }
@@ -844,7 +852,6 @@ attachError = nil
             self.selectedBotId = id
             self.attachError = nil
             self.threadError = nil
-self.attachError = nil
             self.stickyThreadError = nil
             self.memoryNotes = nil
             self.memoryError = nil
@@ -867,9 +874,9 @@ self.attachError = nil
                 let switched = next.selectedBotId != self.selectedBotId
                 self.applyStore(next)
                 if !switched {
-                    // Same bot, different stored session: the thread must be
-                    // reloaded explicitly or the old transcript stays on screen.
-                    await self.reloadThread()
+                    // Same bot, different stored session: reload outside the
+                    // chain so a replay cannot block other shell writes.
+                    self.startReload()
                 }
             } catch {
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Open failed."
@@ -929,6 +936,7 @@ self.attachError = nil
                 }
                 guard !Task.isCancelled else { return }
                 self.threadError = nil
+                self.stickyThreadError = nil
                 self.busyProposals.remove(proposal.id)
                 // Reload outside the chain: a replay must not block writes.
                 self.startReload()
