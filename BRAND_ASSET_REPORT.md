@@ -28,8 +28,18 @@ The package productionizes the approved supplied mascot. The bot without a circl
 | Open Graph | 1200 × 630 |
 | GitHub social preview | 1280 × 640 |
 | Motion | 1024 × 1024 SVG, 2.8-second CSS loop and controllable HTML demo |
+| Product bot avatars | 11 transparent head-only SVGs with square 768-unit viewBoxes and 256 × 256 PNGs |
+| Native motion layers | Eight transparent 1024 × 1024 PNGs: seven full-mascot layers and one bright avatar head |
 
-The `public/` package is duplicated into `web/public/` because Next.js runs from `web/`. The existing Next icon file and root metadata reference the new favicon system. Native SwiftUI files and native build behavior are outside this change.
+The `public/` package is duplicated into `web/public/` because Next.js runs from `web/`. Next metadata, web logos and bot avatars consume the approved package. Native SwiftUI uses bundled copies from `brand/`; `macos/build-app.sh` packages the ICNS, header artwork, avatar PNGs, animation layers and shared JSON sources. There is one editable brand source, with generated copies only where a platform needs them.
+
+## Native integration
+
+The app icon, Dock icon, navigation logo and all bot avatars now use the approved mascot. Bot settings offer Original, Sand, Coral, Peach, Gold, Green, Teal, Blue, Lilac, Rose and Silver. Product avatars use just the head, with the body and arms removed. The palette uses brighter colors and reduces head shading to 30% of its original depth. Glasses and eyes stay black, highlights stay white and surroundings stay transparent. The primary brand and app icon retain the full monochrome mascot.
+
+Startup uses one 2.8-second animation while the local server starts in parallel. Loading uses the full mascot; the chat Working row uses a head-only float and blink with the same timing. Other avatar surfaces remain static. Reduce Motion skips the intro and renders loading artwork still. Animation pauses while the scene is inactive. The native timing decoder and SVG generator share `brand/source/motion.json`; native artwork is split from the approved SVG, not redrawn in Swift.
+
+Old geometric avatar renderers, shape/upload controls, legacy native icon files and their generator were removed. Existing stored shape/image fields remain readable for compatibility and aren't automatically rewritten or deleted. Choosing a color explicitly clears that bot's custom image through the existing settings API. Bot settings are the only color-selection UI. Retired files remain recoverable from Git; supplied originals remain in `brand/source/`.
 
 ## Use and design decisions
 
@@ -60,6 +70,8 @@ npm run brand:check
 npx tsc --noEmit
 npx tsc --noEmit -p web/tsconfig.json
 npm test
+macos/test.sh
+macos/build-app.sh
 ```
 
 `brand:build` validates and optimizes the masters, writes deterministic output folders, runs the checks and packages `brand/`. Once npm dependencies are installed, regeneration is offline. The ZIP is a ready-to-use asset handoff; clone the repository to edit and regenerate it.
@@ -68,18 +80,20 @@ npm test
 
 Completed on 14 September 2026:
 
-- Asset checks pass for 96 registered outputs, including 70 PNGs and 17 SVG exports. Original supplied PNGs are additionally verified against their recorded hashes.
+- Asset checks cover 139 registered outputs, including 89 PNGs and 41 SVG exports. Original supplied PNGs are additionally verified against their recorded hashes.
 - PNG dimensions, sRGB profiles, alpha channels, anti-aliased edges, unclipped bounds, primary alignment and maskable safe-circle containment pass. SVG XML, viewBoxes, group IDs, gradients, file sizes and absence of embedded raster content pass.
 - Cleaned-raster/vector silhouette overlap is 99.84% at 1024 px. This measures agreement with the cleaned silhouette, not pixel identity with the approved original. Visual comparison against the supplied source confirms the same pose, proportions, glasses and eye placement, with the shading compromises described above.
 - ICO directory entries and decoded DIB pixels pass. ICNS chunks and all ten Xcode slots pass. Apple's `iconutil` independently accepts the ICNS and `sips` recognizes the ICO.
 - The preview was opened in Aside. Anonymous Chromium checks cover 360, 390 and 1440 px widths, with no horizontal overflow or failed preview images. Black, white and checkerboard views, the overlay control, keyboard focus and social compositions were inspected. Favicons were inspected at actual 16/32/48/64 px sizes and enlarged; 16 px is necessarily coarse, while 32 px and above retain clearer eyes and glasses.
 - Play/stop controls, reduced-motion handling and sampled float, wave, blink, squash and return-to-idle keyframes pass. Static remains the motion demo's default.
-- Both root and web TypeScript checks pass. All 99 existing tests pass. The project has no configured lint command. The application dependency lock and registry are unchanged.
-- The archive contains 92 files under `brand/`. ZIP integrity passes and consecutive completed builds are byte-identical. Archive SHA-256: `c98fd78c628149328c65d9645a9b2455463b9729dfe815e7c7830a5df4a31e50`.
+- All 11 avatar SVGs are checked for absent body/arms, alpha matching the isolated approved head and structurally identical glasses/eye groups. Reassembled full-mascot native layers match the vector within the checker tolerance. Packaged native resources are compared to their canonical sources byte-for-byte.
+- Native release compilation, bundle signing verification and plist validation pass. The running app's navigation logo, rail avatars, chat header and color picker were inspected at the 900 × 600 minimum window size. The color grid fits without clipping. Avatar preview checks cover black, white and checkerboard backgrounds; responsive asset-preview checks cover 360, 390 and 1440 px.
+- Both root and web TypeScript checks pass, as does the production web build. All 100 Node tests and 105 native tests pass. The project has no configured lint command. Next.js ran an automatic dependency check during its build; its lockfile metadata and generated declaration edits were reverted. The application dependency lock and registry remain unchanged.
+- The archive contains 124 files under `brand/`. ZIP integrity is checked with the final build.
 
 The isolated brand-tool package's dependency audit reports no vulnerabilities. The existing application dependency tree reports critical/high advisories in its older Next.js, PostCSS and sharp dependencies. Those pre-existing runtime dependencies are outside this asset change and were not upgraded.
 
-The brand build, checks and web metadata changes received a local Codex source review. The named security/code-review plugins are unavailable in this session, so this is not a claim that their review ran. The user explicitly waived unavailable-plugin review on 14 September 2026, allowing PR #23 to merge. Work was isolated on `feat/production-brand-assets`; the original checkout and the other agent's native changes remain untouched.
+The brand build, native integration and web identity changes received a local Codex source review. The named security/code-review plugins are unavailable in this session, so this is not a claim that their review ran. The user explicitly waived unavailable-plugin review on 14 September 2026. The original package merged in PR #23. Native integration is isolated on `feat/native-brand-integration`, based on main after PR #24, preserving the other agent's merged work.
 
 ## Platform references
 

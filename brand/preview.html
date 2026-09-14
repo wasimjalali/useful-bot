@@ -40,7 +40,7 @@
 <body>
   <main>
     <header><h1>Useful Bot brand assets</h1><a href="README.md">Read the guidelines</a></header>
-    <nav aria-label="Asset sections"><a href="#masters">Compare masters</a><a href="#marks">Marks and lockups</a><a href="#small">Small sizes</a><a href="#app">App icons</a><a href="#social">Social</a><a href="#motion">Motion</a></nav>
+    <nav aria-label="Asset sections"><a href="#masters">Compare masters</a><a href="#marks">Marks and lockups</a><a href="#small">Small sizes</a><a href="#app">App icons</a><a href="#social">Social</a><a href="#avatars">Avatar colors</a><a href="#motion">Motion</a></nav>
     <section id="masters">
       <h2>Compare masters</h2>
       <div class="toolbar" role="group" aria-label="Inspection background">
@@ -75,12 +75,14 @@
       </div>
     </section>
     <section id="social"><h2>Social</h2><div class="grid" id="avatar-gallery"></div><div class="grid social" style="margin-top:32px"><figure><div class="surface"><img src="social/og-image.png" alt="Useful Bot Open Graph image" width="1200" height="630"></div><figcaption>Open Graph · 1200 × 630</figcaption></figure><figure><div class="surface"><img src="social/github-social-preview.png" alt="Useful Bot GitHub social preview" width="1280" height="640"></div><figcaption>GitHub · 1280 × 640</figcaption></figure></div></section>
+    <section id="avatars"><h2>Bot avatar colors</h2><p class="note">Head-only avatars in bright colors, with transparent surroundings. Glasses, eyes and highlights retain the approved geometry.</p><div class="grid" id="bot-avatar-gallery" style="margin-top:24px"></div></section>
     <section id="motion"><h2>Motion</h2><p><a href="motion/animation-demo.html">Open the motion demo</a></p></section>
     <section><h2>Download assets</h2><ul class="file-list" id="downloads"></ul></section>
     <footer>Primary mark: bot without circle. Secondary mark: bot inside white circle.</footer>
   </main>
   <script>
     const galleries = {
+      'bot-avatar-gallery': [['ink','Original'],['brown','Sand'],['red','Coral'],['orange','Peach'],['gold','Gold'],['green','Green'],['teal','Teal'],['blue','Blue'],['purple','Lilac'],['pink','Rose'],['gray','Silver']].map(([id,label]) => [`avatars/${id}.svg`,label]),
       'mark-gallery': [['svg/useful-bot-mark.svg','Primary mark'],['svg/useful-bot-badge.svg','Secondary badge'],['svg/useful-bot-badge-transparent.svg','Badge with transparent exterior']],
       'lockup-gallery': [['svg/useful-bot-wordmark.svg','Inter Semibold wordmark'],['svg/useful-bot-lockup-horizontal.svg','Horizontal lockup'],['svg/useful-bot-lockup-horizontal-badge.svg','Badge lockup'],['svg/useful-bot-lockup-stacked.svg','Stacked lockup']],
       'avatar-gallery': [['social/avatar-1024.png','Primary avatar'],['social/avatar-badge-1024.png','Badge avatar'],['social/x-profile.png','X profile'],['social/linkedin-profile.png','LinkedIn profile']]

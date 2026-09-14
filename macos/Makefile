@@ -16,15 +16,10 @@ test:
 	swift test --skip-build $(SWIFT_TEST_FLAGS)
 
 icon:
-	./scripts/make-icon.sh
+	cd .. && npm run brand:build
 
-bundle: build icon
-	rm -rf "$(APP)"
-	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
-	cp bundle/Info.plist "$(APP)/Contents/Info.plist"
-	cp .build/release/UsefulBotApp "$(APP)/Contents/MacOS/UsefulBotApp"
-	cp assets/AppIcon.icns "$(APP)/Contents/Resources/AppIcon.icns"
-	codesign --force --deep --sign - "$(APP)"
+bundle:
+	./build-app.sh
 
 clean:
-	rm -rf .build dist assets/AppIcon.iconset
+	rm -rf .build dist

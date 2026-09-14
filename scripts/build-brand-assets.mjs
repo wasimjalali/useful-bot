@@ -278,18 +278,86 @@ for (const [name, width, height] of [['og-image', 1200, 630], ['github-social-pr
   await pngOutput(`brand/social/${name}.png`, canvas, width, { height, opaque: true });
 }
 
+// Both the browser and native animation consume the same timing source.
+const motion = JSON.parse(await read('brand/source/motion.json'));
+assert(motion.duration > 0 && Number.isFinite(motion.duration), 'Invalid motion duration');
+for (const key of ['float', 'wave', 'blink', 'squashX', 'squashY']) {
+  const track = motion[key];
+  assert(track.length >= 2 && track[0][0] === 0 && track.at(-1)[0] === 100, `Incomplete motion track: ${key}`);
+  for (const [index, frame] of track.entries()) assert(frame.length === 2 && frame.every(Number.isFinite) && (!index || frame[0] > track[index - 1][0]), `Invalid keyframe: ${key}`);
+}
+const keyframes = (name, track, transform) => `@keyframes ${name}{${track.map(([at, value]) => `${at}%{transform:${transform(value, at)}}`).join('')}}`;
 const motionStyle = `<style>
   #mascot{animation:ub-float 2.8s ease-in-out infinite;transform-origin:512px 680px}
   #arm-right{animation:ub-wave 2.8s ease-in-out infinite;transform-origin:710px 725px}
   #eye-left,#eye-right{animation:ub-blink 2.8s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
   #body{animation:ub-squash 2.8s ease-in-out infinite;transform-origin:512px 890px}
-  @keyframes ub-float{0%,15%,100%{transform:translateY(0)}30%,78%{transform:translateY(-7px)}}
-  @keyframes ub-wave{0%,34%,55%,100%{transform:rotate(0)}42%{transform:rotate(-3deg)}48%{transform:rotate(1deg)}}
-  @keyframes ub-blink{0%,60%,68%,100%{transform:scaleY(1)}64%{transform:scaleY(.08)}}
-  @keyframes ub-squash{0%,72%,100%{transform:scale(1)}81%{transform:scale(1.012,.988)}90%{transform:scale(.995,1.005)}}
+  ${keyframes('ub-float', motion.float, value => `translateY(${value}px)`)}
+  ${keyframes('ub-wave', motion.wave, value => `rotate(${value}deg)`)}
+  ${keyframes('ub-blink', motion.blink, value => `scaleY(${value})`)}
+  ${keyframes('ub-squash', motion.squashX, (value, at) => `scale(${value},${motion.squashY.find(frame => frame[0] === at)[1]})`)}
   @media(prefers-reduced-motion:reduce){#mascot,#arm-right,#eye-left,#eye-right,#body{animation:none;transform:none}}
-</style>`;
+</style>`.replaceAll('2.8s', `${motion.duration}s`);
 await svgOutput('brand/motion/useful-bot-animated.svg', xml(motionStyle + content(mark)));
+
+// Native layers are exports of the approved geometry, never separate drawings.
+const motionLayers = ['arm-left', 'arm-right', 'body', 'head', 'glasses', 'eye-left', 'eye-right'];
+for (const part of motionLayers) {
+  const layer = optimize(mark, { plugins: [{ name: 'isolateNativeLayer', fn: () => ({ element: {
+    enter(node) {
+      if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && child.attributes.id === part);
+    },
+  } }) }] }).data;
+  await pngOutput(`brand/motion/native/${part}.png`, await render(optimized(layer), 1024), 1024, { family: 'motion-layer', layer: part });
+}
+
+// Product avatars keep only the approved head, enlarged without distortion.
+// This square viewBox centers the original head at (512, 397.056).
+// Reduce its shading depth to 30% so selected colors stay clean and bright.
+const avatarParts = new Set(['head', 'glasses', 'eye-left', 'eye-right']);
+const avatarMaster = optimized(optimize(mark, { plugins: [{ name: 'headOnlyAvatar', fn: () => ({ element: {
+  enter(node) {
+    if (node.name === 'svg') node.attributes.viewBox = '128 13.056 768 768';
+    if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && avatarParts.has(child.attributes.id));
+    if (node.name === 'stop' && node.attributes['stop-color']) {
+      const gray = node.attributes['stop-color'];
+      const luminance = parseInt(gray.length === 4 ? gray[1].repeat(2) : gray.slice(1, 3), 16);
+      const lifted = Math.round(255 - (255 - luminance) * .3).toString(16).padStart(2, '0');
+      node.attributes['stop-color'] = '#' + lifted.repeat(3);
+    }
+  },
+} }) }] }).data);
+// Use the same bright head in the native avatar animation. Keep the full
+// artboard here so the existing glasses/eye layers and blink anchors line up.
+const nativeAvatarHead = optimized(optimize(avatarMaster, { plugins: [{ name: 'nativeAvatarHead', fn: () => ({ element: {
+  enter(node) {
+    if (node.name === 'svg') node.attributes.viewBox = '0 0 1024 1024';
+    if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && child.attributes.id === 'head');
+  },
+} }) }] }).data);
+await pngOutput('brand/motion/native/avatar-head.png', await render(nativeAvatarHead, 1024), 1024, { family: 'motion-layer', layer: 'avatar-head' });
+
+// Black eyes/glasses and white highlights retain the approved geometry.
+const palette = JSON.parse(await read('brand/source/avatar-palette.json'));
+const surfaces = new Set(['head']);
+for (const [color, { fill }] of Object.entries(palette)) {
+  assert(/^[a-z]+$/.test(color) && /^#[A-Fa-f0-9]{6}$/.test(fill), `Invalid avatar color: ${color}`);
+  const channels = fill.match(/[A-Fa-f0-9]{2}/g).map(channel => parseInt(channel, 16));
+  const avatar = optimize(avatarMaster, { plugins: [{ name: 'tintMascotSurfaces', fn: () => ({ element: {
+    enter(node, parent) {
+      if (node.name === 'stop' && node.attributes['stop-color']) {
+        const gray = node.attributes['stop-color'];
+        const luminance = parseInt(gray.length === 4 ? gray[1].repeat(2) : gray.slice(1, 3), 16) / 255;
+        node.attributes['stop-color'] = '#' + channels.map(channel => Math.round(channel * luminance).toString(16).padStart(2, '0')).join('');
+      }
+      if (surfaces.has(parent.attributes?.id) && node.attributes.fill && !node.attributes.fill.startsWith('url(')) node.attributes.fill = fill;
+    },
+  } }) }] }).data;
+  const vector = await svgOutput(`brand/avatars/${color}.svg`, avatar);
+  await pngOutput(`brand/avatars/${color}-256.png`, await render(vector, 256), 256, { family: 'avatar', avatarColor: color });
+  await output(`web/public/brand/avatars/${color}.svg`, await read(`brand/avatars/${color}.svg`), { kind: 'svg' });
+}
+for (const name of ['useful-bot-mark.svg', 'useful-bot-mark-flat.svg']) await output(`web/public/brand/${name}`, await read(`brand/svg/${name}`), { kind: 'svg' });
 
 // Record original files too, so source provenance survives packaging.
 const sources = [];
@@ -303,6 +371,8 @@ await output('brand/source/provenance.json', JSON.stringify({
   vectorScale: .768, vectorTranslation: [30.72, 31.744],
   vectorMasterSha256: sha(await read('brand/source/useful-bot-master.svg')),
   edgeMaskSha256: sha(await read('brand/source/raster-edge-mask.svg')),
+  avatarPaletteSha256: sha(await read('brand/source/avatar-palette.json')),
+  motionTimingSha256: sha(await read('brand/source/motion.json')),
   note: 'Interior RGB retained; a hand-authored silhouette and narrow edge RGB decontamination remove extraction debris. Interior alpha normalized. No AI enhancement or bitmap trace.',
   font: { family: 'Inter', weight: 600, version: '4.1', license: 'SIL OFL 1.1', source: 'https://github.com/rsms/inter/releases/tag/v4.1', sha256: sha(fontBytes) },
   sources,

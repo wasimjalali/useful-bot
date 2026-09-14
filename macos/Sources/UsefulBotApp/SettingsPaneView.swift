@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import UsefulBotCore
 
 /// The inline right pane from `bot-settings-panel.tsx` and
@@ -69,9 +68,6 @@ private struct FacePickerView: View {
     @EnvironmentObject private var model: AppModel
     let bot: ShellBot
 
-    @State private var notice: String?
-    @State private var showUpload = false
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -79,222 +75,58 @@ private struct FacePickerView: View {
                 BotAvatarView(bot: bot, size: 80)
                 Spacer(minLength: 0)
             }
-            .padding(.bottom, 4)
 
-            tabs
-            if let notice {
-                Text(notice)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.danger)
+            HStack {
+                Text("Avatar color")
+                    .font(Theme.font(12, .semibold))
+                Spacer()
+                NativeButton("Reset", kind: .secondary, small: true) {
+                    let color = bot.id == Threads.defaultBotId ? "ink" : FacePalette.defaultFace(for: bot.id).color
+                    select(color, custom: bot.id != Threads.defaultBotId)
+                }
+                .accessibilityIdentifier("avatar-reset")
             }
-            shapes
-            colors
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                ForEach(FacePalette.colors, id: \.self) { color in
+                    let selected = BrandAssets.colorID(for: bot) == color
+                    Button {
+                        select(color)
+                    } label: {
+                        VStack(spacing: 2) {
+                            BotFaceView(color: color, size: 40)
+                            Text(BrandAssets.palette[color]!.label)
+                                .font(Theme.font(10, .medium))
+                                .foregroundStyle(Theme.C.ink)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 64)
+                        .background(selected ? Theme.C.sunken : .clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(selected ? Theme.C.ink : .clear, lineWidth: 1.5)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerOnHover()
+                    .accessibilityLabel("\(BrandAssets.palette[color]!.label) avatar")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityIdentifier("avatar-color-\(color)")
+                }
+            }
         }
         .padding(.top, 4)
-        .fileImporter(
-            isPresented: $showUpload,
-            allowedContentTypes: [.png, .jpeg, .webP],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                applyUpload(FaceUpload.dataURL(from: url))
-            case .failure:
-                notice = "That image could not be read. Use a PNG, JPEG or WebP."
-            }
-        }
     }
 
-    private var tabs: some View {
-        HStack(spacing: 0) {
-            tab("Bot", active: true, action: nil)
-            tab("Generate", active: false) {
-                let face = FacePalette.randomFace()
-                notice = nil
-                model.patchBot(botId: bot.id, [
-                    "avatarShape": face.shape,
-                    "avatarColor": face.color,
-                    "avatarImage": nil,
-                    "avatarCustom": true,
-                ])
-            }
-            tab("Upload", active: false) { showUpload = true }
-            tab("Reset", active: false) {
-                notice = nil
-                if bot.id == Threads.defaultBotId {
-                    model.patchBot(botId: bot.id, [
-                        "avatarShape": "circle",
-                        "avatarColor": "ink",
-                        "avatarImage": nil,
-                        "avatarCustom": false,
-                    ])
-                } else {
-                    let face = FacePalette.defaultFace(for: bot.id)
-                    model.patchBot(botId: bot.id, [
-                        "avatarShape": face.shape,
-                        "avatarColor": face.color,
-                        "avatarImage": nil,
-                        "avatarCustom": true,
-                    ])
-                }
-            }
-        }
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
-    }
-
-    private func tab(_ title: String, active: Bool, action: (() -> Void)?) -> some View {
-        Button {
-            action?()
-        } label: {
-            Text(title)
-                .font(.system(size: DesignTokens.FontSize.tabLabel, weight: .semibold))
-                .foregroundStyle(active ? Theme.C.ink : Theme.C.inkMuted)
-                .frame(maxWidth: .infinity, minHeight: DesignTokens.Control.faceTabHeight)
-                .background(active ? Theme.C.sunken : .clear)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(action == nil)
-        .pointerOnHover()
-    }
-
-    private var shapes: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4),
-            spacing: 6
-        ) {
-            ForEach(FacePalette.shapes, id: \.self) { shape in
-                let selected = bot.avatarCustom && bot.avatarImage == nil && bot.avatarShape == shape
-                Button {
-                    notice = nil
-                    model.patchBot(botId: bot.id, [
-                        "avatarShape": shape,
-                        "avatarImage": nil,
-                        "avatarCustom": true,
-                    ])
-                } label: {
-                    BotFaceView(
-                        shape: shape,
-                        color: bot.avatarColor,
-                        image: nil,
-                        size: 36
-                    )
-                    .frame(maxWidth: .infinity)
-                    .frame(height: DesignTokens.Control.faceSwatchHeight)
-                    .background(selected ? Theme.C.sunken : .clear)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                            .strokeBorder(selected ? Theme.C.borderStrong : .clear, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerOnHover()
-                .accessibilityLabel("\(shape) face")
-            }
-        }
-    }
-
-    private var colors: some View {
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 11)
-        return LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(FacePalette.colors, id: \.self) { color in
-                let selected = bot.avatarColor == color
-                Button {
-                    notice = nil
-                    model.patchBot(botId: bot.id, ["avatarColor": color, "avatarCustom": true])
-                } label: {
-                    Circle()
-                        .fill(Theme.color(FacePalette.swatches[color] ?? DesignTokens.Hex.ink))
-                        .frame(width: DesignTokens.Control.faceDot, height: DesignTokens.Control.faceDot)
-                        .overlay(
-                            Circle()
-                                .strokeBorder(Theme.C.surface, lineWidth: 2)
-                        )
-                        .overlay(
-                            Circle()
-                                .strokeBorder(selected ? Theme.C.ink : .clear, lineWidth: 2)
-                                .padding(-2)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerOnHover()
-                .accessibilityLabel("\(color) color")
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func applyUpload(_ outcome: Result<String, FaceUpload.Failure>) {
-        switch outcome {
-        case .success(let dataURL):
-            notice = nil
-            model.patchBot(botId: bot.id, [
-                "avatarImage": dataURL,
-                "avatarCustom": true,
-            ])
-        case .failure(.tooLarge):
-            notice = "That image is too large after resizing. Try a smaller file."
-        case .failure(.unreadable):
-            notice = "That image could not be read. Use a PNG, JPEG or WebP."
-        }
-    }
-}
-
-/// 128pt square JPEG data URL, same budget as `readFaceImage` on the web.
-enum FaceUpload {
-    enum Failure: Error {
-        case tooLarge
-        case unreadable
-    }
-
-    static func dataURL(from url: URL) -> Result<String, Failure> {
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        // Decode only reasonably sized source files; the resize below is the
-        // real cap, but a huge original should never be decoded first.
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-        if let size, size > 8 * 1024 * 1024 {
-            return .failure(.tooLarge)
-        }
-        guard let image = NSImage(contentsOf: url), image.size.width > 0, image.size.height > 0 else {
-            return .failure(.unreadable)
-        }
-        let side: CGFloat = 128
-        let scale = max(side / image.size.width, side / image.size.height)
-        let drawWidth = image.size.width * scale
-        let drawHeight = image.size.height * scale
-        let target = NSImage(size: NSSize(width: side, height: side))
-        target.lockFocus()
-        NSColor.white.setFill()
-        NSRect(x: 0, y: 0, width: side, height: side).fill()
-        image.draw(
-            in: NSRect(
-                x: (side - drawWidth) / 2,
-                y: (side - drawHeight) / 2,
-                width: drawWidth,
-                height: drawHeight
-            ),
-            from: .zero,
-            operation: .sourceOver,
-            fraction: 1
-        )
-        target.unlockFocus()
-        guard let tiff = target.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else {
-            return .failure(.unreadable)
-        }
-        let dataURL = "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
-        guard dataURL.count <= 120_000 else { return .failure(.tooLarge) }
-        return .success(dataURL)
+    private func select(_ color: String, custom: Bool = true) {
+        model.patchBot(botId: bot.id, [
+            "avatarColor": color,
+            "avatarShape": "circle",
+            "avatarImage": nil,
+            "avatarCustom": custom,
+        ])
     }
 }
 

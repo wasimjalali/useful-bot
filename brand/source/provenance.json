@@ -12,6 +12,8 @@
   ],
   "vectorMasterSha256": "893d4fc787b01fa37448566dbebe47bdc57824dfa5faad50f76c3bb5087e12af",
   "edgeMaskSha256": "45e21c45de2fd7990e3d05896d2889a94be2d1beff7204cfefe2cd4225ca3eb6",
+  "avatarPaletteSha256": "71241b61c3cfc5edd7dbda409c32909a81c9a2b5e61bc832b57770d77ae48293",
+  "motionTimingSha256": "9ad72d920e120434a719a53a859cc5d5a86c1c6a84384fb1e3ebfc86a2d96862",
   "note": "Interior RGB retained; a hand-authored silhouette and narrow edge RGB decontamination remove extraction debris. Interior alpha normalized. No AI enhancement or bitmap trace.",
   "font": {
     "family": "Inter",

@@ -1,3 +1,6 @@
+import avatarPalette from "../brand/source/avatar-palette.json" with { type: "json" };
+
+// Legacy shape values remain wire-compatible. Clients render only the mascot.
 export const AVATAR_SHAPES = ["circle", "oval", "square", "pill", "triangle", "hex", "blob", "drop"] as const;
 export const AVATAR_COLORS = [
   "ink",
@@ -22,19 +25,8 @@ export type BotFace = {
   image: string | null;
 };
 
-export const AVATAR_SWATCHES: Record<AvatarColor, string> = {
-  ink: "#171717",
-  brown: "#6b4a2b",
-  red: "#e11d48",
-  orange: "#f97316",
-  gold: "#f5b301",
-  green: "#16a34a",
-  teal: "#0d9488",
-  blue: "#2563eb",
-  purple: "#7c3aed",
-  pink: "#ec4899",
-  gray: "#9ca3af",
-};
+// "ink" is the legacy ID for Original. Color applies to surfaces, not a backdrop.
+export const AVATAR_PALETTE: Record<AvatarColor, { label: string; fill: string }> = avatarPalette;
 
 export function isAvatarShape(value: unknown): value is AvatarShape {
   return typeof value === "string" && (AVATAR_SHAPES as readonly string[]).includes(value);
@@ -73,10 +65,4 @@ export function randomFace(at = Date.now()): BotFace {
     color: AVATAR_COLORS[(seed >>> 4) % AVATAR_COLORS.length],
     image: null,
   };
-}
-
-export function eyeFill(color: AvatarColor): string {
-  return color === "ink" || color === "brown" || color === "blue" || color === "purple" || color === "red"
-    ? "#fafafa"
-    : "#171717";
 }
