@@ -45,8 +45,13 @@ export interface MemoryNoteCard extends MemoryExcerpt {
 }
 
 const NOTE_ID_PATTERN = /^[A-Za-z0-9-]{1,80}$/;
-const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
+const LOCK_TIMEOUT_MS = 5000;
+/**
+ * A crashed holder must be reclaimable well before the acquire deadline, or
+ * every caller blocks for the difference and then throws. Stale stays under the
+ * timeout so a reclaim plus a retry still fits inside it.
+ */
+const LOCK_STALE_MS = 2000;
 const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 
 /** Note ids are file names; anything else is a path traversal or a bad key. */
@@ -89,9 +94,20 @@ const SECRET_MARKERS = [
   "token=",
   "bearer ",
   "authorization:",
-  "sk-",
   "-----begin",
 ];
+
+/**
+ * A bare `sk-` marker refused ordinary words such as "task-list" or
+ * "desk-setup", so the tripwire now looks for a real key shape: `sk-` followed
+ * by a long alphanumeric run. Real provider keys match; prose does not.
+ */
+const SECRET_KEY_PATTERN = /sk-[A-Za-z0-9]{16,}/;
+
+function containsSecret(lowered: string): boolean {
+  if (SECRET_MARKERS.some((marker) => lowered.includes(marker))) return true;
+  return SECRET_KEY_PATTERN.test(lowered);
+}
 
 function memoryRoot(): string {
   const fromEnv = process.env.UB_MEMORY_ROOT;
@@ -118,11 +134,14 @@ export class MemoryStore {
   readonly indexPath: string;
   private readonly root: string;
   private readonly db: DatabaseSync;
+  private readonly dirtyPath: string;
+  private skippedRows = 0;
 
   constructor(root: string = memoryRoot()) {
     this.root = root;
     this.notesDir = join(root, "notes");
     this.indexPath = join(root, "index.sqlite");
+    this.dirtyPath = join(root, "index.dirty");
     mkdirSync(this.notesDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(this.indexPath);
     this.db.exec("PRAGMA journal_mode=WAL");
@@ -140,6 +159,51 @@ export class MemoryStore {
       );
       CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(title, tags, body, id UNINDEXED);
     `);
+    this.repairIfDirty();
+  }
+
+  /** Rows that could not be read during the last list or search. */
+  skippedRowCount(): number {
+    return this.skippedRows;
+  }
+
+  /**
+   * A write marks the store dirty before the markdown rename and clears the
+   * marker only after the row is indexed. A crash in between leaves the marker,
+   * so the next open rebuilds the index from the markdown files and removes the
+   * skew. The marker is written first, so it is present whenever a rename may
+   * have landed without a matching index update.
+   */
+  private markDirty(id: string): void {
+    try {
+      writeFileSync(this.dirtyPath, `${id}\n`, { encoding: "utf8", mode: 0o600, flag: "a" });
+    } catch { /* the marker is best effort; list/search still skip bad rows */ }
+  }
+
+  private clearDirty(): void {
+    try { rmSync(this.dirtyPath, { force: true }); } catch { /* ignore */ }
+  }
+
+  private repairIfDirty(): void {
+    if (!existsSync(this.dirtyPath)) return;
+    try {
+      this.rebuildIndex();
+      this.clearDirty();
+    } catch {
+      // Leave the marker so a later open retries; reads already skip bad rows.
+    }
+  }
+
+  private transaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch { /* ignore */ }
+      throw error;
+    }
   }
 
   private acquire(): () => void {
@@ -168,20 +232,28 @@ export class MemoryStore {
   rebuildIndex(): { indexed: number; rejected: number } {
     const release = this.acquire();
     try {
-      this.db.exec("DELETE FROM notes; DELETE FROM notes_fts;");
       let indexed = 0;
       let rejected = 0;
-      for (const name of readdirSync(this.notesDir)) {
-        if (!name.endsWith(".md")) continue;
-        try {
-          const raw = readFileSync(join(this.notesDir, name), "utf8");
-          const { meta, body } = parseNote(raw);
-          this.insertIndex(meta, body);
-          indexed += 1;
-        } catch {
-          rejected += 1;
+      this.transaction(() => {
+        this.db.exec("DELETE FROM notes; DELETE FROM notes_fts;");
+        for (const name of readdirSync(this.notesDir)) {
+          if (!name.endsWith(".md")) continue;
+          try {
+            const raw = readFileSync(join(this.notesDir, name), "utf8");
+            const { meta, body } = parseNote(raw);
+            // A legacy or hand-edited file can carry an id that is unsafe as a
+            // file name. Skip it rather than poison the whole index.
+            if (!NOTE_ID_PATTERN.test(meta.id)) {
+              rejected += 1;
+              continue;
+            }
+            this.insertIndex(meta, body);
+            indexed += 1;
+          } catch {
+            rejected += 1;
+          }
         }
-      }
+      });
       return { indexed, rejected };
     } finally {
       release();
@@ -207,7 +279,12 @@ export class MemoryStore {
          LIMIT 5`,
       ).all(match, audience, now) as Array<{ id: string }>;
     }
-    return rows.map((row) => this.read(row.id, audience));
+    const excerpts: MemoryExcerpt[] = [];
+    for (const row of rows) {
+      const excerpt = this.readExcerpt(row.id, audience);
+      if (excerpt) excerpts.push(excerpt);
+    }
+    return excerpts;
   }
 
   list(audience: Audience, limit = 100, botId?: string): MemoryNoteCard[] {
@@ -215,13 +292,34 @@ export class MemoryStore {
     const rows = this.db.prepare(
       "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT ?",
     ).all(audience, now, limit) as Array<{ id: string }>;
-    const cards = rows.map((row) => {
-      const excerpt = this.read(row.id, audience);
-      const { meta } = parseNote(readFileSync(join(this.notesDir, `${row.id}.md`), "utf8"));
-      return { ...excerpt, tags: meta.tags, updatedAt: meta.updatedAt };
-    });
+    const cards: MemoryNoteCard[] = [];
+    for (const row of rows) {
+      const excerpt = this.readExcerpt(row.id, audience);
+      if (!excerpt) continue;
+      try {
+        const { meta } = parseNote(readFileSync(join(this.notesDir, `${row.id}.md`), "utf8"));
+        cards.push({ ...excerpt, tags: meta.tags, updatedAt: meta.updatedAt });
+      } catch {
+        this.skippedRows += 1;
+      }
+    }
     if (!botId) return cards;
     return cards.filter((card) => noteBelongsToBot(card.tags, botId));
+  }
+
+  /**
+   * An index row can outlive or disagree with its markdown file (a legacy id, a
+   * deleted file, a crash mid-write). One bad row must not fail the whole read,
+   * so it is skipped and counted; `read` keeps the strict id check for callers
+   * that name a single note.
+   */
+  private readExcerpt(id: string, audience: Audience): MemoryExcerpt | null {
+    try {
+      return this.read(id, audience);
+    } catch {
+      this.skippedRows += 1;
+      return null;
+    }
   }
 
   read(id: string, audience: Audience): MemoryExcerpt {
@@ -262,7 +360,7 @@ export class MemoryStore {
     }
     if (input.id !== undefined) assertNoteId(input.id);
     const lowered = `${input.title}\n${input.body}`.toLowerCase();
-    if (SECRET_MARKERS.some((marker) => lowered.includes(marker))) {
+    if (containsSecret(lowered)) {
       throw new Error("memory_secret_refused");
     }
     const release = this.acquire();
@@ -310,13 +408,17 @@ export class MemoryStore {
         }
         throw error;
       }
+      // The marker is written before the rename so a crash between the rename
+      // and the index insert is repaired on the next open.
+      this.markDirty(id);
       try {
         renameSync(tmp, existingPath);
       } catch (error) {
         try { unlinkSync(tmp); } catch { /* ignore */ }
         throw error;
       }
-      this.insertIndex(meta, input.body);
+      this.transaction(() => this.insertIndex(meta, input.body));
+      this.clearDirty();
       return { id, revision };
     } finally {
       release();
