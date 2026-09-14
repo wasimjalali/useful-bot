@@ -119,6 +119,10 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
 }
 
 public enum EveStream {
+    /// Id prefix for the optimistic user row a send inserts before the stream
+    /// echoes the authoritative event; only rows with this prefix collapse.
+    public static let optimisticUserPrefix = "local-"
+
     public static func parseLine(_ line: String) -> EveEvent? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix(":") else { return nil }
@@ -227,7 +231,17 @@ public struct StreamProjection: Equatable, Sendable {
             searchHits = []
         case "message.received":
             let text = EveStream.stripThreadPrefix(event.message ?? "")
-            if let last = messages.last, last.role == .user, last.text == text { return }
+            // Only the optimistic row this app synthesised for the send is
+            // folded into the authoritative echo; a legitimate repeat of the
+            // same text still appends as its own turn.
+            if let last = messages.last, last.role == .user, last.text == text,
+               last.id.hasPrefix(EveStream.optimisticUserPrefix) {
+                if let id = event.id {
+                    messages[messages.count - 1] = ChatMessage(id: id, role: .user, text: text)
+                }
+                pending = true
+                return
+            }
             messages.append(ChatMessage(id: event.id ?? "u-\(messages.count)", role: .user, text: text))
             pending = true
         case "message.appended":
@@ -242,7 +256,8 @@ public struct StreamProjection: Equatable, Sendable {
                 messages.append(ChatMessage(id: id, role: .assistant, text: delta))
             }
         case "message.completed":
-            if let full = event.message, !full.isEmpty {
+            let full = EveStream.stripThreadPrefix(event.message ?? "")
+            if !full.isEmpty {
                 if let current = currentAssistantId,
                    let index = messages.firstIndex(where: { $0.id == current }) {
                     messages[index].text = full

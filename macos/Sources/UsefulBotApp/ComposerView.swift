@@ -46,6 +46,11 @@ struct ComposerView: View {
             plusOpen = false
             modeOpen = false
         }
+        .onChange(of: bot.id) { _, _ in
+            // The menus belong to the bot they opened for.
+            plusOpen = false
+            modeOpen = false
+        }
     }
 
     private var placeholder: String {

@@ -143,6 +143,36 @@ import Testing
         #expect(chips.count == 2)
         #expect(chips.map(\.title) == ["One", "Two"])
     }
+
+    @Test func optimisticUserRowFoldsIntoTheEcho() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)abc",
+            message: "hi"
+        ))
+        projection.apply(EveEvent(type: "message.received", id: "evt-1", message: "hi"))
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages.first?.id == "evt-1")
+    }
+
+    @Test func repeatedUserTextStillAppends() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u-1", message: "hi"))
+        projection.apply(EveEvent(type: "message.received", id: "u-2", message: "hi"))
+        #expect(projection.messages.count == 2)
+    }
+
+    @Test func completionStripsTheThreadPrefix() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u-1", message: "hi"))
+        projection.apply(EveEvent(
+            type: "message.completed",
+            id: "a-1",
+            message: "You are Echo.\nStanding instructions: be kind.\n\nhello there"
+        ))
+        #expect(projection.messages.last?.text == "hello there")
+    }
 }
 
 @Suite struct ApprovalAndSettingsDecodingTests {

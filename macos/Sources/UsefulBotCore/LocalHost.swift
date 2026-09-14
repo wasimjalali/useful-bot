@@ -20,6 +20,11 @@ public enum LocalHost {
         if let zone = value.firstIndex(of: "%") {
             value = String(value[..<zone])
         }
+        // Control and default-ignorable characters (zero-width joiners, bidi
+        // marks) must not be able to disguise an address as remote.
+        if value.unicodeScalars.contains(where: { $0.properties.isDefaultIgnorableCodePoint || $0.value < 0x21 }) {
+            return true
+        }
         if value.hasSuffix(".") { value.removeLast() }
         if value == "localhost" || value.hasSuffix(".localhost") || value.hasSuffix(".local") {
             return true

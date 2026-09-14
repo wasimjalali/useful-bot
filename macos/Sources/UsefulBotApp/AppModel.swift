@@ -26,6 +26,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var operatorInitials = "DO"
     @Published private(set) var composer: ComposerState?
     @Published private(set) var memoryNotes: [MemoryNote]?
+    @Published private(set) var memoryError: String?
 
     /// Pending approvals from `/api/approvals`, shown above the chat.
     @Published private(set) var approvals: [ApprovalItem] = []
@@ -109,6 +110,7 @@ final class AppModel: ObservableObject {
     private var tickInFlight = false
     private var loadGeneration = 0
     private var sendGeneration = 0
+    private var chatGeneration = 0
     private var sendBotId: String?
     private var started = false
     /// Rebuilding the transcript on every streamed event re-parses markdown
@@ -203,15 +205,15 @@ final class AppModel: ObservableObject {
 
     private func pollApprovals() async {
         guard phase == .ready else { return }
+        // Prune tombstones on every poll so an outage cannot grow them.
+        let now = Date()
+        decidedApprovals = decidedApprovals.filter { now.timeIntervalSince($0.value) < 5 }
         if let items = try? await client.approvals() {
-            // A poll that started before a decision can carry the decided row
-            // back; tombstone it briefly so it cannot be double-decided.
-            let now = Date()
-            decidedApprovals = decidedApprovals.filter { now.timeIntervalSince($0.value) < 5 }
             approvals = items.filter { decidedApprovals[$0.id] == nil }
-            // An approval that vanished server-side must not leave its buttons
-            // disabled forever.
-            busyApprovals.formIntersection(items.map(\.id))
+            // A decision in flight must survive a poll that already saw the
+            // server drop the row, or the buttons re-enable mid-request.
+            let live = Set(items.map(\.id)).union(decidedApprovals.keys)
+            busyApprovals.formIntersection(live)
         }
     }
 
@@ -234,13 +236,23 @@ final class AppModel: ObservableObject {
             }
             return
         }
+        // A turn that belongs to the outgoing bot keeps burning server-side
+        // unless it is cancelled here; Stop can no longer reach it after the
+        // switch.
+        let outgoing = activeSession
         cancelSend()
+        attachError = nil
         selectedBotId = botId
         routineNotice = false
         // The draft and its attachments are page-level on the web, so they
         // survive a bot switch rather than being cleared with the thread.
         startReload()
         persistSelection(botId)
+        if let outgoing, !outgoing.sessionId.isEmpty {
+            Task { [weak self] in
+                _ = try? await self?.client.cancel(sessionId: outgoing.sessionId)
+            }
+        }
     }
 
     /// Persist the selection the way the web's select action does, without
@@ -320,16 +332,20 @@ final class AppModel: ObservableObject {
         // Handoffs and the rail keep pumping during a turn; the web ticks on
         // the same cadence as its stream rather than waiting for it to end.
         pumpHandoffs()
+        let generation = loadGeneration
+        let polledBotId = selectedBotId
         do {
             // The store is owned by the send while one runs (the optimistic
             // session echo must not be overwritten), but proposals and the
             // composer still refresh so mid-turn handoffs and proposals show.
             if !pending {
                 let fresh = try await client.shell()
+                guard generation == loadGeneration, polledBotId == selectedBotId else { return }
                 store = fresh
             }
-            guard let bot = selectedBot else { return }
+            guard let bot = selectedBot, bot.id == polledBotId else { return }
             let state = try await client.threadState(botId: bot.id)
+            guard generation == loadGeneration, polledBotId == selectedBotId else { return }
             proposals = state.proposals
             pruneBusyProposals()
             if !pending {
@@ -346,10 +362,10 @@ final class AppModel: ObservableObject {
     private func pumpHandoffs() {
         guard !tickInFlight else { return }
         tickInFlight = true
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.tickInFlight = false }
             await self.client.tick()
+            self.tickInFlight = false
         }
     }
 
@@ -391,17 +407,22 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             do {
                 // Snapshot the turn ids first so a resend of identical text
-                // cannot arm on the earlier turn. A dead stored session must
-                // not lock the composer, so a failed snapshot falls through
-                // with no history and the send creates a fresh session.
+                // cannot arm on the earlier turn. A snapshot that cannot be
+                // fetched is not the same as an empty one: start a fresh
+                // session instead of risking a mis-armed stream.
                 var history = Set<String>()
+                var sendSessionId = bot.sessionId
                 if let sessionId = bot.sessionId, !sessionId.isEmpty {
-                    history = (try? await self.client.historyTurnIds(sessionId: sessionId)) ?? []
+                    do {
+                        history = try await self.client.historyTurnIds(sessionId: sessionId)
+                    } catch {
+                        sendSessionId = nil
+                    }
                 }
                 guard generation == self.sendGeneration else { return }
                 let sessionId = try await self.client.send(
                     botId: bot.id,
-                    sessionId: bot.sessionId,
+                    sessionId: sendSessionId,
                     message: message
                 )
                 guard generation == self.sendGeneration else { return }
@@ -487,7 +508,11 @@ final class AppModel: ObservableObject {
                 turnId: nil
             ))
         }
-        fresh.apply(EveEvent(type: "message.received", id: "local-\(UUID().uuidString)", message: message))
+        fresh.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)\(UUID().uuidString)",
+            message: message
+        ))
         return fresh
     }
 
@@ -497,7 +522,9 @@ final class AppModel: ObservableObject {
         current.bots[index].sessionId = sessionId
         // The optimistic rail preview must match the server's clip; the full
         // text still goes to touchChat for the stored copy.
-        current.bots[index].lastPreview = String(preview.prefix(160))
+        current.bots[index].lastPreview = String(
+            preview.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)
+        )
         current.bots[index].lastAt = RailClock.stamp(Date())
         store = current
         try? await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
@@ -625,9 +652,10 @@ final class AppModel: ObservableObject {
         let previous = saveChain
         saveChain = Task { [weak self] in
             _ = await previous?.value
-            guard let self else { return }
+            guard !Task.isCancelled, let self else { return }
             do {
                 let next = try await self.client.shellAction(ShellActions.updateBot(botId: botId, patch: patch))
+                guard !Task.isCancelled else { return }
                 self.store = next
                 self.saveError = nil
             } catch {
@@ -637,10 +665,15 @@ final class AppModel: ObservableObject {
     }
 
     func perform(_ action: [String: Any]) {
-        Task { [weak self] in
-            guard let self else { return }
+        // Every shell write shares the save chain so two rapid actions cannot
+        // land out of order and stale echoes cannot overwrite newer state.
+        let previous = saveChain
+        saveChain = Task { [weak self] in
+            _ = await previous?.value
+            guard !Task.isCancelled, let self else { return }
             do {
                 let next = try await self.client.shellAction(action)
+                guard !Task.isCancelled else { return }
                 self.applyStore(next)
                 self.saveError = nil
             } catch {
@@ -650,14 +683,24 @@ final class AppModel: ObservableObject {
     }
 
     /// Apply a store the server echoed and keep the local selection honest.
+    /// Never echoes a select back: the store already carries the selection.
     private func applyStore(_ next: ShellStore) {
         store = next
         if let selected = next.selectedBotId, next.bots.contains(where: { $0.id == selected }) {
             if selected != selectedBotId {
-                select(selected)
+                selectedBotId = selected
+                routineNotice = false
+                startReload()
             }
         } else if let current = selectedBotId, !next.bots.contains(where: { $0.id == current }) {
-            select(next.bots.first?.id ?? "")
+            if let first = next.bots.first?.id {
+                selectedBotId = first
+                routineNotice = false
+                startReload()
+            } else {
+                selectedBotId = nil
+                resetThread()
+            }
             return
         }
         rebuildTranscript()
@@ -713,25 +756,37 @@ final class AppModel: ObservableObject {
     /// New Bot from the rail: clear the thread server-side and start fresh.
     func startNewChat(botId: String? = nil) {
         guard let id = botId ?? selectedBotId else { return }
-        // Only the bot being cleared can have an in-flight turn worth
-        // cancelling; a stored session with no turn is left alone.
-        let runningSession = sendBotId == id ? activeSession?.sessionId : nil
+        // Any in-flight turn would repopulate the cleared thread; cancel it
+        // locally and best-effort server-side, whichever bot started it.
+        let runningSession = activeSession?.sessionId
         cancelSend()
+        chatGeneration += 1
+        let generation = chatGeneration
         Task { [weak self] in
             guard let self else { return }
             if let runningSession, !runningSession.isEmpty {
                 _ = try? await self.client.cancel(sessionId: runningSession)
             }
+            guard generation == self.chatGeneration else { return }
             if self.store?.selectedBotId != id {
                 if let next = try? await self.client.shellAction(ShellActions.select(botId: id)) {
+                    guard generation == self.chatGeneration else { return }
                     self.store = next
                 }
             }
-            if let cleared = try? await self.client.shellAction(ShellActions.clearThread(botId: id)) {
+            // A failed clear must not wipe the visible thread; surface it and
+            // let the next poll re-sync.
+            do {
+                let cleared = try await self.client.shellAction(ShellActions.clearThread(botId: id))
+                guard generation == self.chatGeneration else { return }
                 self.store = cleared
+            } catch {
+                self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."
+                return
             }
             self.resetThread()
             self.selectedBotId = id
+            self.attachError = nil
             self.rebuildTranscript()
             self.settingsOpen = false
             self.routinesOpen = false
@@ -844,7 +899,14 @@ final class AppModel: ObservableObject {
     // MARK: - Memory
 
     func loadMemory(botId: String) async {
-        memoryNotes = (try? await client.memoryNotes(botId: botId)) ?? []
+        do {
+            memoryNotes = try await client.memoryNotes(botId: botId)
+            memoryError = nil
+        } catch {
+            // Keep the last notes and show the failure instead of pretending
+            // this bot remembers nothing.
+            memoryError = "Could not load memory."
+        }
     }
 
     // MARK: - Composer attachments
@@ -857,39 +919,46 @@ final class AppModel: ObservableObject {
         let previous = uploadChain
         uploadChain = Task { [weak self] in
             _ = await previous?.value
-            guard let self else { return }
+            guard !Task.isCancelled, let self else { return }
             for url in urls {
+                guard !Task.isCancelled else { return }
                 guard self.attachments.count < Attachments.maxFiles else {
                     self.attachError = "You can attach up to \(Attachments.maxFiles) files."
                     return
                 }
-                if url.hasDirectoryPath {
-                    self.attachError = "Folders cannot be attached."
-                    continue
-                }
-                let accessing = url.startAccessingSecurityScopedResource()
-                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                // Check the size before reading so a huge pick never lands in
-                // memory just to be rejected by the server.
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-                if let size, size > Attachments.maxBytes {
-                    self.attachError = "That file is larger than \(Attachments.maxBytes / 1024) KB."
-                    continue
-                }
-                let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
-                    ?? "application/octet-stream"
-                do {
-                    let attachment = try await self.client.uploadAttachment(fileURL: url, mimeType: type)
+                let outcome = await self.uploadOne(url)
+                if let attachment = outcome.attachment {
                     self.attachments.append(attachment)
                     self.attachError = nil
-                } catch is Attachments.NameError {
-                    self.attachError = "That file name is not allowed."
-                } catch let error as BackendError {
-                    self.attachError = Self.attachmentCopy(error)
-                } catch {
-                    self.attachError = "Attach failed."
+                } else if let message = outcome.error {
+                    self.attachError = message
                 }
             }
+        }
+    }
+
+    /// One pick: own its security scope for exactly this call, check the size
+    /// before reading, and let the client stream the read with a hard cap.
+    private func uploadOne(_ url: URL) async -> (attachment: Attachment?, error: String?) {
+        if url.hasDirectoryPath {
+            return (nil, "Folders cannot be attached.")
+        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+        if let size, size > Attachments.maxBytes {
+            return (nil, "That file is larger than \(Attachments.maxBytes / 1024) KB.")
+        }
+        let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+            ?? "application/octet-stream"
+        do {
+            return (try await client.uploadAttachment(fileURL: url, mimeType: type), nil)
+        } catch is Attachments.NameError {
+            return (nil, "That file name is not allowed.")
+        } catch let error as BackendError {
+            return (nil, Self.attachmentCopy(error))
+        } catch {
+            return (nil, "Attach failed.")
         }
     }
 

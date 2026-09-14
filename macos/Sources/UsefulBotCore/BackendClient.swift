@@ -531,9 +531,15 @@ public actor BackendClient {
     /// Upload one attachment for the composer. The caller is responsible for
     /// the extension/size checks in `Attachments`.
     public func uploadAttachment(fileURL: URL, mimeType: String) async throws -> Attachment {
-        let data = try Data(contentsOf: fileURL)
-        // Backstop for a file whose size could not be read up front (cloud
-        // placeholder, swapped symlink): never upload past the cap.
+        // Bounded read: never let a huge or unknown-size file land in memory
+        // before the cap is enforced.
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var data = Data()
+        while data.count <= Attachments.maxBytes {
+            guard let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty else { break }
+            data.append(chunk)
+        }
         guard data.count <= Attachments.maxBytes else {
             throw BackendError.attachment("attachment_size")
         }
@@ -657,7 +663,7 @@ public actor BackendClient {
                             continuation.yield(event)
                             if finishOnTerminal,
                                ["turn.completed", "turn.cancelled", "turn.failed",
-                                "session.waiting", "session.completed", "session.failed"].contains(event.type) {
+                                "session.completed", "session.failed", "session.cancelled"].contains(event.type) {
                                 continuation.finish()
                                 return
                             }
@@ -672,10 +678,13 @@ public actor BackendClient {
             }
             let watchdog = TaskBox()
             if expectedSuffix == nil {
+                // History replay finishes when the server closes the stream;
+                // this is only a backstop for a hung connection, so it waits
+                // long enough not to truncate a slow large replay.
                 watchdog.set(Task {
                     while !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 400_000_000)
-                        if activity.idle > 1.5 {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        if activity.idle > 3 {
                             continuation.finish()
                             return
                         }

@@ -407,7 +407,11 @@ private struct BotSettingsFields: View {
                 .foregroundStyle(Theme.C.inkMuted)
                 .padding(.top, 4)
             VStack(alignment: .leading, spacing: 8) {
-                if let notes = model.memoryNotes {
+                if let error = model.memoryError {
+                    Text(error)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.danger)
+                } else if let notes = model.memoryNotes {
                     if notes.isEmpty {
                         Text("Nothing remembered for \(bot.name) yet.")
                             .font(.system(size: 14))

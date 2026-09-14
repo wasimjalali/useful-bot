@@ -78,6 +78,7 @@ struct RailView: View {
                 RowMenuPopover(
                     bot: bot,
                     page: $rowMenuPage,
+                    canDelete: (model.store?.bots.count ?? 0) > 1,
                     onPin: {
                         model.perform(ShellActions.pin(botId: bot.id, pinned: !bot.pinned))
                         closeRowMenu()
@@ -434,6 +435,7 @@ enum RowMenuPage {
 struct RowMenuPopover: View {
     let bot: ShellBot
     @Binding var page: RowMenuPage
+    var canDelete = true
     let onPin: () -> Void
     let onMove: (String?) -> Void
     let onSettings: () -> Void
@@ -457,6 +459,7 @@ struct RowMenuPopover: View {
                     .overlay(Theme.C.border)
                     .padding(.vertical, 2)
                 item(icon: "trash", title: "Delete", danger: true, action: onDelete)
+                    .disabled(!canDelete)
             case .sections:
                 item(icon: "chevron.left", title: "Move to section", action: { page = .root })
                 Divider()
