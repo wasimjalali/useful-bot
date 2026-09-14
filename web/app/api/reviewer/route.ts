@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 
 export const runtime = "nodejs";
+
+const REVIEWER_SESSION_ID = randomUUID();
+const REVIEWER_TURN_ID = randomUUID();
 
 function fixtureReview(text: string): string {
   const clipped = text.trim().slice(0, 80) || "(empty)";
@@ -20,6 +24,9 @@ async function liveReview(text: string, token: string): Promise<string> {
     headers: {
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
+      "x-useful-session-id": REVIEWER_SESSION_ID,
+      "x-useful-turn-id": REVIEWER_TURN_ID,
+      "x-useful-request-id": randomUUID(),
     },
     body: JSON.stringify({
       model: "reviewer",
