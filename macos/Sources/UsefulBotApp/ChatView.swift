@@ -70,6 +70,7 @@ struct ChatView: View {
         VStack(spacing: 8) {
             ForEach(model.approvals) { item in
                 let busy = model.busyApprovals.contains(item.id)
+                let canDecide = !busy && !item.actionSha256.isEmpty
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Needs approval")
@@ -86,12 +87,12 @@ struct ChatView: View {
                             .foregroundStyle(Theme.C.inkMuted)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    NativeButton("Approve", kind: .primary, small: true, enabled: !busy) {
-                        model.decideApproval(item, decision: "approve")
+                    NativeButton("Approve", kind: .primary, small: true, enabled: canDecide) {
+                        model.decideApproval(item, decision: .approve)
                     }
                     .accessibilityIdentifier("approval-approve")
-                    NativeButton("Deny", kind: .danger, small: true, enabled: !busy) {
-                        model.decideApproval(item, decision: "deny")
+                    NativeButton("Deny", kind: .danger, small: true, enabled: canDecide) {
+                        model.decideApproval(item, decision: .deny)
                     }
                     .accessibilityIdentifier("approval-deny")
                 }
@@ -425,9 +426,7 @@ private struct SearchChipView: View {
 
     var body: some View {
         Button {
-            if let url = URL(string: chip.url) {
-                NSWorkspace.shared.open(url)
-            }
+            open(chip.url)
         } label: {
             Text(chip.title)
                 .font(.system(size: 13, weight: .semibold))
@@ -444,6 +443,34 @@ private struct SearchChipView: View {
         .pointerOnHover()
         .onHover { hovering = $0 }
         .help(chip.snippet.isEmpty ? chip.url : chip.snippet)
+    }
+
+    /// Tool output must not be able to send the browser at the local server
+    /// with its session cookie, so loopback and private hosts stay unopened.
+    private func open(_ string: String) {
+        guard
+            let url = URL(string: string),
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            let host = url.host,
+            !Self.isLocal(host)
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private static func isLocal(_ host: String) -> Bool {
+        let lowered = host.lowercased()
+        if lowered == "localhost" || lowered.hasSuffix(".localhost") || lowered.hasSuffix(".local") {
+            return true
+        }
+        if lowered == "::1" { return true }
+        let parts = lowered.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else { return false }
+        if parts[0] == 0 || parts[0] == 10 || parts[0] == 127 { return true }
+        if parts[0] == 192, parts[1] == 168 { return true }
+        if parts[0] == 172, (16...31).contains(parts[1]) { return true }
+        if parts[0] == 169, parts[1] == 254 { return true }
+        return false
     }
 }
 

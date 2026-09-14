@@ -124,6 +124,7 @@ struct ComposerView: View {
                                 onOpenProviders()
                             },
                             onSave: { patch in
+                                modeOpen = false
                                 Task {
                                     await model.saveComposer(
                                         modelId: patch.modelId,
@@ -162,7 +163,13 @@ struct ComposerView: View {
                 .foregroundStyle(Theme.C.ink)
                 .lineLimit(1...6)
                 .focused($focused)
-                .onSubmit(send)
+                // Return sends, Shift+Return inserts a newline, matching the web.
+                .onKeyPress(.return, phases: .down) { press in
+                    if press.modifiers.contains(.shift) { return .ignored }
+                    send()
+                    return .handled
+                }
+                .accessibilityLabel(placeholder)
                 .padding(.vertical, 4)
         }
         .frame(minHeight: DesignTokens.Control.composerInput, alignment: .leading)

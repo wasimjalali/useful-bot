@@ -38,8 +38,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 public enum Transcript {
     public static func merge(
         events: [AgentEvent],
-        messages: [ChatMessage],
-        fallbackAuthor: String
+        messages: [ChatMessage]
     ) -> [TranscriptRow] {
         var rows: [TranscriptRow] = []
         var durableUserCounts: [String: Int] = [:]

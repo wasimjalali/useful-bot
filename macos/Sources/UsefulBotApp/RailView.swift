@@ -586,6 +586,7 @@ private struct BotRowView: View {
             }
             .buttonStyle(.plain)
             .pointerOnHover()
+            .accessibilityLabel("Actions for \(bot.name)")
             .background(
                 GeometryReader { proxy in
                     Color.clear

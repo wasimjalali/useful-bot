@@ -7,6 +7,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case decoding
     /// `/api/providers` answered with its own error code.
     case provider(String)
+    /// `/api/attachments` answered with its own error code.
+    case attachment(String)
 
     public var errorDescription: String? {
         switch self {
@@ -20,6 +22,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The local server sent data this app could not read."
         case .provider(let code):
             return code
+        case .attachment(let code):
+            return code
         }
     }
 
@@ -28,6 +32,18 @@ public enum BackendError: Error, LocalizedError, Equatable {
         if case .provider(let code) = self { return code }
         return nil
     }
+
+    /// The `/api/attachments` error code, when the failure came from that route.
+    public var attachmentCode: String? {
+        if case .attachment(let code) = self { return code }
+        return nil
+    }
+}
+
+/// The only decisions the approvals route accepts.
+public enum ApprovalDecision: String, Sendable {
+    case approve
+    case deny
 }
 
 private struct ShellResponse: Decodable { let store: ShellStore }
@@ -242,14 +258,14 @@ public actor BackendClient {
     }
 
     /// Approve or deny one pending action; the hash must match the row.
-    public func decideApproval(id: String, decision: String, hash: String) async throws {
+    public func decideApproval(id: String, decision: ApprovalDecision, hash: String) async throws {
         let (_, response) = try await perform { client, token in
-            var request = URLRequest(url: client.base.appendingPathComponent("api/approvals/\(id)"))
+            var request = URLRequest(url: client.base.appendingPathComponent("api/approvals/\(Self.pathComponent(id))"))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
-                "decision": decision,
+                "decision": decision.rawValue,
                 "actionSha256": hash,
             ])
             return request
@@ -320,7 +336,9 @@ public actor BackendClient {
     /// Ask the proxy to cancel the active turn on a session.
     public func cancel(sessionId: String) async throws {
         let (_, response) = try await perform { client, token in
-            var request = URLRequest(url: client.base.appendingPathComponent("eve/v1/session/\(sessionId)/cancel"))
+            var request = URLRequest(
+                url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/cancel")
+            )
             request.httpMethod = "POST"
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             return request
@@ -500,11 +518,15 @@ public actor BackendClient {
     public func uploadAttachment(fileURL: URL, mimeType: String) async throws -> Attachment {
         let data = try Data(contentsOf: fileURL)
         let name = try Attachments.safeName(fileURL.lastPathComponent)
+        // `UTType.identifier` is a UTI, not a MIME type; only an allow-listed
+        // `type/subtype` may reach the multipart header. The server falls back
+        // to the file extension when the header is generic.
+        let type = Attachments.safeMIME(mimeType) ?? "application/octet-stream"
         let boundary = "useful-bot-\(UUID().uuidString)"
         var body = Data()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(name)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(type)\r\n\r\n".data(using: .utf8)!)
         body.append(data)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         let (responseData, response) = try await perform { client, token in
@@ -517,12 +539,13 @@ public actor BackendClient {
         }
         let decoded = try? JSONDecoder().decode(AttachmentResponse.self, from: responseData)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw BackendError.http(http.statusCode)
+            throw BackendError.attachment(decoded?.error ?? "attachment_failed")
         }
         guard let decoded, let resolvedName = decoded.name, let bytes = decoded.bytes else {
             throw BackendError.decoding
         }
-        return Attachment(id: name, name: resolvedName, bytes: bytes, text: decoded.text)
+        // The server owns the stored name, so it is the identity for removal.
+        return Attachment(id: resolvedName, name: resolvedName, bytes: bytes, text: decoded.text)
     }
 
     // MARK: - Stream
@@ -560,7 +583,7 @@ public actor BackendClient {
                 do {
                     for attempt in 0..<2 {
                         var components = URLComponents(
-                            url: base.appendingPathComponent("eve/v1/session/\(sessionId)/stream"),
+                            url: base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/stream"),
                             resolvingAgainstBaseURL: false
                         )
                         components?.queryItems = [URLQueryItem(name: "startIndex", value: "0")]
@@ -645,5 +668,13 @@ public actor BackendClient {
         guard (200...299).contains(http.statusCode) else {
             throw BackendError.http(http.statusCode)
         }
+    }
+
+    /// Percent-encode one path segment so an id can never add a path, a query
+    /// or a fragment to the request URL.
+    static func pathComponent(_ value: String) -> String {
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/?#")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 }

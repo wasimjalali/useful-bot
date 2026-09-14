@@ -450,11 +450,9 @@ final class AppModel: ObservableObject {
     }
 
     private func rebuildTranscript() {
-        let author = selectedBot?.name ?? "Useful Bot"
         var rows = Transcript.merge(
             events: durableEvents,
-            messages: projection.messages,
-            fallbackAuthor: author
+            messages: projection.messages
         )
         if let bot = selectedBot, bot.isGroup, let store {
             let roster = Threads.groupMembers(
@@ -470,14 +468,22 @@ final class AppModel: ObservableObject {
     // MARK: - Approvals
 
     /// Approve or deny one pending action. The card disappears on success.
-    func decideApproval(_ item: ApprovalItem, decision: String) {
+    func decideApproval(_ item: ApprovalItem, decision: ApprovalDecision) {
+        guard !item.actionSha256.isEmpty else {
+            approvalError = "That approval is missing its hash. Refresh and try again."
+            return
+        }
         guard !busyApprovals.contains(item.id) else { return }
         busyApprovals.insert(item.id)
         approvalError = nil
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.client.decideApproval(id: item.id, decision: decision, hash: item.actionSha256)
+                try await self.client.decideApproval(
+                    id: item.id,
+                    decision: decision,
+                    hash: item.actionSha256
+                )
                 self.approvals.removeAll { $0.id == item.id }
             } catch {
                 self.approvalError = "Approval failed"
@@ -775,17 +781,43 @@ final class AppModel: ObservableObject {
             for url in incoming {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                let type = UTType(filenameExtension: url.pathExtension)?.identifier ?? "application/octet-stream"
+                // Check the size before reading so a huge pick never lands in
+                // memory just to be rejected by the server.
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+                if let size, size > Attachments.maxBytes {
+                    self.attachError = "That file is larger than \(Attachments.maxBytes / 1024) KB."
+                    continue
+                }
+                let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                    ?? "application/octet-stream"
                 do {
                     let attachment = try await self.client.uploadAttachment(fileURL: url, mimeType: type)
                     next.append(attachment)
+                    self.attachError = nil
                 } catch is Attachments.NameError {
                     self.attachError = "That file name is not allowed."
+                } catch let error as BackendError {
+                    self.attachError = Self.attachmentCopy(error)
                 } catch {
                     self.attachError = "Attach failed."
                 }
             }
             self.attachments = next
+        }
+    }
+
+    private static func attachmentCopy(_ error: BackendError) -> String {
+        switch error.attachmentCode {
+        case "attachment_size":
+            return "That file is larger than \(Attachments.maxBytes / 1024) KB."
+        case "attachment_missing":
+            return "That file could not be read."
+        case "csrf":
+            return "The local server rejected the upload. Try again."
+        case let code?:
+            return code.replacingOccurrences(of: "_", with: " ").capitalized
+        case nil:
+            return "Attach failed."
         }
     }
 

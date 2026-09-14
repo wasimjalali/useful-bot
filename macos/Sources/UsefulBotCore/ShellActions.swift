@@ -104,16 +104,18 @@ public enum ProposalActions {
                 "memberIds": proposal.memberIds,
             ]
         case .updateBotProfile:
-            guard let botId = proposal.botId else { return nil }
+            // A missing patch must not become an all-empty profile wipe; the
+            // proposal is simply not confirmable.
+            guard let botId = proposal.botId, let proposalPatch = proposal.patch else { return nil }
             var patch: [String: Any?] = [
-                "name": proposal.patch?.name ?? "",
-                "label": proposal.patch?.title ?? "",
-                "description": proposal.patch?.description ?? "",
+                "name": proposalPatch.name,
+                "label": proposalPatch.title,
+                "description": proposalPatch.description,
             ]
-            if let shape = proposal.patch?.avatarShape, FacePalette.isShape(shape) {
+            if let shape = proposalPatch.avatarShape, FacePalette.isShape(shape) {
                 patch["avatarShape"] = shape
             }
-            if let color = proposal.patch?.avatarColor, FacePalette.isColor(color) {
+            if let color = proposalPatch.avatarColor, FacePalette.isColor(color) {
                 patch["avatarColor"] = color
             }
             return ShellActions.updateBot(botId: botId, patch: patch)
@@ -125,6 +127,8 @@ public enum ProposalActions {
                 "message": proposal.message ?? "",
                 "sourceBotId": proposal.sourceBotId ?? NSNull(),
             ]
+        case .unknown:
+            return nil
         }
     }
 }

@@ -291,13 +291,7 @@ extension View {
     }
 
     func pointerOnHover() -> some View {
-        onHover { inside in
-            if inside {
-                NSCursor.pointingHand.push()
-            } else {
-                NSCursor.pop()
-            }
-        }
+        modifier(PointerOnHover())
     }
 
     func stageShadow() -> some View {
@@ -316,6 +310,31 @@ extension View {
 
     func smShadow() -> some View {
         shadow(color: Theme.shadow(DesignTokens.Shadow.sm), radius: Theme.radius(DesignTokens.Shadow.sm), x: 0, y: DesignTokens.Shadow.sm.y)
+    }
+}
+
+/// Pushes the pointing hand only while the view is hovered and pops it when
+/// the view disappears under the cursor, so the pushed cursor cannot stick.
+private struct PointerOnHover: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                guard inside != hovering else { return }
+                hovering = inside
+                if inside {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .onDisappear {
+                if hovering {
+                    hovering = false
+                    NSCursor.pop()
+                }
+            }
     }
 }
 

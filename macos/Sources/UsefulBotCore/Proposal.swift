@@ -9,6 +9,9 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         case createGroup
         case updateBotProfile
         case fanout
+        /// A kind this build does not know. It renders as unsupported and can
+        /// never be confirmed; it must not collapse into a known action.
+        case unknown
     }
 
     public struct ProfilePatch: Decodable, Equatable, Sendable {
@@ -41,7 +44,7 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
-        kind = Kind(rawValue: (try? c.decode(String.self, forKey: .kind)) ?? "") ?? .fanout
+        kind = Kind(rawValue: (try? c.decode(String.self, forKey: .kind)) ?? "") ?? .unknown
         status = (try? c.decode(String.self, forKey: .status)) ?? "pending"
         expiresAt = (try? c.decode(String.self, forKey: .expiresAt)) ?? ""
         name = try? c.decodeIfPresent(String.self, forKey: .name)

@@ -60,4 +60,22 @@ import Testing
         """)
         #expect(!dismissed.isOpen())
     }
+
+    @Test func unknownKindsNeverConfirm() throws {
+        let proposal = try decode("""
+        {"id":"p7","kind":"teleportBot","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "targetIds":["b1"],"message":"go"}
+        """)
+        #expect(proposal.kind == .unknown)
+        #expect(ProposalActions.confirm(proposal) == nil)
+    }
+
+    @Test func profileProposalWithoutAPatchNeverConfirms() throws {
+        let proposal = try decode("""
+        {"id":"p8","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "botId":"b1","patch":null}
+        """)
+        #expect(proposal.patch == nil)
+        #expect(ProposalActions.confirm(proposal) == nil)
+    }
 }

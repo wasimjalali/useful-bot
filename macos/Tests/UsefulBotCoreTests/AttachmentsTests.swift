@@ -40,4 +40,20 @@ import Testing
     @Test func emptyTextWithNoFilesTrimsToEmpty() {
         #expect(Attachments.formatMessage("   ", files: []) == "")
     }
+
+    @Test func safeMIMELowercasesEssenceAndRejectsUTIs() {
+        #expect(Attachments.safeMIME("Text/Plain; charset=utf-8") == "text/plain")
+        #expect(Attachments.safeMIME("application/json") == "application/json")
+        #expect(Attachments.safeMIME("public.plain-text") == nil)
+        #expect(Attachments.safeMIME("text/plain\r\nX-Injected: 1") == nil)
+        #expect(Attachments.safeMIME("") == nil)
+    }
+
+    @Test func messageFenceOutgrowsFencesInTheBody() {
+        let body = "see\n```\nnot a close\n```\n"
+        let files = [Attachment(id: "1", name: "notes.md", bytes: 30, text: body)]
+        let text = Attachments.formatMessage("read", files: files)
+        #expect(text.contains("Attached file: notes.md\n````\n"))
+        #expect(text.contains("````\n\(body)\n````"))
+    }
 }

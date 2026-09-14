@@ -343,7 +343,7 @@ struct AppSettingsView: View {
                                 .foregroundStyle(Theme.C.inkMuted)
                         }
                         Spacer(minLength: 0)
-                        settingsValue(chipName)
+                        settingsValue(Self.chipName)
                     }
                     settingsRow(last: true) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -364,7 +364,7 @@ struct AppSettingsView: View {
 
     /// `machdep.cpu.brand_string` reports the real chip ("Apple M2 Max",
     /// "Intel(R) Core(TM) i7...") instead of the web's hardcoded platform.
-    private var chipName: String {
+    private static let chipName: String = {
         var size = 0
         guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 0 else {
             return "This Mac"
@@ -374,7 +374,7 @@ struct AppSettingsView: View {
             return "This Mac"
         }
         return String(cString: buffer)
-    }
+    }()
 
     // MARK: - Usage
 

@@ -130,6 +130,21 @@ struct RootView: View {
                 )
                 .transition(.opacity)
             }
+
+            if sectionPromptOpen {
+                PromptDialog(
+                    title: "Create section",
+                    label: "Section name",
+                    initial: "",
+                    submitLabel: "Create section",
+                    onClose: { sectionPromptOpen = false },
+                    onSubmit: { name in
+                        model.createSection(name: name)
+                        sectionPromptOpen = false
+                    }
+                )
+                .transition(.opacity)
+            }
         }
         .background(Theme.C.canvas)
         .environment(\.colorScheme, .light)
@@ -225,21 +240,6 @@ struct RootView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.stage, style: .continuous))
-        .overlay {
-            if sectionPromptOpen {
-                PromptDialog(
-                    title: "Create section",
-                    label: "Section name",
-                    initial: "",
-                    submitLabel: "Create section",
-                    onClose: { sectionPromptOpen = false },
-                    onSubmit: { name in
-                        model.createSection(name: name)
-                        sectionPromptOpen = false
-                    }
-                )
-            }
-        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

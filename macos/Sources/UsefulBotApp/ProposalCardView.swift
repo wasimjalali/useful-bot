@@ -98,6 +98,19 @@ struct ProposalCardView: View {
                     confirmDisabled: targetId == nil
                 )
             }
+        case .unknown:
+            card(title: "Unsupported proposal", tone: .plain) {
+                Text("This app does not know how to confirm this proposal yet. Update Useful Bot and try again.")
+                    .font(.system(size: 13))
+                    .lineSpacing(3)
+                    .foregroundStyle(Theme.C.inkMuted)
+                HStack(spacing: 8) {
+                    NativeButton("Dismiss", kind: .secondary, small: true, enabled: !pending) {
+                        onDecision(false)
+                    }
+                }
+                .padding(.top, 14)
+            }
         }
     }
 

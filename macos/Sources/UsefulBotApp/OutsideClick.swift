@@ -106,6 +106,7 @@ private struct WindowFrameReader: NSViewRepresentable {
     final class FrameObserver: NSView {
         var onChange: ((CGRect, NSWindow?) -> Void)?
         private var scrollObserver: Any?
+        private weak var observedScroll: NSScrollView?
 
         override func layout() {
             super.layout()
@@ -127,9 +128,17 @@ private struct WindowFrameReader: NSViewRepresentable {
 
         /// A trigger that lives in a ScrollView moves in window coordinates
         /// when the content scrolls, and neither a layout nor a window change
-        /// fires then, so the stored frame would go stale.
+        /// fires then, so the stored frame would go stale. Re-target when the
+        /// view lands in a different scroll view.
         private func observeEnclosingScroll() {
-            guard scrollObserver == nil, let scroll = enclosingScrollView else { return }
+            let scroll = enclosingScrollView
+            guard scroll !== observedScroll else { return }
+            if let scrollObserver {
+                NotificationCenter.default.removeObserver(scrollObserver)
+                self.scrollObserver = nil
+            }
+            observedScroll = scroll
+            guard let scroll else { return }
             scroll.contentView.postsBoundsChangedNotifications = true
             scrollObserver = NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification,
@@ -140,13 +149,6 @@ private struct WindowFrameReader: NSViewRepresentable {
                     self?.report()
                 }
             }
-        }
-
-        private func removeScrollObserver() {
-            if let scrollObserver {
-                NotificationCenter.default.removeObserver(scrollObserver)
-            }
-            scrollObserver = nil
         }
 
         private func report() {
