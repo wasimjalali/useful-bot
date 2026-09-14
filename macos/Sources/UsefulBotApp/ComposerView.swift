@@ -18,8 +18,13 @@ struct ComposerView: View {
     @State private var plusOpen = false
     @State private var modeOpen = false
     @State private var showFileImporter = false
+    @State private var showFolderImporter = false
+    @State private var projectOpen = false
+    @State private var permissionOpen = false
     @State private var plusButtonFrame = CGRect.zero
     @State private var modeChipFrame = CGRect.zero
+    @State private var projectChipFrame = CGRect.zero
+    @State private var permissionChipFrame = CGRect.zero
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -32,6 +37,7 @@ struct ComposerView: View {
                     .padding(.bottom, 8)
             }
             field
+            contextRow
         }
         .padding(.top, DesignTokens.Space.composerTop)
         .padding(.bottom, DesignTokens.Space.composerBottom)
@@ -45,14 +51,31 @@ struct ComposerView: View {
             case .failure: model.attachError = "That file could not be read."
             }
         }
+        .fileImporter(
+            isPresented: $showFolderImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    model.setWorkspaceFolder(url)
+                }
+            case .failure: model.workspaceError = "That folder could not be read."
+            }
+        }
         .onExitCommand {
             plusOpen = false
             modeOpen = false
+            projectOpen = false
+            permissionOpen = false
         }
         .onChange(of: bot.id) { _, _ in
             // The menus belong to the bot they opened for.
             plusOpen = false
             modeOpen = false
+            projectOpen = false
+            permissionOpen = false
         }
     }
 
@@ -64,7 +87,9 @@ struct ComposerView: View {
         !Attachments.formatMessage(model.draft, files: model.attachments).isEmpty
     }
 
-    private var stacked: Bool { !model.attachments.isEmpty }
+    private var workspace: BotWorkspace? { model.selectedBot?.workspace }
+
+    private var stacked: Bool { !model.attachments.isEmpty || workspace != nil }
 
     private var field: some View {
         VStack(spacing: 0) {
@@ -72,10 +97,8 @@ struct ComposerView: View {
                 if stacked { attachmentsRow }
                 HStack(alignment: .bottom, spacing: 8) {
                     plusButton
-                    if stacked { modeChip.padding(.bottom, 2) }
                     input
                     Spacer(minLength: 0)
-                    if !stacked { modeChip.padding(.bottom, 2) }
                     sendButton.padding(.bottom, 2)
                 }
             }
@@ -113,6 +136,10 @@ struct ComposerView: View {
                             onAttach: {
                                 plusOpen = false
                                 showFileImporter = true
+                            },
+                            onAttachFolder: {
+                                plusOpen = false
+                                showFolderImporter = true
                             },
                             onConnectors: {
                                 plusOpen = false
@@ -160,7 +187,69 @@ struct ComposerView: View {
             }
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: plusOpen)
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: modeOpen)
+            // `.composer-project-card` opens above the leading edge.
+            .overlay(alignment: .topLeading) {
+                if projectOpen {
+                    VStack(spacing: 0) {
+                        ProjectMenu(
+                            projects: model.workspaceProjects,
+                            currentPath: workspace?.path,
+                            onPick: { path in
+                                projectOpen = false
+                                model.setWorkspaceFolder(URL(fileURLWithPath: path))
+                            },
+                            onNew: {
+                                projectOpen = false
+                                showFolderImporter = true
+                            },
+                            onRemove: { id in
+                                model.removeWorkspaceProject(id: id)
+                            }
+                        )
+                        .fixedSize()
+                        .dismissOnOutsideClick(triggers: { [projectChipFrame] }) { projectOpen = false }
+                        Spacer(minLength: 8)
+                    }
+                    .frame(height: 0, alignment: .bottom)
+                    .transition(.opacity)
+                }
+            }
+            // `.composer-permission-card` opens beside it, above the composer.
+            .overlay(alignment: .topLeading) {
+                if permissionOpen {
+                    VStack(spacing: 0) {
+                        PermissionMenu(
+                            permission: workspace?.permission,
+                            finalConfirm: workspace?.finalConfirm ?? false,
+                            onPermission: { id in
+                                model.setWorkspacePermission(id)
+                                permissionOpen = false
+                            },
+                            onFinalConfirm: { model.setWorkspaceFinalConfirm(!(workspace?.finalConfirm ?? false)) }
+                        )
+                        .fixedSize()
+                        .dismissOnOutsideClick(triggers: { [permissionChipFrame] }) { permissionOpen = false }
+                        Spacer(minLength: 8)
+                    }
+                    .frame(height: 0, alignment: .bottom)
+                    .padding(.leading, 132)
+                    .transition(.opacity)
+                }
+            }
         }
+    }
+
+    /// The chip row under the composer: working folder, permission, and the
+    /// model/effort chip the reference layout keeps under the field.
+    private var contextRow: some View {
+        HStack(spacing: 10) {
+            projectChip
+            permissionChip
+            Spacer(minLength: 0)
+            modeChip
+        }
+        .padding(.top, 6)
+        .padding(.horizontal, 2)
     }
 
     private var input: some View {
@@ -205,6 +294,8 @@ struct ComposerView: View {
     private var plusButton: some View {
         Button {
             modeOpen = false
+            projectOpen = false
+            permissionOpen = false
             plusOpen.toggle()
         } label: {
             Image(systemName: "plus")
@@ -217,12 +308,73 @@ struct ComposerView: View {
         .buttonStyle(PlusButtonStyle())
         .pointerOnHover()
         .trackWindowFrame($plusButtonFrame)
-        .accessibilityLabel("Attach a file or open connectors")
+        .accessibilityLabel("Attach a file, attach a folder, or open connectors")
+    }
+
+    private var projectChip: some View {
+        Button {
+            plusOpen = false
+            permissionOpen = false
+            modeOpen = false
+            if !projectOpen {
+                Task { await model.loadWorkspaceProjects() }
+            }
+            projectOpen.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "externalDrive.fill")
+                    .font(.system(size: 12))
+                Text(workspace?.folderName ?? "Project")
+                    .lineLimit(1)
+                    .frame(maxWidth: 140, alignment: .leading)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
+            .foregroundStyle(Theme.C.inkMuted)
+            .frame(height: DesignTokens.Control.composerInput)
+        }
+        .buttonStyle(ModeChipStyle())
+        .pointerOnHover()
+        .trackWindowFrame($projectChipFrame)
+        .accessibilityLabel("Working folder for this conversation")
+    }
+
+    private var permissionChip: some View {
+        Button {
+            plusOpen = false
+            projectOpen = false
+            modeOpen = false
+            permissionOpen.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: permissionIcon(workspace?.permission))
+                    .font(.system(size: 12))
+                Text(workspace?.permissionLabel ?? "Permission")
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
+            .foregroundStyle(workspace?.isFullAccess == true ? Theme.C.accentStrong : Theme.C.inkMuted)
+            .frame(height: DesignTokens.Control.composerInput)
+        }
+        .buttonStyle(ModeChipStyle())
+        .pointerOnHover()
+        .trackWindowFrame($permissionChipFrame)
+        .accessibilityLabel("What the bot may do in the working folder")
+    }
+
+    private func permissionIcon(_ permission: String?) -> String {
+        guard let permission else { return "lock.shield" }
+        return PermissionMenu.options.first { $0.id == permission }?.icon ?? "lock.shield"
     }
 
     private var modeChip: some View {
         Button {
             plusOpen = false
+            projectOpen = false
+            permissionOpen = false
             modeOpen.toggle()
         } label: {
             HStack(spacing: 4) {
@@ -279,6 +431,40 @@ struct ComposerView: View {
         // Chips wrap like the transcript's search chips; a plain row clipped
         // once three or more files were attached.
         WrapHStack(spacing: 8) {
+            if let ws = workspace {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.C.accentStrong)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(ws.folderName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.C.ink)
+                            .lineLimit(1)
+                            .frame(maxWidth: 160, alignment: .leading)
+                        Text(folderCountLabel)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.C.inkFaint)
+                            .lineLimit(1)
+                    }
+                    Button {
+                        model.clearWorkspaceFolder()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Detach folder")
+                }
+                .padding(.leading, 10)
+                .padding(.trailing, 6)
+                .frame(height: 32)
+                .background(Theme.C.sunken)
+                .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
+                .clipShape(Capsule())
+            }
             ForEach(model.attachments) { file in
                 HStack(spacing: 6) {
                     Text(file.name)
@@ -308,9 +494,26 @@ struct ComposerView: View {
         .padding(.top, 2)
     }
 
+    private var folderCountLabel: String {
+        guard let botId = model.selectedBotId,
+              let count = model.folderItemCount[botId] else {
+            return wsPathLabel
+        }
+        return "\(count) item\(count == 1 ? "" : "s")"
+    }
+
+    private var wsPathLabel: String {
+        workspace?.path ?? ""
+    }
+
     private func send() {
         guard canSend, !model.pending else { return }
-        let message = Attachments.formatMessage(model.draft, files: model.attachments)
+        var message = Attachments.formatMessage(model.draft, files: model.attachments)
+        // The grant travels by session, not by message; this line tells the
+        // model the folder is there and what to do with it.
+        if let ws = workspace {
+            message += "\n\nAttached project folder: \(ws.folderName) — work inside \(ws.path)"
+        }
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.
@@ -355,18 +558,25 @@ private struct ModeChipStyle: ButtonStyle {
     }
 }
 
-/// `.composer-plus-menu`: attach file and connectors, above the plus button.
+/// `.composer-plus-menu`: photos and files, a folder, and connectors.
 private struct PlusMenu: View {
     let onAttach: () -> Void
+    let onAttachFolder: () -> Void
     let onConnectors: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             item(
-                icon: "folder",
-                title: "Attach file",
-                subtitle: "Add a file to this message",
+                icon: "paperclip",
+                title: "Upload photos & file",
+                subtitle: "Add files to this message",
                 action: onAttach
+            )
+            item(
+                icon: "folder",
+                title: "Attach folder",
+                subtitle: "Let the bot work in a folder",
+                action: onAttachFolder
             )
             item(
                 icon: "square.grid.2x2",
@@ -407,6 +617,161 @@ private struct PlusMenu: View {
             .frame(minHeight: 44)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// `.composer-project-card`: the folder recents plus New project.
+private struct ProjectMenu: View {
+    let projects: [ProjectEntry]
+    let currentPath: String?
+    let onPick: (_ path: String) -> Void
+    let onNew: () -> Void
+    let onRemove: (_ id: String) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Projects")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.C.inkFaint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+            ScrollView {
+                VStack(spacing: 0) {
+                    if projects.isEmpty {
+                        Text("Folders you work in show up here")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.C.inkFaint)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(projects) { project in
+                        MenuRowButton(action: { onPick(project.path) }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.C.inkMuted)
+                                Text(project.name)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.C.ink)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                if project.path == currentPath {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.C.inkMuted)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+            Rectangle()
+                .fill(Theme.C.border)
+                .frame(height: 1)
+            MenuRowButton(action: onNew) {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Text("New project")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 248)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .popShadow()
+    }
+}
+
+/// `.composer-permission-card`: what the bot may do in the granted folder.
+private struct PermissionMenu: View {
+    let permission: String?
+    let finalConfirm: Bool
+    let onPermission: (_ id: String) -> Void
+    let onFinalConfirm: () -> Void
+
+    static let options: [(id: String, label: String, icon: String)] = [
+        ("read_only", "Read only", "book"),
+        ("guard", "Guard", "lock.shield"),
+        ("full_access", "Full access", "checkmark.shield"),
+    ]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Permission")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.C.inkFaint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+            ForEach(Self.options, id: \.id) { option in
+                MenuRowButton(action: { onPermission(option.id) }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: option.icon)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .frame(width: 18)
+                        Text(option.label)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.ink)
+                        Spacer(minLength: 0)
+                        if permission == option.id {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Rectangle()
+                .fill(Theme.C.border)
+                .frame(height: 1)
+            MenuRowButton(action: onFinalConfirm) {
+                HStack {
+                    Image(systemName: "flag")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Text("Final confirm")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                    Spacer(minLength: 0)
+                    SwitchVisual(isOn: finalConfirm)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 248)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .popShadow()
     }
 }
 

@@ -3,8 +3,7 @@ import Foundation
 /// Wire types for the local web server. Decoding is tolerant: a field a newer
 /// server adds is ignored, and a field this client doesn't know yet falls back
 /// to a safe default instead of failing the whole store.
-public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
-    public let id: String
+public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public let id: String
     public let kind: String
     public var name: String
     public var petname: String?
@@ -22,6 +21,7 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
     public var avatarColor: String
     public var avatarImage: String?
     public var avatarCustom: Bool
+    public var workspace: BotWorkspace?
 
     public var isGroup: Bool { kind == "group" }
 
@@ -29,6 +29,7 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
         case id, kind, name, petname, label, description, notify, pinned, hidden
         case sectionId, sessionId, memberIds, lastPreview, lastAt
         case avatarShape, avatarColor, avatarImage, avatarCustom
+        case workspace
     }
 
     public init(from decoder: Decoder) throws {
@@ -51,6 +52,61 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {
         avatarColor = (try? c.decode(String.self, forKey: .avatarColor)) ?? "ink"
         avatarImage = try? c.decodeIfPresent(String.self, forKey: .avatarImage)
         avatarCustom = (try? c.decode(Bool.self, forKey: .avatarCustom)) ?? false
+        workspace = try? c.decodeIfPresent(BotWorkspace.self, forKey: .workspace)
+    }
+}
+
+/// One folder in the composer's project recents.
+public struct ProjectEntry: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let path: String
+    public let name: String
+    public let lastUsedAt: String
+}
+
+struct WorkspaceProjectsResponse: Codable {
+    let ok: Bool
+    let projects: [ProjectEntry]
+}
+
+/// The folder this conversation works in, as the shell store carries it.
+/// `permission` stays a string here: an unknown value from a newer server
+/// renders as its raw word instead of failing the whole store.
+public struct BotWorkspace: Codable, Equatable, Sendable {
+    public let path: String
+    public let permission: String
+    public var finalConfirm: Bool
+
+    public var folderName: String {
+        (path as NSString).lastPathComponent
+    }
+
+    public var isReadOnly: Bool { permission == "read_only" }
+    public var isFullAccess: Bool { permission == "full_access" }
+
+    public var permissionLabel: String {
+        switch permission {
+        case "read_only": return "Read only"
+        case "full_access": return "Full access"
+        default: return "Guard"
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case path, permission, finalConfirm
+    }
+
+    public init(path: String, permission: String, finalConfirm: Bool) {
+        self.path = path
+        self.permission = permission
+        self.finalConfirm = finalConfirm
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = (try? c.decode(String.self, forKey: .path)) ?? ""
+        permission = (try? c.decode(String.self, forKey: .permission)) ?? "guard"
+        finalConfirm = (try? c.decode(Bool.self, forKey: .finalConfirm)) ?? false
     }
 }
 

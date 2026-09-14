@@ -855,6 +855,9 @@ final class AppModel: ObservableObject {
     private func applyStore(_ next: ShellStore) {
         store = next
         reconcileSelection(next)
+        if let bot = selectedBot {
+            refreshFolderCount(for: bot)
+        }
         rebuildTranscript()
     }
 
@@ -1353,5 +1356,119 @@ final class AppModel: ObservableObject {
     func clearAttachments() {
         attachments = []
         attachError = nil
+    }
+
+    // MARK: - Working folder
+
+    @Published private(set) var workspaceProjects: [ProjectEntry] = []
+    @Published var workspaceError: String?
+    /// Top-level item counts for the attached-folder chip, keyed by bot id.
+    /// Volatile on purpose: a count is cheap to recompute and never durable.
+    @Published private(set) var folderItemCount: [String: Int] = [:]
+
+    /// Attach a folder the bot works in. The owner picked it in a native
+    /// picker, so the absolute path is the grant; the permission carries over
+    /// from an earlier pick or starts at Guard.
+    func setWorkspaceFolder(_ url: URL) {
+        guard let bot = selectedBot else { return }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            workspaceError = "That folder could not be read."
+            return
+        }
+        workspaceError = nil
+        let existing = liveBot(bot).workspace
+        let workspace = BotWorkspace(
+            path: url.path,
+            permission: existing?.permission ?? "guard",
+            finalConfirm: existing?.finalConfirm ?? false
+        )
+        folderItemCount[bot.id] = folderEntryCount(of: url)
+        dispatchWorkspace(workspace, botId: bot.id)
+        // Recents are best effort: a missed write only loses a menu entry.
+        enqueue { [weak self] in
+            _ = try? await self?.client.addWorkspaceProject(path: url.path)
+            await self?.loadWorkspaceProjects()
+        }
+    }
+
+    func clearWorkspaceFolder() {
+        guard let bot = selectedBot else { return }
+        workspaceError = nil
+        folderItemCount[bot.id] = nil
+        dispatchWorkspace(nil, botId: bot.id)
+    }
+
+    func setWorkspacePermission(_ permission: String) {
+        guard let bot = selectedBot,
+              let workspace = liveBot(bot).workspace else { return }
+        workspaceError = nil
+        dispatchWorkspace(
+            BotWorkspace(path: workspace.path, permission: permission, finalConfirm: workspace.finalConfirm),
+            botId: bot.id
+        )
+    }
+
+    func setWorkspaceFinalConfirm(_ on: Bool) {
+        guard let bot = selectedBot,
+              let workspace = liveBot(bot).workspace else { return }
+        workspaceError = nil
+        dispatchWorkspace(
+            BotWorkspace(path: workspace.path, permission: workspace.permission, finalConfirm: on),
+            botId: bot.id
+        )
+    }
+
+    private func dispatchWorkspace(_ workspace: BotWorkspace?, botId: String) {
+        let epoch = storeEpoch
+        enqueue { [weak self] in
+            guard let self else { return }
+            do {
+                let next = try await self.client.shellAction(
+                    ShellActions.setWorkspace(botId: botId, workspace: workspace)
+                )
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
+                self.applyStore(next)
+            } catch {
+                self.workspaceError = (error as? LocalizedError)?.errorDescription ?? "That folder change failed."
+            }
+        }
+    }
+
+    func loadWorkspaceProjects() async {
+        if let projects = try? await client.workspaceProjects() {
+            workspaceProjects = projects
+        }
+    }
+
+    func removeWorkspaceProject(id: String) {
+        enqueue { [weak self] in
+            guard let self else { return }
+            _ = try? await self.client.removeWorkspaceProject(id: id)
+            await self.loadWorkspaceProjects()
+        }
+    }
+
+    /// Recompute a folder chip count the store came back without one, so a
+    /// restart shows "N items" again instead of a bare name.
+    func refreshFolderCount(for bot: ShellBot) {
+        guard let path = bot.workspace?.path, folderItemCount[bot.id] == nil else { return }
+        let botId = bot.id
+        Task { @MainActor [weak self] in
+            let count = self?.folderEntryCount(of: URL(fileURLWithPath: path))
+            if let count, self?.folderItemCount[botId] == nil {
+                self?.folderItemCount[botId] = count
+            }
+        }
+    }
+
+    /// Shallow count of a folder's entries; nil when the folder vanished.
+    private func folderEntryCount(of url: URL) -> Int? {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil
+        ))
+        return entries?.count
     }
 }
