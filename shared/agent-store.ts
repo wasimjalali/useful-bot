@@ -24,8 +24,13 @@ import { dirname, join } from "node:path";
 export const AGENT_SCHEMA = 1;
 export const EVENT_CAP_PER_THREAD = 300;
 export const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
-const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
+/**
+ * Stale below timeout, or one crashed holder makes every writer fail for the
+ * whole stale window instead of clearing the corpse. The gap between them is
+ * the margin a live holder gets before its lock is stolen mid-fsync.
+ */
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 3000;
 const TEXT_MAX = 4000;
 
 export type ThreadKind = "bot" | "group";
@@ -615,13 +620,20 @@ export function deleteThread(botId: string, path = agentStorePath()): boolean {
  */
 export function sweepOrphanThreads(liveBotIds: Iterable<string>, path = agentStorePath()): string[] {
   const live = new Set<string>();
-  for (const botId of liveBotIds) live.add(threadIdFor(botId));
+  for (const botId of liveBotIds) {
+    live.add(botId);
+    live.add(threadIdFor(botId));
+  }
   // An empty roster reads as a failed shell load, not as an empty app.
   if (live.size === 0) return [];
+  // Either field is enough. `upsertThread` keeps `id` and `botId` equal, but a
+  // hand-edited or migrated row where they diverge still belongs to a live bot
+  // and must not be deleted on a technicality.
+  const owned = (thread: AgentThread) => live.has(thread.id) || live.has(thread.botId);
   return withAgentStore((store) => {
-    const orphans = store.threads.filter((thread) => !live.has(thread.id));
+    const orphans = store.threads.filter((thread) => !owned(thread));
     if (orphans.length === 0) return [];
-    store.threads = store.threads.filter((thread) => live.has(thread.id));
+    store.threads = store.threads.filter(owned);
     return orphans.map((thread) => thread.id);
   }, path);
 }

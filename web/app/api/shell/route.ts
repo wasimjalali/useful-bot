@@ -33,8 +33,8 @@ export async function GET(request: Request) {
  *    member bot and touches both sides of every transcript;
  *  - clearing a thread drops that bot's agent transcript with its eve session.
  *
- * Deleting a bot is not here: see `detachBot`, which has to run before the
- * roster commit rather than after it.
+ * Deleting a bot is not here: see `detachBot`, which runs after the roster
+ * commit and reports its own failure rather than being swallowed.
  */
 function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): number {
   if (!action) return 0;
@@ -81,13 +81,20 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
  * than swallow it the way this path used to.
  */
 function detachBot(botId: string): string | null {
+  const errors: string[] = [];
+  // Independently: a locked routines store is no reason to leave the
+  // transcript behind as well, and the caller needs to hear about both.
   try {
     deleteRoutinesForBot(botId);
-    deleteThread(botId);
-    return null;
   } catch (err) {
-    return errorCode(err, "detach_failed");
+    errors.push(`routines:${errorCode(err, "detach_failed")}`);
   }
+  try {
+    deleteThread(botId);
+  } catch (err) {
+    errors.push(`transcript:${errorCode(err, "detach_failed")}`);
+  }
+  return errors.length > 0 ? errors.join(",") : null;
 }
 
 /** The action a card sends must match every field the proposal carried. */
@@ -234,7 +241,10 @@ export async function PUT(request: Request) {
         /* the shell action already landed; the handoff pump reports the rest */
       }
     }
-    if (claimed) {
+    // Not for a delete: `appendAgentEvent` upserts, so noting a confirmed
+    // delete on the deleted bot's own thread would rebuild the row the
+    // teardown just removed, and the sweep would have to remove it again.
+    if (claimed && action?.type !== "deleteBot") {
       try {
         noteProposal(claimed, body.action, queued);
       } catch {

@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyShellAction, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
-import { appendAgentEvent, listThreadEvents, readProposal, sweepOrphanThreads } from "../shared/agent-store.ts";
+import {
+  appendAgentEvent,
+  listThreadEvents,
+  readAgentStore,
+  readProposal,
+  sweepOrphanThreads,
+} from "../shared/agent-store.ts";
 import { HANDOFF_DEPTH_MAX, listHandoffs, queueHandoff } from "../shared/handoffs.ts";
 import { UNTRUSTED_PREAMBLE, wrapUntrusted } from "../shared/untrusted.ts";
 import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
@@ -839,9 +845,11 @@ test("deleteBot takes the bot's transcript with it", async () => {
 
     assert.equal(result.status, "deleted");
     assert.equal(result.detachError, null);
-    // The card promises the transcript goes too, so the row must be gone, not
-    // just emptied.
-    assert.equal(listThreadEvents(research).length, 0);
+    // The card promises the transcript goes too, so the row itself must be
+    // gone. `listThreadEvents` returns [] for an emptied row as well, so it
+    // cannot tell `deleteThread` from `clearThread`: read the store.
+    assert.equal(readAgentStore().threads.some((thread) => thread.botId === research), false);
+    // And nothing is left for the sweep to find afterwards.
     assert.deepEqual(sweepOrphanThreads(readShell().bots.map((bot) => bot.id)), []);
   } finally {
     box.restore();

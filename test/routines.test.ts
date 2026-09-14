@@ -29,6 +29,7 @@ import {
   zonedWallToUtc,
   type Routine,
 } from "../shared/routines-store.ts";
+import { peekShell, readShell } from "../shared/shell-io.ts";
 
 function sandbox(): { path: string; restore: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "ub-routines-"));
@@ -473,12 +474,14 @@ test("a pass that changes nothing does not rewrite the file", () => {
       instruction: "x",
       schedules: [{ kind: "daily", time: "09:00" }],
     });
-    const before = statSync(box.path).mtimeMs;
-    const bytes = readFileSync(box.path, "utf8");
+    // The write path replaces the file, so the inode is the proof: identical
+    // bytes would survive a rewrite, and mtime is filesystem-granular.
+    const before = statSync(box.path);
     // Nothing is due, so the claim returns null without touching the document.
     assert.equal(claimDueRoutine("rtn_missing", new Date("2026-09-14T12:00:00.000Z")), null);
-    assert.equal(statSync(box.path).mtimeMs, before);
-    assert.equal(readFileSync(box.path, "utf8"), bytes);
+    const after = statSync(box.path);
+    assert.equal(after.ino, before.ino);
+    assert.equal(after.mtimeMs, before.mtimeMs);
   } finally {
     box.restore();
   }
@@ -543,9 +546,26 @@ test("routines whose bot is gone are swept, and an empty roster sweeps nothing",
     assert.equal(readRoutinesStore().routines.length, 2);
     assert.deepEqual(sweepOrphanRoutines(["bot-a"]), [orphan.id]);
     assert.deepEqual(readRoutinesStore().routines.map((item) => item.id), [live.id]);
-    // Idempotent: a second sweep finds nothing and rewrites nothing.
+    // Idempotent, and it really does not rewrite: a sweep that found nothing
+    // must leave the same file behind, not an identical copy of it.
+    const before = statSync(box.path);
     assert.deepEqual(sweepOrphanRoutines(["bot-a"]), []);
+    assert.equal(statSync(box.path).ino, before.ino);
   } finally {
     box.restore();
   }
+});
+
+test("peekShell refuses to repair, so a sweep never runs against a reseed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-shell-peek-"));
+  const path = join(dir, "shell.json");
+  // Missing and corrupt both read as "no roster", which is what stops the
+  // sweep deleting every bot's data against a freshly seeded single-bot store.
+  assert.equal(peekShell(path), null);
+  writeFileSync(path, "{ not json");
+  assert.equal(peekShell(path), null);
+  // And the repairing read is left exactly as it was: it still reseeds.
+  assert.equal(readShell(path).bots.length > 0, true);
+  // Which peekShell now reads back, because the file is valid again.
+  assert.equal(peekShell(path)?.bots.length, readShell(path).bots.length);
 });

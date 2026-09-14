@@ -20,6 +20,23 @@ export function defaultShellPath(): string {
   return join(homedir(), ".useful-bot", "shell.json");
 }
 
+/**
+ * Read the roster without repairing it. `readShell` treats an unreadable file
+ * as a reason to reseed, which is right for the app (an owner with a broken
+ * store still gets a working app) and catastrophic for anything that deletes
+ * by absence: a reseeded roster holds one bot, so a caller that trusts it
+ * would decide every other bot's routines and transcripts are orphans. Callers
+ * that delete must use this and do nothing when it returns null.
+ */
+export function peekShell(path = defaultShellPath()): ShellStore | null {
+  if (!existsSync(path)) return null;
+  try {
+    return parseShell(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
 export function readShell(path = defaultShellPath()): ShellStore {
   if (!existsSync(path)) {
     const seeded = seedStore();
@@ -54,8 +71,13 @@ export function writeShell(store: ShellStore, path = defaultShellPath()): void {
   }
 }
 
-const LOCK_TIMEOUT_MS = 4000;
-const LOCK_STALE_MS = 15_000;
+/**
+ * Stale below timeout, or one crashed holder makes every writer fail for the
+ * whole stale window instead of clearing the corpse. The gap between them is
+ * the margin a live holder gets before its lock is stolen mid-fsync.
+ */
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 3000;
 const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 
 function sleep(ms: number): void {

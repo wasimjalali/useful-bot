@@ -100,7 +100,13 @@ public enum ApprovalDecision: String, Sendable {
     case deny
 }
 
-private struct ShellResponse: Decodable { let store: ShellStore }
+private struct ShellResponse: Decodable {
+    let store: ShellStore
+    /// Set when the server committed the roster change but could not finish
+    /// what hangs off it (a deleted bot's routines or transcript). The tick
+    /// sweeps the remainder, so this is a warning, never a failure.
+    let detachError: String?
+}
 private struct StateResponse: Decodable {
     let events: [AgentEvent]?
     let proposals: [Proposal]?
@@ -675,12 +681,27 @@ public actor BackendClient {
 
     /// Send any shell action, optionally resolving a proposal in the same
     /// write. Returns the authoritative store the server echoed back.
+    /// A shell action's full answer: the new store plus anything the server
+    /// could not finish alongside it.
+    public struct ShellActionResult: Sendable {
+        public let store: ShellStore
+        public let detachError: String?
+    }
+
     @discardableResult
     public func shellAction(
         _ action: [String: Any],
         proposalId: String? = nil,
         proposalStatus: String? = nil
     ) async throws -> ShellStore {
+        try await shellActionResult(action, proposalId: proposalId, proposalStatus: proposalStatus).store
+    }
+
+    public func shellActionResult(
+        _ action: [String: Any],
+        proposalId: String? = nil,
+        proposalStatus: String? = nil
+    ) async throws -> ShellActionResult {
         var body: [String: Any] = ["action": action]
         if let proposalId { body["proposalId"] = proposalId }
         if let proposalStatus { body["proposalStatus"] = proposalStatus }
@@ -700,7 +721,7 @@ public actor BackendClient {
             }
             throw BackendError.decoding
         }
-        return decoded.store
+        return ShellActionResult(store: decoded.store, detachError: decoded.detachError)
     }
 
     /// Resolve a proposal without a shell action (the dismiss path).

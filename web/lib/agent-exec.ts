@@ -21,8 +21,9 @@ import {
   pendingRoutines,
   sweepOrphanRoutines,
   type Routine,
+  type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
-import { readShell, updateShell } from "../../shared/shell-io.ts";
+import { peekShell, readShell, updateShell } from "../../shared/shell-io.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
 /**
@@ -462,6 +463,17 @@ async function executeRoutine(
       text: routine.instruction,
     });
   } catch (err) {
+    // The note can land and the instruction fail, which leaves the same
+    // dangling row this whole path exists to avoid. Say so where it shows.
+    try {
+      appendAgentEvent(bot.id, {
+        kind: "note",
+        threadKind,
+        text: `Routine "${routine.name}" could not start: the transcript was unavailable.`,
+      });
+    } catch {
+      /* the store is what failed; the run history still records it */
+    }
     throw new Error(`routine_transcript_unavailable: ${err instanceof Error ? err.message : "unknown"}`);
   }
   // Every path out of the turn leaves an outcome row. The claim has already
@@ -530,14 +542,30 @@ export async function runRoutineNow(routineId: string): Promise<RoutineRunResult
   }
   try {
     const result = await executeRoutine(routine, "manual");
-    appendRoutineRun(routine.id, { status: "ok", sessionId: result.sessionId });
+    recordRun(routine.id, { status: "ok", sessionId: result.sessionId });
     return result;
   } catch (err) {
-    const error = runFailure(err);
-    appendRoutineRun(routine.id, { status: "failed", error });
+    recordRun(routine.id, { status: "failed", error: runFailure(err) });
     throw err;
   } finally {
     routinesInflight.delete(routine.id);
+  }
+}
+
+/**
+ * Write one run-history row. The store can be locked, and that must not become
+ * the error the caller sees: losing the history line is a smaller loss than
+ * replacing a real eve failure with `routines_locked`, or than aborting a pump
+ * batch that still has candidates to get through.
+ */
+function recordRun(
+  id: string,
+  run: { status: RoutineRunStatus; sessionId?: string | null; error?: string },
+): void {
+  try {
+    appendRoutineRun(id, run);
+  } catch {
+    /* the outcome still reaches the transcript and the pump result */
   }
 }
 
@@ -596,11 +624,11 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
     routinesInflight.add(candidate.id);
     try {
       const result = await executeRoutine(claim.routine, manual ? "manual" : "schedule");
-      appendRoutineRun(candidate.id, { status: "ok", sessionId: result.sessionId });
+      recordRun(candidate.id, { status: "ok", sessionId: result.sessionId });
       ran.push({ id: candidate.id, name: claim.routine.name });
     } catch (err) {
       const error = runFailure(err);
-      appendRoutineRun(candidate.id, { status: "failed", error });
+      recordRun(candidate.id, { status: "failed", error });
       failed.push({ id: candidate.id, error });
     } finally {
       routinesInflight.delete(candidate.id);
@@ -618,7 +646,13 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
  */
 function sweepOrphans(): string[] {
   try {
-    const live = readShell().bots.map((bot) => bot.id);
+    // `peekShell`, never `readShell`. A roster this process could not parse is
+    // reseeded by `readShell` to a single default bot, and sweeping against
+    // that would read every other bot's routines and transcripts as orphans
+    // and delete all of them. No roster means no sweep.
+    const shell = peekShell();
+    if (!shell) return [];
+    const live = shell.bots.map((bot) => bot.id);
     const routines = sweepOrphanRoutines(live);
     sweepOrphanThreads(live);
     return routines;

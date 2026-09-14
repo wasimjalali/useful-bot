@@ -835,10 +835,15 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             let epoch = self.storeEpoch
             do {
-                let next = try await self.client.shellAction(action)
+                let result = try await self.client.shellActionResult(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                self.applyStore(next)
-                self.saveError = nil
+                self.applyStore(result.store)
+                // The roster change stood; something hanging off it did not.
+                // The tick sweeps the rest, so this says so and moves on
+                // rather than presenting a completed action as a failure.
+                self.saveError = result.detachError == nil
+                    ? nil
+                    : "Deleted, but some of its data is still being cleared up."
             } catch {
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
             }

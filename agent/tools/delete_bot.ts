@@ -83,13 +83,20 @@ export default defineTool({
       // here is reported rather than swallowed, and the tick's sweep clears
       // anything this could not.
       let routines = 0;
-      let detachError: string | null = null;
+      const errors: string[] = [];
+      // Independently: a locked routines store is no reason to leave the
+      // transcript behind too, and the owner needs to hear about both.
       try {
         routines = deleteRoutinesForBot(target.id);
+      } catch (err) {
+        errors.push(`routines:${err instanceof Error ? err.message : "detach_failed"}`);
+      }
+      try {
         deleteThread(target.id);
       } catch (err) {
-        detachError = err instanceof Error ? err.message : "detach_failed";
+        errors.push(`transcript:${err instanceof Error ? err.message : "detach_failed"}`);
       }
+      const detachError = errors.length > 0 ? errors.join(",") : null;
       return {
         status: "deleted",
         botId: target.id,
