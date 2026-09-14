@@ -7,6 +7,8 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -59,10 +61,57 @@ function save(sessions: Record<string, BrowserSession>, path = defaultWebSession
   }
 }
 
+const LOCK_TIMEOUT_MS = 4000;
+const LOCK_STALE_MS = 15_000;
+const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
+
+function sleep(ms: number): void {
+  try {
+    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* fallback for runtimes without Atomics.wait */
+    }
+  }
+}
+
+/**
+ * Locked read-modify-write for the session file. A double login plus a logout
+ * can overlap, and each writes the whole map; without the lock one write can
+ * lose the other's session or resurrect a dropped one.
+ */
+function withLock<T>(path: string, fn: () => T): T {
+  const lock = `${path}.lock`;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let held = false;
+  while (!held) {
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      held = true;
+    } catch {
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
+      } catch { /* lock vanished; retry */ }
+      if (Date.now() > deadline) break;
+      sleep(15);
+    }
+  }
+  if (!held) throw new Error("web_sessions_locked");
+  try {
+    return fn();
+  } finally {
+    try { rmdirSync(lock); } catch { /* ignore */ }
+  }
+}
+
 export function putBrowserSession(token: string, rec: BrowserSession, path = defaultWebSessionsPath()): void {
-  const sessions = load(path);
-  sessions[sessionKey(token)] = rec;
-  save(sessions, path);
+  withLock(path, () => {
+    const sessions = load(path);
+    sessions[sessionKey(token)] = rec;
+    save(sessions, path);
+  });
 }
 
 export function getBrowserSession(token: string, path = defaultWebSessionsPath()): BrowserSession | null {
@@ -72,7 +121,9 @@ export function getBrowserSession(token: string, path = defaultWebSessionsPath()
 }
 
 export function dropBrowserSession(token: string, path = defaultWebSessionsPath()): void {
-  const sessions = load(path);
-  delete sessions[sessionKey(token)];
-  save(sessions, path);
+  withLock(path, () => {
+    const sessions = load(path);
+    delete sessions[sessionKey(token)];
+    save(sessions, path);
+  });
 }
