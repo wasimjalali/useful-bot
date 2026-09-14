@@ -19,6 +19,9 @@ build/
 # regenerable verification evidence (large, reproduce with scripts/build-plan-html.py)
 review-*.png
 
+# release verification report (reproduce with npm run verify:release)
+release-verify.json
+
 # spike scratch (never evidence)
 spikes/**/scratch/
 
