@@ -67,6 +67,8 @@ public struct SearchChip: Equatable, Sendable {
 public struct EveEvent: Decodable, Equatable, Sendable {
     public let type: String
     public let id: String?
+    /// Server-stamped event time from `meta.at`, when the stream carries it.
+    public let metaAt: String?
     public let message: String?
     public let messageDelta: String?
     public let turnId: String?
@@ -74,13 +76,14 @@ public struct EveEvent: Decodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey { case type, data, meta }
     enum DataKeys: String, CodingKey { case message, messageDelta, turnId }
-    enum MetaKeys: String, CodingKey { case id }
+    enum MetaKeys: String, CodingKey { case id, at }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         type = try c.decode(String.self, forKey: .type)
         let meta = try? c.nestedContainer(keyedBy: MetaKeys.self, forKey: .meta)
         id = try? meta?.decodeIfPresent(String.self, forKey: .id)
+        metaAt = try? meta?.decodeIfPresent(String.self, forKey: .at)
         let data = try? c.nestedContainer(keyedBy: DataKeys.self, forKey: .data)
         message = try? data?.decodeIfPresent(String.self, forKey: .message)
         messageDelta = try? data?.decodeIfPresent(String.self, forKey: .messageDelta)
@@ -91,6 +94,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     public init(
         type: String,
         id: String? = nil,
+        metaAt: String? = nil,
         message: String? = nil,
         messageDelta: String? = nil,
         turnId: String? = nil,
@@ -98,6 +102,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     ) {
         self.type = type
         self.id = id
+        self.metaAt = metaAt
         self.message = message
         self.messageDelta = messageDelta
         self.turnId = turnId
@@ -110,11 +115,15 @@ public struct ChatMessage: Identifiable, Equatable, Sendable {
     public var id: String
     public var role: Role
     public var text: String
+    /// When the stream or the client knows it. Replays of old sessions have
+    /// none unless the server stamped the event.
+    public var at: Date?
 
-    public init(id: String, role: Role, text: String) {
+    public init(id: String, role: Role, text: String, at: Date? = nil) {
         self.id = id
         self.role = role
         self.text = text
+        self.at = at
     }
 }
 
@@ -236,13 +245,17 @@ public struct StreamProjection: Equatable, Sendable {
         }
     }
 
-    public mutating func apply(_ event: EveEvent) {
+    public mutating func apply(_ event: EveEvent, live: Bool = false) {
         // Dedupe every identified event, matching the web's seenIds contract;
         // a replayed chunk id must not append its delta twice.
         if let id = event.id {
             if seen.contains(id) { return }
             remember(id)
         }
+        // A server stamp wins; otherwise a turn that is happening now is
+        // stamped from the client clock, while a replay of old history is not
+        // (the durable events already carry their own times).
+        let stamp = TranscriptBlocks.date(fromISO8601: event.metaAt) ?? (live ? Date() : nil)
         switch event.type {
         case "turn.started":
             pending = true
@@ -257,12 +270,22 @@ public struct StreamProjection: Equatable, Sendable {
             if let last = messages.last, last.role == .user, last.text == text,
                last.id.hasPrefix(EveStream.optimisticUserPrefix) {
                 if let id = event.id {
-                    messages[messages.count - 1] = ChatMessage(id: id, role: .user, text: text)
+                    messages[messages.count - 1] = ChatMessage(
+                        id: id,
+                        role: .user,
+                        text: text,
+                        at: stamp ?? last.at
+                    )
                 }
                 pending = true
                 return
             }
-            messages.append(ChatMessage(id: event.id ?? "u-\(messages.count)", role: .user, text: text))
+            messages.append(ChatMessage(
+                id: event.id ?? "u-\(messages.count)",
+                role: .user,
+                text: text,
+                at: stamp
+            ))
             pending = true
         case "message.appended":
             let delta = event.messageDelta ?? ""
@@ -273,7 +296,7 @@ public struct StreamProjection: Equatable, Sendable {
             } else {
                 let id = event.id ?? "a-\(messages.count)"
                 currentAssistantId = id
-                messages.append(ChatMessage(id: id, role: .assistant, text: delta))
+                messages.append(ChatMessage(id: id, role: .assistant, text: delta, at: stamp))
             }
         case "message.completed":
             let full = EveStream.stripThreadPrefix(event.message ?? "")
@@ -285,7 +308,8 @@ public struct StreamProjection: Equatable, Sendable {
                     messages.append(ChatMessage(
                         id: event.id ?? "a-\(messages.count)",
                         role: .assistant,
-                        text: full
+                        text: full,
+                        at: stamp
                     ))
                 }
             }

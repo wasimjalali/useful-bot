@@ -12,6 +12,40 @@ import Testing
         #expect(EveStream.parseLine("[DONE]") == nil)
     }
 
+    @Test func parseLineReadsMetaTimestamp() {
+        let line = #"{"data":{"message":"hi"},"type":"message.received","meta":{"at":"2026-09-14T15:20:09.340Z","id":"evt_1"}}"#
+        let event = EveStream.parseLine(line)
+        #expect(event?.metaAt == "2026-09-14T15:20:09.340Z")
+        #expect(event?.id == "evt_1")
+    }
+
+    @Test func projectionUsesServerStampThenClientStampOnlyWhenLive() {
+        var replay = StreamProjection()
+        replay.apply(EveEvent(
+            type: "message.received",
+            id: "1",
+            metaAt: "2026-09-14T15:20:09.340Z",
+            message: "from the log"
+        ))
+        #expect(replay.messages.first?.at == TranscriptBlocks.date(fromISO8601: "2026-09-14T15:20:09.340Z"))
+
+        var quietReplay = StreamProjection()
+        quietReplay.apply(EveEvent(type: "message.received", id: "2", message: "old"))
+        #expect(quietReplay.messages.first?.at == nil)
+
+        var live = StreamProjection()
+        live.apply(EveEvent(type: "message.received", id: "3", message: "now"), live: true)
+        #expect(live.messages.first?.at != nil)
+    }
+
+    @Test func completedAssistantKeepsItsArrivalTime() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "1", message: "hi"), live: true)
+        projection.apply(EveEvent(type: "message.completed", id: "2", message: "Hello"), live: true)
+        #expect(projection.messages.last?.role == .assistant)
+        #expect(projection.messages.last?.at != nil)
+    }
+
     @Test func stripThreadPrefixRemovesInjectedIdentity() {
         let bot = "You are Scout, Researcher.\nStanding instructions: Survey markets.\nStay in role.\n\nHello"
         #expect(EveStream.stripThreadPrefix(bot) == "Hello")

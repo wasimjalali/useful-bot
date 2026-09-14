@@ -201,12 +201,17 @@ struct RailView: View {
                     PinnedCardView(
                         bot: bot,
                         selected: bot.id == model.selectedBotId,
+                        sectionName: store.sections.first { $0.id == bot.sectionId }?.name,
                         canDelete: (model.store?.bots.count ?? 0) > 1,
+                        menuOpen: rowMenuBot?.id == bot.id,
                         onSelect: { model.select(bot.id) },
                         onOpenSettings: { onOpenSettings(bot.id) },
                         onRenameRequest: { onRenameRequest(bot) },
                         onDeleteRequest: { onDeleteRequest(bot) },
-                        onCreateSection: onCreateSection
+                        onCreateSection: onCreateSection,
+                        onMenu: { frame, trigger in
+                            toggleRowMenu(bot, frame: frame, trigger: trigger)
+                        }
                     )
                 }
             }
@@ -226,6 +231,7 @@ struct RailView: View {
                         BotRowView(
                             bot: bot,
                             selected: bot.id == model.selectedBotId,
+                            menuOpen: rowMenuBot?.id == bot.id,
                             onSelect: { model.select(bot.id) },
                             onOpenSettings: { onOpenSettings(bot.id) },
                             onRenameRequest: { onRenameRequest(bot) },
@@ -240,8 +246,29 @@ struct RailView: View {
                     }
                 }
                 .padding(.top, 2)
+                if bots.isEmpty, let hint = emptySectionHint(store, section.id) {
+                    Text(hint)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkFaint)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                }
             }
         }
+    }
+
+    /// A pinned or hidden bot leaves its section with nothing to show; name
+    /// the reason instead of leaving a dead header behind.
+    private func emptySectionHint(_ store: ShellStore, _ sectionId: String) -> String? {
+        let pinned = store.pinnedBots.filter { $0.sectionId == sectionId }.count
+        if pinned > 0 {
+            return pinned == 1 ? "1 pinned bot shows at the top." : "\(pinned) pinned bots show at the top."
+        }
+        let hidden = store.hiddenBots.filter { $0.sectionId == sectionId }.count
+        if hidden > 0 {
+            return hidden == 1 ? "1 bot here is hidden." : "\(hidden) bots here are hidden."
+        }
+        return nil
     }
 
     @ViewBuilder
@@ -264,6 +291,7 @@ struct RailView: View {
                             BotRowView(
                                 bot: bot,
                                 selected: bot.id == model.selectedBotId,
+                                menuOpen: rowMenuBot?.id == bot.id,
                                 onSelect: { model.select(bot.id) },
                                 onOpenSettings: { onOpenSettings(bot.id) },
                                 onRenameRequest: { onRenameRequest(bot) },
@@ -297,6 +325,7 @@ struct RailView: View {
                             BotRowView(
                                 bot: bot,
                                 selected: bot.id == model.selectedBotId,
+                                menuOpen: rowMenuBot?.id == bot.id,
                                 onSelect: { model.select(bot.id) },
                                 onOpenSettings: { onOpenSettings(bot.id) },
                                 onRenameRequest: { onRenameRequest(bot) },
@@ -519,6 +548,7 @@ struct RowMenuPopover: View {
 private struct BotRowView: View {
     let bot: ShellBot
     let selected: Bool
+    var menuOpen = false
     let onSelect: () -> Void
     let onOpenSettings: () -> Void
     let onRenameRequest: () -> Void
@@ -530,13 +560,19 @@ private struct BotRowView: View {
 
     @EnvironmentObject private var model: AppModel
     @State private var hovering = false
-    @State private var ellipsisFrame: CGRect = .zero
-    @State private var ellipsisWindowFrame: CGRect = .zero
+
+    private var members: [ShellBot] {
+        groupMemberBots(bot, store: model.store)
+    }
 
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 8) {
-                BotAvatarView(bot: bot, size: 36)
+                if bot.isGroup, !members.isEmpty {
+                    AvatarStackView(bots: members, size: 26, maxVisible: 3)
+                } else {
+                    BotAvatarView(bot: bot, size: 36)
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(bot.name)
@@ -544,7 +580,9 @@ private struct BotRowView: View {
                             .foregroundStyle(Theme.C.ink)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                        if bot.isGroup {
+                        // The stacked faces already say "group"; the icon only
+                        // returns when the roster cannot be resolved.
+                        if bot.isGroup, members.isEmpty {
                             Image(systemName: "person.2")
                                 .font(.system(size: 11))
                                 .foregroundStyle(Theme.C.inkFaint)
@@ -579,33 +617,13 @@ private struct BotRowView: View {
         .pointerOnHover()
         .onHover { hovering = $0 }
         .overlay(alignment: .trailing) {
-            // Always visible so the pointer never has to chase a control that
-            // appears and disappears under it.
-            Button {
-                onMenu(ellipsisFrame, ellipsisWindowFrame)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .frame(width: 24, height: 24)
-                    .background(hovering ? Theme.C.accentSoft : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .pointerOnHover()
-            .accessibilityLabel("Actions for \(bot.name)")
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { ellipsisFrame = proxy.frame(in: .named("rail")) }
-                        .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
-                            ellipsisFrame = next
-                        }
-                }
+            // Hover-only like the web rail: the pointer is already over the row
+            // when the control appears, and an open menu keeps it pinned.
+            RowActionsButton(
+                label: "Actions for \(bot.name)",
+                visible: hovering || menuOpen,
+                onTap: onMenu
             )
-            .trackWindowFrame($ellipsisWindowFrame)
-            .fixedSize()
             .padding(.trailing, 2)
         }
         .contextMenu { rowMenu }
@@ -639,39 +657,103 @@ private struct BotRowView: View {
     }
 }
 
+/// The rail's ellipsis affordance: invisible at rest, revealed on hover, and
+/// kept on screen while its popover is open.
+private struct RowActionsButton: View {
+    let label: String
+    let visible: Bool
+    let onTap: (CGRect, CGRect) -> Void
+
+    @State private var hovering = false
+    @State private var frame: CGRect = .zero
+    @State private var windowFrame: CGRect = .zero
+
+    var body: some View {
+        Button {
+            onTap(frame, windowFrame)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.C.inkMuted)
+                .frame(width: 24, height: 24)
+                .background(hovering ? Theme.C.accentSoft : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
+        .opacity(visible ? 1 : 0)
+        .accessibilityLabel(label)
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { frame = proxy.frame(in: .named("rail")) }
+                    .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
+                        frame = next
+                    }
+            }
+        )
+        .trackWindowFrame($windowFrame)
+        .fixedSize()
+    }
+}
+
 private struct PinnedCardView: View {
     let bot: ShellBot
     let selected: Bool
+    var sectionName: String?
     var canDelete = true
+    var menuOpen = false
     let onSelect: () -> Void
     let onOpenSettings: () -> Void
     let onRenameRequest: () -> Void
     let onDeleteRequest: () -> Void
     let onCreateSection: () -> Void
+    let onMenu: (CGRect, CGRect) -> Void
 
     @EnvironmentObject private var model: AppModel
     @State private var hovering = false
 
+    private var members: [ShellBot] {
+        groupMemberBots(bot, store: model.store)
+    }
+
+    /// "Finance · Senior bookkeeper": the section a pinned bot came from stays
+    /// visible on the card, so pinning never hides where it belongs.
+    private var badge: String {
+        [sectionName, bot.label.isEmpty ? nil : bot.label]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+            .uppercased()
+    }
+
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 10) {
-                BotAvatarView(bot: bot, size: 60)
+                if bot.isGroup, !members.isEmpty {
+                    AvatarStackView(bots: members, size: 46, maxVisible: 2)
+                } else {
+                    BotAvatarView(bot: bot, size: 60)
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(bot.name)
                         .font(.system(size: DesignTokens.FontSize.railName, weight: .semibold))
                         .foregroundStyle(Theme.C.ink)
                         .lineLimit(1)
-                    if !bot.label.isEmpty {
-                        Text(bot.label.uppercased())
+                    if !badge.isEmpty {
+                        Text(badge)
                             .font(.system(size: DesignTokens.FontSize.railLabel, weight: .semibold))
                             .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
                             .foregroundStyle(Theme.C.inkFaint)
                             .lineLimit(1)
+                            .truncationMode(.tail)
                     }
                 }
                 Spacer(minLength: 0)
             }
             .padding(DesignTokens.Space.pinnedCardPadding)
+            .padding(.trailing, 22)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(selected ? Theme.C.sunken : Theme.C.surface)
             .overlay(
@@ -688,6 +770,14 @@ private struct PinnedCardView: View {
         .buttonStyle(.plain)
         .pointerOnHover()
         .onHover { hovering = $0 }
+        .overlay(alignment: .trailing) {
+            RowActionsButton(
+                label: "Actions for \(bot.name)",
+                visible: hovering || menuOpen,
+                onTap: onMenu
+            )
+            .padding(.trailing, 6)
+        }
         .contextMenu {
             Button(bot.pinned ? "Unpin" : "Pin") {
                 model.perform(ShellActions.pin(botId: bot.id, pinned: !bot.pinned))
@@ -703,3 +793,4 @@ private struct PinnedCardView: View {
         }
     }
 }
+
