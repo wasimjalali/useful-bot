@@ -132,24 +132,41 @@ export function useShell(authed: boolean) {
   }, [load, persist]);
 
   // Dismissing a card carries no shell action; send the proposal fields alone.
-  const resolveOnly = useCallback(async (meta: {
+  // Route it through the same generation/queue as dispatch so a slow earlier
+  // save cannot land after this resolve and overwrite the newer snapshot.
+  const resolveOnly = useCallback((meta: {
     proposalId: string;
     proposalStatus: "confirmed" | "dismissed";
   }) => {
-    const token = await csrfToken();
-    const res = await fetch("/api/shell", {
-      method: "PUT",
-      credentials: "include",
-      headers: { "content-type": "application/json", "x-ub-csrf": token },
-      body: JSON.stringify(meta),
+    gen.current += 1;
+    const mine = gen.current;
+    dirty.current = true;
+    const run = pending.current.then(async () => {
+      try {
+        const token = await csrfToken();
+        const res = await fetch("/api/shell", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "content-type": "application/json", "x-ub-csrf": token },
+          body: JSON.stringify(meta),
+        });
+        if (res.status === 401) throw new Error("unauthorized");
+        if (!res.ok) throw new Error("Shell save failed");
+        const body = (await res.json()) as { store?: unknown };
+        const fresh = parseShell(body.store ?? seedStore());
+        if (mine === gen.current) {
+          dirty.current = false;
+          latest.current = fresh;
+          setStore(fresh);
+        }
+        return fresh;
+      } catch (err) {
+        if (mine === gen.current) dirty.current = false;
+        throw err;
+      }
     });
-    if (res.status === 401) throw new Error("unauthorized");
-    if (!res.ok) throw new Error("Shell save failed");
-    const body = (await res.json()) as { store?: unknown };
-    const fresh = parseShell(body.store ?? seedStore());
-    latest.current = fresh;
-    setStore(fresh);
-    return fresh;
+    pending.current = run.then(() => undefined).catch(() => undefined);
+    return run;
   }, []);
 
   return {
