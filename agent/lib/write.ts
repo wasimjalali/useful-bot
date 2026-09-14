@@ -29,7 +29,8 @@ export async function approvedWrite(input: {
     throw new Error("write_too_large");
   }
   const root = workspaceRoot();
-  const target = resolveWorkspacePath(input.path, root);
+  // Reject a bad path before it ever reaches the owner.
+  resolveWorkspacePath(input.path, root);
   const hash = actionSha256({
     tool: "write_file",
     canonicalArgs: JSON.stringify({ path: input.path, content: input.content, expectedSha256: input.expectedSha256 }),
@@ -53,6 +54,11 @@ export async function approvedWrite(input: {
     await waitUntilNotPending(approvals, rec.id);
   }
   return executeIfApproved(approvals, rec.id, hash, () => {
+    // The path is resolved again after consume: a parent directory could have
+    // been swapped for a symlink while the owner was reviewing, so the check
+    // that ran before the approval is not enough. Writing to the re-resolved
+    // target closes that window.
+    const target = resolveWorkspacePath(input.path, root);
     // expectedSha256 is optimistic concurrency: the owner approved a write
     // against a known revision, so a file that changed since the proposal must
     // not be silently clobbered.
