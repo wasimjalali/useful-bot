@@ -7,6 +7,8 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -50,6 +52,52 @@ export function defaultApprovalsPath(): string {
   return join(homedir(), ".useful-bot", "approvals.json");
 }
 
+const LOCK_TIMEOUT_MS = 4000;
+const LOCK_STALE_MS = 15_000;
+const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
+
+function sleep(ms: number): void {
+  try {
+    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
+  } catch {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* fallback for runtimes without Atomics.wait */
+    }
+  }
+}
+
+/**
+ * Cross-process lock for a read/merge/write cycle. Both the Next server and the
+ * eve agent process hold their own ApprovalStore, and every persist writes the
+ * whole record map, so an unlocked load/mutate/save can drop the other writer's
+ * decision. The directory lock keeps one writer at a time.
+ */
+function withFileLock<T>(lockPath: string | null, fn: () => T): T {
+  if (!lockPath) return fn();
+  mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let held = false;
+  while (!held) {
+    try {
+      mkdirSync(lockPath, { mode: 0o700 });
+      held = true;
+    } catch {
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) rmdirSync(lockPath);
+      } catch { /* lock vanished; retry */ }
+      if (Date.now() > deadline) break;
+      sleep(15);
+    }
+  }
+  if (!held) throw new Error("approvals_locked");
+  try {
+    return fn();
+  } finally {
+    try { rmdirSync(lockPath); } catch { /* ignore */ }
+  }
+}
+
 function hashesEqual(left: string, right: string): boolean {
   const a = Buffer.from(left, "utf8");
   const b = Buffer.from(right, "utf8");
@@ -89,115 +137,131 @@ export class ApprovalStore {
     actionSha256: string;
     preview: string;
   }): StoredApproval {
-    this.load();
-    this.seq += 1;
-    const createdAt = this.now();
-    const record: StoredApproval = {
-      id: this.persistPath
-        ? `apr_${randomUUID().replaceAll("-", "").slice(0, 16)}`
-        : `apr_${this.seq.toString().padStart(4, "0")}`,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      toolCallId: input.toolCallId,
-      tool: input.tool,
-      actionSha256: input.actionSha256,
-      preview: input.preview,
-      createdAt,
-      expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
-      status: "pending",
-    };
-    this.records.set(record.id, record);
-    this.persist();
-    return record;
+    return this.locked(() => {
+      this.load();
+      this.seq += 1;
+      const createdAt = this.now();
+      const record: StoredApproval = {
+        id: this.persistPath
+          ? `apr_${randomUUID().replaceAll("-", "").slice(0, 16)}`
+          : `apr_${this.seq.toString().padStart(4, "0")}`,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        toolCallId: input.toolCallId,
+        tool: input.tool,
+        actionSha256: input.actionSha256,
+        preview: input.preview,
+        createdAt,
+        expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
+        status: "pending",
+      };
+      this.records.set(record.id, record);
+      this.persist();
+      return record;
+    });
   }
 
   decide(id: string, decision: ApprovalDecision, presentedHash: string): StoredApproval {
-    this.load();
-    const record = this.records.get(id);
-    if (!record) {
-      throw new Error(`approval_not_found:${id}`);
-    }
-    this.refreshExpiry(record);
-    if (record.status !== "pending") {
-      throw new Error(`approval_not_pending:${record.status}`);
-    }
-    if (!hashesEqual(record.actionSha256, presentedHash)) {
-      throw new Error("approval_hash_mismatch");
-    }
-    record.status = decision === "approve" ? "approved" : "denied";
-    this.persist();
-    return record;
+    return this.locked(() => {
+      this.load();
+      const record = this.records.get(id);
+      if (!record) {
+        throw new Error(`approval_not_found:${id}`);
+      }
+      this.refreshExpiry(record);
+      if (record.status !== "pending") {
+        throw new Error(`approval_not_pending:${record.status}`);
+      }
+      if (!hashesEqual(record.actionSha256, presentedHash)) {
+        throw new Error("approval_hash_mismatch");
+      }
+      record.status = decision === "approve" ? "approved" : "denied";
+      this.persist();
+      return record;
+    });
   }
 
   consume(id: string, presentedHash: string): StoredApproval {
-    this.load();
-    const record = this.records.get(id);
-    if (!record) {
-      throw new Error(`approval_not_found:${id}`);
-    }
-    this.refreshExpiry(record);
-    if (!hashesEqual(record.actionSha256, presentedHash)) {
-      throw new Error("approval_hash_mismatch");
-    }
-    if (record.status === "consumed") {
-      throw new Error("approval_replay");
-    }
-    if (record.status === "denied") {
-      throw new Error("approval_denied");
-    }
-    if (record.status === "expired") {
-      throw new Error("approval_expired");
-    }
-    if (record.status !== "approved") {
-      throw new Error(`approval_not_approved:${record.status}`);
-    }
-    record.status = "consumed";
-    this.persist();
-    return record;
+    return this.locked(() => {
+      this.load();
+      const record = this.records.get(id);
+      if (!record) {
+        throw new Error(`approval_not_found:${id}`);
+      }
+      this.refreshExpiry(record);
+      if (!hashesEqual(record.actionSha256, presentedHash)) {
+        throw new Error("approval_hash_mismatch");
+      }
+      if (record.status === "consumed") {
+        throw new Error("approval_replay");
+      }
+      if (record.status === "denied") {
+        throw new Error("approval_denied");
+      }
+      if (record.status === "expired") {
+        throw new Error("approval_expired");
+      }
+      if (record.status !== "approved") {
+        throw new Error(`approval_not_approved:${record.status}`);
+      }
+      record.status = "consumed";
+      this.persist();
+      return record;
+    });
   }
 
   get(id: string): StoredApproval | undefined {
-    this.load();
-    const record = this.records.get(id);
-    if (!record) return undefined;
-    const before = record.status;
-    this.refreshExpiry(record);
-    if (record.status !== before) this.persist();
-    return record;
+    return this.locked(() => {
+      this.load();
+      const record = this.records.get(id);
+      if (!record) return undefined;
+      const before = record.status;
+      this.refreshExpiry(record);
+      if (record.status !== before) this.persist();
+      return record;
+    });
   }
 
   listPending(): PendingApproval[] {
-    this.load();
-    let changed = false;
-    const out: PendingApproval[] = [];
-    for (const record of this.records.values()) {
-      const before = record.status;
-      this.refreshExpiry(record);
-      if (record.status !== before) changed = true;
-      if (record.status === "pending") {
-        out.push({
-          id: record.id,
-          tool: record.tool,
-          preview: record.preview,
-          actionSha256: record.actionSha256,
-          createdAt: record.createdAt,
-          expiresAt: record.expiresAt,
-        });
+    return this.locked(() => {
+      this.load();
+      let changed = false;
+      const out: PendingApproval[] = [];
+      for (const record of this.records.values()) {
+        const before = record.status;
+        this.refreshExpiry(record);
+        if (record.status !== before) changed = true;
+        if (record.status === "pending") {
+          out.push({
+            id: record.id,
+            tool: record.tool,
+            preview: record.preview,
+            actionSha256: record.actionSha256,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+          });
+        }
       }
-    }
-    if (changed) this.persist();
-    out.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
-    return out;
+      if (changed) this.persist();
+      out.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+      return out;
+    });
   }
 
   invalidateOnRestart(): void {
-    this.load();
-    for (const record of this.records.values()) {
-      if (record.status === "pending" || record.status === "approved") {
-        record.status = "expired";
+    this.locked(() => {
+      this.load();
+      for (const record of this.records.values()) {
+        if (record.status === "pending" || record.status === "approved") {
+          record.status = "expired";
+        }
       }
-    }
-    this.persist();
+      this.persist();
+    });
+  }
+
+  private locked<T>(fn: () => T): T {
+    return withFileLock(this.persistPath ? `${this.persistPath}.lock` : null, fn);
   }
 
   private refreshExpiry(record: StoredApproval): void {
