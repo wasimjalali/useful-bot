@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyShellAction, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
-import { listThreadEvents, readProposal } from "../shared/agent-store.ts";
-import { listHandoffs } from "../shared/handoffs.ts";
+import { appendAgentEvent, listThreadEvents, readProposal } from "../shared/agent-store.ts";
+import { HANDOFF_DEPTH_MAX, listHandoffs, queueHandoff } from "../shared/handoffs.ts";
+import bash from "../agent/tools/bash.ts";
 import listBots from "../agent/tools/list_bots.ts";
 import proposeBot from "../agent/tools/propose_bot.ts";
 import proposeGroup from "../agent/tools/propose_group.ts";
@@ -208,6 +209,80 @@ test("updateBotProfile proposes the edit and reports no_change honestly", async 
   } finally {
     box.restore();
   }
+});
+
+test("sendToBot refuses hidden targets and ambiguous names", async () => {
+  const box = sandbox();
+  try {
+    let store = seedRoster(["CEO", "Research", "Writer"]);
+    const ceo = idOf(store, "CEO");
+    const research = idOf(store, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    store = applyShellAction(store, { type: "hide", botId: research, hidden: true }).store;
+    writeShell(store);
+    const hidden = await run<{ status: string }>(sendToBot, { botId: research, message: "hi" });
+    assert.equal(hidden.status, "invalid");
+
+    store = applyShellAction(store, {
+      type: "nameBot",
+      botId: idOf(store, "Research"),
+      name: "Research",
+      label: "Lead",
+    }).store;
+    store = applyShellAction(store, {
+      type: "nameBot",
+      botId: idOf(store, "Writer"),
+      name: "Writer",
+      label: "Lead",
+    }).store;
+    writeShell(store);
+    const ambiguous = await run<{ status: string; matches?: unknown[] }>(sendToBot, {
+      botId: "Lead",
+      message: "hi",
+    });
+    assert.equal(ambiguous.status, "ambiguous");
+    assert.equal(ambiguous.matches?.length, 2);
+    // An exact id still wins over the duplicate label.
+    const byId = await run<{ status: string }>(sendToBot, { botId: idOf(store, "Writer"), message: "hi" });
+    assert.equal(byId.status, "queued");
+  } finally {
+    box.restore();
+  }
+});
+
+test("sendToBot refuses to forward a handoff past the depth cap", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(store, "CEO");
+    const research = idOf(store, "Research");
+    process.env.UB_ACTIVE_BOT_ID = research;
+    const incoming = queueHandoff({
+      sourceBotId: ceo,
+      sourceName: "CEO",
+      targetBotId: research,
+      targetName: "Research",
+      message: "deep task",
+      depth: HANDOFF_DEPTH_MAX,
+    });
+    appendAgentEvent(research, {
+      kind: "post",
+      text: "deep task",
+      handoffId: incoming.id,
+      authorBotId: ceo,
+    }, process.env.UB_AGENT_STORE_PATH);
+    const bounced = await run<{ status: string }>(sendToBot, { botId: ceo, message: "back at you" });
+    assert.equal(bounced.status, "loop_refused");
+  } finally {
+    box.restore();
+  }
+});
+
+test("bash refuses commands that reference secret stores or parent traversal", async () => {
+  const blocked = await run<{ status: string }>(bash, { command: "cat ~/.ssh/id_rsa" });
+  assert.equal(blocked.status, "blocked");
+  const traversal = await run<{ status: string }>(bash, { command: "cat ../../etc/passwd" });
+  assert.equal(traversal.status, "blocked");
 });
 
 test("listBots reports ids, groups and sections", async () => {

@@ -23,7 +23,11 @@ function sessionIdFrom(request: Request): string | null {
 function channelAuth(): AuthFn<Request> {
   const secret = process.env.UB_CHANNEL_JWT_SECRET;
   if (!secret) {
-    return () => null;
+    // Fail closed: without a secret every request would be anonymous yet able
+    // to drive tool execution. Refuse instead of returning a null principal.
+    return () => {
+      throw new ForbiddenError({ message: "channel_auth_unconfigured" });
+    };
   }
   const verify = jwtHmac({
     algorithm: "HS256",

@@ -140,6 +140,11 @@ function s2FixtureModel() {
   return provider.chatModel("s2-fixture");
 }
 
+// One id per process when the env does not pin one, so every model request in
+// a process reports the same session/turn instead of a fresh random uuid.
+const PROCESS_SESSION_ID = process.env.UB_SESSION_ID ?? crypto.randomUUID();
+const PROCESS_TURN_ID = process.env.UB_TURN_ID ?? crypto.randomUUID();
+
 function requireModel() {
   if (process.env.UB_S2_FIXTURE === "1") {
     return s2FixtureModel();
@@ -154,8 +159,8 @@ function requireModel() {
     apiKey: token,
     fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
-      headers.set("x-useful-session-id", process.env.UB_SESSION_ID ?? crypto.randomUUID());
-      headers.set("x-useful-turn-id", process.env.UB_TURN_ID ?? crypto.randomUUID());
+      headers.set("x-useful-session-id", PROCESS_SESSION_ID);
+      headers.set("x-useful-turn-id", PROCESS_TURN_ID);
       headers.set("x-useful-request-id", crypto.randomUUID());
       return fetch(input, { ...init, headers });
     },
