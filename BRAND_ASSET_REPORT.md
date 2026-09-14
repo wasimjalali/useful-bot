@@ -79,7 +79,7 @@ Completed on 14 September 2026:
 
 The isolated brand-tool package's dependency audit reports no vulnerabilities. The existing application dependency tree reports critical/high advisories in its older Next.js, PostCSS and sharp dependencies. Those pre-existing runtime dependencies are outside this asset change and were not upgraded.
 
-The brand build, checks and web metadata changes received a local Codex source review. The named security/code-review plugins are unavailable in this session, so this is not a claim that their review ran. The change stays on `feat/production-brand-assets` for PR review; it is not merged without the required review. The original checkout and the other agent's native changes remain untouched.
+The brand build, checks and web metadata changes received a local Codex source review. The named security/code-review plugins are unavailable in this session, so this is not a claim that their review ran. The user explicitly waived unavailable-plugin review on 14 September 2026, allowing PR #23 to merge. Work was isolated on `feat/production-brand-assets`; the original checkout and the other agent's native changes remain untouched.
 
 ## Platform references
 
