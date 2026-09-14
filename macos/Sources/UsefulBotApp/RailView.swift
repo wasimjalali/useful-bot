@@ -197,6 +197,7 @@ struct RailView: View {
                     PinnedCardView(
                         bot: bot,
                         selected: bot.id == model.selectedBotId,
+                        canDelete: (model.store?.bots.count ?? 0) > 1,
                         onSelect: { model.select(bot.id) },
                         onOpenSettings: { onOpenSettings(bot.id) },
                         onRenameRequest: { onRenameRequest(bot) },
@@ -637,6 +638,7 @@ private struct BotRowView: View {
 private struct PinnedCardView: View {
     let bot: ShellBot
     let selected: Bool
+    var canDelete = true
     let onSelect: () -> Void
     let onOpenSettings: () -> Void
     let onRenameRequest: () -> Void
@@ -693,6 +695,7 @@ private struct PinnedCardView: View {
             }
             Divider()
             Button("Delete", role: .destructive, action: onDeleteRequest)
+                .disabled(!canDelete)
         }
     }
 }

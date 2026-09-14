@@ -331,8 +331,10 @@ final class AppModel: ObservableObject {
             }
             guard generation == loadGeneration else { return }
             publishTranscript(force: true)
-            // A send's own failure banner outlives the reload that follows it.
-            threadError = stickyThreadError ?? (projection.failed ? "The last turn failed." : nil)
+            // A send's own failure banner belongs to the bot that sent it; a
+            // switch in the meantime must not show it on the new bot.
+            let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
+            threadError = sticky ?? (projection.failed ? "The last turn failed." : nil)
         } catch is CancellationError {
             return
         } catch {
@@ -773,24 +775,43 @@ final class AppModel: ObservableObject {
     private func reconcileSelection(_ next: ShellStore) {
         if let selected = next.selectedBotId, next.bots.contains(where: { $0.id == selected }) {
             if selected != selectedBotId {
-                // A server-driven switch (proposal, create) stops the old
-                // turn like a rail click does.
-                resetThread()
-                selectedBotId = selected
-                routineNotice = false
-                startReload()
+                switchToBot(selected)
             }
         } else if let current = selectedBotId, !next.bots.contains(where: { $0.id == current }) {
             if let first = next.bots.first?.id {
-                resetThread()
-                selectedBotId = first
-                routineNotice = false
-                startReload()
+                switchToBot(first)
             } else {
                 selectedBotId = nil
                 resetThread()
+                clearPerThreadState()
             }
         }
+    }
+
+    /// The server-driven equivalent of a rail click: stop the outgoing turn
+    /// (best-effort server cancel) and clear per-thread state for the new bot.
+    private func switchToBot(_ id: String) {
+        let outgoing = activeSession
+        resetThread()
+        selectedBotId = id
+        routineNotice = false
+        clearPerThreadState()
+        startReload()
+        if let outgoing, !outgoing.sessionId.isEmpty {
+            Task { @MainActor [weak self] in
+                _ = try? await self?.client.cancel(sessionId: outgoing.sessionId)
+            }
+        }
+    }
+
+    /// Errors and memory belong to one bot; a switch must not show them on
+    /// the next bot's pane or chat.
+    private func clearPerThreadState() {
+        attachError = nil
+        threadError = nil
+        stickyThreadError = nil
+        memoryNotes = nil
+        memoryError = nil
     }
 
     func createBot(name: String, petname: String, label: String, description: String, sectionId: String?) {

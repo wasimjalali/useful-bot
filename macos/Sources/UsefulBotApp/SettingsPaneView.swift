@@ -388,7 +388,9 @@ private struct BotSettingsFields: View {
             }
             Spacer(minLength: 0)
             NativeSwitch(isOn: bot.notify) {
-                model.patchBot(botId: bot.id, ["notify": !bot.notify])
+                // Resolve the live flag so a double tap cannot send !old twice.
+                let live = model.store?.bots.first { $0.id == bot.id } ?? bot
+                model.patchBot(botId: bot.id, ["notify": !live.notify])
             }
             .accessibilityLabel("Notifications")
             .accessibilityValue(bot.notify ? "on" : "off")
@@ -656,8 +658,12 @@ private struct GroupSettingsFields: View {
 
     private func toggle(_ id: String, active: Bool) {
         notice = ""
-        var members = bot.memberIds
-        if active {
+        // Resolve the live roster: the view's `bot` snapshot can be one echo
+        // behind, and two quick taps must not drop an earlier update.
+        let live = model.store?.bots.first { $0.id == bot.id } ?? bot
+        var members = live.memberIds
+        let isActive = members.contains(id)
+        if isActive {
             guard members.count > Threads.groupMinMembers else {
                 notice = "A group needs at least \(Threads.groupMinMembers) bots."
                 return
