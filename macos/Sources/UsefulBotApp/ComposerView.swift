@@ -168,12 +168,13 @@ struct ComposerView: View {
                 .foregroundStyle(Theme.C.ink)
                 .lineLimit(1...6)
                 .focused($focused)
-                // Plain Return sends; when there is nothing to send it is
-                // swallowed rather than inserting a newline. Modified keys
-                // fall through to the field.
+                // Plain Return sends when possible. With nothing to send it is
+                // swallowed; while a turn runs it falls through so the next
+                // draft can take a newline. Modified keys always fall through.
                 .onKeyPress(.return, phases: .down) { press in
                     guard press.modifiers.isEmpty else { return .ignored }
-                    guard canSend, !model.pending else { return .handled }
+                    guard canSend else { return .handled }
+                    guard !model.pending else { return .ignored }
                     send()
                     return .handled
                 }

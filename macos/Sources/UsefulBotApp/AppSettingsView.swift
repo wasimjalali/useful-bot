@@ -234,6 +234,11 @@ struct AppSettingsView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.C.inkMuted)
             }
+            if let providers = model.providers, providers.isEmpty {
+                Text("No providers are configured for this build.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
             ForEach(model.providers ?? []) { item in
                 providerSection(item)
             }
@@ -288,17 +293,10 @@ struct AppSettingsView: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
                             .accessibilityLabel("API key")
+                            .onSubmit { connect(item) }
                         HStack(spacing: 8) {
                             NativeButton("Connect", kind: .primary, enabled: canConnect(item)) {
-                                let key = (drafts[item.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                                Task {
-                                    await model.connectProvider(id: item.id, key: key)
-                                    // Keep the key on screen when the connect
-                                    // failed so it can be corrected and retried.
-                                    if model.providersError == nil {
-                                        drafts[item.id] = ""
-                                    }
-                                }
+                                connect(item)
                             }
                             if item.connected && item.source == "settings" {
                                 NativeButton("Remove", kind: .secondary, enabled: model.providerBusy != item.id) {
@@ -322,6 +320,19 @@ struct AppSettingsView: View {
     private func canConnect(_ item: ProviderPublic) -> Bool {
         model.providerBusy != item.id
             && !(drafts[item.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func connect(_ item: ProviderPublic) {
+        guard canConnect(item) else { return }
+        let key = (drafts[item.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await model.connectProvider(id: item.id, key: key)
+            // Keep the key on screen when the connect failed so it can be
+            // corrected and retried.
+            if model.providersError == nil {
+                drafts[item.id] = ""
+            }
+        }
     }
 
     private func draftBinding(_ id: String) -> Binding<String> {

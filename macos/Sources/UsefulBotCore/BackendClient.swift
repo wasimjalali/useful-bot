@@ -9,6 +9,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case provider(String)
     /// `/api/attachments` answered with its own error code.
     case attachment(String)
+    /// `/api/shell` answered with its own error code.
+    case shell(String)
 
     public var errorDescription: String? {
         switch self {
@@ -24,6 +26,27 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return code
         case .attachment(let code):
             return code
+        case .shell(let code):
+            return Self.shellCopy(code)
+        }
+    }
+
+    private static func shellCopy(_ code: String) -> String {
+        switch code {
+        case "proposal_missing":
+            return "That proposal is no longer available."
+        case "proposal_expired":
+            return "That proposal has expired."
+        case "proposal_mismatch":
+            return "That proposal no longer matches this app."
+        case "target_missing":
+            return "The target bot no longer exists."
+        case "fanout_empty":
+            return "There is nobody left to send this to."
+        case "csrf":
+            return "The local server rejected that write. Try again."
+        default:
+            return code.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
 
@@ -36,6 +59,12 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// The `/api/attachments` error code, when the failure came from that route.
     public var attachmentCode: String? {
         if case .attachment(let code) = self { return code }
+        return nil
+    }
+
+    /// The `/api/shell` error code, when the failure came from that route.
+    public var shellCode: String? {
+        if case .shell(let code) = self { return code }
         return nil
     }
 }
@@ -52,6 +81,7 @@ private struct StateResponse: Decodable {
     let proposals: [Proposal]?
 }
 private struct SendResponse: Decodable { let sessionId: String? }
+private struct ShellErrorResponse: Decodable { let error: String? }
 private struct ProvidersResponse: Decodable {
     let composer: ComposerState?
     let providers: [ProviderPublic]?
@@ -205,12 +235,12 @@ public actor BackendClient {
     /// Run a request and, on an expired or rotated session, sign in once more
     /// and retry it. Without this a server restart leaves the app broken until
     /// relaunch.
-    private func perform(_ build: (BackendClient, String) -> URLRequest) async throws -> (Data, URLResponse) {
-        var result = try await session.data(for: build(self, csrf))
+    private func perform(_ build: (BackendClient, String) throws -> URLRequest) async throws -> (Data, URLResponse) {
+        var result = try await session.data(for: try build(self, csrf))
         if let http = result.1 as? HTTPURLResponse, http.statusCode == 401 || http.statusCode == 403 {
             try await signIn()
             // Rebuild with the fresh token, not the one from the failed try.
-            result = try await session.data(for: build(self, csrf))
+            result = try await session.data(for: try build(self, csrf))
         }
         return result
     }
@@ -235,7 +265,8 @@ public actor BackendClient {
                 resolvingAgainstBaseURL: false
             )
             components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
-            return URLRequest(url: components?.url ?? client.base)
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
         }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(StateResponse.self, from: data) else {
@@ -368,7 +399,8 @@ public actor BackendClient {
                 resolvingAgainstBaseURL: false
             )
             components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
-            return URLRequest(url: components?.url ?? client.base)
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
         }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(MemoryResponse.self, from: data) else {
@@ -397,7 +429,8 @@ public actor BackendClient {
                 resolvingAgainstBaseURL: false
             )
             components?.queryItems = [URLQueryItem(name: "limit", value: "2")]
-            var request = URLRequest(url: components?.url ?? client.base)
+            guard let url = components?.url else { throw BackendError.decoding }
+            var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             return request
@@ -436,7 +469,7 @@ public actor BackendClient {
     /// action the web client sends after a turn starts. Without it a poll
     /// would read back a null session and the next send would start a new one.
     public func touchChat(botId: String, preview: String, sessionId: String) async throws {
-        let (_, response) = try await perform { client, token in
+        let (data, response) = try await perform { client, token in
             let action: [String: Any] = [
                 "type": "touchChat",
                 "botId": botId,
@@ -450,7 +483,7 @@ public actor BackendClient {
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action])
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectShellOK(data, response)
     }
 
     /// Apply a profile patch through the shell action endpoint. Nil values are
@@ -478,7 +511,7 @@ public actor BackendClient {
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectShellOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -499,7 +532,7 @@ public actor BackendClient {
             ])
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectShellOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -531,9 +564,15 @@ public actor BackendClient {
     /// Upload one attachment for the composer. The caller is responsible for
     /// the extension/size checks in `Attachments`.
     public func uploadAttachment(fileURL: URL, mimeType: String) async throws -> Attachment {
+        let name = try Attachments.safeName(fileURL.lastPathComponent)
         // Bounded read: never let a huge or unknown-size file land in memory
         // before the cap is enforced.
-        let handle = try FileHandle(forReadingFrom: fileURL)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: fileURL)
+        } catch {
+            throw BackendError.attachment("attachment_missing")
+        }
         defer { try? handle.close() }
         var data = Data()
         while data.count <= Attachments.maxBytes {
@@ -543,7 +582,6 @@ public actor BackendClient {
         guard data.count <= Attachments.maxBytes else {
             throw BackendError.attachment("attachment_size")
         }
-        let name = try Attachments.safeName(fileURL.lastPathComponent)
         // `UTType.identifier` is a UTI, not a MIME type; only an allow-listed
         // `type/subtype` may reach the multipart header. The server falls back
         // to the file extension when the header is generic.
@@ -574,7 +612,9 @@ public actor BackendClient {
         // or the prompt, and the local id is unique per attachment so two
         // picks that normalise to the same name cannot collapse into one.
         let displayName = (try? Attachments.safeName(resolvedName)) ?? name
-        return Attachment(id: UUID().uuidString, name: displayName, bytes: bytes, text: decoded.text)
+        // Clip here too: the prompt must not carry more than the server keeps.
+        let text = decoded.text.map { String($0.prefix(Attachments.textMax)) }
+        return Attachment(id: UUID().uuidString, name: displayName, bytes: bytes, text: text)
     }
 
     // MARK: - Stream
@@ -719,7 +759,26 @@ public actor BackendClient {
         guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
         // eve answers 202 Accepted for a session turn, so any 2xx is success.
         guard (200...299).contains(http.statusCode) else {
+            // A final 401/403 after the sign-in retry is an auth failure, not
+            // a generic HTTP error.
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw BackendError.unauthorized
+            }
             throw BackendError.http(http.statusCode)
+        }
+    }
+
+    /// The shell route answers `{ok:false,error:"code"}`; surface that code
+    /// instead of a bare status so the UI can explain what failed.
+    private static func expectShellOK(_ data: Data, _ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
+        guard (200...299).contains(http.statusCode) else {
+            if let decoded = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
+               let code = decoded.error, !code.isEmpty {
+                throw BackendError.shell(code)
+            }
+            try expectOK(response)
+            return
         }
     }
 

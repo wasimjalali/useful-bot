@@ -108,6 +108,8 @@ final class AppModel: ObservableObject {
     private var activeSession: (botId: String, sessionId: String)?
     /// One handoff pump at a time; a slow server must not stack ticks.
     private var tickInFlight = false
+    /// Consecutive unauthorized polls, surfaced after the second failure.
+    private var pollAuthFailures = 0
     private var loadGeneration = 0
     private var sendGeneration = 0
     private var chatGeneration = 0
@@ -169,8 +171,9 @@ final class AppModel: ObservableObject {
         pollTask?.cancel()
         approvalPollTask?.cancel()
         reloadTask?.cancel()
-        saveChain?.cancel()
-        saveChain = nil
+        // Let the serialised shell writes drain instead of forking a second
+        // chain: cancellation is cooperative and a tail could still land.
+        await saveChain?.value
         uploadChain?.cancel()
         uploadChain = nil
         cancelSend()
@@ -247,8 +250,9 @@ final class AppModel: ObservableObject {
         memoryError = nil
         selectedBotId = botId
         routineNotice = false
-        // The draft and its attachments are page-level on the web, so they
-        // survive a bot switch rather than being cleared with the thread.
+        // Clear the old thread synchronously so the new bot never flashes the
+        // previous transcript while its state loads.
+        resetThread()
         startReload()
         persistSelection(botId)
         if let outgoing, !outgoing.sessionId.isEmpty {
@@ -357,7 +361,15 @@ final class AppModel: ObservableObject {
                 // by an idle poll that knows nothing new.
             }
             await refreshComposer()
+            pollAuthFailures = 0
+        } catch let error as BackendError where error == .unauthorized {
+            // Never leave the shell silently stuck on a rejected session.
+            pollAuthFailures += 1
+            if pollAuthFailures >= 2 {
+                threadError = "The local server rejected this app. Retry or restart it."
+            }
         } catch {
+            pollAuthFailures = 0
             /* keep the last view; the next poll retries */
         }
     }
@@ -726,6 +738,9 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled else { return }
+                // The created bot starts fresh: stop any turn still streaming
+                // into the previous thread.
+                self.cancelSend()
                 self.resetThread()
                 self.applyStore(next)
             } catch {
@@ -741,6 +756,7 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled else { return }
+                self.cancelSend()
                 self.resetThread()
                 self.applyStore(next)
                 self.settingsOpen = true
@@ -771,7 +787,7 @@ final class AppModel: ObservableObject {
         cancelSend()
         chatGeneration += 1
         let generation = chatGeneration
-        Task { [weak self] in
+        enqueue { [weak self] in
             guard let self else { return }
             if let runningSession, !runningSession.isEmpty {
                 _ = try? await self.client.cancel(sessionId: runningSession)
@@ -780,7 +796,7 @@ final class AppModel: ObservableObject {
             if self.store?.selectedBotId != id {
                 if let next = try? await self.client.shellAction(ShellActions.select(botId: id)) {
                     guard generation == self.chatGeneration else { return }
-                    self.store = next
+                    self.applyStore(next)
                 }
             }
             // A failed clear must not wipe the visible thread; surface it and
@@ -788,18 +804,23 @@ final class AppModel: ObservableObject {
             do {
                 let cleared = try await self.client.shellAction(ShellActions.clearThread(botId: id))
                 guard generation == self.chatGeneration else { return }
-                self.store = cleared
+                self.applyStore(cleared)
             } catch {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."
                 return
             }
+            guard generation == self.chatGeneration else { return }
             self.resetThread()
             self.selectedBotId = id
             self.attachError = nil
+            self.threadError = nil
+            self.memoryNotes = nil
+            self.memoryError = nil
             self.rebuildTranscript()
             self.settingsOpen = false
             self.routinesOpen = false
             self.routineNotice = false
+            await self.reloadThread()
         }
     }
 
@@ -858,14 +879,17 @@ final class AppModel: ObservableObject {
                         proposalId: proposal.id,
                         proposalStatus: "confirmed"
                     )
+                    guard !Task.isCancelled else { return }
                     self.applyStore(next)
                 } else {
                     let next = try await self.client.resolveProposal(
                         proposalId: proposal.id,
                         status: "dismissed"
                     )
+                    guard !Task.isCancelled else { return }
                     self.applyStore(next)
                 }
+                guard !Task.isCancelled else { return }
                 self.threadError = nil
                 self.busyProposals.remove(proposal.id)
                 await self.reloadThread()
@@ -927,7 +951,7 @@ final class AppModel: ObservableObject {
         // Serialise uploads so two picks cannot race the attachment list, and
         // re-check the cap after every completion instead of up front.
         let previous = uploadChain
-        uploadChain = Task { [weak self] in
+        uploadChain = Task { @MainActor [weak self] in
             _ = await previous?.value
             guard !Task.isCancelled, let self else { return }
             for url in urls {
@@ -950,7 +974,9 @@ final class AppModel: ObservableObject {
     /// One pick: own its security scope for exactly this call, check the size
     /// before reading, and let the client stream the read with a hard cap.
     private func uploadOne(_ url: URL) async -> (attachment: Attachment?, error: String?) {
-        if url.hasDirectoryPath {
+        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory
+            ?? url.hasDirectoryPath
+        if isDirectory {
             return (nil, "Folders cannot be attached.")
         }
         let accessing = url.startAccessingSecurityScopedResource()
@@ -980,9 +1006,7 @@ final class AppModel: ObservableObject {
             return "That file could not be read."
         case "csrf":
             return "The local server rejected the upload. Try again."
-        case let code?:
-            return code.replacingOccurrences(of: "_", with: " ").capitalized
-        case nil:
+        default:
             return "Attach failed."
         }
     }

@@ -6,6 +6,8 @@ import Foundation
 public enum Attachments {
     public static let maxBytes = 1_048_576
     public static let maxFiles = 5
+    /// Per-file text the server keeps; the native upload clips to the same cap.
+    public static let textMax = 64 * 1024
 
     public enum NameError: Error, Equatable {
         case forbidden

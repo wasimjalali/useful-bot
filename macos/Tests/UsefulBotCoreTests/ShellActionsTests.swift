@@ -87,4 +87,13 @@ import Testing
         #expect(BackendClient.pathComponent("..") == "_")
         #expect(BackendClient.pathComponent("") == "_")
     }
+
+    @Test func shellErrorsSurfaceReadableCopy() {
+        #expect(
+            BackendError.shell("proposal_missing").errorDescription
+                == "That proposal is no longer available."
+        )
+        #expect(BackendError.shell("custom_thing").errorDescription == "Custom Thing")
+        #expect(BackendError.shell("proposal_missing").shellCode == "proposal_missing")
+    }
 }
