@@ -99,7 +99,11 @@ private struct FacePickerView: View {
             switch result {
             case .success(let urls):
                 guard let url = urls.first else { return }
-                applyUpload(FaceUpload.dataURL(from: url))
+                // Decoding and resizing a large source can take long enough to
+                // hitch the window; do it off the main actor and apply back on.
+                Task { @MainActor in
+                    applyUpload(await FaceUpload.dataURL(from: url))
+                }
             case .failure:
                 notice = "That image could not be read. Use a PNG, JPEG or WebP."
             }
@@ -250,18 +254,27 @@ private struct FacePickerView: View {
 
 /// 128pt square JPEG data URL, same budget as `readFaceImage` on the web.
 enum FaceUpload {
-    enum Failure: Error {
+    enum Failure: Error, Sendable {
         case tooLarge
         case unreadable
     }
 
-    static func dataURL(from url: URL) -> Result<String, Failure> {
+    private static let maxSourceBytes = 8 * 1024 * 1024
+
+    /// Runs the decode away from the main actor; the AppKit work is offscreen
+    /// and touches no shared view state.
+    static func dataURL(from url: URL) async -> Result<String, Failure> {
+        await Task.detached(priority: .userInitiated) {
+            render(url)
+        }.value
+    }
+
+    private static func render(_ url: URL) -> Result<String, Failure> {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         // Decode only reasonably sized source files; the resize below is the
         // real cap, but a huge original should never be decoded first.
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
-        if let size, size > 8 * 1024 * 1024 {
+        if sourceExceedsCap(url) {
             return .failure(.tooLarge)
         }
         guard let image = NSImage(contentsOf: url), image.size.width > 0, image.size.height > 0 else {
@@ -295,6 +308,23 @@ enum FaceUpload {
         let dataURL = "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
         guard dataURL.count <= 120_000 else { return .failure(.tooLarge) }
         return .success(dataURL)
+    }
+
+    /// Size gate that holds even when the URL reports no `fileSize`: fall back
+    /// to the file attributes and, last, a bounded one-past-the-cap read so an
+    /// unknown-size file is never decoded unbounded.
+    private static func sourceExceedsCap(_ url: URL) -> Bool {
+        if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+            return size > maxSourceBytes
+        }
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attributes[.size] as? Int {
+            return size > maxSourceBytes
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let probe = (try? handle.read(upToCount: maxSourceBytes + 1)) ?? Data()
+        return probe.count > maxSourceBytes
     }
 }
 
@@ -442,9 +472,15 @@ private struct BotSettingsFields: View {
             .padding(.top, 8)
         }
         .task(id: bot.id) {
+            var delay: UInt64 = 4_000_000_000
             while !Task.isCancelled {
                 await model.loadMemory(botId: bot.id)
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                // Back off a failed poll so a server that is down is not hit
+                // every 4s, and reset once it answers again.
+                delay = model.memoryError == nil
+                    ? 4_000_000_000
+                    : min(delay * 2, 30_000_000_000)
+                try? await Task.sleep(nanoseconds: delay)
             }
         }
     }
