@@ -253,6 +253,10 @@ public actor BackendClient {
         }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
+            if let failure = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
+               let code = failure.error, !code.isEmpty {
+                throw BackendError.shell(code)
+            }
             throw BackendError.decoding
         }
         return decoded.store
@@ -513,6 +517,10 @@ public actor BackendClient {
         }
         try Self.expectShellOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
+            if let failure = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
+               let code = failure.error, !code.isEmpty {
+                throw BackendError.shell(code)
+            }
             throw BackendError.decoding
         }
         return decoded.store
@@ -534,6 +542,10 @@ public actor BackendClient {
         }
         try Self.expectShellOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
+            if let failure = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
+               let code = failure.error, !code.isEmpty {
+                throw BackendError.shell(code)
+            }
             throw BackendError.decoding
         }
         return decoded.store

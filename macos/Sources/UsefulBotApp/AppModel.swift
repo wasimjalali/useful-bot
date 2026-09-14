@@ -110,6 +110,11 @@ final class AppModel: ObservableObject {
     private var tickInFlight = false
     /// Consecutive unauthorized polls, surfaced after the second failure.
     private var pollAuthFailures = 0
+    /// Bumped by retry so a shell write that was already in flight cannot
+    /// land its echo over the fresh reload.
+    private var storeEpoch = 0
+    /// A send's own failure banner, preserved across its trailing reload.
+    private var stickyThreadError: String?
     private var loadGeneration = 0
     private var sendGeneration = 0
     private var chatGeneration = 0
@@ -138,6 +143,7 @@ final class AppModel: ObservableObject {
         let attempt = startAttempt
         phase = .starting
         threadError = nil
+        stickyThreadError = nil
         saveError = nil
         _ = await services.ensure(config: config, timeoutSeconds: 40)
         guard attempt == startAttempt else { return }
@@ -174,6 +180,9 @@ final class AppModel: ObservableObject {
         // Let the serialised shell writes drain instead of forking a second
         // chain: cancellation is cooperative and a tail could still land.
         await saveChain?.value
+        // Anything that was in flight from before this retry must not paint
+        // over the fresh state.
+        storeEpoch += 1
         uploadChain?.cancel()
         uploadChain = nil
         cancelSend()
@@ -215,7 +224,9 @@ final class AppModel: ObservableObject {
             approvals = items.filter { decidedApprovals[$0.id] == nil }
             // A decision in flight must survive a poll that already saw the
             // server drop the row, or the buttons re-enable mid-request.
-            let live = Set(items.map(\.id)).union(decidedApprovals.keys)
+            let live = Set(items.map(\.id))
+                .union(decidedApprovals.keys)
+                .union(busyApprovals)
             busyApprovals.formIntersection(live)
         }
     }
@@ -246,6 +257,8 @@ final class AppModel: ObservableObject {
         cancelSend()
         attachError = nil
         threadError = nil
+attachError = nil
+        stickyThreadError = nil
         memoryNotes = nil
         memoryError = nil
         selectedBotId = botId
@@ -324,7 +337,8 @@ final class AppModel: ObservableObject {
             }
             guard generation == loadGeneration else { return }
             publishTranscript(force: true)
-            threadError = projection.failed ? "The last turn failed." : nil
+            // A send's own failure banner outlives the reload that follows it.
+            threadError = stickyThreadError ?? (projection.failed ? "The last turn failed." : nil)
         } catch is CancellationError {
             return
         } catch {
@@ -407,12 +421,17 @@ final class AppModel: ObservableObject {
 
     func send(_ text: String) {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty, !pending, let bot = selectedBot else { return }
+        // Never send through the selectedBot fallback: the turn must belong to
+        // the bot the composer is showing.
+        guard !message.isEmpty, !pending,
+              let bot = selectedBot, bot.id == selectedBotId else { return }
         cancelSend()
         pending = true
         threadError = nil
+        stickyThreadError = nil
         sendGeneration += 1
         let generation = sendGeneration
+        let chatGen = chatGeneration
         sendBotId = bot.id
         let draftSnapshot = draft
         let sentAttachmentIds = Set(attachments.map(\.id))
@@ -434,44 +453,46 @@ final class AppModel: ObservableObject {
                         sendSessionId = nil
                     }
                 }
-                guard generation == self.sendGeneration else { return }
+                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 let sessionId = try await self.client.send(
                     botId: bot.id,
                     sessionId: sendSessionId,
                     message: message
                 )
-                guard generation == self.sendGeneration else { return }
+                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 self.activeSession = (bot.id, sessionId)
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
                 self.clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: message)
-                guard generation == self.sendGeneration else { return }
+                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 var sawUserTurn = false
                 for try await event in self.client.stream(
                     sessionId: sessionId,
                     expectedSuffix: message,
                     historyTurnIds: history
                 ) {
-                    guard generation == self.sendGeneration, self.sendBotId == bot.id else { return }
+                    guard generation == self.sendGeneration, chatGen == self.chatGeneration, self.sendBotId == bot.id else { return }
                     if event.type == "message.received" { sawUserTurn = true }
                     self.projection.apply(event)
                     self.publishTranscript()
                 }
                 self.publishTranscript(force: true)
-                guard generation == self.sendGeneration else { return }
+                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 if self.projection.failed {
-                    self.threadError = "The turn failed."
+                    self.stickyThreadError = "The turn failed."
                 } else if !sawUserTurn {
-                    self.threadError = "The turn did not start."
+                    self.stickyThreadError = "The turn did not start."
                 }
+                self.threadError = self.stickyThreadError
                 self.pending = false
                 await self.reloadThread()
             } catch is CancellationError {
                 return
             } catch {
-                guard generation == self.sendGeneration else { return }
-                self.threadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                self.threadError = self.stickyThreadError
                 self.pending = false
                 await self.reloadThread()
             }
@@ -676,9 +697,10 @@ final class AppModel: ObservableObject {
     func patchBot(botId: String, _ patch: [String: Any?]) {
         enqueue { [weak self] in
             guard let self else { return }
+            let epoch = self.storeEpoch
             do {
                 let next = try await self.client.shellAction(ShellActions.updateBot(botId: botId, patch: patch))
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.store = next
                 self.saveError = nil
             } catch {
@@ -690,9 +712,10 @@ final class AppModel: ObservableObject {
     func perform(_ action: [String: Any]) {
         enqueue { [weak self] in
             guard let self else { return }
+            let epoch = self.storeEpoch
             do {
                 let next = try await self.client.shellAction(action)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.applyStore(next)
                 self.saveError = nil
             } catch {
@@ -707,12 +730,16 @@ final class AppModel: ObservableObject {
         store = next
         if let selected = next.selectedBotId, next.bots.contains(where: { $0.id == selected }) {
             if selected != selectedBotId {
+                // A server-driven switch (proposal, create) stops the old
+                // turn like a rail click does.
+                resetThread()
                 selectedBotId = selected
                 routineNotice = false
                 startReload()
             }
         } else if let current = selectedBotId, !next.bots.contains(where: { $0.id == current }) {
             if let first = next.bots.first?.id {
+                resetThread()
                 selectedBotId = first
                 routineNotice = false
                 startReload()
@@ -728,6 +755,7 @@ final class AppModel: ObservableObject {
     func createBot(name: String, petname: String, label: String, description: String, sectionId: String?) {
         enqueue { [weak self] in
             guard let self else { return }
+            let epoch = self.storeEpoch
             let action = ShellActions.createBot(
                 name: name,
                 petname: petname,
@@ -737,7 +765,7 @@ final class AppModel: ObservableObject {
             )
             do {
                 let next = try await self.client.shellAction(action)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 // The created bot starts fresh: stop any turn still streaming
                 // into the previous thread.
                 self.cancelSend()
@@ -752,10 +780,11 @@ final class AppModel: ObservableObject {
     func createGroup(name: String, memberIds: [String], sectionId: String?) {
         enqueue { [weak self] in
             guard let self else { return }
+            let epoch = self.storeEpoch
             let action = ShellActions.createGroup(name: name, memberIds: memberIds, sectionId: sectionId)
             do {
                 let next = try await self.client.shellAction(action)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.cancelSend()
                 self.resetThread()
                 self.applyStore(next)
@@ -789,6 +818,7 @@ final class AppModel: ObservableObject {
         let generation = chatGeneration
         enqueue { [weak self] in
             guard let self else { return }
+            let epoch = self.storeEpoch
             if let runningSession, !runningSession.isEmpty {
                 _ = try? await self.client.cancel(sessionId: runningSession)
             }
@@ -809,27 +839,31 @@ final class AppModel: ObservableObject {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."
                 return
             }
-            guard generation == self.chatGeneration else { return }
+            guard generation == self.chatGeneration, epoch == self.storeEpoch else { return }
             self.resetThread()
             self.selectedBotId = id
             self.attachError = nil
             self.threadError = nil
+self.attachError = nil
+            self.stickyThreadError = nil
             self.memoryNotes = nil
             self.memoryError = nil
             self.rebuildTranscript()
             self.settingsOpen = false
             self.routinesOpen = false
             self.routineNotice = false
-            await self.reloadThread()
+            // Reload outside the chain: an SSE replay must not block writes.
+            self.startReload()
         }
     }
 
     func openRecent(_ recentId: String) {
         enqueue { [weak self] in
             guard let self else { return }
+            let epoch = self.storeEpoch
             do {
                 let next = try await self.client.shellAction(ShellActions.openRecent(recentId: recentId))
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 let switched = next.selectedBotId != self.selectedBotId
                 self.applyStore(next)
                 if !switched {
@@ -848,6 +882,9 @@ final class AppModel: ObservableObject {
     }
 
     private func resetThread() {
+        // A stream still running for the old thread must not apply into the
+        // fresh projection; cancelSend bumps the send generation and stops it.
+        cancelSend()
         loadGeneration += 1
         reloadTask?.cancel()
         durableEvents = []
@@ -865,6 +902,7 @@ final class AppModel: ObservableObject {
         busyProposals.insert(proposal.id)
         enqueue { [weak self] in
             guard let self else { return }
+            let epoch = self.storeEpoch
             do {
                 if confirmed {
                     guard let action = ProposalActions.confirm(proposal) else {
@@ -879,20 +917,21 @@ final class AppModel: ObservableObject {
                         proposalId: proposal.id,
                         proposalStatus: "confirmed"
                     )
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                     self.applyStore(next)
                 } else {
                     let next = try await self.client.resolveProposal(
                         proposalId: proposal.id,
                         status: "dismissed"
                     )
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                     self.applyStore(next)
                 }
                 guard !Task.isCancelled else { return }
                 self.threadError = nil
                 self.busyProposals.remove(proposal.id)
-                await self.reloadThread()
+                // Reload outside the chain: a replay must not block writes.
+                self.startReload()
             } catch {
                 self.busyProposals.remove(proposal.id)
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Proposal failed."

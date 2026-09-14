@@ -86,22 +86,21 @@ import Testing
         #expect(!proposal.isOpen())
     }
 
-    @Test func profileConfirmCarriesAPetnameAndDropsTheEmptyOne() throws {
-        let withPetname = try decode("""
+    @Test func profileConfirmOnlySendsVisibleFields() throws {
+        // The card shows name/title/description; petname and avatar edits are
+        // never confirmed blind.
+        let proposal = try decode("""
         {"id":"p10","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Scout","petname":"Scout Two","title":"Research","description":"Owns it"}}
+         "botId":"b1","patch":{"name":"Scout","petname":"Scout Two","title":"Research","description":"Owns it",
+          "avatarShape":"hex","avatarColor":"blue"}}
         """)
-        let action = try #require(ProposalActions.confirm(withPetname))
+        let action = try #require(ProposalActions.confirm(proposal))
         let patch = try #require(action["patch"] as? [String: Any])
-        #expect(patch["petname"] as? String == "Scout Two")
-
-        let withoutPetname = try decode("""
-        {"id":"p11","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Scout","petname":"","title":"Research","description":"Owns it"}}
-        """)
-        let plain = try #require(ProposalActions.confirm(withoutPetname))
-        let plainPatch = try #require(plain["patch"] as? [String: Any])
-        #expect(plainPatch["petname"] == nil)
+        #expect(patch["name"] as? String == "Scout")
+        #expect(patch["label"] as? String == "Research")
+        #expect(patch["petname"] == nil)
+        #expect(patch["avatarShape"] == nil)
+        #expect(patch["avatarColor"] == nil)
     }
 
     @Test func createConfirmRequiresAName() throws {

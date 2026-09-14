@@ -8,6 +8,9 @@ import UsefulBotCore
 struct ComposerView: View {
     @EnvironmentObject private var model: AppModel
 
+    /// `chat-composer.tsx` textarea cap, matching the server clip.
+    static let maxDraftLength = 2000
+
     let bot: ShellBot
     var onOpenConnectors: () -> Void
     var onOpenProviders: () -> Void
@@ -168,6 +171,14 @@ struct ComposerView: View {
                 .foregroundStyle(Theme.C.ink)
                 .lineLimit(1...6)
                 .focused($focused)
+                // The web caps the composer at 2000 chars and the server clips
+                // to the same limit; capping here keeps the durable text equal
+                // to the live echo so the transcript merge can pair them.
+                .onChange(of: model.draft) { _, next in
+                    if next.count > Self.maxDraftLength {
+                        model.draft = String(next.prefix(Self.maxDraftLength))
+                    }
+                }
                 // Plain Return sends when possible. With nothing to send it is
                 // swallowed; while a turn runs it falls through so the next
                 // draft can take a newline. Modified keys always fall through.

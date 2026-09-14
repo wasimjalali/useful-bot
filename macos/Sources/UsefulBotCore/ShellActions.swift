@@ -113,22 +113,14 @@ public enum ProposalActions {
             ]
         case .updateBotProfile:
             // A missing patch must not become an all-empty profile wipe; the
-            // proposal is simply not confirmable.
+            // proposal is simply not confirmable. Only the fields the card
+            // shows are sent: petname/avatar keys would be blind changes.
             guard let botId = proposal.botId, let proposalPatch = proposal.patch else { return nil }
-            var patch: [String: Any?] = [
+            let patch: [String: Any?] = [
                 "name": proposalPatch.name,
                 "label": proposalPatch.title,
                 "description": proposalPatch.description,
             ]
-            if let petname = proposalPatch.petname, !petname.isEmpty {
-                patch["petname"] = petname
-            }
-            if let shape = proposalPatch.avatarShape, FacePalette.isShape(shape) {
-                patch["avatarShape"] = shape
-            }
-            if let color = proposalPatch.avatarColor, FacePalette.isColor(color) {
-                patch["avatarColor"] = color
-            }
             return ShellActions.updateBot(botId: botId, patch: patch)
         case .fanout:
             guard let targetId = proposal.fanoutTargetId else { return nil }

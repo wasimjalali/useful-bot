@@ -37,21 +37,17 @@ import Testing
         #expect(action["sectionId"] as? String == "s1")
     }
 
-    @Test func profileConfirmKeepsValidFacesAndDropsInvalidOnes() throws {
+    @Test func profileConfirmDropsBlindAvatarAndPetnameKeys() throws {
         let valid = try JSONDecoder().decode(Proposal.self, from: Data("""
         {"id":"p2","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Scout","title":"Lead","description":"D","avatarShape":"hex","avatarColor":"not-a-color"}}
+         "botId":"b1","patch":{"name":"Scout","title":"Lead","description":"D","avatarShape":"hex","avatarColor":"blue","petname":"Scout Two"}}
         """.utf8))
         let patch = try #require(ProposalActions.confirm(valid)?["patch"] as? [String: Any])
-        #expect(patch["avatarShape"] as? String == "hex")
+        #expect(patch["name"] as? String == "Scout")
+        #expect(patch["label"] as? String == "Lead")
+        #expect(patch["avatarShape"] == nil)
         #expect(patch["avatarColor"] == nil)
-
-        let invalid = try JSONDecoder().decode(Proposal.self, from: Data("""
-        {"id":"p3","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
-         "botId":"b1","patch":{"name":"Scout","title":"Lead","description":"D","avatarShape":"nope"}}
-        """.utf8))
-        let clean = try #require(ProposalActions.confirm(invalid)?["patch"] as? [String: Any])
-        #expect(clean["avatarShape"] == nil)
+        #expect(patch["petname"] == nil)
     }
 
     @Test func fanoutConfirmTargetsTheGroupWhenThereIsOne() throws {

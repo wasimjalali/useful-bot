@@ -173,6 +173,20 @@ import Testing
         ))
         #expect(projection.messages.last?.text == "hello there")
     }
+
+    @Test func reusedDeltaIdsStillApply() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "he"))
+        projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "llo"))
+        #expect(projection.messages.last?.text == "hello")
+    }
+
+    @Test func duplicateIdentifiedEventsDrop() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        #expect(projection.messages.count == 1)
+    }
 }
 
 @Suite struct ApprovalAndSettingsDecodingTests {

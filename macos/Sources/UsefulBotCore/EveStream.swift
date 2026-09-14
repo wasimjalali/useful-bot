@@ -219,9 +219,15 @@ public struct StreamProjection: Equatable, Sendable {
     public init() {}
 
     public mutating func apply(_ event: EveEvent) {
-        if let id = event.id {
+        // Deltas are content, not identity: an id reused across appended
+        // chunks must still apply. Other events dedupe by id, and the set is
+        // reset periodically so a long replay cannot grow without bound.
+        if let id = event.id, event.type != "message.appended", event.type != "action.partial" {
             if seen.contains(id) { return }
             seen.insert(id)
+            if seen.count > 2000 {
+                seen.removeAll()
+            }
         }
         switch event.type {
         case "turn.started":
