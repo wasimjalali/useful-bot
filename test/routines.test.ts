@@ -30,6 +30,7 @@ import {
   type Routine,
 } from "../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, writeShell } from "../shared/shell-io.ts";
+import { sweepOrphanState } from "../web/lib/agent-exec.ts";
 
 function sandbox(): { path: string; restore: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "ub-routines-"));
@@ -593,4 +594,56 @@ test("a reseeded roster is marked, and the mark clears when it is rebuilt", () =
   rebuilt.bots = [...rebuilt.bots, { ...rebuilt.bots[0], id: "bot-second", name: "Second" }];
   writeShell(rebuilt, path);
   assert.equal(shellWasReseeded(path), false);
+});
+
+test("the sweep stands down while the roster is a recovery stub", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-sweep-gate-"));
+  const shellPath = join(dir, "shell.json");
+  const routinesPath = join(dir, "routines.json");
+  const previous = {
+    shell: process.env.UB_SHELL_PATH,
+    routines: process.env.UB_ROUTINES_PATH,
+    agents: process.env.UB_AGENT_STORE_PATH,
+  };
+  process.env.UB_SHELL_PATH = shellPath;
+  process.env.UB_ROUTINES_PATH = routinesPath;
+  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
+  try {
+    const shell = readShell(shellPath);
+    shell.bots = [...shell.bots, { ...shell.bots[0], id: "bot-second", name: "Second" }];
+    writeShell(shell, shellPath);
+    createRoutine({ botId: "bot-second", name: "Live", instruction: "x", schedules: [] });
+    createRoutine({ botId: "bot-gone", name: "Orphan", instruction: "x", schedules: [] });
+
+    // The roster is the owner's, so the orphan goes and the live one stays.
+    assert.equal(sweepOrphanState().length, 1);
+    assert.deepEqual(readRoutinesStore().routines.map((item) => item.name), ["Live"]);
+
+    // Now lose the roster. Both routines are orphans against the stub, and
+    // that is exactly why the sweep must not run.
+    createRoutine({ botId: "bot-gone", name: "Orphan2", instruction: "x", schedules: [] });
+    writeFileSync(shellPath, "{ not json");
+    readShell(shellPath);
+    assert.equal(shellWasReseeded(shellPath), true);
+    assert.deepEqual(sweepOrphanState(), []);
+    assert.equal(readRoutinesStore().routines.length, 2);
+
+    // Restoring a roster the stub never held takes it out of recovery, and
+    // the sweep picks up where it left off.
+    const restored = readShell(shellPath);
+    restored.bots = [...restored.bots, { ...restored.bots[0], id: "bot-second", name: "Second" }];
+    writeShell(restored, shellPath);
+    assert.equal(shellWasReseeded(shellPath), false);
+    assert.equal(sweepOrphanState().length, 1);
+    assert.deepEqual(readRoutinesStore().routines.map((item) => item.name), ["Live"]);
+  } finally {
+    for (const [key, value] of [
+      ["UB_SHELL_PATH", previous.shell],
+      ["UB_ROUTINES_PATH", previous.routines],
+      ["UB_AGENT_STORE_PATH", previous.agents],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });

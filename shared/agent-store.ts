@@ -607,10 +607,12 @@ export function deleteThread(botId: string, path = agentStorePath()): boolean {
   return withAgentStore((store) => {
     const id = threadIdFor(botId);
     const before = store.threads.length;
-    // Either field, matching `sweepOrphanThreads`: a hand-edited row where the
-    // two diverge still belongs to this bot, and leaving it for the sweep
-    // would be the two functions disagreeing about the same row.
-    store.threads = store.threads.filter((item) => item.id !== id && item.botId !== botId);
+    // Keyed on `id`, like every other lookup here. `sweepOrphanThreads` keeps a
+    // row when either field is live, and the asymmetry is on purpose: in a
+    // hand-edited store where the two diverge, `{id: live, botId: deleted}` is
+    // operationally the live bot's thread, so deleting the other bot must not
+    // take it. A row both of whose bots are gone is the sweep's to collect.
+    store.threads = store.threads.filter((item) => item.id !== id);
     return store.threads.length !== before;
   }, path);
 }
@@ -629,9 +631,9 @@ export function sweepOrphanThreads(liveBotIds: Iterable<string>, path = agentSto
   }
   // An empty roster reads as a failed shell load, not as an empty app.
   if (live.size === 0) return [];
-  // Either field is enough. `upsertThread` keeps `id` and `botId` equal, but a
-  // hand-edited or migrated row where they diverge still belongs to a live bot
-  // and must not be deleted on a technicality.
+  // Either field is enough, which is looser than `deleteThread` on purpose: a
+  // sweep deletes rows nobody asked it to, so it errs towards keeping, and a
+  // hand-edited row that still names one live bot is not an orphan.
   const owned = (thread: AgentThread) => live.has(thread.id) || live.has(thread.botId);
   return withAgentStore((store) => {
     const orphans = store.threads.filter((thread) => !owned(thread));

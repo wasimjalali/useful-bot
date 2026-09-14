@@ -26,14 +26,56 @@ export function defaultShellPath(): string {
  * inspection: valid JSON, one bot. Anything that deletes by absence has to
  * know the difference, so the reseed says so out loud instead of leaving the
  * next reader to guess.
+ *
+ * The mark records which bots the stub held. That, not a count, is what says
+ * whether the roster is still the stub: a restored backup and a bot the owner
+ * added both bring ids the stub never had, and neither of them goes through a
+ * code path this module could hook.
  */
 function reseedMarkerPath(path: string): string {
   return `${path}.reseeded`;
 }
 
-/** Whether the roster on disk is a recovery stub rather than the owner's. */
+type ReseedMark = { at: string; botIds: string[] };
+
+function writeReseedMark(path: string, botIds: string[]): void {
+  try {
+    const mark: ReseedMark = { at: new Date().toISOString(), botIds };
+    writeFileSync(reseedMarkerPath(path), `${JSON.stringify(mark)}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch { /* see shellWasReseeded: an unwritable mark is handled there */ }
+}
+
+function clearReseedMark(path: string): void {
+  try { unlinkSync(reseedMarkerPath(path)); } catch { /* nothing to clear */ }
+}
+
+function readReseedMark(path: string): ReseedMark | null {
+  try {
+    const raw = JSON.parse(readFileSync(reseedMarkerPath(path), "utf8")) as Partial<ReseedMark>;
+    return Array.isArray(raw?.botIds) ? { at: String(raw.at ?? ""), botIds: raw.botIds } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the roster on disk is a recovery stub rather than the owner's.
+ *
+ * Evaluated against the live file every time, so the mark clears itself as
+ * soon as the roster holds a bot the stub did not. That covers the restore
+ * nothing in this module can observe: copying a `.invalid.*` backup back over
+ * the store is a manual file move, and the bots it brings are the proof.
+ */
 export function shellWasReseeded(path = defaultShellPath()): boolean {
-  return existsSync(reseedMarkerPath(path));
+  const mark = readReseedMark(path);
+  if (!mark) return false;
+  const shell = peekShell(path);
+  // No readable roster is its own reason for a deleting caller to stop.
+  if (!shell) return true;
+  const stub = new Set(mark.botIds);
+  if (shell.bots.every((bot) => stub.has(bot.id))) return true;
+  clearReseedMark(path);
+  return false;
 }
 
 /**
@@ -58,6 +100,9 @@ export function peekShell(path = defaultShellPath()): ShellStore | null {
 export function readShell(path = defaultShellPath()): ShellStore {
   if (!existsSync(path)) {
     const seeded = seedStore();
+    // A missing store lost nothing, so a mark left over from an older file
+    // must not make this fresh one look like a recovery stub.
+    clearReseedMark(path);
     writeShell(seeded, path);
     return seeded;
   }
@@ -68,11 +113,12 @@ export function readShell(path = defaultShellPath()): ShellStore {
     try { renameSync(path, bak); } catch { /* ignore */ }
     console.warn(`[useful-bot] shell store was unreadable; reseeded and backed up to ${bak}`);
     const seeded = seedStore();
+    // Before the stub lands, not after. The absence of a mark is what lets a
+    // deleting caller act, so a crash between the two has to leave a mark with
+    // no stub (one sweep suppressed) rather than a stub with no mark (every
+    // other bot's routines and transcripts read as orphans).
+    writeReseedMark(path, seeded.bots.map((bot) => bot.id));
     writeShell(seeded, path);
-    // After the write, which clears the marker for a real roster.
-    try {
-      writeFileSync(reseedMarkerPath(path), `${new Date().toISOString()}\n`, { encoding: "utf8", mode: 0o600 });
-    } catch { /* the sweep is the only reader; a missing marker only costs it caution */ }
     return seeded;
   }
 }
@@ -87,12 +133,6 @@ export function writeShell(store: ShellStore, path = defaultShellPath()): void {
     fsyncSync(fd);
     closeSync(fd);
     renameSync(tmp, path);
-    // A roster with more than the seeded bot in it is the owner's again,
-    // whether they rebuilt it or restored the backup, so the sweep can trust
-    // the store from here on.
-    if (parsed.bots.length > 1) {
-      try { unlinkSync(reseedMarkerPath(path)); } catch { /* no marker to clear */ }
-    }
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
     throw err;

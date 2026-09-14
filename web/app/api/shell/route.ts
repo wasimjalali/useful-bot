@@ -74,7 +74,7 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
  * already destroyed the routines and the transcript of a bot that still
  * exists, which is worse than the orphan it was trying to avoid. Nothing here
  * can be atomic with the roster write anyway: three stores, three locks. So
- * the roster is the authority, this is best effort, and `sweepOrphans` on the
+ * the roster is the authority, this is best effort, and `sweepOrphanState` on the
  * tick is what makes a failure here temporary instead of permanent.
  *
  * Returns the error when it could not finish, so the caller can say so rather
