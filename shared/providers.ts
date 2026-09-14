@@ -256,6 +256,7 @@ export function resolveUpstream(
   opencodeSession: boolean;
   effort: EffortId | null;
   speed: SpeedId;
+  fallback: boolean;
 } {
   const active = catalogItem(store.activeProviderId);
   const stored = store.keys[active.id]?.key;
@@ -274,6 +275,7 @@ export function resolveUpstream(
       opencodeSession: active.id === "opencode-go",
       effort: composer.effort,
       speed: composer.speed,
+      fallback: false,
     };
   }
   const go = catalogItem("opencode-go");
@@ -295,5 +297,6 @@ export function resolveUpstream(
     opencodeSession: true,
     effort: goComposer.effort,
     speed: goComposer.speed,
+    fallback: store.activeProviderId !== "opencode-go",
   };
 }

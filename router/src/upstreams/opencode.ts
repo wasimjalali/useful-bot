@@ -3,6 +3,7 @@ import { RouterError } from "../errors.ts";
 import type { RegistryEntry } from "../registry.ts";
 import { applyReasoning } from "../../../shared/models.ts";
 import { readProviderStore, resolveUpstream } from "../../../shared/providers.ts";
+import { retryAfterMs } from "../retry-after.ts";
 
 export function sessionHeader(callerId: string, sessionId: string, role: string): string {
   return createHash("sha256").update(`${callerId}:${sessionId}:${role}`).digest("hex");
@@ -23,15 +24,7 @@ export function upstreamConfigError(error: unknown): RouterError {
   });
 }
 
-function retryAfterMs(response: Response): number | undefined {
-  const header = response.headers.get("retry-after");
-  if (!header) return undefined;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
-  const at = Date.parse(header);
-  if (Number.isFinite(at)) return Math.max(0, at - Date.now());
-  return undefined;
-}
+const CLIENT_CONTROLLED_KEYS = new Set(["reasoning_effort", "service_tier"]);
 
 export async function completeUpstream(input: {
   entry: RegistryEntry;
@@ -39,7 +32,7 @@ export async function completeUpstream(input: {
   sessionId: string;
   callerId: string;
   signal: AbortSignal;
-}): Promise<{ response: Response; providerId: string; model: string }> {
+}): Promise<{ response: Response; providerId: string; model: string; fallback: boolean }> {
   let resolved: ReturnType<typeof resolveUpstream>;
   try {
     resolved = resolveUpstream(readProviderStore(), input.entry.alias, process.env);
@@ -48,9 +41,14 @@ export async function completeUpstream(input: {
   }
   const url = `${resolved.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const payload = input.body as Record<string, unknown>;
+  const forwardedBody: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (!CLIENT_CONTROLLED_KEYS.has(key)) forwardedBody[key] = value;
+  }
+  const model = resolved.providerId === input.entry.upstream ? input.entry.upstreamModelId : resolved.model;
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
-    ...payload,
-    model: resolved.model,
+    ...forwardedBody,
+    model,
     max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : input.entry.maxOutputTokens,
   });
   const headers: Record<string, string> = {
@@ -69,7 +67,7 @@ export async function completeUpstream(input: {
     signal: input.signal,
   });
   if (response.status >= 200 && response.status < 300) {
-    return { response, providerId: resolved.providerId, model: resolved.model };
+    return { response, providerId: resolved.providerId, model, fallback: resolved.fallback };
   }
   if (response.status >= 300 && response.status < 400) {
     throw new RouterError({

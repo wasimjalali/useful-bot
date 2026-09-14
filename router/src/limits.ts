@@ -85,6 +85,11 @@ export class LimitStore {
     ).run(row.callerId, row.provider, row.model, row.inputTokens, row.outputTokens, row.at);
   }
 
+  /**
+   * Ops audit shape: with no callerId this aggregates every caller and labels
+   * the row `caller_id: "aggregate"` so operators cannot mistake it for the
+   * desktop-only view. Per-caller views keep the caller's id.
+   */
   summarize(callerId?: string, now = Date.now(), windowMs = 7 * 24 * 60 * 60 * 1000): UsageSummary {
     const start = now - windowMs;
     const totals = callerId
@@ -102,7 +107,7 @@ export class LimitStore {
         "SELECT provider, model, COUNT(*) AS requests, SUM(input_tokens) AS input, SUM(output_tokens) AS output FROM usage WHERE ts > ? GROUP BY provider, model ORDER BY output DESC, input DESC",
       ).all(start) as Array<{ provider: string; model: string; requests: number; input: number; output: number }>;
     return {
-      caller_id: callerId ?? "desktop",
+      caller_id: callerId ?? "aggregate",
       window_start: new Date(start).toISOString(),
       reserved_input_tokens: null,
       reserved_output_tokens: null,
@@ -139,40 +144,28 @@ export class LimitStore {
   hit(caller: AuthedCaller, now: number): void {
     const limits = CALLER_LIMITS[caller.profile];
     this.prune(now);
-    const minuteAgo = now - 60_000;
-    const recent = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE caller_id = ? AND ts > ?").get(
-      caller.callerId,
-      minuteAgo,
-    ) as { c: number };
-    if (recent.c >= limits.rpm) {
-      throw new RouterError({
-        status: 429,
-        type: "rate_limit_error",
-        code: "caller_rate_limit",
-        message: "caller_rate_limit",
-        retryable: true,
-      });
-    }
-    const dayAgo = now - 24 * 60 * 60 * 1000;
-    const day = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE caller_id = ? AND ts > ?").get(
-      caller.callerId,
-      dayAgo,
-    ) as { c: number };
-    if (limits.requests24h > 0 && day.c >= limits.requests24h) {
-      throw new RouterError({
-        status: 429,
-        type: "rate_limit_error",
-        code: "caller_budget_exhausted",
-        message: "caller_budget_exhausted",
-        retryable: true,
-      });
-    }
-    if (limits.input24h > 0 || limits.output24h > 0) {
-      const tokens = this.db.prepare(
-        "SELECT COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output FROM usage WHERE caller_id = ? AND ts > ?",
-      ).get(caller.callerId, dayAgo) as { input: number; output: number };
-      if ((limits.input24h > 0 && Number(tokens.input) >= limits.input24h)
-        || (limits.output24h > 0 && Number(tokens.output) >= limits.output24h)) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const minuteAgo = now - 60_000;
+      const recent = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE caller_id = ? AND ts > ?").get(
+        caller.callerId,
+        minuteAgo,
+      ) as { c: number };
+      if (recent.c >= limits.rpm) {
+        throw new RouterError({
+          status: 429,
+          type: "rate_limit_error",
+          code: "caller_rate_limit",
+          message: "caller_rate_limit",
+          retryable: true,
+        });
+      }
+      const dayAgo = now - 24 * 60 * 60 * 1000;
+      const day = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE caller_id = ? AND ts > ?").get(
+        caller.callerId,
+        dayAgo,
+      ) as { c: number };
+      if (limits.requests24h > 0 && day.c >= limits.requests24h) {
         throw new RouterError({
           status: 429,
           type: "rate_limit_error",
@@ -181,7 +174,26 @@ export class LimitStore {
           retryable: true,
         });
       }
+      if (limits.input24h > 0 || limits.output24h > 0) {
+        const tokens = this.db.prepare(
+          "SELECT COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output FROM usage WHERE caller_id = ? AND ts > ?",
+        ).get(caller.callerId, dayAgo) as { input: number; output: number };
+        if ((limits.input24h > 0 && Number(tokens.input) >= limits.input24h)
+          || (limits.output24h > 0 && Number(tokens.output) >= limits.output24h)) {
+          throw new RouterError({
+            status: 429,
+            type: "rate_limit_error",
+            code: "caller_budget_exhausted",
+            message: "caller_budget_exhausted",
+            retryable: true,
+          });
+        }
+      }
+      this.db.prepare("INSERT INTO hits (caller_id, ts) VALUES (?, ?)").run(caller.callerId, now);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
-    this.db.prepare("INSERT INTO hits (caller_id, ts) VALUES (?, ?)").run(caller.callerId, now);
   }
 }

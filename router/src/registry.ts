@@ -7,6 +7,7 @@ import type { Alias } from "../../shared/contracts.ts";
 
 export interface RegistryEntry {
   alias: Alias;
+  upstream: string;
   upstreamModelId: string;
   modelContextWindowTokens: number;
   maxOutputTokens: number;
@@ -41,6 +42,8 @@ function validEntry(entry: RegistryEntry): boolean {
     entry
     && typeof entry === "object"
     && ALIASES.has(entry.alias)
+    && typeof entry.upstream === "string"
+    && entry.upstream.length > 0
     && typeof entry.upstreamModelId === "string"
     && entry.upstreamModelId.length > 0
     && Number.isInteger(entry.modelContextWindowTokens)

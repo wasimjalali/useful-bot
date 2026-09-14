@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { BODY_LIMIT_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
 import { AuthTable } from "./auth.ts";
+import { AliasCircuit } from "./circuit.ts";
 import { RouterError, errorBody } from "./errors.ts";
 import { LimitStore } from "./limits.ts";
 import { entryFor, loadRegistry } from "./registry.ts";
@@ -34,6 +35,31 @@ function send(res: ServerResponse, status: number, body: unknown, extra: Record<
 }
 
 const UPSTREAM_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+const REQUEST_TOTAL_MS = 180_000;
+const FIRST_EVENT_MS = 60_000;
+const IDLE_EVENT_MS = 45_000;
+const MAX_EVENT_BYTES = 256 * 1024;
+
+const ALLOWED_COMPLETION_KEYS = new Set([
+  "model",
+  "messages",
+  "stream",
+  "max_tokens",
+  "n",
+  "tools",
+  "tool_choice",
+  "parallel_tool_calls",
+  "stream_options",
+]);
+
+const ROUTE_METHODS: Record<string, string[]> = {
+  "/health/live": ["GET"],
+  "/health/ready": ["GET"],
+  "/v1/models": ["GET"],
+  "/v1/search": ["POST"],
+  "/v1/chat/completions": ["POST"],
+  "/v1/usage": ["GET"],
+};
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -112,6 +138,50 @@ async function readCapped(response: Response, limit: number): Promise<string> {
   return text + decoder.decode();
 }
 
+function waitForDrain(res: ServerResponse, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      res.off("drain", onDrain);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      cleanup();
+      if (!res.writableEnded) res.destroy();
+      reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+    };
+    res.once("drain", onDrain);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+function abortKind(signal: AbortSignal): "client" | "idle" | "total" | "other" {
+  if (!signal.aborted) return "other";
+  const reason = signal.reason;
+  if (reason instanceof Error) {
+    if (reason.message === "client_disconnect") return "client";
+    if (reason.message === "idle_timeout") return "idle";
+  }
+  if (reason && typeof reason === "object" && (reason as { name?: string }).name === "TimeoutError") {
+    return "total";
+  }
+  return "other";
+}
+
+function timeoutError(headersSent: boolean): RouterError {
+  return new RouterError({
+    status: headersSent ? 502 : 504,
+    type: "upstream_error",
+    code: "upstream_timeout",
+    message: "upstream_timeout",
+    retryable: false,
+  });
+}
+
 function assertHost(req: IncomingMessage, port: number): void {
   const host = req.headers.host ?? "";
   const allowed = new Set([
@@ -159,6 +229,16 @@ function validateCompletion(body: unknown): { model: string; stream: boolean; ma
     });
   }
   const rec = body as Record<string, unknown>;
+  for (const key of Object.keys(rec)) {
+    if (!ALLOWED_COMPLETION_KEYS.has(key)) {
+      throw new RouterError({
+        status: 400,
+        type: "invalid_request_error",
+        code: "unsupported_parameter",
+        message: "unsupported_parameter",
+      });
+    }
+  }
   if (rec.n !== undefined && rec.n !== 1) {
     throw new RouterError({
       status: 400,
@@ -207,6 +287,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
   const auth = AuthTable.fromConfigPath(configPath);
   const registry = loadRegistry(lockPath);
   const limits = new LimitStore(dbPath);
+  const circuit = new AliasCircuit();
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -220,6 +301,16 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         return;
       }
       assertHost(req, (server.address() as { port: number }).port);
+      const allowedMethods = ROUTE_METHODS[url.pathname];
+      if (allowedMethods && !allowedMethods.includes(req.method)) {
+        res.setHeader("allow", allowedMethods.join(", "));
+        throw new RouterError({
+          status: 405,
+          type: "invalid_request_error",
+          code: "invalid_request",
+          message: "method_not_allowed",
+        });
+      }
       if (req.method === "GET" && url.pathname === "/health/ready") {
         const caller = auth.authenticate(req.headers.authorization ?? null);
         if (caller.profile !== "ops") {
@@ -230,10 +321,12 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
       }
       const caller = auth.authenticate(req.headers.authorization ?? null);
       if (req.method === "GET" && url.pathname === "/v1/models") {
+        const visible = caller.profile === "ops"
+          ? registry
+          : registry.filter((entry) => caller.aliases.includes(entry.alias));
         send(res, 200, {
           object: "list",
-          data: registry
-            .filter((entry) => caller.aliases.includes(entry.alias))
+          data: visible
             .map((entry) => ({
               id: entry.alias,
               object: "model",
@@ -270,21 +363,38 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         limits.rememberRequest(stepId, caller.callerId, Date.now());
         limits.hit(caller, Date.now());
         const entry = entryFor(registry, alias);
-        const disconnect = new AbortController();
+        const controller = new AbortController();
         res.on("close", () => {
-          if (!res.writableEnded) disconnect.abort();
+          if (!res.writableEnded) {
+            controller.abort(new Error("client_disconnect"));
+            res.destroy();
+          }
         });
-        const upstream = await completeUpstream({
-          entry,
-          body,
-          sessionId,
-          callerId: caller.callerId,
-          signal: AbortSignal.any([AbortSignal.timeout(180_000), disconnect.signal]),
-        });
+        const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
+        circuit.assertClosed(entry.alias);
+        let upstream: Awaited<ReturnType<typeof completeUpstream>>;
+        try {
+          upstream = await completeUpstream({
+            entry,
+            body,
+            sessionId,
+            callerId: caller.callerId,
+            signal,
+          });
+        } catch (error) {
+          if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
+          throw error;
+        }
+        circuit.recordSuccess(entry.alias);
         const outHeaders: Record<string, string> = {
           "x-useful-request-id": stepId,
           "x-useful-upstream-model": upstream.model,
+          "x-useful-upstream-provider": upstream.providerId,
         };
+        if (upstream.fallback) {
+          outHeaders["x-useful-upstream-fallback"] = upstream.providerId;
+          log({ request_id: requestId, event: "upstream_fallback", alias: entry.alias, provider: upstream.providerId });
+        }
         void turnId;
         const record = (usage: { inputTokens: number; outputTokens: number } | null) => {
           if (!usage || upstream.response.status >= 400) return;
@@ -298,32 +408,88 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           });
         };
         if (parsed.stream) {
-          res.writeHead(upstream.response.status, {
-            "content-type": "text/event-stream",
-            "cache-control": "no-store",
-            ...outHeaders,
-          });
+          const writeHeaders = () => {
+            res.writeHead(upstream.response.status, {
+              "content-type": "text/event-stream",
+              "cache-control": "no-store",
+              ...outHeaders,
+            });
+          };
           if (!upstream.response.body) {
+            writeHeaders();
             res.end();
             return;
           }
           const reader = upstream.response.body.getReader();
           const decoder = new TextDecoder();
           let leftover = "";
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (!res.write(Buffer.from(value))) {
-              await new Promise<void>((resolve) => res.once("drain", resolve));
+          let firstEvent = false;
+          let idleTimer: NodeJS.Timeout | undefined;
+          const armIdle = (ms: number) => {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => controller.abort(new Error("idle_timeout")), ms);
+          };
+          armIdle(FIRST_EVENT_MS);
+          try {
+            while (true) {
+              let chunk: Uint8Array;
+              try {
+                const result = await reader.read();
+                if (result.done) break;
+                chunk = result.value;
+              } catch (error) {
+                const kind = abortKind(signal);
+                if (kind === "client") return;
+                if (kind === "idle") throw timeoutError(firstEvent);
+                if (kind === "total") throw timeoutError(false);
+                throw error;
+              }
+              clearTimeout(idleTimer);
+              leftover += decoder.decode(chunk, { stream: true });
+              const parts = leftover.split(/\r?\n\r?\n/);
+              leftover = parts.pop() ?? "";
+              if (Buffer.byteLength(leftover, "utf8") > MAX_EVENT_BYTES) {
+                throw new RouterError({
+                  status: 502,
+                  type: "upstream_error",
+                  code: "upstream_protocol_error",
+                  message: "upstream event too large",
+                });
+              }
+              for (const part of parts) {
+                if (Buffer.byteLength(part, "utf8") > MAX_EVENT_BYTES) {
+                  throw new RouterError({
+                    status: 502,
+                    type: "upstream_error",
+                    code: "upstream_protocol_error",
+                    message: "upstream event too large",
+                  });
+                }
+                const usage = usageFromSseBlock(part);
+                if (usage) record(usage);
+              }
+              if (!firstEvent) {
+                firstEvent = true;
+                writeHeaders();
+              }
+              if (!res.write(Buffer.from(chunk))) {
+                try {
+                  await waitForDrain(res, signal);
+                } catch (error) {
+                  if (error instanceof RouterError) throw error;
+                  const kind = abortKind(signal);
+                  if (kind === "client") return;
+                  if (kind === "idle") throw timeoutError(true);
+                  if (kind === "total") throw timeoutError(false);
+                  throw error;
+                }
+              }
+              armIdle(IDLE_EVENT_MS);
             }
-            leftover += decoder.decode(value, { stream: true });
-            const parts = leftover.split(/\r?\n\r?\n/);
-            leftover = parts.pop() ?? "";
-            for (const part of parts) {
-              const usage = usageFromSseBlock(part);
-              if (usage) record(usage);
-            }
+          } finally {
+            clearTimeout(idleTimer);
           }
+          if (!firstEvent) writeHeaders();
           res.end();
           return;
         }
@@ -341,7 +507,6 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         send(res, 200, caller.profile === "ops" ? limits.summarize() : limits.summarize(caller.callerId));
         return;
       }
-      res.setHeader("allow", "GET, POST");
       throw new RouterError({ status: 404, type: "invalid_request_error", code: "invalid_request", message: "not found" });
     } catch (error) {
       const body = error instanceof RouterError
