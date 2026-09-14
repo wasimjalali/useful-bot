@@ -44,14 +44,14 @@ export async function GET(request: Request) {
   let session = await readSession();
   if (!session && isLocalDesktop(request)) {
     const created = createBrowserSession("desktop", "desktop");
-    session = { callerId: "desktop", profile: "desktop", csrf: created.csrf };
+    session = { callerId: "desktop", profile: "desktop", csrf: created.csrf, expiresAt: created.expiresAt };
     const response = NextResponse.json({
       ok: true,
       profile: "desktop",
       expiresAt: created.expiresAt,
       csrfToken: created.csrf,
     });
-    response.headers.set("set-cookie", sessionCookie(created.token));
+    response.headers.append("set-cookie", sessionCookie(created.token));
     return response;
   }
   if (!session) {
@@ -60,7 +60,7 @@ export async function GET(request: Request) {
   return NextResponse.json({
     ok: true,
     profile: session.profile,
-    expiresAt: Date.now() + 12 * 60 * 60 * 1000,
+    expiresAt: session.expiresAt,
     csrfToken: session.csrf,
   });
 }
@@ -74,6 +74,9 @@ export async function POST(request: Request) {
   if (!identity) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
+  // Re-issuing a session must retire the one it replaces, or the old cookie
+  // stays valid until its own expiry.
+  await destroySession();
   const created = createBrowserSession(identity.callerId, identity.profile);
   const response = NextResponse.json({
     ok: true,
@@ -81,13 +84,20 @@ export async function POST(request: Request) {
     expiresAt: created.expiresAt,
     csrfToken: created.csrf,
   });
-  response.headers.set("set-cookie", sessionCookie(created.token));
+  response.headers.append("set-cookie", sessionCookie(created.token));
   return response;
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
+  const session = await readSession();
+  if (session) {
+    const csrf = request.headers.get("x-ub-csrf");
+    if (!csrf || csrf !== session.csrf) {
+      return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
+    }
+  }
   await destroySession();
   const response = NextResponse.json({ ok: true });
-  response.headers.set("set-cookie", clearSessionCookie());
+  response.headers.append("set-cookie", clearSessionCookie());
   return response;
 }
