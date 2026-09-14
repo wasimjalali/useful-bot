@@ -29,7 +29,10 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let error = model.attachError {
+            // Both, and in that order: a folder that would not attach and a
+            // permission that would not apply are separate failures, and a
+            // published error nothing renders is the same as no error at all.
+            if let error = model.attachError ?? model.workspaceError {
                 Text(error)
                     .font(.system(size: DesignTokens.FontSize.attachError))
                     .foregroundStyle(Theme.C.danger)
@@ -497,7 +500,7 @@ struct ComposerView: View {
         // The grant travels by session, not by message; this line tells the
         // model the folder is there and what to do with it.
         if let ws = workspace {
-            message += "\n\nAttached project folder: \(ws.folderName) — work inside \(ws.path)"
+            message += "\n\nAttached project folder: \(ws.folderName) — work inside \(ws.promptPath)"
         }
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send

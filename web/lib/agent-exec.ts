@@ -58,6 +58,30 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
   });
 }
 
+/**
+ * Stamp from the roster as it is right now, not from a snapshot taken before
+ * an await. `runEveTurn` reads the shell, then spends up to twenty seconds
+ * replaying the session stream; stamping the pre-await bot in that window
+ * resurrects a grant the owner detached while it ran. A bot that has since
+ * disappeared revokes rather than keeps its old capability.
+ */
+function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
+  if (!sessionId) return;
+  let bot: ShellBot | undefined;
+  try {
+    bot = readShell().bots.find((item) => item.id === botId);
+  } catch {
+    // An unreadable roster is not permission to keep the grant.
+    removeSessionGrant(sessionId);
+    return;
+  }
+  if (!bot) {
+    removeSessionGrant(sessionId);
+    return;
+  }
+  syncSessionWorkspace(sessionId, bot);
+}
+
 const inflight = new Set<string>();
 
 type EveEvent = { type?: string; data?: Record<string, unknown>; meta?: { id?: string; at?: string } };
@@ -272,7 +296,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
   let reply = "";
   try {
     const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
-    if (sessionId) syncSessionWorkspace(sessionId, bot);
+    if (sessionId) syncSessionWorkspaceFresh(sessionId, bot.id);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
@@ -283,7 +307,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
     const body = await res.json() as { sessionId?: string };
     sessionId = body.sessionId ?? sessionId;
     if (!sessionId) throw new Error("eve_session_missing");
-    syncSessionWorkspace(sessionId, bot);
+    syncSessionWorkspaceFresh(sessionId, bot.id);
     const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
       headers: { authorization: `Bearer ${jwt}` },
       signal: controller.signal,

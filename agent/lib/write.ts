@@ -130,7 +130,8 @@ function writeAtomically(target: string, root: string, content: string): { bytes
   // The realpath of the parent must sit under the real root: a symlink
   // component created between the checks above and this call would otherwise
   // redirect the rename.
-  if (!realpathSync(parent).startsWith(`${rootReal}/`) && realpathSync(parent) !== rootReal) {
+  const parentReal = realpathSync(parent);
+  if (!parentReal.startsWith(`${rootReal}/`) && parentReal !== rootReal) {
     throw new Error("path_escape");
   }
   const tmp = join(

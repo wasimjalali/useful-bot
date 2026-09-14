@@ -17,6 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 // The permission vocabulary is client-safe and lives beside the bot fields
 // that carry it; this store only adds persistence on top.
 import {
+  isGrantableRootPath,
   parseWorkspacePermission,
   type WorkspacePermission,
 } from "./shell-store.ts";
@@ -75,7 +76,13 @@ function parseGrant(raw: unknown): SessionGrant | null {
   const sessionId = typeof rec.sessionId === "string" && rec.sessionId.length > 0 && rec.sessionId.length <= 200
     ? rec.sessionId
     : null;
-  const path = typeof rec.path === "string" && rec.path.startsWith("/") ? rec.path : null;
+  // Screened on read as well as on write: a hand-edited or older file must not
+  // hand back a grant on `/` or on a credential folder that this build would
+  // refuse to create. The tool re-checks too, but a row nothing can use has no
+  // business occupying one of the store's slots.
+  const path = typeof rec.path === "string" && rec.path.length <= 1024 && isGrantableRootPath(rec.path)
+    ? rec.path
+    : null;
   const permission = parseWorkspacePermission(rec.permission);
   if (!sessionId || !path || !permission) return null;
   return {
@@ -243,8 +250,16 @@ export function upsertSessionGrant(
   if (!input.sessionId || input.sessionId.length > 200) {
     throw new Error("workspace_session_invalid");
   }
-  if (!input.path.startsWith("/") || input.path.length > 1024) {
+  // Segment screen and root refusal, not just "looks absolute": a grant on
+  // `/` or on a credential folder must not reach the store even when a caller
+  // hands it over typed.
+  if (input.path.length > 1024 || !isGrantableRootPath(input.path)) {
     throw new Error("workspace_path_invalid");
+  }
+  // The type says WorkspacePermission; a JS caller can still pass anything,
+  // and a value parseGrant later drops would revoke the grant silently.
+  if (!parseWorkspacePermission(input.permission)) {
+    throw new Error("workspace_permission_invalid");
   }
   updateWorkspaceStore((store) => {
     const stamp = at.toISOString();
@@ -277,7 +292,10 @@ export function upsertProject(
   at = new Date(),
   path = defaultWorkspacePath(),
 ): ProjectEntry {
-  if (!input.path.startsWith("/") || input.path.length > 1024) {
+  // A recent is what the owner picks from next, so it is screened the same
+  // way a grant is: a row nothing may be granted on has no business in the
+  // picker.
+  if (input.path.length > 1024 || !isGrantableRootPath(input.path)) {
     throw new Error("workspace_path_invalid");
   }
   const entry: ProjectEntry = {

@@ -80,11 +80,28 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
     /// A folder name comes from the filesystem, so control characters are
     /// stripped before it can reach the composer or a message.
     public var folderName: String {
-        let raw = (path as NSString).lastPathComponent
-        let cleaned = String(raw.unicodeScalars.filter { scalar in
-            scalar != "\n" && scalar != "\r" && scalar != "\t" && scalar.value >= 0x20
-        })
+        let cleaned = BotWorkspace.sanitized((path as NSString).lastPathComponent)
         return cleaned.isEmpty ? "Folder" : String(cleaned.prefix(80))
+    }
+
+    /// The path as it may appear in a message to the model. The whole path is
+    /// filesystem-controlled, not just its last component, so a directory
+    /// named with a newline would otherwise inject prompt lines past the
+    /// sanitized `folderName`.
+    public var promptPath: String {
+        let cleaned = BotWorkspace.sanitized(path)
+        return cleaned.isEmpty ? folderName : String(cleaned.prefix(512))
+    }
+
+    /// Drop C0/C1 controls and Unicode format characters. The format category
+    /// carries the bidi overrides and zero-width joiners that let a crafted
+    /// name spoof a menu row or hide text in a prompt line.
+    static func sanitized(_ value: String) -> String {
+        String(value.unicodeScalars.filter { scalar in
+            scalar.value >= 0x20
+                && !(scalar.value >= 0x7f && scalar.value <= 0x9f)
+                && scalar.properties.generalCategory != .format
+        })
     }
 
     public var isReadOnly: Bool { permission == "read_only" }

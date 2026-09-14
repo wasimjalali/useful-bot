@@ -48,4 +48,10 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".git",
   "LaunchAgents",
   "auth.json",
+  // Credential stores that sit under a home directory a grant may cover.
+  // read_file is ungated, so a folder grant on $HOME would otherwise hand
+  // over Keychain material and registry tokens with no approval card.
+  "keychain",
+  "netrc",
+  ".npmrc",
 ] as const;

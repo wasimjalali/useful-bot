@@ -301,8 +301,13 @@ function parseWorkspacePermissionStrict(value: unknown): WorkspacePermission {
  */
 export function isGrantableRootPath(path: string): boolean {
   if (!path.startsWith("/") || path.length > 1024) return false;
+  // The filesystem root has no segments to screen, so every check below would
+  // pass it while it covers every credential store on the machine. A grant is
+  // a folder the owner picked, never the whole disk.
+  if (path.replace(/\/+$/, "") === "") return false;
   for (const segment of path.split("/")) {
     if (!segment) continue;
+    if (segment === "..") return false;
     const lowered = segment.toLowerCase();
     if (FORBIDDEN_GRANT_SEGMENTS.has(lowered)) return false;
   }
@@ -318,6 +323,7 @@ const FORBIDDEN_GRANT_SEGMENTS = new Set([
   "auth.json",
   "secrets",
   "launchagents",
+  "keychains",
 ]);
 
 function parseRecent(raw: unknown): ShellRecent {

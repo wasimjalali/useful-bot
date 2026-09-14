@@ -313,6 +313,11 @@ struct ChatView: View {
             let names = members(bot).map(\.name)
             return "Group chat with \(names.isEmpty ? "no members yet" : names.joined(separator: ", ")). Untargeted messages go to the orchestrator; @name directs one bot."
         }
+        // Full access is the owner's own choice to skip the card on writes, so
+        // the flat promise this used to make was not true in every posture.
+        if let ws = bot.workspace, ws.isFullAccess, !ws.finalConfirm {
+            return "Runs locally on this Mac. Commands need your approval; writes in the attached folder don't."
+        }
         return "Runs locally on this Mac. Writes and commands need your approval."
     }
 

@@ -1393,9 +1393,8 @@ final class AppModel: ObservableObject {
                 self.folderItemCount[bot.id] = count
             }
         }
-        dispatchWorkspace(workspace, botId: bot.id)
-        // Recents are best effort: a missed write only loses a menu entry.
-        enqueue { [weak self] in
+        dispatchWorkspace(workspace, botId: bot.id) { [weak self] in
+            // Recents are best effort: a missed write only loses a menu entry.
             _ = try? await self?.client.addWorkspaceProject(path: url.path)
             await self?.loadWorkspaceProjects()
         }
@@ -1432,7 +1431,11 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func dispatchWorkspace(_ workspace: BotWorkspace?, botId: String) {
+    private func dispatchWorkspace(
+        _ workspace: BotWorkspace?,
+        botId: String,
+        onSuccess: (@MainActor () async -> Void)? = nil,
+    ) {
         let epoch = storeEpoch
         enqueue { [weak self] in
             guard let self else { return }
@@ -1442,6 +1445,10 @@ final class AppModel: ObservableObject {
                 )
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.applyStore(next)
+                // Only once the grant actually landed. A rejected folder that
+                // still showed up under Recents would offer the owner a pick
+                // that fails again every time.
+                await onSuccess?()
             } catch {
                 self.workspaceError = (error as? LocalizedError)?.errorDescription ?? "That folder change failed."
             }

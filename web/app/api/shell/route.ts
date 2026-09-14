@@ -16,6 +16,7 @@ import { fanOut } from "../../../lib/agent-exec";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, isGrantableRootPath, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
+import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 
 export async function GET(request: Request) {
@@ -81,6 +82,47 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
  * Returns the error when it could not finish, so the caller can say so rather
  * than swallow it the way this path used to.
  */
+/**
+ * Drop the filesystem capability an action just took away.
+ *
+ * A grant is keyed by eve session id, and four actions end or narrow one:
+ * detaching the folder (`setWorkspace` with null), starting a new chat or
+ * clearing the thread (the old session is abandoned), and deleting the bot.
+ * The session id can differ either side of the commit — `newChat` mints a new
+ * one — so both snapshots are revoked, and the ids are compared so a detach
+ * that keeps the session still revokes it.
+ *
+ * Best effort, like `detachBot`: the roster is the authority, and the stamp at
+ * the next turn is the backstop. It must not turn a locked grants store into a
+ * failed roster action the owner already saw succeed.
+ */
+function revokeGrantsFor(
+  action: ShellAction | undefined,
+  before: ShellStore,
+  after: ShellStore,
+): void {
+  if (!action) return;
+  const ends = action.type === "clearThread"
+    || action.type === "newChat"
+    || action.type === "deleteBot"
+    || (action.type === "setWorkspace" && !action.workspace);
+  if (!ends) return;
+  const botId = action.type === "newChat" ? action.botId ?? before.selectedBotId : action.botId;
+  if (!botId) return;
+  const ids = new Set(
+    [before, after]
+      .map((store) => store.bots.find((bot) => bot.id === botId)?.sessionId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  for (const id of ids) {
+    try {
+      removeSessionGrant(id);
+    } catch {
+      /* the next turn's stamp revokes it; a locked store is not this action's failure */
+    }
+  }
+}
+
 function detachBot(botId: string): string | null {
   const errors: string[] = [];
   // Independently: a locked routines store is no reason to leave the
@@ -255,6 +297,11 @@ export async function PUT(request: Request) {
     const next = action
       ? updateShell((shell) => applyShellAction(shell, action).store)
       : current;
+    // Revoking here, not only at the next turn stamp. `syncSessionWorkspace`
+    // runs when a turn starts, so without this a detach leaves the capability
+    // live for the rest of an in-flight turn and for any approval card still
+    // open — the owner's decision has to take effect when they make it.
+    revokeGrantsFor(action, current, next);
     // Only once the roster commit stood. A failure here is reported, not
     // swallowed, and the tick's sweep clears whatever was left behind.
     const detachError = action?.type === "deleteBot" ? detachBot(action.botId) : null;

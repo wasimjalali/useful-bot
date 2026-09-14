@@ -11,6 +11,8 @@ import {
 import { channelJwt, syncSessionWorkspace } from "../../../../lib/agent-exec";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell } from "../../../../../shared/shell-io.ts";
+import type { ShellBot } from "../../../../../shared/shell-store.ts";
+import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
 const EVE = "http://127.0.0.1:4321";
@@ -69,6 +71,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       throw err;
     }
     if (isEveSessionPost(suffix)) {
+      let bot: ShellBot | null = null;
       try {
         const raw = new TextDecoder().decode(body);
         const shell = readShell();
@@ -76,22 +79,35 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         if (!route) {
           return Response.json({ ok: false, error: "eve_bot_missing" }, { status: 400 });
         }
-        const bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
+        bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
         const members = bot && bot.kind === "group"
           ? groupMembers(speakersFrom(shell.bots), bot.memberIds)
           : [];
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members));
         headers.set("content-type", "application/json");
-        // The tools that run during this turn read the workspace grant for
-        // the session, so it has to be current — stamped or revoked — before
-        // the turn reaches eve. Continuation posts carry the session id in
-        // the path; a create gets its grant stamped from the response below.
-        if (suffix !== "session") {
-          const sessionId = suffix.split("/")[1] ?? "";
-          if (sessionId && bot) syncSessionWorkspace(sessionId, bot);
-        }
       } catch {
         /* keep the original body: a malformed turn must fail at eve, not here */
+      }
+      // Outside the body-rewrite try on purpose. The tools that run during
+      // this turn read the workspace grant for the session, so it has to be
+      // current — stamped or revoked — before the turn reaches eve. Sharing
+      // the catch above would turn a grants-store failure into a silent "keep
+      // going with whatever the file still says", which is the stale
+      // capability this stamp exists to prevent. A bot we could not resolve
+      // revokes rather than leaves the old grant standing: no grant falls
+      // back to the legacy root with approval cards, which is a narrowing.
+      // Continuation posts carry the session id in the path; a create is
+      // stamped from the response below.
+      if (suffix !== "session") {
+        const sessionId = suffix.split("/")[1] ?? "";
+        if (sessionId) {
+          try {
+            if (bot) syncSessionWorkspace(sessionId, bot);
+            else removeSessionGrant(sessionId);
+          } catch {
+            return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+          }
+        }
       }
     }
   }

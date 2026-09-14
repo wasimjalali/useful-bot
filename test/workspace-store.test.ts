@@ -162,3 +162,67 @@ test("a corrupt store is backed up before a write starts from the seed", () => {
   assert.ok(backup, "corrupt store must be backed up, not clobbered");
   assert.equal(readWorkspaceStore(path).grants.length, 1);
 });
+
+test("a grant on the filesystem root is refused", () => {
+  const path = tempStore();
+  assert.throws(
+    () => upsertSessionGrant(
+      { sessionId: "s1", path: "/", permission: "guard", finalConfirm: false },
+      new Date(),
+      path,
+    ),
+    /workspace_path_invalid/,
+  );
+  assert.equal(readSessionGrant("s1", path), null);
+});
+
+test("a grant on a credential folder is refused at the store, not only the route", () => {
+  const path = tempStore();
+  for (const bad of ["/Users/someone/Library/Keychains", "/Users/someone/.ssh", "/Users/someone/secrets"]) {
+    assert.throws(
+      () => upsertSessionGrant(
+        { sessionId: "s1", path: bad, permission: "read_only", finalConfirm: false },
+        new Date(),
+        path,
+      ),
+      /workspace_path_invalid/,
+      bad,
+    );
+  }
+});
+
+test("an unknown permission is refused at upsert instead of dropping on read", () => {
+  const path = tempStore();
+  assert.throws(
+    () => upsertSessionGrant(
+      // A JS caller can pass anything the type forbids; the store is the guard.
+      { sessionId: "s1", path: "/tmp/a", permission: "admin" as never, finalConfirm: false },
+      new Date(),
+      path,
+    ),
+    /workspace_permission_invalid/,
+  );
+});
+
+test("a hand-edited grant on the filesystem root does not read back", () => {
+  const path = tempStore();
+  const store = parseWorkspaceStore({
+    schemaVersion: 1,
+    grants: [
+      { sessionId: "s1", path: "/", permission: "full_access", finalConfirm: false, updatedAt: new Date().toISOString() },
+      { sessionId: "s2", path: "/tmp/ok", permission: "guard", finalConfirm: false, updatedAt: new Date().toISOString() },
+    ],
+    projects: [],
+  });
+  assert.equal(store.grants.length, 1);
+  assert.equal(store.grants[0].sessionId, "s2");
+  assert.equal(path.length > 0, true);
+});
+
+test("a project recent on the filesystem root is refused", () => {
+  const path = tempStore();
+  assert.throws(
+    () => upsertProject({ path: "/", name: "root" }, new Date(), path),
+    /workspace_path_invalid/,
+  );
+});

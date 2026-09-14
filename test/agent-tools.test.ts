@@ -1117,3 +1117,51 @@ test("railAction refuses to hide the bot the owner is talking to", async () => {
     box.restore();
   }
 });
+
+test("keychain material under a granted home folder is not readable", async () => {
+  const box = grantFixture("read_only");
+  try {
+    // The grant covers the folder; a Keychain path inside it is still refused,
+    // and read_file is ungated so this list is the only thing standing there.
+    mkdirSync(join(box.project, "Library", "Keychains"), { recursive: true });
+    writeFileSync(join(box.project, "Library", "Keychains", "login.keychain-db"), "secret", "utf8");
+    await assert.rejects(
+      () => run(readFile, { path: "Library/Keychains/login.keychain-db" }, { session: { id: "sess-1" } }),
+      /path_forbidden/,
+    );
+    writeFileSync(join(box.project, ".netrc"), "machine example.com", "utf8");
+    await assert.rejects(
+      () => run(readFile, { path: ".netrc" }, { session: { id: "sess-1" } }),
+      /path_forbidden/,
+    );
+  } finally {
+    box.restore();
+  }
+});
+
+test("bash refuses an approval granted before the owner dropped to read_only", async () => {
+  const box = grantFixture("guard");
+  try {
+    const pending = run<{ status?: string; error?: string }>(
+      bash,
+      { command: "echo hi" },
+      { session: { id: "sess-1" } },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(box.approvals.listPending().length, 1);
+    // The owner narrows the grant while the card sits open, then approves the
+    // card they raised before the change. It must not spend on the old posture.
+    upsertSessionGrant(
+      { sessionId: "sess-1", path: realpathSync(box.project), permission: "read_only", finalConfirm: false },
+      new Date(),
+      process.env.UB_WORKSPACE_STORE_PATH,
+    );
+    const card = box.approvals.listPending()[0];
+    box.approvals.decide(card.id, "approve", card.actionSha256);
+    const result = await pending;
+    assert.equal(result.status, "blocked");
+    assert.equal(result.error, "workspace_changed");
+  } finally {
+    box.restore();
+  }
+});

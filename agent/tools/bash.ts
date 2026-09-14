@@ -18,7 +18,18 @@ const INPUT_MAX_BYTES = 1024 * 1024;
  * out of the workspace. cwd/env confinement alone does not stop an absolute
  * path, so this is a tripwire in addition to the owner's per-command approval.
  */
-const BLOCKED_COMMAND_SUBSTRINGS = [...FORBIDDEN_PATH_SUBSTRINGS, "keychain", ".."];
+const BLOCKED_COMMAND_SUBSTRINGS = [
+  ...FORBIDDEN_PATH_SUBSTRINGS,
+  // Substrings that only ever name something outside the folder. `..` earns
+  // its place as a path traversal marker even though it costs the odd benign
+  // `echo "a..b"`: the owner still sees the command on a card, so a false
+  // block is a retype, while a miss is a read the card made look routine.
+  "..",
+  "/etc/",
+  "/private/etc",
+  "/var/db",
+  "/library/keychains",
+];
 
 function blockedReason(command: string): string | null {
   const lowered = command.toLowerCase();
@@ -64,10 +75,15 @@ export default defineTool({
     // confinement alone cannot keep a verbatim shell line inside the folder,
     // so a card is the only honest gate. Final confirm changes nothing here.
     await waitUntilNotPending(store, rec.id);
-    // The workspace may have changed while the card sat open; the approval
-    // was granted against the cwd at request time, so refuse a changed one.
+    // The workspace may have changed while the card sat open. The approval was
+    // granted against the cwd AND the posture at request time, so a changed
+    // root, a changed permission, or a revoked grant all refuse the approval
+    // rather than spend it on something the owner did not see. Same rule as
+    // the write path.
     const refreshed = effectiveRoot(ctx?.session?.id);
-    if (refreshed.root !== root) {
+    const permissionAtRequest = grant?.permission ?? null;
+    const permissionNow = refreshed.grant?.permission ?? null;
+    if (refreshed.root !== root || permissionNow !== permissionAtRequest) {
       return { status: "blocked", error: "workspace_changed" };
     }
     return executeIfApproved(store, rec.id, hash, async () => {
