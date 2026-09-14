@@ -8,6 +8,7 @@ import {
   pumpHandoffs,
   pumpRoutines,
   routinesInFlight,
+  sweepOrphanState,
 } from "../../../../lib/agent-exec";
 
 /**
@@ -58,18 +59,26 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!agentsEnabled()) {
-    return NextResponse.json({ ok: false, error: "agent_credential_missing" }, { status: 503 });
-  }
+  // Authorisation first: an unauthorised caller should not learn from the
+  // status code whether this app has an agent credential.
   if (!(await authorised(request))) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   // The UI polls this every few seconds; the bucket is generous but stops a
   // runaway loop from piling up pump work. Key on a hash, never the raw token.
+  // Ahead of the sweep as well as the pumps: both take file locks.
   const identity = request.headers.get("x-ub-agent-key") ?? request.headers.get("cookie") ?? "local";
   const key = createHash("sha256").update(identity).digest("hex").slice(0, 16);
   if (rateLimited(`tick:${key}`, 120)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
+  // Ahead of the credential gate on purpose. Routines whose bot is gone are
+  // visible through the routines route, which needs no credential, and a
+  // teardown that failed before a key was revoked would otherwise wait for one
+  // to come back before it healed.
+  const swept = sweepOrphanState();
+  if (!agentsEnabled()) {
+    return NextResponse.json({ ok: false, error: "agent_credential_missing", swept: swept.length }, { status: 503 });
   }
   const raw = Number(new URL(request.url).searchParams.get("limit") ?? "2");
   const limit = Number.isFinite(raw) ? Math.min(4, Math.max(1, Math.trunc(raw))) : 2;
@@ -84,6 +93,7 @@ export async function POST(request: Request) {
     ok: true,
     enabled: agentsEnabled(),
     started: true,
+    swept: swept.length,
     inFlight: handoffsInFlight(),
     routinesInFlight: routinesInFlight(),
   });

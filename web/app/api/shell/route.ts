@@ -241,10 +241,13 @@ export async function PUT(request: Request) {
         /* the shell action already landed; the handoff pump reports the rest */
       }
     }
-    // Not for a delete: `appendAgentEvent` upserts, so noting a confirmed
-    // delete on the deleted bot's own thread would rebuild the row the
-    // teardown just removed, and the sweep would have to remove it again.
-    if (claimed && action?.type !== "deleteBot") {
+    // `appendAgentEvent` upserts, so noting a confirmed delete on the deleted
+    // bot's own thread rebuilds the row the teardown just removed. Only that
+    // thread is skipped: a delete confirmed from another bot's chat still
+    // gets its receipt, on a thread that survives.
+    const notesDeletedThread = action?.type === "deleteBot"
+      && (claimed?.threadId || threadIdFor(action.botId)) === threadIdFor(action.botId);
+    if (claimed && !notesDeletedThread) {
       try {
         noteProposal(claimed, body.action, queued);
       } catch {

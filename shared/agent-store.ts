@@ -607,7 +607,10 @@ export function deleteThread(botId: string, path = agentStorePath()): boolean {
   return withAgentStore((store) => {
     const id = threadIdFor(botId);
     const before = store.threads.length;
-    store.threads = store.threads.filter((item) => item.id !== id);
+    // Either field, matching `sweepOrphanThreads`: a hand-edited row where the
+    // two diverge still belongs to this bot, and leaving it for the sweep
+    // would be the two functions disagreeing about the same row.
+    store.threads = store.threads.filter((item) => item.id !== id && item.botId !== botId);
     return store.threads.length !== before;
   }, path);
 }

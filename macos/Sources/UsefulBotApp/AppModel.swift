@@ -843,7 +843,7 @@ final class AppModel: ObservableObject {
                 // rather than presenting a completed action as a failure.
                 self.saveError = result.detachError == nil
                     ? nil
-                    : "Deleted, but some of its data is still being cleared up."
+                    : "Saved, but some of its data is still being cleared up."
             } catch {
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
             }

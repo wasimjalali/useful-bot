@@ -23,7 +23,7 @@ import {
   type Routine,
   type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
-import { peekShell, readShell, updateShell } from "../../shared/shell-io.ts";
+import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
 /**
@@ -485,11 +485,15 @@ async function executeRoutine(
   try {
     ({ sessionId, reply } = await runEveTurn(bot, routine.instruction));
   } catch (err) {
-    appendAgentEvent(bot.id, {
-      kind: "note",
-      threadKind,
-      text: `Routine "${routine.name}" failed: ${err instanceof Error ? err.message : "routine_failed"}`.slice(0, 300),
-    });
+    // Best effort, like the pre-append note: a locked store must not become
+    // the error the caller sees in place of whatever eve actually did.
+    try {
+      appendAgentEvent(bot.id, {
+        kind: "note",
+        threadKind,
+        text: `Routine "${routine.name}" failed: ${err instanceof Error ? err.message : "routine_failed"}`.slice(0, 300),
+      });
+    } catch { /* the run history still records the failure */ }
     throw err;
   }
   if (reply) {
@@ -564,8 +568,10 @@ function recordRun(
 ): void {
   try {
     appendRoutineRun(id, run);
-  } catch {
-    /* the outcome still reaches the transcript and the pump result */
+  } catch (err) {
+    // The pane polls run history, so a lost row is invisible there. Say it
+    // here rather than nowhere.
+    console.warn(`[useful-bot] routine ${id} ran but its history row was lost:`, err);
   }
 }
 
@@ -578,8 +584,6 @@ export type RoutinePumpResult = {
   failed: Array<{ id: string; error: string }>;
   /** Candidates a contended store lock made someone else's turn this tick. */
   skipped: Array<{ id: string; reason: string }>;
-  /** Routines dropped because the bot that owned them is gone. */
-  swept: string[];
 };
 
 export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
@@ -592,9 +596,6 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
   const ran: Array<{ id: string; name: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
   const skipped: Array<{ id: string; reason: string }> = [];
-  // Before anything is claimed: a routine whose bot is gone can never run, and
-  // it would otherwise take a slot in every tick forever.
-  const swept = sweepOrphans();
   const now = new Date();
   const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
   for (const candidate of candidates.slice(0, limit)) {
@@ -634,7 +635,7 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
       routinesInflight.delete(candidate.id);
     }
   }
-  return { ran, failed, skipped, swept };
+  return { ran, failed, skipped };
 }
 
 /**
@@ -642,14 +643,19 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
  * Deleting a bot sweeps its own, but the roster, the routines and the agent
  * store have three separate locks: a delete that failed between them, or a
  * routine created for a bot deleted in the same moment, leaves work nothing
- * can ever complete. Running it on the tick makes that state temporary.
+ * can ever complete. The tick calls this, which makes that state temporary.
+ *
+ * Returns the routine ids it dropped.
  */
-function sweepOrphans(): string[] {
+export function sweepOrphanState(): string[] {
   try {
     // `peekShell`, never `readShell`. A roster this process could not parse is
     // reseeded by `readShell` to a single default bot, and sweeping against
     // that would read every other bot's routines and transcripts as orphans
-    // and delete all of them. No roster means no sweep.
+    // and delete all of them. No roster means no sweep, and neither does a
+    // roster another process already replaced with that stub: a reseed leaves
+    // valid JSON, so only the marker can tell the two apart.
+    if (shellWasReseeded()) return [];
     const shell = peekShell();
     if (!shell) return [];
     const live = shell.bots.map((bot) => bot.id);

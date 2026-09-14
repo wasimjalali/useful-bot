@@ -21,12 +21,30 @@ export function defaultShellPath(): string {
 }
 
 /**
- * Read the roster without repairing it. `readShell` treats an unreadable file
+ * Set beside the store when `readShell` had to reseed. A reseeded roster is a
+ * recovery stub, not the truth, and it is indistinguishable from a real one by
+ * inspection: valid JSON, one bot. Anything that deletes by absence has to
+ * know the difference, so the reseed says so out loud instead of leaving the
+ * next reader to guess.
+ */
+function reseedMarkerPath(path: string): string {
+  return `${path}.reseeded`;
+}
+
+/** Whether the roster on disk is a recovery stub rather than the owner's. */
+export function shellWasReseeded(path = defaultShellPath()): boolean {
+  return existsSync(reseedMarkerPath(path));
+}
+
+/**
+ * Read the roster without repairing it. `readShell` treats an unreadable store
  * as a reason to reseed, which is right for the app (an owner with a broken
- * store still gets a working app) and catastrophic for anything that deletes
- * by absence: a reseeded roster holds one bot, so a caller that trusts it
- * would decide every other bot's routines and transcripts are orphans. Callers
- * that delete must use this and do nothing when it returns null.
+ * store still gets a working one) and catastrophic for anything that deletes
+ * by absence: every other bot's routines and transcripts become orphans.
+ *
+ * Callers that delete must use this, do nothing when it returns null, and
+ * check `shellWasReseeded` as well: null only covers a file this process could
+ * not read, not one another process already replaced with a stub.
  */
 export function peekShell(path = defaultShellPath()): ShellStore | null {
   if (!existsSync(path)) return null;
@@ -51,6 +69,10 @@ export function readShell(path = defaultShellPath()): ShellStore {
     console.warn(`[useful-bot] shell store was unreadable; reseeded and backed up to ${bak}`);
     const seeded = seedStore();
     writeShell(seeded, path);
+    // After the write, which clears the marker for a real roster.
+    try {
+      writeFileSync(reseedMarkerPath(path), `${new Date().toISOString()}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch { /* the sweep is the only reader; a missing marker only costs it caution */ }
     return seeded;
   }
 }
@@ -65,6 +87,12 @@ export function writeShell(store: ShellStore, path = defaultShellPath()): void {
     fsyncSync(fd);
     closeSync(fd);
     renameSync(tmp, path);
+    // A roster with more than the seeded bot in it is the owner's again,
+    // whether they rebuilt it or restored the backup, so the sweep can trust
+    // the store from here on.
+    if (parsed.bots.length > 1) {
+      try { unlinkSync(reseedMarkerPath(path)); } catch { /* no marker to clear */ }
+    }
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
     throw err;

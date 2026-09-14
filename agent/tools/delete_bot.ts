@@ -84,17 +84,22 @@ export default defineTool({
       // anything this could not.
       let routines = 0;
       const errors: string[] = [];
+      // A short code, never the raw message: internal text does not belong in
+      // a tool result, and a comma in one would break the framing below.
+      const code = (err: unknown) => (err instanceof Error ? err.message : "detach_failed")
+        .replaceAll(",", " ")
+        .slice(0, 80);
       // Independently: a locked routines store is no reason to leave the
       // transcript behind too, and the owner needs to hear about both.
       try {
         routines = deleteRoutinesForBot(target.id);
       } catch (err) {
-        errors.push(`routines:${err instanceof Error ? err.message : "detach_failed"}`);
+        errors.push(`routines:${code(err)}`);
       }
       try {
         deleteThread(target.id);
       } catch (err) {
-        errors.push(`transcript:${err instanceof Error ? err.message : "detach_failed"}`);
+        errors.push(`transcript:${code(err)}`);
       }
       const detachError = errors.length > 0 ? errors.join(",") : null;
       return {

@@ -29,7 +29,7 @@ import {
   zonedWallToUtc,
   type Routine,
 } from "../shared/routines-store.ts";
-import { peekShell, readShell } from "../shared/shell-io.ts";
+import { peekShell, readShell, shellWasReseeded, writeShell } from "../shared/shell-io.ts";
 
 function sandbox(): { path: string; restore: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "ub-routines-"));
@@ -568,4 +568,29 @@ test("peekShell refuses to repair, so a sweep never runs against a reseed", () =
   assert.equal(readShell(path).bots.length > 0, true);
   // Which peekShell now reads back, because the file is valid again.
   assert.equal(peekShell(path)?.bots.length, readShell(path).bots.length);
+});
+
+test("a reseeded roster is marked, and the mark clears when it is rebuilt", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-shell-reseed-"));
+  const path = join(dir, "shell.json");
+
+  // A fresh install is a seed, not a reseed: nothing was lost, so nothing has
+  // to be protected from the sweep.
+  const fresh = readShell(path);
+  assert.equal(shellWasReseeded(path), false);
+  assert.equal(fresh.bots.length >= 1, true);
+
+  // A store this build cannot read is renamed aside and replaced with a stub.
+  // That stub parses, so `peekShell` cannot tell it from the owner's roster:
+  // the marker is the only thing that can.
+  writeFileSync(path, "{ not json");
+  readShell(path);
+  assert.equal(shellWasReseeded(path), true);
+  assert.notEqual(peekShell(path), null);
+
+  // Rebuilt or restored, the roster is the owner's again and the mark goes.
+  const rebuilt = readShell(path);
+  rebuilt.bots = [...rebuilt.bots, { ...rebuilt.bots[0], id: "bot-second", name: "Second" }];
+  writeShell(rebuilt, path);
+  assert.equal(shellWasReseeded(path), false);
 });
