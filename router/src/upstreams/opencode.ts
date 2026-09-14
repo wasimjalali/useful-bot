@@ -8,6 +8,31 @@ export function sessionHeader(callerId: string, sessionId: string, role: string)
   return createHash("sha256").update(`${callerId}:${sessionId}:${role}`).digest("hex");
 }
 
+export function upstreamConfigError(error: unknown): RouterError {
+  const raw = error instanceof Error ? error.message : "";
+  const known = raw === "upstream_credential_missing"
+    || raw === "provider_unknown"
+    || raw === "provider_incompatible"
+    || raw === "provider_disconnected";
+  const code = known ? raw : "configuration_unverified";
+  return new RouterError({
+    status: 503,
+    type: "internal_error",
+    code,
+    message: code,
+  });
+}
+
+function retryAfterMs(response: Response): number | undefined {
+  const header = response.headers.get("retry-after");
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const at = Date.parse(header);
+  if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  return undefined;
+}
+
 export async function completeUpstream(input: {
   entry: RegistryEntry;
   body: unknown;
@@ -18,13 +43,8 @@ export async function completeUpstream(input: {
   let resolved: ReturnType<typeof resolveUpstream>;
   try {
     resolved = resolveUpstream(readProviderStore(), input.entry.alias, process.env);
-  } catch {
-    throw new RouterError({
-      status: 503,
-      type: "internal_error",
-      code: "configuration_unverified",
-      message: "upstream credential missing",
-    });
+  } catch (error) {
+    throw upstreamConfigError(error);
   }
   const url = `${resolved.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const payload = input.body as Record<string, unknown>;
@@ -48,6 +68,9 @@ export async function completeUpstream(input: {
     redirect: "manual",
     signal: input.signal,
   });
+  if (response.status >= 200 && response.status < 300) {
+    return { response, providerId: resolved.providerId, model: resolved.model };
+  }
   if (response.status >= 300 && response.status < 400) {
     throw new RouterError({
       status: 502,
@@ -64,5 +87,28 @@ export async function completeUpstream(input: {
       message: "upstream auth failed",
     });
   }
-  return { response, providerId: resolved.providerId, model: resolved.model };
+  if (response.status === 429) {
+    throw new RouterError({
+      status: 429,
+      type: "rate_limit_error",
+      code: "upstream_rate_limited",
+      message: "upstream_rate_limited",
+      retryable: true,
+      retryAfterMs: retryAfterMs(response),
+    });
+  }
+  if (response.status === 404) {
+    throw new RouterError({
+      status: 502,
+      type: "upstream_error",
+      code: "model_unavailable",
+      message: "model_unavailable",
+    });
+  }
+  throw new RouterError({
+    status: 502,
+    type: "upstream_error",
+    code: "upstream_protocol_error",
+    message: "upstream_protocol_error",
+  });
 }

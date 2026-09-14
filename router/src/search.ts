@@ -54,12 +54,15 @@ export async function search(caller: AuthedCaller, body: unknown): Promise<unkno
     clearTimeout(timer);
   }
   if (response.status === 429) {
+    const header = response.headers.get("retry-after");
+    const seconds = header ? Number(header) : NaN;
     throw new RouterError({
       status: 429,
       type: "rate_limit_error",
       code: "upstream_rate_limited",
       message: "search rate limited",
-      retryable: false,
+      retryable: true,
+      retryAfterMs: Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined,
     });
   }
   if (!response.ok) {
