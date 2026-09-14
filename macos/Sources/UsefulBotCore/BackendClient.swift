@@ -228,6 +228,15 @@ public actor BackendClient {
         }
         if process.isRunning {
             process.terminate()
+            // A Keychain unlock prompt ignores SIGTERM; give it a short grace
+            // then make sure the CLI cannot leak into the next launch.
+            let killDeadline = Date().addingTimeInterval(1)
+            while process.isRunning, Date() < killDeadline {
+                usleep(50_000)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
             throw BackendError.deviceTokenMissing
         }
         process.waitUntilExit()

@@ -11,7 +11,7 @@ import SwiftUI
 /// Inside detection is hover based, not frame based: anchored popovers are
 /// placed with `.offset`, and the AppKit frame of an offset view does not
 /// include that shift, so a frame check would classify every click on the
-/// popover as outside and tear the popover down on mousedown — before the
+/// popover as outside and tear the popover down on mousedown, before the
 /// clicked row's action could run.
 extension View {
     func dismissOnOutsideClick(
