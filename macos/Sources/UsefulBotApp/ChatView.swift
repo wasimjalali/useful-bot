@@ -372,7 +372,7 @@ struct TranscriptRowView: View {
         case .handoff:
             // The reference hides the dispatch text and marks the send itself.
             if recipients.isEmpty, row.targetBotIds.isEmpty {
-                bubbleRow
+                bubbleRow(showsSpeaker: true)
             } else {
                 BotMetaRow(
                     prefix: "Messaged",
@@ -388,18 +388,19 @@ struct TranscriptRowView: View {
                     names: [row.author ?? ""],
                     roster: bots
                 )
-                bubbleRow
+                // The strip already names and faces the author.
+                bubbleRow(showsSpeaker: false)
             }
         case .note:
             HStack(alignment: .top, spacing: 12) {
-                BotAvatarView(bot: bot, size: 20)
+                BotAvatarView(bot: speaker ?? bot, size: 20)
                 Text(row.text)
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
                 Spacer(minLength: 0)
             }
         case .assistant:
-            bubbleRow
+            bubbleRow(showsSpeaker: true)
         }
     }
 
@@ -435,19 +436,20 @@ struct TranscriptRowView: View {
         }
     }
 
-    private var bubbleRow: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            if let speaker {
+    private func bubbleRow(showsSpeaker: Bool) -> some View {
+        let attributed = showsSpeaker && row.authorBotId != nil && row.authorBotId != bot.id
+        return HStack(alignment: .bottom, spacing: 8) {
+            if attributed, let speaker {
                 BotAvatarView(bot: speaker, size: 24)
             }
             VStack(alignment: .leading, spacing: 4) {
-                if let speakerLabel {
+                if attributed, let speakerLabel {
                     Text(speakerLabel)
                         .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                bubble
+                bubble(showsAvatar: attributed && speaker != nil)
             }
             Spacer(minLength: 4)
             if let at = row.at {
@@ -461,13 +463,16 @@ struct TranscriptRowView: View {
         }
     }
 
-    private var bubble: some View {
-        ChatMarkdownView(text: row.text, expandsWidth: false)
+    private func bubble(showsAvatar: Bool) -> some View {
+        // Only reserve room for chrome that actually renders: an undated
+        // replay has no trailing time, a strip-attributed post has no avatar.
+        let chrome = (row.at == nil ? 0 : timeReserve) + (showsAvatar ? avatarReserve : 0)
+        return ChatMarkdownView(text: row.text, expandsWidth: false)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(Theme.C.sunken)
             .clipShape(RoundedRectangle(cornerRadius: bubbleRadius, style: .continuous))
-            .frame(maxWidth: max(160, maxBubbleWidth - timeReserve - (speaker == nil ? 0 : avatarReserve)), alignment: .leading)
+            .frame(maxWidth: max(160, maxBubbleWidth - chrome), alignment: .leading)
     }
 
     /// The bot that spoke, when the row is attributed and it is not the chat

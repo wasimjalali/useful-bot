@@ -78,6 +78,67 @@ import Testing
         #expect(blocks.count == 2)
     }
 
+    @Test func postsAreNeverCollapsedEvenWhenIdentical() {
+        let rows = [
+            TranscriptRow(id: "u", kind: .user, text: "kick off"),
+            TranscriptRow(id: "p1", kind: .post, text: "done", authorBotId: "eng"),
+            TranscriptRow(id: "p2", kind: .post, text: "done", authorBotId: "eng"),
+        ]
+        let blocks = build(rows)
+        #expect(blocks.map(\.id) == ["u", "p1", "p2", "summary-p2"])
+        guard case .summary(_, let count, let botIds) = blocks.last else {
+            Issue.record("expected a summary")
+            return
+        }
+        #expect(count == 2)
+        #expect(botIds == ["eng"])
+    }
+
+    @Test func aDayDividerBreaksTheCollapseChain() {
+        let rows = [
+            TranscriptRow(id: "h1", kind: .handoff, text: "ship it", authorBotId: "bot-useful", targetBotIds: ["eng"], at: date("2026-09-12T09:00:00Z")),
+            TranscriptRow(id: "h2", kind: .handoff, text: "ship it", authorBotId: "bot-useful", targetBotIds: ["growth"], at: date("2026-09-13T09:00:00Z")),
+        ]
+        let blocks = build(rows)
+        #expect(blocks.map(\.id) == ["day-h1", "h1", "day-h2", "h2"])
+        guard case .message(let first, let firstTargets) = blocks[1],
+              case .message(let second, let secondTargets) = blocks[3] else {
+            Issue.record("expected two strips around the divider")
+            return
+        }
+        #expect(first.id == "h1")
+        #expect(firstTargets == ["eng"])
+        #expect(second.id == "h2")
+        #expect(secondTargets == ["growth"])
+    }
+
+    @Test func summaryIdHangsOffTheVisibleMessageBlock() {
+        let rows = [
+            TranscriptRow(id: "h1", kind: .handoff, text: "go", authorBotId: "bot-useful", targetBotIds: ["eng"]),
+            TranscriptRow(id: "h2", kind: .handoff, text: "go", authorBotId: "bot-useful", targetBotIds: ["growth"]),
+            TranscriptRow(id: "a1", kind: .assistant, text: "on it"),
+            TranscriptRow(id: "a2", kind: .assistant, text: "done"),
+        ]
+        let blocks = build(rows)
+        guard case .summary(let id, let count, let botIds) = blocks.last else {
+            Issue.record("expected a summary")
+            return
+        }
+        #expect(id == "summary-a2")
+        #expect(count == 2)
+        #expect(botIds == ["eng", "growth"])
+    }
+
+    @Test func handoffBackToTheOpenBotIsNotInvolved() {
+        let rows = [
+            TranscriptRow(id: "a1", kind: .assistant, text: "one", authorBotId: "bot-useful"),
+            TranscriptRow(id: "h1", kind: .handoff, text: "self", authorBotId: "bot-useful", targetBotIds: ["bot-useful"]),
+            TranscriptRow(id: "a2", kind: .assistant, text: "two", authorBotId: "bot-useful"),
+        ]
+        let blocks = build(rows)
+        #expect(blocks.count == 3)
+    }
+
     @Test func summaryCountsBubblesAndInvolvedBots() {
         let rows = [
             TranscriptRow(id: "u", kind: .user, text: "kick off", at: date("2026-09-14T17:00:00Z")),

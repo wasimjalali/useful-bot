@@ -336,14 +336,28 @@ final class AppModel: ObservableObject {
                 // the transcript look like it is generating again and jitters
                 // the scroll. Apply the replay silently and only start
                 // publishing once it reaches the live tail.
-                let durableTailId = state.events.last?.id
+                //
+                // The stream only carries user/assistant turns, so a durable
+                // handoff/post/note can never appear in it; gate on the newest
+                // durable message. A pruned or replaced session may never
+                // replay that row, so the first event stamped after it also
+                // proves the replay caught up.
+                let sessionTail = state.events.last { $0.kind == "user" || $0.kind == "assistant" }
+                let durableTailId = sessionTail?.id
+                let durableTailAt = TranscriptBlocks.date(fromISO8601: sessionTail?.at)
                 var atLiveTail = durableTailId == nil
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
-                    projection.apply(event, live: atLiveTail)
-                    if !atLiveTail, let durableTailId, event.id == durableTailId {
-                        atLiveTail = true
+                    if !atLiveTail {
+                        if let durableTailId, event.id == durableTailId {
+                            atLiveTail = true
+                        } else if let durableTailAt,
+                                  let eventAt = TranscriptBlocks.date(fromISO8601: event.metaAt),
+                                  eventAt > durableTailAt {
+                            atLiveTail = true
+                        }
                     }
+                    projection.apply(event, live: atLiveTail)
                     if atLiveTail {
                         publishTranscript()
                     }

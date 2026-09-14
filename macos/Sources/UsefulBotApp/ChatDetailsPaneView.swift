@@ -66,7 +66,11 @@ struct ChatDetailsPaneView: View {
         VStack(alignment: .leading, spacing: 12) {
             sectionLabel("Members")
             if members.isEmpty {
-                Text("No members yet. Add two to six bots from the group settings.")
+                // A roster that no longer resolves is different from a group
+                // that was never staffed.
+                Text(bot.memberIds.isEmpty
+                    ? "No members yet. Add two to six bots from the group settings."
+                    : "This group's members are gone. Pick new ones in the group settings.")
                     .font(.system(size: 13))
                     .lineSpacing(3)
                     .foregroundStyle(Theme.C.inkMuted)

@@ -258,8 +258,9 @@ struct RailView: View {
     }
 
     /// A pinned or hidden bot leaves its section with nothing to show; name
-    /// the reason instead of leaving a dead header behind.
-    private func emptySectionHint(_ store: ShellStore, _ sectionId: String) -> String? {
+    /// the reason instead of leaving a dead header behind. Unassigned uses the
+    /// same rule, with its own fallback line for a genuinely empty bucket.
+    private func emptySectionHint(_ store: ShellStore, _ sectionId: String?) -> String? {
         let pinned = store.pinnedBots.filter { $0.sectionId == sectionId }.count
         if pinned > 0 {
             return pinned == 1 ? "1 pinned bot shows at the top." : "\(pinned) pinned bots show at the top."
@@ -268,7 +269,7 @@ struct RailView: View {
         if hidden > 0 {
             return hidden == 1 ? "1 bot here is hidden." : "\(hidden) bots here are hidden."
         }
-        return nil
+        return sectionId == nil ? "Default home for new bots." : nil
     }
 
     @ViewBuilder
@@ -281,7 +282,7 @@ struct RailView: View {
             if !store.collapsedUnassigned {
                 VStack(alignment: .leading, spacing: 2) {
                     if bots.isEmpty {
-                        Text("Default home for new bots.")
+                        Text(emptySectionHint(store, nil) ?? "Default home for new bots.")
                             .font(.system(size: 12))
                             .foregroundStyle(Theme.C.inkFaint)
                             .padding(.horizontal, 8)
@@ -684,6 +685,10 @@ private struct RowActionsButton: View {
         .pointerOnHover()
         .onHover { hovering = $0 }
         .opacity(visible ? 1 : 0)
+        // Fade, but take the hidden control out of the click and VoiceOver
+        // order too; the row's context menu stays as the keyboard path.
+        .allowsHitTesting(visible)
+        .accessibilityHidden(!visible)
         .accessibilityLabel(label)
         .background(
             GeometryReader { proxy in

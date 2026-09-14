@@ -49,21 +49,25 @@ public enum TranscriptBlocks {
         func noteInvolvement(_ row: TranscriptRow) {
             var ids: [String] = []
             // A teammate who spoke in this room counts; so do the bots this
-            // room messaged out to. A fan-out post's targets are not counted
-            // again as authors.
+            // room messaged out to. A bot handed off to itself is not a
+            // teammate, and a fan-out post's targets are not counted as
+            // authors.
             if let author = row.authorBotId, author != selectedBotId {
                 ids.append(author)
             }
             if row.kind == .handoff {
-                ids.append(contentsOf: row.targetBotIds)
+                ids.append(contentsOf: row.targetBotIds.filter { $0 != selectedBotId })
             }
             involved = orderedUnique(involved + ids)
         }
 
         func flushRun() {
-            if bubbleCount >= 2, !involved.isEmpty, let last = lastTurnRow {
+            if bubbleCount >= 2, !involved.isEmpty,
+               let index = lastMessageBlockIndex, index < blocks.count {
+                // The summary id hangs off the visible message block, never a
+                // collapsed copy that does not render.
                 blocks.append(.summary(
-                    id: "summary-\(last.id)",
+                    id: "summary-\(blocks[index].id)",
                     messageCount: bubbleCount,
                     botIds: involved
                 ))
@@ -76,6 +80,10 @@ public enum TranscriptBlocks {
             if let date = row.at,
                lastDatedDay == nil || !calendar.isDate(date, inSameDayAs: lastDatedDay!) {
                 flushRun()
+                // A divider ends the collapse chain: identical dispatches on
+                // two different days are two strips.
+                lastTurnRow = nil
+                lastMessageBlockIndex = nil
                 blocks.append(.dayDivider(
                     id: "day-\(row.id)",
                     label: dayLabel(date, now: now, calendar: calendar, timeZone: timeZone, locale: locale)
@@ -91,21 +99,22 @@ public enum TranscriptBlocks {
                 continue
             }
 
-            // A fan-out queues one copy per target with the same sender and
-            // text; collapse the copies into the first bubble, merging targets.
-            if let previous = lastTurnRow,
+            // A fan-out queues one handoff copy per target with the same
+            // sender and text; collapse the copies into the first strip,
+            // merging targets. Posts are never collapsed: each post is its
+            // own bubble.
+            if row.kind == .handoff,
+               let previous = lastTurnRow,
                let index = lastMessageBlockIndex,
                previous.kind == row.kind,
                previous.authorBotId == row.authorBotId,
                previous.text == row.text,
-               row.kind == .handoff || row.kind == .post,
                case .message(let firstRow, let firstRecipients) = blocks[index] {
                 blocks[index] = .message(
                     row: firstRow,
                     recipients: orderedUnique(firstRecipients + row.targetBotIds)
                 )
                 noteInvolvement(row)
-                lastTurnRow = row
                 continue
             }
 

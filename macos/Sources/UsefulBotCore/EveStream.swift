@@ -304,6 +304,9 @@ public struct StreamProjection: Equatable, Sendable {
                 if let current = currentAssistantId,
                    let index = messages.firstIndex(where: { $0.id == current }) {
                     messages[index].text = full
+                    // The deltas may have been undated (a replay without
+                    // `meta.at`); the completion's stamp still lands.
+                    if messages[index].at == nil { messages[index].at = stamp }
                 } else {
                     messages.append(ChatMessage(
                         id: event.id ?? "a-\(messages.count)",

@@ -46,6 +46,20 @@ import Testing
         #expect(projection.messages.last?.at != nil)
     }
 
+    @Test func completionAdoptsTheServerStampWhenDeltasWereUndated() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.appended", id: "1", messageDelta: "He"))
+        #expect(projection.messages.last?.at == nil)
+        projection.apply(EveEvent(
+            type: "message.completed",
+            id: "2",
+            metaAt: "2026-09-14T15:20:09.340Z",
+            message: "Hello"
+        ))
+        #expect(projection.messages.last?.text == "Hello")
+        #expect(projection.messages.last?.at == TranscriptBlocks.date(fromISO8601: "2026-09-14T15:20:09.340Z"))
+    }
+
     @Test func stripThreadPrefixRemovesInjectedIdentity() {
         let bot = "You are Scout, Researcher.\nStanding instructions: Survey markets.\nStay in role.\n\nHello"
         #expect(EveStream.stripThreadPrefix(bot) == "Hello")

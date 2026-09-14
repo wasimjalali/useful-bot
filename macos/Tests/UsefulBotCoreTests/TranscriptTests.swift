@@ -114,4 +114,16 @@ import Testing
         #expect(rows.count == 2)
         #expect(rows.allSatisfy { $0.at == nil })
     }
+
+    @Test func liveMessageTimeSurvivesTheMerge() throws {
+        let stamp = TranscriptBlocks.date(fromISO8601: "2026-09-14T17:10:00Z")
+        let rows = Transcript.merge(
+            events: [],
+            messages: [
+                ChatMessage(id: "u1", role: .user, text: "hi", at: stamp),
+                ChatMessage(id: "a1", role: .assistant, text: "hello", at: stamp),
+            ]
+        )
+        #expect(rows.map(\.at) == [stamp, stamp])
+    }
 }

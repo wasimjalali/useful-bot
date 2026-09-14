@@ -51,6 +51,7 @@ struct AvatarStackView: View {
         switch bots.count {
         case 0: return "No members"
         case 1: return bots[0].name
+        case 2, 3: return bots.map(\.name).joined(separator: ", ")
         default: return "\(bots.count) bots"
         }
     }
