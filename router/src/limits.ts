@@ -34,8 +34,14 @@ export interface UsageSummary {
   by_model: UsageBucket[];
 }
 
+const REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+const HIT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const USAGE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const PRUNE_INTERVAL_MS = 60 * 1000;
+
 export class LimitStore {
   private readonly db: DatabaseSync;
+  private lastPrune = 0;
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -61,9 +67,19 @@ export class LimitStore {
         ts INTEGER NOT NULL
       );
     `);
+    this.prune(Date.now());
+  }
+
+  private prune(now: number): void {
+    if (now - this.lastPrune < PRUNE_INTERVAL_MS) return;
+    this.lastPrune = now;
+    this.db.prepare("DELETE FROM requests WHERE created_at < ?").run(now - REQUEST_TTL_MS);
+    this.db.prepare("DELETE FROM hits WHERE ts < ?").run(now - HIT_RETENTION_MS);
+    this.db.prepare("DELETE FROM usage WHERE ts < ?").run(now - USAGE_RETENTION_MS);
   }
 
   recordUsage(row: UsageRow): void {
+    this.prune(row.at);
     this.db.prepare(
       "INSERT INTO usage (caller_id, provider, model, input_tokens, output_tokens, ts) VALUES (?, ?, ?, ?, ?, ?)",
     ).run(row.callerId, row.provider, row.model, row.inputTokens, row.outputTokens, row.at);
@@ -105,8 +121,12 @@ export class LimitStore {
   }
 
   rememberRequest(requestId: string, callerId: string, now: number): void {
-    const existing = this.db.prepare("SELECT request_id FROM requests WHERE request_id = ?").get(requestId);
-    if (existing) {
+    this.prune(now);
+    const key = `${callerId}\u0000${requestId}`;
+    const info = this.db.prepare(
+      "INSERT INTO requests (request_id, caller_id, created_at) VALUES (?, ?, ?) ON CONFLICT(request_id) DO NOTHING",
+    ).run(key, callerId, now);
+    if (Number(info.changes) === 0) {
       throw new RouterError({
         status: 409,
         type: "invalid_request_error",
@@ -114,15 +134,11 @@ export class LimitStore {
         message: "duplicate_request",
       });
     }
-    this.db.prepare("INSERT INTO requests (request_id, caller_id, created_at) VALUES (?, ?, ?)").run(
-      requestId,
-      callerId,
-      now,
-    );
   }
 
   hit(caller: AuthedCaller, now: number): void {
     const limits = CALLER_LIMITS[caller.profile];
+    this.prune(now);
     const minuteAgo = now - 60_000;
     const recent = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE caller_id = ? AND ts > ?").get(
       caller.callerId,
@@ -150,6 +166,21 @@ export class LimitStore {
         message: "caller_budget_exhausted",
         retryable: true,
       });
+    }
+    if (limits.input24h > 0 || limits.output24h > 0) {
+      const tokens = this.db.prepare(
+        "SELECT COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output FROM usage WHERE caller_id = ? AND ts > ?",
+      ).get(caller.callerId, dayAgo) as { input: number; output: number };
+      if ((limits.input24h > 0 && Number(tokens.input) >= limits.input24h)
+        || (limits.output24h > 0 && Number(tokens.output) >= limits.output24h)) {
+        throw new RouterError({
+          status: 429,
+          type: "rate_limit_error",
+          code: "caller_budget_exhausted",
+          message: "caller_budget_exhausted",
+          retryable: true,
+        });
+      }
     }
     this.db.prepare("INSERT INTO hits (caller_id, ts) VALUES (?, ?)").run(caller.callerId, now);
   }
