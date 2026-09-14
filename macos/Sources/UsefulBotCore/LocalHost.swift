@@ -56,7 +56,7 @@ public enum LocalHost {
             value = String(value.dropFirst().dropLast())
         }
         if value.hasSuffix(".") { value.removeLast() }
-        if value == "localhost" || value.hasSuffix(".localhost") || value == "::1" || value == "::" {
+        if value == "localhost" || value.hasSuffix(".localhost") || value == "::1" {
             return true
         }
         if value.contains(":") { return false }

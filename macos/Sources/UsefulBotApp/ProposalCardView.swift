@@ -93,7 +93,9 @@ struct ProposalCardView: View {
                     .foregroundStyle(Theme.C.inkMuted)
                     .padding(.top, 8)
                 actions(
-                    confirm: targetId != nil ? "Send to \(proposal.targetIds.count)" : "Nothing to send",
+                    confirm: targetId != nil
+                        ? (proposal.groupId != nil ? "Send to group" : "Send to \(proposal.targetIds.count)")
+                        : "Nothing to send",
                     dismiss: "Cancel",
                     confirmDisabled: targetId == nil
                 )

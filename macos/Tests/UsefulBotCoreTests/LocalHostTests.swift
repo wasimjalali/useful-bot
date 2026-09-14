@@ -63,6 +63,10 @@ import Testing
         for host in ["192.168.1.4", "10.0.0.5", "printer.local", "example.com", "169.254.1.1"] {
             #expect(!LocalHost.isLoopback(host), "expected \(host) to be non-loopback")
         }
+        // The unspecified address is local but not loopback: a credential-
+        // bearing base must not be built on a wildcard bind.
+        #expect(LocalHost.isLocal("::"))
+        #expect(!LocalHost.isLoopback("::"))
     }
 }
 
