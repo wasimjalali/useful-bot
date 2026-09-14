@@ -283,9 +283,9 @@ struct ComposerView: View {
     private func send() {
         guard canSend, !model.pending else { return }
         let message = Attachments.formatMessage(model.draft, files: model.attachments)
-        model.draft = ""
-        model.clearAttachments()
         modeOpen = false
+        // The model clears the composer once the turn is accepted, so a send
+        // that fails before that keeps the draft.
         model.send(message)
     }
 }

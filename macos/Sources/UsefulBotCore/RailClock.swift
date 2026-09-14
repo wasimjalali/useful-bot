@@ -18,6 +18,12 @@ public enum RailClock {
         iso.date(from: raw) ?? isoPlain.date(from: raw)
     }
 
+    /// The same shape the server sends, so the optimistic stamp can be read
+    /// back by `date(from:)` and by the web client.
+    public static func stamp(_ date: Date) -> String {
+        iso.string(from: date)
+    }
+
     public static func label(
         iso raw: String?,
         now: Date = Date(),

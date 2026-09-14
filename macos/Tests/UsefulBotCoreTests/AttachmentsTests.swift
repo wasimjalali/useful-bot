@@ -6,6 +6,8 @@ import Testing
     @Test func safeNameStripsPathsAndUnsafeCharacters() throws {
         #expect(try Attachments.safeName("/tmp/hello world.txt") == "hello_world.txt")
         #expect(try Attachments.safeName("../../etc/passwd") == "passwd")
+        #expect(try Attachments.safeName("..") == "file")
+        #expect(try Attachments.safeName(".") == "file")
     }
 
     @Test func secretNamesAreRejected() {

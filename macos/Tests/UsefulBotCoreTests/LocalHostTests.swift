@@ -26,6 +26,8 @@ import Testing
         let hosts = [
             "::", "::1", "fe80::1", "fc00::1", "fd00::1",
             "::ffff:127.0.0.1", "::ffff:192.168.0.1", "::127.0.0.1",
+            "::ffff:0:127.0.0.1", "0:0:0:0:0:ffff:127.0.0.1", "0:0:0:0:0:0:0:1",
+            "0:0:0:0:0:ffff:7f00:1", "[::1]", "fe80::1%en0",
         ]
         for host in hosts {
             #expect(LocalHost.isLocal(host), "expected \(host) to be local")

@@ -100,6 +100,9 @@ final class AppModel: ObservableObject {
     private var sendTask: Task<Void, Never>?
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
+    /// The newest session this app started, so cancel targets it even before
+    /// the store echo lands.
+    private var activeSessionId: String?
     private var loadGeneration = 0
     private var sendGeneration = 0
     private var sendBotId: String?
@@ -162,6 +165,8 @@ final class AppModel: ObservableObject {
         reloadTask?.cancel()
         saveChain?.cancel()
         saveChain = nil
+        uploadChain?.cancel()
+        uploadChain = nil
         cancelSend()
         pollTask = nil
         approvalPollTask = nil
@@ -355,6 +360,8 @@ final class AppModel: ObservableObject {
         sendGeneration += 1
         let generation = sendGeneration
         sendBotId = bot.id
+        let draftSnapshot = draft
+        let sentAttachmentIds = Set(attachments.map(\.id))
         projection = projectionForSend(message)
         rebuildTranscript()
         sendTask = Task { [weak self] in
@@ -374,6 +381,10 @@ final class AppModel: ObservableObject {
                     message: message
                 )
                 guard generation == self.sendGeneration else { return }
+                self.activeSessionId = sessionId
+                // The turn is accepted: clear only what this send owned, so
+                // text or files added while it was in flight survive.
+                self.clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: message)
                 guard generation == self.sendGeneration else { return }
                 var sawUserTurn = false
@@ -416,9 +427,21 @@ final class AppModel: ObservableObject {
         pending = false
         Task { [weak self] in
             guard let self else { return }
-            if let sessionId = bot.sessionId, !sessionId.isEmpty {
+            // The newest session may be one this app just created and has not
+            // echoed into the store yet.
+            let sessionId = self.activeSessionId ?? bot.sessionId
+            if let sessionId, !sessionId.isEmpty {
                 _ = try? await self.client.cancel(sessionId: sessionId)
             }
+        }
+    }
+
+    /// Clear the composer only for the text and files this send owned, so
+    /// anything typed or attached while the turn was starting survives.
+    private func clearSentComposer(draft draftSnapshot: String, attachmentIds: Set<String>) {
+        if draft == draftSnapshot { draft = "" }
+        if !attachmentIds.isEmpty {
+            attachments.removeAll { attachmentIds.contains($0.id) }
         }
     }
 
@@ -450,7 +473,7 @@ final class AppModel: ObservableObject {
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
         current.bots[index].sessionId = sessionId
         current.bots[index].lastPreview = preview
-        current.bots[index].lastAt = ISO8601DateFormatter().string(from: Date())
+        current.bots[index].lastAt = RailClock.stamp(Date())
         store = current
         try? await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
     }

@@ -54,7 +54,7 @@ private struct OutsideClickDismissal: ViewModifier {
         let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
             // Sheets own the screen while they run; a click outside the app
             // must not dismiss the popover under them.
-            if NSApp.modalWindow == nil { close() }
+            if NSApp.modalWindow == nil, !hoveringInside { close() }
         }
         monitors = [local, global].compactMap { $0 }
     }

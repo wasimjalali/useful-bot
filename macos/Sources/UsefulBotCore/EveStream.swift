@@ -167,7 +167,11 @@ public enum EveStream {
         for item in list {
             guard let row = item.objectValue else { continue }
             let url = (row["url"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard url.hasPrefix("https://") || url.hasPrefix("http://") else { continue }
+            guard let parsed = URL(string: url),
+                  let scheme = parsed.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  let host = parsed.host,
+                  !LocalHost.isLocal(host) else { continue }
             let title = String((chipText(row["title"]) ?? url).prefix(200))
             let snippet = String((chipText(row["snippet"]) ?? chipText(row["description"]) ?? "").prefix(800))
             chips.append(SearchChip(title: title, url: String(url.prefix(2048)), snippet: snippet))

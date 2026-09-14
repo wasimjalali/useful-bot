@@ -38,7 +38,7 @@ public enum Attachments {
             return allowed ? character : "_"
         })
         let clipped = String(cleaned.prefix(80))
-        let safe = clipped.isEmpty ? "file" : clipped
+        let safe = clipped.isEmpty || clipped == "." || clipped == ".." ? "file" : clipped
         let lower = safe.lowercased()
         if lower.contains(".env") || lower.hasSuffix(".pem") || lower.hasSuffix(".key") {
             throw NameError.forbidden

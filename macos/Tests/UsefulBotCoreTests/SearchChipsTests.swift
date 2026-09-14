@@ -51,6 +51,22 @@ import Testing
         #expect(chips.isEmpty)
     }
 
+    @Test func refusesLoopbackAndPrivateResults() throws {
+        // These links must never be rendered as chips: opening them would
+        // target the local server with the desktop session cookie.
+        let chips = EveStream.parseSearchChips(try value("""
+        {"results":[
+          {"title":"Local","url":"http://127.0.0.1:4320/api/shell"},
+          {"title":"Short","url":"http://127.1/"},
+          {"title":"Hex","url":"http://0x7f.0.0.1/"},
+          {"title":"Name","url":"http://localhost:4320/"},
+          {"title":"Private","url":"http://192.168.1.4/"},
+          {"title":"V6","url":"http://[::1]:4320/"}
+        ]}
+        """))
+        #expect(chips.isEmpty)
+    }
+
     @Test func capsAtFiveRows() throws {
         let rows = (1...8).map { "{\"url\":\"https://example.com/\($0)\"}" }.joined(separator: ",")
         let chips = EveStream.parseSearchChips(try value("{\"results\":[\(rows)]}"))

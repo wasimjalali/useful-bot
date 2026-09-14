@@ -14,6 +14,12 @@ public enum LocalHost {
             // An unknown host cannot be proven remote; fail closed.
             return true
         }
+        if value.hasPrefix("["), value.hasSuffix("]") {
+            value = String(value.dropFirst().dropLast())
+        }
+        if let zone = value.firstIndex(of: "%") {
+            value = String(value[..<zone])
+        }
         if value.hasSuffix(".") { value.removeLast() }
         if value == "localhost" || value.hasSuffix(".localhost") || value.hasSuffix(".local") {
             return true
@@ -28,20 +34,59 @@ public enum LocalHost {
     }
 
     private static func isLocalIPv6(_ value: String) -> Bool {
-        if value == "::" || value == "::1" { return true }
-        if value.hasPrefix("fe80:") { return true } // link-local
-        if value.hasPrefix("fc") || value.hasPrefix("fd") { return true } // unique-local
-        // v4-mapped and v4-compatible forms: ::ffff:127.0.0.1, ::127.0.0.1.
-        // A dotted tail is required so a global address like 2606::1111 is
-        // not mistaken for a short IPv4 number.
-        if let range = value.range(of: "::") {
-            let tail = String(value[range.upperBound...])
-            if tail.contains(".") {
-                let withoutMarker = tail.hasPrefix("ffff:") ? String(tail.dropFirst(5)) : tail
-                return isLocal(withoutMarker)
-            }
+        // Any embedded dotted IPv4 tail decides: ::ffff:127.0.0.1,
+        // ::ffff:0:127.0.0.1 and 0:0:0:0:0:ffff:127.0.0.1 alike.
+        if value.contains(".") {
+            let tail = value.split(separator: ":").last.map(String.init) ?? value
+            return isLocal(tail)
+        }
+        // Expand to eight groups so compressed and full forms classify the
+        // same: ::1 and 0:0:0:0:0:0:0:1, :: and 0:0:0:0:0:0:0:0.
+        guard let groups = ipv6Groups(value) else { return false }
+        if groups.allSatisfy({ $0 == 0 }) { return true }
+        if groups.dropLast().allSatisfy({ $0 == 0 }), groups.last == 1 { return true }
+        if groups[0] & 0xffc0 == 0xfe80 { return true } // fe80::/10 link-local
+        if groups[0] & 0xfe00 == 0xfc00 { return true } // fc00::/7 unique-local
+        if groups[0] == 0, groups[1] == 0, groups[2] == 0, groups[3] == 0,
+           groups[4] == 0, groups[5] == 0xffff {
+            // Standard v4-mapped in hex form: the last 32 bits are the IPv4.
+            return isPrivateV4(UInt32(groups[6]) << 16 | UInt32(groups[7]))
         }
         return false
+    }
+
+    /// Expand an IPv6 literal to eight 16-bit groups, accepting one `::` and a
+    /// trailing dotted IPv4 tail. Returns nil for anything malformed.
+    private static func ipv6Groups(_ value: String) -> [UInt16]? {
+        let halves = value.components(separatedBy: "::")
+        guard halves.count <= 2 else { return nil }
+
+        func parse(_ part: String) -> [UInt16]? {
+            guard !part.isEmpty else { return [] }
+            var groups: [UInt16] = []
+            let tokens = part.split(separator: ":")
+            for (index, token) in tokens.enumerated() {
+                if token.contains(".") {
+                    guard index == tokens.count - 1 else { return nil }
+                    let quads = token.split(separator: ".").compactMap { UInt16($0) }
+                    guard quads.count == 4, quads.allSatisfy({ $0 <= 255 }) else { return nil }
+                    groups.append(quads[0] << 8 | quads[1])
+                    groups.append(quads[2] << 8 | quads[3])
+                } else {
+                    guard let group = UInt16(token, radix: 16) else { return nil }
+                    groups.append(group)
+                }
+            }
+            return groups
+        }
+
+        guard let left = parse(halves[0]) else { return nil }
+        guard halves.count == 2 else {
+            return left.count == 8 ? left : nil
+        }
+        guard let right = parse(halves[1]), left.count + right.count <= 8 else { return nil }
+        let zeros = Array(repeating: UInt16(0), count: 8 - left.count - right.count)
+        return left + zeros + right
     }
 
     private static func isPrivateV4(_ address: UInt32) -> Bool {
