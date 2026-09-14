@@ -113,6 +113,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     if (encoded) out.set("x-ub-route", encoded);
     return new Response(upstream.body, { status: upstream.status, headers: out });
   } catch {
-    return Response.json({ ok: false, error: "eve unavailable" }, { status: 503 });
+    return Response.json({ ok: false, error: "eve_unavailable" }, { status: 503 });
   }
 }
