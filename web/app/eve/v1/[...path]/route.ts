@@ -137,15 +137,24 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     // the stamp cannot come from a pre-request snapshot.
     if (method === "POST" && suffix === "session" && route) {
       const text = await upstream.text();
+      let created = "";
       try {
-        const parsed = JSON.parse(text) as { sessionId?: string };
-        if (parsed.sessionId) {
-          const fresh = readShell();
-          const bot = fresh.bots.find((item) => item.id === route?.threadId) ?? null;
-          if (bot) syncSessionWorkspace(parsed.sessionId, bot);
-        }
+        created = (JSON.parse(text) as { sessionId?: string }).sessionId ?? "";
       } catch {
-        /* grant stamping is best effort; the body itself is intact */
+        /* a body this build cannot parse still belongs to the caller */
+      }
+      if (created) {
+        try {
+          const bot = readShell().bots.find((item) => item.id === route?.threadId) ?? null;
+          if (bot) syncSessionWorkspace(created, bot);
+          else removeSessionGrant(created);
+        } catch {
+          // The session exists upstream either way, so the body goes back. What
+          // must not survive is a grant row this build could not make current:
+          // without one the tools fall back to the legacy root with approval
+          // cards, which is the narrower posture.
+          try { removeSessionGrant(created); } catch { /* the next turn's stamp settles it */ }
+        }
       }
       return new Response(text, { status: upstream.status, headers: out });
     }

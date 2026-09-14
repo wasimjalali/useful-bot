@@ -262,19 +262,32 @@ function parseBot(raw: unknown): ShellBot {
   };
 }
 
-/** Tolerant: a malformed workspace field is no workspace, never a failure. */
+/**
+ * Tolerant: a malformed workspace field is no workspace, never a failure.
+ *
+ * Screened the same way a write is. A hand-edited roster naming `/` or a
+ * credential folder would otherwise parse into a bot field the grants store
+ * then refuses, which turns one bot's chat into a turn that cannot start.
+ * Reading it as no folder is the honest answer: the owner reattaches.
+ */
 function parseWorkspace(raw: unknown): BotWorkspace | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
-  if (typeof rec.path !== "string" || !rec.path.startsWith("/")) return null;
+  if (typeof rec.path !== "string" || !isGrantableRootPath(rec.path)) return null;
   const permission = parseWorkspacePermission(rec.permission);
   if (!permission) return null;
   return { path: rec.path, permission, finalConfirm: rec.finalConfirm === true };
 }
 
-/** A grant path must be absolute and bounded; the store holds capability roots. */
+/**
+ * A grant path is a capability root: absolute, bounded, and not a folder whose
+ * own name says it holds credentials. The route validates the filesystem side
+ * (real directory, not a symlink); this is the shape rule, and it is the same
+ * rule the grants store applies, so a bot field can never carry a path the
+ * grant built from it would reject.
+ */
 function assertGrantableRootPath(path: unknown): string {
-  if (typeof path !== "string" || !path.startsWith("/") || path.length > 1024) {
+  if (typeof path !== "string" || path.length > 1024 || !isGrantableRootPath(path)) {
     throw new Error("workspace_path_invalid");
   }
   return path;
@@ -323,7 +336,19 @@ const FORBIDDEN_GRANT_SEGMENTS = new Set([
   "auth.json",
   "secrets",
   "launchagents",
+  // Credential stores, as folder names this time: the substring screen in
+  // `resolveWorkspacePath` only covers what sits under the root, so the root
+  // itself needs its own list.
   "keychains",
+  "keychain",
+  "netrc",
+  ".netrc",
+  ".npmrc",
+  ".docker",
+  ".kube",
+  ".pypirc",
+  ".authinfo",
+  "cookies",
 ]);
 
 function parseRecent(raw: unknown): ShellRecent {

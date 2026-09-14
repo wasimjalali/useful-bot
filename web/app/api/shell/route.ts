@@ -83,14 +83,15 @@ function applyFollowUp(action: ShellAction | undefined, shell: ShellStore): numb
  * than swallow it the way this path used to.
  */
 /**
- * Drop the filesystem capability an action just took away.
+ * Drop the filesystem capabilities an action just took away.
  *
- * A grant is keyed by eve session id, and four actions end or narrow one:
- * detaching the folder (`setWorkspace` with null), starting a new chat or
- * clearing the thread (the old session is abandoned), and deleting the bot.
- * The session id can differ either side of the commit — `newChat` mints a new
- * one — so both snapshots are revoked, and the ids are compared so a detach
- * that keeps the session still revokes it.
+ * A grant is keyed by eve session id, so it stops being the owner's decision
+ * the moment a bot stops holding that session. Rather than listing the actions
+ * that do it — `newChat`, `clearThread`, `deleteBot`, but also `sendToBot`,
+ * `touchChat`, `setSession` and `openRecent`, which rotate a session quietly —
+ * this diffs the roster and revokes every session id that a bot held before
+ * the commit and no longer holds after it. A detach keeps the session, so that
+ * one is caught by its own check below.
  *
  * Best effort, like `detachBot`: the roster is the authority, and the stamp at
  * the next turn is the backstop. It must not turn a locked grants store into a
@@ -102,19 +103,22 @@ function revokeGrantsFor(
   after: ShellStore,
 ): void {
   if (!action) return;
-  const ends = action.type === "clearThread"
-    || action.type === "newChat"
-    || action.type === "deleteBot"
-    || (action.type === "setWorkspace" && !action.workspace);
-  if (!ends) return;
-  const botId = action.type === "newChat" ? action.botId ?? before.selectedBotId : action.botId;
-  if (!botId) return;
-  const ids = new Set(
-    [before, after]
-      .map((store) => store.bots.find((bot) => bot.id === botId)?.sessionId)
-      .filter((id): id is string => Boolean(id)),
+  const stale = new Set<string>();
+  const held = new Set(
+    after.bots.map((bot) => bot.sessionId).filter((id): id is string => Boolean(id)),
   );
-  for (const id of ids) {
+  for (const bot of before.bots) {
+    // Held by nobody after the commit: the conversation it belonged to is
+    // gone, cleared, or moved to a different session.
+    if (bot.sessionId && !held.has(bot.sessionId)) stale.add(bot.sessionId);
+  }
+  // The folder was detached but the conversation continues, so the session id
+  // is unchanged and the diff above cannot see it.
+  if (action.type === "setWorkspace" && !action.workspace) {
+    const session = after.bots.find((bot) => bot.id === action.botId)?.sessionId;
+    if (session) stale.add(session);
+  }
+  for (const id of stale) {
     try {
       removeSessionGrant(id);
     } catch {

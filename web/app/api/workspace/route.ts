@@ -54,9 +54,15 @@ export async function POST(request: Request) {
         if (realpathSync(path) !== path) {
           return NextResponse.json({ ok: false, error: "workspace_path_symlink" }, { status: 400 });
         }
-        upsertProject({ path: realpathSync(path), name: basename(path) });
       } catch {
+        // Only the filesystem checks above are a missing path; the store's own
+        // refusal below says something different and should say so.
         return NextResponse.json({ ok: false, error: "workspace_path_missing" }, { status: 400 });
+      }
+      try {
+        upsertProject({ path: realpathSync(path), name: basename(path) });
+      } catch (err) {
+        return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
       }
     } else if (body.action === "removeProject") {
       if (!body.id) {

@@ -50,8 +50,19 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   "auth.json",
   // Credential stores that sit under a home directory a grant may cover.
   // read_file is ungated, so a folder grant on $HOME would otherwise hand
-  // over Keychain material and registry tokens with no approval card.
+  // these over with no approval card. The list cannot be exhaustive, which is
+  // why granting a home directory is a bad idea rather than a safe one; it
+  // covers what is both common and unambiguous. A file a project legitimately
+  // needs is still reachable through bash, which always shows a card.
   "keychain",
   "netrc",
   ".npmrc",
+  ".docker",
+  ".kube",
+  ".pypirc",
+  ".authinfo",
+  "library/cookies",
+  "id_rsa",
+  "id_ecdsa",
+  "id_ed25519",
 ] as const;

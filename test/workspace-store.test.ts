@@ -226,3 +226,35 @@ test("a project recent on the filesystem root is refused", () => {
     /workspace_path_invalid/,
   );
 });
+
+test("the credential folders added in round 3 are refused as grant roots", () => {
+  const path = tempStore();
+  const refused = [
+    "/Users/someone/Library/Keychains",
+    "/Users/someone/.docker",
+    "/Users/someone/.kube",
+    "/Users/someone/.npmrc",
+    "/Users/someone/.netrc",
+    "/Users/someone/.pypirc",
+    "/Users/someone/.authinfo",
+    "/Users/someone/Library/Cookies",
+  ];
+  for (const bad of refused) {
+    assert.throws(
+      () => upsertSessionGrant(
+        { sessionId: "s1", path: bad, permission: "read_only", finalConfirm: false },
+        new Date(),
+        path,
+      ),
+      /workspace_path_invalid/,
+      bad,
+    );
+  }
+  // A project that merely mentions one of these words is still grantable.
+  upsertSessionGrant(
+    { sessionId: "s1", path: "/Users/someone/keychain-viewer-app", permission: "guard", finalConfirm: false },
+    new Date(),
+    path,
+  );
+  assert.equal(readSessionGrant("s1", path)?.path, "/Users/someone/keychain-viewer-app");
+});

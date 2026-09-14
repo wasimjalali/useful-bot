@@ -63,8 +63,14 @@ export async function approvedWrite(input: {
     // The owner may have changed the folder or its permission while the card
     // sat open. The approval was granted against the root at request time,
     // so a changed workspace must not consume it: refuse and let the turn
-    // retry against the new grant.
-    const refreshed = effectiveRoot(input.sessionId || undefined);
+    // retry against the new grant. A grant revoked with no legacy root
+    // configured leaves nothing to write into, which is the same answer.
+    let refreshed;
+    try {
+      refreshed = effectiveRoot(input.sessionId || undefined);
+    } catch {
+      throw new Error("workspace_changed");
+    }
     const permissionAtRequest = permission ?? null;
     const permissionNow = refreshed.grant?.permission ?? null;
     if (refreshed.root !== root || permissionNow !== permissionAtRequest) {

@@ -490,8 +490,11 @@ struct ComposerView: View {
         return "\(count) item\(count == 1 ? "" : "s")"
     }
 
+    /// The count has not landed yet. A raw path would put a filesystem-named
+    /// string straight into the chip, newlines and all, so the sanitized name
+    /// stands in until the real count arrives.
     private var wsPathLabel: String {
-        workspace?.path ?? ""
+        workspace?.folderName ?? ""
     }
 
     private func send() {

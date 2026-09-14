@@ -93,14 +93,20 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
         return cleaned.isEmpty ? folderName : String(cleaned.prefix(512))
     }
 
-    /// Drop C0/C1 controls and Unicode format characters. The format category
-    /// carries the bidi overrides and zero-width joiners that let a crafted
-    /// name spoof a menu row or hide text in a prompt line.
+    /// Drop C0/C1 controls, Unicode format characters and the line and
+    /// paragraph separators. Format carries the bidi overrides and zero-width
+    /// joiners that spoof a menu row; U+2028 and U+2029 are not controls but
+    /// break a line all the same, which is a prompt line a crafted folder name
+    /// would otherwise write.
     static func sanitized(_ value: String) -> String {
         String(value.unicodeScalars.filter { scalar in
-            scalar.value >= 0x20
-                && !(scalar.value >= 0x7f && scalar.value <= 0x9f)
-                && scalar.properties.generalCategory != .format
+            guard scalar.value >= 0x20, !(scalar.value >= 0x7f && scalar.value <= 0x9f) else { return false }
+            switch scalar.properties.generalCategory {
+            case .format, .lineSeparator, .paragraphSeparator, .control:
+                return false
+            default:
+                return true
+            }
         })
     }
 

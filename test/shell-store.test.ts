@@ -237,3 +237,31 @@ test("updateBot writes a custom face", () => {
   assert.equal(bot?.avatarShape, "drop");
   assert.equal(bot?.avatarColor, "gold");
 });
+
+test("a roster naming an ungrantable folder reads back with no workspace", () => {
+  const store = parseShell({
+    ...seedStore(),
+    bots: [{
+      ...seedStore().bots[0],
+      workspace: { path: "/", permission: "full_access", finalConfirm: false },
+    }],
+  });
+  // Tolerant, not fatal: the bot keeps working, it just has no folder.
+  assert.equal(store.bots[0].workspace, null);
+});
+
+test("setWorkspace refuses a root the grants store would reject", () => {
+  const base = seedStore();
+  const botId = base.bots[0].id;
+  for (const bad of ["/", "/Users/someone/.ssh", "/Users/someone/Library/Keychains"]) {
+    assert.throws(
+      () => applyShellAction(base, {
+        type: "setWorkspace",
+        botId,
+        workspace: { path: bad, permission: "guard", finalConfirm: false },
+      }),
+      /workspace_path_invalid/,
+      bad,
+    );
+  }
+});

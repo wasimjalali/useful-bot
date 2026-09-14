@@ -97,7 +97,9 @@ export function resolveWorkspacePath(inputPath: string, root: string = workspace
   }
   const resolved = resolve(root, inputPath);
   const rel = relative(root, resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
+  // A leading `..` SEGMENT is the escape; a file honestly named `..notes` is
+  // not, and a prefix test refuses it for no reason.
+  if (rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) {
     throw new Error("path_escape");
   }
   // Only the part under the root is screened. The root itself is a folder the

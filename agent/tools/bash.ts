@@ -25,10 +25,11 @@ const BLOCKED_COMMAND_SUBSTRINGS = [
   // `echo "a..b"`: the owner still sees the command on a card, so a false
   // block is a retype, while a miss is a read the card made look routine.
   "..",
-  "/etc/",
+  "/etc",
   "/private/etc",
   "/var/db",
   "/library/keychains",
+  "/library/cookies",
 ];
 
 function blockedReason(command: string): string | null {
@@ -80,7 +81,14 @@ export default defineTool({
     // root, a changed permission, or a revoked grant all refuse the approval
     // rather than spend it on something the owner did not see. Same rule as
     // the write path.
-    const refreshed = effectiveRoot(ctx?.session?.id);
+    let refreshed;
+    try {
+      refreshed = effectiveRoot(ctx?.session?.id);
+    } catch {
+      // A grant revoked with no legacy root configured leaves nothing to run
+      // in. That is the workspace changing, not a tool crash.
+      return { status: "blocked", error: "workspace_changed" };
+    }
     const permissionAtRequest = grant?.permission ?? null;
     const permissionNow = refreshed.grant?.permission ?? null;
     if (refreshed.root !== root || permissionNow !== permissionAtRequest) {
