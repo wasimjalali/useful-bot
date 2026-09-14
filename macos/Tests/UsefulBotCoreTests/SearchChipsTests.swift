@@ -174,11 +174,12 @@ import Testing
         #expect(projection.messages.last?.text == "hello there")
     }
 
-    @Test func reusedDeltaIdsStillApply() {
+    @Test func reusedDeltaIdsDropLikeTheWeb() {
         var projection = StreamProjection()
         projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "he"))
+        // The web dedupes every identified event, replay included.
         projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "llo"))
-        #expect(projection.messages.last?.text == "hello")
+        #expect(projection.messages.last?.text == "he")
     }
 
     @Test func duplicateIdentifiedEventsDrop() {

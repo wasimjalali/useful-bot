@@ -156,7 +156,11 @@ public actor BackendClient {
         base: URL = URL(string: "http://127.0.0.1:4320")!,
         tokenService: String = "com.usefulbot.device.desktop"
     ) {
-        self.base = base
+        // The device token rides on every request: never let a non-loopback
+        // base carry it off the machine.
+        let host = base.host?.lowercased()
+        let loopback = host == "127.0.0.1" || host == "localhost" || host == "::1"
+        self.base = loopback ? base : ServerConfig.resolved().baseURL
         self.tokenService = tokenService
         let config = URLSessionConfiguration.default
         config.httpCookieStorage = .shared
@@ -198,7 +202,12 @@ public actor BackendClient {
             throw BackendError.http(sessionHttp.statusCode)
         }
         let body = (try? JSONSerialization.jsonObject(with: sessionData)) as? [String: Any]
-        csrf = body?["csrfToken"] as? String ?? ""
+        // A missing CSRF token would make every write 403 and loop through
+        // re-sign-in; fail loudly instead of carrying an empty header.
+        guard let csrfToken = body?["csrfToken"] as? String, !csrfToken.isEmpty else {
+            throw BackendError.unauthorized
+        }
+        csrf = csrfToken
     }
 
     private static func deviceToken(service: String) throws -> String {
@@ -314,7 +323,7 @@ public actor BackendClient {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
                 "decision": decision.rawValue,
                 "actionSha256": hash,
             ])
@@ -356,7 +365,7 @@ public actor BackendClient {
             request.httpMethod = method
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
             return request
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -453,7 +462,7 @@ public actor BackendClient {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
                 "message": message,
                 "botId": botId,
             ])
@@ -484,7 +493,7 @@ public actor BackendClient {
             request.httpMethod = "PUT"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action])
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["action": action])
             return request
         }
         try Self.expectShellOK(data, response)
@@ -518,7 +527,7 @@ public actor BackendClient {
             request.httpMethod = "PUT"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
             return request
         }
         try Self.expectShellOK(data, response)
@@ -540,7 +549,7 @@ public actor BackendClient {
             request.httpMethod = "PUT"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
                 "proposalId": proposalId,
                 "proposalStatus": status,
             ])
@@ -569,7 +578,7 @@ public actor BackendClient {
             request.httpMethod = "PUT"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: patch)
+            request.httpBody = try JSONSerialization.data(withJSONObject: patch)
             return request
         }
         try Self.expectOK(response)

@@ -237,10 +237,9 @@ public struct StreamProjection: Equatable, Sendable {
     }
 
     public mutating func apply(_ event: EveEvent) {
-        // Deltas are content, not identity: an id reused across appended
-        // chunks must still apply. Other events dedupe by id, and the set is
-        // reset periodically so a long replay cannot grow without bound.
-        if let id = event.id, event.type != "message.appended", event.type != "action.partial" {
+        // Dedupe every identified event, matching the web's seenIds contract;
+        // a replayed chunk id must not append its delta twice.
+        if let id = event.id {
             if seen.contains(id) { return }
             remember(id)
         }
