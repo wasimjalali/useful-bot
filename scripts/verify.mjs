@@ -6,9 +6,9 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
-if (NODE_MAJOR !== 24) {
-  process.stderr.write(`verify refuses to run: Node 24 required, got ${process.versions.node}\n`);
+const [NODE_MAJOR, NODE_MINOR, NODE_PATCH] = process.versions.node.split(".").map(Number);
+if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1)) {
+  process.stderr.write(`verify refuses to run: need Node >=24.11.1 <25, got ${process.versions.node}\n`);
   process.exit(2);
 }
 
@@ -60,7 +60,7 @@ function assert(condition, name, detail) {
 
 function caseRuntime() {
   const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  assert(process.execPath === NODE || process.execPath.endsWith("/node"), "execPath", process.execPath);
+  assert(process.execPath === NODE, "execPath", process.execPath);
   assert(Number(process.versions.node.split(".")[0]) === 24, "node-major", process.versions.node);
   assert(pkg.dependencies.eve === "0.54.3", "eve-pin", pkg.dependencies.eve);
   assert(pkg.dependencies.ai === "7.0.99", "ai-pin", pkg.dependencies.ai);
@@ -71,8 +71,6 @@ function caseRuntime() {
   const row = db.prepare("SELECT body FROM probe WHERE body MATCH 'fts5'").get();
   assert(row && row.body === "fts5-ok", "fts5");
   db.close();
-  const help = readFileSync(path.join(ROOT, "node_modules/eve/docs/reference/cli.md"), "utf8");
-  void help;
   const startHelp = spawnHelp(["node_modules/eve/bin/eve.js", "start", "--help"]);
   return startHelp;
 }
