@@ -530,7 +530,6 @@ export function ChatComposer({
               ))}
             </div>
           ) : null}
-          {stacked ? textarea : null}
           <div className="composer-row">
             <button
               aria-expanded={plusOpen}
@@ -549,7 +548,7 @@ export function ChatComposer({
             <label className="sr-only" htmlFor="chat-question">
               Message
             </label>
-            {stacked ? null : textarea}
+            {textarea}
             <div className="composer-trail">
               {stacked ? null : modeChip}
               {sendButton}
