@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { apiError, errorCode, readJson } from "../../../lib/api-guard";
 import { refreshProviderModels } from "../../../../shared/live-models.ts";
 import { isEffortId, isSpeedId } from "../../../../shared/models.ts";
 import {
@@ -53,15 +54,20 @@ export async function PUT(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
+  let body: {
+    providerId?: unknown;
+    key?: unknown;
+    activeProviderId?: unknown;
+    modelId?: unknown;
+    effort?: unknown;
+    speed?: unknown;
+  };
   try {
-    const body = await request.json() as {
-      providerId?: unknown;
-      key?: unknown;
-      activeProviderId?: unknown;
-      modelId?: unknown;
-      effort?: unknown;
-      speed?: unknown;
-    };
+    body = await readJson(request) as typeof body;
+  } catch (err) {
+    return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+  }
+  try {
     let store = readProviderStore();
     let modelsDirty = false;
     if (typeof body.key === "string" && body.providerId) {
@@ -92,8 +98,7 @@ export async function PUT(request: Request) {
       composer: composerState(store),
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "invalid";
-    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+    return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
   }
 }
 
@@ -104,8 +109,13 @@ export async function DELETE(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
+  let body: { providerId?: unknown };
   try {
-    const body = await request.json() as { providerId?: unknown };
+    body = await readJson(request) as { providerId?: unknown };
+  } catch (err) {
+    return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+  }
+  try {
     const store = clearProviderKey(readProviderStore(), asId(body.providerId));
     writeProviderStore(store);
     return NextResponse.json({
@@ -115,7 +125,6 @@ export async function DELETE(request: Request) {
       composer: composerState(store),
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "invalid";
-    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+    return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
   }
 }

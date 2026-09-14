@@ -9,6 +9,7 @@ import {
   type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
 import { channelJwt } from "../../../../lib/agent-exec";
+import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell } from "../../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
@@ -44,6 +45,9 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     if (!csrf || csrf !== session.csrf) {
       return Response.json({ ok: false, error: "csrf" }, { status: 403 });
     }
+    if (rateLimited(`eve:${session.callerId}`, 60)) {
+      return Response.json({ ok: false, error: "rate_limited" }, { status: 429 });
+    }
   }
   const url = new URL(request.url);
   const target = `${EVE}/eve/v1/${suffix}${url.search}`;
@@ -54,10 +58,16 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   // sign one from the channel secret.
   const jwt = channelJwt();
   if (jwt) headers.set("authorization", `Bearer ${jwt}`);
-  let body: ArrayBuffer | undefined;
+  let body: Uint8Array | undefined;
   let route: SessionRoute | null = null;
   if (method !== "GET") {
-    body = await request.arrayBuffer();
+    try {
+      body = await readBody(request, EVE_BODY_MAX);
+    } catch (err) {
+      const guarded = apiError(err);
+      if (guarded) return guarded;
+      throw err;
+    }
     if (isEveSessionPost(suffix)) {
       try {
         const raw = new TextDecoder().decode(body);
@@ -70,7 +80,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const members = bot && bot.kind === "group"
           ? groupMembers(speakersFrom(shell.bots), bot.memberIds)
           : [];
-        body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members)).buffer;
+        body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members));
         headers.set("content-type", "application/json");
       } catch {
         /* keep the original body: a malformed turn must fail at eve, not here */
@@ -82,6 +92,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       ? request.signal
       : AbortSignal.any([request.signal, AbortSignal.timeout(180_000)]);
     const upstream = await fetch(target, { method, headers, body, signal });
+    if (!upstream.ok) {
+      // Keep the upstream status but never relay eve's internal error body to
+      // the caller; it can carry runtime and prompt detail.
+      await upstream.body?.cancel().catch(() => undefined);
+      return Response.json(
+        { ok: false, error: "eve_error", status: upstream.status },
+        { status: upstream.status },
+      );
+    }
     const out = new Headers();
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);

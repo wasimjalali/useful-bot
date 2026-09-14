@@ -14,6 +14,12 @@ export async function POST(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
+  // Reject an oversized multipart body before Next buffers it. The declared
+  // length is absent for chunked uploads, so rely on the per-file gate there.
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > ATTACH_MAX_BYTES + 64 * 1024) {
+    return NextResponse.json({ ok: false, error: "attachment_size" }, { status: 413 });
+  }
   try {
     const form = await request.formData();
     const file = form.get("file");
