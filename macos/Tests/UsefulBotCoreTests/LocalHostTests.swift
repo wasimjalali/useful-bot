@@ -50,6 +50,9 @@ import Testing
         #expect(LocalHost.isLocal("   "))
         #expect(LocalHost.isLocal("::ffff:999.0.0.1"))
         #expect(LocalHost.isLocal("gggg::1"))
+        #expect(LocalHost.isLocal("08.0.0.1"))
+        #expect(LocalHost.isLocal("127..0.1"))
+        #expect(!LocalHost.isLocal("cafe.de"))
     }
 }
 

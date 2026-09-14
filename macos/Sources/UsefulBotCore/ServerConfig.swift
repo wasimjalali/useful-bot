@@ -20,14 +20,4 @@ public struct ServerConfig: Equatable {
 
     public var baseURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
     public var healthURL: URL { baseURL.appendingPathComponent("api/health") }
-
-    public func isAllowedOrigin(_ url: URL) -> Bool {
-        if ["blob", "about", "data"].contains(url.scheme?.lowercased() ?? "") {
-            return true
-        }
-        guard let host = url.host?.lowercased() else { return false }
-        let loopback = host == "127.0.0.1" || host == "localhost"
-        guard loopback else { return false }
-        return url.port == port || (url.port == nil && port == 80)
-    }
 }

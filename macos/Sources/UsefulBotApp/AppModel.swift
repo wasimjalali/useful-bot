@@ -105,6 +105,8 @@ final class AppModel: ObservableObject {
     /// The newest session this app started, scoped to its bot so a Stop on
     /// another bot cannot cancel the wrong session.
     private var activeSession: (botId: String, sessionId: String)?
+    /// One handoff pump at a time; a slow server must not stack ticks.
+    private var tickInFlight = false
     private var loadGeneration = 0
     private var sendGeneration = 0
     private var sendBotId: String?
@@ -317,25 +319,37 @@ final class AppModel: ObservableObject {
         guard phase == .ready else { return }
         // Handoffs and the rail keep pumping during a turn; the web ticks on
         // the same cadence as its stream rather than waiting for it to end.
-        Task { [weak self] in
-            guard let self else { return }
-            await self.client.tick()
-        }
-        // A send owns the state while it runs; a poll must not race it.
-        guard !pending else { return }
+        pumpHandoffs()
         do {
-            let fresh = try await client.shell()
-            store = fresh
+            // The store is owned by the send while one runs (the optimistic
+            // session echo must not be overwritten), but proposals and the
+            // composer still refresh so mid-turn handoffs and proposals show.
+            if !pending {
+                let fresh = try await client.shell()
+                store = fresh
+            }
             guard let bot = selectedBot else { return }
             let state = try await client.threadState(botId: bot.id)
-            durableEvents = state.events
             proposals = state.proposals
             pruneBusyProposals()
-            rebuildTranscript()
-            threadError = nil
+            if !pending {
+                durableEvents = state.events
+                rebuildTranscript()
+                threadError = nil
+            }
             await refreshComposer()
         } catch {
             /* keep the last view; the next poll retries */
+        }
+    }
+
+    private func pumpHandoffs() {
+        guard !tickInFlight else { return }
+        tickInFlight = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.tickInFlight = false }
+            await self.client.tick()
         }
     }
 
@@ -377,11 +391,12 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             do {
                 // Snapshot the turn ids first so a resend of identical text
-                // cannot arm on the earlier turn. A failed snapshot aborts the
-                // send rather than risking the wrong turn.
+                // cannot arm on the earlier turn. A dead stored session must
+                // not lock the composer, so a failed snapshot falls through
+                // with no history and the send creates a fresh session.
                 var history = Set<String>()
                 if let sessionId = bot.sessionId, !sessionId.isEmpty {
-                    history = try await self.client.historyTurnIds(sessionId: sessionId)
+                    history = (try? await self.client.historyTurnIds(sessionId: sessionId)) ?? []
                 }
                 guard generation == self.sendGeneration else { return }
                 let sessionId = try await self.client.send(
@@ -432,20 +447,13 @@ final class AppModel: ObservableObject {
 
     func cancel() {
         guard let bot = selectedBot else { return }
+        let target = activeSession?.botId == bot.id ? activeSession?.sessionId : bot.sessionId
         cancelSend()
         pending = false
         Task { [weak self] in
             guard let self else { return }
-            // The newest session may be one this app just created and has not
-            // echoed into the store yet; only trust it for the same bot.
-            let sessionId: String?
-            if let active = self.activeSession, active.botId == bot.id {
-                sessionId = active.sessionId
-            } else {
-                sessionId = bot.sessionId
-            }
-            if let sessionId, !sessionId.isEmpty {
-                _ = try? await self.client.cancel(sessionId: sessionId)
+            if let target, !target.isEmpty {
+                _ = try? await self.client.cancel(sessionId: target)
             }
         }
     }
@@ -464,6 +472,7 @@ final class AppModel: ObservableObject {
         sendTask?.cancel()
         sendTask = nil
         sendBotId = nil
+        activeSession = nil
         if pending { pending = false }
     }
 
@@ -486,7 +495,9 @@ final class AppModel: ObservableObject {
         guard var current = store,
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
         current.bots[index].sessionId = sessionId
-        current.bots[index].lastPreview = preview
+        // The optimistic rail preview must match the server's clip; the full
+        // text still goes to touchChat for the stored copy.
+        current.bots[index].lastPreview = String(preview.prefix(160))
         current.bots[index].lastAt = RailClock.stamp(Date())
         store = current
         try? await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
@@ -702,9 +713,9 @@ final class AppModel: ObservableObject {
     /// New Bot from the rail: clear the thread server-side and start fresh.
     func startNewChat(botId: String? = nil) {
         guard let id = botId ?? selectedBotId else { return }
-        // An in-flight turn would repopulate the cleared thread, so stop the
-        // local stream and ask the server to cancel it best-effort.
-        let runningSession = activeSession?.sessionId ?? selectedBot?.sessionId
+        // Only the bot being cleared can have an in-flight turn worth
+        // cancelling; a stored session with no turn is left alone.
+        let runningSession = sendBotId == id ? activeSession?.sessionId : nil
         cancelSend()
         Task { [weak self] in
             guard let self else { return }

@@ -30,6 +30,13 @@ public enum LocalHost {
         if let address = ipv4(value) {
             return isPrivateV4(address)
         }
+        // A numeric-looking host that does not parse (08.0.0.1, 127..0.1) is
+        // not provably remote; fail closed like any other unknown host.
+        let numeric = CharacterSet(charactersIn: "0123456789abcdefABCDEFxX.")
+        if value.contains(where: { $0.isNumber }),
+           value.unicodeScalars.allSatisfy({ numeric.contains($0) }) {
+            return true
+        }
         return false
     }
 
