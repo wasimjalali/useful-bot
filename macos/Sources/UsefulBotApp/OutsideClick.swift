@@ -44,12 +44,17 @@ private struct OutsideClickDismissal: ViewModifier {
 
     private func install() {
         guard monitors.isEmpty else { return }
-        let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-            if shouldClose(event) { onClose() }
+        // Mouse-up, not mouse-down: popover rows run their action on mouse-up,
+        // so a mouse-down dismissal would tear the row down before the action
+        // could fire for any click hover tracking missed.
+        let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { event in
+            if shouldClose(event) { close() }
             return event
         }
         let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            onClose()
+            // Sheets own the screen while they run; a click outside the app
+            // must not dismiss the popover under them.
+            if NSApp.modalWindow == nil { close() }
         }
         monitors = [local, global].compactMap { $0 }
     }
@@ -59,13 +64,26 @@ private struct OutsideClickDismissal: ViewModifier {
         monitors = []
     }
 
+    /// Deferred so a dismissal and a row action in the same click both land:
+    /// the row runs its action on mouse-up, then the popover closes.
+    private func close() {
+        DispatchQueue.main.async(execute: onClose)
+    }
+
     private func shouldClose(_ event: NSEvent) -> Bool {
         // Modal sheets own the screen while they run; dismissing the popover
         // under them would be surprising.
         if NSApp.modalWindow != nil || event.window?.sheetParent != nil { return false }
         // A click on the popover keeps it open so the row action can fire.
         if hoveringInside { return false }
-        if let triggers, triggers().contains(where: { $0.contains(event.locationInWindow) }) {
+        guard let triggers else { return true }
+        let frames = triggers()
+        if frames.contains(where: { $0.contains(event.locationInWindow) }) {
+            return false
+        }
+        // A trigger that has not reported a frame yet cannot prove the click
+        // is outside; keep the popover so its toggle button stays in charge.
+        if frames.contains(where: { $0.isEmpty }) {
             return false
         }
         return true
@@ -87,15 +105,48 @@ private struct WindowFrameReader: NSViewRepresentable {
 
     final class FrameObserver: NSView {
         var onChange: ((CGRect, NSWindow?) -> Void)?
+        private var scrollObserver: Any?
 
         override func layout() {
             super.layout()
+            observeEnclosingScroll()
             report()
         }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            observeEnclosingScroll()
             report()
+        }
+
+        deinit {
+            if let scrollObserver {
+                NotificationCenter.default.removeObserver(scrollObserver)
+            }
+        }
+
+        /// A trigger that lives in a ScrollView moves in window coordinates
+        /// when the content scrolls, and neither a layout nor a window change
+        /// fires then, so the stored frame would go stale.
+        private func observeEnclosingScroll() {
+            guard scrollObserver == nil, let scroll = enclosingScrollView else { return }
+            scroll.contentView.postsBoundsChangedNotifications = true
+            scrollObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scroll.contentView,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.report()
+                }
+            }
+        }
+
+        private func removeScrollObserver() {
+            if let scrollObserver {
+                NotificationCenter.default.removeObserver(scrollObserver)
+            }
+            scrollObserver = nil
         }
 
         private func report() {

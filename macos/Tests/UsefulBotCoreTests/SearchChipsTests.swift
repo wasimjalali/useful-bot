@@ -89,6 +89,44 @@ import Testing
         """)))
         #expect(projection.searchHits.isEmpty)
     }
+
+    @Test func truncatesFieldsToTheWebLimits() throws {
+        let title = String(repeating: "t", count: 260)
+        let url = "https://example.com/" + String(repeating: "u", count: 2100)
+        let snippet = String(repeating: "s", count: 900)
+        let chips = EveStream.parseSearchChips(try value("""
+        {"results":[{"title":"\(title)","url":"\(url)","snippet":"\(snippet)"}]}
+        """))
+        #expect(chips.count == 1)
+        #expect(chips[0].title.count == 200)
+        #expect(chips[0].url.count == 2048)
+        #expect(chips[0].snippet.count == 800)
+    }
+
+    @Test func stringifiesScalarTitles() throws {
+        let chips = EveStream.parseSearchChips(try value("""
+        {"results":[{"title":42,"url":"https://example.com/n"}]}
+        """))
+        #expect(chips.first?.title == "42")
+    }
+
+    @Test func ignoresNullAndNonArrayResults() throws {
+        let nullResults = EveStream.parseSearchChips(try value(#"{"results":null}"#))
+        let scalarResults = EveStream.parseSearchChips(try value(#"{"results":"nope"}"#))
+        #expect(nullResults.isEmpty)
+        #expect(scalarResults.isEmpty)
+    }
+
+    @Test func keepsDuplicateUrls() throws {
+        let chips = EveStream.parseSearchChips(try value("""
+        {"results":[
+          {"title":"One","url":"https://example.com/x"},
+          {"title":"Two","url":"https://example.com/x"}
+        ]}
+        """))
+        #expect(chips.count == 2)
+        #expect(chips.map(\.title) == ["One", "Two"])
+    }
 }
 
 @Suite struct ApprovalAndSettingsDecodingTests {

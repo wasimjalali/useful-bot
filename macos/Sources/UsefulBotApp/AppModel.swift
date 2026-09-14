@@ -29,6 +29,8 @@ final class AppModel: ObservableObject {
 
     /// Pending approvals from `/api/approvals`, shown above the chat.
     @Published private(set) var approvals: [ApprovalItem] = []
+    /// Approvals with a decision in flight, so double taps cannot double-post.
+    @Published private(set) var busyApprovals: Set<String> = []
     @Published private(set) var approvalError: String?
     /// Web results the live turn surfaced, shown as chips under the transcript.
     @Published private(set) var searchHits: [SearchChip] = []
@@ -49,7 +51,14 @@ final class AppModel: ObservableObject {
     }
     /// Inline routines pane, toggled from the header button next to settings.
     @Published var routinesOpen = false {
-        didSet { if routinesOpen { settingsOpen = false } }
+        didSet {
+            if routinesOpen {
+                settingsOpen = false
+            } else {
+                // The create stub notice is per visit, not per bot.
+                routineNotice = false
+            }
+        }
     }
     @Published var routineNotice = false
     /// ⌘K palette.
@@ -462,6 +471,8 @@ final class AppModel: ObservableObject {
 
     /// Approve or deny one pending action. The card disappears on success.
     func decideApproval(_ item: ApprovalItem, decision: String) {
+        guard !busyApprovals.contains(item.id) else { return }
+        busyApprovals.insert(item.id)
         approvalError = nil
         Task { [weak self] in
             guard let self else { return }
@@ -471,6 +482,7 @@ final class AppModel: ObservableObject {
             } catch {
                 self.approvalError = "Approval failed"
             }
+            self.busyApprovals.remove(item.id)
         }
     }
 

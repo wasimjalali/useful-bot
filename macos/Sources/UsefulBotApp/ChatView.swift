@@ -45,17 +45,23 @@ struct ChatView: View {
                     .dismissOnOutsideClick(triggers: { [settingsGearFrame] }) {
                         model.settingsOpen = false
                     }
+                    .onExitCommand(perform: closePanes)
             }
 
             if model.routinesOpen, let bot = model.selectedBot {
                 RoutinesPaneView(bot: bot)
                     .dismissOnOutsideClick(triggers: { [routinesButtonFrame] }) {
                         model.routinesOpen = false
-                        model.routineNotice = false
                     }
+                    .onExitCommand(perform: closePanes)
             }
         }
         .background(Theme.C.surface)
+    }
+
+    private func closePanes() {
+        model.settingsOpen = false
+        model.routinesOpen = false
     }
 
     // MARK: - Approvals
@@ -63,6 +69,7 @@ struct ChatView: View {
     private var approvals: some View {
         VStack(spacing: 8) {
             ForEach(model.approvals) { item in
+                let busy = model.busyApprovals.contains(item.id)
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Needs approval")
@@ -79,21 +86,24 @@ struct ChatView: View {
                             .foregroundStyle(Theme.C.inkMuted)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    NativeButton("Approve", kind: .primary, small: true) {
+                    NativeButton("Approve", kind: .primary, small: true, enabled: !busy) {
                         model.decideApproval(item, decision: "approve")
                     }
-                    NativeButton("Deny", kind: .danger, small: true) {
+                    .accessibilityIdentifier("approval-approve")
+                    NativeButton("Deny", kind: .danger, small: true, enabled: !busy) {
                         model.decideApproval(item, decision: "deny")
                     }
+                    .accessibilityIdentifier("approval-deny")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(Theme.C.warningSoft)
                 .overlay(
                     RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                        .strokeBorder(Theme.C.warningSoft, lineWidth: 1)
+                        .strokeBorder(Theme.C.border, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+                .opacity(busy ? 0.7 : 1)
             }
             if let error = model.approvalError {
                 Text(error)
@@ -125,7 +135,6 @@ struct ChatView: View {
             }
             Spacer(minLength: 0)
             NativeIconButton(systemImage: "calendar.badge.clock", size: 32, iconSize: 15) {
-                model.routineNotice = false
                 model.routinesOpen.toggle()
             }
             .help("Routines")
@@ -400,7 +409,8 @@ struct SearchChipsRow: View {
 
     var body: some View {
         WrapHStack(spacing: 8) {
-            ForEach(chips, id: \.url) { chip in
+            // Two results can share a URL, so identity is by position.
+            ForEach(Array(chips.enumerated()), id: \.offset) { _, chip in
                 SearchChipView(chip: chip)
             }
         }

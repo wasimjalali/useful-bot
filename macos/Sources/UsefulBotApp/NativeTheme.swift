@@ -226,6 +226,7 @@ extension NSScrollView {
         contentView.postsBoundsChangedNotifications = true
         if objc_getAssociatedObject(self, &ubScrollObserver) as? Bool == true { return }
         objc_setAssociatedObject(self, &ubScrollObserver, true, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        // Selector observers are weak, so the scroll view owns the lifetime.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(ub_contentBoundsDidChange),
@@ -244,6 +245,8 @@ extension NSScrollView {
         if let previous = objc_getAssociatedObject(self, &ubLastOrigin) as? NSValue {
             if previous.pointValue == origin { return }
         } else {
+            // The first origin only arms tracking: installing a scroller must
+            // not flash the knob before the user scrolls.
             objc_setAssociatedObject(self, &ubLastOrigin, NSValue(point: origin), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
             return
         }
@@ -335,9 +338,19 @@ final class InputModality: ObservableObject {
         monitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
         ) { [weak self] event in
-            let pointer = event.type != .keyDown
-            if self?.pointerDriven != pointer {
-                self?.pointerDriven = pointer
+            dispatchPrecondition(condition: .onQueue(.main))
+            let modality: Bool?
+            switch event.type {
+            case .keyDown where event.keyCode == 48:
+                // Tab moves focus; typing must not re-arm the ring.
+                modality = false
+            case .keyDown:
+                modality = nil
+            default:
+                modality = true
+            }
+            if let modality, self?.pointerDriven != modality {
+                self?.pointerDriven = modality
             }
             return event
         }

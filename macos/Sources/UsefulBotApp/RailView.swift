@@ -131,6 +131,19 @@ struct RailView: View {
         rowMenuPage = .root
     }
 
+    /// The ellipsis is a toggle: a second click on the same row's trigger
+    /// closes the menu rather than re-opening it.
+    private func toggleRowMenu(_ bot: ShellBot, frame: CGRect, trigger: CGRect) {
+        if rowMenuBot?.id == bot.id {
+            closeRowMenu()
+            return
+        }
+        rowMenuAnchor = frame
+        rowMenuTrigger = trigger
+        rowMenuBot = bot
+        rowMenuPage = .root
+    }
+
     // MARK: - Triggers
 
     private var searchTrigger: some View {
@@ -215,10 +228,7 @@ struct RailView: View {
                             canDelete: store.bots.count > 1,
                             onCreateSection: onCreateSection,
                             onMenu: { frame, trigger in
-                                rowMenuAnchor = frame
-                                rowMenuTrigger = trigger
-                                rowMenuBot = bot
-                                rowMenuPage = .root
+                                    toggleRowMenu(bot, frame: frame, trigger: trigger)
                             }
                         )
                     }
@@ -256,11 +266,8 @@ struct RailView: View {
                                 canDelete: store.bots.count > 1,
                                 onCreateSection: onCreateSection,
                                 onMenu: { frame, trigger in
-                                    rowMenuAnchor = frame
-                                    rowMenuTrigger = trigger
-                                    rowMenuBot = bot
-                                    rowMenuPage = .root
-                                }
+                                    toggleRowMenu(bot, frame: frame, trigger: trigger)
+                            }
                             )
                         }
                     }
@@ -292,11 +299,8 @@ struct RailView: View {
                                 canDelete: store.bots.count > 1,
                                 onCreateSection: onCreateSection,
                                 onMenu: { frame, trigger in
-                                    rowMenuAnchor = frame
-                                    rowMenuTrigger = trigger
-                                    rowMenuBot = bot
-                                    rowMenuPage = .root
-                                }
+                                    toggleRowMenu(bot, frame: frame, trigger: trigger)
+                            }
                             )
                         }
                     }
@@ -555,6 +559,8 @@ private struct BotRowView: View {
             .padding(.leading, 8)
             .padding(.trailing, 28)
             .padding(.vertical, 6)
+            // The web's 36pt row is a floor, not the height: the 36pt avatar
+            // plus this padding lands at 48.
             .frame(minHeight: DesignTokens.Space.botRow)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(selected || hovering ? Theme.C.sunken : .clear)

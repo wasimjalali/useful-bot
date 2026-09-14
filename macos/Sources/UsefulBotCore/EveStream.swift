@@ -168,12 +168,30 @@ public enum EveStream {
             guard let row = item.objectValue else { continue }
             let url = (row["url"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard url.hasPrefix("https://") || url.hasPrefix("http://") else { continue }
-            let title = String((row["title"]?.stringValue ?? url).prefix(200))
-            let snippet = String((row["snippet"]?.stringValue ?? row["description"]?.stringValue ?? "").prefix(800))
+            let title = String((chipText(row["title"]) ?? url).prefix(200))
+            let snippet = String((chipText(row["snippet"]) ?? chipText(row["description"]) ?? "").prefix(800))
             chips.append(SearchChip(title: title, url: String(url.prefix(2048)), snippet: snippet))
             if chips.count >= 5 { break }
         }
         return chips
+    }
+
+    /// Mirror the web's `String(value)` for scalar fields: numbers and booleans
+    /// stringify, compound and null values fall back to the next source.
+    private static func chipText(_ value: JSONValue?) -> String? {
+        switch value {
+        case .string(let text):
+            return text
+        case .number(let number):
+            if number.rounded() == number, abs(number) < 1e15 {
+                return String(Int(number))
+            }
+            return String(number)
+        case .bool(let flag):
+            return flag ? "true" : "false"
+        case .array, .object, .null, .none:
+            return nil
+        }
     }
 }
 
