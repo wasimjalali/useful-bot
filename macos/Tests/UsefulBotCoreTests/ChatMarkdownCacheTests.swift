@@ -27,7 +27,7 @@ import Testing
         let source = "a **bold** word"
         let first = ChatMarkdownCache.inline(from: source)
         let second = ChatMarkdownCache.inline(from: source)
-        #expect(String(first.characters) == "a bold word")
+        #expect(first.map(\.text).joined() == "a bold word")
         #expect(first == second)
         #expect(ChatMarkdownCache.entryCount() == 1)
         // A different text is its own entry, which is what a streamed delta is.

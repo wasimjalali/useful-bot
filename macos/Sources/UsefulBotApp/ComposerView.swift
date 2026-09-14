@@ -20,7 +20,7 @@ struct ComposerView: View {
     @State private var showFileImporter = false
     @State private var plusButtonFrame = CGRect.zero
     @State private var modeChipFrame = CGRect.zero
-    @FocusState private var focused: Bool
+    @State private var focused = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -169,35 +169,18 @@ struct ComposerView: View {
                 Text(placeholder)
                     .font(.system(size: DesignTokens.FontSize.chatBody))
                     .foregroundStyle(Theme.C.inkFaint)
-                    .padding(.top, 5)
+                    .padding(.top, 7)
                     .allowsHitTesting(false)
             }
-            TextField("", text: $model.draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: DesignTokens.FontSize.chatBody))
-                .foregroundStyle(Theme.C.ink)
-                .lineLimit(1...6)
-                .focused($focused)
-                // The web caps the composer at 2000 chars and the server clips
-                // to the same limit; capping here keeps the durable text equal
-                // to the live echo so the transcript merge can pair them.
-                .onChange(of: model.draft) { _, next in
-                    if next.utf16.count > Self.maxDraftLength {
-                        model.draft = ComposerDraft.clip(next, toUTF16: Self.maxDraftLength)
-                    }
-                }
-                // Plain Return sends when possible. With nothing to send it is
-                // swallowed; while a turn runs it falls through so the next
-                // draft can take a newline. Modified keys always fall through.
-                .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.isEmpty else { return .ignored }
-                    guard canSend else { return .handled }
-                    guard !model.pending else { return .ignored }
-                    send()
-                    return .handled
-                }
-                .accessibilityLabel(placeholder)
-                .padding(.vertical, 4)
+            ComposerTextView(
+                text: $model.draft,
+                returnSends: true,
+                canSend: { canSend },
+                pending: { model.pending },
+                onSend: { send() },
+                onFocusChange: { focused = $0 }
+            )
+            .accessibilityLabel(placeholder)
         }
         .frame(minHeight: DesignTokens.Control.composerInput, alignment: .leading)
     }

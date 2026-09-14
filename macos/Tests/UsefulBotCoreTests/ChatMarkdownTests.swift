@@ -45,3 +45,43 @@ import Testing
         #expect(ChatMarkdownParser.blocks(from: "   \n\n").isEmpty)
     }
 }
+
+@Suite struct ChatInlineTests {
+    @Test func parsesStrongEmphasisAndCode() {
+        #expect(ChatInline.parse("**bold** plain *em* `code`") == [
+            InlineSpan(kind: .strong, text: "bold"),
+            InlineSpan(kind: .text, text: " plain "),
+            InlineSpan(kind: .emphasized, text: "em"),
+            InlineSpan(kind: .text, text: " "),
+            InlineSpan(kind: .code, text: "code"),
+        ])
+    }
+
+    @Test func doubleUnderscoreIsStrong() {
+        #expect(ChatInline.parse("__wide__") == [InlineSpan(kind: .strong, text: "wide")])
+    }
+
+    @Test func snakeCaseStaysPlain() {
+        // Single underscores are deliberately not emphasis: snake_case
+        // identifiers must not turn into italics the way CommonMark does.
+        #expect(ChatInline.parse("run my_var_name again") == [
+            InlineSpan(kind: .text, text: "run my_var_name again"),
+        ])
+    }
+
+    @Test func parsesHttpLinksOnly() {
+        let spans = ChatInline.parse("[docs](https://example.com/a) and [bad](javascript:alert(1))")
+        #expect(spans == [
+            InlineSpan(kind: .link, text: "docs", href: "https://example.com/a"),
+            InlineSpan(kind: .text, text: " and [bad](javascript:alert(1))"),
+        ])
+    }
+
+    @Test func emptySourceHasNoSpans() {
+        #expect(ChatInline.parse("").isEmpty)
+    }
+
+    @Test func unclosedMarkerStaysText() {
+        #expect(ChatInline.parse("2 * 3 = 6") == [InlineSpan(kind: .text, text: "2 * 3 = 6")])
+    }
+}

@@ -163,21 +163,18 @@ public enum ChatMarkdownCache {
     }
 
     private static let blockCache = Cache<[MarkdownBlock]>(capacity: capacity)
-    private static let inlineCache = Cache<AttributedString>(capacity: capacity)
+    private static let inlineCache = Cache<[InlineSpan]>(capacity: capacity)
 
     public static func blocks(from source: String) -> [MarkdownBlock] {
         blockCache.value(for: source, build: ChatMarkdownParser.blocks(from:))
     }
 
-    /// The unstyled inline spans. The renderer applies its own fonts and colors
-    /// on top, which is a cheap pass over the runs.
-    public static func inline(from source: String) -> AttributedString {
-        inlineCache.value(for: source) { text in
-            (try? AttributedString(
-                markdown: text,
-                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            )) ?? AttributedString(text)
-        }
+    /// The inline spans from `shared/chat-markdown.ts`. The renderer turns
+    /// these into styled `AttributedString` runs; parsing must match the web
+    /// exactly, so Apple's own markdown parser is not used (it italicizes
+    /// `_snake_case_` and accepts emphasis forms the web never draws).
+    public static func inline(from source: String) -> [InlineSpan] {
+        inlineCache.value(for: source, build: ChatInline.parse)
     }
 
     /// Test hooks.

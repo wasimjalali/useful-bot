@@ -84,8 +84,13 @@ public enum TranscriptBlocks {
                 // two different days are two strips.
                 lastTurnRow = nil
                 lastMessageBlockIndex = nil
+                // The divider is keyed to the day itself, not to the row that
+                // happened to start it: the live echo of the owner's turn
+                // replaces that row's id mid-stream, and a divider whose id
+                // moved with it tore the whole list down and reset the
+                // transcript's scroll to the top.
                 blocks.append(.dayDivider(
-                    id: "day-\(row.id)",
+                    id: "day-\(Int(calendar.startOfDay(for: date).timeIntervalSince1970))",
                     label: dayLabel(date, now: now, calendar: calendar, timeZone: timeZone, locale: locale)
                 ))
                 lastDatedDay = date
