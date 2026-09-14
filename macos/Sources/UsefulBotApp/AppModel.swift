@@ -31,6 +31,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var approvals: [ApprovalItem] = []
     /// Approvals with a decision in flight, so double taps cannot double-post.
     @Published private(set) var busyApprovals: Set<String> = []
+    /// Recently decided approvals, briefly hidden from a racing poll.
+    private var decidedApprovals: [String: Date] = [:]
     @Published private(set) var approvalError: String?
     /// Web results the live turn surfaced, shown as chips under the transcript.
     @Published private(set) var searchHits: [SearchChip] = []
@@ -100,9 +102,9 @@ final class AppModel: ObservableObject {
     private var sendTask: Task<Void, Never>?
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
-    /// The newest session this app started, so cancel targets it even before
-    /// the store echo lands.
-    private var activeSessionId: String?
+    /// The newest session this app started, scoped to its bot so a Stop on
+    /// another bot cannot cancel the wrong session.
+    private var activeSession: (botId: String, sessionId: String)?
     private var loadGeneration = 0
     private var sendGeneration = 0
     private var sendBotId: String?
@@ -200,7 +202,11 @@ final class AppModel: ObservableObject {
     private func pollApprovals() async {
         guard phase == .ready else { return }
         if let items = try? await client.approvals() {
-            approvals = items
+            // A poll that started before a decision can carry the decided row
+            // back; tombstone it briefly so it cannot be double-decided.
+            let now = Date()
+            decidedApprovals = decidedApprovals.filter { now.timeIntervalSince($0.value) < 5 }
+            approvals = items.filter { decidedApprovals[$0.id] == nil }
             // An approval that vanished server-side must not leave its buttons
             // disabled forever.
             busyApprovals.formIntersection(items.map(\.id))
@@ -308,8 +314,15 @@ final class AppModel: ObservableObject {
     }
 
     private func pollOnce() async {
+        guard phase == .ready else { return }
+        // Handoffs and the rail keep pumping during a turn; the web ticks on
+        // the same cadence as its stream rather than waiting for it to end.
+        Task { [weak self] in
+            guard let self else { return }
+            await self.client.tick()
+        }
         // A send owns the state while it runs; a poll must not race it.
-        guard phase == .ready, !pending else { return }
+        guard !pending else { return }
         do {
             let fresh = try await client.shell()
             store = fresh
@@ -320,10 +333,6 @@ final class AppModel: ObservableObject {
             pruneBusyProposals()
             rebuildTranscript()
             threadError = nil
-            Task { [weak self] in
-                guard let self else { return }
-                await self.client.tick()
-            }
             await refreshComposer()
         } catch {
             /* keep the last view; the next poll retries */
@@ -381,7 +390,7 @@ final class AppModel: ObservableObject {
                     message: message
                 )
                 guard generation == self.sendGeneration else { return }
-                self.activeSessionId = sessionId
+                self.activeSession = (bot.id, sessionId)
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
                 self.clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
@@ -428,8 +437,13 @@ final class AppModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             // The newest session may be one this app just created and has not
-            // echoed into the store yet.
-            let sessionId = self.activeSessionId ?? bot.sessionId
+            // echoed into the store yet; only trust it for the same bot.
+            let sessionId: String?
+            if let active = self.activeSession, active.botId == bot.id {
+                sessionId = active.sessionId
+            } else {
+                sessionId = bot.sessionId
+            }
             if let sessionId, !sessionId.isEmpty {
                 _ = try? await self.client.cancel(sessionId: sessionId)
             }
@@ -439,7 +453,7 @@ final class AppModel: ObservableObject {
     /// Clear the composer only for the text and files this send owned, so
     /// anything typed or attached while the turn was starting survives.
     private func clearSentComposer(draft draftSnapshot: String, attachmentIds: Set<String>) {
-        if draft == draftSnapshot { draft = "" }
+        draft = ComposerDraft.remainder(draft, afterSending: draftSnapshot)
         if !attachmentIds.isEmpty {
             attachments.removeAll { attachmentIds.contains($0.id) }
         }
@@ -523,6 +537,7 @@ final class AppModel: ObservableObject {
                     hash: item.actionSha256
                 )
                 self.approvals.removeAll { $0.id == item.id }
+                self.decidedApprovals[item.id] = Date()
             } catch {
                 self.approvalError = (error as? LocalizedError)?.errorDescription ?? "Approval failed"
             }
@@ -687,8 +702,15 @@ final class AppModel: ObservableObject {
     /// New Bot from the rail: clear the thread server-side and start fresh.
     func startNewChat(botId: String? = nil) {
         guard let id = botId ?? selectedBotId else { return }
+        // An in-flight turn would repopulate the cleared thread, so stop the
+        // local stream and ask the server to cancel it best-effort.
+        let runningSession = activeSession?.sessionId ?? selectedBot?.sessionId
+        cancelSend()
         Task { [weak self] in
             guard let self else { return }
+            if let runningSession, !runningSession.isEmpty {
+                _ = try? await self.client.cancel(sessionId: runningSession)
+            }
             if self.store?.selectedBotId != id {
                 if let next = try? await self.client.shellAction(ShellActions.select(botId: id)) {
                     self.store = next
@@ -736,6 +758,7 @@ final class AppModel: ObservableObject {
         projection = StreamProjection()
         transcript = []
         pending = false
+        activeSession = nil
     }
 
     // MARK: - Proposals

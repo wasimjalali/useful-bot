@@ -48,5 +48,22 @@ import Testing
         #expect(LocalHost.isLocal(nil))
         #expect(LocalHost.isLocal(""))
         #expect(LocalHost.isLocal("   "))
+        #expect(LocalHost.isLocal("::ffff:999.0.0.1"))
+        #expect(LocalHost.isLocal("gggg::1"))
+    }
+}
+
+@Suite struct ComposerDraftTests {
+    @Test func exactDraftClears() {
+        #expect(ComposerDraft.remainder("hello", afterSending: "hello") == "")
+    }
+
+    @Test func keptTypingOnlyLosesTheSentPart() {
+        #expect(ComposerDraft.remainder("hellonext", afterSending: "hello") == "next")
+    }
+
+    @Test func editedTextIsLeftAlone() {
+        #expect(ComposerDraft.remainder("rewritten", afterSending: "hello") == "rewritten")
+        #expect(ComposerDraft.remainder("", afterSending: "hello") == "")
     }
 }

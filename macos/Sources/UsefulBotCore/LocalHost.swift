@@ -38,11 +38,12 @@ public enum LocalHost {
         // ::ffff:0:127.0.0.1 and 0:0:0:0:0:ffff:127.0.0.1 alike.
         if value.contains(".") {
             let tail = value.split(separator: ":").last.map(String.init) ?? value
-            return isLocal(tail)
+            guard let address = ipv4(tail) else { return true } // malformed: fail closed
+            return isPrivateV4(address)
         }
         // Expand to eight groups so compressed and full forms classify the
         // same: ::1 and 0:0:0:0:0:0:0:1, :: and 0:0:0:0:0:0:0:0.
-        guard let groups = ipv6Groups(value) else { return false }
+        guard let groups = ipv6Groups(value) else { return true } // malformed: fail closed
         if groups.allSatisfy({ $0 == 0 }) { return true }
         if groups.dropLast().allSatisfy({ $0 == 0 }), groups.last == 1 { return true }
         if groups[0] & 0xffc0 == 0xfe80 { return true } // fe80::/10 link-local
@@ -55,8 +56,8 @@ public enum LocalHost {
         return false
     }
 
-    /// Expand an IPv6 literal to eight 16-bit groups, accepting one `::` and a
-    /// trailing dotted IPv4 tail. Returns nil for anything malformed.
+    /// Expand a dotted-tail-free IPv6 literal to eight 16-bit groups,
+    /// accepting one `::`. Returns nil for anything malformed.
     private static func ipv6Groups(_ value: String) -> [UInt16]? {
         let halves = value.components(separatedBy: "::")
         guard halves.count <= 2 else { return nil }
@@ -64,18 +65,9 @@ public enum LocalHost {
         func parse(_ part: String) -> [UInt16]? {
             guard !part.isEmpty else { return [] }
             var groups: [UInt16] = []
-            let tokens = part.split(separator: ":")
-            for (index, token) in tokens.enumerated() {
-                if token.contains(".") {
-                    guard index == tokens.count - 1 else { return nil }
-                    let quads = token.split(separator: ".").compactMap { UInt16($0) }
-                    guard quads.count == 4, quads.allSatisfy({ $0 <= 255 }) else { return nil }
-                    groups.append(quads[0] << 8 | quads[1])
-                    groups.append(quads[2] << 8 | quads[3])
-                } else {
-                    guard let group = UInt16(token, radix: 16) else { return nil }
-                    groups.append(group)
-                }
+            for token in part.split(separator: ":") {
+                guard let group = UInt16(token, radix: 16) else { return nil }
+                groups.append(group)
             }
             return groups
         }
