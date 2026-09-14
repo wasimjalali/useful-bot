@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { applyShellAction, seedStore, type ShellStore } from "../shared/shell-store.ts";
@@ -462,8 +462,10 @@ function grantFixture(mode: "read_only" | "guard" | "full_access", finalConfirm 
   delete process.env.UB_WORKSPACE_ROOT;
   const approvals = new ApprovalStore(Date.now, join(dir, "approvals.json"));
   setApprovalStore(approvals);
+  // macOS /tmp is a symlink chain; the grant must carry the canonical path,
+  // the way the attach route stores it.
   upsertSessionGrant(
-    { sessionId: "sess-1", path: project, permission: mode, finalConfirm },
+    { sessionId: "sess-1", path: realpathSync(project), permission: mode, finalConfirm },
     new Date(),
     process.env.UB_WORKSPACE_STORE_PATH,
   );
@@ -540,7 +542,7 @@ test("guard keeps the approval card; full access writes without one", async () =
     assert.equal(pending.length, 1);
     box.approvals.decide(pending[0].id, "approve", pending[0].actionSha256);
     const result = await write;
-    assert.equal(result.path, join(box.project, "guard.txt"));
+    assert.equal(result.path, join(realpathSync(box.project), "guard.txt"));
   } finally {
     box.restore();
   }
@@ -578,16 +580,23 @@ test("final confirm asks again even under full access", async () => {
     const pending = box.approvals.listPending()[0];
     box.approvals.decide(pending.id, "approve", pending.actionSha256);
     const result = await write;
-    assert.equal(result.path, join(box.project, "out2.txt"));
+    assert.equal(result.path, join(realpathSync(box.project), "out2.txt"));
   } finally {
     box.restore();
   }
 });
 
-test("bash runs inside the granted folder and skips the card under full access", async () => {
+test("bash runs inside the granted folder and always shows its card", async () => {
   const box = grantFixture("full_access");
   try {
-    const result = await run<{ stdout: string; stderr: string }>(bash, { command: "pwd" }, { session: { id: "sess-1" } });
+    const pending = run<{ stdout: string; stderr: string }>(bash, { command: "pwd" }, { session: { id: "sess-1" } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Even full access keeps the human gate on shell lines: cwd confinement
+    // cannot keep a verbatim command inside the folder.
+    assert.equal(box.approvals.listPending().length, 1);
+    const card = box.approvals.listPending()[0];
+    box.approvals.decide(card.id, "approve", card.actionSha256);
+    const result = await pending;
     assert.equal(result.stdout.includes(basename(box.project)), true);
   } finally {
     box.restore();
@@ -618,13 +627,45 @@ test("a root chosen by the owner may sit in a screened path; children may not", 
   process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
   delete process.env.UB_WORKSPACE_ROOT;
   upsertSessionGrant(
-    { sessionId: "sess-git", path: project, permission: "read_only", finalConfirm: false },
+    { sessionId: "sess-git", path: realpathSync(project), permission: "read_only", finalConfirm: false },
     new Date(),
   );
   try {
     const readme = await run<{ text: string }>(readFile, { path: "readme.md" }, { session: { id: "sess-git" } });
     assert.equal(readme.text.includes("ok"), true);
     await assert.rejects(() => run(readFile, { path: ".env" }, { session: { id: "sess-git" } }), /path_forbidden/);
+  } finally {
+    const put = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    put("UB_WORKSPACE_STORE_PATH", previous.store);
+    put("UB_WORKSPACE_ROOT", previous.root);
+  }
+});
+
+test("a symlinked grant root is refused at tool time", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-link-"));
+  const outside = join(dir, "outside");
+  const link = join(dir, "link");
+  mkdirSync(outside, { recursive: true });
+  symlinkSync(outside, link);
+  const previous = {
+    store: process.env.UB_WORKSPACE_STORE_PATH,
+    root: process.env.UB_WORKSPACE_ROOT,
+  };
+  process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+  delete process.env.UB_WORKSPACE_ROOT;
+  upsertSessionGrant(
+    { sessionId: "sess-link", path: link, permission: "read_only", finalConfirm: false },
+    new Date(),
+  );
+  try {
+    // The grant is on disk, but the tool refuses to use a link as a root.
+    await assert.rejects(
+      () => run(readFile, { path: "x" }, { session: { id: "sess-link" } }),
+      /workspace_root_symlink/,
+    );
   } finally {
     const put = (key: string, value: string | undefined) => {
       if (value === undefined) delete process.env[key];

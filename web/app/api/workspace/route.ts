@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { statSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename } from "node:path";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
+import { isGrantableRootPath } from "../../../../shared/shell-store.ts";
 import {
-  PROJECTS_MAX,
   readWorkspaceStore,
   removeProject,
   upsertProject,
@@ -44,18 +44,20 @@ export async function POST(request: Request) {
     if (body.action === "addProject") {
       const path = body.path ?? "";
       try {
-        if (!path.startsWith("/") || !statSync(path).isDirectory()) {
+        if (!isGrantableRootPath(path)) {
+          return NextResponse.json({ ok: false, error: "workspace_path_forbidden" }, { status: 400 });
+        }
+        const stat = lstatSync(path);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
           return NextResponse.json({ ok: false, error: "workspace_not_directory" }, { status: 400 });
         }
+        if (realpathSync(path) !== path) {
+          return NextResponse.json({ ok: false, error: "workspace_path_symlink" }, { status: 400 });
+        }
+        upsertProject({ path: realpathSync(path), name: basename(path) });
       } catch {
         return NextResponse.json({ ok: false, error: "workspace_path_missing" }, { status: 400 });
       }
-      const projects = readWorkspaceStore().projects;
-      if (!projects.some((item) => item.path === path) && projects.length >= PROJECTS_MAX) {
-        // The list is a recents list: the least recently used drops.
-        removeProject(projects[0].id);
-      }
-      upsertProject({ path, name: basename(path) });
     } else if (body.action === "removeProject") {
       if (!body.id) {
         return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });

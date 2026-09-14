@@ -77,8 +77,14 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
     public let permission: String
     public var finalConfirm: Bool
 
+    /// A folder name comes from the filesystem, so control characters are
+    /// stripped before it can reach the composer or a message.
     public var folderName: String {
-        (path as NSString).lastPathComponent
+        let raw = (path as NSString).lastPathComponent
+        let cleaned = String(raw.unicodeScalars.filter { scalar in
+            scalar != "\n" && scalar != "\r" && scalar != "\t" && scalar.value >= 0x20
+        })
+        return cleaned.isEmpty ? "Folder" : String(cleaned.prefix(80))
     }
 
     public var isReadOnly: Bool { permission == "read_only" }
@@ -96,7 +102,11 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
         case path, permission, finalConfirm
     }
 
-    public init(path: String, permission: String, finalConfirm: Bool) {
+    public init?(path: String, permission: String, finalConfirm: Bool) {
+        // A grant is a filesystem capability: an empty or relative path is no
+        // folder, and a workspace that cannot say where it points must not
+        // render as one.
+        guard !path.isEmpty, path.hasPrefix("/") else { return nil }
         self.path = path
         self.permission = permission
         self.finalConfirm = finalConfirm
@@ -104,7 +114,14 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        path = (try? c.decode(String.self, forKey: .path)) ?? ""
+        let decodedPath = (try? c.decode(String.self, forKey: .path)) ?? ""
+        guard !decodedPath.isEmpty, decodedPath.hasPrefix("/") else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "workspace path must be absolute"
+            ))
+        }
+        path = decodedPath
         permission = (try? c.decode(String.self, forKey: .permission)) ?? "guard"
         finalConfirm = (try? c.decode(Bool.self, forKey: .finalConfirm)) ?? false
     }

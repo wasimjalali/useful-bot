@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { statSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import {
@@ -14,7 +14,7 @@ import {
 } from "../../../../shared/agent-store.ts";
 import { fanOut } from "../../../lib/agent-exec";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
-import { applyShellAction, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { applyShellAction, isGrantableRootPath, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 
@@ -188,14 +188,25 @@ export async function PUT(request: Request) {
       }
     }
 
-    // A folder grant is an owner decision, but the path still has to be real:
-    // an absolute path to an existing directory, not a file or a wish.
+    // A folder grant is an owner decision, but the path still has to be real
+    // and grantable: an absolute path to an existing directory that is not
+    // itself a symlink and whose own name is not a credential store.
     if (body.action?.type === "setWorkspace" && body.action.workspace) {
       const target = body.action.workspace.path;
       try {
-        if (!statSync(target).isDirectory()) {
+        if (!isGrantableRootPath(target)) {
+          return NextResponse.json({ ok: false, error: "workspace_path_forbidden" }, { status: 400 });
+        }
+        const stat = lstatSync(target);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
           return NextResponse.json({ ok: false, error: "workspace_not_directory" }, { status: 400 });
         }
+        if (realpathSync(target) !== target) {
+          return NextResponse.json({ ok: false, error: "workspace_path_symlink" }, { status: 400 });
+        }
+        // Store the canonical path: the agent re-verifies at tool time, and
+        // a grant carrying a link path would fail there instead of working.
+        body.action.workspace.path = realpathSync(target);
       } catch {
         return NextResponse.json({ ok: false, error: "workspace_path_missing" }, { status: 400 });
       }

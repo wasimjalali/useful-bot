@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, readFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, readFileSync, unlinkSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
-import { autoApproved, effectiveRoot, resolveWorkspacePath, sessionPermission } from "./workspace.ts";
+import { autoApproved, effectiveRoot, resolveWorkspacePath } from "./workspace.ts";
 import { WRITE_MAX_BYTES } from "../../shared/policy.ts";
 
 let store: ApprovalStore | null = null;
@@ -23,15 +23,15 @@ export async function approvedWrite(input: {
   sessionId: string;
   turnId: string;
   toolCallId: string;
-  /** Full access on a granted folder: the permission set by the owner decides. */
-  grantFinalConfirm?: boolean;
   autoDecision?: "approve" | "deny";
 }): Promise<{ bytes: number; path: string; approvalId: string; actionSha256: string }> {
   if (Buffer.byteLength(input.content, "utf8") > WRITE_MAX_BYTES) {
     throw new Error("write_too_large");
   }
+  // One grant read for root AND permission: two reads could pair a root from
+  // before a permission change with the permission after it.
   const { root, grant } = effectiveRoot(input.sessionId || undefined);
-  const permission = sessionPermission(input.sessionId || undefined);
+  const permission = grant ? grant.permission : null;
   if (permission === "read_only") {
     throw new Error("workspace_read_only");
   }
@@ -56,10 +56,20 @@ export async function approvedWrite(input: {
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);
-  } else if (grant && autoApproved(permission, input.grantFinalConfirm ?? grant.finalConfirm)) {
+  } else if (grant && autoApproved(permission, grant.finalConfirm)) {
     approvals.decide(rec.id, "approve", hash);
   } else {
     await waitUntilNotPending(approvals, rec.id);
+    // The owner may have changed the folder or its permission while the card
+    // sat open. The approval was granted against the root at request time,
+    // so a changed workspace must not consume it: refuse and let the turn
+    // retry against the new grant.
+    const refreshed = effectiveRoot(input.sessionId || undefined);
+    const permissionAtRequest = permission ?? null;
+    const permissionNow = refreshed.grant?.permission ?? null;
+    if (refreshed.root !== root || permissionNow !== permissionAtRequest) {
+      throw new Error("workspace_changed");
+    }
   }
   return executeIfApproved(approvals, rec.id, hash, () => {
     // The path is resolved again after consume: a parent directory could have
@@ -81,21 +91,61 @@ export async function approvedWrite(input: {
         throw new Error("write_revision_conflict");
       }
     }
-    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    const tmp = join(
-      dirname(target),
-      `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`,
-    );
+    return { ...writeAtomically(target, root, input.content), approvalId: rec.id, actionSha256: hash };
+  });
+}
+
+/**
+ * Create the parent directory and land the file without following a symlink
+ * that could have been swapped in. Parents are created one level at a time
+ * with lstat checks, and the final parent is re-verified by realpath before
+ * the rename, so a symlinked component cannot redirect the write.
+ */
+function writeAtomically(target: string, root: string, content: string): { bytes: number; path: string } {
+  let parent = dirname(target);
+  const rootReal = realpathSync(root);
+  const missing: string[] = [];
+  let probe = parent;
+  while (probe !== rootReal && probe !== "/") {
+    let stat;
     try {
-      writeFileSync(tmp, input.content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      const fd = openSync(tmp, "r");
-      fsyncSync(fd);
-      closeSync(fd);
-      renameSync(tmp, target);
+      stat = lstatSync(probe);
     } catch (error) {
-      try { unlinkSync(tmp); } catch { /* ignore */ }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        missing.unshift(probe);
+        probe = dirname(probe);
+        continue;
+      }
       throw error;
     }
-    return { bytes: Buffer.byteLength(input.content, "utf8"), path: target, approvalId: rec.id, actionSha256: hash };
-  });
+    if (stat.isSymbolicLink()) throw new Error("path_symlink");
+    if (!stat.isDirectory()) throw new Error("path_not_directory");
+    break;
+  }
+  for (const dir of missing) {
+    mkdirSync(dir, { mode: 0o700 });
+    const stat = lstatSync(dir);
+    if (stat.isSymbolicLink()) throw new Error("path_symlink");
+  }
+  // The realpath of the parent must sit under the real root: a symlink
+  // component created between the checks above and this call would otherwise
+  // redirect the rename.
+  if (!realpathSync(parent).startsWith(`${rootReal}/`) && realpathSync(parent) !== rootReal) {
+    throw new Error("path_escape");
+  }
+  const tmp = join(
+    parent,
+    `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`,
+  );
+  try {
+    writeFileSync(tmp, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    const fd = openSync(tmp, "r");
+    fsyncSync(fd);
+    closeSync(fd);
+    renameSync(tmp, target);
+  } catch (error) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    throw error;
+  }
+  return { bytes: Buffer.byteLength(content, "utf8"), path: target };
 }

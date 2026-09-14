@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   readSessionGrant,
   readWorkspaceStore,
   removeProject,
+  removeSessionGrant,
   upsertProject,
   upsertSessionGrant,
 } from "../shared/workspace-store.ts";
@@ -107,4 +108,57 @@ test("parse tolerates unknown and malformed records", () => {
   assert.equal(parsed.grants.length, 1);
   assert.equal(parsed.projects.length, 1);
   assert.equal(parsed.schemaVersion, 1);
+});
+
+test("detaching revokes the grant, not just the bot field", () => {
+  const path = tempStore();
+  upsertSessionGrant(
+    { sessionId: "s1", path: "/tmp/a", permission: "full_access", finalConfirm: false },
+    new Date(),
+    path,
+  );
+  assert.ok(readSessionGrant("s1", path));
+  removeSessionGrant("s1", path);
+  assert.equal(readSessionGrant("s1", path), null);
+  // Revoking an unknown session is a no-op, not an error.
+  removeSessionGrant("never-existed", path);
+});
+
+test("duplicate rows keep the newest, not first-in-file", () => {
+  const path = tempStore();
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      // Older record first in file order; the newer one must win.
+      grants: [
+        { sessionId: "s1", path: "/tmp/old", permission: "read_only", finalConfirm: false, updatedAt: "2026-09-14T10:00:00Z" },
+        { sessionId: "s1", path: "/tmp/new", permission: "full_access", finalConfirm: true, updatedAt: "2026-09-14T11:00:00Z" },
+      ],
+      projects: [
+        { id: "p1", path: "/tmp/p", name: "old name", lastUsedAt: "2026-09-14T10:00:00Z" },
+        { id: "p1", path: "/tmp/p", name: "new name", lastUsedAt: "2026-09-14T11:00:00Z" },
+      ],
+    }),
+    "utf8",
+  );
+  const store = readWorkspaceStore(path);
+  assert.equal(store.grants.length, 1);
+  assert.equal(store.grants[0].path, "/tmp/new");
+  assert.equal(store.projects[0].name, "new name");
+});
+
+test("a corrupt store is backed up before a write starts from the seed", () => {
+  const path = tempStore();
+  writeFileSync(path, "{corrupt", { encoding: "utf8" });
+  upsertSessionGrant(
+    { sessionId: "s1", path: "/tmp/a", permission: "guard", finalConfirm: false },
+    new Date(),
+    path,
+  );
+  // The corrupt bytes survive as evidence beside the store.
+  const dir = path.slice(0, path.lastIndexOf("/"));
+  const backup = readdirSync(dir).find((name: string) => name.includes(".invalid."));
+  assert.ok(backup, "corrupt store must be backed up, not clobbered");
+  assert.equal(readWorkspaceStore(path).grants.length, 1);
 });

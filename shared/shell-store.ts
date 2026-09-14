@@ -272,6 +272,54 @@ function parseWorkspace(raw: unknown): BotWorkspace | null {
   return { path: rec.path, permission, finalConfirm: rec.finalConfirm === true };
 }
 
+/** A grant path must be absolute and bounded; the store holds capability roots. */
+function assertGrantableRootPath(path: unknown): string {
+  if (typeof path !== "string" || !path.startsWith("/") || path.length > 1024) {
+    throw new Error("workspace_path_invalid");
+  }
+  return path;
+}
+
+/**
+ * Strict on writes: an unknown permission word must fail the action, not
+ * silently become Guard. The read path above stays tolerant — a newer build's
+ * store stays readable — but a write with a value this build does not know is
+ * a caller bug.
+ */
+function parseWorkspacePermissionStrict(value: unknown): WorkspacePermission {
+  const parsed = parseWorkspacePermission(value);
+  if (!parsed) throw new Error("workspace_permission_invalid");
+  return parsed;
+}
+
+/**
+ * Screen a folder root by PATH SEGMENT before it becomes a grant. A folder
+ * named `my.github-project` is fine; one whose own name is `.ssh`, `secrets`
+ * or `auth.json` is where credentials live, so it is refused at attach time.
+ * Anything under the granted root keeps the substring screen in
+ * `resolveWorkspacePath`.
+ */
+export function isGrantableRootPath(path: string): boolean {
+  if (!path.startsWith("/") || path.length > 1024) return false;
+  for (const segment of path.split("/")) {
+    if (!segment) continue;
+    const lowered = segment.toLowerCase();
+    if (FORBIDDEN_GRANT_SEGMENTS.has(lowered)) return false;
+  }
+  return true;
+}
+
+const FORBIDDEN_GRANT_SEGMENTS = new Set([
+  ".env",
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  ".git",
+  "auth.json",
+  "secrets",
+  "launchagents",
+]);
+
 function parseRecent(raw: unknown): ShellRecent {
   if (!raw || typeof raw !== "object") throw new Error("shell_recent_invalid");
   const rec = raw as Record<string, unknown>;
@@ -654,13 +702,10 @@ export function applyShellAction(
       // The route validates the folder exists before calling; the store only
       // enforces shape. An explicit null detaches the folder.
       const workspace = action.workspace === null ? null : {
-        path: action.workspace.path,
-        permission: parseWorkspacePermission(action.workspace.permission) ?? "guard",
+        path: assertGrantableRootPath(action.workspace.path),
+        permission: parseWorkspacePermissionStrict(action.workspace.permission),
         finalConfirm: action.workspace.finalConfirm === true,
       } satisfies BotWorkspace | null;
-      if (workspace !== null && !workspace.path.startsWith("/")) {
-        throw new Error("workspace_path_invalid");
-      }
       return {
         store: {
           ...store,

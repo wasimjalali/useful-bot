@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { autoApproved, effectiveRoot, sessionPermission } from "../lib/workspace.ts";
+import { effectiveRoot } from "../lib/workspace.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
@@ -39,9 +39,10 @@ export default defineTool({
     if (blocked) {
       return { status: "blocked", error: blocked };
     }
+    // One grant read for root AND permission: two reads could pair a root
+    // from before a permission change with the permission after it.
     const { root, grant } = effectiveRoot(ctx?.session?.id);
-    const permission = sessionPermission(ctx?.session?.id);
-    if (permission === "read_only") {
+    if (grant?.permission === "read_only") {
       return { status: "blocked", error: "workspace_read_only" };
     }
     const hash = actionSha256({
@@ -59,13 +60,15 @@ export default defineTool({
       actionSha256: hash,
       preview: input.command,
     });
-    // Full access skips the card for commands inside the granted folder;
-    // Final confirm turns that back off, and guard always asks. The tripwire
-    // list and the confined env above apply in every mode.
-    if (grant && autoApproved(permission, grant.finalConfirm)) {
-      store.decide(rec.id, "approve", hash);
-    } else {
-      await waitUntilNotPending(store, rec.id);
+    // Commands always wait for the owner, in every permission: cwd and env
+    // confinement alone cannot keep a verbatim shell line inside the folder,
+    // so a card is the only honest gate. Final confirm changes nothing here.
+    await waitUntilNotPending(store, rec.id);
+    // The workspace may have changed while the card sat open; the approval
+    // was granted against the cwd at request time, so refuse a changed one.
+    const refreshed = effectiveRoot(ctx?.session?.id);
+    if (refreshed.root !== root) {
+      return { status: "blocked", error: "workspace_changed" };
     }
     return executeIfApproved(store, rec.id, hash, async () => {
       const args = ["/bin/sh", "-c", input.command];

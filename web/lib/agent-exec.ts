@@ -24,7 +24,7 @@ import {
   type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
-import { upsertSessionGrant } from "../../shared/workspace-store.ts";
+import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
 /**
@@ -38,13 +38,18 @@ const EVE = "http://127.0.0.1:4321";
 const DELIVER_TIMEOUT_MS = 120_000;
 
 /**
- * Stamp the workspace grant a turn's tools will read. Called from the eve
- * proxy and from server-driven turns: the agent process resolves the grant
- * per session, so it must be current before the turn reaches eve. A bot
- * without a workspace clears nothing here — the legacy root still applies.
+ * Stamp — or revoke — the workspace grant a turn's tools will read. Called
+ * from the eve proxy and from server-driven turns: the agent process
+ * resolves the grant per session, so it must be current before the turn
+ * reaches eve. A bot whose folder was detached revokes the grant here, so
+ * capability never outlives the owner's decision.
  */
 export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
-  if (!sessionId || !bot.workspace) return;
+  if (!sessionId) return;
+  if (!bot.workspace) {
+    removeSessionGrant(sessionId);
+    return;
+  }
   upsertSessionGrant({
     sessionId,
     path: bot.workspace.path,

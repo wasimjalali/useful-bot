@@ -83,9 +83,9 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members));
         headers.set("content-type", "application/json");
         // The tools that run during this turn read the workspace grant for
-        // the session, so it has to be current before the turn reaches eve.
-        // Continuation posts carry the session id in the path; a create gets
-        // its grant stamped from the response below.
+        // the session, so it has to be current — stamped or revoked — before
+        // the turn reaches eve. Continuation posts carry the session id in
+        // the path; a create gets its grant stamped from the response below.
         if (suffix !== "session") {
           const sessionId = suffix.split("/")[1] ?? "";
           if (sessionId && bot) syncSessionWorkspace(sessionId, bot);
@@ -117,13 +117,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     out.set("cache-control", "no-store");
     // A session create answers with the fresh session id. Capture the small
     // JSON body to stamp the grant before returning it: a tolerant parse that
-    // fails still passes the body through untouched.
+    // fails still passes the body through untouched. The shell is re-read so
+    // the stamp cannot come from a pre-request snapshot.
     if (method === "POST" && suffix === "session" && route) {
       const text = await upstream.text();
       try {
         const parsed = JSON.parse(text) as { sessionId?: string };
         if (parsed.sessionId) {
-          const bot = shell.bots.find((item) => item.id === route?.threadId) ?? null;
+          const fresh = readShell();
+          const bot = fresh.bots.find((item) => item.id === route?.threadId) ?? null;
           if (bot) syncSessionWorkspace(parsed.sessionId, bot);
         }
       } catch {

@@ -54,6 +54,16 @@ test("setWorkspace rejects an unknown bot and a malformed grant", () => {
       }),
     /workspace_path_invalid/,
   );
+  // An unknown permission word fails the write instead of becoming Guard.
+  assert.throws(
+    () =>
+      applyShellAction(store, {
+        type: "setWorkspace",
+        botId: DEFAULT_BOT_ID,
+        workspace: { path: "/tmp/project", permission: "admin" as never, finalConfirm: false },
+      }),
+    /workspace_permission_invalid/,
+  );
 });
 
 test("seed store has compact Useful Bot in Unassigned", () => {

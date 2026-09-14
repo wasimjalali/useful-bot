@@ -109,18 +109,33 @@ export function parseWorkspaceStore(raw: unknown): WorkspaceStore {
   if (rec.projects !== undefined && !Array.isArray(rec.projects)) throw new Error("workspace_projects");
   const grants = (rec.grants ?? [])
     .map(parseGrant)
-    .filter((grant): grant is SessionGrant => grant !== null)
-    // One grant per session: the newest write wins.
-    .filter((grant, index, all) => all.findIndex((other) => other.sessionId === grant.sessionId) === index)
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-    .slice(-GRANTS_MAX);
+    .filter((grant): grant is SessionGrant => grant !== null);
   const projects = (rec.projects ?? [])
     .map(parseProject)
-    .filter((project): project is ProjectEntry => project !== null)
-    .filter((project, index, all) => all.findIndex((other) => other.path === project.path) === index)
-    .sort((a, b) => a.lastUsedAt.localeCompare(b.lastUsedAt))
-    .slice(-PROJECTS_MAX);
-  return { schemaVersion: WORKSPACE_SCHEMA, grants, projects };
+    .filter((project): project is ProjectEntry => project !== null);
+  return {
+    schemaVersion: WORKSPACE_SCHEMA,
+    grants: dedupeNewest(grants, (grant) => grant.sessionId, (grant) => grant.updatedAt)
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+      .slice(-GRANTS_MAX),
+    projects: dedupeNewest(projects, (project) => project.path, (project) => project.lastUsedAt)
+      .sort((a, b) => a.lastUsedAt.localeCompare(b.lastUsedAt))
+      .slice(-PROJECTS_MAX),
+  };
+}
+
+/**
+ * One row per key, keeping the record with the highest timestamp.
+ * First-in-file is not the same as newest: a hand-edited or partially
+ * recovered store can hold two rows for one session.
+ */
+function dedupeNewest<T>(rows: T[], key: (row: T) => string, stamp: (row: T) => string): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows) {
+    const current = byKey.get(key(row));
+    if (!current || stamp(row) >= stamp(current)) byKey.set(key(row), row);
+  }
+  return [...byKey.values()];
 }
 
 function readStoreFile(path: string): WorkspaceStore {
@@ -131,6 +146,16 @@ function readStoreFile(path: string): WorkspaceStore {
     // An unreadable store must never block a turn: grants are a capability
     // cache, so starting empty only means tools fall back to the legacy root.
     return seedStore();
+  }
+}
+
+/** The store as it sits on disk, or null when unreadable. */
+function peekStoreFile(path: string): WorkspaceStore | null {
+  if (!existsSync(path)) return null;
+  try {
+    return parseWorkspaceStore(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    return null;
   }
 }
 
@@ -180,7 +205,17 @@ export function updateWorkspaceStore(
   }
   if (!held) throw new Error("workspace_locked");
   try {
-    const next = mutate(readStoreFile(path));
+    // Writes must not clobber what they could not read. If the store on disk
+    // is corrupt, back it up first and start from the seed, the way the
+    // shell store does; a silent overwrite loses the evidence.
+    let previous = peekStoreFile(path);
+    if (previous === null && existsSync(path)) {
+      const bak = `${path}.invalid.${process.pid}.${Date.now()}`;
+      try { renameSync(path, bak); } catch { /* ignore */ }
+      console.warn(`[useful-bot] workspace store was unreadable; backed up to ${bak}`);
+      previous = null;
+    }
+    const next = mutate(previous ?? seedStore());
     writeStoreFile(next, path);
     return next;
   } finally {
@@ -203,6 +238,14 @@ export function upsertSessionGrant(
   at = new Date(),
   path = defaultWorkspacePath(),
 ): void {
+  // The grant is a filesystem capability, so it is validated here and not
+  // only at the route: agent-exec stamps it from shell fields verbatim.
+  if (!input.sessionId || input.sessionId.length > 200) {
+    throw new Error("workspace_session_invalid");
+  }
+  if (!input.path.startsWith("/") || input.path.length > 1024) {
+    throw new Error("workspace_path_invalid");
+  }
   updateWorkspaceStore((store) => {
     const stamp = at.toISOString();
     const grant: SessionGrant = { ...input, updatedAt: stamp };
@@ -216,6 +259,15 @@ export function upsertSessionGrant(
   }, path);
 }
 
+/** Detaching a folder must revoke the capability, not just the bot field. */
+export function removeSessionGrant(sessionId: string, path = defaultWorkspacePath()): void {
+  if (!sessionId) return;
+  updateWorkspaceStore((store) => ({
+    ...store,
+    grants: store.grants.filter((item) => item.sessionId !== sessionId),
+  }), path);
+}
+
 export function projectIdFor(path: string): string {
   return createHash("sha256").update(path).digest("hex").slice(0, 24);
 }
@@ -225,10 +277,15 @@ export function upsertProject(
   at = new Date(),
   path = defaultWorkspacePath(),
 ): ProjectEntry {
+  if (!input.path.startsWith("/") || input.path.length > 1024) {
+    throw new Error("workspace_path_invalid");
+  }
   const entry: ProjectEntry = {
     id: projectIdFor(input.path),
     path: input.path,
-    name: input.name.slice(0, 120),
+    // A folder name comes from the filesystem: strip control characters
+    // before it reaches a menu row.
+    name: sanitizeName(input.name),
     lastUsedAt: at.toISOString(),
   };
   updateWorkspaceStore((store) => {
@@ -241,6 +298,13 @@ export function upsertProject(
     return { ...store, projects };
   }, path);
   return entry;
+}
+
+function sanitizeName(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, 120) || "Project";
 }
 
 export function removeProject(id: string, path = defaultWorkspacePath()): void {

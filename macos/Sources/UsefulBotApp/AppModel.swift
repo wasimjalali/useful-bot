@@ -1384,7 +1384,15 @@ final class AppModel: ObservableObject {
             permission: existing?.permission ?? "guard",
             finalConfirm: existing?.finalConfirm ?? false
         )
-        folderItemCount[bot.id] = folderEntryCount(of: url)
+        // The count lands asynchronously: a big folder must not block the pick.
+        folderItemCount[bot.id] = nil
+        Task.detached { [weak self] in
+            let count = Self.folderEntryCount(atPath: url.path)
+            await MainActor.run { [weak self] in
+                guard let self, self.selectedBotId == bot.id else { return }
+                self.folderItemCount[bot.id] = count
+            }
+        }
         dispatchWorkspace(workspace, botId: bot.id)
         // Recents are best effort: a missed write only loses a menu entry.
         enqueue { [weak self] in
@@ -1401,8 +1409,12 @@ final class AppModel: ObservableObject {
     }
 
     func setWorkspacePermission(_ permission: String) {
-        guard let bot = selectedBot,
-              let workspace = liveBot(bot).workspace else { return }
+        guard let bot = selectedBot else { return }
+        guard let workspace = liveBot(bot).workspace else {
+            // A silent no-op would read as a broken chip; say why instead.
+            workspaceError = "Attach a folder first."
+            return
+        }
         workspaceError = nil
         dispatchWorkspace(
             BotWorkspace(path: workspace.path, permission: permission, finalConfirm: workspace.finalConfirm),
@@ -1455,20 +1467,25 @@ final class AppModel: ObservableObject {
     func refreshFolderCount(for bot: ShellBot) {
         guard let path = bot.workspace?.path, folderItemCount[bot.id] == nil else { return }
         let botId = bot.id
-        Task { @MainActor [weak self] in
-            let count = self?.folderEntryCount(of: URL(fileURLWithPath: path))
-            if let count, self?.folderItemCount[botId] == nil {
-                self?.folderItemCount[botId] = count
+        // A directory scan never runs on the main actor: attaching a large
+        // folder must not jank the composer it is attached from.
+        Task.detached { [weak self] in
+            let count = Self.folderEntryCount(atPath: path)
+            await MainActor.run { [weak self] in
+                if let count, self?.folderItemCount[botId] == nil {
+                    self?.folderItemCount[botId] = count
+                }
             }
         }
     }
 
-    /// Shallow count of a folder's entries; nil when the folder vanished.
-    private func folderEntryCount(of url: URL) -> Int? {
-        let entries = (try? FileManager.default.contentsOfDirectory(
+    /// Shallow count of a folder's entries; nil when it cannot be read.
+    private nonisolated static func folderEntryCount(atPath path: String) -> Int? {
+        let url = URL(fileURLWithPath: path)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: nil
-        ))
-        return entries?.count
+        ) else { return nil }
+        return entries.count
     }
 }

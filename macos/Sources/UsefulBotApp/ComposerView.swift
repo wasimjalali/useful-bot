@@ -87,7 +87,7 @@ struct ComposerView: View {
         !Attachments.formatMessage(model.draft, files: model.attachments).isEmpty
     }
 
-    private var workspace: BotWorkspace? { model.selectedBot?.workspace }
+    private var workspace: BotWorkspace? { bot.workspace }
 
     private var stacked: Bool { !model.attachments.isEmpty || workspace != nil }
 
@@ -326,7 +326,9 @@ struct ComposerView: View {
                     .font(.system(size: 12))
                 Text(workspace?.folderName ?? "Project")
                     .lineLimit(1)
-                    .frame(maxWidth: 140, alignment: .leading)
+                    // The cap belongs to a real folder name only; a bare
+                    // "Project" chip keeps its label and chevron adjacent.
+                    .frame(maxWidth: workspace != nil ? 140 : nil, alignment: .leading)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .medium))
             }
@@ -803,18 +805,38 @@ private struct ComposerModeMenu: View {
     let onSave: (_ patch: ComposerPatch) -> Void
 
     @State private var flyout: Flyout?
+    @State private var hoverTask: Task<Void, Never>?
 
     enum Flyout {
         case effort
         case model
     }
 
+    /// Hover delay before the flyout opens; instant pops read as flicker.
+    private static let hoverDelay: Duration = .milliseconds(500)
+
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
+        HStack(alignment: .bottom, spacing: 6) {
             if flyout != nil {
                 flyoutCard
             }
             card
+        }
+        // The flyout persists on purpose: it opened because the pointer
+        // hovered a row, and it only leaves when a selection is made, the
+        // menu closes, or the pointer hovers the other row.
+        .onHover { hovering in
+            if !hovering { hoverTask?.cancel() }
+        }
+    }
+
+    /// Open (or switch) the flyout after the hover settles.
+    private func hover(_ target: Flyout) {
+        hoverTask?.cancel()
+        hoverTask = Task {
+            try? await Task.sleep(for: Self.hoverDelay)
+            guard !Task.isCancelled else { return }
+            flyout = target
         }
     }
 
@@ -836,7 +858,7 @@ private struct ComposerModeMenu: View {
                 }
             }
             if !composer.efforts.isEmpty {
-                MenuRowButton(action: { flyout = flyout == .effort ? nil : .effort }) {
+                MenuRowButton(action: { flyout = .effort }) {
                     HStack {
                         Text("Effort")
                             .font(.system(size: 13))
@@ -854,11 +876,15 @@ private struct ComposerModeMenu: View {
                     .frame(maxWidth: .infinity)
                     .background(flyout == .effort ? Theme.C.sunken : .clear)
                 }
+                .onHover { hovering in
+                    guard hovering else { return }
+                    hover(.effort)
+                }
             }
             Rectangle()
                 .fill(Theme.C.border)
                 .frame(height: 1)
-            MenuRowButton(action: { flyout = flyout == .model ? nil : .model }) {
+            MenuRowButton(action: { flyout = .model }) {
                 HStack {
                     Text("Model")
                         .font(.system(size: 13))
@@ -876,6 +902,10 @@ private struct ComposerModeMenu: View {
                 .frame(height: 36)
                 .frame(maxWidth: .infinity)
                 .background(flyout == .model ? Theme.C.sunken : .clear)
+            }
+            .onHover { hovering in
+                guard hovering else { return }
+                hover(.model)
             }
         }
         .frame(width: 232)
@@ -916,7 +946,7 @@ private struct ComposerModeMenu: View {
                         }
                     }
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: 240)
             case .model:
                 ModelFlyout(composer: composer, onSave: onSave, onOpenProviders: onOpenProviders)
             case .none:

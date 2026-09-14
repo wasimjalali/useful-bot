@@ -15,7 +15,16 @@ export default defineTool({
   execute(input, ctx) {
     const { root } = effectiveRoot(ctx?.session?.id);
     const target = resolveWorkspacePath(input.path, root);
-    const raw = readFileSync(target, "utf8");
+    let raw: string;
+    try {
+      raw = readFileSync(target, "utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") throw new Error("path_missing");
+      if (code === "EISDIR") throw new Error("path_not_file");
+      if (code === "EACCES") throw new Error("path_unreadable");
+      throw error;
+    }
     const offset = input.offset ?? 0;
     // An offset past the end returns no text; without a flag that is
     // indistinguishable from a genuinely empty file.

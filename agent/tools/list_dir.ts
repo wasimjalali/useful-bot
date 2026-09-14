@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { effectiveRoot, resolveWorkspacePath } from "../lib/workspace.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -10,7 +10,8 @@ const LIST_MAX_ENTRIES = 500;
 /**
  * Read-only listing of the workspace this conversation works in. Bounded the
  * same way read_file is: a cap on entries, no recursion here (the agent asks
- * per directory), and every name goes out wrapped as untrusted data.
+ * per directory), no symlink following (a link reports as `link`, it is never
+ * entered or sized), and every row goes out wrapped as untrusted data.
  */
 export default defineTool({
   description: "List a folder in the workspace this conversation works in.",
@@ -21,19 +22,34 @@ export default defineTool({
   execute(input, ctx) {
     const { root } = effectiveRoot(ctx?.session?.id);
     const target = resolveWorkspacePath(input.path || ".", root);
-    const stat = statSync(target);
-    if (!stat.isDirectory()) {
-      throw new Error("path_not_directory");
+    let stat;
+    try {
+      stat = lstatSync(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("path_missing");
+      throw error;
     }
+    if (stat.isSymbolicLink()) throw new Error("path_symlink");
+    if (!stat.isDirectory()) throw new Error("path_not_directory");
     const limit = Math.min(input.limit ?? LIST_MAX_ENTRIES, LIST_MAX_ENTRIES);
-    const names = readdirSync(target).sort();
+    let names: string[];
+    try {
+      names = readdirSync(target).sort();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES") throw new Error("path_unreadable");
+      throw error;
+    }
     const truncated = names.length > limit;
     const entries = names.slice(0, limit).map((name) => {
       let kind = "file";
       let size: number | null = null;
       try {
-        const entry = statSync(join(target, name));
-        kind = entry.isDirectory() ? "directory" : "file";
+        const entry = lstatSync(join(target, name));
+        kind = entry.isSymbolicLink()
+          ? "link"
+          : entry.isDirectory()
+            ? "directory"
+            : "file";
         if (kind === "file") size = entry.size;
       } catch {
         kind = "unknown";

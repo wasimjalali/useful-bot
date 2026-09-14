@@ -1,8 +1,8 @@
 import { resolve, relative, isAbsolute, join } from "node:path";
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { isGrantableRootPath } from "../../shared/shell-store.ts";
 import {
-  parseWorkspacePermission,
   readSessionGrant,
   type SessionGrant,
   type WorkspacePermission,
@@ -19,26 +19,40 @@ export function workspaceRoot(): string {
 }
 
 /**
- * The folder a conversation works in. A session grant (a folder the owner
- * picked in the desktop app) wins; without one the legacy process-global
- * `UB_WORKSPACE_ROOT` applies, and without either the file tools refuse.
+ * The folder a conversation works in, verified at tool time. The grant is
+ * read ONCE here: pairing a root from one read with a permission from
+ * another is a race a concurrent permission change could exploit. A root
+ * that is itself a symlink, or whose path segments name a credential store,
+ * is refused here regardless of what any route accepted earlier.
  */
-export function effectiveRoot(sessionId?: string): {
-  root: string;
-  grant: SessionGrant | null;
-} {
+export function effectiveRoot(sessionId?: string): { root: string; grant: SessionGrant | null } {
   const grant = sessionId ? readSessionGrant(sessionId) : null;
-  if (grant) return { root: resolve(grant.path), grant };
-  return { root: workspaceRoot(), grant: null };
+  if (!grant) return { root: workspaceRoot(), grant: null };
+  assertSafeRoot(grant.path);
+  return { root: resolve(grant.path), grant };
 }
 
 /**
- * The permission a session holds, `null` when no grant exists (the legacy
- * workspace keeps the always-approval posture).
+ * The root is a capability, so the tool re-checks it at call time: not a
+ * symlink, a real directory, and not a folder whose own name is a
+ * credential store. The route validated this at attach time; paths can be
+ * swapped afterwards.
  */
-export function sessionPermission(sessionId?: string): WorkspacePermission | null {
-  const grant = sessionId ? readSessionGrant(sessionId) : null;
-  return grant ? parseWorkspacePermission(grant.permission) : null;
+export function assertSafeRoot(path: string): string {
+  if (!isGrantableRootPath(path)) throw new Error("workspace_path_forbidden");
+  let root = resolve(path);
+  let stat;
+  try {
+    stat = lstatSync(root);
+  } catch {
+    throw new Error("workspace_root_missing");
+  }
+  if (stat.isSymbolicLink()) throw new Error("workspace_root_symlink");
+  if (!stat.isDirectory()) throw new Error("workspace_root_not_directory");
+  // resolve() is lexical; realpath sees through anything a component above
+  // might hide. A root that is not what it says it is must not be used.
+  if (realpathSync(root) !== root) throw new Error("workspace_root_symlink");
+  return root;
 }
 
 /**

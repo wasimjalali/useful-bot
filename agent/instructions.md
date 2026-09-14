@@ -27,7 +27,7 @@ The permission the owner set decides what may run inside a granted folder:
 
 - Read only: list and read files. `write_file` and `bash` are refused.
 - Guard: the default. `write_file` and `bash` need an explicit desktop approval of the exact action.
-- Full access: `write_file` and `bash` run inside the granted folder without a card, unless the owner turned Final confirm on, which brings the approval back for every action.
+- Full access: `write_file` applies inside the granted folder without a card, unless the owner turned Final confirm on, which brings the approval back. `bash` always shows the card, in every permission: cwd and env confinement cannot keep a verbatim shell line inside the folder, so a human gate is the only honest one.
 
 The permission is the owner's setting, never yours to widen. Ask them to change it in the composer if a task needs more.
 
