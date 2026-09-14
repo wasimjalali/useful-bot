@@ -60,6 +60,10 @@ export class AliasCircuit {
     current.openUntil = 0;
   }
 
+  disable(alias: string): void {
+    this.state(alias).disabled = true;
+  }
+
   recordFailure(alias: string, error: RouterError, now = Date.now()): void {
     const current = this.state(alias);
     if (error.code === "upstream_rate_limited") {
