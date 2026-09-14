@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   ApprovalStore,
   actionSha256,
+  approvalActor,
   executeIfApproved,
   waitUntilNotPending,
 } from "../agent/lib/approvals.ts";
@@ -20,6 +21,14 @@ function hashFor(args: string) {
     toolVersion: "1",
   });
 }
+
+test("approval attribution falls back to live and threads tool context", () => {
+  assert.deepEqual(approvalActor(), { sessionId: "live", turnId: "live", toolCallId: "live" });
+  assert.deepEqual(
+    approvalActor({ session: { id: "ses_1", turn: { id: "turn_1" } }, callId: "call_1" }),
+    { sessionId: "ses_1", turnId: "turn_1", toolCallId: "call_1" },
+  );
+});
 
 test("file-backed store shares request decide and consume across instances", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");

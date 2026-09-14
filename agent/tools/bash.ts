@@ -3,7 +3,7 @@ import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { workspaceRoot } from "../lib/workspace.ts";
-import { actionSha256, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
 
@@ -33,7 +33,7 @@ export default defineTool({
     command: z.string().min(1).max(8192),
     timeoutMs: z.number().int().min(1).max(60_000).optional(),
   }),
-  async execute(input) {
+  async execute(input, ctx) {
     const blocked = blockedReason(input.command);
     if (blocked) {
       return { status: "blocked", error: blocked };
@@ -49,9 +49,7 @@ export default defineTool({
     });
     const store = getApprovalStore();
     const rec = store.request({
-      sessionId: "live",
-      turnId: "live",
-      toolCallId: "live",
+      ...approvalActor(ctx),
       tool: "bash",
       actionSha256: hash,
       preview: input.command,

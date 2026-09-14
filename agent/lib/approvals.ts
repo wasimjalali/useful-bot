@@ -71,6 +71,24 @@ export type PendingApproval = Pick<
   "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt"
 >;
 
+/** The subset of an eve ToolContext an approval record needs for attribution. */
+export interface ApprovalActorContext {
+  session?: { id?: string; turn?: { id?: string } };
+  callId?: string;
+}
+
+export function approvalActor(ctx?: ApprovalActorContext): {
+  sessionId: string;
+  turnId: string;
+  toolCallId: string;
+} {
+  return {
+    sessionId: ctx?.session?.id ?? "live",
+    turnId: ctx?.session?.turn?.id ?? "live",
+    toolCallId: ctx?.callId ?? "live",
+  };
+}
+
 export function defaultApprovalsPath(): string {
   if (process.env.UB_APPROVALS_PATH) return process.env.UB_APPROVALS_PATH;
   return join(homedir(), ".useful-bot", "approvals.json");
