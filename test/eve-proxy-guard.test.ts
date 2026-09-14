@@ -21,6 +21,18 @@ test("eve proxy allowlists stream get and session posts", () => {
   assert.equal(evePostAllowed("health"), false);
 });
 
+test("eve proxy rejects traversal and out-of-charset session ids", () => {
+  assert.equal(evePostAllowed("session/.."), false);
+  assert.equal(eveGetAllowed("session/../stream"), false);
+  assert.equal(evePostAllowed("session/."), false);
+  assert.equal(evePostAllowed("session/../../health"), false);
+  assert.equal(evePostAllowed("session/a.b"), false);
+  assert.equal(eveGetAllowed("session/a b/stream"), false);
+  // Real identifiers (uuid, dashed slug) stay allowed.
+  assert.equal(evePostAllowed("session/00000000-0000-4000-8000-000000000002"), true);
+  assert.equal(evePostAllowed("session/sess-old"), true);
+});
+
 test("turn rewrite prefixes specialist bots and drops the routing botId", () => {
   assert.equal(threadPrefix({ bot: null }), "");
   const bot = {

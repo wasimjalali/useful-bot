@@ -1,5 +1,4 @@
-import { readSession } from "../../../../lib/auth";
-import { originAllowed } from "../../../../lib/desktop-gate";
+import { isGateError, requireDesktop } from "../../../../lib/desktop-gate";
 import {
   eveGetAllowed,
   evePostAllowed,
@@ -30,17 +29,15 @@ export async function POST(
 }
 
 async function proxy(request: Request, params: { path: string[] }, method: string): Promise<Response> {
-  const session = await readSession();
-  if (!session) {
-    return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  }
+  // Only the owner desktop session may reach eve: a device/router credential
+  // minted a browser session must not get a chat-completions proxy.
+  const gate = await requireDesktop(request);
+  if (isGateError(gate)) return gate.error;
+  const session = gate.session;
   const suffix = params.path.join("/");
   const allowed = method === "GET" ? eveGetAllowed(suffix) : evePostAllowed(suffix);
   if (!allowed) {
     return Response.json({ ok: false, error: "not found" }, { status: 404 });
-  }
-  if (!originAllowed(request)) {
-    return Response.json({ ok: false, error: "origin" }, { status: 403 });
   }
   if (method !== "GET") {
     const csrf = request.headers.get("x-ub-csrf");
