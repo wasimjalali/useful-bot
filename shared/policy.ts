@@ -25,6 +25,20 @@ export const CALLER_LIMITS = {
   ops: { aliases: [], search: false, rpm: 30, requests24h: 0, input24h: 0, output24h: 0 },
 } as const;
 
+// Aggregate ceiling shared by every model caller, not a subscription entitlement.
+export const AGGREGATE_LIMITS = {
+  requests24h: 300,
+  input24h: 3_000_000,
+  output24h: 400_000,
+} as const;
+
+export const MAX_ACTIVE_UPSTREAM = 2;
+export const MAX_ACTIVE_PER_CALLER = 1;
+
+export const MAX_MESSAGE_COUNT = 256;
+export const MAX_TOOL_SCHEMAS = 32;
+export const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
+
 export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".env",
   "secrets",

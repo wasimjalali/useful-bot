@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { BODY_LIMIT_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
+import { BODY_LIMIT_BYTES, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
 import { AuthTable } from "./auth.ts";
 import { AliasCircuit } from "./circuit.ts";
+import { ConcurrencyGate } from "./concurrency.ts";
 import { RouterError, errorBody } from "./errors.ts";
-import { LimitStore } from "./limits.ts";
+import { LimitStore, estimateInputUnits } from "./limits.ts";
 import { entryFor, loadRegistry } from "./registry.ts";
 import { search } from "./search.ts";
 import { completeUpstream } from "./upstreams/opencode.ts";
@@ -219,59 +220,132 @@ function headerUuid(req: IncomingMessage, name: string): string {
   return value;
 }
 
+function validationError(code: string): RouterError {
+  return new RouterError({
+    status: 400,
+    type: "invalid_request_error",
+    code,
+    message: code,
+  });
+}
+
+const ALLOWED_MESSAGE_ROLES = new Set(["system", "user", "assistant", "tool"]);
+
+function validateTools(tools: unknown): void {
+  if (tools === undefined) return;
+  if (!Array.isArray(tools)) throw validationError("unsupported_parameter");
+  if (tools.length > MAX_TOOL_SCHEMAS) throw validationError("unsupported_parameter");
+  if (Buffer.byteLength(JSON.stringify(tools), "utf8") > MAX_TOOL_SCHEMA_BYTES) {
+    throw validationError("unsupported_parameter");
+  }
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") throw validationError("unsupported_parameter");
+    const rec = tool as Record<string, unknown>;
+    const fn = rec.function;
+    if (rec.type !== "function" || !fn || typeof fn !== "object") {
+      throw validationError("unsupported_parameter");
+    }
+    if (typeof (fn as Record<string, unknown>).name !== "string") {
+      throw validationError("unsupported_parameter");
+    }
+  }
+}
+
+function validateToolChoice(choice: unknown): void {
+  if (choice === undefined) return;
+  if (choice === "auto" || choice === "none" || choice === "required") return;
+  if (choice && typeof choice === "object") {
+    const rec = choice as Record<string, unknown>;
+    const fn = rec.function;
+    if (rec.type === "function" && fn && typeof fn === "object" && typeof (fn as Record<string, unknown>).name === "string") {
+      return;
+    }
+  }
+  throw validationError("unsupported_parameter");
+}
+
+/**
+ * Text-only message history per SPEC.md:151. Rejects multimodal content and
+ * validates tool-call identity and outstanding-call references before any
+ * dispatch so a malformed history never reaches the upstream.
+ */
+function validateMessages(messages: unknown[]): void {
+  if (messages.length > MAX_MESSAGE_COUNT) throw validationError("unsupported_parameter");
+  const outstanding = new Set<string>();
+  for (const item of messages) {
+    if (!item || typeof item !== "object") throw validationError("invalid_request");
+    const message = item as Record<string, unknown>;
+    const role = message.role;
+    if (typeof role !== "string" || !ALLOWED_MESSAGE_ROLES.has(role)) {
+      throw validationError("invalid_request");
+    }
+    if (Array.isArray(message.content)) throw validationError("unsupported_parameter");
+    if (message.content !== undefined && message.content !== null && typeof message.content !== "string") {
+      throw validationError("invalid_request");
+    }
+    if (message.reasoning_content !== undefined && typeof message.reasoning_content !== "string") {
+      throw validationError("invalid_request");
+    }
+    if (role === "assistant" && message.tool_calls !== undefined) {
+      if (!Array.isArray(message.tool_calls)) throw validationError("invalid_request");
+      for (const call of message.tool_calls) {
+        if (!call || typeof call !== "object") throw validationError("invalid_tool_history");
+        const entry = call as Record<string, unknown>;
+        if (typeof entry.id !== "string" || entry.id.length === 0 || outstanding.has(entry.id)) {
+          throw validationError("invalid_tool_history");
+        }
+        const fn = entry.function;
+        if (!fn || typeof fn !== "object" || typeof (fn as Record<string, unknown>).name !== "string") {
+          throw validationError("invalid_request");
+        }
+        outstanding.add(entry.id);
+      }
+    }
+    if (role === "tool") {
+      const toolCallId = message.tool_call_id;
+      if (typeof toolCallId !== "string" || toolCallId.length === 0 || !outstanding.has(toolCallId)) {
+        throw validationError("invalid_tool_history");
+      }
+      outstanding.delete(toolCallId);
+    }
+  }
+}
+
 function validateCompletion(body: unknown): { model: string; stream: boolean; max_tokens?: number } {
-  if (!body || typeof body !== "object") {
-    throw new RouterError({
-      status: 400,
-      type: "invalid_request_error",
-      code: "invalid_request",
-      message: "invalid_request",
-    });
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw validationError("invalid_request");
   }
   const rec = body as Record<string, unknown>;
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_COMPLETION_KEYS.has(key)) {
-      throw new RouterError({
-        status: 400,
-        type: "invalid_request_error",
-        code: "unsupported_parameter",
-        message: "unsupported_parameter",
-      });
+      throw validationError("unsupported_parameter");
     }
   }
   if (rec.n !== undefined && rec.n !== 1) {
-    throw new RouterError({
-      status: 400,
-      type: "invalid_request_error",
-      code: "unsupported_parameter",
-      message: "unsupported_parameter",
-    });
+    throw validationError("unsupported_parameter");
   }
   if (typeof rec.model !== "string") {
-    throw new RouterError({
-      status: 400,
-      type: "invalid_request_error",
-      code: "unknown_alias",
-      message: "unknown_alias",
-    });
+    throw validationError("unknown_alias");
   }
   if (!Array.isArray(rec.messages)) {
-    throw new RouterError({
-      status: 400,
-      type: "invalid_request_error",
-      code: "invalid_request",
-      message: "messages required",
-    });
+    throw validationError("invalid_request");
+  }
+  validateMessages(rec.messages);
+  validateTools(rec.tools);
+  validateToolChoice(rec.tool_choice);
+  if (rec.parallel_tool_calls !== undefined && rec.parallel_tool_calls !== false) {
+    throw validationError("unsupported_parameter");
+  }
+  if (rec.stream_options !== undefined) {
+    const options = rec.stream_options;
+    if (!options || typeof options !== "object" || (options as Record<string, unknown>).include_usage !== true) {
+      throw validationError("unsupported_parameter");
+    }
   }
   const stream = rec.stream === true;
   const maxTokens = rec.max_tokens;
   if (maxTokens !== undefined && (typeof maxTokens !== "number" || maxTokens < 1 || maxTokens > 4096)) {
-    throw new RouterError({
-      status: 400,
-      type: "invalid_request_error",
-      code: "invalid_request",
-      message: "max_tokens",
-    });
+    throw validationError("invalid_request");
   }
   return { model: rec.model, stream, max_tokens: typeof maxTokens === "number" ? maxTokens : undefined };
 }
@@ -288,6 +362,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
   const registry = loadRegistry(lockPath);
   const limits = new LimitStore(dbPath);
   const circuit = new AliasCircuit();
+  const concurrency = new ConcurrencyGate();
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -360,104 +435,105 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         const body = parseJsonBody(raw);
         const parsed = validateCompletion(body);
         const alias = auth.assertAlias(caller, parsed.model);
-        limits.rememberRequest(stepId, caller.callerId, Date.now());
-        limits.hit(caller, Date.now());
         const entry = entryFor(registry, alias);
-        const controller = new AbortController();
-        res.on("close", () => {
-          if (!res.writableEnded) {
-            controller.abort(new Error("client_disconnect"));
-            res.destroy();
-          }
-        });
-        const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
         circuit.assertClosed(entry.alias);
-        let upstream: Awaited<ReturnType<typeof completeUpstream>>;
+        concurrency.acquire(caller.callerId);
         try {
-          upstream = await completeUpstream({
-            entry,
-            body,
-            sessionId,
-            callerId: caller.callerId,
-            signal,
+          limits.rememberRequest(stepId, caller.callerId, Date.now());
+          const reservationId = limits.reserve({
+            caller,
+            alias: entry.alias,
+            inputUnits: estimateInputUnits(body),
+            outputUnits: parsed.max_tokens ?? entry.maxOutputTokens,
+            now: Date.now(),
           });
-        } catch (error) {
-          if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
-          throw error;
-        }
-        circuit.recordSuccess(entry.alias);
-        const outHeaders: Record<string, string> = {
-          "x-useful-request-id": stepId,
-          "x-useful-upstream-model": upstream.model,
-          "x-useful-upstream-provider": upstream.providerId,
-        };
-        if (upstream.fallback) {
-          outHeaders["x-useful-upstream-fallback"] = upstream.providerId;
-          log({ request_id: requestId, event: "upstream_fallback", alias: entry.alias, provider: upstream.providerId });
-        }
-        void turnId;
-        const record = (usage: { inputTokens: number; outputTokens: number } | null) => {
-          if (!usage || upstream.response.status >= 400) return;
-          limits.recordUsage({
-            callerId: caller.callerId,
-            provider: upstream.providerId,
-            model: upstream.model,
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            at: Date.now(),
+          const controller = new AbortController();
+          res.on("close", () => {
+            if (!res.writableEnded) {
+              controller.abort(new Error("client_disconnect"));
+              res.destroy();
+            }
           });
-        };
-        if (parsed.stream) {
-          const writeHeaders = () => {
-            res.writeHead(upstream.response.status, {
-              "content-type": "text/event-stream",
-              "cache-control": "no-store",
-              ...outHeaders,
-            });
-          };
-          if (!upstream.response.body) {
-            writeHeaders();
-            res.end();
-            return;
-          }
-          const reader = upstream.response.body.getReader();
-          const decoder = new TextDecoder();
-          let leftover = "";
-          let firstEvent = false;
-          let idleTimer: NodeJS.Timeout | undefined;
-          const armIdle = (ms: number) => {
-            clearTimeout(idleTimer);
-            idleTimer = setTimeout(() => controller.abort(new Error("idle_timeout")), ms);
-          };
-          armIdle(FIRST_EVENT_MS);
+          const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
+          let upstream: Awaited<ReturnType<typeof completeUpstream>>;
           try {
-            while (true) {
-              let chunk: Uint8Array;
-              try {
-                const result = await reader.read();
-                if (result.done) break;
-                chunk = result.value;
-              } catch (error) {
-                const kind = abortKind(signal);
-                if (kind === "client") return;
-                if (kind === "idle") throw timeoutError(firstEvent);
-                if (kind === "total") throw timeoutError(false);
-                throw error;
-              }
+            upstream = await completeUpstream({
+              entry,
+              body,
+              sessionId,
+              callerId: caller.callerId,
+              signal,
+            });
+          } catch (error) {
+            if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
+            throw error;
+          }
+          circuit.recordSuccess(entry.alias);
+          const outHeaders: Record<string, string> = {
+            "x-useful-request-id": stepId,
+            "x-useful-upstream-model": upstream.model,
+            "x-useful-upstream-provider": upstream.providerId,
+          };
+          if (upstream.fallback) {
+            outHeaders["x-useful-upstream-fallback"] = upstream.providerId;
+            log({ request_id: requestId, event: "upstream_fallback", alias: entry.alias, provider: upstream.providerId });
+          }
+          void turnId;
+          const record = (usage: { inputTokens: number; outputTokens: number } | null) => {
+            if (!usage || upstream.response.status >= 400) return;
+            const reconciled = limits.reconcile(
+              reservationId,
+              usage,
+              { provider: upstream.providerId, model: upstream.model },
+              Date.now(),
+            );
+            if (reconciled.overrun) {
+              circuit.disable(entry.alias);
+              log({ request_id: requestId, event: "reservation_overrun", alias: entry.alias });
+            }
+          };
+          if (parsed.stream) {
+            const writeHeaders = () => {
+              res.writeHead(upstream.response.status, {
+                "content-type": "text/event-stream",
+                "cache-control": "no-store",
+                ...outHeaders,
+              });
+            };
+            if (!upstream.response.body) {
+              writeHeaders();
+              res.end();
+              return;
+            }
+            const reader = upstream.response.body.getReader();
+            const decoder = new TextDecoder();
+            let leftover = "";
+            let firstEvent = false;
+            let idleTimer: NodeJS.Timeout | undefined;
+            const armIdle = (ms: number) => {
               clearTimeout(idleTimer);
-              leftover += decoder.decode(chunk, { stream: true });
-              const parts = leftover.split(/\r?\n\r?\n/);
-              leftover = parts.pop() ?? "";
-              if (Buffer.byteLength(leftover, "utf8") > MAX_EVENT_BYTES) {
-                throw new RouterError({
-                  status: 502,
-                  type: "upstream_error",
-                  code: "upstream_protocol_error",
-                  message: "upstream event too large",
-                });
-              }
-              for (const part of parts) {
-                if (Buffer.byteLength(part, "utf8") > MAX_EVENT_BYTES) {
+              idleTimer = setTimeout(() => controller.abort(new Error("idle_timeout")), ms);
+            };
+            armIdle(FIRST_EVENT_MS);
+            try {
+              while (true) {
+                let chunk: Uint8Array;
+                try {
+                  const result = await reader.read();
+                  if (result.done) break;
+                  chunk = result.value;
+                } catch (error) {
+                  const kind = abortKind(signal);
+                  if (kind === "client") return;
+                  if (kind === "idle") throw timeoutError(firstEvent);
+                  if (kind === "total") throw timeoutError(false);
+                  throw error;
+                }
+                clearTimeout(idleTimer);
+                leftover += decoder.decode(chunk, { stream: true });
+                const parts = leftover.split(/\r?\n\r?\n/);
+                leftover = parts.pop() ?? "";
+                if (Buffer.byteLength(leftover, "utf8") > MAX_EVENT_BYTES) {
                   throw new RouterError({
                     status: 502,
                     type: "upstream_error",
@@ -465,43 +541,66 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                     message: "upstream event too large",
                   });
                 }
-                const usage = usageFromSseBlock(part);
-                if (usage) record(usage);
-              }
-              if (!firstEvent) {
-                firstEvent = true;
-                writeHeaders();
-              }
-              if (!res.write(Buffer.from(chunk))) {
-                try {
-                  await waitForDrain(res, signal);
-                } catch (error) {
-                  if (error instanceof RouterError) throw error;
-                  const kind = abortKind(signal);
-                  if (kind === "client") return;
-                  if (kind === "idle") throw timeoutError(true);
-                  if (kind === "total") throw timeoutError(false);
-                  throw error;
+                for (const part of parts) {
+                  if (Buffer.byteLength(part, "utf8") > MAX_EVENT_BYTES) {
+                    throw new RouterError({
+                      status: 502,
+                      type: "upstream_error",
+                      code: "upstream_protocol_error",
+                      message: "upstream event too large",
+                    });
+                  }
+                  const usage = usageFromSseBlock(part);
+                  if (usage) record(usage);
                 }
+                if (!firstEvent) {
+                  firstEvent = true;
+                  writeHeaders();
+                }
+                if (!res.write(Buffer.from(chunk))) {
+                  try {
+                    await waitForDrain(res, signal);
+                  } catch (error) {
+                    if (error instanceof RouterError) throw error;
+                    const kind = abortKind(signal);
+                    if (kind === "client") return;
+                    if (kind === "idle") throw timeoutError(true);
+                    if (kind === "total") throw timeoutError(false);
+                    throw error;
+                  }
+                }
+                armIdle(IDLE_EVENT_MS);
               }
-              armIdle(IDLE_EVENT_MS);
+            } finally {
+              clearTimeout(idleTimer);
             }
-          } finally {
-            clearTimeout(idleTimer);
+            if (!firstEvent) writeHeaders();
+            res.end();
+            return;
           }
-          if (!firstEvent) writeHeaders();
-          res.end();
+          const firstByteTimer = setTimeout(() => controller.abort(new Error("idle_timeout")), FIRST_EVENT_MS);
+          let text: string;
+          try {
+            text = await readCapped(upstream.response, UPSTREAM_BODY_LIMIT_BYTES);
+          } catch (error) {
+            const kind = abortKind(signal);
+            if (kind === "client") return;
+            if (kind === "idle" || kind === "total") throw timeoutError(false);
+            throw error;
+          } finally {
+            clearTimeout(firstByteTimer);
+          }
+          let json: unknown = text;
+          try { json = JSON.parse(text); } catch { /* keep */ }
+          if (json && typeof json === "object" && json !== null && "model" in json) {
+            (json as { model: string }).model = parsed.model;
+          }
+          record(usageFromPayload(json));
+          send(res, upstream.response.status, json, outHeaders);
           return;
+        } finally {
+          concurrency.release(caller.callerId);
         }
-        const text = await readCapped(upstream.response, UPSTREAM_BODY_LIMIT_BYTES);
-        let json: unknown = text;
-        try { json = JSON.parse(text); } catch { /* keep */ }
-        if (json && typeof json === "object" && json !== null && "model" in json) {
-          (json as { model: string }).model = parsed.model;
-        }
-        record(usageFromPayload(json));
-        send(res, upstream.response.status, json, outHeaders);
-        return;
       }
       if (req.method === "GET" && url.pathname === "/v1/usage") {
         send(res, 200, caller.profile === "ops" ? limits.summarize() : limits.summarize(caller.callerId));
