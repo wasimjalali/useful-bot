@@ -162,12 +162,10 @@ public enum TranscriptBlocks {
         timeZone: TimeZone = .current,
         locale: Locale = .current
     ) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.timeZone = timeZone
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        DateFormatterCache.shared.string(
+            from: date,
+            key: .init(template: nil, calendar: nil, timeZone: timeZone, locale: locale)
+        )
     }
 
     /// Parse the server's `new Date().toISOString()`, with and without the
@@ -197,12 +195,10 @@ public enum TranscriptBlocks {
         timeZone: TimeZone,
         locale: Locale
     ) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.calendar = calendar
-        formatter.timeZone = timeZone
-        formatter.setLocalizedDateFormatFromTemplate(format)
-        return formatter.string(from: date)
+        DateFormatterCache.shared.string(
+            from: date,
+            key: .init(template: format, calendar: calendar, timeZone: timeZone, locale: locale)
+        )
     }
 
     /// Preserve first-seen order while removing repeats, so a merged fan-out
@@ -214,5 +210,41 @@ public enum TranscriptBlocks {
             if seen.insert(id).inserted { result.append(id) }
         }
         return result
+    }
+}
+
+/// Every bubble formats its own stamp on every rebuild, and building the
+/// formatter is the expensive part; keep one per locale, time zone, calendar
+/// and template behind a lock instead of one per call.
+private final class DateFormatterCache: @unchecked Sendable {
+    struct Key: Hashable {
+        /// A localized date template, or nil for the short time style.
+        let template: String?
+        let calendar: Calendar?
+        let timeZone: TimeZone
+        let locale: Locale
+    }
+
+    static let shared = DateFormatterCache()
+
+    private let lock = NSLock()
+    private var formatters: [Key: DateFormatter] = [:]
+
+    func string(from date: Date, key: Key) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        if let formatter = formatters[key] { return formatter.string(from: date) }
+        let formatter = DateFormatter()
+        formatter.locale = key.locale
+        if let calendar = key.calendar { formatter.calendar = calendar }
+        formatter.timeZone = key.timeZone
+        if let template = key.template {
+            formatter.setLocalizedDateFormatFromTemplate(template)
+        } else {
+            formatter.dateStyle = .none
+            formatter.timeStyle = .short
+        }
+        formatters[key] = formatter
+        return formatter.string(from: date)
     }
 }
