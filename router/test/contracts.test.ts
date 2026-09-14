@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRouter } from "../src/index.ts";
 import { LimitStore } from "../src/limits.ts";
+import { ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs } from "../src/retry-after.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
@@ -534,6 +535,140 @@ test("hit enforces 24h token budgets", () => {
   const now = Date.now();
   store.recordUsage({ callerId: "desktop", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 0, outputTokens: 200_000, at: now });
   assert.throws(() => store.hit(caller, now), /caller_budget_exhausted/);
+});
+
+test("hit enforces the aggregate 24h token budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "phone", profile: "phone" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  store.recordUsage({ callerId: "ghost", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 3_000_000, outputTokens: 0, at: now });
+  assert.throws(() => store.hit(caller, now), /global_budget_exhausted/);
+});
+
+test("reserve charges a ledger entry and reconcile records observed usage", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  const id = store.reserve({ caller, alias: "workhorse", inputUnits: 1000, outputUnits: 4096, now });
+  let meter = store.summarize("desktop", now);
+  assert.equal(meter.reserved_input_tokens, 1000);
+  assert.equal(meter.reserved_output_tokens, 4096);
+  const reconciled = store.reconcile(id, { inputTokens: 11, outputTokens: 4 }, { provider: "opencode-go", model: "glm-5.3-flash" }, now);
+  assert.equal(reconciled.overrun, false);
+  meter = store.summarize("desktop", now);
+  assert.equal(meter.reserved_input_tokens, 0);
+  assert.equal(meter.observed_input_tokens, 11);
+  assert.equal(meter.observed_output_tokens, 4);
+});
+
+test("observed usage above a reservation is an overrun", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  const id = store.reserve({ caller, alias: "workhorse", inputUnits: 10, outputUnits: 10, now });
+  const reconciled = store.reconcile(id, { inputTokens: 10, outputTokens: 99 }, { provider: "opencode-go", model: "glm-5.3-flash" }, now);
+  assert.equal(reconciled.overrun, true);
+  assert.equal(reconciled.alias, "workhorse");
+});
+
+test("concurrency gate allows two upstream requests and one per caller", () => {
+  const gate = new ConcurrencyGate();
+  gate.acquire("a");
+  assert.throws(() => gate.acquire("a"), /session_busy/);
+  gate.acquire("b");
+  assert.throws(() => gate.acquire("c"), /global_budget_exhausted/);
+  gate.release("a");
+  gate.acquire("c");
+  gate.release("b");
+  gate.release("c");
+  gate.acquire("d");
+  gate.release("d");
+});
+
+test("multimodal message content is rejected", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "http://127.0.0.1/x.png" } }] }],
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "unsupported_parameter");
+  });
+});
+
+test("a tool message without an outstanding call is invalid history", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [{ role: "tool", tool_call_id: randomUUID(), content: "result" }],
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "invalid_tool_history");
+  });
+});
+
+test("duplicate tool call ids are invalid history", async () => {
+  await withRouter(async (base, tokens) => {
+    const callId = randomUUID();
+    const call = { id: callId, type: "function", function: { name: "f", arguments: "{}" } };
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [
+          { role: "assistant", tool_calls: [call, call] },
+        ],
+      }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "invalid_tool_history");
+  });
+});
+
+test("more than 32 tool schemas is rejected", async () => {
+  const tools = Array.from({ length: 33 }, (_, index) => ({
+    type: "function",
+    function: { name: `f${index}`, parameters: {} },
+  }));
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], tools }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.code, "unsupported_parameter");
+  });
+});
+
+test("a well formed tool call and result is accepted", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({
+        model: "workhorse",
+        messages: [
+          { role: "assistant", tool_calls: [{ id: "call-1", type: "function", function: { name: "f", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "call-1", content: "result" },
+          { role: "user", content: "continue" },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+  });
 });
 
 test("upstream config errors keep their distinct code", () => {
