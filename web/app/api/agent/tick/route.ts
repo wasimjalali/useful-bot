@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { isGateError, originAllowed, requireDesktop } from "../../../../lib/desktop-gate";
+import { rateLimited } from "../../../../lib/api-guard";
 import {
   agentsEnabled,
   handoffsInFlight,
@@ -58,6 +59,13 @@ export async function POST(request: Request) {
   }
   if (!(await authorised(request))) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  // The UI polls this every few seconds; the bucket is generous but stops a
+  // runaway loop from piling up pump work. Key on a hash, never the raw token.
+  const identity = request.headers.get("x-ub-agent-key") ?? request.headers.get("cookie") ?? "local";
+  const key = createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  if (rateLimited(`tick:${key}`, 120)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   const raw = Number(new URL(request.url).searchParams.get("limit") ?? "2");
   const limit = Number.isFinite(raw) ? Math.min(4, Math.max(1, Math.trunc(raw))) : 2;

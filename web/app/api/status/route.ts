@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import { readSession } from "../../../lib/auth";
+import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import { appVersion, systemOperator } from "../../../../shared/operator.ts";
 
-export async function GET() {
-  const session = await readSession();
-  if (!session) {
-    return NextResponse.json({ ok: false }, { status: 401 });
-  }
+export async function GET(request: Request) {
+  const gate = await requireDesktop(request);
+  if (isGateError(gate)) return gate.error;
+  const session = gate.session;
   let eve = "unknown";
   try {
     const res = await fetch("http://127.0.0.1:4321/eve/v1/health", { signal: AbortSignal.timeout(1500) });

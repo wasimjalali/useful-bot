@@ -91,4 +91,16 @@ test("usage parser reads completion and sse payloads", () => {
     inputTokens: 3,
     outputTokens: 2,
   });
+  // A usage-less data line before the usage line must not end the scan.
+  assert.deepEqual(
+    usageFromSseBlock("data: {\"foo\":1}\n\ndata: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}"),
+    { inputTokens: 10, outputTokens: 5 },
+  );
+  // Malformed JSON before a valid usage line is skipped, not fatal.
+  assert.deepEqual(
+    usageFromSseBlock("data: {oops\ndata: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2}}"),
+    { inputTokens: 7, outputTokens: 2 },
+  );
+  assert.equal(usageFromPayload({ usage: { prompt_tokens: 1.5, completion_tokens: 2 } }), null);
+  assert.equal(usageFromPayload({ usage: { prompt_tokens: 1e12, completion_tokens: 2 } }), null);
 });

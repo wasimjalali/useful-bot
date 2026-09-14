@@ -66,6 +66,62 @@ test("waitUntilNotPending settles when another process approves", async () => {
   assert.equal(settled.status, "approved");
 });
 
+test("a second decision on a settled approval is rejected", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"once"}');
+  const rec = new ApprovalStore(Date.now, path).request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory once",
+  });
+  const first = new ApprovalStore(Date.now, path).decide(rec.id, "approve", hash);
+  assert.equal(first.status, "approved");
+  // The loser must see the winner's status, not overwrite it.
+  assert.throws(
+    () => new ApprovalStore(Date.now, path).decide(rec.id, "deny", hash),
+    /approval_not_pending:approved/,
+  );
+  assert.equal(new ApprovalStore(Date.now, path).get(rec.id)?.status, "approved");
+});
+
+test("deciding an expired approval is rejected", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"old"}');
+  const rec = new ApprovalStore(() => 0, path).request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory old",
+  });
+  assert.throws(
+    () => new ApprovalStore(Date.now, path).decide(rec.id, "approve", hash),
+    /approval_not_pending:expired/,
+  );
+});
+
+test("a mismatched action hash cannot decide an approval", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"real"}');
+  const rec = new ApprovalStore(Date.now, path).request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory real",
+  });
+  assert.throws(
+    () => new ApprovalStore(Date.now, path).decide(rec.id, "approve", hashFor('{"title":"other"}')),
+    /approval_hash_mismatch/,
+  );
+  assert.equal(new ApprovalStore(Date.now, path).get(rec.id)?.status, "pending");
+});
+
 test("denied wait does not execute", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
   const hash = hashFor('{"title":"no"}');

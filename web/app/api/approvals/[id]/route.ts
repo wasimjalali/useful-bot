@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import { isGateError, requireDesktop } from "../../../../lib/desktop-gate";
+import { apiError, readJson } from "../../../../lib/api-guard";
 
 export const runtime = "nodejs";
 
@@ -14,7 +15,12 @@ export async function POST(
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
-  const body = (await request.json()) as { decision?: string; actionSha256?: string };
+  let body: { decision?: string; actionSha256?: string };
+  try {
+    body = await readJson(request) as { decision?: string; actionSha256?: string };
+  } catch (err) {
+    return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+  }
   if (body.decision !== "approve" && body.decision !== "deny") {
     return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
   }

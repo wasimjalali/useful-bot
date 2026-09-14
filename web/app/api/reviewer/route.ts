@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 
 export const runtime = "nodejs";
 
@@ -42,7 +43,15 @@ export async function POST(request: Request) {
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   }
-  const body = await request.json() as { text?: unknown };
+  if (rateLimited(`reviewer:${gate.session.callerId}`, 20)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
+  let body: { text?: unknown };
+  try {
+    body = await readJson(request) as { text?: unknown };
+  } catch (err) {
+    return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+  }
   if (typeof body.text !== "string" || body.text.trim().length === 0) {
     return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
   }
@@ -55,7 +64,6 @@ export async function POST(request: Request) {
     const review = await liveReview(text, token);
     return NextResponse.json({ ok: true, fixture: false, text: review });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "reviewer_failed";
-    return NextResponse.json({ ok: false, error: message }, { status: 502 });
+    return NextResponse.json({ ok: false, error: errorCode(err, "reviewer_failed") }, { status: 502 });
   }
 }
