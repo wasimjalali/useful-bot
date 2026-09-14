@@ -45,6 +45,25 @@ public enum LocalHost {
         return false
     }
 
+    /// True for loopback only: the credential-bearing client base must allow
+    /// nothing broader than 127.0.0.0/8, `::1` and localhost spellings.
+    public static func isLoopback(_ host: String?) -> Bool {
+        guard var value = host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else {
+            return false
+        }
+        if value.hasPrefix("["), value.hasSuffix("]") {
+            value = String(value.dropFirst().dropLast())
+        }
+        if value.hasSuffix(".") { value.removeLast() }
+        if value == "localhost" || value.hasSuffix(".localhost") || value == "::1" || value == "::" {
+            return true
+        }
+        if value.contains(":") { return false }
+        guard let address = ipv4(value) else { return false }
+        return (address >> 24) & 0xff == 127
+    }
+
     private static func isLocalIPv6(_ value: String) -> Bool {
         // Any embedded dotted IPv4 tail decides: ::ffff:127.0.0.1,
         // ::ffff:0:127.0.0.1 and 0:0:0:0:0:ffff:127.0.0.1 alike.

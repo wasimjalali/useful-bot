@@ -156,10 +156,9 @@ public actor BackendClient {
         base: URL = URL(string: "http://127.0.0.1:4320")!,
         tokenService: String = "com.usefulbot.device.desktop"
     ) {
-        // The device token rides on every request: never let a non-loopback
-        // base carry it off the machine. The shared classifier handles the
-        // odd but valid loopback spellings (127.1, hex, [::1]).
-        self.base = LocalHost.isLocal(base.host) ? base : ServerConfig.resolved().baseURL
+        // The device token and cookies ride on every request: the base must be
+        // loopback, never a LAN or remote host.
+        self.base = LocalHost.isLoopback(base.host) ? base : ServerConfig.resolved().baseURL
         self.tokenService = tokenService
         let config = URLSessionConfiguration.default
         config.httpCookieStorage = .shared
@@ -714,13 +713,18 @@ public actor BackendClient {
                                    let message = event.message,
                                    let suffix = expectedSuffix {
                                     let stripped = EveStream.stripThreadPrefix(message)
-                                    if stripped == suffix,
+                                    // The server clips the stored turn, so the
+                                    // echo can be a prefix of the composed
+                                    // message once attachments are embedded.
+                                    let expected = String(suffix.prefix(Attachments.messageMax))
+                                    let matches = stripped == suffix || stripped.hasPrefix(expected)
+                                    if matches,
                                        let turnId = event.turnId,
                                        !historyTurnIds.contains(turnId) {
                                         armed = true
                                         armedBox.set()
                                         continuation.yield(event)
-                                    } else if stripped == suffix,
+                                    } else if matches,
                                               event.turnId == nil,
                                               historyTurnIds.isEmpty {
                                         armed = true

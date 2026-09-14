@@ -55,6 +55,15 @@ import Testing
         #expect(LocalHost.isLocal("127.0.0.1\u{200B}"))
         #expect(!LocalHost.isLocal("cafe.de"))
     }
+    @Test func loopbackIsNarrowerThanLocal() {
+        // Credential-bearing bases allow loopback only.
+        for host in ["localhost", "127.0.0.1", "127.1", "0x7f.0.0.1", "[::1]", "::1"] {
+            #expect(LocalHost.isLoopback(host), "expected \(host) to be loopback")
+        }
+        for host in ["192.168.1.4", "10.0.0.5", "printer.local", "example.com", "169.254.1.1"] {
+            #expect(!LocalHost.isLoopback(host), "expected \(host) to be non-loopback")
+        }
+    }
 }
 
 @Suite struct ComposerDraftTests {

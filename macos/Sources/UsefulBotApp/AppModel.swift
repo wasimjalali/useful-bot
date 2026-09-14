@@ -240,9 +240,15 @@ final class AppModel: ObservableObject {
 
     func select(_ botId: String) {
         guard botId != selectedBotId else {
-            if store?.selectedBotId != botId {
-                store?.selectedBotId = botId
-                persistSelection(botId)
+            guard let store else { return }
+            if store.bots.contains(where: { $0.id == botId }) {
+                if store.selectedBotId != botId {
+                    self.store?.selectedBotId = botId
+                    persistSelection(botId)
+                }
+            } else {
+                // The id no longer exists; repair instead of persisting it.
+                reconcileSelection(store)
             }
             return
         }
@@ -500,6 +506,8 @@ final class AppModel: ObservableObject {
                     self.stickyThreadError = "The turn did not start."
                 }
                 self.threadError = self.stickyThreadError
+                self.activeSession = nil
+
                 self.pending = false
                 await self.reloadThread()
             } catch is CancellationError {
@@ -508,17 +516,22 @@ final class AppModel: ObservableObject {
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
                 self.threadError = self.stickyThreadError
+                self.activeSession = nil
                 self.pending = false
                 await self.reloadThread()
             }
             if generation == self.sendGeneration {
                 self.pending = false
+                self.activeSession = nil
             }
         }
     }
 
     func cancel() {
         guard let bot = selectedBot else { return }
+        // Nothing live to stop: never cancel a settled session or wipe a tail
+        // the user is reading.
+        guard pending || activeSession != nil else { return }
         let target = activeSession?.botId == bot.id ? activeSession?.sessionId : bot.sessionId
         cancelSend()
         pending = false
@@ -587,14 +600,20 @@ final class AppModel: ObservableObject {
         )
         current.bots[index].lastAt = RailClock.stamp(Date())
         store = current
+        let generation = sendGeneration
+        let chatGen = chatGeneration
         do {
             try await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
+            guard generation == sendGeneration, chatGen == chatGeneration,
+                  selectedBotId == botId else { return }
             // A later success supersedes the pointer-failure notice.
             if stickyThreadError == "The session pointer could not be saved." {
                 stickyThreadError = nil
                 threadError = nil
             }
         } catch {
+            guard generation == sendGeneration, chatGen == chatGeneration,
+                  selectedBotId == botId else { return }
             // The turn still runs; only the stored pointer failed. Surface it
             // so the next poll's revert is not a mystery.
             stickyThreadError = "The session pointer could not be saved."
@@ -738,7 +757,7 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(ShellActions.updateBot(botId: botId, patch: patch))
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                self.store = next
+                self.applyStore(next)
                 self.saveError = nil
             } catch {
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."

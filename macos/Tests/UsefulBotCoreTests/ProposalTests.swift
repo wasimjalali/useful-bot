@@ -86,9 +86,9 @@ import Testing
         #expect(!proposal.isOpen())
     }
 
-    @Test func profileConfirmOnlySendsVisibleFields() throws {
-        // The card shows name/title/description; petname and avatar edits are
-        // never confirmed blind.
+    @Test func profileConfirmCarriesVisibleFieldsAndValidFaces() throws {
+        // Name/title/description plus a valid avatar travel; petname is never
+        // sent and the server's confirm would reject a mismatched avatar.
         let proposal = try decode("""
         {"id":"p10","kind":"updateBotProfile","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
          "botId":"b1","patch":{"name":"Scout","petname":"Scout Two","title":"Research","description":"Owns it",
@@ -99,8 +99,8 @@ import Testing
         #expect(patch["name"] as? String == "Scout")
         #expect(patch["label"] as? String == "Research")
         #expect(patch["petname"] == nil)
-        #expect(patch["avatarShape"] == nil)
-        #expect(patch["avatarColor"] == nil)
+        #expect(patch["avatarShape"] as? String == "hex")
+        #expect(patch["avatarColor"] as? String == "blue")
     }
 
     @Test func createConfirmRequiresAName() throws {

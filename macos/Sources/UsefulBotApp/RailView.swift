@@ -80,7 +80,10 @@ struct RailView: View {
                     page: $rowMenuPage,
                     canDelete: (model.store?.bots.count ?? 0) > 1,
                     onPin: {
-                        model.perform(ShellActions.pin(botId: bot.id, pinned: !bot.pinned))
+                        // Resolve the live flags: the snapshot can be an echo
+                        // behind, and an inverted stale value would undo a tap.
+                        let live = model.store?.bots.first { $0.id == bot.id } ?? bot
+                        model.perform(ShellActions.pin(botId: bot.id, pinned: !live.pinned))
                         closeRowMenu()
                     },
                     onMove: { sectionId in
@@ -96,7 +99,8 @@ struct RailView: View {
                         onRenameRequest(bot)
                     },
                     onHide: {
-                        model.perform(ShellActions.hide(botId: bot.id, hidden: !bot.hidden))
+                        let live = model.store?.bots.first { $0.id == bot.id } ?? bot
+                        model.perform(ShellActions.hide(botId: bot.id, hidden: !live.hidden))
                         closeRowMenu()
                     },
                     onNewSection: {

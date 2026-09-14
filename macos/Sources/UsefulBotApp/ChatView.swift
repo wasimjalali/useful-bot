@@ -30,7 +30,7 @@ struct ChatView: View {
                 }
                 if let bot = model.selectedBot {
                     header(bot)
-                    if model.hasThreadContent {
+                    if model.hasThreadContent || model.pending {
                         transcript(bot)
                     } else {
                         emptyState(bot)

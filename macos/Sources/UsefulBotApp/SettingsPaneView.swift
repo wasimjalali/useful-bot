@@ -55,7 +55,11 @@ struct SettingsPaneView: View {
 
     @ViewBuilder
     private var groupFields: some View {
-        GroupSettingsFields(bot: bot, onDeleteRequest: onDeleteRequest)
+        GroupSettingsFields(
+            bot: bot,
+            canDelete: (model.store?.bots.count ?? 0) > 1,
+            onDeleteRequest: onDeleteRequest
+        )
     }
 }
 
@@ -513,6 +517,7 @@ private struct MemoryNoteView: View {
 private struct GroupSettingsFields: View {
     @EnvironmentObject private var model: AppModel
     let bot: ShellBot
+    var canDelete = true
     var onDeleteRequest: (() -> Void)?
 
     @State private var name = ""
@@ -581,8 +586,13 @@ private struct GroupSettingsFields: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.danger)
             }
-            NativeButton("Delete group", systemImage: "trash", kind: .danger, small: true) {
+            NativeButton("Delete group", systemImage: "trash", kind: .danger, small: true, enabled: canDelete) {
                 onDeleteRequest?()
+            }
+            if !canDelete {
+                Text("The last bot cannot be deleted.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
             }
         }
         .onAppear(perform: seed)
