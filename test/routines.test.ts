@@ -11,8 +11,11 @@ import {
   deleteRoutinesForBot,
   dueRoutines,
   listRoutines,
+  claimManualRun,
   nextOccurrence,
   parseRoutinesStore,
+  pendingRoutines,
+  requestRoutineRun,
   parseSchedules,
   readRoutine,
   readRoutinesStore,
@@ -112,6 +115,7 @@ test("routineNextRun takes the earliest schedule and routineDueAt anchors on the
     updatedAt: "2026-09-14T00:00:00.000Z",
     lastRunAt: null,
     runHistory: [],
+    manualRunRequested: false,
   };
   // Daily 07:00 Berlin beats weekly Monday 09:00 Berlin on the same day.
   const next = routineNextRun(routine, new Date("2026-09-14T00:00:00.000Z"));
@@ -348,4 +352,65 @@ test("the manual run route refuses to start without the agent credential", () =>
   assert.match(source, /agent_credential_missing/);
   // The gate runs before anything reads or starts a routine.
   assert.ok(source.indexOf("requireDesktop") < source.indexOf("runRoutineNow"));
+});
+
+// MARK: - Agent-requested runs
+
+test("a requested run is claimed once and does not consume the scheduled slot", () => {
+  const box = sandbox();
+  try {
+    const routine = createRoutine({
+      botId: "bot-a",
+      name: "Weekly",
+      instruction: "Draft the report.",
+      schedules: [weekly([1], "09:00")],
+      timezone: "Europe/Berlin",
+    }, undefined, new Date("2026-09-13T00:00:00.000Z"));
+
+    assert.equal(requestRoutineRun(routine.id), true);
+    // A second ask while one is waiting must not queue a second run.
+    assert.equal(requestRoutineRun(routine.id), false);
+    assert.equal(requestRoutineRun("rtn_nope"), false);
+
+    const quiet = new Date("2026-09-13T06:00:00.000Z");
+    assert.deepEqual(dueRoutines(quiet), []);
+    assert.equal(pendingRoutines(quiet).map((item) => item.id).join(), routine.id);
+
+    assert.ok(claimManualRun(routine.id));
+    // The racing tick finds the request already taken.
+    assert.equal(claimManualRun(routine.id), null);
+    assert.deepEqual(pendingRoutines(quiet), []);
+    // The scheduled Monday is untouched by the manual run.
+    assert.equal(readRoutine(routine.id)?.lastRunAt, null);
+    assert.equal(routineDueAt(readRoutine(routine.id)!, new Date("2026-09-14T07:30:00.000Z"))?.toISOString(),
+      "2026-09-14T07:00:00.000Z");
+  } finally {
+    box.restore();
+  }
+});
+
+test("pendingRoutines puts a requested run before the scheduled backlog", () => {
+  const box = sandbox();
+  try {
+    const seeded = new Date("2026-09-13T00:00:00.000Z");
+    const scheduled = createRoutine({
+      botId: "bot-a",
+      name: "Scheduled",
+      instruction: "x",
+      schedules: [{ kind: "daily", time: "09:00" }],
+      timezone: "Europe/Berlin",
+    }, undefined, seeded);
+    const asked = createRoutine({
+      botId: "bot-a",
+      name: "Asked",
+      instruction: "x",
+      schedules: [],
+      timezone: "Europe/Berlin",
+    }, undefined, seeded);
+    requestRoutineRun(asked.id);
+    const now = new Date("2026-09-14T12:00:00.000Z");
+    assert.deepEqual(pendingRoutines(now).map((item) => item.name), ["Asked", "Scheduled"]);
+  } finally {
+    box.restore();
+  }
 });

@@ -18,6 +18,20 @@ import proposeGroup from "../agent/tools/propose_group.ts";
 import postToGroup from "../agent/tools/post_to_group.ts";
 import sendToBot from "../agent/tools/send_to_bot.ts";
 import updateBotProfile from "../agent/tools/update_bot_profile.ts";
+import deleteBot from "../agent/tools/delete_bot.ts";
+import deleteRoutine from "../agent/tools/delete_routine.ts";
+import railAction from "../agent/tools/rail_action.ts";
+import listRoutines from "../agent/tools/list_routines.ts";
+import createRoutine from "../agent/tools/create_routine.ts";
+import updateRoutine from "../agent/tools/update_routine.ts";
+import runRoutine from "../agent/tools/run_routine.ts";
+import { ApprovalStore } from "../agent/lib/approvals.ts";
+import { setApprovalStore } from "../agent/lib/write.ts";
+import {
+  createRoutine as storeCreateRoutine,
+  listRoutines as storedRoutines,
+  readRoutine,
+} from "../shared/routines-store.ts";
 
 type Tool = { execute: (input: never, context: never) => unknown };
 
@@ -32,10 +46,12 @@ function sandbox() {
     store: process.env.UB_AGENT_STORE_PATH,
     handoffs: process.env.UB_HANDOFF_DIR,
     active: process.env.UB_ACTIVE_BOT_ID,
+    routines: process.env.UB_ROUTINES_PATH,
   };
   process.env.UB_SHELL_PATH = join(dir, "shell.json");
   process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
   process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
+  process.env.UB_ROUTINES_PATH = join(dir, "routines.json");
   return {
     dir,
     restore() {
@@ -47,6 +63,7 @@ function sandbox() {
       put("UB_AGENT_STORE_PATH", previous.store);
       put("UB_HANDOFF_DIR", previous.handoffs);
       put("UB_ACTIVE_BOT_ID", previous.active);
+      put("UB_ROUTINES_PATH", previous.routines);
     },
   };
 }
@@ -58,6 +75,17 @@ function seedRoster(names: string[]): ShellStore {
   }
   writeShell(store);
   return store;
+}
+
+/** One saved routine for a bot, used by the delete-gate tests. */
+function createRoutineFixture(botId: string): string {
+  return storeCreateRoutine({
+    botId,
+    name: "Weekly check",
+    instruction: "Check the thing.",
+    schedules: [{ kind: "weekly", days: [1], time: "09:00" }],
+    timezone: "Europe/Berlin",
+  }).id;
 }
 
 function idOf(store: ShellStore, name: string): string {
@@ -399,4 +427,294 @@ test("listBots fences bot profile text as untrusted data", async () => {
   } finally {
     box.restore();
   }
+});
+
+// MARK: - Rail actions
+
+test("railAction pins, hides, moves and creates sections", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(store, "CEO");
+
+    assert.equal((await run<{ status: string }>(railAction, { action: "pin", botId: ceo })).status, "applied");
+    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.pinned, true);
+    await run(railAction, { action: "unpin", botId: ceo });
+    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.pinned, false);
+
+    await run(railAction, { action: "hide", botId: ceo });
+    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.hidden, true);
+    await run(railAction, { action: "unhide", botId: ceo });
+    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.hidden, false);
+
+    const section = await run<{ status: string; sectionId: string }>(railAction, {
+      action: "createSection",
+      name: "Work",
+    });
+    assert.equal(section.status, "applied");
+    assert.ok(section.sectionId);
+    await run(railAction, { action: "move", botId: ceo, sectionId: section.sectionId });
+    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.sectionId, section.sectionId);
+
+    await run(railAction, { action: "renameSection", sectionId: section.sectionId, name: "Ops" });
+    assert.equal(readShell().sections.find((item) => item.id === section.sectionId)?.name, "Ops");
+
+    // Moving back out is the same action with a null section.
+    await run(railAction, { action: "move", botId: ceo, sectionId: null });
+    assert.equal(readShell().bots.find((bot) => bot.id === ceo)?.sectionId, null);
+  } finally {
+    box.restore();
+  }
+});
+
+test("railAction refuses unknown bots, unknown sections and missing names", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO"]);
+    const ceo = idOf(store, "CEO");
+    assert.equal((await run<{ status: string }>(railAction, { action: "pin", botId: "nope" })).status, "not_found");
+    assert.equal((await run<{ status: string }>(railAction, { action: "pin" })).status, "invalid");
+    assert.equal(
+      (await run<{ status: string }>(railAction, { action: "move", botId: ceo, sectionId: "sec-nope" })).status,
+      "not_found",
+    );
+    assert.equal((await run<{ status: string }>(railAction, { action: "createSection" })).status, "invalid");
+    assert.equal(
+      (await run<{ status: string }>(railAction, { action: "renameSection", sectionId: "nope", name: "X" })).status,
+      "not_found",
+    );
+    assert.equal(readShell().sections.length, 0);
+  } finally {
+    box.restore();
+  }
+});
+
+// MARK: - Routine tools
+
+test("routine tools create, list, update and queue a run", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["SEO"]);
+    const seo = idOf(store, "SEO");
+    process.env.UB_ACTIVE_BOT_ID = seo;
+
+    const created = await run<{ status: string; routineId: string; nextRunAt: string | null }>(createRoutine, {
+      name: "Weekly SEO check",
+      instruction: "Check rankings and draft a post.",
+      schedules: [{ kind: "weekly", days: [1], time: "09:00" }],
+      timezone: "Europe/Berlin",
+    });
+    assert.equal(created.status, "created");
+    assert.ok(created.nextRunAt);
+    assert.equal(storedRoutines(seo).length, 1);
+
+    const listed = await run<{ routines: Array<{ id: string; name: string; active: boolean }> }>(listRoutines, {});
+    assert.equal(listed.routines.length, 1);
+    // Owner text reaches the model as data, not as instructions.
+    assert.equal(listed.routines[0].name.startsWith(UNTRUSTED_PREAMBLE), true);
+
+    const paused = await run<{ status: string; active: boolean; nextRunAt: string | null }>(updateRoutine, {
+      routineId: created.routineId,
+      active: false,
+    });
+    assert.equal(paused.status, "updated");
+    assert.equal(paused.active, false);
+    assert.equal(paused.nextRunAt, null);
+    assert.equal(readRoutine(created.routineId)?.active, false);
+
+    const queued = await run<{ status: string }>(runRoutine, { routineId: created.routineId });
+    assert.equal(queued.status, "queued");
+    assert.equal(readRoutine(created.routineId)?.manualRunRequested, true);
+    // A second call while one is waiting must not queue a second run.
+    assert.equal((await run<{ status: string }>(runRoutine, { routineId: created.routineId })).status, "duplicate");
+  } finally {
+    box.restore();
+  }
+});
+
+test("routine tools reject bad schedules, zones and unknown ids", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["SEO"]);
+    process.env.UB_ACTIVE_BOT_ID = idOf(store, "SEO");
+
+    const badTime = await run<{ status: string }>(createRoutine, {
+      name: "Bad",
+      instruction: "x",
+      schedules: [{ kind: "daily", time: "9:00" }],
+    });
+    assert.equal(badTime.status, "invalid");
+    const badDays = await run<{ status: string }>(createRoutine, {
+      name: "Bad",
+      instruction: "x",
+      schedules: [{ kind: "weekly", days: [], time: "09:00" }],
+    });
+    assert.equal(badDays.status, "invalid");
+    const badZone = await run<{ status: string }>(createRoutine, {
+      name: "Bad",
+      instruction: "x",
+      schedules: [{ kind: "daily", time: "09:00" }],
+      timezone: "Mars/Olympus",
+    });
+    assert.equal(badZone.status, "invalid");
+    const badBot = await run<{ status: string }>(createRoutine, {
+      name: "Bad",
+      instruction: "x",
+      botId: "nope",
+      schedules: [{ kind: "daily", time: "09:00" }],
+    });
+    assert.equal(badBot.status, "not_found");
+    // Nothing malformed reached the store.
+    assert.equal(storedRoutines(idOf(store, "SEO")).length, 0);
+
+    assert.equal((await run<{ status: string }>(updateRoutine, { routineId: "rtn_nope", name: "x" })).status, "not_found");
+    assert.equal((await run<{ status: string }>(runRoutine, { routineId: "rtn_nope" })).status, "not_found");
+    assert.equal((await run<{ status: string }>(listRoutines, { botId: "nope" })).status, "not_found");
+  } finally {
+    box.restore();
+  }
+});
+
+// MARK: - Owner gate on destructive tools
+
+/**
+ * The tools block on `waitUntilNotPending`, so the record is requested
+ * synchronously and the decision is made from the test while the call is in
+ * flight, exactly as the owner's approval card does.
+ */
+function pendingApproval(store: ApprovalStore): { id: string; actionSha256: string; tool: string } {
+  const open = store.listPending();
+  assert.equal(open.length, 1, "expected exactly one pending approval");
+  return open[0];
+}
+
+test("a bot-initiated bot delete cannot bypass the owner gate", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(shell, "CEO");
+    const research = idOf(shell, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    createRoutineFixture(research);
+
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+
+    const denied = run<{ status: string }>(deleteBot, { botId: research });
+    const first = pendingApproval(approvals);
+    assert.equal(first.tool, "delete_bot");
+    // Still pending: nothing may be removed before the owner decides.
+    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
+    approvals.decide(first.id, "deny", first.actionSha256);
+    await assert.rejects(() => denied, /approval_denied/);
+    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
+    assert.equal(storedRoutines(research).length, 1);
+
+    const approved = run<{ status: string; routinesRemoved: number }>(deleteBot, { botId: research });
+    const second = pendingApproval(approvals);
+    approvals.decide(second.id, "approve", second.actionSha256);
+    const result = await approved;
+    assert.equal(result.status, "deleted");
+    assert.equal(result.routinesRemoved, 1);
+    assert.equal(readShell().bots.some((bot) => bot.id === research), false);
+    // The bot's routines went with it instead of coming due for a ghost.
+    assert.equal(storedRoutines(research).length, 0);
+  } finally {
+    box.restore();
+  }
+});
+
+test("deleteBot refuses the orchestrator, itself and the last bot", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["CEO"]);
+    const ceo = idOf(shell, "CEO");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+
+    assert.equal((await run<{ status: string }>(deleteBot, { botId: "bot-useful" })).status, "refused");
+    assert.equal((await run<{ status: string }>(deleteBot, { botId: ceo })).status, "refused");
+    assert.equal((await run<{ status: string }>(deleteBot, { botId: "nope" })).status, "not_found");
+    // A refusal never opens an approval card for the owner to deal with.
+    assert.equal(approvals.listPending().length, 0);
+    assert.equal(readShell().bots.length, 2);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a bot-initiated routine delete cannot bypass the owner gate", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["SEO"]);
+    const seo = idOf(shell, "SEO");
+    process.env.UB_ACTIVE_BOT_ID = seo;
+    const routineId = createRoutineFixture(seo);
+
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+
+    assert.equal((await run<{ status: string }>(deleteRoutine, { routineId: "rtn_nope" })).status, "not_found");
+    assert.equal(approvals.listPending().length, 0);
+
+    const denied = run<{ status: string }>(deleteRoutine, { routineId });
+    const first = pendingApproval(approvals);
+    assert.equal(first.tool, "delete_routine");
+    assert.equal(readRoutine(routineId) !== null, true);
+    approvals.decide(first.id, "deny", first.actionSha256);
+    await assert.rejects(() => denied, /approval_denied/);
+    assert.equal(readRoutine(routineId) !== null, true);
+
+    const approved = run<{ status: string }>(deleteRoutine, { routineId });
+    const second = pendingApproval(approvals);
+    // A card approved for one routine is spent on that routine only.
+    assert.equal(second.actionSha256 === first.actionSha256, true);
+    approvals.decide(second.id, "approve", second.actionSha256);
+    assert.equal((await approved).status, "deleted");
+    assert.equal(readRoutine(routineId), null);
+  } finally {
+    box.restore();
+  }
+});
+
+// MARK: - Tool schemas
+
+/**
+ * eve validates a model's arguments against `inputSchema` before `execute`
+ * runs, so the schema is the first boundary. These assert the shapes the tools
+ * rely on rather than re-checking the runtime guards above.
+ */
+test("new tool schemas reject the arguments a model gets wrong", () => {
+  // defineTool types inputSchema as the published JSON shape; the zod schema
+  // eve validates against is what is actually there at runtime.
+  type Schema = { safeParse: (value: unknown) => { success: boolean } };
+  const parse = (tool: { inputSchema: unknown }, value: unknown) =>
+    (tool.inputSchema as Schema).safeParse(value).success;
+
+  assert.equal(parse(deleteBot, { botId: "bot-a" }), true);
+  assert.equal(parse(deleteBot, {}), false);
+  assert.equal(parse(deleteBot, { botId: "" }), false);
+
+  assert.equal(parse(railAction, { action: "pin", botId: "bot-a" }), true);
+  assert.equal(parse(railAction, { action: "move", botId: "bot-a", sectionId: null }), true);
+  assert.equal(parse(railAction, { action: "delete", botId: "bot-a" }), false);
+
+  const valid = { name: "n", instruction: "i", schedules: [{ kind: "daily", time: "09:00" }] };
+  assert.equal(parse(createRoutine, valid), true);
+  assert.equal(parse(createRoutine, { ...valid, schedules: [] }), false);
+  // 24-hour "HH:MM" only; a 4-character time never reaches the store.
+  assert.equal(parse(createRoutine, { ...valid, schedules: [{ kind: "daily", time: "9:00" }] }), false);
+  assert.equal(parse(createRoutine, { ...valid, schedules: [{ kind: "weekly", days: [7], time: "09:00" }] }), false);
+  assert.equal(parse(createRoutine, { name: "n", schedules: valid.schedules }), false);
+
+  assert.equal(parse(updateRoutine, { routineId: "rtn_a" }), true);
+  assert.equal(parse(updateRoutine, { routineId: "rtn_a", active: "yes" }), false);
+  assert.equal(parse(updateRoutine, {}), false);
+
+  assert.equal(parse(runRoutine, { routineId: "rtn_a" }), true);
+  assert.equal(parse(runRoutine, {}), false);
+  assert.equal(parse(deleteRoutine, { routineId: "rtn_a" }), true);
+  assert.equal(parse(deleteRoutine, {}), false);
+  assert.equal(parse(listRoutines, {}), true);
 });

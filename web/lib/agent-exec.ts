@@ -16,7 +16,8 @@ import {
 import {
   appendRoutineRun,
   claimDueRoutine,
-  dueRoutines,
+  claimManualRun,
+  pendingRoutines,
   readRoutine,
   type Routine,
 } from "../../shared/routines-store.ts";
@@ -524,15 +525,16 @@ async function pumpRoutinesOnce(limit: number): Promise<{
   const ran: Array<{ id: string; name: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
   const now = new Date();
-  const candidates = dueRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
+  const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
   for (const candidate of candidates.slice(0, limit)) {
-    // The claim moves lastRunAt inside the store lock, so a tick that raced
-    // this one recomputes the schedule and finds nothing due.
-    const claim = claimDueRoutine(candidate.id, now);
+    // Both claims flip their marker inside the store lock, so a tick that raced
+    // this one finds the request already taken or nothing due.
+    const manual = claimManualRun(candidate.id);
+    const claim = manual ?? claimDueRoutine(candidate.id, now);
     if (!claim) continue;
     routinesInflight.add(candidate.id);
     try {
-      const result = await executeRoutine(claim.routine, "schedule");
+      const result = await executeRoutine(claim.routine, manual ? "manual" : "schedule");
       appendRoutineRun(candidate.id, { status: "ok", sessionId: result.sessionId });
       ran.push({ id: candidate.id, name: claim.routine.name });
     } catch (err) {

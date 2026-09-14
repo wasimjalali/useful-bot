@@ -63,6 +63,13 @@ export type Routine = {
   updatedAt: string;
   lastRunAt: string | null;
   runHistory: RoutineRun[];
+  /**
+   * An out-of-band run the owner asked for through an agent tool. The tool has
+   * no desktop session, so it cannot reach the run route; it raises this flag
+   * and the next tick picks it up. A manual run never consumes the scheduled
+   * slot, so `lastRunAt` is left alone.
+   */
+  manualRunRequested: boolean;
 };
 
 export type RoutinesStore = {
@@ -334,6 +341,7 @@ export function parseRoutine(raw: unknown): Routine | null {
     updatedAt: rec.updatedAt,
     lastRunAt: typeof rec.lastRunAt === "string" ? rec.lastRunAt : null,
     runHistory: history.slice(-RUN_HISTORY_MAX),
+    manualRunRequested: rec.manualRunRequested === true,
   };
 }
 
@@ -476,6 +484,7 @@ export function createRoutine(draft: RoutineDraft, path = routinesStorePath(), a
     updatedAt: stamp,
     lastRunAt: null,
     runHistory: [],
+    manualRunRequested: false,
   };
   return withRoutinesStore((store) => {
     const owned = store.routines.filter((item) => item.botId === routine.botId).length;
@@ -586,6 +595,49 @@ export function claimDueRoutine(
       dueAt: dueAt.toISOString(),
     };
   }, path);
+}
+
+/**
+ * Ask for an out-of-band run. Returns false when the routine is gone or a
+ * request is already waiting, so a repeated tool call cannot queue two runs.
+ */
+export function requestRoutineRun(id: string, path = routinesStorePath()): boolean {
+  return withRoutinesStore((store) => {
+    const routine = store.routines.find((item) => item.id === id);
+    if (!routine || routine.manualRunRequested) return false;
+    routine.manualRunRequested = true;
+    routine.updatedAt = new Date().toISOString();
+    return true;
+  }, path);
+}
+
+/**
+ * Take ownership of a requested run. Clearing the flag inside the lock is what
+ * makes the run happen once when two ticks race.
+ */
+export function claimManualRun(id: string, path = routinesStorePath()): { routine: Routine } | null {
+  return withRoutinesStore((store) => {
+    const routine = store.routines.find((item) => item.id === id);
+    if (!routine || !routine.manualRunRequested) return null;
+    routine.manualRunRequested = false;
+    routine.updatedAt = new Date().toISOString();
+    return {
+      routine: { ...routine, schedules: routine.schedules.slice(), runHistory: routine.runHistory.slice() },
+    };
+  }, path);
+}
+
+/** Every routine the next tick owes work for: requested runs and due ones. */
+export function pendingRoutines(now = new Date(), path = routinesStorePath()): Routine[] {
+  return readRoutinesStore(path)
+    .routines.filter((routine) => routine.manualRunRequested || routineDueAt(routine, now) !== null)
+    .sort((left, right) => {
+      // A run the owner asked for goes before the scheduled backlog.
+      if (left.manualRunRequested !== right.manualRunRequested) return left.manualRunRequested ? -1 : 1;
+      const leftDue = routineDueAt(left, now)?.getTime() ?? 0;
+      const rightDue = routineDueAt(right, now)?.getTime() ?? 0;
+      return leftDue - rightDue || left.id.localeCompare(right.id);
+    });
 }
 
 /** Every routine whose next occurrence has passed, oldest due first. */

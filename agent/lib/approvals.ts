@@ -43,7 +43,11 @@ function sleep(ms: number): void {
   }
 }
 
-export type ApprovalTool = "bash" | "write_file" | "memory.upsert";
+/**
+ * Every tool whose action the owner has to approve before it runs. Deleting a
+ * bot or a routine is irreversible, so an agent asks here rather than writing.
+ */
+export type ApprovalTool = "bash" | "write_file" | "memory.upsert" | "delete_bot" | "delete_routine";
 export type ApprovalDecision = "approve" | "deny";
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
 
