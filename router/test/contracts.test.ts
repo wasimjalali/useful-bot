@@ -533,7 +533,7 @@ test("hit enforces 24h token budgets", () => {
   const store = new LimitStore(join(dir, "usage.sqlite"));
   const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
   const now = Date.now();
-  store.recordUsage({ callerId: "desktop", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 0, outputTokens: 200_000, at: now });
+  store.recordUsage({ callerId: "desktop", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 0, outputTokens: 3_000_000, at: now });
   assert.throws(() => store.hit(caller, now), /caller_budget_exhausted/);
 });
 
@@ -542,7 +542,7 @@ test("hit enforces the aggregate 24h token budget", () => {
   const store = new LimitStore(join(dir, "usage.sqlite"));
   const caller = { callerId: "phone", profile: "phone" as const, aliases: ["workhorse"], search: true };
   const now = Date.now();
-  store.recordUsage({ callerId: "ghost", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 3_000_000, outputTokens: 0, at: now });
+  store.recordUsage({ callerId: "ghost", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 32_000_000, outputTokens: 0, at: now });
   assert.throws(() => store.hit(caller, now), /global_budget_exhausted/);
 });
 

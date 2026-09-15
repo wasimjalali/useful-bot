@@ -134,9 +134,8 @@ public struct TurnFailure: Equatable, Sendable {
     /// The router refuses a turn with `caller_budget_exhausted` when the day's
     /// token budget is spent, and eve wraps that in its retry error. Saying
     /// "the turn failed" for that leaves the owner with nothing to do, when in
-    /// fact one setting fixes it.
-    /// `nil` when the cause is not one this app can explain, so the caller
-    /// keeps its own wording rather than repeating itself.
+    /// fact one setting fixes it. `nil` when the cause is not one this app can
+    /// explain, so the caller keeps its own wording rather than repeating it.
     public var reason: String? {
         let haystack = "\(code) \(detail)".lowercased()
         if haystack.contains("budget_exhausted") {
