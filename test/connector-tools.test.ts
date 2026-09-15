@@ -36,6 +36,10 @@ test("risk table reads the verb segment", () => {
   assert.equal(connectorRisk("LINEAR_ARCHIVE_ISSUE"), "destructive");
   assert.equal(connectorRisk("SLACK_REVOKE_TOKEN"), "destructive");
   assert.equal(connectorRisk("X"), "write");
+  // A toolkit with underscores is stripped whole when it is known.
+  assert.equal(connectorRisk("MICROSOFT_TEAMS_LIST_CHANNELS", "microsoft_teams"), "read");
+  assert.equal(connectorRisk("MICROSOFT_TEAMS_LIST_CHANNELS"), "write");
+  assert.equal(connectorRisk("MICROSOFT_TEAMS_DELETE_MESSAGE"), "destructive");
 });
 
 test("gate follows the permission table", () => {

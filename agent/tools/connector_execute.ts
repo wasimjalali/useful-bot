@@ -36,13 +36,13 @@ export default defineTool({
     if (!SLUG.test(tool)) return { status: "blocked", error: "tool_slug_invalid" };
     const store = readConnectorsStore();
     if (!store.apiKey) return { status: "blocked", error: "connectors_not_set_up" };
-    const toolkit = toolkitOf(tool);
-    if (!store.connectedToolkits.includes(toolkit)) {
-      return { status: "blocked", error: "not_connected", toolkit };
+    const toolkit = toolkitOf(tool, store.connectedToolkits);
+    if (!toolkit) {
+      return { status: "blocked", error: "not_connected", toolkit: tool.split("_")[0]?.toLowerCase() ?? "unknown" };
     }
     const grant = ctx?.session?.id ? readSessionGrant(ctx.session.id) : null;
     const permission = grant?.permission ?? null;
-    const risk = connectorRisk(tool);
+    const risk = connectorRisk(tool, toolkit);
     const gate = connectorGate(risk, permission);
     if (gate === "refuse") return { status: "blocked", error: "workspace_read_only", risk };
 

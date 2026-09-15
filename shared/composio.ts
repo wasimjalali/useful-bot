@@ -98,11 +98,18 @@ export const SESSION_CONFIG = {
   sandbox: { enable: false },
 } as const;
 
-/** The slug prefix of a tool slug: GMAIL_SEND_EMAIL -> gmail. */
-export function toolkitOf(toolSlug: string): string {
-  const upper = toolSlug.trim();
-  const idx = upper.indexOf("_");
-  return (idx === -1 ? upper : upper.slice(0, idx)).toLowerCase();
+/**
+ * The connected toolkit a tool slug belongs to, or null. Toolkit slugs can
+ * carry underscores (microsoft_teams), so the match is longest-first and on a
+ * whole segment: GMAIL_SEND_EMAIL -> gmail, MICROSOFT_TEAMS_SEND -> microsoft_teams,
+ * and a slug that merely starts with the letters of a toolkit matches nothing.
+ */
+export function toolkitOf(toolSlug: string, known: readonly string[]): string | null {
+  const slug = toolSlug.trim().toLowerCase();
+  for (const toolkit of [...known].sort((a, b) => b.length - a.length)) {
+    if (slug === toolkit || slug.startsWith(`${toolkit}_`)) return toolkit;
+  }
+  return null;
 }
 
 function requireKey(store: ConnectorsStore): string {
@@ -303,10 +310,10 @@ export async function executeConnectorTool(
 ): Promise<unknown> {
   const store = readConnectorsStore(path);
   if (store.connectedToolkits.length === 0) throw new Error("no_connectors");
-  const toolkit = toolkitOf(toolSlug);
-  if (!store.connectedToolkits.includes(toolkit)) {
+  const toolkit = toolkitOf(toolSlug, store.connectedToolkits);
+  if (!toolkit) {
     const err = new Error("not_connected") as Error & { toolkit: string };
-    err.toolkit = toolkit;
+    err.toolkit = toolSlug.split("_")[0]?.toLowerCase() ?? "unknown";
     throw err;
   }
   // Never replay an execute: a write that the owner approved once must not

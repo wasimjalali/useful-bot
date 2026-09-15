@@ -311,8 +311,12 @@ test("execute refuses toolkits that are not connected before touching the networ
   assert.deepEqual(out, { data: { ok: true, slug: "GMAIL_FETCH_EMAILS" }, successful: true });
 });
 
-test("toolkitOf reads the slug prefix", () => {
-  assert.equal(toolkitOf("GMAIL_FETCH_EMAILS"), "gmail");
-  assert.equal(toolkitOf("GOOGLECALENDAR_CREATE_EVENT"), "googlecalendar");
-  assert.equal(toolkitOf("weird"), "weird");
+test("toolkitOf matches a whole connected toolkit segment, longest first", () => {
+  const known = ["gmail", "microsoft_teams", "microsoft"];
+  assert.equal(toolkitOf("GMAIL_FETCH_EMAILS", known), "gmail");
+  assert.equal(toolkitOf("MICROSOFT_TEAMS_SEND_MESSAGE", known), "microsoft_teams");
+  assert.equal(toolkitOf("MICROSOFT_GRAPH_LIST", known), "microsoft");
+  assert.equal(toolkitOf("GMAILX_FETCH", known), null);
+  assert.equal(toolkitOf("GOOGLECALENDAR_CREATE_EVENT", known), null);
+  assert.equal(toolkitOf("weird", known), null);
 });
