@@ -13,48 +13,120 @@ public struct LocalServices: Sendable {
     private let supervisor: ServiceSupervisor
     private let runner: ProcessRunner
     private let probe: HealthProbe
+    /// How long a port that is open but not yet serving is given before it is
+    /// treated as wedged. A service that is still starting holds its port
+    /// before its health endpoint answers, and killing it there is a restart
+    /// loop that never converges. Zero in tests.
+    private let startGraceSeconds: Double
+    /// How often a still-missing service is started again while `ensure` waits.
+    private static let restartInterval: Double = 15
 
     public init(
         runner: ProcessRunner = FoundationProcessRunner(),
         probe: HealthProbe = URLSessionHealthProbe(),
-        supervisor: ServiceSupervisor = ServiceSupervisor()
+        supervisor: ServiceSupervisor = ServiceSupervisor(),
+        // Long enough for a cold Next dev server, which holds its port well
+        // before it serves. A genuinely wedged listener costs this once.
+        startGraceSeconds: Double = 20
     ) {
         self.runner = runner
         self.probe = probe
         self.supervisor = supervisor
+        self.startGraceSeconds = startGraceSeconds
     }
 
-    public func ensure(config: ServerConfig, timeoutSeconds: Int = 40) async -> EnsureOutcome {
-        if await probe.probe(config.healthURL) { return .ready }
+    /// `timeoutSeconds` is wall clock, not a number of attempts: a probe that
+    /// times out costs seconds of its own, and three of them per attempt used
+    /// to stretch a 40 second budget into minutes of a window that says it is
+    /// starting up. The default covers a cold start of all three services,
+    /// where the web is a Next dev server.
+    public func ensure(config: ServerConfig, timeoutSeconds: Int = 90) async -> EnsureOutcome {
+        if await allReady(config: config) { return .ready }
         // Without a node binary nothing can start; report it now instead of
         // waiting out the health timeout on a launch that can never succeed.
         guard supervisor.isNodeAvailable else { return .nodeMissing }
-        await startMissing(config: config)
-        for _ in 0..<timeoutSeconds {
-            if await probe.probe(config.healthURL) { return .ready }
+        // The checks above were awaits of their own, so nothing is started for
+        // an attempt that has already been replaced.
+        if Task.isCancelled { return .unavailable }
+        // Before the first start, not after: the grace a held port is given is
+        // part of the budget, and three of them used to run outside it.
+        let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
+        await startMissing(config: config, deadline: deadline)
+        var nextStart = Date().addingTimeInterval(Self.restartInterval)
+        while Date() < deadline {
+            // A retry cancels the attempt it replaces, and an abandoned
+            // attempt must stop supervising ports rather than run its budget
+            // out alongside the new one.
+            if Task.isCancelled { return .unavailable }
+            if await allReady(config: config) { return .ready }
+            if Date() >= deadline { break }
+            // A start can fail, and a started service can exit a second later.
+            // Polling alone would then wait out the whole budget on a port that
+            // nobody is going to open, so the start is attempted again while
+            // there is time left. `startMissing` skips anything already healthy
+            // and never starts a second listener on an occupied port.
+            if Date() >= nextStart {
+                // `allowRestart: false`: by now every listener on these ports
+                // is either one this call started or one it decided to keep,
+                // and a service that is merely slow (a cold Next dev server
+                // takes tens of seconds) must not be killed and restarted into
+                // the same wait, forever. The retry only fills a port that is
+                // still empty.
+                await startMissing(config: config, allowRestart: false)
+                nextStart = Date().addingTimeInterval(Self.restartInterval)
+                continue
+            }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        return await probe.probe(config.healthURL) ? .ready : .unavailable
+        return await allReady(config: config) ? .ready : .unavailable
     }
 
-    func startMissing(config: ServerConfig) async {
+    /// All three, not just the one the app talks to.
+    ///
+    /// The web server answering used to be the whole check, so a dead router
+    /// was never noticed or restarted: the app opened looking healthy and every
+    /// turn failed at the model call instead. The three are asked at once, so
+    /// one unreachable service costs one probe timeout rather than three.
+    private func allReady(config: ServerConfig) async -> Bool {
+        async let web = probe.probe(config.healthURL)
+        async let router = probe.probe(ServiceSupervisor.routerHealthURL)
+        async let eve = probe.probe(ServiceSupervisor.eveHealthURL)
+        // Each is awaited into a value: `&&` takes an autoclosure, which
+        // cannot capture an `async let`.
+        let webReady = await web
+        let routerReady = await router
+        let eveReady = await eve
+        return webReady && routerReady && eveReady
+    }
+
+    /// `allowRestart` is the permission to treat an occupied but unhealthy port
+    /// as a wedged process and signal it. True on the first pass, where the
+    /// listener predates this app's attempt; false on the retries, where it
+    /// would be killing something this call just started.
+    func startMissing(config: ServerConfig, allowRestart: Bool = true, deadline: Date? = nil) async {
         await ensureService(
             mode: .router,
             port: ServiceSupervisor.routerPort,
             health: ServiceSupervisor.routerHealthURL,
-            repoPath: config.repoPath
+            repoPath: config.repoPath,
+            allowRestart: allowRestart,
+            deadline: deadline
         )
         await ensureService(
             mode: .eve,
             port: ServiceSupervisor.evePort,
             health: ServiceSupervisor.eveHealthURL,
-            repoPath: config.repoPath
+            repoPath: config.repoPath,
+            allowRestart: allowRestart,
+            deadline: deadline
         )
         await ensureService(
             mode: .web,
             port: ServiceSupervisor.webPort,
             health: config.healthURL,
-            repoPath: config.repoPath
+            repoPath: config.repoPath,
+            allowRestart: allowRestart,
+            deadline: deadline
         )
     }
 
@@ -62,27 +134,73 @@ public struct LocalServices: Sendable {
     /// own listener that accepts TCP but never serves (a wedged process) is
     /// stopped before restarting, and a port held by a foreign process is left
     /// untouched so we never fight another app for it.
-    private func ensureService(mode: ServiceMode, port: Int, health: URL, repoPath: String) async {
+    private func ensureService(
+        mode: ServiceMode,
+        port: Int,
+        health: URL,
+        repoPath: String,
+        allowRestart: Bool = true,
+        deadline: Date? = nil
+    ) async {
+        if Task.isCancelled { return }
         if await probe.probe(health) { return }
         let owns: @Sendable (String) -> Bool = { [supervisor] line in
             supervisor.isOwnNodeProcess(line, repoPath: repoPath)
         }
+        // A listener this call is already waiting on is left alone: the retry
+        // exists to fill an empty port, not to kill a slow starter.
+        if !allowRestart {
+            // Re-checked after the health probe above, which was an await:
+            // cancellation can land inside it, and a cancelled attempt must not
+            // start a service the retry is about to start itself.
+            if !Task.isCancelled, runner.listeners(port: port).isEmpty {
+                runner.start(supervisor.command(mode: mode, repoPath: repoPath))
+            }
+            return
+        }
         if !runner.listeners(port: port).isEmpty {
+            // A port that is open but not yet serving is usually a service
+            // still coming up, not a wedged one. Give it a moment: killing a
+            // slow starter here restarts it into the same race, every time.
+            // The grace never outlives the caller's budget.
+            let remaining = deadline.map { $0.timeIntervalSinceNow } ?? startGraceSeconds
+            if await waitForHealth(health, seconds: min(startGraceSeconds, remaining)) { return }
+            // The wait also ends on cancellation, and a cancelled attempt must
+            // not spend its last act killing a listener the retry is about to
+            // wait on.
+            if Task.isCancelled { return }
             runner.stopOwnListeners(port: port, owns: owns)
             // Poll for the listener to actually go away instead of betting on
             // a fixed sleep, so a slow-but-cooperative process is not force
             // killed and a fast one is not waited on.
             _ = await waitForPortFree(port: port, timeout: 1_000)
+            if Task.isCancelled { return }
         }
         if !runner.listeners(port: port).isEmpty {
             runner.forceStopOwnListeners(port: port, owns: owns)
             _ = await waitForPortFree(port: port, timeout: 400)
+            if Task.isCancelled { return }
         }
         // A foreign listener survives the own-only signals above, so this
         // stays false and we never start a duplicate on an occupied port.
-        if runner.listeners(port: port).isEmpty {
+        if !Task.isCancelled, runner.listeners(port: port).isEmpty {
             runner.start(supervisor.command(mode: mode, repoPath: repoPath))
         }
+    }
+
+    /// Polls the health endpoint until it answers or the grace elapses.
+    private func waitForHealth(_ health: URL, seconds: Double) async -> Bool {
+        guard seconds > 0 else { return false }
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            // A cancelled attempt stops here rather than holding the retry
+            // behind a grace window it no longer cares about.
+            if Task.isCancelled { return false }
+            if await probe.probe(health) { return true }
+            if Date() >= deadline { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return false
     }
 
     /// Polls until the port has no listener or the timeout elapses. Returns
@@ -90,6 +208,7 @@ public struct LocalServices: Sendable {
     private func waitForPortFree(port: Int, timeout: Int) async -> Bool {
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000)
         while !runner.listeners(port: port).isEmpty {
+            if Task.isCancelled { return false }
             if Date() >= deadline { return false }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }

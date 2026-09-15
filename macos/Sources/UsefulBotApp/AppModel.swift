@@ -149,6 +149,10 @@ final class AppModel: ObservableObject {
     private let poller = HealthPoller(probe: URLSessionHealthProbe())
     private let client: BackendClient
     private var startAttempt = 0
+    /// The start in flight, so a retry can cancel it before starting another.
+    private var bootTask: Task<Void, Never>?
+    /// A retry already tearing down and restarting the stack.
+    private var retrying = false
 
     init() {
         let config = ServerConfig.resolved()
@@ -232,6 +236,17 @@ final class AppModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        // Held so a retry can cancel the attempt it replaces. Two supervisors
+        // running at once would both be starting and stopping the same ports.
+        let boot = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.boot()
+        }
+        bootTask = boot
+        await boot.value
+    }
+
+    private func boot() async {
         startAttempt += 1
         let attempt = startAttempt
         phase = .starting
@@ -239,8 +254,11 @@ final class AppModel: ObservableObject {
         threadError = nil
         stickyThreadError = nil
         saveError = nil
-        let outcome = await services.ensure(config: config, timeoutSeconds: 40)
-        guard attempt == startAttempt else { return }
+        let outcome = await services.ensure(config: config)
+        // A cancelled attempt paints nothing at all: the retry that cancelled
+        // it owns the screen from here, and `startAttempt` is only bumped once
+        // this task has been awaited, so it cannot stand in for this check.
+        guard !Task.isCancelled, attempt == startAttempt else { return }
         if outcome == .nodeMissing {
             // A missing interpreter is a different failure from a dead server:
             // say so instead of making the owner wait for the retry.
@@ -250,15 +268,26 @@ final class AppModel: ObservableObject {
             phase = .unavailable
             return
         }
-        guard await poller.check(config.healthURL) else {
+        // `ensure` is the authority on whether the stack is up, and it checks
+        // all three services. Re-gating on the web endpoint alone is what let
+        // the app open looking healthy with a dead router behind it, so an
+        // unavailable outcome stops here and says which part is missing.
+        if outcome == .unavailable {
+            // Which one is not known here, and guessing would send the owner
+            // to the wrong log.
+            startupError = "The local services did not all start. One of the router, the agent or the web server is not answering."
             phase = .unavailable
             return
         }
+        // No second gate on the web endpoint alone: `ensure` just checked all
+        // three, and asking again about one of them only re-opened the door
+        // this fix closes. A service that dies after this point surfaces as a
+        // failed request, which says what actually went wrong.
         do {
             try await client.signIn()
-            guard attempt == startAttempt else { return }
+            guard !Task.isCancelled, attempt == startAttempt else { return }
             let loaded = try await client.shell()
-            guard attempt == startAttempt else { return }
+            guard !Task.isCancelled, attempt == startAttempt else { return }
             store = loaded
             selectedBotId = loaded.selectedBotId ?? loaded.bots.first?.id
             phase = .ready
@@ -270,13 +299,24 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            guard attempt == startAttempt else { return }
+            guard !Task.isCancelled, attempt == startAttempt else { return }
             threadError = (error as? LocalizedError)?.errorDescription ?? "Could not reach the local server."
             phase = .unavailable
         }
     }
 
     func retry() async {
+        // Two retries in flight would each cancel the same boot and then start
+        // their own, which is the pair of supervisors `bootTask` exists to
+        // prevent. The second press is a no-op instead.
+        guard !retrying else { return }
+        retrying = true
+        defer { retrying = false }
+        // First, so the attempt being replaced stops supervising the ports the
+        // new one is about to.
+        bootTask?.cancel()
+        await bootTask?.value
+        bootTask = nil
         pollTask?.cancel()
         approvalPollTask?.cancel()
         reloadTask?.cancel()
