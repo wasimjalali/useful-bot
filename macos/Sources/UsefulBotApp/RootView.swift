@@ -942,8 +942,11 @@ private actor LogoCache {
         if let cached = images[urlString] { return cached }
         if let running = inFlight[urlString] { return await running.value }
         let task = Task<NSImage?, Never> {
+            // The allowlist is checked again on the final URL, since a redirect
+            // could otherwise carry the fetch off the logo host.
             guard let (data, response) = try? await URLSession.shared.data(from: url),
                   let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  http.url?.scheme == "https", http.url?.host?.lowercased() == Self.host,
                   data.count < 512 * 1024,
                   let image = NSImage(data: data) else { return nil }
             return image
