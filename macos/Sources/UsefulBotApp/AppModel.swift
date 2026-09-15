@@ -102,6 +102,19 @@ final class AppModel: ObservableObject {
     @Published var searchOpen = false
     /// Composer draft is page-level on the web, so it survives a bot switch.
     @Published var draft = ""
+    /// Bumped only when the app itself writes `draft` — the send-clear and the
+    /// restore of a failed send. Typing never bumps it.
+    ///
+    /// The composer's text view uses this to tell a deliberate write apart from
+    /// a re-render. SwiftUI rebuilds the composer on every unrelated published
+    /// change (the poll republishes the store, the transcript, the proposals),
+    /// and such a rebuild can carry a `draft` captured a moment earlier. While
+    /// a dictation app is inserting an utterance in chunks, that stale value
+    /// used to be written back over the newer text in the field, and the
+    /// dictation app then re-inserted the whole utterance on top of what was
+    /// left: the doubled transcript. Model-to-view writes now happen only when
+    /// this token changes.
+    @Published private(set) var draftWriteToken: UInt64 = 0
     @Published var attachments: [Attachment] = []
     @Published var attachError: String?
     @Published private(set) var onboardingDismissedFor: Set<String> = []
@@ -144,6 +157,16 @@ final class AppModel: ObservableObject {
     /// to the newest turn: sending is an explicit request to watch the answer,
     /// so it overrides whatever the reader's scroll position was.
     @Published private(set) var sendTick: UInt64 = 0
+    /// False from the moment a chat is opened until its rows are all in.
+    ///
+    /// A thread arrives in two waves — the durable rows, then the session
+    /// replay — and a scroll view that already exists while they land keeps
+    /// the offset it had, which is the top. Something then has to scroll it
+    /// down, and that trip is what reads as "it starts in the middle and
+    /// jumps". The transcript is not built at all until this is true, so its
+    /// first layout is the finished one and `defaultScrollAnchor(.bottom)`
+    /// puts it on the newest turn with nothing to animate.
+    @Published private(set) var transcriptReady = false
     private var chatGeneration = 0
     private var sendBotId: String?
     private var started = false
@@ -385,6 +408,9 @@ final class AppModel: ObservableObject {
             }
             guard generation == loadGeneration else { return }
             publishTranscript(force: true)
+            // Every row is in, so the transcript can be built and laid out once,
+            // already at its newest turn.
+            transcriptReady = true
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot.
             let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
@@ -393,6 +419,9 @@ final class AppModel: ObservableObject {
             return
         } catch {
             guard generation == loadGeneration else { return }
+            // A thread that will not load still has to render: the error
+            // belongs on screen, not behind a transcript that never appears.
+            transcriptReady = true
             threadError = (error as? LocalizedError)?.errorDescription ?? "Thread failed to load."
         }
     }
@@ -499,7 +528,18 @@ final class AppModel: ObservableObject {
         sendBotId = bot.id
         let draftSnapshot = draft
         let sentAttachmentIds = Set(attachments.map(\.id))
-        projection = projectionForSend(message)
+        // Appended to the projection that is already on screen, never a fresh
+        // one built from the durable rows. The durable store holds only the
+        // side channel — notes, proposals, handoffs — while the conversation
+        // itself lives in the eve session and reaches us by replay, so
+        // rebuilding from durable rows erased every message the reader could
+        // see and left them alone with the line they had just sent until the
+        // turn finished and the replay put it all back.
+        projection.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)\(UUID().uuidString)",
+            message: message
+        ), live: true)
         rebuildTranscript()
         // The composer empties the moment the turn is committed, not when the
         // server answers. Waiting for the round trip left the sent text sitting
@@ -616,6 +656,7 @@ final class AppModel: ObservableObject {
     /// anything typed or attached while the turn was starting survives.
     private func clearSentComposer(draft draftSnapshot: String, attachmentIds: Set<String>) {
         draft = ComposerDraft.remainder(draft, afterSending: draftSnapshot)
+        draftWriteToken &+= 1
         if !attachmentIds.isEmpty {
             attachments.removeAll { attachmentIds.contains($0.id) }
         }
@@ -630,7 +671,10 @@ final class AppModel: ObservableObject {
             draft = draftSnapshot
         } else if !draft.hasPrefix(draftSnapshot) {
             draft = draftSnapshot + "\n" + draft
+        } else {
+            return
         }
+        draftWriteToken &+= 1
     }
 
     private func cancelSend() {
@@ -1081,6 +1125,7 @@ final class AppModel: ObservableObject {
         // cleared transcript.
         pendingPublish?.cancel()
         pendingPublish = nil
+        transcriptReady = false
         durableEvents = []
         proposals = []
         projection = StreamProjection()
@@ -1175,6 +1220,33 @@ final class AppModel: ObservableObject {
 
     var hasThreadContent: Bool {
         !transcript.isEmpty || !openProposals.isEmpty || showOnboarding
+    }
+
+    /// The first reply row of the newest turn, or nil if the turn has none.
+    ///
+    /// A finished answer is read from its first line, not its last, so the
+    /// transcript settles with the top of the reply in view rather than its
+    /// tail. Anything the bot said before the owner's most recent message
+    /// belongs to an older turn and is not the anchor.
+    var latestReplyAnchor: String? {
+        var anchor: String?
+        var awaitingReply = false
+        for block in transcriptBlocks {
+            guard case .message(let row, _) = block else { continue }
+            switch row.kind {
+            case .user:
+                awaitingReply = true
+                anchor = nil
+            case .assistant:
+                if awaitingReply {
+                    anchor = row.id
+                    awaitingReply = false
+                }
+            case .handoff, .post, .note:
+                continue
+            }
+        }
+        return anchor
     }
 
     // MARK: - Memory

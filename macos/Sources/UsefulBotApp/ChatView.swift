@@ -16,6 +16,14 @@ struct ChatView: View {
     /// fires then: streaming replies append below and stay pinned, while a
     /// scroll-up into history never yanks the reader back down.
     @State private var pinnedToBottom = true
+    /// Height of the newest reply and of the window showing it. Together they
+    /// decide whether landing on the reply's first line is worth moving the
+    /// page for: a reply that already fits needs no move.
+    @State private var replyHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    /// Room for the user's message above the reply, so an answer that only
+    /// just fits is left where it is.
+    private static let replyAnchorSlack: CGFloat = 120
 
     var body: some View {
         HStack(spacing: 0) {
@@ -32,6 +40,11 @@ struct ChatView: View {
                     header(bot)
                     if model.hasThreadContent || model.pending {
                         transcript(bot)
+                            // A new chat gets a new scroll view. Reusing one
+                            // across bots hands the next chat the offset the
+                            // last one was left at, which then has to be
+                            // corrected on screen.
+                            .id(bot.id)
                     } else {
                         emptyState(bot)
                     }
@@ -254,6 +267,19 @@ struct ChatView: View {
                                     maxBubbleWidth: columnWidth * 0.85
                                 )
                                 .equatable()
+                                // Only the newest reply measures itself, and
+                                // only so the scroll can tell an answer that
+                                // overflows the window from one that does not.
+                                .background {
+                                    if row.id == model.latestReplyAnchor {
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(
+                                                key: ReplyHeightKey.self,
+                                                value: geometry.size.height
+                                            )
+                                        }
+                                    }
+                                }
                             case .summary(_, let count, let botIds):
                                 BotMetaRow(
                                     prefix: "\(count) messages with",
@@ -287,7 +313,8 @@ struct ChatView: View {
                 }
                 .uvScroll()
                 .defaultScrollAnchor(.bottom)
-                .modifier(ScrollPinnedTracker(pinned: $pinnedToBottom))
+                .modifier(ScrollPinnedTracker(pinned: $pinnedToBottom, viewport: $viewportHeight))
+                .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
                 .onAppear { jumpToBottom(proxy) }
                 // A chat opens at its newest turn, and gets there before the
                 // frame is drawn. The delayed scroll this replaces was visible
@@ -325,8 +352,26 @@ struct ChatView: View {
                     guard pinnedToBottom else { return }
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
-                .onChange(of: model.pending) {
+                .onChange(of: model.pending) { wasPending, nowPending in
                     guard pinnedToBottom else { return }
+                    // The turn just finished. Land on the first line of the
+                    // answer rather than its last: a long reply read from the
+                    // bottom is a reply read backwards.
+                    //
+                    // Only when the answer is actually taller than the window,
+                    // though. A short exchange is already on screen in full,
+                    // and re-anchoring it moves the page under the reader to
+                    // show them what they can already see.
+                    if wasPending, !nowPending,
+                       replyHeight > viewportHeight - Self.replyAnchorSlack,
+                       let anchor = model.latestReplyAnchor {
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            proxy.scrollTo(anchor, anchor: .top)
+                        }
+                        return
+                    }
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onChange(of: model.openProposals.count) {
@@ -703,8 +748,20 @@ struct WrapHStack: Layout {    var spacing: CGFloat = 8
 /// from "I am reading history". Needs the scroll-geometry API of macOS 15;
 /// older systems keep the previous always-follow behavior, with the bottom
 /// default anchor still handling the short-content and open cases.
+/// The height of the newest reply, reported up from the row that renders it.
+private struct ReplyHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private struct ScrollPinnedTracker: ViewModifier {
     @Binding var pinned: Bool
+    /// The visible height of the transcript, for deciding whether a reply
+    /// overflows it.
+    @Binding var viewport: CGFloat
     /// Within half a line of the bottom counts as pinned, so a hair of
     /// rubber-band or rounding cannot drop the pin while streaming.
     private static let tolerance: CGFloat = 48
@@ -716,6 +773,7 @@ private struct ScrollPinnedTracker: ViewModifier {
         var offset: CGFloat
         var contentHeight: CGFloat
         var distance: CGFloat
+        var viewport: CGFloat
     }
 
     /// True only while the reader's own hand is on the transcript. Every other
@@ -740,9 +798,11 @@ private struct ScrollPinnedTracker: ViewModifier {
                 return Geometry(
                     offset: geometry.contentOffset.y,
                     contentHeight: geometry.contentSize.height,
-                    distance: max(0, geometry.contentSize.height - bottomEdge)
+                    distance: max(0, geometry.contentSize.height - bottomEdge),
+                    viewport: geometry.containerSize.height
                 )
             } action: { _, new in
+                viewport = new.viewport
                 // Only the reader's own gesture may break the pin.
                 //
                 // Everything else that moves this geometry is the app's doing

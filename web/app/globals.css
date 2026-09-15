@@ -1044,8 +1044,9 @@ html, body {
     border: 0;
     border-top: 1px solid var(--border);
   }
-  /* A wide table scrolls inside its own box; the transcript column never
-     grows to fit one. */
+  /* The table takes the column's width and wraps inside it. `max-content`
+     made a long cell scroll sideways through the very thing being read; the
+     scroll stays only as the fallback for a table too wide to wrap. */
   .chat-md-table {
     overflow-x: auto;
     margin: 0 0 0.8em;
@@ -1054,9 +1055,10 @@ html, body {
   }
   .chat-md-table table {
     border-collapse: collapse;
-    width: max-content;
-    min-width: 100%;
+    width: 100%;
+    table-layout: auto;
   }
+  .chat-md-table td { overflow-wrap: anywhere; }
   .chat-md-table th,
   .chat-md-table td {
     border-bottom: 1px solid var(--border);

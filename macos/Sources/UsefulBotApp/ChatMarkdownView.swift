@@ -66,12 +66,19 @@ struct ChatMarkdownView: View, Equatable {
         case .quote(let content):
             HStack(alignment: .top, spacing: 10) {
                 // The bar carries the quote; no tint, so a quoted line stays
-                // as readable as the prose around it.
+                // as readable as the prose around it. It takes its height from
+                // the text beside it: a bare Rectangle reports a small ideal
+                // height, and with `fixedSize` that became the whole block's
+                // height, so the next row in the transcript drew over the
+                // quote instead of below it.
                 Rectangle()
                     .fill(Theme.C.borderStrong)
                     .frame(width: 2)
+                    .frame(maxHeight: .infinity)
                 Text(inline(content))
                     .foregroundStyle(Theme.C.inkMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .rule:
@@ -140,8 +147,11 @@ struct ChatMarkdownView: View, Equatable {
 /// A pipe table as a real grid.
 ///
 /// `Grid` keeps the columns aligned across rows without measuring anything by
-/// hand, and the whole table scrolls sideways inside its own scroll view so a
-/// wide one never pushes the transcript column out past the window edge.
+/// hand. The table takes the width the transcript column offers and no more:
+/// columns size to their content while there is room, and once there is not,
+/// cells wrap and the rows grow taller. Nothing is pinned to its content width,
+/// because a table that insists on it turns a long cell into a sideways scroll
+/// through the one thing the reader wants to read.
 struct MarkdownTableView: View {
     let table: MarkdownTable
     /// The row renderer's inline parser, passed in so the table draws bold,
@@ -149,31 +159,32 @@ struct MarkdownTableView: View {
     let inline: (String) -> AttributedString
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(Array(table.headers.enumerated()), id: \.offset) { index, cell in
-                        cellView(cell, column: index, header: true)
-                    }
-                }
-                .background(Theme.C.sunken)
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIndex, row in
-                    Divider().gridCellUnsizedAxes(.horizontal)
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { index, cell in
-                            cellView(cell, column: index, header: false)
-                        }
-                    }
-                    .background(rowIndex.isMultiple(of: 2) ? Color.clear : Theme.C.sunken.opacity(0.4))
+        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(Array(table.headers.enumerated()), id: \.offset) { index, cell in
+                    cellView(cell, column: index, header: true)
                 }
             }
-            .fixedSize(horizontal: true, vertical: false)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Body rows carry no fill. The header band is what separates the
+            // titles from the data; striping the rest only adds noise to a
+            // grid whose rules already say where each row ends.
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                Divider().gridCellUnsizedAxes(.horizontal)
+                GridRow {
+                    ForEach(Array(row.enumerated()), id: \.offset) { index, cell in
+                        cellView(cell, column: index, header: false)
+                    }
+                }
+            }
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // Hugs left when the table is narrower than the column, rather than
+        // stretching two short columns across the whole width.
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func cellView(_ cell: String, column: Int, header: Bool) -> some View {
@@ -183,10 +194,20 @@ struct MarkdownTableView: View {
         return Text(inline(cell))
             .font(header ? Theme.font(DesignTokens.FontSize.chatBody, .semibold) : nil)
             .multilineTextAlignment(textAlignment(alignment))
-            .frame(minWidth: 64, maxWidth: 360, alignment: frameAlignment(alignment))
+            // Wraps rather than truncating or forcing the column wider. No
+            // width cap: the Grid shares out what the column has, and a cell
+            // that cannot fit its line takes another one.
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: frameAlignment(alignment))
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            // Only the header stretches, and only because its band has to be
+            // even when one title wraps and the others do not. Body cells are
+            // left to their natural height: making every cell greedy left the
+            // grid reporting less height than it drew, and the next row in the
+            // transcript was laid out over the bottom of the table.
+            .modifier(FillRowHeight(active: header))
+            .background(header ? Theme.C.sunken : Color.clear)
     }
 
     private func textAlignment(_ alignment: MarkdownTable.Alignment) -> TextAlignment {
@@ -202,6 +223,21 @@ struct MarkdownTableView: View {
         case .leading: return .leading
         case .center: return .center
         case .trailing: return .trailing
+        }
+    }
+}
+
+/// Stretch to the row's height, or leave the view alone. Applying
+/// `maxHeight: .infinity` to every cell makes the whole grid greedy; this
+/// keeps it to the cells that actually need an even band.
+private struct FillRowHeight: ViewModifier {
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        if active {
+            content.frame(maxHeight: .infinity)
+        } else {
+            content
         }
     }
 }

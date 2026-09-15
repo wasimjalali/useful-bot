@@ -276,6 +276,7 @@ struct ComposerView: View {
             }
             ComposerTextView(
                 text: $model.draft,
+                writeToken: model.draftWriteToken,
                 returnSends: true,
                 canSend: { canSend },
                 pending: { model.pending },
