@@ -946,7 +946,8 @@ final class AppModel: ObservableObject {
     /// collapses a list the owner expanded.
     func loadConnectors(search: String = "", quiet: Bool = false) async {
         if !quiet { connectorsError = nil }
-        let limit = quiet ? max(Self.connectorPageSize, connectors?.toolkits.count ?? 0) : Self.connectorPageSize
+        // The server caps a page at 200; a quiet reload never asks for more.
+        let limit = quiet ? min(max(Self.connectorPageSize, connectors?.toolkits.count ?? 0), 200) : Self.connectorPageSize
         do {
             let payload = try await client.connectors(search: search, limit: limit)
             connectors = payload
@@ -970,9 +971,13 @@ final class AppModel: ObservableObject {
         connectorMoreBusy = true
         do {
             let page = try await client.connectors(search: search, offset: offset, limit: Self.connectorPageSize)
-            if var current = connectors {
-                current.toolkits.append(contentsOf: page.toolkits)
+            // The search may have moved on while the page was in flight; a
+            // page for an old query is dropped, and rows on screen never repeat.
+            if connectorSearch == search, var current = connectors {
+                let seen = Set(current.toolkits.map(\.slug))
+                current.toolkits.append(contentsOf: page.toolkits.filter { !seen.contains($0.slug) })
                 current.nextOffset = page.nextOffset
+                current.total = page.total
                 connectors = current
             }
         } catch {

@@ -484,7 +484,7 @@ public struct ConnectorsPayload: Codable, Equatable, Sendable {
     /// Set when the route could not reach Composio; the rows are then empty.
     public let error: String?
     /// Rows matching the query in total, and where the next page starts.
-    public let total: Int
+    public var total: Int
     public var nextOffset: Int?
 
     public init(from decoder: Decoder) throws {

@@ -31,6 +31,8 @@ type Payload = {
 };
 
 const PAGE_SIZE = 30;
+/** The server caps a page here; a quiet reload never asks for more. */
+const PAGE_CAP = 200;
 
 const POLL_MS = 3000;
 const POLL_LIMIT_MS = 120_000;
@@ -90,7 +92,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       const res = await fetch(`/api/connectors?${params}`, { credentials: "include" });
       const body = (await res.json()) as Payload;
       if (!res.ok && res.status !== 502) throw new Error(body.error ?? "connectors_failed");
-      shown.current = Math.max(PAGE_SIZE, body.toolkits?.length ?? 0);
+      shown.current = Math.min(Math.max(PAGE_SIZE, body.toolkits?.length ?? 0), PAGE_CAP);
       setPayload(body);
       // A quiet poll only clears a load error it could have caused; a message
       // from Connect or Disconnect stays until the owner acts again.
@@ -116,18 +118,24 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
   async function showMore() {
     const offset = payload?.nextOffset;
     if (offset === null || offset === undefined) return;
+    const query = search.trim();
     setMore(true);
     try {
       const params = new URLSearchParams();
-      if (search.trim()) params.set("search", search.trim());
+      if (query) params.set("search", query);
       params.set("offset", String(offset));
       params.set("limit", String(PAGE_SIZE));
       const res = await fetch(`/api/connectors?${params}`, { credentials: "include" });
       const body = (await res.json()) as Payload;
       if (!res.ok || !body.ok) throw new Error("more_failed");
+      // The search may have moved on while this page was in flight; a page
+      // for an old query is dropped. Rows already shown are not repeated.
+      if (searchLive.current.trim() !== query) return;
       setPayload((current) => {
-        const merged = [...(current?.toolkits ?? []), ...(body.toolkits ?? [])];
-        shown.current = merged.length;
+        const seen = new Set((current?.toolkits ?? []).map((row) => row.slug));
+        const fresh = (body.toolkits ?? []).filter((row) => !seen.has(row.slug));
+        const merged = [...(current?.toolkits ?? []), ...fresh];
+        shown.current = Math.min(merged.length, PAGE_CAP);
         return { ...(current ?? {}), ...body, toolkits: merged };
       });
     } catch {

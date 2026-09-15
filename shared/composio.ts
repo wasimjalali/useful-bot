@@ -441,7 +441,7 @@ export async function searchConnectorTools(
       toolSchemas?: Record<string, { toolkit: string; toolSlug: string; description?: string; inputSchema?: Record<string, unknown> }>;
       toolkitConnectionStatuses?: Array<{ toolkit: string; hasActiveConnection: boolean }>;
     }>,
-    client.tools.getRawComposioTools({ toolkits: store.connectedToolkits, search: useCase, limit: 15 }).catch(() => []),
+    client.tools.getRawComposioTools({ toolkits: store.connectedToolkits, search: useCase, limit: 15 }).catch(() => null),
   ]);
   const wanted = new Set<string>();
   const guidance: string[] = [];
@@ -463,7 +463,10 @@ export async function searchConnectorTools(
       inputSchema: schema.inputSchema ?? null,
     });
   }
-  for (const tool of direct) {
+  // A failed direct listing is said out loud rather than passed off as a
+  // complete answer: the model then knows a missing tool may still exist.
+  if (direct === null) guidance.push("The direct tool listing failed, so this list may be incomplete. Search again if a tool you expect is missing.");
+  for (const tool of direct ?? []) {
     const toolkit = tool.toolkit?.slug.toLowerCase() ?? toolkitOf(tool.slug, store.connectedToolkits) ?? "";
     if (!allowed.has(toolkit) || tools.has(tool.slug)) continue;
     tools.set(tool.slug, {
