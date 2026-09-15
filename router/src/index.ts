@@ -220,7 +220,13 @@ function headerUuid(req: IncomingMessage, name: string): string {
   return value;
 }
 
-function validationError(code: string): RouterError {
+/**
+ * `reason` names the check that refused, in the log only. The wire code stays
+ * the coarse one the spec defines, but a rejection nobody can diagnose is how
+ * a dead chat turns into "the turn failed" with no way to find out why.
+ */
+function validationError(code: string, reason?: string): RouterError {
+  log({ event: "rejected", code, reason: reason ?? code });
   return new RouterError({
     status: 400,
     type: "invalid_request_error",
@@ -233,20 +239,23 @@ const ALLOWED_MESSAGE_ROLES = new Set(["system", "user", "assistant", "tool"]);
 
 function validateTools(tools: unknown): void {
   if (tools === undefined) return;
-  if (!Array.isArray(tools)) throw validationError("unsupported_parameter");
-  if (tools.length > MAX_TOOL_SCHEMAS) throw validationError("unsupported_parameter");
-  if (Buffer.byteLength(JSON.stringify(tools), "utf8") > MAX_TOOL_SCHEMA_BYTES) {
-    throw validationError("unsupported_parameter");
+  if (!Array.isArray(tools)) throw validationError("unsupported_parameter", "tools_not_array");
+  if (tools.length > MAX_TOOL_SCHEMAS) {
+    throw validationError("unsupported_parameter", `tools_count:${tools.length}>${MAX_TOOL_SCHEMAS}`);
+  }
+  const toolBytes = Buffer.byteLength(JSON.stringify(tools), "utf8");
+  if (toolBytes > MAX_TOOL_SCHEMA_BYTES) {
+    throw validationError("unsupported_parameter", `tools_bytes:${toolBytes}>${MAX_TOOL_SCHEMA_BYTES}`);
   }
   for (const tool of tools) {
-    if (!tool || typeof tool !== "object") throw validationError("unsupported_parameter");
+    if (!tool || typeof tool !== "object") throw validationError("unsupported_parameter", "tool_shape");
     const rec = tool as Record<string, unknown>;
     const fn = rec.function;
     if (rec.type !== "function" || !fn || typeof fn !== "object") {
-      throw validationError("unsupported_parameter");
+      throw validationError("unsupported_parameter", "tool_not_function");
     }
     if (typeof (fn as Record<string, unknown>).name !== "string") {
-      throw validationError("unsupported_parameter");
+      throw validationError("unsupported_parameter", "tool_name");
     }
   }
 }
@@ -261,7 +270,7 @@ function validateToolChoice(choice: unknown): void {
       return;
     }
   }
-  throw validationError("unsupported_parameter");
+  throw validationError("unsupported_parameter", "tool_choice");
 }
 
 /**
@@ -270,7 +279,9 @@ function validateToolChoice(choice: unknown): void {
  * dispatch so a malformed history never reaches the upstream.
  */
 function validateMessages(messages: unknown[]): void {
-  if (messages.length > MAX_MESSAGE_COUNT) throw validationError("unsupported_parameter");
+  if (messages.length > MAX_MESSAGE_COUNT) {
+    throw validationError("unsupported_parameter", `messages_count:${messages.length}>${MAX_MESSAGE_COUNT}`);
+  }
   const outstanding = new Set<string>();
   for (const item of messages) {
     if (!item || typeof item !== "object") throw validationError("invalid_request");
@@ -279,7 +290,7 @@ function validateMessages(messages: unknown[]): void {
     if (typeof role !== "string" || !ALLOWED_MESSAGE_ROLES.has(role)) {
       throw validationError("invalid_request");
     }
-    if (Array.isArray(message.content)) throw validationError("unsupported_parameter");
+    if (Array.isArray(message.content)) throw validationError("unsupported_parameter", "message_content_array");
     if (message.content !== undefined && message.content !== null && typeof message.content !== "string") {
       throw validationError("invalid_request");
     }
@@ -318,11 +329,12 @@ function validateCompletion(body: unknown): { model: string; stream: boolean; ma
   const rec = body as Record<string, unknown>;
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_COMPLETION_KEYS.has(key)) {
-      throw validationError("unsupported_parameter");
+      // The key is caller input; only a safe alphabet reaches the log line.
+      throw validationError("unsupported_parameter", `unknown_key:${key.replace(/[^\w.-]/g, "?").slice(0, 40)}`);
     }
   }
   if (rec.n !== undefined && rec.n !== 1) {
-    throw validationError("unsupported_parameter");
+    throw validationError("unsupported_parameter", "n_not_one");
   }
   if (typeof rec.model !== "string") {
     throw validationError("unknown_alias");
@@ -334,12 +346,12 @@ function validateCompletion(body: unknown): { model: string; stream: boolean; ma
   validateTools(rec.tools);
   validateToolChoice(rec.tool_choice);
   if (rec.parallel_tool_calls !== undefined && rec.parallel_tool_calls !== false) {
-    throw validationError("unsupported_parameter");
+    throw validationError("unsupported_parameter", `parallel_tool_calls:${String(rec.parallel_tool_calls)}`);
   }
   if (rec.stream_options !== undefined) {
     const options = rec.stream_options;
     if (!options || typeof options !== "object" || (options as Record<string, unknown>).include_usage !== true) {
-      throw validationError("unsupported_parameter");
+      throw validationError("unsupported_parameter", "stream_options");
     }
   }
   const stream = rec.stream === true;

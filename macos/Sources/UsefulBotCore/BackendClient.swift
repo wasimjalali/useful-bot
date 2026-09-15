@@ -18,6 +18,9 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case attachment(String)
     /// `/api/shell` answered with its own error code.
     case shell(String)
+    /// eve retired the session this chat pointed at (a failed turn ends a
+    /// session for good), so nothing can be sent to it again.
+    case sessionEnded
 
     public var errorDescription: String? {
         switch self {
@@ -59,6 +62,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return code
         case .shell(let code):
             return Self.shellCopy(code)
+        case .sessionEnded:
+            return "This chat's session ended. Send again to start a new one."
         }
     }
 
@@ -130,6 +135,9 @@ private struct StateResponse: Decodable {
     let proposals: [Proposal]?
 }
 private struct SendResponse: Decodable { let sessionId: String? }
+/// The proxy's error envelope for an upstream refusal. `code` is only ever
+/// the one value the proxy relays, `session_not_active`.
+private struct EveErrorResponse: Decodable { let code: String? }
 private struct ShellErrorResponse: Decodable { let error: String? }
 private struct ProvidersResponse: Decodable {
     let composer: ComposerState?
@@ -787,6 +795,13 @@ public actor BackendClient {
                 "botId": botId,
             ])
             return request
+        }
+        // A 409 with the relayed code means the stored session is gone, not
+        // busy: the caller starts a fresh one instead of showing a dead end.
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
+           failure.code == "session_not_active" {
+            throw BackendError.sessionEnded
         }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) else {

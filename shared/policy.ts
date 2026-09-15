@@ -39,7 +39,15 @@ export const MAX_ACTIVE_UPSTREAM = 2;
 export const MAX_ACTIVE_PER_CALLER = 1;
 
 export const MAX_MESSAGE_COUNT = 256;
-export const MAX_TOOL_SCHEMAS = 32;
+/**
+ * A count, not the real bound: `MAX_TOOL_SCHEMA_BYTES` is what keeps the
+ * upstream payload sane, and a schema's size has little to do with how many
+ * there are. 32 was one below what this app actually sends (26 agent tools
+ * plus eve's own, 33 in total on 2026-09-15), so adding a single tool killed
+ * every turn with `unsupported_parameter`. The headroom here is for the
+ * connector tools a bot picks up, which vary per roster.
+ */
+export const MAX_TOOL_SCHEMAS = 96;
 export const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
 
 export const FORBIDDEN_PATH_SUBSTRINGS = [

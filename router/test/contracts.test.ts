@@ -11,6 +11,7 @@ import { ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs } from "../src/retry-after.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
+import { MAX_TOOL_SCHEMAS } from "../../shared/policy.ts";
 
 type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -637,8 +638,8 @@ test("duplicate tool call ids are invalid history", async () => {
   });
 });
 
-test("more than 32 tool schemas is rejected", async () => {
-  const tools = Array.from({ length: 33 }, (_, index) => ({
+test("more than MAX_TOOL_SCHEMAS tool schemas is rejected", async () => {
+  const tools = Array.from({ length: MAX_TOOL_SCHEMAS + 1 }, (_, index) => ({
     type: "function",
     function: { name: `f${index}`, parameters: {} },
   }));

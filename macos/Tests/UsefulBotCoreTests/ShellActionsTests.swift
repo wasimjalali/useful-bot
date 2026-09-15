@@ -15,6 +15,14 @@ import Testing
         #expect(patch["avatarImage"] is NSNull)
     }
 
+    @Test func setSessionSendsNullToDropThePointer() throws {
+        let dropped = ShellActions.setSession(botId: "b1", sessionId: nil)
+        #expect(dropped["type"] as? String == "setSession")
+        #expect(dropped["sessionId"] is NSNull)
+        let set = ShellActions.setSession(botId: "b1", sessionId: "wrun_1")
+        #expect(set["sessionId"] as? String == "wrun_1")
+    }
+
     @Test func moveToUnassignedSendsNull() throws {
         let action = ShellActions.move(botId: "b1", sectionId: nil)
         #expect(action["sectionId"] is NSNull)
