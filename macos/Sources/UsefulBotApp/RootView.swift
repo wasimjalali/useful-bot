@@ -926,14 +926,19 @@ private struct AppLogo: View {
 }
 
 /// One fetch per logo URL for the life of the process; a failure is not
-/// cached, so a flaky load is retried the next time the row appears.
+/// cached, so a flaky load is retried the next time the row appears. Only
+/// Composio's logo host is fetched, so a row's logo field cannot point the
+/// app at anything else, and the cache is capped.
 private actor LogoCache {
     static let shared = LogoCache()
+    private static let host = "logos.composio.dev"
+    private static let maxEntries = 400
     private var images: [String: NSImage] = [:]
     private var inFlight: [String: Task<NSImage?, Never>] = [:]
 
     func image(for urlString: String?) async -> NSImage? {
-        guard let urlString, let url = URL(string: urlString), url.scheme == "https" else { return nil }
+        guard let urlString, let url = URL(string: urlString), url.scheme == "https",
+              url.host?.lowercased() == Self.host else { return nil }
         if let cached = images[urlString] { return cached }
         if let running = inFlight[urlString] { return await running.value }
         let task = Task<NSImage?, Never> {
@@ -946,7 +951,10 @@ private actor LogoCache {
         inFlight[urlString] = task
         let result = await task.value
         inFlight[urlString] = nil
-        if let result { images[urlString] = result }
+        if let result {
+            if images.count >= Self.maxEntries { images.removeAll() }
+            images[urlString] = result
+        }
         return result
     }
 }

@@ -273,11 +273,13 @@ export async function listConnectorToolkits(
     } else {
       add((await session.toolkits({ toolkits: FEATURED_TOOLKITS, limit: PAGE_MAX })).items);
       let next: string | undefined;
-      while (rows.size < limit) {
-        const page = await session.toolkits({ limit: PAGE_MAX, cursor: next });
-        add(page.items);
-        next = page.cursor;
-        if (!next || page.items.length === 0) break;
+      // Bounded by pages, not only by rows: a page of duplicates adds nothing
+      // and must not turn into a walk through the whole catalogue.
+      for (let page = 0; page < 4 && rows.size < limit; page += 1) {
+        const batch = await session.toolkits({ limit: PAGE_MAX, cursor: next });
+        add(batch.items);
+        next = batch.cursor;
+        if (!next || batch.items.length === 0) break;
       }
     }
     // Composio's own no-sign-in toolkits (composio_search, exa and the like)
