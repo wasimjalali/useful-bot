@@ -105,6 +105,8 @@ const XARGS_VALUED = new Set([
 ]);
 /** Package runners that fetch a package and run it. */
 const PACKAGE_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
+/** Variables that change which program a later command runs, or with what. */
+const HIJACK_VARS = /^(PATH|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_(SSH|SSH_COMMAND|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|PAGER|CONFIG[A-Z_]*|EXEC_PATH|ASKPASS|TEMPLATE_DIR|DIR|WORK_TREE|PROXY_COMMAND)|EDITOR|VISUAL|PAGER|LESSOPEN|LESSCLOSE|NODE_OPTIONS|PYTHONSTARTUP|PYTHONPATH|PERL5OPT|PERL5LIB|RUBYOPT|BASH_ENV|ENV|SHELL|CDPATH|IFS|HOME|TMPDIR|PROMPT_COMMAND|ZDOTDIR)=/;
 
 /** Executables the confined PATH would find anyway; not "outside the folder". */
 const SYSTEM_BIN_PREFIXES = ["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/"];
@@ -147,10 +149,21 @@ type Segment = { tokens: Token[]; pipedInto: boolean };
 const isAssignment = (token: Token) => !token.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text);
 
 function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth = 0): string | null {
+  // `PATH=./bin:$PATH git status` runs whatever ./bin calls git.
+  const hijack = tokens.find((token) => !token.quoted && HIJACK_VARS.test(token.text));
+  if (hijack) return `changes what a command runs (${hijack.text.split("=")[0]}=)`;
   let args = tokens.filter((token) => !isAssignment(token));
   // Peel wrappers, their flags and their numeric arguments so `env -i FOO=1
   // rm -rf x`, `timeout 5 rm x` and `exec rm x` still see `rm`.
   while (args.length > 0 && WRAPPERS.has(basename(args[0].text))) {
+    // `script -c '...'` and `env -S '...'` carry a whole command line as an
+    // option value: judged as a line of its own.
+    const wrapper = basename(args[0].text);
+    const carriedAt = args.findIndex((token, at) => at > 0 && ((wrapper === "script" && token.text === "-c") || (wrapper === "env" && token.text === "-S")));
+    if (carriedAt > 0 && args[carriedAt + 1]) {
+      const carried = commandRisk(args[carriedAt + 1].text, root, depth);
+      if (carried) return carried;
+    }
     // Only the wrapper's own leading options go; the inner command keeps
     // its flags, or `timeout 5 git push --force` would lose its force.
     // Options with a value take it along, so `exec -a backup rm` does not
@@ -198,8 +211,8 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     if (flags.some((flag) => /^-[a-zA-Z]*[ceEpr]/.test(flag) || flag === "--eval" || flag === "--print")) {
       return `runs inline code (${name} -e)`;
     }
-    // Code from stdin is a payload this cannot read.
-    if (flags.some((flag) => flag === "-" || flag === "<" || flag.startsWith("<") || flag === "/dev/stdin")) {
+    // Code from stdin, or from a descriptor, is a payload this cannot read.
+    if (flags.some((flag) => flag === "-" || flag === "<" || flag.startsWith("<") || flag.startsWith("/dev/"))) {
       return `runs code from stdin (${name})`;
     }
     const script = words[0] ? fileUnderRoot(words[0], root) : null;
@@ -229,6 +242,11 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
   if (PACKAGE_RUNNERS.has(name) || ((name === "npm" || name === "pnpm" || name === "yarn" || name === "bun")
     && ["exec", "x", "dlx", "create", "init"].includes(words[0] ?? ""))) {
     return packageRunnerRisk(name, rest, root, depth);
+  }
+  if (name === "awk" || name === "gawk" || name === "mawk" || name === "nawk") {
+    // An awk program can shell out; that is a command this cannot read.
+    const program = rest.find((token) => /\bsystem\s*\(|\|\s*"|"\s*\||\bgetline\b/.test(token.text));
+    if (program) return `runs a command from awk (${name} system())`;
   }
   if (name === "rsync" && flags.some((flag) => flag.startsWith("--delete"))) return "deletes at the destination (rsync --delete)";
   if (name === "chmod" && flags.some((flag) => /^-[a-zA-Z]*R/.test(flag))) return "changes permissions recursively (chmod -R)";
@@ -500,6 +518,8 @@ function gitRisk(all: string[]): string | null {
       if (flag === "-c" || flag === "--config-env" || flag.startsWith("--config-env=")) {
         return "sets git config on the command line (git -c)";
       }
+      // `--exec-path=./evil` makes git run whatever sits there.
+      if (flag === "--exec-path" || flag.startsWith("--exec-path=")) return "changes where git finds its commands (git --exec-path)";
       if (GIT_VALUED_GLOBALS.has(flag)) {
         i += 1;
         continue;
@@ -515,7 +535,13 @@ function gitRisk(all: string[]): string | null {
   const has = (...names: string[]) => flags.some((flag) => names.includes(flag));
   switch (sub) {
     case "reset":
-      return has("--hard", "--merge", "--keep") ? "discards changes (git reset --hard)" : null;
+      if (has("--hard", "--merge", "--keep")) return "discards changes (git reset --hard)";
+      // Moving the branch to another commit rewrites its history even when
+      // the working tree is kept; unstaging (`git reset HEAD file`) does not.
+      if (has("--soft", "--mixed")) return "moves the branch (git reset --soft)";
+      return words[1] && words[1] !== "HEAD" && !has("--") && /^(HEAD[~^]|[0-9a-f]{7,40}$|refs\/|origin\/|@\{)/.test(words[1])
+        ? "moves the branch (git reset <commit>)"
+        : null;
     case "clean":
       return "deletes untracked files (git clean)";
     case "push":
@@ -550,7 +576,8 @@ function gitRisk(all: string[]): string | null {
       if (has("-d", "--delete")) return "deletes a tag (git tag -d)";
       return has("-f", "--force") ? "overwrites a tag (git tag -f)" : null;
     case "symbolic-ref":
-      return words.length > 1 && !has("--delete", "-d") ? "rewrites a ref (git symbolic-ref)" : "rewrites a ref (git symbolic-ref)";
+      // `git symbolic-ref HEAD` reads; a second word writes, -d deletes.
+      return words.length > 2 || has("--delete", "-d") ? "rewrites a ref (git symbolic-ref)" : null;
     case "worktree":
       return words[1] === "remove" || words[1] === "prune" ? `removes a worktree (git worktree ${words[1]})` : null;
     case "rm":
