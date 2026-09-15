@@ -54,7 +54,6 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
     sessionId,
     path: bot.workspace.path,
     permission: bot.workspace.permission,
-    finalConfirm: bot.workspace.finalConfirm,
   });
 }
 

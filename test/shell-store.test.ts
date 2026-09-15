@@ -23,18 +23,17 @@ test("setWorkspace attaches, updates and detaches a conversation folder", () => 
   store = applyShellAction(store, {
     type: "setWorkspace",
     botId: DEFAULT_BOT_ID,
-    workspace: { path: "/tmp/project", permission: "guard", finalConfirm: false },
+    workspace: { path: "/tmp/project", permission: "auto" },
   }).store;
   const attached = store.bots[0].workspace;
   assert.equal(attached?.path, "/tmp/project");
-  assert.equal(attached?.permission, "guard");
+  assert.equal(attached?.permission, "auto");
   store = applyShellAction(store, {
     type: "setWorkspace",
     botId: DEFAULT_BOT_ID,
-    workspace: { path: "/tmp/project", permission: "full_access", finalConfirm: true },
+    workspace: { path: "/tmp/project", permission: "full_access" },
   }).store;
   assert.equal(store.bots[0].workspace?.permission, "full_access");
-  assert.equal(store.bots[0].workspace?.finalConfirm, true);
   store = applyShellAction(store, { type: "setWorkspace", botId: DEFAULT_BOT_ID, workspace: null }).store;
   assert.equal(store.bots[0].workspace, null);
 });
@@ -51,17 +50,17 @@ test("setWorkspace rejects an unknown bot and a malformed grant", () => {
       applyShellAction(store, {
         type: "setWorkspace",
         botId: DEFAULT_BOT_ID,
-        workspace: { path: "relative/path", permission: "guard", finalConfirm: false },
+        workspace: { path: "relative/path", permission: "auto" },
       }),
     /workspace_path_invalid/,
   );
-  // An unknown permission word fails the write instead of becoming Guard.
+  // An unknown permission word fails the write instead of becoming Auto.
   assert.throws(
     () =>
       applyShellAction(store, {
         type: "setWorkspace",
         botId: DEFAULT_BOT_ID,
-        workspace: { path: "/tmp/project", permission: "admin" as never, finalConfirm: false },
+        workspace: { path: "/tmp/project", permission: "admin" as never },
       }),
     /workspace_permission_invalid/,
   );
@@ -244,7 +243,7 @@ test("a roster naming an ungrantable folder reads back with no workspace", () =>
     ...seedStore(),
     bots: [{
       ...seedStore().bots[0],
-      workspace: { path: "/", permission: "full_access", finalConfirm: false },
+      workspace: { path: "/", permission: "full_access" },
     }],
   });
   // Tolerant, not fatal: the bot keeps working, it just has no folder.
@@ -259,7 +258,7 @@ test("setWorkspace refuses a root the grants store would reject", () => {
       () => applyShellAction(base, {
         type: "setWorkspace",
         botId,
-        workspace: { path: bad, permission: "guard", finalConfirm: false },
+        workspace: { path: bad, permission: "auto" },
       }),
       /workspace_path_invalid/,
       bad,
@@ -295,7 +294,7 @@ test("staleSessionIds catches a detach, where the session id never changes", () 
   const before = applyShellAction(withSession, {
     type: "setWorkspace",
     botId,
-    workspace: { path: "/tmp", permission: "guard", finalConfirm: false },
+    workspace: { path: "/tmp", permission: "auto" },
   }).store;
   const action = { type: "setWorkspace", botId, workspace: null } as const;
   const after = applyShellAction(before, action).store;

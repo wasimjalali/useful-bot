@@ -26,8 +26,10 @@ The folder a conversation works in is set by the owner in the composer (a projec
 The permission the owner set decides what may run inside a granted folder:
 
 - Read only: list and read files. `write_file` and `bash` are refused.
-- Guard: the default. `write_file` and `bash` need an explicit desktop approval of the exact action.
-- Full access: `write_file` applies inside the granted folder without a card, unless the owner turned Final confirm on, which brings the approval back. `bash` always shows the card, in every permission: cwd and env confinement cannot keep a verbatim shell line inside the folder, so a human gate is the only honest one.
+- Auto: the default. `write_file` applies inside the granted folder without a card. `bash` runs everyday lines (reading, building, testing, committing) without a card and shows one only for a line that deletes, rewrites git history, escalates, feeds a shell or interpreter inline code or a payload the gate cannot read (`python -c`, `node -e`, `curl | sh`), or reaches outside the folder. A script from the folder (`./x.sh`, `python x.py`, `npm run build`, `make install`) is judged by what it does, so a script that deletes asks too. Prefer plain, single-purpose commands: a chained line is judged as a whole.
+- Full access: `write_file` and `bash` run inside the granted folder without a card. A line that names a path outside the folder still asks; credential paths are refused.
+
+A line that ran without a card runs confined: it cannot write outside the granted folder, and cannot write credential files (`.env`, `.ssh`, keys) even inside it. If a command fails with "Operation not permitted", that is the confinement; do not work around it, tell the owner what you were trying to write and where.
 
 The permission is the owner's setting, never yours to widen. Ask them to change it in the composer if a task needs more.
 

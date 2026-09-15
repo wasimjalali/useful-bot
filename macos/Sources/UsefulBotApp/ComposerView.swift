@@ -99,7 +99,10 @@ struct ComposerView: View {
 
     private var workspace: BotWorkspace? { bot.workspace }
 
-    private var stacked: Bool { !model.attachments.isEmpty || workspace != nil }
+    /// Only per-message files stack above the field. The working folder is a
+    /// setting of the conversation, and the project chip under the field is
+    /// where it shows; a second chip inside the field said the same thing.
+    private var stacked: Bool { !model.attachments.isEmpty }
 
     private var field: some View {
         VStack(spacing: 0) {
@@ -212,6 +215,10 @@ struct ComposerView: View {
                                 projectOpen = false
                                 showFolderImporter = true
                             },
+                            onDetach: {
+                                projectOpen = false
+                                model.clearWorkspaceFolder()
+                            },
                             onRemove: { id in
                                 model.removeWorkspaceProject(id: id)
                             }
@@ -230,12 +237,10 @@ struct ComposerView: View {
                     VStack(spacing: 0) {
                         PermissionMenu(
                             permission: workspace?.permission,
-                            finalConfirm: workspace?.finalConfirm ?? false,
                             onPermission: { id in
                                 model.setWorkspacePermission(id)
                                 permissionOpen = false
-                            },
-                            onFinalConfirm: { model.setWorkspaceFinalConfirm(!(workspace?.finalConfirm ?? false)) }
+                            }
                         )
                         .fixedSize()
                         .dismissOnOutsideClick(triggers: { [permissionChipFrame] }) { permissionOpen = false }
@@ -319,7 +324,9 @@ struct ComposerView: View {
             projectOpen.toggle()
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "externalDrive.fill")
+                // A real symbol name: the drive icon this used was misspelt
+                // and never drew, which left the chip as bare text.
+                Image(systemName: workspace == nil ? "folder" : "folder.fill")
                     .font(.system(size: 12))
                 // Clipped by characters rather than held in a fixed-width
                 // frame: a frame wide enough for a long name leaves a short
@@ -365,8 +372,8 @@ struct ComposerView: View {
     }
 
     private func permissionIcon(_ permission: String?) -> String {
-        guard let permission else { return "lock.shield" }
-        return PermissionMenu.options.first { $0.id == permission }?.icon ?? "lock.shield"
+        guard let permission else { return "bolt.shield" }
+        return PermissionMenu.options.first { $0.id == permission }?.icon ?? "bolt.shield"
     }
 
     private var modeChip: some View {
@@ -430,43 +437,6 @@ struct ComposerView: View {
         // Chips wrap like the transcript's search chips; a plain row clipped
         // once three or more files were attached.
         WrapHStack(spacing: 8) {
-            if let ws = workspace {
-                HStack(spacing: 6) {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.C.accentStrong)
-                    VStack(alignment: .leading, spacing: 0) {
-                        // Same reason as the project chip: clip the string, do
-                        // not hold a fixed-width frame that strands the ×.
-                        Text(ComposerView.chipLabel(ws.folderName, max: 22) ?? "Folder")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Theme.C.ink)
-                            .lineLimit(1)
-                        if !folderCountLabel.isEmpty {
-                            Text(folderCountLabel)
-                                .font(.system(size: 10))
-                                .foregroundStyle(Theme.C.inkFaint)
-                                .lineLimit(1)
-                        }
-                    }
-                    Button {
-                        model.clearWorkspaceFolder()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(Theme.C.inkMuted)
-                            .frame(width: 20, height: 20)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Detach folder")
-                }
-                .padding(.leading, 10)
-                .padding(.trailing, 6)
-                .frame(height: 32)
-                .background(Theme.C.sunken)
-                .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
-                .clipShape(Capsule())
-            }
             ForEach(model.attachments) { file in
                 HStack(spacing: 6) {
                     Text(file.name)
@@ -494,18 +464,6 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 4)
         .padding(.top, 2)
-    }
-
-    /// Empty until the count arrives. The scan runs off the main actor, so
-    /// there is a moment with no number; repeating the folder name underneath
-    /// itself only makes the chip look broken, and a raw path would put a
-    /// filesystem-named string, newlines and all, into the layout.
-    private var folderCountLabel: String {
-        guard let botId = model.selectedBotId,
-              let count = model.folderItemCount[botId] else {
-            return ""
-        }
-        return "\(count) item\(count == 1 ? "" : "s")"
     }
 
     private func send() {
@@ -629,6 +587,7 @@ private struct ProjectMenu: View {
     let currentPath: String?
     let onPick: (_ path: String) -> Void
     let onNew: () -> Void
+    let onDetach: () -> Void
     let onRemove: (_ id: String) -> Void
 
     var body: some View {
@@ -692,6 +651,24 @@ private struct ProjectMenu: View {
                 .frame(height: 36)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // The × that detached the folder lived on the chip inside the
+            // field; with that chip gone, this is where a folder is let go.
+            if currentPath != nil {
+                MenuRowButton(action: onDetach) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
+                        Text("Detach folder")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.ink)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
         .frame(width: 248)
         .background(Theme.C.surface)
@@ -707,13 +684,11 @@ private struct ProjectMenu: View {
 /// `.composer-permission-card`: what the bot may do in the granted folder.
 private struct PermissionMenu: View {
     let permission: String?
-    let finalConfirm: Bool
     let onPermission: (_ id: String) -> Void
-    let onFinalConfirm: () -> Void
 
     static let options: [(id: String, label: String, icon: String)] = [
         ("read_only", "Read only", "book"),
-        ("guard", "Guard", "lock.shield"),
+        ("auto", "Auto", "bolt.shield"),
         ("full_access", "Full access", "checkmark.shield"),
     ]
 
@@ -748,25 +723,8 @@ private struct PermissionMenu: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            Rectangle()
-                .fill(Theme.C.border)
-                .frame(height: 1)
-            MenuRowButton(action: onFinalConfirm) {
-                HStack {
-                    Image(systemName: "flag")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.C.inkMuted)
-                    Text("Final confirm")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.C.ink)
-                    Spacer(minLength: 0)
-                    SwitchVisual(isOn: finalConfirm)
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 36)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
         }
+        .padding(.bottom, 6)
         .frame(width: 248)
         .background(Theme.C.surface)
         .overlay(

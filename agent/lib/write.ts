@@ -56,7 +56,7 @@ export async function approvedWrite(input: {
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);
-  } else if (grant && autoApproved(permission, grant.finalConfirm)) {
+  } else if (autoApproved(permission)) {
     approvals.decide(rec.id, "approve", hash);
   } else {
     await waitUntilNotPending(approvals, rec.id);

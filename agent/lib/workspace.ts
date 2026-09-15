@@ -56,15 +56,13 @@ export function assertSafeRoot(path: string): string {
 }
 
 /**
- * Whether a mutating action may run without asking the owner. Only an
- * explicit Full access grant skips the card, and Final confirm turns that
- * back off; every other posture waits for the owner.
+ * Whether a write inside the granted folder may land without asking the
+ * owner. Auto and Full access both let the bot edit the folder it was
+ * given; Read only refuses earlier, and no grant at all (the legacy root)
+ * still waits for the owner. Commands have their own gate in `bash`.
  */
-export function autoApproved(
-  permission: WorkspacePermission | null,
-  finalConfirm: boolean,
-): boolean {
-  return permission === "full_access" && !finalConfirm;
+export function autoApproved(permission: WorkspacePermission | null): boolean {
+  return permission === "full_access" || permission === "auto";
 }
 
 /**

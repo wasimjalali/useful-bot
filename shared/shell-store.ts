@@ -8,10 +8,15 @@ import {
 } from "./bot-face.ts";
 
 /** Client-safe: this file must never pull in node builtins. */
-export type WorkspacePermission = "read_only" | "guard" | "full_access";
+export type WorkspacePermission = "read_only" | "auto" | "full_access";
 
+/**
+ * "guard" is what Auto was called before this build; a store written then
+ * still reads as the same posture instead of dropping the grant.
+ */
 export function parseWorkspacePermission(value: unknown): WorkspacePermission | null {
-  return value === "read_only" || value === "guard" || value === "full_access" ? value : null;
+  if (value === "guard") return "auto";
+  return value === "read_only" || value === "auto" || value === "full_access" ? value : null;
 }
 
 export const SHELL_SCHEMA = 1;
@@ -37,7 +42,6 @@ export type BotKind = "bot" | "group";
 export type BotWorkspace = {
   path: string;
   permission: WorkspacePermission;
-  finalConfirm: boolean;
 };
 
 export type ShellBot = {
@@ -276,7 +280,7 @@ function parseWorkspace(raw: unknown): BotWorkspace | null {
   if (typeof rec.path !== "string" || !isGrantableRootPath(rec.path)) return null;
   const permission = parseWorkspacePermission(rec.permission);
   if (!permission) return null;
-  return { path: rec.path, permission, finalConfirm: rec.finalConfirm === true };
+  return { path: rec.path, permission };
 }
 
 /**
@@ -295,7 +299,7 @@ function assertGrantableRootPath(path: unknown): string {
 
 /**
  * Strict on writes: an unknown permission word must fail the action, not
- * silently become Guard. The read path above stays tolerant — a newer build's
+ * silently become Auto. The read path above stays tolerant — a newer build's
  * store stays readable — but a write with a value this build does not know is
  * a caller bug.
  */
@@ -781,7 +785,6 @@ export function applyShellAction(
       const workspace = action.workspace === null ? null : {
         path: assertGrantableRootPath(action.workspace.path),
         permission: parseWorkspacePermissionStrict(action.workspace.permission),
-        finalConfirm: action.workspace.finalConfirm === true,
       } satisfies BotWorkspace | null;
       return {
         store: {

@@ -44,7 +44,6 @@ export type SessionGrant = {
   sessionId: string;
   path: string;
   permission: WorkspacePermission;
-  finalConfirm: boolean;
   updatedAt: string;
 };
 
@@ -89,7 +88,6 @@ function parseGrant(raw: unknown): SessionGrant | null {
     sessionId,
     path,
     permission,
-    finalConfirm: rec.finalConfirm === true,
     updatedAt: typeof rec.updatedAt === "string" ? rec.updatedAt : new Date(0).toISOString(),
   };
 }
@@ -241,7 +239,7 @@ export function readSessionGrant(sessionId: string, path = defaultWorkspacePath(
 }
 
 export function upsertSessionGrant(
-  input: { sessionId: string; path: string; permission: WorkspacePermission; finalConfirm: boolean },
+  input: { sessionId: string; path: string; permission: WorkspacePermission },
   at = new Date(),
   path = defaultWorkspacePath(),
 ): void {

@@ -168,6 +168,11 @@ final class AppModel: ObservableObject {
     /// puts it on the newest turn with nothing to animate.
     @Published private(set) var transcriptReady = false
     private var chatGeneration = 0
+    /// The rows each chat last rendered, keyed by bot id. A switch back shows
+    /// them at once: the fresh load replaces the old empty state a beat later,
+    /// and that beat read as the chat opening blank, or on its start page,
+    /// before the conversation snapped in.
+    private var transcriptCache: [String: (rows: [TranscriptRow], blocks: [TranscriptBlock])] = [:]
     private var sendBotId: String?
     private var started = false
     /// Rebuilding the transcript on every streamed event re-parses markdown
@@ -339,6 +344,12 @@ final class AppModel: ObservableObject {
         // Clear the old thread synchronously so the new bot never flashes the
         // previous transcript while its state loads.
         resetThread()
+        // A chat already opened this session comes back with its rows on
+        // screen while the reload confirms them.
+        if let cached = transcriptCache[botId] {
+            transcript = cached.rows
+            transcriptBlocks = cached.blocks
+        }
         startReload()
         persistSelection(botId)
         if let outgoing, !outgoing.sessionId.isEmpty {
@@ -411,10 +422,11 @@ final class AppModel: ObservableObject {
                 }
             }
             guard generation == loadGeneration else { return }
-            publishTranscript(force: true)
             // Every row is in, so the transcript can be built and laid out once,
-            // already at its newest turn.
+            // already at its newest turn. Marked ready first, so the publish
+            // below is the one that counts as this chat's loaded state.
             transcriptReady = true
+            publishTranscript(force: true)
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot.
             let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
@@ -805,9 +817,22 @@ final class AppModel: ObservableObject {
             )
             rows = Transcript.attributeGroupReplies(rows, roster: roster)
         }
+        // Nothing has loaded for this chat yet: a store echo that lands in
+        // that window must not wipe the rows the switch put back.
+        if rows.isEmpty, !transcriptReady, let selectedBotId, let cached = transcriptCache[selectedBotId] {
+            transcript = cached.rows
+            transcriptBlocks = cached.blocks
+            searchHits = projection.searchHits
+            return
+        }
         transcript = rows
         transcriptBlocks = TranscriptBlocks.build(rows: rows, selectedBotId: selectedBotId)
         searchHits = projection.searchHits
+        // An empty result only replaces the cache once the load has finished
+        // and said so; before that it is the blank the switch just cleared.
+        if let selectedBotId, transcriptReady || !rows.isEmpty {
+            transcriptCache[selectedBotId] = (rows, transcriptBlocks)
+        }
     }
 
     // MARK: - Approvals
@@ -954,9 +979,6 @@ final class AppModel: ObservableObject {
     private func applyStore(_ next: ShellStore) {
         store = next
         reconcileSelection(next)
-        if let bot = selectedBot {
-            refreshFolderCount(for: bot)
-        }
         rebuildTranscript()
     }
 
@@ -1059,6 +1081,7 @@ final class AppModel: ObservableObject {
     }
 
     func delete(botId: String) {
+        transcriptCache[botId] = nil
         perform(ShellActions.deleteBot(botId: botId))
     }
 
@@ -1096,6 +1119,9 @@ final class AppModel: ObservableObject {
             }
             guard generation == self.chatGeneration, epoch == self.storeEpoch else { return }
             self.resetThread()
+            // The old conversation is gone server-side; it must not come back
+            // from the cache on the next switch.
+            self.transcriptCache[id] = nil
             self.selectedBotId = id
             self.attachError = nil
             self.approvalError = nil
@@ -1489,13 +1515,10 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var workspaceProjects: [ProjectEntry] = []
     @Published var workspaceError: String?
-    /// Top-level item counts for the attached-folder chip, keyed by bot id.
-    /// Volatile on purpose: a count is cheap to recompute and never durable.
-    @Published private(set) var folderItemCount: [String: Int] = [:]
 
     /// Attach a folder the bot works in. The owner picked it in a native
     /// picker, so the absolute path is the grant; the permission carries over
-    /// from an earlier pick or starts at Guard.
+    /// from an earlier pick or starts at Auto.
     func setWorkspaceFolder(_ url: URL) {
         guard let bot = selectedBot else { return }
         var isDirectory: ObjCBool = false
@@ -1512,20 +1535,10 @@ final class AppModel: ObservableObject {
         // belt and braces, but a silent detach is the wrong belt.
         guard let workspace = BotWorkspace(
             path: url.path,
-            permission: existing?.permission ?? "guard",
-            finalConfirm: existing?.finalConfirm ?? false
+            permission: existing?.permission ?? "auto"
         ) else {
             workspaceError = "That folder could not be attached."
             return
-        }
-        // The count lands asynchronously: a big folder must not block the pick.
-        folderItemCount[bot.id] = nil
-        Task.detached { [weak self] in
-            let count = Self.folderEntryCount(atPath: url.path)
-            await MainActor.run { [weak self] in
-                guard let self, self.selectedBotId == bot.id else { return }
-                self.folderItemCount[bot.id] = count
-            }
         }
         dispatchWorkspace(workspace, botId: bot.id) { [weak self] in
             // Recents are best effort: a missed write only loses a menu entry.
@@ -1537,7 +1550,6 @@ final class AppModel: ObservableObject {
     func clearWorkspaceFolder() {
         guard let bot = selectedBot else { return }
         workspaceError = nil
-        folderItemCount[bot.id] = nil
         dispatchWorkspace(nil, botId: bot.id)
     }
 
@@ -1550,17 +1562,7 @@ final class AppModel: ObservableObject {
         }
         workspaceError = nil
         dispatchWorkspace(
-            BotWorkspace(path: workspace.path, permission: permission, finalConfirm: workspace.finalConfirm),
-            botId: bot.id
-        )
-    }
-
-    func setWorkspaceFinalConfirm(_ on: Bool) {
-        guard let bot = selectedBot,
-              let workspace = liveBot(bot).workspace else { return }
-        workspaceError = nil
-        dispatchWorkspace(
-            BotWorkspace(path: workspace.path, permission: workspace.permission, finalConfirm: on),
+            BotWorkspace(path: workspace.path, permission: permission),
             botId: bot.id
         )
     }
@@ -1601,32 +1603,5 @@ final class AppModel: ObservableObject {
             _ = try? await self.client.removeWorkspaceProject(id: id)
             await self.loadWorkspaceProjects()
         }
-    }
-
-    /// Recompute a folder chip count the store came back without one, so a
-    /// restart shows "N items" again instead of a bare name.
-    func refreshFolderCount(for bot: ShellBot) {
-        guard let path = bot.workspace?.path, folderItemCount[bot.id] == nil else { return }
-        let botId = bot.id
-        // A directory scan never runs on the main actor: attaching a large
-        // folder must not jank the composer it is attached from.
-        Task.detached { [weak self] in
-            let count = Self.folderEntryCount(atPath: path)
-            await MainActor.run { [weak self] in
-                if let count, self?.folderItemCount[botId] == nil {
-                    self?.folderItemCount[botId] = count
-                }
-            }
-        }
-    }
-
-    /// Shallow count of a folder's entries; nil when it cannot be read.
-    private nonisolated static func folderEntryCount(atPath path: String) -> Int? {
-        let url = URL(fileURLWithPath: path)
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: nil
-        ) else { return nil }
-        return entries.count
     }
 }

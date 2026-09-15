@@ -3,6 +3,8 @@ import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { effectiveRoot } from "../lib/workspace.ts";
+import { commandRisk, outsideFolderRisk } from "../lib/command-risk.ts";
+import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
@@ -65,37 +67,69 @@ export default defineTool({
       backend: "just-bash",
       toolVersion: "1",
     });
+    // The posture decides who answers the card. Auto runs the everyday
+    // lines and stops for one that deletes, rewrites history, escalates,
+    // runs a payload it cannot read, or reaches outside the folder. Full
+    // access runs every line inside the folder and stops only for a reach
+    // outside it: the grant was for this folder. No grant at all (the
+    // legacy root) always waits for the owner. The tripwire above still
+    // refuses credential paths in every posture.
+    const permission = grant?.permission ?? null;
+    let risk: string | null = null;
+    let askOwner = true;
+    switch (permission) {
+      case "auto":
+        risk = commandRisk(input.command, root);
+        askOwner = risk !== null;
+        break;
+      case "full_access":
+        risk = outsideFolderRisk(input.command, root);
+        askOwner = risk !== null;
+        break;
+      default:
+        // No grant, or a posture this build does not know: the owner decides.
+        askOwner = true;
+    }
+    // Nothing runs unconfined without the owner: a system with no sandbox
+    // gets a card for every line instead of a bare shell.
+    if (!askOwner && !sandboxAvailable()) {
+      risk = "no sandbox on this system";
+      askOwner = true;
+    }
     const store = getApprovalStore();
     const rec = store.request({
       ...approvalActor(ctx),
       tool: "bash",
       actionSha256: hash,
-      preview: input.command,
+      preview: risk ? `${input.command}\n${risk}` : input.command,
     });
-    // Commands always wait for the owner, in every permission: cwd and env
-    // confinement alone cannot keep a verbatim shell line inside the folder,
-    // so a card is the only honest gate. Final confirm changes nothing here.
-    await waitUntilNotPending(store, rec.id);
-    // The workspace may have changed while the card sat open. The approval was
-    // granted against the cwd AND the posture at request time, so a changed
-    // root, a changed permission, or a revoked grant all refuse the approval
-    // rather than spend it on something the owner did not see. Same rule as
-    // the write path.
-    let refreshed;
-    try {
-      refreshed = effectiveRoot(ctx?.session?.id);
-    } catch {
-      // A grant revoked with no legacy root configured leaves nothing to run
-      // in. That is the workspace changing, not a tool crash.
-      return { status: "blocked", error: "workspace_changed" };
-    }
-    const permissionAtRequest = grant?.permission ?? null;
-    const permissionNow = refreshed.grant?.permission ?? null;
-    if (refreshed.root !== root || permissionNow !== permissionAtRequest) {
-      return { status: "blocked", error: "workspace_changed" };
+    if (!askOwner) {
+      store.decide(rec.id, "approve", hash);
+    } else {
+      await waitUntilNotPending(store, rec.id);
+      // The workspace may have changed while the card sat open. The approval
+      // was granted against the cwd AND the posture at request time, so a
+      // changed root, a changed permission, or a revoked grant all refuse the
+      // approval rather than spend it on something the owner did not see.
+      // Same rule as the write path.
+      let refreshed;
+      try {
+        refreshed = effectiveRoot(ctx?.session?.id);
+      } catch {
+        // A grant revoked with no legacy root configured leaves nothing to
+        // run in. That is the workspace changing, not a tool crash.
+        return { status: "blocked", error: "workspace_changed" };
+      }
+      const permissionNow = refreshed.grant?.permission ?? null;
+      if (refreshed.root !== root || permissionNow !== permission) {
+        return { status: "blocked", error: "workspace_changed" };
+      }
     }
     return executeIfApproved(store, rec.id, hash, async () => {
-      const args = ["/bin/sh", "-c", input.command];
+      // What ran without a card runs confined to the folder, so a line the
+      // classifier misjudged still cannot write outside it. A line the
+      // owner approved runs as they read it.
+      const args = askOwner ? ["/bin/sh", "-c", input.command] : confinedCommand(root, input.command);
       const { stdout, stderr } = await execFileAsync(args[0], args.slice(1), {
         cwd: root,
         timeout: input.timeoutMs ?? 30_000,

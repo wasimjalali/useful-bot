@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { applyShellAction, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 import {
@@ -448,7 +448,7 @@ test("listBots fences bot profile text as untrusted data", async () => {
  * agent's tools read, so these tests exercise the exact production posture:
  * write the grant, then call the tool the model would call.
  */
-function grantFixture(mode: "read_only" | "guard" | "full_access", finalConfirm = false) {
+function grantFixture(mode: "read_only" | "auto" | "full_access") {
   const dir = mkdtempSync(join(tmpdir(), "ub-grant-"));
   const project = join(dir, "project");
   mkdirSync(project, { recursive: true });
@@ -465,7 +465,7 @@ function grantFixture(mode: "read_only" | "guard" | "full_access", finalConfirm 
   // macOS /tmp is a symlink chain; the grant must carry the canonical path,
   // the way the attach route stores it.
   upsertSessionGrant(
-    { sessionId: "sess-1", path: realpathSync(project), permission: mode, finalConfirm },
+    { sessionId: "sess-1", path: realpathSync(project), permission: mode },
     new Date(),
     process.env.UB_WORKSPACE_STORE_PATH,
   );
@@ -521,83 +521,110 @@ test("read_only refuses writes and commands inside the folder", async () => {
   }
 });
 
-test("guard keeps the approval card; full access writes without one", async () => {
-  const box = grantFixture("guard");
+test("auto and full access write inside the folder without a card", async () => {
+  for (const mode of ["auto", "full_access"] as const) {
+    const box = grantFixture(mode);
+    try {
+      await approvedWrite({
+        path: "out.txt",
+        content: mode,
+        expectedSha256: null,
+        sessionId: "sess-1",
+        turnId: "t",
+        toolCallId: "c",
+      });
+      assert.equal(readFileSync(join(box.project, "out.txt"), "utf8"), mode);
+      assert.equal(box.approvals.listPending().length, 0, mode);
+    } finally {
+      box.restore();
+    }
+  }
+});
+
+test("auto runs everyday commands and stops for a destructive one", async () => {
+  const box = grantFixture("auto");
   try {
+    const plain = await run<{ stdout: string }>(bash, { command: "pwd" }, { session: { id: "sess-1" } });
+    assert.equal(plain.stdout.includes(basename(box.project)), true);
+    assert.equal(box.approvals.listPending().length, 0, "pwd must not raise a card");
+
     let settled = false;
-    const write = approvedWrite({
-      path: "guard.txt",
-      content: "guarded",
-      expectedSha256: null,
-      sessionId: "sess-1",
-      turnId: "t",
-      toolCallId: "c",
-    }).then((result) => {
+    const destructive = run<{ stdout: string; status?: string }>(
+      bash,
+      { command: "rm note.txt" },
+      { session: { id: "sess-1" } },
+    ).then((result) => {
       settled = true;
       return result;
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(settled, false, "guard must wait for the owner");
-    const pending = box.approvals.listPending();
-    assert.equal(pending.length, 1);
-    box.approvals.decide(pending[0].id, "approve", pending[0].actionSha256);
-    const result = await write;
-    assert.equal(result.path, join(realpathSync(box.project), "guard.txt"));
-  } finally {
-    box.restore();
-  }
+    assert.equal(settled, false, "rm must wait for the owner");
+    const cards = box.approvals.listPending();
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].preview.includes("deletes files"), true, "the card says why it came up");
+    box.approvals.decide(cards[0].id, "approve", cards[0].actionSha256);
+    await destructive;
+    assert.equal(existsSync(join(box.project, "note.txt")), false);
 
-  const full = grantFixture("full_access");
-  try {
-    await approvedWrite({
-      path: "out.txt",
-      content: "full",
-      expectedSha256: null,
-      sessionId: "sess-1",
-      turnId: "t",
-      toolCallId: "c",
-    });
-    assert.equal(readFileSync(join(full.project, "out.txt"), "utf8"), "full");
-    assert.equal(full.approvals.listPending().length, 0);
-  } finally {
-    full.restore();
-  }
-});
-
-test("final confirm asks again even under full access", async () => {
-  const box = grantFixture("full_access", true);
-  try {
-    const write = approvedWrite({
-      path: "out2.txt",
-      content: "confirm",
-      expectedSha256: null,
-      sessionId: "sess-1",
-      turnId: "t",
-      toolCallId: "c",
-    });
+    // A script is judged by what it does, not by its name.
+    mkdirSync(join(box.project, "scripts"), { recursive: true });
+    writeFileSync(join(box.project, "scripts", "tidy.sh"), "#!/bin/sh\nrm -rf build\n", { mode: 0o755 });
+    const script = run<{ stdout: string }>(bash, { command: "./scripts/tidy.sh" }, { session: { id: "sess-1" } });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(box.approvals.listPending().length, 1, "final confirm must show the card");
-    const pending = box.approvals.listPending()[0];
-    box.approvals.decide(pending.id, "approve", pending.actionSha256);
-    const result = await write;
-    assert.equal(result.path, join(realpathSync(box.project), "out2.txt"));
+    const scriptCards = box.approvals.listPending();
+    assert.equal(scriptCards.length, 1, "a script that deletes must wait for the owner");
+    assert.equal(scriptCards[0].preview.includes("scripts/tidy.sh: deletes files"), true);
+    box.approvals.decide(scriptCards[0].id, "deny", scriptCards[0].actionSha256);
+    await assert.rejects(script);
   } finally {
     box.restore();
   }
 });
 
-test("bash runs inside the granted folder and always shows its card", async () => {
+test("what runs without a card cannot write outside the folder", { skip: process.platform !== "darwin" }, async () => {
+  const box = grantFixture("auto");
+  const outside = join(dirname(realpathSync(tmpdir())), `ub-escape-${process.pid}-${Date.now()}`);
+  try {
+    // No card: through a symlink the line names nothing outside the folder
+    // as far as the text goes, so confinement is what stops the write.
+    symlinkSync(dirname(outside), join(box.project, "escape"));
+    await assert.rejects(
+      () => run(bash, { command: `echo out > escape/${basename(outside)}` }, { session: { id: "sess-1" } }),
+      /not permitted/i,
+    );
+    assert.equal(existsSync(outside), false);
+    assert.equal(box.approvals.listPending().length, 0);
+    const inside = await run<{ stdout: string }>(bash, { command: "echo in > made.txt && cat made.txt" }, { session: { id: "sess-1" } });
+    assert.equal(inside.stdout.includes("in"), true);
+  } finally {
+    rmSync(outside, { force: true });
+    box.restore();
+  }
+});
+
+test("full access runs commands without a card, asks before a reach outside, and the tripwire still holds", async () => {
   const box = grantFixture("full_access");
   try {
-    const pending = run<{ stdout: string; stderr: string }>(bash, { command: "pwd" }, { session: { id: "sess-1" } });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    // Even full access keeps the human gate on shell lines: cwd confinement
-    // cannot keep a verbatim command inside the folder.
-    assert.equal(box.approvals.listPending().length, 1);
-    const card = box.approvals.listPending()[0];
-    box.approvals.decide(card.id, "approve", card.actionSha256);
-    const result = await pending;
+    const result = await run<{ stdout: string }>(bash, { command: "rm note.txt && pwd" }, { session: { id: "sess-1" } });
     assert.equal(result.stdout.includes(basename(box.project)), true);
+    assert.equal(box.approvals.listPending().length, 0);
+
+    let settled = false;
+    const outside = run<{ stdout: string }>(bash, { command: "ls /Users" }, { session: { id: "sess-1" } })
+      .then((value) => {
+        settled = true;
+        return value;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(settled, false, "a path outside the folder must wait for the owner");
+    const cards = box.approvals.listPending();
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0].preview.includes("outside the folder"), true);
+    box.approvals.decide(cards[0].id, "deny", cards[0].actionSha256);
+    await assert.rejects(outside);
+
+    const blocked = await run<{ status: string }>(bash, { command: "cat ~/.ssh/id_rsa" }, { session: { id: "sess-1" } });
+    assert.equal(blocked.status, "blocked");
   } finally {
     box.restore();
   }
@@ -627,7 +654,7 @@ test("a root chosen by the owner may sit in a screened path; children may not", 
   process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
   delete process.env.UB_WORKSPACE_ROOT;
   upsertSessionGrant(
-    { sessionId: "sess-git", path: realpathSync(project), permission: "read_only", finalConfirm: false },
+    { sessionId: "sess-git", path: realpathSync(project), permission: "read_only" },
     new Date(),
   );
   try {
@@ -657,7 +684,7 @@ test("a symlinked grant root is refused at tool time", async () => {
   process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
   delete process.env.UB_WORKSPACE_ROOT;
   upsertSessionGrant(
-    { sessionId: "sess-link", path: link, permission: "read_only", finalConfirm: false },
+    { sessionId: "sess-link", path: link, permission: "read_only" },
     new Date(),
   );
   try {
@@ -1140,11 +1167,11 @@ test("keychain material under a granted home folder is not readable", async () =
 });
 
 test("bash refuses an approval granted before the owner dropped to read_only", async () => {
-  const box = grantFixture("guard");
+  const box = grantFixture("auto");
   try {
     const pending = run<{ status?: string; error?: string }>(
       bash,
-      { command: "echo hi" },
+      { command: "rm note.txt" },
       { session: { id: "sess-1" } },
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1152,7 +1179,7 @@ test("bash refuses an approval granted before the owner dropped to read_only", a
     // The owner narrows the grant while the card sits open, then approves the
     // card they raised before the change. It must not spend on the old posture.
     upsertSessionGrant(
-      { sessionId: "sess-1", path: realpathSync(box.project), permission: "read_only", finalConfirm: false },
+      { sessionId: "sess-1", path: realpathSync(box.project), permission: "read_only" },
       new Date(),
       process.env.UB_WORKSPACE_STORE_PATH,
     );
@@ -1191,7 +1218,7 @@ test("an exact credential folder name is refused without blocking its lookalikes
 });
 
 test("reads work in every permission, because reading is what a grant is for", async () => {
-  for (const mode of ["read_only", "guard", "full_access"] as const) {
+  for (const mode of ["read_only", "auto", "full_access"] as const) {
     const box = grantFixture(mode);
     try {
       const note = await run<{ text: string }>(
