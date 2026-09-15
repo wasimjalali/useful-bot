@@ -950,6 +950,15 @@ final class AppModel: ObservableObject {
         let limit = quiet ? min(max(Self.connectorPageSize, connectors?.toolkits.count ?? 0), 200) : Self.connectorPageSize
         do {
             let payload = try await client.connectors(search: search, limit: limit)
+            // Fast typing on a slow answer: a quiet result for a query that is
+            // no longer in the box is dropped rather than shown over the
+            // current one. An explicit load (open, key saved, retry) always
+            // lands and resets the live query to what it loaded.
+            if quiet {
+                guard search == connectorSearch else { return }
+            } else {
+                connectorSearch = search
+            }
             connectors = payload
             if let code = payload.error {
                 let message = code == "key_rejected" ? Self.connectorKeyRejected : Self.connectorUpstreamError

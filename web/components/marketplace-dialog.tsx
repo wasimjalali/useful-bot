@@ -92,6 +92,9 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       const res = await fetch(`/api/connectors?${params}`, { credentials: "include" });
       const body = (await res.json()) as Payload;
       if (!res.ok && res.status !== 502) throw new Error(body.error ?? "connectors_failed");
+      // Fast typing on a slow answer: a result for a query that is no longer
+      // in the box is dropped rather than shown over the current one.
+      if (searchLive.current.trim() !== query.trim()) return body;
       shown.current = Math.min(Math.max(PAGE_SIZE, body.toolkits?.length ?? 0), PAGE_CAP);
       setPayload(body);
       // A quiet poll only clears a load error it could have caused; a message
