@@ -211,7 +211,10 @@ private struct BotSettingsFields: View {
             loaded = false
             seed()
         }
-        .onChange(of: bot) { _, _ in
+        // Only the edited fields: a poll that moves lastPreview or the
+        // session must not reseed a just-committed edit back to the old text
+        // while its echo is still in flight.
+        .onChange(of: [bot.name, bot.label, bot.description]) { _, _ in
             // Store echoes and polls can rename the bot while the pane is
             // open; refresh the fields from the snapshot unless the owner is
             // typing in one of them.
@@ -460,7 +463,8 @@ private struct GroupSettingsFields: View {
             loaded = false
             seed()
         }
-        .onChange(of: bot) { _, _ in
+        // Only the edited fields, for the same reason as the bot pane.
+        .onChange(of: [bot.name, bot.description]) { _, _ in
             // Store echoes and polls can rename the group while the pane is
             // open; refresh the fields from the snapshot unless the owner is
             // typing in one of them.
