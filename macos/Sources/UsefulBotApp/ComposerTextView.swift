@@ -15,6 +15,10 @@ import UsefulBotCore
 /// it (marked text), which is what broke dictation.
 struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
+    /// Changes only when the app deliberately writes the draft. See
+    /// `AppModel.draftWriteToken`: this is what separates a real write from a
+    /// re-render carrying a stale value.
+    var writeToken: UInt64
     /// False while a turn is in flight: Return then falls through to a
     /// newline, matching the key handler it replaces.
     var returnSends: Bool
@@ -81,7 +85,7 @@ struct ComposerTextView: NSViewRepresentable {
         context.coordinator.onSend = onSend
         context.coordinator.onFocusChange = onFocusChange
         context.coordinator.returnSends = returnSends
-        context.coordinator.syncFromModel(into: textView, text: text)
+        context.coordinator.syncFromModel(into: textView, text: text, writeToken: writeToken)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
@@ -107,30 +111,43 @@ struct ComposerTextView: NSViewRepresentable {
         var pending: () -> Bool = { false }
         var onSend: () -> Void = {}
         var onFocusChange: (Bool) -> Void = { _ in }
-        /// The text this coordinator last pushed into the model. Pulling the
-        /// model back into the view is skipped while it equals this value, so
-        /// the send-clear and clip writes land but the echo of our own typing
-        /// never resets the caret mid-composition.
-        private var lastPushed: String?
-
         init(text: Binding<String>) {
             self._text = text
         }
 
-        /// Model -> view, but never while the field holds marked (dictated or
-        /// IME-composing) text, and never as an echo of what we just pushed.
-        /// Selection is preserved so a mid-text clear or clip does not throw
-        /// the caret to the end.
-        func syncFromModel(into textView: NSTextView, text next: String) {
-            if textView.string == next || lastPushed == next || textView.hasMarkedText() { return }
+        /// The last write token this coordinator applied. Nil until the first
+        /// `updateNSView`, which seeds the field.
+        private var appliedWriteToken: UInt64?
+
+        /// Model -> view, and only when the app actually asked for it.
+        ///
+        /// Comparing the incoming text against the field was not enough. A
+        /// SwiftUI rebuild carries whatever `draft` held when it was scheduled,
+        /// so during a fast multi-chunk insert — which is exactly how a
+        /// dictation app delivers an utterance — a rebuild could arrive with
+        /// text older than what the field already had, match neither the field
+        /// nor what it had just pushed, and be written back over the newer content. The
+        /// dictation app then re-inserted its full utterance on top of the
+        /// remains, which is the doubled transcript. So a write happens only
+        /// when the token says the app meant one: the send-clear, or the
+        /// restore of a failed send. Everything else leaves the field alone,
+        /// because while someone is composing, the field is the truth.
+        ///
+        /// Marked text is still refused outright, and the selection is kept so
+        /// a mid-text clear does not throw the caret to the end.
+        func syncFromModel(into textView: NSTextView, text next: String, writeToken: UInt64) {
+            let deliberate = appliedWriteToken != writeToken
+            appliedWriteToken = writeToken
+            if !deliberate { return }
+            if textView.string == next || textView.hasMarkedText() { return }
             let selection = textView.selectedRanges
             let length = (next as NSString).length
             textView.string = next
             let kept = selection.filter { $0.rangeValue.location <= length }
-            if let last = kept.last {
-                textView.selectedRanges = kept
-            } else {
+            if kept.isEmpty {
                 textView.setSelectedRange(NSRange(location: length, length: 0))
+            } else {
+                textView.selectedRanges = kept
             }
         }
 
@@ -162,7 +179,6 @@ struct ComposerTextView: NSViewRepresentable {
                     $0.rangeValue.location <= (next as NSString).length
                 }
             }
-            lastPushed = next
             text = next
         }
 

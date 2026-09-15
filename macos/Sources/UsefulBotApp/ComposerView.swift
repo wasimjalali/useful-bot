@@ -276,6 +276,7 @@ struct ComposerView: View {
             }
             ComposerTextView(
                 text: $model.draft,
+                writeToken: model.draftWriteToken,
                 returnSends: true,
                 canSend: { canSend },
                 pending: { model.pending },
@@ -509,12 +510,13 @@ struct ComposerView: View {
 
     private func send() {
         guard canSend, !model.pending else { return }
-        var message = Attachments.formatMessage(model.draft, files: model.attachments)
-        // The grant travels by session, not by message; this line tells the
-        // model the folder is there and what to do with it.
-        if let ws = workspace {
-            message += "\n\nAttached project folder: \(ws.folderName) — work inside \(ws.promptPath)"
-        }
+        // The folder is not mentioned in the message. The grant travels by
+        // session: the tools resolve their root and permission from it, and
+        // the instructions already tell the model what a granted folder means.
+        // Restating it here put a long absolute path in every bubble the owner
+        // sends, to tell the agent something it already knew. The chip under
+        // the composer is where the owner sees which folder is attached.
+        let message = Attachments.formatMessage(model.draft, files: model.attachments)
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.

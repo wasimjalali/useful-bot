@@ -16,6 +16,18 @@ struct ChatView: View {
     /// fires then: streaming replies append below and stay pinned, while a
     /// scroll-up into history never yanks the reader back down.
     @State private var pinnedToBottom = true
+    /// Height of the newest reply and of the window showing it. Together they
+    /// decide whether landing on the reply's first line is worth moving the
+    /// page for: a reply that already fits needs no move.
+    @State private var replyHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+    /// True while the view is parked at the top of a finished reply. It stops
+    /// the bottom-pinning triggers from dragging the reader back down as the
+    /// durable reload changes the list underneath them.
+    @State private var holdingReplyAnchor = false
+    /// Room for the user's message above the reply, so an answer that only
+    /// just fits is left where it is.
+    private static let replyAnchorSlack: CGFloat = 120
 
     var body: some View {
         HStack(spacing: 0) {
@@ -32,6 +44,11 @@ struct ChatView: View {
                     header(bot)
                     if model.hasThreadContent || model.pending {
                         transcript(bot)
+                            // A new chat gets a new scroll view. Reusing one
+                            // across bots hands the next chat the offset the
+                            // last one was left at, which then has to be
+                            // corrected on screen.
+                            .id(bot.id)
                     } else {
                         emptyState(bot)
                     }
@@ -198,27 +215,13 @@ struct ChatView: View {
 
     // MARK: - Transcript
 
-    /// Scroll to the newest turn now and once more after layout settles.
-    ///
-    /// A row added or a transcript replaced changes the content height a frame
-    /// after the change that triggered this, so a single scroll lands short.
-    /// Both passes are untransacted: the transcript belongs at its newest turn,
-    /// and animating the trip there is what makes opening a chat look like it
-    /// started at the top and fell.
-    private func stickToBottom(_ proxy: ScrollViewProxy) {
-        jumpToBottom(proxy)
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 80_000_000)
-            guard pinnedToBottom else { return }
-            jumpToBottom(proxy)
-        }
-    }
-
-    private func jumpToBottom(_ proxy: ScrollViewProxy) {
+    /// Move to a row without animating the trip. Used for the one automatic
+    /// scroll this transcript performs.
+    private func scrollWithoutAnimation(_ proxy: ScrollViewProxy, to id: String) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            proxy.scrollTo("bottom", anchor: .bottom)
+            proxy.scrollTo(id, anchor: .top)
         }
     }
 
@@ -254,6 +257,19 @@ struct ChatView: View {
                                     maxBubbleWidth: columnWidth * 0.85
                                 )
                                 .equatable()
+                                // Only the newest reply measures itself, and
+                                // only so the scroll can tell an answer that
+                                // overflows the window from one that does not.
+                                .background {
+                                    if row.id == model.latestReplyAnchor {
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(
+                                                key: ReplyHeightKey.self,
+                                                value: geometry.size.height
+                                            )
+                                        }
+                                    }
+                                }
                             case .summary(_, let count, let botIds):
                                 BotMetaRow(
                                     prefix: "\(count) messages with",
@@ -262,7 +278,12 @@ struct ChatView: View {
                                 )
                             }
                         }
-                        if model.pending {
+                        // Gone as soon as the reply starts arriving, so the
+                        // reply takes its place rather than following it. Kept
+                        // until the end of the turn, it was removed after the
+                        // last row landed, and with the content bottom-aligned
+                        // that pulled everything down by its height.
+                        if model.pending, model.transcript.last?.kind != .assistant {
                             WorkingRow(bot: bot)
                         }
                         if !model.searchHits.isEmpty {
@@ -287,51 +308,38 @@ struct ChatView: View {
                 }
                 .uvScroll()
                 .defaultScrollAnchor(.bottom)
-                .modifier(ScrollPinnedTracker(pinned: $pinnedToBottom))
-                .onAppear { jumpToBottom(proxy) }
-                // A chat opens at its newest turn, and gets there before the
-                // frame is drawn. The delayed scroll this replaces was visible
-                // as a jump: the transcript rendered at the top, then travelled
-                // down once the rows had loaded. The pin is re-armed because a
-                // different chat is a different reading position, and the
-                // transcript for this one arrives after the switch, which the
-                // row-count trigger then lands.
-                .task(id: bot.id) {
-                    pinnedToBottom = true
-                    jumpToBottom(proxy)
-                }
-                // Sending is the one trigger that ignores the pin. The owner
-                // asked for this answer, so the transcript goes to it even if
-                // they were reading history a moment earlier, and stays there
-                // for the reply that streams in after.
-                .onChange(of: model.sendTick) {
-                    pinnedToBottom = true
-                    stickToBottom(proxy)
-                }
-                // The web pins to the newest turn on every content change.
-                // Each trigger scrolls only while the reader is pinned to the
-                // bottom; a jump to the top would mean the content changed
-                // under them, and dragging them back is not rendering.
-                //
-                // The row count is also what changes when a finished turn
-                // reloads the durable transcript, which swaps a short list for
-                // the full history: that needs the settle pass too, or the
-                // viewport lands wherever the taller content put it.
-                .onChange(of: model.transcript.count) {
-                    guard pinnedToBottom else { return }
-                    stickToBottom(proxy)
-                }
-                .onChange(of: model.transcript.last?.text.count) {
-                    guard pinnedToBottom else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onChange(of: model.pending) {
-                    guard pinnedToBottom else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onChange(of: model.openProposals.count) {
-                    guard pinnedToBottom else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                .modifier(ScrollPinnedTracker(
+                    pinned: $pinnedToBottom,
+                    viewport: $viewportHeight
+                ))
+                .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
+                // There is exactly one automatic scroll in this transcript, and
+                // it is the one below. Everything else stays at the newest turn
+                // because `defaultScrollAnchor(.bottom)` already holds the
+                // bottom as the content grows — opening a chat, switching bots,
+                // sending, streaming and the durable reload all keep their place
+                // without being told to. The explicit scrolls that used to sit
+                // here were not keeping the view there; they were what moved it,
+                // because scrolling to a bottom anchor repositions content that
+                // is shorter than the window and SwiftUI had already placed.
+                .onChange(of: model.sendTick) { holdingReplyAnchor = false }
+                .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
+                // The single exception: an answer taller than the window is
+                // read from its first line, so the view moves there once, when
+                // the turn finishes. A reply that already fits is left alone.
+                .onChange(of: model.pending) { wasPending, nowPending in
+                    guard wasPending, !nowPending, pinnedToBottom,
+                          replyHeight > viewportHeight - Self.replyAnchorSlack,
+                          let anchor = model.latestReplyAnchor else { return }
+                    holdingReplyAnchor = true
+                    scrollWithoutAnimation(proxy, to: anchor)
+                    // The durable reload lands moments later and changes the
+                    // list, so the anchor is re-applied once it has settled.
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        guard holdingReplyAnchor else { return }
+                        scrollWithoutAnimation(proxy, to: anchor)
+                    }
                 }
         }
     }
@@ -703,8 +711,20 @@ struct WrapHStack: Layout {    var spacing: CGFloat = 8
 /// from "I am reading history". Needs the scroll-geometry API of macOS 15;
 /// older systems keep the previous always-follow behavior, with the bottom
 /// default anchor still handling the short-content and open cases.
+/// The height of the newest reply, reported up from the row that renders it.
+private struct ReplyHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private struct ScrollPinnedTracker: ViewModifier {
     @Binding var pinned: Bool
+    /// The visible height of the transcript, for deciding whether a reply
+    /// overflows it.
+    @Binding var viewport: CGFloat
     /// Within half a line of the bottom counts as pinned, so a hair of
     /// rubber-band or rounding cannot drop the pin while streaming.
     private static let tolerance: CGFloat = 48
@@ -716,6 +736,7 @@ private struct ScrollPinnedTracker: ViewModifier {
         var offset: CGFloat
         var contentHeight: CGFloat
         var distance: CGFloat
+        var viewport: CGFloat
     }
 
     /// True only while the reader's own hand is on the transcript. Every other
@@ -740,9 +761,11 @@ private struct ScrollPinnedTracker: ViewModifier {
                 return Geometry(
                     offset: geometry.contentOffset.y,
                     contentHeight: geometry.contentSize.height,
-                    distance: max(0, geometry.contentSize.height - bottomEdge)
+                    distance: max(0, geometry.contentSize.height - bottomEdge),
+                    viewport: geometry.containerSize.height
                 )
-            } action: { _, new in
+            } action: { old, new in
+                viewport = new.viewport
                 // Only the reader's own gesture may break the pin.
                 //
                 // Everything else that moves this geometry is the app's doing

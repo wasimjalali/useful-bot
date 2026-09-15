@@ -84,15 +84,6 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
         return cleaned.isEmpty ? "Folder" : String(cleaned.prefix(80))
     }
 
-    /// The path as it may appear in a message to the model. The whole path is
-    /// filesystem-controlled, not just its last component, so a directory
-    /// named with a newline would otherwise inject prompt lines past the
-    /// sanitized `folderName`.
-    public var promptPath: String {
-        let cleaned = BotWorkspace.sanitized(path)
-        return cleaned.isEmpty ? folderName : String(cleaned.prefix(512))
-    }
-
     /// Drop C0/C1 controls, Unicode format characters and the line and
     /// paragraph separators. Format carries the bidi overrides and zero-width
     /// joiners that spoof a menu row; U+2028 and U+2029 are not controls but
