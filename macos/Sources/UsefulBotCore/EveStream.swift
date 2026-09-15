@@ -234,12 +234,22 @@ public enum EveStream {
         return try? JSONDecoder().decode(EveEvent.self, from: data)
     }
 
+    /// Ports of `BOT_TURN_PREFIX` and `GROUP_TURN_PREFIX` in
+    /// `shared/threads.ts`: the identity has to be the first line, end with a
+    /// period, and for a bot turn the marker must start line two.
+    private static let botTurnPrefix = try! NSRegularExpression(
+        pattern: "^You are [^\\n]+\\.\\nStanding instructions: "
+    )
+    private static let groupTurnPrefix = try! NSRegularExpression(
+        pattern: "^Group chat: [^\\n]+\\.\\n"
+    )
+
     /// Remove the identity prefix the web proxy injects into a stored user
     /// turn, so the transcript shows the owner's original message.
     public static func stripThreadPrefix(_ text: String) -> String {
-        let isBotPrefix = text.hasPrefix("You are ") && text.contains("\nStanding instructions: ")
-        let isGroupPrefix = text.hasPrefix("Group chat: ")
-            && text.prefix(while: { $0 != "\n" }).hasSuffix(".")
+        let whole = NSRange(text.startIndex..., in: text)
+        let isBotPrefix = botTurnPrefix.firstMatch(in: text, range: whole) != nil
+        let isGroupPrefix = groupTurnPrefix.firstMatch(in: text, range: whole) != nil
         guard isBotPrefix || isGroupPrefix else { return text }
         guard let range = text.range(of: "\n\n") else { return text }
         return String(text[range.upperBound...])

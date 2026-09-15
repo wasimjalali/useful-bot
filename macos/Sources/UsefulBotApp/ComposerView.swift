@@ -792,7 +792,9 @@ private struct ComposerModeMenu: View {
     /// Open (or switch) the flyout after the hover settles.
     private func hover(_ target: Flyout) {
         hoverTask?.cancel()
-        hoverTask = Task {
+        // A plain Task body runs off the main actor; the flyout is SwiftUI
+        // state and must be written on the main thread.
+        hoverTask = Task { @MainActor in
             try? await Task.sleep(for: Self.hoverDelay)
             guard !Task.isCancelled else { return }
             flyout = target

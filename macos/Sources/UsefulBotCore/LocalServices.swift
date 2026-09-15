@@ -231,14 +231,15 @@ public protocol ProcessRunner: Sendable {
 private final class SpawnRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var processes: [pid_t: Process] = [:]
-    private var handles: [pid_t: FileHandle] = [:]
     private var reportedUnknown: Set<String> = []
 
-    func add(pid: pid_t, process: Process, handle: FileHandle?) {
+    func add(pid: pid_t, process: Process) {
         lock.lock()
+        defer { lock.unlock() }
+        // A process that exits at once can run its termination handler before
+        // this call: recording it then would store an entry nothing removes.
+        guard process.isRunning else { return }
         processes[pid] = process
-        handles[pid] = handle
-        lock.unlock()
     }
 
     /// True while the recorded process is still alive. The `isRunning` check
@@ -250,12 +251,10 @@ private final class SpawnRegistry: @unchecked Sendable {
         return process.isRunning
     }
 
-    func remove(pid: pid_t) -> FileHandle? {
+    func remove(pid: pid_t) {
         lock.lock()
         defer { lock.unlock() }
-        let handle = handles.removeValue(forKey: pid)
         processes.removeValue(forKey: pid)
-        return handle
     }
 
     /// One log line per port/pid pair so a permanently foreign listener does
@@ -294,11 +293,13 @@ public struct FoundationProcessRunner: ProcessRunner {
             "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory(),
         ]
-        process.terminationHandler = { [registry] finished in
+        process.terminationHandler = { [registry, handle] finished in
             let pid = finished.processIdentifier
-            if let handle = registry.remove(pid: pid) {
-                try? handle.close()
-            }
+            registry.remove(pid: pid)
+            // The handle is closed here, not by the adder: for a process that
+            // exits at once this handler can run before `add`, and the closer
+            // must not depend on which wins the race.
+            if let handle { try? handle.close() }
             Self.appendEvent(
                 "service \(label) (pid \(pid)) exited with status \(finished.terminationStatus)",
                 to: logURL
@@ -306,7 +307,7 @@ public struct FoundationProcessRunner: ProcessRunner {
         }
         do {
             try process.run()
-            registry.add(pid: process.processIdentifier, process: process, handle: handle)
+            registry.add(pid: process.processIdentifier, process: process)
         } catch {
             if let handle { try? handle.close() }
             Self.appendEvent("failed to launch \(label): \(error.localizedDescription)", to: logURL)

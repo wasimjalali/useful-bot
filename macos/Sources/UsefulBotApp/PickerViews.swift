@@ -187,8 +187,10 @@ struct SearchPaletteView: View {
     @State private var active = 0
     @FocusState private var focused: Bool
 
+    // Only tabs `hits` can actually fill; a tab with no data source would
+    // never return a row and would always read "Nothing in X yet."
     enum SearchTab: String, CaseIterable {
-        case all, messages, bots, groups, files, links, routines, actions
+        case all, messages, bots, groups
 
         var label: String {
             switch self {
@@ -196,10 +198,6 @@ struct SearchPaletteView: View {
             case .messages: return "Messages"
             case .bots: return "Bots"
             case .groups: return "Groups"
-            case .files: return "Files"
-            case .links: return "Links"
-            case .routines: return "Routines"
-            case .actions: return "Actions"
             }
         }
     }

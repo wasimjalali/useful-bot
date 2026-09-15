@@ -402,6 +402,7 @@ final class AppModel: ObservableObject {
         attachError = nil
         threadError = nil
         stickyThreadError = nil
+        saveError = nil
         memoryNotes = nil
         memoryError = nil
         selectedBotId = botId
@@ -463,8 +464,16 @@ final class AppModel: ObservableObject {
             // transcript appears at once instead of after the stream goes idle.
             durableEvents = state.events
             proposals = state.proposals
-            projection = StreamProjection()
-            rebuildTranscript()
+            // Only when nothing is on screen yet. A reload that follows Stop
+            // keeps the rows the turn already streamed until the replay below
+            // has them all; rebuilding on an empty projection here blanked the
+            // chat for the length of the replay.
+            if projection.messages.isEmpty {
+                projection = StreamProjection()
+                rebuildTranscript()
+            } else {
+                projection = StreamProjection()
+            }
             if let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
@@ -614,7 +623,8 @@ final class AppModel: ObservableObject {
         let chatGen = chatGeneration
         sendBotId = bot.id
         let draftSnapshot = draft
-        let sentAttachmentIds = Set(attachments.map(\.id))
+        let sentAttachments = attachments
+        let sentAttachmentIds = Set(sentAttachments.map(\.id))
         // Appended to the projection that is already on screen, never a fresh
         // one built from the durable rows. The durable store holds only the
         // side channel — notes, proposals, handoffs — while the conversation
@@ -642,6 +652,9 @@ final class AppModel: ObservableObject {
         sendTick &+= 1
         sendTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // True once the POST answered: the server has the turn, so a
+            // later failure lost the reply, not the send.
+            var delivered = false
             do {
                 // Snapshot the turn ids first so a resend of identical text
                 // cannot arm on the earlier turn. A snapshot that cannot be
@@ -659,7 +672,7 @@ final class AppModel: ObservableObject {
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 let sessionId: String
                 do {
-                    sessionId = try await self.client.send(
+                    sessionId = try await self.postSession(
                         botId: bot.id,
                         sessionId: sendSessionId,
                         message: message
@@ -677,8 +690,9 @@ final class AppModel: ObservableObject {
                     // second session gets created only to be cancelled.
                     guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                     history = []
-                    sessionId = try await self.client.send(botId: bot.id, sessionId: nil, message: message)
+                    sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message)
                 }
+                delivered = true
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else {
                     // The turn was stopped while it was being created: the
                     // session exists now, so cancel it best-effort instead of
@@ -728,12 +742,22 @@ final class AppModel: ObservableObject {
                 return
             } catch {
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
-                // The composer was cleared when the turn was committed, so a
-                // send that never reached the server has to give the text
-                // back. Anything typed since is kept ahead of it.
-                self.restoreUnsentDraft(draftSnapshot)
-                self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
-                self.threadError = self.stickyThreadError
+                if delivered {
+                    // The server has the turn, so the draft stays cleared and
+                    // the transcript keeps what the stream already applied.
+                    // Only the reply itself is missing, so say that, then let
+                    // the reload resync with what eve stored.
+                    self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "The reply could not be read."
+                    self.threadError = self.stickyThreadError
+                } else {
+                    // The composer was cleared when the turn was committed, so
+                    // a send that never reached the server has to give the text
+                    // and its files back. Anything typed or attached since is
+                    // kept.
+                    self.restoreUnsentDraft(draftSnapshot, sentAttachments: sentAttachments)
+                    self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                    self.threadError = self.stickyThreadError
+                }
                 self.activeSession = nil
                 self.pending = false
                 await self.reloadThread()
@@ -754,11 +778,13 @@ final class AppModel: ObservableObject {
         cancelSend()
         pending = false
         activeSession = nil
-        // Drop only the optimistic/live rows: the durable transcript stays
-        // until a reload actually succeeds.
-        projection = StreamProjection()
-        searchHits = []
+        // Keep the rows already on screen: the conversation lives in the eve
+        // session and reaches the app by replay, so clearing the projection
+        // here would erase the just-sent message and any partial reply until
+        // a reload puts them back. The reload below resyncs the transcript
+        // with what eve actually stored.
         rebuildTranscript()
+        startReload()
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let target, !target.isEmpty {
@@ -780,16 +806,23 @@ final class AppModel: ObservableObject {
     /// Put an unsent draft back after a send that never reached the server.
     /// Whatever was typed in the meantime stays, and goes after the returned
     /// text, so the field reads in the order it was written.
-    private func restoreUnsentDraft(_ draftSnapshot: String) {
-        guard !draftSnapshot.isEmpty else { return }
-        if draft.isEmpty {
-            draft = draftSnapshot
-        } else if !draft.hasPrefix(draftSnapshot) {
-            draft = draftSnapshot + "\n" + draft
-        } else {
-            return
+    private func restoreUnsentDraft(_ draftSnapshot: String, sentAttachments: [Attachment] = []) {
+        if !draftSnapshot.isEmpty {
+            if draft.isEmpty {
+                draft = draftSnapshot
+                draftWriteToken &+= 1
+            } else if !draft.hasPrefix(draftSnapshot) {
+                draft = draftSnapshot + "\n" + draft
+                draftWriteToken &+= 1
+            }
         }
-        draftWriteToken &+= 1
+        // The failed send owned these files: they go back in front of
+        // anything attached since, without duplicating ids.
+        let current = Set(attachments.map(\.id))
+        let missing = sentAttachments.filter { !current.contains($0.id) }
+        if !missing.isEmpty {
+            attachments = missing + attachments
+        }
     }
 
     private func cancelSend() {
@@ -819,6 +852,17 @@ final class AppModel: ObservableObject {
             message: message
         ), live: true)
         return fresh
+    }
+
+    /// POST a turn on a task Stop cannot cancel. The detached task still
+    /// answers with the session id it made when this send was stopped, and
+    /// the generation guard at the call site then cancels that session
+    /// best-effort instead of leaving it burning with no pointer and no Stop.
+    private func postSession(botId: String, sessionId: String?, message: String) async throws -> String {
+        let client = client
+        return try await Task.detached {
+            try await client.send(botId: botId, sessionId: sessionId, message: message)
+        }.value
     }
 
     /// Forget a session eve has retired, locally and in the stored shell, so
@@ -1259,6 +1303,9 @@ final class AppModel: ObservableObject {
                 self.applyStore(next)
                 self.saveError = nil
             } catch {
+                // The pane shows one saveError for whichever bot is open, so a
+                // save that fails after a switch must not land on the new one.
+                guard epoch == self.storeEpoch, botId == self.selectedBotId else { return }
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
             }
         }
@@ -1333,6 +1380,7 @@ final class AppModel: ObservableObject {
         attachError = nil
         threadError = nil
         stickyThreadError = nil
+        saveError = nil
         memoryNotes = nil
         memoryError = nil
     }
@@ -1546,6 +1594,9 @@ final class AppModel: ObservableObject {
                 }
                 self.threadError = nil
                 self.stickyThreadError = nil
+                // The card leaves at once: waiting for the reload kept its
+                // buttons live after a success, and a second tap double-sent.
+                self.proposals.removeAll { $0.id == proposal.id }
                 self.busyProposals.remove(proposal.id)
                 // Reload outside the chain: a replay must not block writes.
                 self.startReload()
@@ -1617,11 +1668,17 @@ final class AppModel: ObservableObject {
 
     func loadMemory(botId: String) async {
         do {
-            memoryNotes = try await client.memoryNotes(botId: botId)
+            let notes = try await client.memoryNotes(botId: botId)
+            // A slow response from the previous bot must not land on this one.
+            guard botId == selectedBotId else { return }
+            memoryNotes = notes
             memoryError = nil
+        } catch is CancellationError {
+            return
         } catch {
             // Keep the last notes and show the failure instead of pretending
             // this bot remembers nothing.
+            guard botId == selectedBotId else { return }
             memoryError = "Could not load memory."
         }
     }

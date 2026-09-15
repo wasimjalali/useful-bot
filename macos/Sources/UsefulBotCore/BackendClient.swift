@@ -21,6 +21,9 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// eve retired the session this chat pointed at (a failed turn ends a
     /// session for good), so nothing can be sent to it again.
     case sessionEnded
+    /// The event stream ended before the turn did, so the reply on screen
+    /// may be missing its tail.
+    case streamInterrupted
 
     public var errorDescription: String? {
         switch self {
@@ -64,6 +67,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return Self.shellCopy(code)
         case .sessionEnded:
             return "This chat's session ended. Send again to start a new one."
+        case .streamInterrupted:
+            return "The connection dropped before the reply finished."
         }
     }
 
@@ -351,7 +356,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/shell"))
         }
-        try Self.expectOK(response)
+        try Self.expectShellOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ShellResponse.self, from: data) else {
             if let failure = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
                let code = failure.error, !code.isEmpty {
@@ -1057,6 +1062,10 @@ public actor BackendClient {
                         // In history mode a waiting marker ends every replayed
                         // turn; only the idle watchdog may finish the read.
                         let finishOnTerminal = expectedSuffix != nil
+                        // In armed mode the stream must end with a terminal
+                        // event; an EOF before one means the server dropped
+                        // mid-turn, not that the reply is done.
+                        var sawTerminal = false
                         for try await line in bytes.lines {
                             activity.touch()
                             guard let event = EveStream.parseLine(line) else { continue }
@@ -1087,12 +1096,17 @@ public actor BackendClient {
                                 continue
                             }
                             continuation.yield(event)
-                            if finishOnTerminal,
-                               ["turn.completed", "turn.cancelled", "turn.failed",
+                            if ["turn.completed", "turn.cancelled", "turn.failed",
                                 "session.completed", "session.failed", "session.cancelled"].contains(event.type) {
-                                continuation.finish()
-                                return
+                                sawTerminal = true
+                                if finishOnTerminal {
+                                    continuation.finish()
+                                    return
+                                }
                             }
+                        }
+                        if expectedSuffix != nil, armed, !sawTerminal {
+                            throw BackendError.streamInterrupted
                         }
                         continuation.finish()
                         return

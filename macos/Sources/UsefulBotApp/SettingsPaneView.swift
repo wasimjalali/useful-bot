@@ -154,13 +154,13 @@ private struct BotSettingsFields: View {
                 TextField("", text: $name)
                     .nativeField(focused: focus == .name)
                     .focused($focus, equals: .name)
-                    .onSubmit { commitName() }
+                    .onSubmit { commitName(bot) }
             }
             FieldShell(label: "Label (optional)") {
                 TextField("", text: $label)
                     .nativeField(focused: focus == .label)
                     .focused($focus, equals: .label)
-                    .onSubmit { commitLabel() }
+                    .onSubmit { commitLabel(bot) }
             }
             FieldShell(label: "Description") {
                 ZStack(alignment: .topLeading) {
@@ -199,16 +199,40 @@ private struct BotSettingsFields: View {
             }
         }
         .onAppear(perform: seed)
-        .onChange(of: bot.id) { _, _ in
+        .onChange(of: bot.id) { old, _ in
+            // The view already holds the incoming bot here, so the outgoing
+            // bot is looked up by its old id and its edits commit before the
+            // fields are reseeded for the new one.
+            if let outgoing = model.store?.bots.first(where: { $0.id == old }) {
+                commitName(outgoing)
+                commitLabel(outgoing)
+                commitDescription(outgoing)
+            }
+            loaded = false
+            seed()
+        }
+        // Only the edited fields: a poll that moves lastPreview or the
+        // session must not reseed a just-committed edit back to the old text
+        // while its echo is still in flight.
+        .onChange(of: [bot.name, bot.label, bot.description]) { _, _ in
+            // Store echoes and polls can rename the bot while the pane is
+            // open; refresh the fields from the snapshot unless the owner is
+            // typing in one of them.
+            guard focus == nil else { return }
             loaded = false
             seed()
         }
         .onChange(of: focus) { _, next in
             if next == nil {
-                commitName()
-                commitLabel()
-                commitDescription()
+                commitName(bot)
+                commitLabel(bot)
+                commitDescription(bot)
             }
+        }
+        .onDisappear {
+            commitName(bot)
+            commitLabel(bot)
+            commitDescription(bot)
         }
     }
 
@@ -289,23 +313,23 @@ private struct BotSettingsFields: View {
         loaded = true
     }
 
-    private func commitName() {
+    private func commitName(_ target: ShellBot) {
         let next = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty else {
-            name = bot.name
+            name = target.name
             return
         }
-        if next != bot.name { model.patchBot(botId: bot.id, ["name": next]) }
+        if next != target.name { model.patchBot(botId: target.id, ["name": next]) }
     }
 
-    private func commitLabel() {
+    private func commitLabel(_ target: ShellBot) {
         let next = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        if next != bot.label { model.patchBot(botId: bot.id, ["label": next]) }
+        if next != target.label { model.patchBot(botId: target.id, ["label": next]) }
     }
 
-    private func commitDescription() {
-        if description != bot.description {
-            model.patchBot(botId: bot.id, ["description": description])
+    private func commitDescription(_ target: ShellBot) {
+        if description != target.description {
+            model.patchBot(botId: target.id, ["description": description])
         }
     }
 }
@@ -377,7 +401,7 @@ private struct GroupSettingsFields: View {
                 TextField("", text: $name)
                     .nativeField(focused: focus == .name)
                     .focused($focus, equals: .name)
-                    .onSubmit { commitName() }
+                    .onSubmit { commitName(bot) }
             }
             FieldShell(label: "Instructions") {
                 ZStack(alignment: .topLeading) {
@@ -428,15 +452,35 @@ private struct GroupSettingsFields: View {
             }
         }
         .onAppear(perform: seed)
-        .onChange(of: bot.id) { _, _ in
+        .onChange(of: bot.id) { old, _ in
+            // The view already holds the incoming bot here, so the outgoing
+            // bot is looked up by its old id and its edits commit before the
+            // fields are reseeded for the new one.
+            if let outgoing = model.store?.bots.first(where: { $0.id == old }) {
+                commitName(outgoing)
+                commitInstructions(outgoing)
+            }
+            loaded = false
+            seed()
+        }
+        // Only the edited fields, for the same reason as the bot pane.
+        .onChange(of: [bot.name, bot.description]) { _, _ in
+            // Store echoes and polls can rename the group while the pane is
+            // open; refresh the fields from the snapshot unless the owner is
+            // typing in one of them.
+            guard focus == nil else { return }
             loaded = false
             seed()
         }
         .onChange(of: focus) { _, next in
             if next == nil {
-                commitName()
-                commitInstructions()
+                commitName(bot)
+                commitInstructions(bot)
             }
+        }
+        .onDisappear {
+            commitName(bot)
+            commitInstructions(bot)
         }
     }
 
@@ -530,18 +574,18 @@ private struct GroupSettingsFields: View {
         loaded = true
     }
 
-    private func commitName() {
+    private func commitName(_ target: ShellBot) {
         let next = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !next.isEmpty else {
-            name = bot.name
+            name = target.name
             return
         }
-        if next != bot.name { model.patchBot(botId: bot.id, ["name": next]) }
+        if next != target.name { model.patchBot(botId: target.id, ["name": next]) }
     }
 
-    private func commitInstructions() {
-        if instructions != bot.description {
-            model.patchBot(botId: bot.id, ["description": instructions])
+    private func commitInstructions(_ target: ShellBot) {
+        if instructions != target.description {
+            model.patchBot(botId: target.id, ["description": instructions])
         }
     }
 }

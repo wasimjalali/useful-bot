@@ -187,7 +187,10 @@ public enum ChatMarkdownParser {
         var escaped = false
         for character in trimmed {
             if escaped {
-                current.append(character == "|" ? "|" : character)
+                // Only the pipe loses its escape; any other escaped character
+                // keeps its backslash, matching `splitRow` in
+                // `shared/chat-markdown.ts` (`C:\path` stays `C:\path`).
+                current.append(character == "|" ? "|" : "\\\(character)")
                 escaped = false
                 continue
             }
