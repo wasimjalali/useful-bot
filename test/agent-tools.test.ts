@@ -871,6 +871,83 @@ test("railAction pins, hides, moves and creates sections", async () => {
   }
 });
 
+test("railAction removeSection asks the owner, refuses a non-empty section and honours a denial", async () => {
+  const box = sandbox();
+  try {
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+    const store = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(store, "CEO");
+    const section = await run<{ status: string; sectionId: string }>(railAction, {
+      action: "createSection",
+      name: "Finance",
+    });
+    await run(railAction, { action: "move", botId: ceo, sectionId: section.sectionId });
+
+    // A section with a bot in it is refused outright, naming the bot, and no
+    // card is raised.
+    const full = await run<{ status: string; memberBotIds: string[] }>(railAction, {
+      action: "removeSection",
+      sectionId: section.sectionId,
+    });
+    assert.equal(full.status, "refused");
+    assert.deepEqual(full.memberBotIds, [ceo]);
+    assert.equal(approvals.listPending().length, 0);
+
+    await run(railAction, { action: "move", botId: ceo, sectionId: null });
+
+    // Denied: the section stays.
+    const denied = run<{ status: string }>(railAction, { action: "removeSection", sectionId: section.sectionId });
+    let card = pendingApproval(approvals);
+    assert.equal(card.tool, "remove_section");
+    assert.equal(card.preview, `remove section Finance (${section.sectionId})`);
+    approvals.decide(card.id, "deny", card.actionSha256);
+    await assert.rejects(() => denied, /approval_denied/);
+    assert.ok(readShell().sections.some((item) => item.id === section.sectionId));
+
+    // Approved: the section goes, and a replay of the same card has no effect.
+    const approved = run<{ status: string; sectionId: string }>(railAction, {
+      action: "removeSection",
+      sectionId: section.sectionId,
+    });
+    card = pendingApproval(approvals);
+    approvals.decide(card.id, "approve", card.actionSha256);
+    const removed = await approved;
+    assert.equal(removed.status, "removed");
+    assert.equal(removed.sectionId, section.sectionId);
+    assert.equal(readShell().sections.some((item) => item.id === section.sectionId), false);
+    const again = await run<{ status: string }>(railAction, { action: "removeSection", sectionId: section.sectionId });
+    assert.equal(again.status, "not_found");
+    assert.equal(approvals.listPending().length, 0);
+  } finally {
+    box.restore();
+  }
+});
+
+test("railAction updateSection renames a section by id in one step", async () => {
+  const box = sandbox();
+  try {
+    seedRoster(["CEO"]);
+    const section = await run<{ status: string; sectionId: string }>(railAction, {
+      action: "createSection",
+      name: "Work",
+    });
+    const renamed = await run<{ status: string; sectionId: string | null }>(railAction, {
+      action: "updateSection",
+      sectionId: section.sectionId,
+      name: "Operations",
+    });
+    assert.equal(renamed.status, "applied");
+    assert.equal(renamed.sectionId, section.sectionId);
+    assert.equal(readShell().sections.length, 1);
+    assert.equal(readShell().sections[0].name, "Operations");
+    const missing = await run<{ status: string }>(railAction, { action: "updateSection", sectionId: "nope", name: "X" });
+    assert.equal(missing.status, "not_found");
+  } finally {
+    box.restore();
+  }
+});
+
 test("railAction refuses unknown bots, unknown sections and missing names", async () => {
   const box = sandbox();
   try {
