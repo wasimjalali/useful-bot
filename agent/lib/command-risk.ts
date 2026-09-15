@@ -300,12 +300,23 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     // whether it sits on the line or in a -f file.
     const shellsOut = /\bsystem\s*\(|\|\s*"|"\s*\||\bgetline\b/;
     if (rest.some((token) => shellsOut.test(token.text))) return `runs a command from awk (${name} system())`;
-    const fileAt = flags.indexOf("-f");
-    if (fileAt >= 0) {
-      const file = flags[fileAt + 1] ? fileUnderRoot(flags[fileAt + 1], root) : null;
+    // Every spelling of the program file: -f x, -fx, --file=x, --source-file=x.
+    const programs: string[] = [];
+    for (let i = 0; i < flags.length; i += 1) {
+      const flag = flags[i];
+      if (flag === "-f" || flag === "--file" || flag === "--source-file") {
+        programs.push(flags[i + 1] ?? "");
+        i += 1;
+        continue;
+      }
+      const attached = /^(?:--file=|--source-file=|-f)(.+)$/.exec(flag);
+      if (attached) programs.push(attached[1]);
+    }
+    for (const program of programs) {
+      const file = program ? fileUnderRoot(program, root) : null;
       const text = file ? readScript(file) : null;
       if (!text) return `runs an awk program this cannot read (${name} -f)`;
-      if (shellsOut.test(text)) return `runs a command from awk (${name} -f ${flags[fileAt + 1]})`;
+      if (shellsOut.test(text)) return `runs a command from awk (${name} -f ${program})`;
     }
   }
   if (name === "rsync" && flags.some((flag) => flag.startsWith("--delete"))) return "deletes at the destination (rsync --delete)";

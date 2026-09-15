@@ -92,6 +92,8 @@ test("a line is judged by the script it runs", () => {
       ["make -f shell.mk", /parse time/],
       ["make -f brace.mk", /parse time/],
       ["awk -f tools/evil.awk data.txt", /from awk/],
+      ["awk -ftools/evil.awk data.txt", /from awk/],
+      ["awk --file=tools/evil.awk data.txt", /from awk/],
       ["make -f missing.mk", /cannot read/],
       ["sh scripts/missing.sh", /runs a shell script/],
     ];
