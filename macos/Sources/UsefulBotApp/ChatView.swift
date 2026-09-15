@@ -21,6 +21,10 @@ struct ChatView: View {
     /// page for: a reply that already fits needs no move.
     @State private var replyHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
+    /// True while the view is parked at the top of a finished reply. It stops
+    /// the bottom-pinning triggers from dragging the reader back down as the
+    /// durable reload changes the list underneath them.
+    @State private var holdingReplyAnchor = false
     /// Room for the user's message above the reply, so an answer that only
     /// just fits is left where it is.
     private static let replyAnchorSlack: CGFloat = 120
@@ -211,27 +215,13 @@ struct ChatView: View {
 
     // MARK: - Transcript
 
-    /// Scroll to the newest turn now and once more after layout settles.
-    ///
-    /// A row added or a transcript replaced changes the content height a frame
-    /// after the change that triggered this, so a single scroll lands short.
-    /// Both passes are untransacted: the transcript belongs at its newest turn,
-    /// and animating the trip there is what makes opening a chat look like it
-    /// started at the top and fell.
-    private func stickToBottom(_ proxy: ScrollViewProxy) {
-        jumpToBottom(proxy)
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 80_000_000)
-            guard pinnedToBottom else { return }
-            jumpToBottom(proxy)
-        }
-    }
-
-    private func jumpToBottom(_ proxy: ScrollViewProxy) {
+    /// Move to a row without animating the trip. Used for the one automatic
+    /// scroll this transcript performs.
+    private func scrollWithoutAnimation(_ proxy: ScrollViewProxy, to id: String) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            proxy.scrollTo("bottom", anchor: .bottom)
+            proxy.scrollTo(id, anchor: .top)
         }
     }
 
@@ -288,7 +278,12 @@ struct ChatView: View {
                                 )
                             }
                         }
-                        if model.pending {
+                        // Gone as soon as the reply starts arriving, so the
+                        // reply takes its place rather than following it. Kept
+                        // until the end of the turn, it was removed after the
+                        // last row landed, and with the content bottom-aligned
+                        // that pulled everything down by its height.
+                        if model.pending, model.transcript.last?.kind != .assistant {
                             WorkingRow(bot: bot)
                         }
                         if !model.searchHits.isEmpty {
@@ -313,70 +308,38 @@ struct ChatView: View {
                 }
                 .uvScroll()
                 .defaultScrollAnchor(.bottom)
-                .modifier(ScrollPinnedTracker(pinned: $pinnedToBottom, viewport: $viewportHeight))
+                .modifier(ScrollPinnedTracker(
+                    pinned: $pinnedToBottom,
+                    viewport: $viewportHeight
+                ))
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
-                .onAppear { jumpToBottom(proxy) }
-                // A chat opens at its newest turn, and gets there before the
-                // frame is drawn. The delayed scroll this replaces was visible
-                // as a jump: the transcript rendered at the top, then travelled
-                // down once the rows had loaded. The pin is re-armed because a
-                // different chat is a different reading position, and the
-                // transcript for this one arrives after the switch, which the
-                // row-count trigger then lands.
-                .task(id: bot.id) {
-                    pinnedToBottom = true
-                    jumpToBottom(proxy)
-                }
-                // Sending is the one trigger that ignores the pin. The owner
-                // asked for this answer, so the transcript goes to it even if
-                // they were reading history a moment earlier, and stays there
-                // for the reply that streams in after.
-                .onChange(of: model.sendTick) {
-                    pinnedToBottom = true
-                    stickToBottom(proxy)
-                }
-                // The web pins to the newest turn on every content change.
-                // Each trigger scrolls only while the reader is pinned to the
-                // bottom; a jump to the top would mean the content changed
-                // under them, and dragging them back is not rendering.
-                //
-                // The row count is also what changes when a finished turn
-                // reloads the durable transcript, which swaps a short list for
-                // the full history: that needs the settle pass too, or the
-                // viewport lands wherever the taller content put it.
-                .onChange(of: model.transcript.count) {
-                    guard pinnedToBottom else { return }
-                    stickToBottom(proxy)
-                }
-                .onChange(of: model.transcript.last?.text.count) {
-                    guard pinnedToBottom else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                // There is exactly one automatic scroll in this transcript, and
+                // it is the one below. Everything else stays at the newest turn
+                // because `defaultScrollAnchor(.bottom)` already holds the
+                // bottom as the content grows — opening a chat, switching bots,
+                // sending, streaming and the durable reload all keep their place
+                // without being told to. The explicit scrolls that used to sit
+                // here were not keeping the view there; they were what moved it,
+                // because scrolling to a bottom anchor repositions content that
+                // is shorter than the window and SwiftUI had already placed.
+                .onChange(of: model.sendTick) { holdingReplyAnchor = false }
+                .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
+                // The single exception: an answer taller than the window is
+                // read from its first line, so the view moves there once, when
+                // the turn finishes. A reply that already fits is left alone.
                 .onChange(of: model.pending) { wasPending, nowPending in
-                    guard pinnedToBottom else { return }
-                    // The turn just finished. Land on the first line of the
-                    // answer rather than its last: a long reply read from the
-                    // bottom is a reply read backwards.
-                    //
-                    // Only when the answer is actually taller than the window,
-                    // though. A short exchange is already on screen in full,
-                    // and re-anchoring it moves the page under the reader to
-                    // show them what they can already see.
-                    if wasPending, !nowPending,
-                       replyHeight > viewportHeight - Self.replyAnchorSlack,
-                       let anchor = model.latestReplyAnchor {
-                        var transaction = Transaction()
-                        transaction.disablesAnimations = true
-                        withTransaction(transaction) {
-                            proxy.scrollTo(anchor, anchor: .top)
-                        }
-                        return
+                    guard wasPending, !nowPending, pinnedToBottom,
+                          replyHeight > viewportHeight - Self.replyAnchorSlack,
+                          let anchor = model.latestReplyAnchor else { return }
+                    holdingReplyAnchor = true
+                    scrollWithoutAnimation(proxy, to: anchor)
+                    // The durable reload lands moments later and changes the
+                    // list, so the anchor is re-applied once it has settled.
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        guard holdingReplyAnchor else { return }
+                        scrollWithoutAnimation(proxy, to: anchor)
                     }
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onChange(of: model.openProposals.count) {
-                    guard pinnedToBottom else { return }
-                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
         }
     }
@@ -801,7 +764,7 @@ private struct ScrollPinnedTracker: ViewModifier {
                     distance: max(0, geometry.contentSize.height - bottomEdge),
                     viewport: geometry.containerSize.height
                 )
-            } action: { _, new in
+            } action: { old, new in
                 viewport = new.viewport
                 // Only the reader's own gesture may break the pin.
                 //

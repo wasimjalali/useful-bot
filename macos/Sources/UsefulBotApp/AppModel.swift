@@ -401,9 +401,13 @@ final class AppModel: ObservableObject {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
                     projection.apply(event, live: atLiveTail)
-                    if atLiveTail {
-                        publishTranscript()
-                    }
+                    // Nothing is published while the session replays. Each
+                    // publish rebuilt the list, so opening a chat used to
+                    // assemble it in 100ms steps in front of the reader; the
+                    // rows are all in hand a moment later and the single
+                    // publish below lays them out once, already at the newest
+                    // turn. A live turn still streams: that goes through
+                    // `send`, which publishes per delta.
                 }
             }
             guard generation == loadGeneration else { return }
@@ -608,7 +612,15 @@ final class AppModel: ObservableObject {
                 self.activeSession = nil
 
                 self.pending = false
-                await self.reloadThread()
+                // Not a full reload. Rebuilding the thread here reset the
+                // projection to empty, and since the durable store holds no
+                // conversation rows the transcript briefly had none at all:
+                // the view fell back to its empty state, the scroll view was
+                // torn down, and the replay then rebuilt it row by row. That
+                // teardown is what made even a one-line exchange jump. The
+                // rows on screen are already the right ones, so only the side
+                // channel needs refreshing.
+                await self.refreshDurable()
             } catch is CancellationError {
                 return
             } catch {
@@ -745,6 +757,21 @@ final class AppModel: ObservableObject {
     /// events stream in, with a forced rebuild when the turn settles. A delta
     /// that arrives inside the window is coalesced onto one trailing rebuild
     /// rather than dropped.
+    /// Refresh the durable rows and proposals, leaving the projection alone.
+    ///
+    /// The replay a full reload performs would rebuild the very rows already on
+    /// screen, with the same ids, after a stretch of showing none. This is the
+    /// same work `pollOnce` does when idle.
+    private func refreshDurable() async {
+        guard let bot = selectedBot else { return }
+        let generation = loadGeneration
+        guard let state = try? await client.threadState(botId: bot.id),
+              generation == loadGeneration, bot.id == selectedBotId else { return }
+        durableEvents = state.events
+        proposals = state.proposals
+        rebuildTranscript()
+    }
+
     private func publishTranscript(force: Bool = false) {
         let now = Date()
         let since = now.timeIntervalSince(lastTranscriptPublish)
