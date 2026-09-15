@@ -147,6 +147,24 @@ Severity is the auditor's. The verdict column is the orchestrator's after readin
 | G-SHARED-09 | GLM | low | ux | scripts/service.mjs:162 | Eve startup names the wrong keychain item on failure | confirmed | Spark | mergeable | #50 |
 | ORCH-01 | orchestrator | medium | bug | macos/Sources/UsefulBotApp/AppModel.swift:772 | Attachments removed at send are not restored when the send fails | found while verifying G-WEB-05 | Spark | mergeable | #48 |
 
+### Landed after the three slice PRs
+
+- #52 `fix(agent)`: eve failed to boot after #50 because the reviewer subagent threw at module
+  load when the reviewer token was absent. Found by restarting the services against main,
+  not by either auditor or the Spark review of #50. The provider now builds either way and
+  the first reviewer call fails with `reviewer_unconfigured`, reading the token per call.
+- #53 `feat(agent)`: railAction gained `removeSection` (approval-gated) and `updateSection`,
+  from the owner's brief mid-session. Verified live in the app.
+
+### Open for round 2
+
+- ORCH-02 (medium, ux): the macOS rail does not refresh while a turn is running (the store
+  poll pauses so the optimistic session echo is not overwritten), so a section or bot a
+  tool changed mid-turn appears only after the turn ends. Seen while verifying #53.
+- Provision the reviewer credential (profile `reviewer`) in setup-local and service.mjs.
+- Re-audit every slice against main with fresh briefs; re-verify the persona prefix on a
+  routine run and the acting-bot resolution on a handoff.
+
 ### Not patched this round, for the owner
 
 - The reviewer credential (`UB_ROUTER_REVIEWER_TOKEN`, profile `reviewer`) is never minted by
