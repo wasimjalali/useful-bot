@@ -404,9 +404,18 @@ export function ChatComposer({
 
   async function addFiles(list: FileList | null) {
     if (!list || list.length === 0) return;
-    setAttachError("");
     const room = ATTACH_MAX_FILES - files.length;
+    // A full message takes nothing, so say so instead of clearing a prior
+    // message and returning with no error.
+    if (room <= 0) {
+      setAttachError("Up to 5 files per message.");
+      return;
+    }
+    setAttachError("");
     const incoming = Array.from(list).slice(0, room);
+    // A pick larger than the room still uploads what fits; the message says
+    // the rest was dropped.
+    const dropped = incoming.length < list.length;
     try {
       const csrf = await csrfHeaders();
       const next: Attached[] = [];
@@ -432,6 +441,7 @@ export function ChatComposer({
         });
       }
       setFiles((current) => [...current, ...next].slice(0, ATTACH_MAX_FILES));
+      if (dropped) setAttachError("Up to 5 files per message.");
     } catch (err) {
       setAttachError(err instanceof Error ? err.message : "Attach failed");
     }
