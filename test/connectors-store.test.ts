@@ -47,13 +47,14 @@ test("a new key drops the old session and connected cache", () => {
   assert.equal(store.apiKey, null);
 });
 
-test("key validation refuses short, long and whitespace keys", () => {
+test("key validation strips whitespace and refuses short or long keys", () => {
   const store = emptyConnectorsStore();
   assert.throws(() => setConnectorsKey(store, "short"), /connectors_key/);
-  assert.throws(() => setConnectorsKey(store, "has space in it"), /connectors_key/);
-  assert.throws(() => setConnectorsKey(store, "x".repeat(513)), /connectors_key/);
+  assert.throws(() => setConnectorsKey(store, "x".repeat(4097)), /connectors_key/);
   setConnectorsKey(store, "  ak_trimmed_ok  ");
   assert.equal(store.apiKey, "ak_trimmed_ok");
+  setConnectorsKey(store, "ak_pasted\n with_break ");
+  assert.equal(store.apiKey, "ak_pastedwith_break");
 });
 
 test("user id survives a locked update and stays stable across reads", () => {

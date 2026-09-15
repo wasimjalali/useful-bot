@@ -155,10 +155,14 @@ export function updateConnectorsStore<T>(
   }
 }
 
+/**
+ * A pasted key often arrives with a newline or a space from the page it was
+ * copied off. No key legitimately contains whitespace, so it is stripped
+ * rather than refused; a key that is still too short or too long is refused.
+ */
 export function setConnectorsKey(store: ConnectorsStore, key: string): void {
-  const trimmed = key.trim();
-  if (trimmed.length < 8 || trimmed.length > 512) throw new Error("connectors_key");
-  if (/\s/.test(trimmed)) throw new Error("connectors_key");
+  const trimmed = key.replace(/\s+/g, "");
+  if (trimmed.length < 8 || trimmed.length > 4096) throw new Error("connectors_key");
   if (store.apiKey !== trimmed) {
     // A new key means a new Composio project: the old session and its
     // connections belong to the old one.

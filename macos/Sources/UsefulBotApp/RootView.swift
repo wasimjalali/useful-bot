@@ -686,6 +686,8 @@ struct ConnectorsDialog: View {
                 Link("Get a key at composio.dev", destination: URL(string: "https://platform.composio.dev")!)
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.C.inkMuted)
+                    .underline()
+                    .pointerOnHover()
                 Spacer(minLength: 0)
             }
         }
