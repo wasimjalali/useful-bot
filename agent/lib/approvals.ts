@@ -58,6 +58,7 @@ export type ApprovalTool =
   | "write_file"
   | "memory.upsert"
   | "delete_bot"
+  | "remove_section"
   | "clear_history"
   | "delete_routine"
   | "create_routine"

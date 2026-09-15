@@ -11,7 +11,7 @@ import { removeSessionGrant } from "../../shared/workspace-store.ts";
 
 export default defineTool({
   description:
-    "Delete a teammate bot or group chat when the owner asks for it. The owner sees an approval card and nothing is removed until they approve it. This also removes that bot's routines and recent chats, and it cannot be undone, so confirm which bot they mean before calling it.",
+    "Delete a teammate bot or group chat when the owner asks for it. The owner sees an approval card and nothing is removed until they approve it. This also removes that bot's routines and recent chats, and it cannot be undone, so confirm which bot they mean before calling it. The section it sat in stays; call railAction removeSection to tidy an emptied one.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80),
     reason: z.string().max(300).optional(),
