@@ -333,5 +333,5 @@ export function markFailed(
 
 export function dropHandoff(id: string, dir = handoffDir()): void {
   rmSync(handoffPath(id, dir), { force: true });
-  releaseHandoffClaim(id, dir);
+  releaseHandoffClaim(id, "", dir);
 }

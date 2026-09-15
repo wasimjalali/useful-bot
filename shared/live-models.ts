@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { mergeLiveModels, modelsFor, type ModelOption } from "./models.ts";
 
@@ -31,7 +31,10 @@ export function readModelsCache(path = modelsCachePath()): CacheFile {
 
 export function writeModelsCache(cache: CacheFile, path = modelsCachePath()): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(cache)}\n`, { encoding: "utf8", mode: 0o600 });
+  // Atomic like the catalogue cache: readers see the old file or the new one.
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(cache)}\n`, { encoding: "utf8", mode: 0o600 });
+  renameSync(tmp, path);
 }
 
 export function cachedModels(providerId: string, path = modelsCachePath()): ModelOption[] {

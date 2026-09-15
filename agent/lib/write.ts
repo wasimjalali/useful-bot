@@ -7,6 +7,17 @@ import { WRITE_MAX_BYTES } from "../../shared/policy.ts";
 
 let store: ApprovalStore | null = null;
 
+const PREVIEW_MAX = 500;
+
+/** Fit the content onto the approval card without hiding that it was cut. */
+function clipPreview(value: string): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  const bytes = Buffer.byteLength(value, "utf8");
+  return flat.length > PREVIEW_MAX
+    ? `${flat.slice(0, PREVIEW_MAX)} ... (${bytes} bytes)`
+    : flat;
+}
+
 export function getApprovalStore(): ApprovalStore {
   if (!store) store = new ApprovalStore(Date.now, defaultApprovalsPath());
   return store;
@@ -52,7 +63,10 @@ export async function approvedWrite(input: {
     toolCallId: input.toolCallId,
     tool: "write_file",
     actionSha256: hash,
-    preview: `write ${input.path}`,
+    // The content is what the owner is actually authorising, so it goes on
+    // the card after the path; without it they would be approving a bare
+    // filename. The hash still binds the full text.
+    preview: `write ${input.path}: ${clipPreview(input.content)}`,
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);

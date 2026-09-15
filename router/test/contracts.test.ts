@@ -11,7 +11,7 @@ import { ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs } from "../src/retry-after.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
-import { MAX_TOOL_SCHEMAS } from "../../shared/policy.ts";
+import { MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
 type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -676,6 +676,89 @@ test("upstream config errors keep their distinct code", () => {
   assert.equal(upstreamConfigError(new Error("provider_unknown")).code, "provider_unknown");
   assert.equal(upstreamConfigError(new Error("provider_disconnected")).code, "provider_disconnected");
   assert.equal(upstreamConfigError(new Error("providers_schema")).code, "configuration_unverified");
+});
+
+test("search without the capability is 403", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/search`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.ops}`, "content-type": "application/json" },
+      body: JSON.stringify({ query: "hello" }),
+    });
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error.code, "capability_forbidden");
+  });
+});
+
+test("search enforces one search per second per caller", async () => {
+  await withRouter(async (base, tokens) => {
+    const originalFetch = globalThis.fetch;
+    const stubFetch = async (...args: Parameters<typeof fetch>): Promise<Response> => {
+      const [input] = args;
+      if (typeof input === "string" && input.includes("api.firecrawl.dev")) {
+        return new Response(
+          JSON.stringify({ data: { web: [{ title: "t", url: "https://example.com/", description: "s" }] } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return originalFetch(...args);
+    };
+    globalThis.fetch = stubFetch;
+    try {
+      const post = () => originalFetch(`${base}/v1/search`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json" },
+        body: JSON.stringify({ query: "hello" }),
+      });
+      const first = await post();
+      assert.equal(first.status, 200);
+      assert.equal((await first.json()).provider, "firecrawl-keyless");
+      const second = await post();
+      assert.equal(second.status, 429);
+      assert.equal((await second.json()).error.code, "search_rate_limited");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("search hits enforce the per-caller 24h cap", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  const step = SEARCH_LIMITS.minIntervalMs + 100;
+  for (let i = 0; i < SEARCH_LIMITS.desktop; i += 1) {
+    store.checkSearchLimit(caller, now + i * step);
+  }
+  assert.throws(() => store.checkSearchLimit(caller, now + SEARCH_LIMITS.desktop * step), /search_rate_limited/);
+});
+
+test("search hits enforce one per second per caller", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  store.checkSearchLimit(caller, now);
+  assert.throws(() => store.checkSearchLimit(caller, now + 500), /search_rate_limited/);
+  store.checkSearchLimit(caller, now + SEARCH_LIMITS.minIntervalMs);
+});
+
+test("search hits enforce the aggregate 24h cap", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const now = Date.now();
+  const step = SEARCH_LIMITS.minIntervalMs + 100;
+  for (let i = 0; i < SEARCH_LIMITS.aggregate; i += 1) {
+    store.checkSearchLimit(
+      { callerId: `caller-${i}`, profile: "desktop" as const, aliases: ["workhorse"], search: true },
+      now + i * step,
+    );
+  }
+  assert.throws(() => store.checkSearchLimit(
+    { callerId: "one-more", profile: "desktop" as const, aliases: ["workhorse"], search: true },
+    now + SEARCH_LIMITS.aggregate * step,
+  ), /search_rate_limited/);
 });
 
 test("runtime config rejects malformed credentials", () => {

@@ -432,8 +432,14 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         }
         const raw = await readBody(req);
         const body = parseJsonBody(raw);
-        const result = await search(caller, body);
-        send(res, 200, result, { "x-useful-request-id": requestId });
+        concurrency.acquire(caller.callerId);
+        try {
+          limits.checkSearchLimit(caller, Date.now());
+          const result = await search(caller, body);
+          send(res, 200, result, { "x-useful-request-id": requestId });
+        } finally {
+          concurrency.release(caller.callerId);
+        }
         return;
       }
       if (req.method === "POST" && url.pathname === "/v1/chat/completions") {

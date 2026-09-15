@@ -1,5 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+
+// One session and turn per process; the request id is fresh per call. The
+// router refuses /v1/chat/completions without these UUIDs (see agent/agent.ts).
+const REVIEWER_SESSION_ID = randomUUID();
+const REVIEWER_TURN_ID = randomUUID();
 
 export default defineTool({
   description: "Ask the pinned reviewer to find defects in supplied text. Read-only. Not available to phone.",
@@ -9,13 +15,25 @@ export default defineTool({
   async execute(input) {
     const token = process.env.UB_ROUTER_REVIEWER_TOKEN;
     if (!token) {
-      return { text: "reviewer-offline", fixture: true };
+      // The S2 probe relies on the fixture; otherwise the model must never be
+      // handed placeholder text shaped as a real answer.
+      if (process.env.UB_S2_FIXTURE === "1") {
+        return { text: "reviewer-offline", fixture: true };
+      }
+      return {
+        status: "unavailable",
+        error: "reviewer_unconfigured",
+        hint: "The reviewer credential is not provisioned on this Mac.",
+      };
     }
     const res = await fetch(process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1/chat/completions", {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
+        "x-useful-session-id": REVIEWER_SESSION_ID,
+        "x-useful-turn-id": REVIEWER_TURN_ID,
+        "x-useful-request-id": randomUUID(),
       },
       body: JSON.stringify({
         model: "reviewer",

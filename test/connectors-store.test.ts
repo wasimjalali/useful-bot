@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -94,6 +94,17 @@ test("parse rejects junk and heals partial records", () => {
   assert.equal(healed.apiKey, null);
   assert.equal(healed.sessionId, null);
   assert.deepEqual(healed.connectedToolkits, ["gmail"]);
+});
+
+test("a corrupt connectors file is set aside instead of throwing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-conn-"));
+  const path = join(dir, "connectors.json");
+  writeFileSync(path, "{ torn", "utf8");
+  const loaded = readConnectorsStore(path);
+  assert.equal(loaded.apiKey, null);
+  assert.equal(existsSync(path), false);
+  const backup = readdirSync(dir).find((name: string) => name.includes(".invalid."));
+  assert.equal(typeof backup, "string");
 });
 
 test("update rewrites only when something changed", () => {

@@ -18,6 +18,7 @@ import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
 import bash from "../agent/tools/bash.ts";
 import listBots from "../agent/tools/list_bots.ts";
 import memorySearch from "../agent/tools/memory_search.ts";
+import memoryUpsert from "../agent/tools/memory_upsert.ts";
 import readFile from "../agent/tools/read_file.ts";
 import proposeBot from "../agent/tools/propose_bot.ts";
 import proposeGroup from "../agent/tools/propose_group.ts";
@@ -158,6 +159,39 @@ test("sendToBot queues a handoff, is idempotent per requestId, and refuses self-
     assert.equal(self.status, "invalid");
     const missing = await run<{ status: string }>(sendToBot, { botId: "nope", message: "hi" });
     assert.equal(missing.status, "not_found");
+  } finally {
+    box.restore();
+  }
+});
+
+test("sendToBot queues into a one-member group without flipping its thread kind", async () => {
+  const box = sandbox();
+  try {
+    let store = seedRoster(["CEO", "Research", "Writer"]);
+    const group = applyShellAction(store, {
+      type: "createGroup",
+      name: "Pair",
+      memberIds: [idOf(store, "Research"), idOf(store, "Writer")],
+    });
+    const groupId = group.createdId ?? "";
+    // A group shrunk to one member is what a hand-edited or migrated store
+    // arrives in; the tool must still treat it as a group.
+    store = {
+      ...group.store,
+      bots: group.store.bots.map((bot) => (
+        bot.id === groupId ? { ...bot, memberIds: [idOf(group.store, "Research")] } : bot
+      )),
+    };
+    writeShell(store);
+    process.env.UB_ACTIVE_BOT_ID = idOf(store, "CEO");
+
+    const sent = await run<{ status: string }>(sendToBot, { botId: groupId, message: "kickoff" });
+    assert.equal(sent.status, "queued");
+    const handoff = listHandoffs().at(-1);
+    assert.equal(handoff?.groupId, groupId);
+    assert.equal(handoff?.threadKind, "group");
+    const thread = readAgentStore().threads.find((item) => item.botId === groupId);
+    assert.equal(thread?.kind, "group");
   } finally {
     box.restore();
   }
@@ -330,6 +364,24 @@ test("bash refuses commands that reference secret stores or parent traversal", a
   assert.equal(traversal.status, "blocked");
 });
 
+test("bash truncates output past the exec buffer instead of failing the call", async () => {
+  const box = grantFixture("auto");
+  try {
+    // Two megabytes from a pipe overflows execFile's 1 MiB maxBuffer, which
+    // used to reject the whole call; the partial output must come back cut.
+    const result = await run<{ stdout: string; truncated: boolean }>(
+      bash,
+      { command: "yes x | head -c 2097152" },
+      { session: { id: "sess-1" } },
+    );
+    assert.equal(result.truncated, true);
+    assert.equal(result.stdout.startsWith(UNTRUSTED_PREAMBLE), true);
+    assert.equal(result.stdout.includes("END-UNTRUSTED"), true);
+  } finally {
+    box.restore();
+  }
+});
+
 test("listBots reports ids, groups and sections", async () => {
   const box = sandbox();
   try {
@@ -427,6 +479,52 @@ test("memory search fences note bodies as untrusted data", async () => {
   }
 });
 
+test("memory_upsert refuses an oversized body without raising a card", async () => {
+  const box = sandbox();
+  try {
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+    // 8192 characters but 12288 bytes: only the byte check the store runs
+    // can catch this, and it must not cost the owner a card first.
+    const result = await run<{ status: string; error: string }>(memoryUpsert, {
+      expectedRevision: null,
+      title: "Too big",
+      tags: [],
+      body: "x".repeat(4096) + "é".repeat(4096),
+      audience: "desktop",
+      expiresAt: null,
+    });
+    assert.equal(result.status, "invalid");
+    assert.equal(result.error, "memory_too_large");
+    assert.equal(approvals.listPending().length, 0);
+  } finally {
+    box.restore();
+  }
+});
+
+test("memory_upsert puts audience, tags and the body on the card", async () => {
+  const box = sandbox();
+  try {
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+    const pending = run(memoryUpsert, {
+      expectedRevision: null,
+      title: "CEO pref",
+      tags: ["writing"],
+      body: "Short sentences.",
+      audience: "desktop",
+      expiresAt: null,
+    });
+    const card = pendingApproval(approvals);
+    assert.equal(card.tool, "memory.upsert");
+    assert.equal(card.preview.includes("memory CEO pref (desktop, tags: writing): Short sentences."), true);
+    approvals.decide(card.id, "deny", card.actionSha256);
+    await assert.rejects(() => pending, /approval_denied/);
+  } finally {
+    box.restore();
+  }
+});
+
 test("listBots fences bot profile text as untrusted data", async () => {
   const box = sandbox();
   try {
@@ -437,6 +535,37 @@ test("listBots fences bot profile text as untrusted data", async () => {
       assert.equal(bot.description.startsWith(UNTRUSTED_PREAMBLE), true);
       assert.equal(bot.title.startsWith(UNTRUSTED_PREAMBLE), true);
     }
+  } finally {
+    box.restore();
+  }
+});
+
+test("tools resolve the acting bot by session, then env, then the selected bot", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(store, "CEO");
+    const research = idOf(store, "Research");
+    // A chat the owner opened for CEO: the session pointer is what a turn in
+    // that chat must trust, not the bot the owner happens to have selected.
+    writeShell(applyShellAction(store, {
+      type: "touchChat",
+      botId: ceo,
+      preview: "hello",
+      sessionId: "sess-ceo",
+    }).store);
+    process.env.UB_ACTIVE_BOT_ID = research;
+
+    // The session wins even while the env pins another bot.
+    const inSession = await run<{ activeBotId: string }>(listBots, {}, { session: { id: "sess-ceo" } });
+    assert.equal(inSession.activeBotId, ceo);
+    // Without a session the env still pins one, the way tests do.
+    const byEnv = await run<{ activeBotId: string }>(listBots, {});
+    assert.equal(byEnv.activeBotId, research);
+    // With neither, the shell's selection answers.
+    delete process.env.UB_ACTIVE_BOT_ID;
+    const bySelection = await run<{ activeBotId: string }>(listBots, {});
+    assert.equal(bySelection.activeBotId, store.selectedBotId);
   } finally {
     box.restore();
   }
@@ -888,7 +1017,7 @@ test("routine tools reject bad schedules, zones and unknown ids", async () => {
  * synchronously and the decision is made from the test while the call is in
  * flight, exactly as the owner's approval card does.
  */
-function pendingApproval(store: ApprovalStore): { id: string; actionSha256: string; tool: string } {
+function pendingApproval(store: ApprovalStore): { id: string; actionSha256: string; tool: string; preview: string } {
   const open = store.listPending();
   assert.equal(open.length, 1, "expected exactly one pending approval");
   return open[0];
@@ -1060,6 +1189,25 @@ test("new tool schemas reject the arguments a model gets wrong", () => {
   assert.equal(parse(deleteRoutine, { routineId: "rtn_a" }), true);
   assert.equal(parse(deleteRoutine, {}), false);
   assert.equal(parse(listRoutines, {}), true);
+
+  // memory_upsert's schema mirrors the store's size rules so a bad note dies
+  // before it can reach an approval card.
+  const memoryNote = {
+    expectedRevision: null,
+    title: "t",
+    tags: ["a"],
+    body: "b",
+    audience: "desktop",
+    expiresAt: null,
+  };
+  assert.equal(parse(memoryUpsert, memoryNote), true);
+  assert.equal(parse(memoryUpsert, { ...memoryNote, title: "x".repeat(121) }), false);
+  assert.equal(parse(memoryUpsert, { ...memoryNote, tags: Array.from({ length: 9 }, (_, at) => `t${at}`) }), false);
+  assert.equal(parse(memoryUpsert, { ...memoryNote, body: "x".repeat(8193) }), false);
+  assert.equal(parse(memoryUpsert, { ...memoryNote, expiresAt: "soon" }), false);
+  assert.equal(parse(memoryUpsert, { ...memoryNote, expiresAt: "2026-01-01T00:00:00Z" }), true);
+  assert.equal(parse(memoryUpsert, { ...memoryNote, id: "../escape" }), false);
+  assert.equal(parse(memoryUpsert, { ...memoryNote, id: "note-1" }), true);
 });
 
 test("deleteBot refuses an ambiguous name instead of guessing which bot", async () => {

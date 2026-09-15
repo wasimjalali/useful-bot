@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -37,8 +37,7 @@ function putKeychain(service, token) {
   ], { input, encoding: "utf8" });
   input.fill(0);
   if (result.status !== 0) {
-    process.stderr.write(`${JSON.stringify({ error: "keychain_write_failed", item: service })}\n`);
-    process.exit(1);
+    throw new Error(service);
   }
 }
 
@@ -64,12 +63,8 @@ if (!rotate && (existsSync(configPath) || existingItems.length > 0)) {
   process.exit(1);
 }
 
-let backup = null;
-if (rotate && existsSync(configPath)) {
-  backup = `${configPath}.bak.${Date.now()}`;
-  renameSync(configPath, backup);
-}
-
+// The old config stays in place until the new secrets are stored: a failed
+// put must leave the previous config untouched.
 mkdirSync(root, { recursive: true, mode: 0o700 });
 chmodSync(root, 0o700);
 
@@ -78,11 +73,6 @@ const routerDesktop = randomBytes(32).toString("base64url");
 const ops = randomBytes(32).toString("base64url");
 const channel = randomBytes(32).toString("base64url");
 const future = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
-putKeychain("com.usefulbot.device.desktop", desktop);
-putKeychain("com.usefulbot.router.desktop", routerDesktop);
-putKeychain("com.usefulbot.router.ops", ops);
-putKeychain("com.usefulbot.channel.desktop", channel);
 
 const config = {
   schemaVersion: 1,
@@ -97,7 +87,28 @@ const config = {
     { id: "router-ops", kind: "router", sha256: digest(ops), callerId: "ops", profile: "ops", expiresAt: future, revokedAt: null },
   ],
 };
-writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+const tmpConfigPath = `${configPath}.tmp.${process.pid}`;
+writeFileSync(tmpConfigPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+chmodSync(tmpConfigPath, 0o600);
+
+try {
+  putKeychain("com.usefulbot.device.desktop", desktop);
+  putKeychain("com.usefulbot.router.desktop", routerDesktop);
+  putKeychain("com.usefulbot.router.ops", ops);
+  putKeychain("com.usefulbot.channel.desktop", channel);
+} catch (err) {
+  try { unlinkSync(tmpConfigPath); } catch { /* ignore */ }
+  const item = err instanceof Error ? err.message : "unknown";
+  process.stderr.write(`${JSON.stringify({ error: "keychain_write_failed", item })}\n`);
+  process.exit(1);
+}
+
+let backup = null;
+if (rotate && existsSync(configPath)) {
+  backup = `${configPath}.bak.${Date.now()}`;
+  renameSync(configPath, backup);
+}
+renameSync(tmpConfigPath, configPath);
 chmodSync(configPath, 0o600);
 process.stdout.write(`${JSON.stringify({
   ok: true,

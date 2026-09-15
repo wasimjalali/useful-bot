@@ -37,6 +37,10 @@ function load(path = defaultWebSessionsPath()): Record<string, BrowserSession> {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as { sessions?: Record<string, BrowserSession> };
     return parsed.sessions && typeof parsed.sessions === "object" ? parsed.sessions : {};
   } catch {
+    // A corrupt file must not be silently replaced: keep the evidence aside
+    // so the next write starts from a fresh file.
+    const bak = `${path}.invalid.${Date.now()}`;
+    try { renameSync(path, bak); } catch { /* ignore */ }
     return {};
   }
 }

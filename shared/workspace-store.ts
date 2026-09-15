@@ -180,8 +180,9 @@ function writeStoreFile(store: WorkspaceStore, path: string): void {
   }
 }
 
-const LOCK_TIMEOUT_MS = 2_000;
-const LOCK_STALE_MS = 5_000;
+// Stale below timeout, so a waiter can reclaim a dead lock before giving up.
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 3000;
 
 function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);

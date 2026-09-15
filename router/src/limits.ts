@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { RouterError } from "./errors.ts";
+import { SEARCH_LIMITS } from "../../shared/policy.ts";
 import { currentBudget, effectiveLimits } from "../../shared/limits-store.ts";
 import type { AuthedCaller } from "./auth.ts";
 
@@ -124,6 +125,11 @@ export class LimitStore {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS reservations_created_idx ON reservations(created_at);
+      CREATE TABLE IF NOT EXISTS search_hits (
+        caller_id TEXT NOT NULL,
+        ts INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS search_hits_ts_idx ON search_hits(ts);
     `);
     const row = this.db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
     const version = Number(row?.user_version ?? 0);
@@ -136,6 +142,7 @@ export class LimitStore {
     if (now - this.lastPrune < PRUNE_INTERVAL_MS) return;
     this.lastPrune = now;
     this.db.prepare("DELETE FROM requests WHERE created_at < ?").run(now - REQUEST_TTL_MS);
+    this.db.prepare("DELETE FROM search_hits WHERE ts < ?").run(now - REQUEST_TTL_MS);
     this.db.prepare("DELETE FROM hits WHERE ts < ?").run(now - HIT_RETENTION_MS);
     this.db.prepare("DELETE FROM usage WHERE ts < ?").run(now - USAGE_RETENTION_MS);
     this.db.prepare("DELETE FROM reservations WHERE created_at < ?").run(now - RESERVATION_RETENTION_MS);
@@ -316,6 +323,50 @@ export class LimitStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.enforce(caller, now);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Persisted per-caller search gate from SPEC.md section 7. The counter is
+   * written before dispatch, so failed and unknown requests still count, and
+   * every check plus the insert runs in one transaction.
+   */
+  checkSearchLimit(caller: AuthedCaller, now: number): void {
+    // Callers without the search capability get capability_forbidden from the
+    // adapter, not a quota error, so they never consume the shared budget.
+    if (!caller.search) return;
+    this.prune(now);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const perCaller = (SEARCH_LIMITS as Record<string, number>)[caller.profile] ?? 0;
+      // Unknown profiles default to no budget: a search flag on a profile
+      // without a cap must not mean unlimited searches.
+      if (perCaller <= 0) {
+        throw this.policyError("search_rate_limited");
+      }
+      const dayAgo = now - 24 * 60 * 60 * 1000;
+      const day = this.db.prepare("SELECT COUNT(*) AS c FROM search_hits WHERE caller_id = ? AND ts > ?").get(
+        caller.callerId,
+        dayAgo,
+      ) as { c: number };
+      if (day.c >= perCaller) {
+        throw this.policyError("search_rate_limited");
+      }
+      const total = this.db.prepare("SELECT COUNT(*) AS c FROM search_hits WHERE ts > ?").get(dayAgo) as { c: number };
+      if (total.c >= SEARCH_LIMITS.aggregate) {
+        throw this.policyError("search_rate_limited");
+      }
+      const last = this.db.prepare("SELECT MAX(ts) AS ts FROM search_hits WHERE caller_id = ?").get(
+        caller.callerId,
+      ) as { ts: number | null };
+      if (last.ts !== null && now - last.ts < SEARCH_LIMITS.minIntervalMs) {
+        throw this.policyError("search_rate_limited");
+      }
+      this.db.prepare("INSERT INTO search_hits (caller_id, ts) VALUES (?, ?)").run(caller.callerId, now);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
