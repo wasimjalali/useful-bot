@@ -33,6 +33,7 @@ interface StubState {
   toolkitItems: ToolkitItem[];
   executed: Array<{ slug: string; args: Record<string, unknown> | undefined }>;
   searched: Array<{ query: string; toolkits?: string[] }>;
+  listed: Array<Record<string, unknown> | undefined>;
   searchResponse: unknown;
   authorized: Array<{ toolkit: string; callbackUrl?: string }>;
   deleted: string[];
@@ -48,6 +49,7 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
     toolkitItems: [],
     executed: [],
     searched: [],
+    listed: [],
     searchResponse: { results: [], toolSchemas: {}, toolkits: [] },
     authorized: [],
     deleted: [],
@@ -63,7 +65,11 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
       return { id: `ca_${toolkit}`, redirectUrl: `https://connect.composio.dev/${toolkit}` };
     },
     async toolkits(options) {
+      state.listed.push(options);
       if ((options?.limit ?? 0) > 50) throw Object.assign(new Error("payload.limit must be <= 50"), { statusCode: 400 });
+      if (options?.search !== undefined && options.search.length < 3) {
+        throw Object.assign(new Error("Validation error"), { statusCode: 400 });
+      }
       const items = options?.isConnected
         ? state.toolkitItems.filter((item) => item.connection?.isActive)
         : options?.toolkits
@@ -198,11 +204,21 @@ test("listing puts connected first, then featured in order, then the rest, and r
   assert.deepEqual(readConnectorsStore(path).connectedToolkits, ["gmail"]);
 });
 
-test("listing with a search filters by slug or name", async () => {
-  const { factory } = stub({ toolkitItems: [SLACK, GMAIL] });
+test("listing with a search filters by slug or name, lowercased", async () => {
+  const { state, factory } = stub({ toolkitItems: [SLACK, GMAIL] });
   setComposioFactory(factory);
-  const rows = await listConnectorToolkits({ search: "sla" }, tmpPath());
+  const rows = await listConnectorToolkits({ search: "Sla" }, tmpPath());
   assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
+  const remote = state.listed.filter((options) => options?.search !== undefined).map((options) => options?.search);
+  assert.deepEqual(remote, ["sla"]);
+});
+
+test("a one or two character search never reaches Composio", async () => {
+  const { state, factory } = stub({ toolkitItems: [SLACK, GMAIL, PENDING] });
+  setComposioFactory(factory);
+  const rows = await listConnectorToolkits({ search: "sl" }, tmpPath());
+  assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
+  assert.equal(state.listed.some((options) => options?.search !== undefined), false);
 });
 
 test("an empty connected page clears the cache, and a search never rewrites it", async () => {

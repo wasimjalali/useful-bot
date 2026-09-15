@@ -101,6 +101,8 @@ export function setComposioFactory(next: ComposioFactory | null): void {
 
 /** Composio refuses a page larger than this. */
 const PAGE_MAX = 50;
+/** Composio refuses a search shorter than this; shorter ones filter locally. */
+const SEARCH_MIN = 3;
 
 /**
  * What the dialog shows before any search: the apps most people reach for,
@@ -252,7 +254,9 @@ export async function listConnectorToolkits(
   path = connectorsPath(),
 ): Promise<ConnectorToolkit[]> {
   const limit = Math.min(Math.max(options.limit ?? 160, 1), 200);
-  const search = options.search?.trim() || undefined;
+  // Slugs are lowercase and Composio's search is case sensitive, so the
+  // query goes over lowercased; the local match below is lowercase too.
+  const search = options.search?.trim().toLowerCase() || undefined;
   return withSession(path, async (session) => {
     const rows = new Map<string, ConnectorToolkit>();
     // Composio pages at 50; walk the connected set fully, it is short.
@@ -268,10 +272,12 @@ export async function listConnectorToolkits(
     const add = (items: Awaited<ReturnType<ComposioSessionLike["toolkits"]>>["items"]) => {
       for (const item of items) if (!rows.has(item.slug)) rows.set(item.slug, toRow(item));
     };
-    if (search) {
+    // The popular set is always loaded: it is what a short or misspelt search
+    // should still find, and Composio's search misses some of it.
+    add((await session.toolkits({ toolkits: FEATURED_TOOLKITS, limit: PAGE_MAX })).items);
+    if (search && search.length >= SEARCH_MIN) {
       add((await session.toolkits({ search, limit: PAGE_MAX })).items);
     } else {
-      add((await session.toolkits({ toolkits: FEATURED_TOOLKITS, limit: PAGE_MAX })).items);
       let next: string | undefined;
       // Bounded by pages, not only by rows: a page of duplicates adds nothing
       // and must not turn into a walk through the whole catalogue.
