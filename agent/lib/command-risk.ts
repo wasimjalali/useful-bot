@@ -54,6 +54,33 @@ const DESTRUCTIVE_COMMANDS: Record<string, string> = {
   reboot: "restarts the machine",
   shutdown: "shuts the machine down",
   halt: "shuts the machine down",
+  at: "schedules a job to run later",
+  batch: "schedules a job to run later",
+  // Writers that go through a system daemon, past any file sandbox.
+  defaults: "changes system preferences",
+  security: "changes the keychain",
+  mdutil: "changes Spotlight",
+  tmutil: "changes Time Machine",
+  systemsetup: "changes system settings",
+  networksetup: "changes network settings",
+  scutil: "changes system configuration",
+  dscl: "changes directory services",
+  pmset: "changes power settings",
+  csrutil: "changes system protection",
+  spctl: "changes Gatekeeper",
+  nvram: "changes firmware variables",
+  open: "opens an app or file outside the shell",
+};
+/** Editors that can run a shell from their own command line. */
+const EDITORS: Record<string, string> = {
+  vim: "opens an editor that can shell out (vim)",
+  vi: "opens an editor that can shell out (vi)",
+  ex: "opens an editor that can shell out (ex)",
+  view: "opens an editor that can shell out (view)",
+  nvim: "opens an editor that can shell out (nvim)",
+  emacs: "opens an editor that can shell out (emacs)",
+  nano: "opens an editor (nano)",
+  ed: "opens an editor that can shell out (ed)",
 };
 
 /** Package, container and cloud CLIs whose verbs below remove or publish. */
@@ -74,7 +101,10 @@ const DESTRUCTIVE_VERBS = new Set([
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "fish", "csh", "tcsh", "ash", "yash", "pwsh", "powershell", "nu", "elvish"]);
 /** Interpreters whose inline-code flag can do anything a shell can. */
-const INTERPRETERS = new Set(["python", "pypy", "node", "nodejs", "bun", "tsx", "ts-node", "perl", "ruby", "php", "osascript", "deno"]);
+const INTERPRETERS = new Set([
+  "python", "pypy", "node", "nodejs", "bun", "tsx", "ts-node", "perl", "ruby", "php", "osascript", "deno",
+  "tclsh", "expect", "wish", "lua", "luajit", "Rscript", "sqlite3",
+]);
 const WRAPPERS = new Set([
   "env", "time", "nohup", "nice", "command", "exec", "builtin", "caffeinate",
   "timeout", "gtimeout", "setsid", "stdbuf", "watch", "ionice", "chrt",
@@ -215,6 +245,11 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
 
   if (DESTRUCTIVE_COMMANDS[name]) return `${DESTRUCTIVE_COMMANDS[name]} (${name})`;
   if (OPAQUE_LAUNCHERS[name]) return OPAQUE_LAUNCHERS[name];
+  if (EDITORS[name]) return EDITORS[name];
+  // Copying a device over a file empties it, the way truncate does.
+  if ((name === "cp" || name === "install" || name === "dd") && flags.some((flag) => /^(if=)?\/dev\/(null|zero)$/.test(flag))) {
+    return `empties a file (${name} /dev/null)`;
+  }
   if (SHELLS.has(name)) {
     if (afterPipe) return `pipes into a shell (${name})`;
     // `sh -c "..."` runs its argument: classify that line on its own. A
@@ -499,8 +534,10 @@ function makeRisk(flags: string[], root: string, depth: number): string | null {
     if (flag === "--eval" || flag === "-E" || flag.startsWith("--eval=")) return "runs make code from the command line (make --eval)";
     if (flag === "-f" || flag === "--file" || flag === "--makefile") files.push(flags[++i] ?? "");
     else if (flag.startsWith("--file=") || flag.startsWith("--makefile=")) files.push(flag.slice(flag.indexOf("=") + 1));
+    else if (/^-f./.test(flag)) files.push(flag.slice(2));
     else if (flag === "-C" || flag === "--directory") dir = resolve(root, flags[++i] ?? ".");
     else if (flag.startsWith("--directory=")) dir = resolve(root, flag.slice(12));
+    else if (/^-C./.test(flag)) dir = resolve(root, flag.slice(2));
     else if (!flag.startsWith("-")) words.push(flag);
   }
   // A makefile from stdin or a device is a payload this cannot read.
@@ -639,7 +676,12 @@ function gitRisk(all: string[], root: string): string | null {
       return has("-f", "--force", "-m", "-M", "--move") ? "moves or overwrites a branch (git branch -f)" : null;
     case "checkout":
       if (has("-B", "--orphan")) return "overwrites or restarts a branch (git checkout -B)";
-      return has("--", ".", "-f", "--force") && !has("-b") ? "discards working changes (git checkout)" : null;
+      if (has("-f", "--force")) return "discards working changes (git checkout -f)";
+      return has("--", ".") && !has("-b") ? "discards working changes (git checkout)" : null;
+    case "submodule":
+      return words[1] === "deinit" || words[1] === "absorbgitdirs" || (words[1] === "update" && has("-f", "--force", "--checkout"))
+        ? `rewrites a submodule (git submodule ${words[1]})`
+        : null;
     case "switch":
       return has("-C", "--force-create", "-f", "--force", "--discard-changes", "--orphan") ? "overwrites a branch or discards changes (git switch -C)" : null;
     case "restore":
