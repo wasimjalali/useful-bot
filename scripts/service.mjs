@@ -29,6 +29,23 @@ function fail(code, item) {
   process.exit(1);
 }
 
+// The reviewer credential arrived after the first installs. A service must
+// still boot without it: the review tool and the reviewer subagent answer
+// reviewer_unconfigured per call, so the miss is logged once here instead of
+// taking chat down with it.
+async function reviewerToken() {
+  try {
+    return await keychain("com.usefulbot.router.reviewer");
+  } catch {
+    process.stderr.write(`${JSON.stringify({
+      warn: "reviewer_unconfigured",
+      item: "com.usefulbot.router.reviewer",
+      hint: "run scripts/setup-local.mjs --add-missing, then restart the services",
+    })}\n`);
+    return null;
+  }
+}
+
 function preflightPort(host, port) {
   return new Promise((resolve, reject) => {
     const probe = createServer();
@@ -165,6 +182,9 @@ async function main() {
     } catch {
       fail("credential_store_locked_or_missing", "com.usefulbot.router.desktop");
     }
+    const reviewer = await reviewerToken();
+    if (reviewer) env.UB_ROUTER_REVIEWER_TOKEN = reviewer;
+    else delete env.UB_ROUTER_REVIEWER_TOKEN;
     // Lets an agent tool wake the handoff pump at once instead of waiting for
     // the next web poll. Best effort: the poll drains the same queue.
     env.UB_WEB_BASE_URL = process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
@@ -187,6 +207,10 @@ async function main() {
     } catch {
       fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
     }
+    // The web reviewer route runs the same alias as the agent's review tool.
+    const reviewer = await reviewerToken();
+    if (reviewer) env.UB_ROUTER_REVIEWER_TOKEN = reviewer;
+    else delete env.UB_ROUTER_REVIEWER_TOKEN;
     run([
       path.join(ROOT, "node_modules/next/dist/bin/next"),
       "dev",
