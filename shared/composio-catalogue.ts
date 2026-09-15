@@ -30,8 +30,10 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 const PAGE = 50;
 const MAX_PAGES = 60;
 
-let memo: { fetchedAt: number; items: CatalogueItem[] } | null = null;
-let building: Promise<void> | null = null;
+// Keyed by path: two catalogue paths in one process must not read each
+// other's items out of one shared slot.
+const memo = new Map<string, { fetchedAt: number; items: CatalogueItem[] }>();
+const building = new Map<string, Promise<void>>();
 
 export function cataloguePath(root = process.env.UB_CATALOGUE_PATH): string {
   if (root) return root;
@@ -39,7 +41,8 @@ export function cataloguePath(root = process.env.UB_CATALOGUE_PATH): string {
 }
 
 function load(path: string): { fetchedAt: number; items: CatalogueItem[] } | null {
-  if (memo) return memo;
+  const cached = memo.get(path);
+  if (cached) return cached;
   if (!existsSync(path)) return null;
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<CatalogueFile>;
@@ -48,8 +51,9 @@ function load(path: string): { fetchedAt: number; items: CatalogueItem[] } | nul
       (item): item is CatalogueItem =>
         !!item && typeof item === "object" && typeof item.slug === "string" && typeof item.name === "string",
     );
-    memo = { fetchedAt: Date.parse(raw.fetchedAt) || 0, items };
-    return memo;
+    const entry = { fetchedAt: Date.parse(raw.fetchedAt) || 0, items };
+    memo.set(path, entry);
+    return entry;
   } catch {
     return null;
   }
@@ -62,7 +66,7 @@ function save(items: CatalogueItem[], path: string): void {
   const file: CatalogueFile = { schemaVersion: 1, fetchedAt, items };
   writeFileSync(tmp, `${JSON.stringify(file)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, path);
-  memo = { fetchedAt: Date.parse(fetchedAt), items };
+  memo.set(path, { fetchedAt: Date.parse(fetchedAt), items });
 }
 
 async function build(session: ComposioSessionLike, path: string): Promise<void> {
@@ -93,22 +97,23 @@ export function readCatalogue(
 ): Array<{ slug: string; name: string; isNoAuth: boolean; logo?: string | undefined }> | null {
   const current = load(path);
   const stale = !current || Date.now() - current.fetchedAt > TTL_MS;
-  if (stale && !building) {
-    building = build(session, path)
+  if (stale && !building.has(path)) {
+    const pending = build(session, path)
       .catch(() => undefined)
       .finally(() => {
-        building = null;
+        building.delete(path);
       });
+    building.set(path, pending);
   }
   return current?.items ?? null;
 }
 
 /** Waits for a build in progress, for tests and the probe. */
 export async function catalogueReady(): Promise<void> {
-  if (building) await building;
+  await Promise.all([...building.values()]);
 }
 
 /** Drops the in-memory copy so the next read goes to disk. Tests only. */
 export function resetCatalogueMemo(): void {
-  memo = null;
+  memo.clear();
 }

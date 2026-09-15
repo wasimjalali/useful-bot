@@ -261,6 +261,15 @@ test("list can isolate notes to one bot tag", () => {
   assert.equal(store.list("desktop", 100, "missing").length, 0);
 });
 
+test("tagsForBot keeps the bot tag when the note already carries eight user tags", () => {
+  const eight = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  const tagged = tagsForBot(eight, "ceo");
+  assert.equal(tagged.length, 8);
+  assert.equal(tagged.includes(botTag("ceo")), true);
+  assert.equal(tagged[7], botTag("ceo"));
+  assert.deepEqual(tagged.slice(0, 7), ["a", "b", "c", "d", "e", "f", "g"]);
+});
+
 test("ordinary text with sk- is saved; a real key shape is still refused", () => {
   const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
   resetMemoryDir(root);

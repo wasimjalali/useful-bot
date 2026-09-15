@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { catalogFor } from "./live-models.ts";
 import {
@@ -155,12 +155,30 @@ export function parseProviderStore(raw: unknown): ProviderStore {
 
 export function readProviderStore(path = providersPath()): ProviderStore {
   if (!existsSync(path)) return emptyProviderStore();
-  return parseProviderStore(JSON.parse(readFileSync(path, "utf8")));
+  try {
+    return parseProviderStore(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    // A torn write must not wedge every model call: keep the evidence aside
+    // and start empty, the way the shell store reseeds a bad file.
+    const bak = `${path}.invalid.${Date.now()}`;
+    try { renameSync(path, bak); } catch { /* ignore */ }
+    return emptyProviderStore();
+  }
 }
 
 export function writeProviderStore(store: ProviderStore, path = providersPath()): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(store)}\n`, { encoding: "utf8", mode: 0o600 });
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(store)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    const fd = openSync(tmp, "r");
+    fsyncSync(fd);
+    closeSync(fd);
+    renameSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 export function setProviderKey(store: ProviderStore, id: ProviderId, key: string, now = new Date()): ProviderStore {

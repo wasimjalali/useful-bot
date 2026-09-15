@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { activeBotId } from "../lib/active-bot.ts";
 import { listRoutines, routineNextRun } from "../../shared/routines-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -10,9 +11,9 @@ export default defineTool({
   inputSchema: z.object({
     botId: z.string().min(1).max(80).optional(),
   }),
-  execute(input) {
+  execute(input, ctx) {
     const shell = readShell();
-    const botId = input.botId?.trim() || process.env.UB_ACTIVE_BOT_ID || shell.selectedBotId;
+    const botId = input.botId?.trim() || activeBotId(shell, ctx);
     const bot = shell.bots.find((item) => item.id === botId) ?? null;
     if (!bot) {
       return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call listBots for exact ids." };

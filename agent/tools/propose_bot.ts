@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { activeBotId } from "../lib/active-bot.ts";
 import {
   appendAgentEvent,
   createProposal,
@@ -21,9 +22,10 @@ export default defineTool({
     brief: z.string().max(1000).optional(),
     requestId: z.string().min(1).max(120).optional(),
   }),
-  execute(input) {
+  execute(input, ctx) {
     const shell = readShell();
-    const source = shell.bots.find((bot) => bot.id === process.env.UB_ACTIVE_BOT_ID);
+    const sourceId = activeBotId(shell, ctx);
+    const source = shell.bots.find((bot) => bot.id === sourceId);
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : shell.selectedBotId;
     const threadId = threadIdFor(sourceBotId);
     const requestId = input.requestId?.trim();

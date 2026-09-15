@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { activeBotId } from "../lib/active-bot.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
 import { applyShellAction, DEFAULT_BOT_ID, type ShellAction } from "../../shared/shell-store.ts";
 
@@ -20,7 +21,7 @@ export default defineTool({
     /** New name for `createSection` and `renameSection`. */
     name: z.string().min(1).max(80).optional(),
   }),
-  execute(input) {
+  execute(input, ctx) {
     const shell = readShell();
     const needsBot = input.action !== "createSection" && input.action !== "renameSection";
     let botId = "";
@@ -50,7 +51,7 @@ export default defineTool({
           // own chat; hiding it also makes handoffs to it fail.
           return { status: "refused", error: "the default Useful Bot cannot be hidden" };
         }
-        if (botId === (process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId)) {
+        if (botId === activeBotId(shell, ctx)) {
           // Hiding the chat the owner is standing in takes the thread they are
           // talking to off the rail mid-conversation. `delete_bot` refuses the
           // same move for the same reason.

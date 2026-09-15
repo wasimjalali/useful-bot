@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { POLICY_APPROVAL_TTL_MS } from "../shared/policy.ts";
 import {
   ApprovalStore,
   actionSha256,
@@ -195,4 +196,35 @@ test("waitUntilNotPending retries a transient lock error instead of aborting", a
   const settled = await waitUntilNotPending(stub, "apr_x", 1000, 5);
   assert.equal(calls, 2);
   assert.equal(settled.status, "approved");
+});
+
+test("persist prunes settled records after the grace window and keeps a recent decision", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-apr-")), "approvals.json");
+  const hash = hashFor('{"title":"prune"}');
+  const started = 1_000;
+  const agent = new ApprovalStore(() => started, path);
+  const rec = agent.request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hash,
+    preview: "memory prune",
+  });
+  new ApprovalStore(() => started, path).decide(rec.id, "approve", hash);
+  // Inside the grace window the decided card is still on disk for a slow
+  // poll to read.
+  const soon = new ApprovalStore(() => started + POLICY_APPROVAL_TTL_MS, path);
+  assert.equal(soon.get(rec.id)?.status, "approved");
+  // Past expiry plus the TTL and the grace window it goes on the next write.
+  const late = started + 2 * POLICY_APPROVAL_TTL_MS + 60 * 60 * 1000 + 1;
+  new ApprovalStore(() => late, path).request({
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c",
+    tool: "memory.upsert",
+    actionSha256: hashFor('{"title":"later"}'),
+    preview: "memory later",
+  });
+  assert.equal(new ApprovalStore(Date.now, path).get(rec.id), undefined);
 });

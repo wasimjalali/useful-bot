@@ -35,6 +35,16 @@ export const AGGREGATE_LIMITS = {
   output24h: 3_500_000,
 } as const;
 
+// Search caps from SPEC.md section 7: per-caller daily budgets, the aggregate
+// daily ceiling, and at most one search per second per caller.
+export const SEARCH_LIMITS = {
+  desktop: 50,
+  phone: 10,
+  eval: 20,
+  aggregate: 60,
+  minIntervalMs: 1000,
+} as const;
+
 export const MAX_ACTIVE_UPSTREAM = 2;
 export const MAX_ACTIVE_PER_CALLER = 1;
 

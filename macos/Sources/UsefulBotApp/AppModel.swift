@@ -1303,6 +1303,9 @@ final class AppModel: ObservableObject {
                 self.applyStore(next)
                 self.saveError = nil
             } catch {
+                // The pane shows one saveError for whichever bot is open, so a
+                // save that fails after a switch must not land on the new one.
+                guard epoch == self.storeEpoch, botId == self.selectedBotId else { return }
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
             }
         }

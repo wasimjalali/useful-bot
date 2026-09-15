@@ -157,9 +157,13 @@ async function main() {
     };
     try {
       env.UB_CHANNEL_JWT_SECRET = await keychain("com.usefulbot.channel.desktop");
-      env.UB_ROUTER_DESKTOP_TOKEN = await keychain("com.usefulbot.router.desktop");
     } catch {
       fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
+    }
+    try {
+      env.UB_ROUTER_DESKTOP_TOKEN = await keychain("com.usefulbot.router.desktop");
+    } catch {
+      fail("credential_store_locked_or_missing", "com.usefulbot.router.desktop");
     }
     // Lets an agent tool wake the handoff pump at once instead of waiting for
     // the next web poll. Best effort: the poll drains the same queue.

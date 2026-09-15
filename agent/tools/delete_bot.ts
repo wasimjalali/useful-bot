@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { activeBotId } from "../lib/active-bot.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { deleteThread } from "../../shared/agent-store.ts";
 import { deleteRoutinesForBot } from "../../shared/routines-store.ts";
@@ -39,8 +40,8 @@ export default defineTool({
     if (target.id === DEFAULT_BOT_ID) {
       return { status: "refused", error: "the default Useful Bot runs this app and cannot be deleted" };
     }
-    const activeBotId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
-    if (target.id === activeBotId) {
+    const selfId = activeBotId(shell, ctx);
+    if (target.id === selfId) {
       return { status: "refused", error: "that is this bot; the owner deletes it from the rail" };
     }
     if (shell.bots.length <= 1) {

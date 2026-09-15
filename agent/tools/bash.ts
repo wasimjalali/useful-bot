@@ -130,17 +130,29 @@ export default defineTool({
       // classifier misjudged still cannot write outside it. A line the
       // owner approved runs as they read it.
       const args = askOwner ? ["/bin/sh", "-c", input.command] : confinedCommand(root, input.command);
-      const { stdout, stderr } = await execFileAsync(args[0], args.slice(1), {
-        cwd: root,
-        timeout: input.timeoutMs ?? 30_000,
-        maxBuffer: INPUT_MAX_BYTES,
-        env: {
-          PATH: "/usr/bin:/bin",
-          HOME: root,
-          TMPDIR: root,
-          LANG: "C",
-        },
-      });
+      let stdout: string;
+      let stderr: string;
+      try {
+        ({ stdout, stderr } = await execFileAsync(args[0], args.slice(1), {
+          cwd: root,
+          timeout: input.timeoutMs ?? 30_000,
+          maxBuffer: INPUT_MAX_BYTES,
+          env: {
+            PATH: "/usr/bin:/bin",
+            HOME: root,
+            TMPDIR: root,
+            LANG: "C",
+          },
+        }));
+      } catch (err) {
+        // Output past the input cap rejects the whole execFile call with the
+        // partial output attached; clip what came through instead of failing
+        // the turn with a raw maxBuffer error. Any other error is real.
+        if ((err as NodeJS.ErrnoException).code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw err;
+        const partial = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
+        stdout = partial.stdout ?? "";
+        stderr = partial.stderr ?? "";
+      }
       const truncated = stdout.length > OUTPUT_MAX_BYTES || stderr.length > OUTPUT_MAX_BYTES;
       return {
         stdout: wrapUntrusted("bash stdout", stdout.slice(0, OUTPUT_MAX_BYTES)),
