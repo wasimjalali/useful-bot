@@ -32,20 +32,23 @@ function reviewerModel() {
   // The desktop token's profile forbids the reviewer alias, so only the
   // reviewer credential works here. A missing one must not throw at module
   // load: eve evaluates every subagent at boot, and this Mac has no reviewer
-  // credential yet, so a throw here took the whole agent down. The failure
-  // moves to the first call instead, where it is reported as such.
-  const token = process.env.UB_ROUTER_REVIEWER_TOKEN ?? "";
+  // credential yet, so a throw here took the whole agent down. The token is
+  // read per call instead, the way agent/tools/review.ts reads it, so a
+  // credential provisioned after boot is picked up and a missing one fails
+  // the call, not the process.
   const provider = createOpenAICompatible({
     name: "useful-bot-router",
     baseURL: process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1",
-    apiKey: token || "reviewer-unconfigured",
+    apiKey: "reviewer-unconfigured",
     // The router refuses /v1/chat/completions without the x-useful-* UUIDs,
     // so every call carries the process session and turn plus a fresh id.
     fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const token = process.env.UB_ROUTER_REVIEWER_TOKEN;
       if (!token) {
         throw new Error("reviewer_unconfigured");
       }
       const headers = new Headers(init?.headers);
+      headers.set("authorization", `Bearer ${token}`);
       headers.set("x-useful-session-id", PROCESS_SESSION_ID);
       headers.set("x-useful-turn-id", PROCESS_TURN_ID);
       headers.set("x-useful-request-id", crypto.randomUUID());
