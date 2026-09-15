@@ -63,6 +63,63 @@ public struct SearchChip: Equatable, Sendable {
     }
 }
 
+/// What the live turn is doing right now, read off the session stream and
+/// shown in the working row while the reply is still on its way.
+public enum TurnActivity: Equatable, Sendable {
+    case thinking
+    case working
+    case tool(String)
+
+    /// Sentence case, no trailing period: the row swaps between these while
+    /// the turn runs, and a period on every one of them reads as a stutter.
+    public var label: String {
+        switch self {
+        case .thinking: return "Thinking"
+        case .working: return "Working"
+        case .tool(let name): return Self.toolLabel(name)
+        }
+    }
+
+    /// Says what the bot is doing, not which function it called. Tools the
+    /// table does not know still read as English rather than as a symbol.
+    public static func toolLabel(_ name: String) -> String {
+        if let known = known[name] { return known }
+        let spoken = name
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard !spoken.isEmpty else { return "Working" }
+        return "Using \(spoken.lowercased())"
+    }
+
+    private static let known: [String: String] = [
+        "bash": "Running a command",
+        "connector_execute": "Using a connector",
+        "connector_search": "Looking through connectors",
+        "create_routine": "Writing a routine",
+        "delete_bot": "Removing a bot",
+        "delete_routine": "Removing a routine",
+        "list_bots": "Checking the roster",
+        "list_dir": "Reading a folder",
+        "list_routines": "Checking the routines",
+        "memory_read": "Reading memory",
+        "memory_search": "Searching memory",
+        "memory_upsert": "Saving to memory",
+        "post_to_group": "Posting to the group",
+        "propose_bot": "Drafting a proposal",
+        "propose_group": "Drafting a proposal",
+        "rail_action": "Rearranging the rail",
+        "read_file": "Reading a file",
+        "review": "Asking the reviewer",
+        "run_routine": "Running a routine",
+        "send_to_bot": "Messaging a teammate",
+        "update_bot_profile": "Updating a profile",
+        "update_routine": "Updating a routine",
+        "web_search": "Searching the web",
+        "write_file": "Writing a file",
+    ]
+}
+
 /// One NDJSON event from an eve session stream.
 public struct EveEvent: Decodable, Equatable, Sendable {
     public let type: String
@@ -193,6 +250,22 @@ public enum EveStream {
         return chips
     }
 
+    /// The tool an `actions.requested` event is about. One step can request
+    /// several calls; the row names the first, because it is the one the reader
+    /// sees start. Subagent and remote-agent calls carry a name instead of a
+    /// tool name, and that name is just as good a label.
+    static func requestedToolName(_ data: JSONValue?) -> String? {
+        guard let actions = data?["actions"]?.arrayValue else { return nil }
+        for action in actions {
+            for key in ["toolName", "subagentName", "remoteAgentName", "name"] {
+                if let name = action[key]?.stringValue, !name.isEmpty {
+                    return String(name.prefix(80))
+                }
+            }
+        }
+        return nil
+    }
+
     /// Mirror the web's `String(value)` for scalar fields: numbers and booleans
     /// stringify, compound and null values fall back to the next source.
     private static func chipText(_ value: JSONValue?) -> String? {
@@ -222,6 +295,9 @@ public struct StreamProjection: Equatable, Sendable {
     public private(set) var failed = false
     /// Web results the turn surfaced, shown as chips under the transcript.
     public private(set) var searchHits: [SearchChip] = []
+    /// What the turn is doing right now. Reasoning and tool calls both reach
+    /// us on this stream, so the working row can say which one it is.
+    public private(set) var activity: TurnActivity = .thinking
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -262,6 +338,7 @@ public struct StreamProjection: Equatable, Sendable {
             failed = false
             currentAssistantId = nil
             searchHits = []
+            activity = .thinking
         case "message.received":
             let text = EveStream.stripThreadPrefix(event.message ?? "")
             // Only the optimistic row this app synthesised for the send is
@@ -278,6 +355,7 @@ public struct StreamProjection: Equatable, Sendable {
                     )
                 }
                 pending = true
+                activity = .thinking
                 return
             }
             messages.append(ChatMessage(
@@ -287,9 +365,23 @@ public struct StreamProjection: Equatable, Sendable {
                 at: stamp
             ))
             pending = true
+            activity = .thinking
+        case "reasoning.appended", "reasoning.completed":
+            activity = .thinking
+        case "actions.requested":
+            if let name = EveStream.requestedToolName(event.data) {
+                activity = .tool(name)
+            }
+        case "action.input.appended":
+            if let name = event.data?["toolName"]?.stringValue, !name.isEmpty {
+                activity = .tool(name)
+            }
         case "message.appended":
             let delta = event.messageDelta ?? ""
             guard !delta.isEmpty else { return }
+            // Text is arriving: the row is about to be replaced by the reply
+            // itself, so it must not still claim a tool is running.
+            activity = .working
             if let current = currentAssistantId,
                let index = messages.firstIndex(where: { $0.id == current }) {
                 messages[index].text += delta
@@ -326,6 +418,8 @@ public struct StreamProjection: Equatable, Sendable {
         case "action.result", "action.partial":
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
+            // The tool has answered; the next step is the model's again.
+            if event.type == "action.result" { activity = .thinking }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             pending = false
             currentAssistantId = nil
