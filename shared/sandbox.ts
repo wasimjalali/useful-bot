@@ -19,9 +19,23 @@ function commandExists(name: string): boolean {
   }
 }
 
-export function selectSandbox(which: (name: string) => boolean = commandExists): SandboxDecision {
+export function selectSandbox(pin?: string, which: (name: string) => boolean = commandExists): SandboxDecision {
   const docker = which("docker");
   const microsandbox = which("microsandbox") || which("msb");
+  // The owner's runtime config pins the backend. A binary sitting on PATH
+  // must not silently upgrade what the config pinned, so the pin wins over
+  // the sniffing below; the binaries are still reported for the setup and
+  // verify scripts.
+  if (pin === "just-bash") {
+    return {
+      backend: "just-bash",
+      isolation: "non-vm",
+      approvalRequired: true,
+      evidenceId: "s3-non-vm-default",
+      reason: "the runtime config pins just-bash; installed VM binaries do not upgrade the backend",
+      binaries: { docker, microsandbox },
+    };
+  }
   if (microsandbox) {
     return {
       backend: "microsandbox",

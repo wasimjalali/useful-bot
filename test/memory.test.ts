@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -259,6 +259,72 @@ test("list can isolate notes to one bot tag", () => {
   assert.equal(seo.length, 1);
   assert.equal(seo[0].title, "SEO pref");
   assert.equal(store.list("desktop", 100, "missing").length, 0);
+});
+
+test("list applies the bot filter before the limit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  const mine = store.upsert({
+    expectedRevision: null,
+    title: "Oldest note",
+    tags: tagsForBot([], "target"),
+    body: "Mine, and the oldest.",
+    audience: "desktop",
+    expiresAt: null,
+    sessionId: "s",
+  });
+  // Every other note must land in a strictly later millisecond so the old
+  // limit-first SQL had no room left for the target bot's own note.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (let i = 0; i < 100; i += 1) {
+    store.upsert({
+      expectedRevision: null,
+      title: `Other ${i}`,
+      tags: tagsForBot([], "other"),
+      body: "Not for the target bot.",
+      audience: "desktop",
+      expiresAt: null,
+      sessionId: "s",
+    });
+  }
+  const listed = store.list("desktop", 100, "target");
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].id, mine.id);
+});
+
+test("an offset expiry is normalised to a UTC instant and the note stays live", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  resetMemoryDir(root);
+  const store = new MemoryStore(root);
+  store.upsert({
+    expectedRevision: null,
+    title: "Offset expiry",
+    tags: [],
+    body: "Still valid tomorrow.",
+    audience: "desktop",
+    // One hour ahead of the Z instant the schema accepts too.
+    expiresAt: "2099-01-01T12:00:00+01:00",
+    sessionId: "s",
+  });
+  const listed = store.list("desktop");
+  assert.equal(listed.length, 1);
+  const raw = readFileSync(join(root, "notes", `${listed[0].id}.md`), "utf8");
+  const meta = JSON.parse(raw.split("\n")[1]) as { expiresAt: string };
+  assert.equal(meta.expiresAt, "2099-01-01T11:00:00.000Z");
+  assert.equal(store.search("Still valid", "desktop").length, 1);
+  assert.throws(
+    () => store.upsert({
+      expectedRevision: null,
+      title: "Bad expiry",
+      tags: [],
+      body: "unparsable",
+      audience: "desktop",
+      expiresAt: "not-a-time",
+      sessionId: "s",
+    }),
+    /memory_meta/,
+  );
 });
 
 test("tagsForBot keeps the bot tag when the note already carries eight user tags", () => {

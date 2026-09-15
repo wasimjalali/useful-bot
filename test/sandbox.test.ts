@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { confinedCommand, sandboxAvailable, sandboxProfile } from "../agent/lib/sandbox.ts";
+import { selectSandbox } from "../shared/sandbox.ts";
 
 const execFileAsync = promisify(execFile);
 const darwin = process.platform === "darwin";
@@ -26,6 +27,15 @@ test("the profile names the folder and refuses credential files inside it", () =
   assert.ok(profile.includes(`(allow file-write* (subpath "${realpathSync(root)}"))`));
   assert.ok(profile.includes('(deny file-write* (regex #"/\\.env($|[/.])"))'));
   assert.ok(profile.startsWith("(version 1)\n(allow default)\n(deny file-write*)"));
+});
+
+test("a pinned just-bash stays just-bash even when docker is on PATH", () => {
+  const decision = selectSandbox("just-bash", (name) => name === "docker");
+  assert.equal(decision.backend, "just-bash");
+  assert.equal(decision.isolation, "non-vm");
+  // The binaries are still reported for the setup and verify scripts.
+  assert.equal(decision.binaries.docker, true);
+  assert.equal(decision.binaries.microsandbox, false);
 });
 
 test("a confined line writes inside the folder and nowhere else", { skip: !darwin || !sandboxAvailable() }, async () => {
