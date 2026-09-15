@@ -308,10 +308,17 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
  * session already carried a prefix from an earlier owner turn.
  */
 function turnPrefixFor(bot: ShellBot): string {
-  // Only a group needs the roster: its member list is part of the prefix.
-  const members = bot.kind === "group"
-    ? groupMembers(speakersFrom(readShell().bots), bot.memberIds)
-    : [];
+  // Only a group needs the roster: its member list is part of the prefix. A
+  // roster that will not read must not fail the turn, which never needed it
+  // before; the group then speaks without its member list.
+  let members: ReturnType<typeof groupMembers> = [];
+  if (bot.kind === "group") {
+    try {
+      members = groupMembers(speakersFrom(readShell().bots), bot.memberIds);
+    } catch {
+      members = [];
+    }
+  }
   return threadPrefix({
     bot: { id: bot.id, kind: bot.kind, name: bot.name, label: bot.label, description: bot.description },
     members,

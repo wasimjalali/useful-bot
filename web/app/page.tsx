@@ -83,7 +83,6 @@ export default function Page() {
 
   const [transcriptUser, setTranscriptUser] = useState<Array<{ id: string; text: string }>>([]);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-  const [failedSend, setFailedSend] = useState<string | null>(null);
   const [busyProposals, setBusyProposals] = useState<ReadonlySet<string>>(() => new Set());
   const [busyApprovals, setBusyApprovals] = useState<ReadonlySet<string>>(() => new Set());
   const busyApprovalsRef = useRef<Set<string>>(new Set());
@@ -338,7 +337,6 @@ export default function Page() {
     if (!message || proj.pending || sendLock.current || !selected) return false;
     sendLock.current = true;
     setError("");
-    setFailedSend(null);
     setPickerOpen(false);
     const optimisticId = nextId();
     stickRef.current = true;
@@ -377,7 +375,6 @@ export default function Page() {
       // Always append: the merge pairs each optimistic entry against one
       // projected message, so repeated identical sends stay countable.
       setTranscriptUser((current) => [...current, { id: `u-${nextSeq()}`, text: message }]);
-      setDraft("");
       const body = (await res.json()) as { sessionId?: string };
       const sid = body.sessionId ?? sessionId;
       if (sid) {
@@ -389,14 +386,17 @@ export default function Page() {
         dispatch({ type: "touchChat", botId: selected.id, preview: message });
       }
       void refreshThread(selected.id);
+      // Only once the body parsed: cleared earlier, a parse failure below
+      // would lose the text while the composer kept its files.
+      setDraft("");
       return true;
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Send failed";
       if (reason === "unauthorized") setAuthed(false);
       setError(reason === "unauthorized" ? "Sign in expired" : reason);
       // The POST never landed: drop the optimistic bubble. The composer kept
-      // the text and files, so there is nothing to restore here.
-      setFailedSend(message);
+      // the text and files, so the owner sends again from there; a banner
+      // retry would re-send the fenced blob and leave the chips behind.
       setProj((current) => ({
         ...current,
         pending: false,
@@ -720,20 +720,6 @@ export default function Page() {
           {displayError ? (
             <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm text-danger sm:px-6" role="alert">
               <span className="min-w-0">{displayError}</span>
-              {failedSend ? (
-                <button
-                  className="btn btn-secondary min-h-8 px-3 text-xs"
-                  onClick={() => {
-                    const retry = failedSend;
-                    setFailedSend(null);
-                    setError("");
-                    void send(retry);
-                  }}
-                  type="button"
-                >
-                  Retry
-                </button>
-              ) : null}
             </div>
           ) : null}
           {approvals.length > 0 ? (
