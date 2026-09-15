@@ -24,6 +24,7 @@ import {
   type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
+import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
 
@@ -110,14 +111,28 @@ export function agentsEnabled(): boolean {
   return Boolean(process.env.UB_CHANNEL_JWT || process.env.UB_CHANNEL_JWT_SECRET);
 }
 
+// A token signed from the channel secret, cached until it nears expiry. The
+// web process is long-lived and service.mjs bakes a 12-hour token into the
+// env at boot, so a process that only ever returned UB_CHANNEL_JWT would 401
+// against eve after 12 hours until the next restart.
+let signedChannelJwt: { secret: string; token: string; exp: number } | null = null;
+
 export function channelJwt(): string | null {
-  if (process.env.UB_CHANNEL_JWT) return process.env.UB_CHANNEL_JWT;
   const secret = process.env.UB_CHANNEL_JWT_SECRET;
-  if (!secret) return null;
+  if (!secret) return process.env.UB_CHANNEL_JWT ?? null;
   try {
-    return signChannelJwt(secret, "desktop-app");
+    const now = Math.floor(Date.now() / 1000);
+    // Re-sign once the cached token is within an hour of its exp, or when the
+    // secret itself changed; signing is cheap but there is no reason to do it
+    // on every proxy request.
+    if (!signedChannelJwt || signedChannelJwt.secret !== secret || now >= signedChannelJwt.exp - 60 * 60) {
+      const token = signChannelJwt(secret, "desktop-app");
+      signedChannelJwt = { secret, token, exp: now + 12 * 60 * 60 };
+      return token;
+    }
+    return signedChannelJwt.token;
   } catch {
-    return null;
+    return process.env.UB_CHANNEL_JWT ?? null;
   }
 }
 
@@ -287,6 +302,23 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
 }
 
 /**
+ * The identity prefix the eve proxy puts on a UI turn for this bot. Handoff
+ * delivery and routine runs reach eve directly, not through the proxy, so
+ * without it a teammate bot would answer as the default Useful Bot unless the
+ * session already carried a prefix from an earlier owner turn.
+ */
+function turnPrefixFor(bot: ShellBot): string {
+  // Only a group needs the roster: its member list is part of the prefix.
+  const members = bot.kind === "group"
+    ? groupMembers(speakersFrom(readShell().bots), bot.memberIds)
+    : [];
+  return threadPrefix({
+    bot: { id: bot.id, kind: bot.kind, name: bot.name, label: bot.label, description: bot.description },
+    members,
+  });
+}
+
+/**
  * Open (or reuse) a bot's eve session, send one message and wait for the reply.
  * Shared by handoff delivery and by routine runs so both reach eve the same
  * way: the same envelope-matched stream read, the same timeout, the same
@@ -296,6 +328,10 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
   const jwt = channelJwt();
   if (!jwt) throw new Error("channel_credential_missing");
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
+  // The body the proxy would have built for this bot: identity prefix first,
+  // then the caller's text. readHandoffStream arms on this exact string,
+  // because eve echoes the turn as it was stored.
+  const sent = `${turnPrefixFor(bot)}${message}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DELIVER_TIMEOUT_MS);
   let sessionId = bot.sessionId ?? "";
@@ -306,7 +342,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
-      body: JSON.stringify({ message, botId: bot.id }),
+      body: JSON.stringify({ message: sent, botId: bot.id }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`eve_send_${res.status}`);
@@ -319,7 +355,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
       signal: controller.signal,
     });
     if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-    reply = await readHandoffStream(stream.body, controller.signal, historyIds, message);
+    reply = await readHandoffStream(stream.body, controller.signal, historyIds, sent);
   } finally {
     clearTimeout(timer);
   }
@@ -509,7 +545,8 @@ async function executeRoutine(
         ? `Test run of routine "${routine.name}".`
         : `Routine "${routine.name}" ran.`,
     });
-    // The instruction is stored verbatim and sent verbatim.
+    // The instruction is stored verbatim; the bot's identity prefix is added
+    // on the way to eve (see runEveTurn).
     appendAgentEvent(bot.id, {
       kind: "user",
       threadKind,
@@ -577,10 +614,14 @@ async function executeRoutine(
 }
 
 /**
- * Run one routine now, the way the pane's Test run button does. The scheduler
- * shares the in-flight set, so a manual run cannot overlap a scheduled one.
+ * Claim a manual run synchronously, then start the turn. The Test run route
+ * needs the claim settled before it answers, so it calls this and maps a sync
+ * throw (routine_busy, routine_missing, routines_locked) to a status; a run
+ * told "started" but whose claim failed would leave no history row anywhere.
+ * The scheduler shares the in-flight set, so a manual run cannot overlap a
+ * scheduled one.
  */
-export async function runRoutineNow(routineId: string): Promise<RoutineRunResult> {
+export function startRoutineNow(routineId: string): Promise<RoutineRunResult> {
   if (routinesInflight.has(routineId)) throw new Error("routine_busy");
   // Claimed before anything can yield. The pump re-reads this set immediately
   // before its own claim, and both paths run to their `add` without an await,
@@ -598,6 +639,14 @@ export async function runRoutineNow(routineId: string): Promise<RoutineRunResult
     routinesInflight.delete(routineId);
     throw err;
   }
+  return runClaimedRoutine(routine);
+}
+
+/**
+ * Run a routine whose in-flight and store claims are already taken, and leave
+ * an outcome row whatever the turn does. Shared by both manual-run entries.
+ */
+async function runClaimedRoutine(routine: Routine): Promise<RoutineRunResult> {
   try {
     const result = await executeRoutine(routine, "manual");
     recordRun(routine.id, { status: "ok", sessionId: result.sessionId });
@@ -608,6 +657,14 @@ export async function runRoutineNow(routineId: string): Promise<RoutineRunResult
   } finally {
     routinesInflight.delete(routine.id);
   }
+}
+
+/**
+ * Run one routine now, the way the pane's Test run button does. Kept for any
+ * caller that wants the old rejected-promise shape for a failed claim.
+ */
+export async function runRoutineNow(routineId: string): Promise<RoutineRunResult> {
+  return startRoutineNow(routineId);
 }
 
 /**

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../../../lib/desktop-gate";
 import { errorCode, rateLimited } from "../../../../../lib/api-guard";
-import { agentsEnabled, routinesInFlight, runRoutineNow } from "../../../../../lib/agent-exec";
+import { agentsEnabled, startRoutineNow } from "../../../../../lib/agent-exec";
 import { readRoutine } from "../../../../../../shared/routines-store.ts";
 
 export const runtime = "nodejs";
@@ -32,12 +32,24 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const routine = readRoutine(id);
     if (!routine) return NextResponse.json({ ok: false, error: "routine_missing" }, { status: 404 });
-    if (routinesInFlight().includes(id)) {
-      return NextResponse.json({ ok: false, error: "routine_busy" }, { status: 409 });
-    }
-    void runRoutineNow(id).catch(() => undefined);
+    // The claim happens here, before the response: a caller told "started"
+    // and then left with a swallowed claim failure would have no history row
+    // to show and no error anywhere.
+    void startRoutineNow(id).catch(() => undefined);
     return NextResponse.json({ ok: true, started: true, routineId: id });
   } catch (err) {
-    return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
+    const code = errorCode(err);
+    // A double click is contention, not a fault: ask the caller to retry.
+    if (code === "routine_busy") {
+      return NextResponse.json({ ok: false, error: code }, { status: 409 });
+    }
+    // A contended store lock is also transient.
+    if (code === "routines_locked") {
+      return NextResponse.json({ ok: false, error: code }, { status: 503 });
+    }
+    if (code === "routine_missing") {
+      return NextResponse.json({ ok: false, error: code }, { status: 404 });
+    }
+    return NextResponse.json({ ok: false, error: code }, { status: 400 });
   }
 }

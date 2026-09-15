@@ -77,7 +77,6 @@ export default function Page() {
   const [createSectionId, setCreateSectionId] = useState<string | null>(null);
   const [renameBot, setRenameBot] = useState<ShellBot | null>(null);
   const [deleteBot, setDeleteBot] = useState<ShellBot | null>(null);
-  const [routineNotice, setRoutineNotice] = useState(false);
   const [operator, setOperator] = useState({ name: "Desktop owner", initials: "DO" });
   const [approvals, setApprovals] = useState<Array<{ id: string; hash: string; preview: string; tool: string }>>([]);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
@@ -332,16 +331,14 @@ export default function Page() {
   useEffect(() => {
     if (!hydrated.current || !selected) return;
     attachBot(selected);
-    setRoutineNotice(false);
   }, [selectedId]);
 
-  async function send(text: string) {
+  async function send(text: string): Promise<boolean> {
     const message = text.trim();
-    if (!message || proj.pending || sendLock.current || !selected) return;
+    if (!message || proj.pending || sendLock.current || !selected) return false;
     sendLock.current = true;
     setError("");
     setFailedSend(null);
-    setDraft("");
     setPickerOpen(false);
     const optimisticId = nextId();
     stickRef.current = true;
@@ -351,7 +348,8 @@ export default function Page() {
       error: "",
       messages: [...current.messages, { role: "user", text: message, id: optimisticId }],
     }));
-    dispatch({ type: "touchChat", botId: selected.id, preview: message });
+    // The rail preview only moves once the POST landed. Stamping it earlier
+    // leaves the rail showing a message the backend never got.
     try {
       const sessionId = selected.sessionId ?? active;
       const csrf = await csrfHeaders();
@@ -379,6 +377,7 @@ export default function Page() {
       // Always append: the merge pairs each optimistic entry against one
       // projected message, so repeated identical sends stay countable.
       setTranscriptUser((current) => [...current, { id: `u-${nextSeq()}`, text: message }]);
+      setDraft("");
       const body = (await res.json()) as { sessionId?: string };
       const sid = body.sessionId ?? sessionId;
       if (sid) {
@@ -386,21 +385,24 @@ export default function Page() {
         setActive(sid);
         dispatch({ type: "touchChat", botId: selected.id, preview: message, sessionId: sid });
         setQuery(selected.id, sid);
+      } else {
+        dispatch({ type: "touchChat", botId: selected.id, preview: message });
       }
       void refreshThread(selected.id);
+      return true;
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Send failed";
       if (reason === "unauthorized") setAuthed(false);
       setError(reason === "unauthorized" ? "Sign in expired" : reason);
-      // The POST never landed: drop the optimistic bubble and give the text back
-      // so the message is not lost.
+      // The POST never landed: drop the optimistic bubble. The composer kept
+      // the text and files, so there is nothing to restore here.
       setFailedSend(message);
       setProj((current) => ({
         ...current,
         pending: false,
         messages: current.messages.filter((entry) => entry.id !== optimisticId),
       }));
-      setDraft(message);
+      return false;
     } finally {
       sendLock.current = false;
     }
@@ -775,10 +777,12 @@ export default function Page() {
                 onClose={() => setPickerOpen(false)}
                 onCreateBot={() => {
                   setPickerOpen(false);
+                  setCreateSectionId(null);
                   setCreateKind("bot");
                 }}
                 onCreateGroup={() => {
                   setPickerOpen(false);
+                  setCreateSectionId(null);
                   setCreateKind("group");
                 }}
                 onSelectBot={(id) => startNewChat(id)}
@@ -915,7 +919,7 @@ export default function Page() {
                       setAppSettingsTab("providers");
                       setAppSettingsOpen(true);
                     }}
-                    onSend={(text) => void send(text)}
+                    onSend={(text) => send(text)}
                     onStop={() => void cancel()}
                     pending={pending}
                     placeholder={bot.kind === "group"
@@ -939,11 +943,8 @@ export default function Page() {
                   bot={bot}
                   onClose={() => {
                     setSettingsOpen(false);
-                    setRoutineNotice(false);
                   }}
-                  onCreateRoutine={() => setRoutineNotice(true)}
                   onPatch={(patch) => dispatch({ type: "updateBot", botId: bot.id, patch })}
-                  routineNotice={routineNotice}
                 />
               ) : null}
             </div>

@@ -355,8 +355,10 @@ test("the manual run route refuses to start without the agent credential", () =>
   const source = routeSource("[id]", "run", "route.ts");
   assert.match(source, /if \(!agentsEnabled\(\)\)/);
   assert.match(source, /agent_credential_missing/);
-  // The gate runs before anything reads or starts a routine.
-  assert.ok(source.indexOf("requireDesktop") < source.indexOf("runRoutineNow"));
+  // The gate runs before anything reads or starts a routine. The start call
+  // is the claim: the route answers after the claim, so a claim failure can
+  // still be mapped to a status instead of vanishing into a voided run.
+  assert.ok(source.indexOf("requireDesktop") < source.indexOf("startRoutineNow"));
 });
 
 // MARK: - Agent-requested runs
