@@ -49,7 +49,13 @@ export interface ComposioSessionLike {
     toolkit: string,
     options?: { callbackUrl?: string },
   ): Promise<{ id: string; redirectUrl?: string | null }>;
-  toolkits(options?: { search?: string; limit?: number; cursor?: string; isConnected?: boolean }): Promise<{
+  toolkits(options?: {
+    search?: string;
+    limit?: number;
+    cursor?: string;
+    isConnected?: boolean;
+    toolkits?: string[];
+  }): Promise<{
     items: Array<{
       slug: string;
       name: string;
@@ -95,6 +101,53 @@ export function setComposioFactory(next: ComposioFactory | null): void {
 
 /** Composio refuses a page larger than this. */
 const PAGE_MAX = 50;
+
+/**
+ * What the dialog shows before any search: the apps most people reach for,
+ * in this order, after whatever is already connected. Everything else follows
+ * alphabetically from the catalogue, and search covers the rest.
+ */
+export const FEATURED_TOOLKITS = [
+  "gmail",
+  "googlecalendar",
+  "googledrive",
+  "googlesheets",
+  "googledocs",
+  "slack",
+  "notion",
+  "github",
+  "linear",
+  "outlook",
+  "microsoft_teams",
+  "whatsapp",
+  "telegram",
+  "discord",
+  "hubspot",
+  "salesforce",
+  "jira",
+  "confluence",
+  "asana",
+  "trello",
+  "clickup",
+  "todoist",
+  "airtable",
+  "calendly",
+  "zoom",
+  "stripe",
+  "shopify",
+  "dropbox",
+  "figma",
+  "canva",
+  "linkedin",
+  "twitter",
+  "youtube",
+  "reddit",
+  "mailchimp",
+  "zendesk",
+  "intercom",
+  "apollo",
+  "spotify",
+];
 
 export const SESSION_CONFIG = {
   manageConnections: { enable: false },
@@ -198,7 +251,7 @@ export async function listConnectorToolkits(
   options: { search?: string; limit?: number } = {},
   path = connectorsPath(),
 ): Promise<ConnectorToolkit[]> {
-  const limit = Math.min(Math.max(options.limit ?? 40, 1), PAGE_MAX);
+  const limit = Math.min(Math.max(options.limit ?? 160, 1), 200);
   const search = options.search?.trim() || undefined;
   return withSession(path, async (session) => {
     const rows = new Map<string, ConnectorToolkit>();
@@ -212,14 +265,30 @@ export async function listConnectorToolkits(
     }
     const connectedSlugs = [...rows.values()].filter((row) => row.connected).map((row) => row.slug);
     updateConnectorsStore((store) => setConnectedToolkits(store, connectedSlugs), path);
-    if (search || rows.size < limit) {
-      const page = await session.toolkits({ search, limit });
-      for (const item of page.items) if (!rows.has(item.slug)) rows.set(item.slug, toRow(item));
+    const add = (items: Awaited<ReturnType<ComposioSessionLike["toolkits"]>>["items"]) => {
+      for (const item of items) if (!rows.has(item.slug)) rows.set(item.slug, toRow(item));
+    };
+    if (search) {
+      add((await session.toolkits({ search, limit: PAGE_MAX })).items);
+    } else {
+      add((await session.toolkits({ toolkits: FEATURED_TOOLKITS, limit: PAGE_MAX })).items);
+      let next: string | undefined;
+      while (rows.size < limit) {
+        const page = await session.toolkits({ limit: PAGE_MAX, cursor: next });
+        add(page.items);
+        next = page.cursor;
+        if (!next || page.items.length === 0) break;
+      }
     }
     // Composio's own no-sign-in toolkits (composio_search, exa and the like)
     // have no account to connect, so they have no place in this list.
     const list = [...rows.values()].filter((row) => !row.noAuth && (!search || matches(row, search)));
-    list.sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name));
+    const rank = new Map(FEATURED_TOOLKITS.map((slug, index) => [slug, index]));
+    const tier = (row: ConnectorToolkit) => (row.connected ? 0 : rank.has(row.slug) ? 1 : 2);
+    list.sort((a, b) =>
+      tier(a) - tier(b) ||
+      (tier(a) === 1 ? (rank.get(a.slug) ?? 0) - (rank.get(b.slug) ?? 0) : a.name.localeCompare(b.name)),
+    );
     return list.slice(0, limit);
   });
 }

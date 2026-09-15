@@ -622,7 +622,8 @@ struct ConnectorsDialog: View {
 
     @State private var search = ""
     @State private var keyDraft = ""
-    @State private var listHeight: CGFloat = 0
+    private static let rowHeight: CGFloat = 72
+    private static let listMaxHeight: CGFloat = 460
     @FocusState private var keyFocused: Bool
     @FocusState private var searchFocused: Bool
 
@@ -765,20 +766,21 @@ struct ConnectorsDialog: View {
             }
             // Short lists size the dialog to their content; long ones scroll
             // inside a fixed height, so the dialog never grows past the window.
+            // Rows have a fixed height, so the list height is arithmetic rather
+            // than a measurement, which a collapsed scroll view never reports.
             ScrollView {
                 catalogueList(payload)
-                    .background(
-                        GeometryReader { proxy in
-                            Color.clear.preference(key: CatalogueHeightKey.self, value: proxy.size.height)
-                        }
-                    )
             }
-            .onPreferenceChange(CatalogueHeightKey.self) { listHeight = $0 }
-            .frame(height: min(max(listHeight, 0), 460))
+            .frame(height: catalogueHeight(payload))
             .padding(.horizontal, 20)
             .padding(.top, 16)
             .padding(.bottom, 20)
         }
+    }
+
+    private func catalogueHeight(_ payload: ConnectorsPayload) -> CGFloat {
+        if payload.toolkits.isEmpty { return model.connectorsError != nil ? 0 : 100 }
+        return min(CGFloat(payload.toolkits.count) * Self.rowHeight + 2, Self.listMaxHeight)
     }
 
     @ViewBuilder
@@ -885,29 +887,21 @@ struct ConnectorsDialog: View {
     }
 }
 
-private struct CatalogueHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 /// An app's logo from Composio, or its initial on a sunken tile when there is
-/// none or it fails to load.
+/// none or it fails to load. Composio serves SVG, which AsyncImage cannot
+/// decode, so the bytes are fetched and handed to NSImage, which can.
 private struct AppLogo: View {
     let name: String
     let url: String?
 
+    @State private var image: NSImage?
+
     var body: some View {
         Group {
-            if let url, let link = URL(string: url) {
-                AsyncImage(url: link) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFit()
-                    } else {
-                        initial
-                    }
-                }
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
             } else {
                 initial
             }
@@ -915,6 +909,9 @@ private struct AppLogo: View {
         .frame(width: 28, height: 28)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityHidden(true)
+        .task(id: url) {
+            image = await LogoCache.shared.image(for: url)
+        }
     }
 
     private var initial: some View {
@@ -925,5 +922,31 @@ private struct AppLogo: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.C.inkMuted)
         }
+    }
+}
+
+/// One fetch per logo URL for the life of the process; a failure is not
+/// cached, so a flaky load is retried the next time the row appears.
+private actor LogoCache {
+    static let shared = LogoCache()
+    private var images: [String: NSImage] = [:]
+    private var inFlight: [String: Task<NSImage?, Never>] = [:]
+
+    func image(for urlString: String?) async -> NSImage? {
+        guard let urlString, let url = URL(string: urlString), url.scheme == "https" else { return nil }
+        if let cached = images[urlString] { return cached }
+        if let running = inFlight[urlString] { return await running.value }
+        let task = Task<NSImage?, Never> {
+            guard let (data, response) = try? await URLSession.shared.data(from: url),
+                  let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  data.count < 512 * 1024,
+                  let image = NSImage(data: data) else { return nil }
+            return image
+        }
+        inFlight[urlString] = task
+        let result = await task.value
+        inFlight[urlString] = nil
+        if let result { images[urlString] = result }
+        return result
     }
 }

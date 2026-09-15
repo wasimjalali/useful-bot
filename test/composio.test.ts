@@ -66,7 +66,9 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
       if ((options?.limit ?? 0) > 50) throw Object.assign(new Error("payload.limit must be <= 50"), { statusCode: 400 });
       const items = options?.isConnected
         ? state.toolkitItems.filter((item) => item.connection?.isActive)
-        : state.toolkitItems.filter((item) => !options?.search || item.slug.includes(options.search));
+        : options?.toolkits
+          ? state.toolkitItems.filter((item) => options.toolkits?.includes(item.slug))
+          : state.toolkitItems.filter((item) => !options?.search || item.slug.includes(options.search));
       return { items, cursor: undefined };
     },
     async search(params) {
@@ -175,8 +177,11 @@ const PENDING: ToolkitItem = {
   connection: { isActive: false, connectedAccount: { status: "INITIATED", id: "ca_notion" } },
 };
 
-test("listing puts connected first and refreshes the connected cache", async () => {
-  const { factory } = stub({ toolkitItems: [SLACK, PENDING, GMAIL, NOAUTH] });
+const AIRTABLE: ToolkitItem = { slug: "airtable", name: "Airtable", isNoAuth: false, logo: undefined };
+const ZULIP: ToolkitItem = { slug: "zulip", name: "Zulip", isNoAuth: false, logo: undefined };
+
+test("listing puts connected first, then featured in order, then the rest, and refreshes the cache", async () => {
+  const { factory } = stub({ toolkitItems: [ZULIP, SLACK, PENDING, AIRTABLE, GMAIL, NOAUTH] });
   setComposioFactory(factory);
   const path = tmpPath();
   const rows = await listConnectorToolkits({}, path);
@@ -184,8 +189,10 @@ test("listing puts connected first and refreshes the connected cache", async () 
     rows.map((row) => [row.slug, row.connected, row.accountId, row.status]),
     [
       ["gmail", true, "ca_gmail", "ACTIVE"],
-      ["notion", false, "ca_notion", "INITIATED"],
       ["slack", false, null, null],
+      ["notion", false, "ca_notion", "INITIATED"],
+      ["airtable", false, null, null],
+      ["zulip", false, null, null],
     ],
   );
   assert.deepEqual(readConnectorsStore(path).connectedToolkits, ["gmail"]);
