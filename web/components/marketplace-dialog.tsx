@@ -31,10 +31,11 @@ type Payload = {
 const POLL_MS = 3000;
 const POLL_LIMIT_MS = 120_000;
 const LOAD_ERROR = "Could not load connectors.";
-const UPSTREAM_ERROR = "Composio did not answer. Check the key, then try again.";
+const UPSTREAM_ERROR = "Composio did not answer. Try again in a moment.";
+const KEY_REJECTED = "Composio rejected this key. Remove it and paste a fresh one from platform.composio.dev.";
 const RATE_ERROR = "Too many requests. Wait a moment.";
 /** Errors a background poll may clear; an action's own message stays until the next action. */
-const LOAD_ERRORS = new Set([LOAD_ERROR, UPSTREAM_ERROR, RATE_ERROR]);
+const LOAD_ERRORS = new Set([LOAD_ERROR, UPSTREAM_ERROR, KEY_REJECTED, RATE_ERROR]);
 
 /** Only an https page from Composio's own hosts is opened for sign-in. */
 function safeSignInUrl(value: string): URL | null {
@@ -79,7 +80,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       setPayload(body);
       // A quiet poll only clears a load error it could have caused; a message
       // from Connect or Disconnect stays until the owner acts again.
-      const next = body.ok === false ? UPSTREAM_ERROR : "";
+      const next = body.ok === false ? (body.error === "key_rejected" ? KEY_REJECTED : UPSTREAM_ERROR) : "";
       setError((current) => (quiet && !LOAD_ERRORS.has(current) && current ? current : next));
       return body;
     } catch (err) {
@@ -167,7 +168,15 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
         body: JSON.stringify({ apiKey }),
       });
       const body = (await res.json()) as Payload;
-      if (!res.ok || !body.ok) throw new Error(body.error === "connectors_key" ? "That key looks invalid." : "Could not save the key.");
+      if (!res.ok || !body.ok) {
+        throw new Error(
+          body.error === "connectors_key_consumer"
+            ? "That is a Composio For You key. This app needs a Platform project key, which starts with ak_."
+            : body.error === "connectors_key"
+              ? "That key looks invalid."
+              : "Could not save the key.",
+        );
+      }
       setKeyDraft("");
       await load("");
     } catch (err) {
