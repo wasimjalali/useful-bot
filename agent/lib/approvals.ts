@@ -54,7 +54,8 @@ export type ApprovalTool =
   | "delete_bot"
   | "delete_routine"
   | "create_routine"
-  | "update_routine";
+  | "update_routine"
+  | "connector";
 export type ApprovalDecision = "approve" | "deny";
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
 
