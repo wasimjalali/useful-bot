@@ -220,26 +220,6 @@ test("a one or two character search never reaches Composio", async () => {
   assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
   assert.equal(state.listed.some((options) => options?.search !== undefined), false);
 });
-  const wrapped = () => {
-    const client = factory("ak_stub");
-    const create = client.sessions.create.bind(client.sessions);
-    client.sessions.create = async (userId, config) => {
-      const session = await create(userId, config);
-      const toolkits = session.toolkits.bind(session);
-      session.toolkits = async (options) => {
-        calls.push(options);
-        if (options?.search && options.search.length < 3) throw Object.assign(new Error("Validation error"), { statusCode: 400 });
-        return toolkits(options);
-      };
-      return session;
-    };
-    return client;
-  };
-  setComposioFactory(wrapped);
-  const rows = await listConnectorToolkits({ search: "sl" }, tmpPath());
-  assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
-  assert.equal(calls.some((options) => options?.search !== undefined), false);
-});
 
 test("an empty connected page clears the cache, and a search never rewrites it", async () => {
   const { state, factory } = stub({ toolkitItems: [SLACK, GMAIL] });
