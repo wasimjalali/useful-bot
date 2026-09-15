@@ -293,7 +293,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
               <button className="btn btn-primary min-h-10 px-4 text-xs" disabled={busy === "key" || !keyDraft.trim()} type="submit">
                 Save key
               </button>
-              <a className="text-sm text-ink-muted underline-offset-2 hover:underline" href="https://platform.composio.dev" rel="noreferrer" target="_blank">
+              <a className="cursor-pointer text-sm text-ink-muted underline-offset-2 hover:underline" href="https://platform.composio.dev" rel="noreferrer" target="_blank">
                 Get a key at composio.dev
               </a>
             </div>
