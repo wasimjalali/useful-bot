@@ -529,12 +529,25 @@ final class AppModel: ObservableObject {
         let generation = loadGeneration
         let polledBotId = selectedBotId
         do {
-            // The store is owned by the send while one runs (the optimistic
-            // session echo must not be overwritten), but proposals and the
-            // composer still refresh so mid-turn handoffs and proposals show.
-            if !pending {
-                let fresh = try await client.shell()
-                guard generation == loadGeneration, polledBotId == selectedBotId else { return }
+            // The rail keeps refreshing during a turn, so a section or bot a
+            // tool changes shows up while the reply is still streaming. The
+            // send still owns its bot's session echo: touchChat may not have
+            // landed yet, and the fresh copy must not revert the optimistic
+            // pointer and preview stamped by updateSession. Only the idle poll
+            // repairs the selection; a server-driven switch mid-turn would
+            // cancel the turn, and the poll after it settles does that work.
+            var fresh = try await client.shell()
+            guard generation == loadGeneration, polledBotId == selectedBotId else { return }
+            if pending {
+                if let botId = sendBotId,
+                   let local = store?.bots.first(where: { $0.id == botId }),
+                   let index = fresh.bots.firstIndex(where: { $0.id == botId }) {
+                    fresh.bots[index].sessionId = local.sessionId
+                    fresh.bots[index].lastPreview = local.lastPreview
+                    fresh.bots[index].lastAt = local.lastAt
+                }
+                store = fresh
+            } else {
                 store = fresh
                 // A poll can be the first to see a server-side delete; repair
                 // the selection the same way an action echo does.
