@@ -94,6 +94,7 @@ public enum TurnActivity: Equatable, Sendable {
 
     private static let known: [String: String] = [
         "bash": "Running a command",
+        "clear_history": "Clearing a chat",
         "connector_execute": "Using a connector",
         "connector_search": "Looking through connectors",
         "create_routine": "Writing a routine",
@@ -118,6 +119,40 @@ public enum TurnActivity: Equatable, Sendable {
         "web_search": "Searching the web",
         "write_file": "Writing a file",
     ]
+}
+
+/// Why a turn failed, in words the owner can act on.
+public struct TurnFailure: Equatable, Sendable {
+    public let code: String
+    public let detail: String
+
+    public init(code: String, detail: String) {
+        self.code = code
+        self.detail = detail
+    }
+
+    /// The router refuses a turn with `caller_budget_exhausted` when the day's
+    /// token budget is spent, and eve wraps that in its retry error. Saying
+    /// "the turn failed" for that leaves the owner with nothing to do, when in
+    /// fact one setting fixes it.
+    /// `nil` when the cause is not one this app can explain, so the caller
+    /// keeps its own wording rather than repeating itself.
+    public var reason: String? {
+        let haystack = "\(code) \(detail)".lowercased()
+        if haystack.contains("budget_exhausted") {
+            return "The daily token limit is used up. Raise it in Settings, under Usage."
+        }
+        if haystack.contains("rate_limit") {
+            return "The router is rate limiting. Wait a moment and send again."
+        }
+        if haystack.contains("unauthorized") {
+            return "The router rejected this app. Restart the local services."
+        }
+        return nil
+    }
+
+    /// What to show when this failure is the whole message.
+    public var message: String { reason ?? "The turn failed." }
 }
 
 /// One NDJSON event from an eve session stream.
@@ -293,6 +328,10 @@ public struct StreamProjection: Equatable, Sendable {
     /// Set when the turn or session failed, so callers can surface it instead
     /// of treating the empty turn as a delivered reply.
     public private(set) var failed = false
+    /// Why the turn failed, as eve reported it. Kept so the reader is told
+    /// that the day's token budget ran out rather than just that something
+    /// went wrong.
+    public private(set) var failure: TurnFailure?
     /// Web results the turn surfaced, shown as chips under the transcript.
     public private(set) var searchHits: [SearchChip] = []
     /// What the turn is doing right now. Reasoning and tool calls both reach
@@ -305,6 +344,22 @@ public struct StreamProjection: Equatable, Sendable {
     private var currentAssistantId: String?
 
     public init() {}
+
+    /// A turn is starting from this app.
+    ///
+    /// The `turn.started` event that would clear the last turn's outcome sits
+    /// ahead of this turn's user message in the replayed stream, and the reader
+    /// of that stream skips everything before that message. So without this the
+    /// projection kept `failed` from a turn that ended hours ago, and the next
+    /// successful reply was still reported as "The turn failed."
+    public mutating func beginTurn() {
+        pending = true
+        failed = false
+        failure = nil
+        searchHits = []
+        activity = .thinking
+        currentAssistantId = nil
+    }
 
     /// Dedupe identity with a bounded FIFO: the oldest remembered id is
     /// evicted first, so a long replay can neither grow without bound nor
@@ -336,6 +391,7 @@ public struct StreamProjection: Equatable, Sendable {
         case "turn.started":
             pending = true
             failed = false
+            failure = nil
             currentAssistantId = nil
             searchHits = []
             activity = .thinking
@@ -414,6 +470,10 @@ public struct StreamProjection: Equatable, Sendable {
         case "turn.failed", "session.failed":
             pending = false
             failed = true
+            failure = TurnFailure(
+                code: event.data?["code"]?.stringValue ?? event.type,
+                detail: event.message ?? ""
+            )
             currentAssistantId = nil
         case "action.result", "action.partial":
             let chips = EveStream.parseSearchChips(event.data)

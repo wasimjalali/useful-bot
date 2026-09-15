@@ -25,6 +25,7 @@ import postToGroup from "../agent/tools/post_to_group.ts";
 import sendToBot from "../agent/tools/send_to_bot.ts";
 import updateBotProfile from "../agent/tools/update_bot_profile.ts";
 import deleteBot from "../agent/tools/delete_bot.ts";
+import clearHistory from "../agent/tools/clear_history.ts";
 import deleteRoutine from "../agent/tools/delete_routine.ts";
 import railAction from "../agent/tools/rail_action.ts";
 import listRoutines from "../agent/tools/list_routines.ts";
@@ -1236,5 +1237,81 @@ test("reads work in every permission, because reading is what a grant is for", a
     } finally {
       box.restore();
     }
+  }
+});
+
+test("clearHistory waits for the owner and then empties the chat", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(shell, "CEO");
+    const research = idOf(shell, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    // A session pointer and a durable event, which is what a used chat has.
+    writeShell(applyShellAction(readShell(), {
+      type: "touchChat",
+      botId: research,
+      preview: "hello",
+      sessionId: "wrun_test",
+    }).store);
+    appendAgentEvent(research, { kind: "note", text: "remember this" });
+    assert.equal(listThreadEvents(research).length, 1);
+
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+
+    const denied = run<{ status: string }>(clearHistory, { botId: research });
+    const first = pendingApproval(approvals);
+    assert.equal(first.tool, "clear_history");
+    // Still pending: nothing may be emptied before the owner decides.
+    assert.equal(readShell().bots.find((bot) => bot.id === research)?.sessionId, "wrun_test");
+    approvals.decide(first.id, "deny", first.actionSha256);
+    await assert.rejects(() => denied, /approval_denied/);
+    assert.equal(listThreadEvents(research).length, 1);
+
+    const approved = run<{ status: string; clearedCount: number }>(clearHistory, { botId: research });
+    const second = pendingApproval(approvals);
+    approvals.decide(second.id, "approve", second.actionSha256);
+    const result = await approved;
+    assert.equal(result.status, "cleared");
+    assert.equal(result.clearedCount, 1);
+    assert.equal(readShell().bots.find((bot) => bot.id === research)?.sessionId, null);
+    assert.equal(listThreadEvents(research).length, 0);
+    // The bot itself survives: only the conversation went.
+    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
+  } finally {
+    box.restore();
+  }
+});
+
+test("clearHistory clears its own chat by default and every chat on request", async () => {
+  const box = sandbox();
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(shell, "CEO");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    const approvals = new ApprovalStore(() => 1_000);
+    setApprovalStore(approvals);
+
+    // No botId: this bot's own chat, and the card says which one.
+    const own = run<{ status: string; bots: Array<{ id: string }> }>(clearHistory, {});
+    const card = pendingApproval(approvals);
+    approvals.decide(card.id, "approve", card.actionSha256);
+    const result = await own;
+    assert.equal(result.bots.length, 1);
+    assert.equal(result.bots[0].id, ceo);
+
+    // Every chat, in one card.
+    const all = run<{ clearedCount: number }>(clearHistory, { all: true });
+    const second = pendingApproval(approvals);
+    approvals.decide(second.id, "approve", second.actionSha256);
+    assert.equal((await all).clearedCount, readShell().bots.length);
+
+    // Contradictory arguments are refused without troubling the owner.
+    assert.equal((await run<{ status: string }>(clearHistory, { all: true, botId: ceo })).status, "refused");
+    assert.equal((await run<{ status: string }>(clearHistory, { botId: "nope" })).status, "not_found");
+    assert.equal(approvals.listPending().length, 0);
+  } finally {
+    box.restore();
   }
 });

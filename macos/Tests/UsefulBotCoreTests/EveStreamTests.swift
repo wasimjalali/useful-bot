@@ -129,6 +129,39 @@ import Testing
         #expect(projection.activity == .tool("scout"))
     }
 
+    @Test func aNewTurnDoesNotInheritTheLastTurnsFailure() {
+        // The reload leaves the projection on a turn that failed hours ago.
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        projection.apply(EveEvent(type: "turn.failed", id: "2", message: "caller_budget_exhausted"))
+        #expect(projection.failed)
+
+        // Sending again arms the stream at this turn's user message, so the
+        // `turn.started` that would clear the flag is never applied here.
+        projection.beginTurn()
+        #expect(!projection.failed)
+        #expect(projection.failure == nil)
+        projection.apply(EveEvent(type: "message.received", id: "3", message: "hi"), live: true)
+        projection.apply(EveEvent(type: "message.completed", id: "4", message: "ready"), live: true)
+        projection.apply(EveEvent(type: "turn.completed", id: "5"))
+        #expect(!projection.failed)
+    }
+
+    @Test func aFailedTurnSaysWhy() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(
+            type: "turn.failed",
+            id: "1",
+            message: "AI_RetryError: Failed after 3 attempts. Last error: AI_APICallError: caller_budget_exhausted"
+        ))
+        #expect(projection.failure?.reason == "The daily token limit is used up. Raise it in Settings, under Usage.")
+
+        var other = StreamProjection()
+        other.apply(EveEvent(type: "turn.failed", id: "1", message: "the model went away"))
+        #expect(other.failure?.reason == nil)
+        #expect(other.failure?.message == "The turn failed.")
+    }
+
     @Test func projectionIgnoresReplayedEventIds() {
         var projection = StreamProjection()
         projection.apply(EveEvent(type: "message.received", id: "same", message: "hi"))
