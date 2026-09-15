@@ -153,7 +153,11 @@ export async function connectorsSession(path = connectorsPath()): Promise<Compos
  * (Composio expired it, the owner deleted it in the dashboard) is dropped and
  * recreated once, then the operation is retried on the new one.
  */
-async function withSession<T>(path: string, op: (session: ComposioSessionLike) => Promise<T>): Promise<T> {
+async function withSession<T>(
+  path: string,
+  op: (session: ComposioSessionLike) => Promise<T>,
+  retry = true,
+): Promise<T> {
   const session = await connectorsSession(path);
   try {
     return await op(session);
@@ -163,6 +167,7 @@ async function withSession<T>(path: string, op: (session: ComposioSessionLike) =
     updateConnectorsStore((scratch) => {
       if (scratch.sessionId === session.sessionId) scratch.sessionId = null;
     }, path);
+    if (!retry) throw new Error("session_expired");
     return op(await connectorsSession(path));
   }
 }
@@ -304,5 +309,8 @@ export async function executeConnectorTool(
     err.toolkit = toolkit;
     throw err;
   }
-  return withSession(path, (session) => session.execute(toolSlug, args));
+  // Never replay an execute: a write that the owner approved once must not
+  // run twice on a recreated session. The caller sees session_expired and the
+  // model asks again, which mints a fresh card.
+  return withSession(path, (session) => session.execute(toolSlug, args), false);
 }

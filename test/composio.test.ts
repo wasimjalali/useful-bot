@@ -209,14 +209,18 @@ test("an empty connected page clears the cache, and a search never rewrites it",
   assert.deepEqual(readConnectorsStore(path).connectedToolkits, []);
 });
 
-test("a session that died after caching is replaced once and the call retried", async () => {
+test("a session that died after caching is dropped; reads are retried, executes are not", async () => {
   const { state, factory } = stub({ executeThrows: Object.assign(new Error("gone"), { statusCode: 410 }) });
   setComposioFactory(factory);
   const path = tmpPath();
   updateConnectorsStore((store) => setConnectedToolkits(store, ["gmail"]), path);
   const first = await connectorsSession(path);
-  const out = await executeConnectorTool("GMAIL_FETCH_EMAILS", {}, path);
-  assert.deepEqual(out, { data: { ok: true, slug: "GMAIL_FETCH_EMAILS" }, successful: true });
+  await assert.rejects(() => executeConnectorTool("GMAIL_SEND_EMAIL", {}, path), /session_expired/);
+  assert.equal(state.executed.length, 1);
+  assert.equal(readConnectorsStore(path).sessionId, null);
+  // The next call gets a fresh session and runs once.
+  const out = await executeConnectorTool("GMAIL_SEND_EMAIL", {}, path);
+  assert.deepEqual(out, { data: { ok: true, slug: "GMAIL_SEND_EMAIL" }, successful: true });
   assert.equal(state.executed.length, 2);
   assert.equal(state.created.length, 2);
   assert.notEqual(readConnectorsStore(path).sessionId, first.sessionId);

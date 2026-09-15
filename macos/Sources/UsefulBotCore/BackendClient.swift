@@ -119,6 +119,12 @@ private struct ProvidersResponse: Decodable {
     let error: String?
 }
 private struct ApprovalsResponse: Decodable { let approvals: [ApprovalItem] }
+private struct ConnectorAuthorizeResponse: Decodable {
+    let ok: Bool?
+    let redirectUrl: String?
+    let error: String?
+}
+private struct ConnectorsErrorResponse: Decodable { let error: String? }
 private struct RoutinesResponse: Decodable { let routines: [Routine]? }
 private struct RoutineResponse: Decodable { let routine: Routine? }
 private struct MemoryResponse: Decodable { let notes: [MemoryNote] }
@@ -437,6 +443,69 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         return decoded.providers ?? []
+    }
+
+    // MARK: - Connectors
+
+    /// The Connectors catalogue, optionally narrowed by a search string. A 502
+    /// (Composio unreachable) still decodes: `error` is set and the rows are
+    /// empty, so the dialog can say what happened instead of going blank.
+    public func connectors(search: String? = nil) async throws -> ConnectorsPayload {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/connectors"),
+                resolvingAgainstBaseURL: false
+            )
+            if let search, !search.isEmpty {
+                components?.queryItems = [URLQueryItem(name: "search", value: search)]
+            }
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        if let http = response as? HTTPURLResponse, http.statusCode != 502 {
+            try Self.expectOK(response)
+        }
+        guard let decoded = try? JSONDecoder().decode(ConnectorsPayload.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
+    /// Stores the Composio key on the Mac. Pass nil to remove it.
+    public func setConnectorsKey(_ key: String?) async throws {
+        try await connectorsWrite(method: "PUT", body: ["apiKey": key ?? NSNull()])
+    }
+
+    /// Starts the hosted OAuth flow for one app and returns the page to open.
+    public func authorizeConnector(slug: String) async throws -> String {
+        let data = try await connectorsWrite(method: "POST", body: ["toolkit": slug])
+        guard let decoded = try? JSONDecoder().decode(ConnectorAuthorizeResponse.self, from: data),
+              let url = decoded.redirectUrl, !url.isEmpty else {
+            throw BackendError.decoding
+        }
+        return url
+    }
+
+    /// Revokes one connected account.
+    public func disconnectConnector(accountId: String) async throws {
+        _ = try await connectorsWrite(method: "DELETE", body: ["accountId": accountId])
+    }
+
+    @discardableResult
+    private func connectorsWrite(method: String, body: [String: Any]) async throws -> Data {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/connectors"))
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let decoded = try? JSONDecoder().decode(ConnectorsErrorResponse.self, from: data)
+            throw BackendError.provider(decoded?.error ?? "connectors_failed")
+        }
+        return data
     }
 
     /// Observed token traffic for the settings Usage tab.

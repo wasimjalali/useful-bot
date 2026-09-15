@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UniformTypeIdentifiers
 import UsefulBotCore
@@ -55,6 +56,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var providerBusy: String?
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
+    /// Connectors dialog: the catalogue, the key state and one in-flight
+    /// OAuth flow the dialog polls for.
+    @Published private(set) var connectors: ConnectorsPayload?
+    @Published var connectorsError: String?
+    @Published private(set) var connectorBusy: String?
+    @Published private(set) var connectorPending: String?
+    @Published private(set) var connectorTimedOut: String?
+    private var connectorPoll: Task<Void, Never>?
 
     /// Which inline pane is open. One value, so settings and the details pane
     /// can never fight over the 320pt sidebar.
@@ -915,6 +924,112 @@ final class AppModel: ObservableObject {
             providersError = "Could not disconnect."
         }
         providerBusy = nil
+    }
+
+    // MARK: - Connectors
+
+    func loadConnectors(search: String = "", quiet: Bool = false) async {
+        if !quiet { connectorsError = nil }
+        do {
+            let payload = try await client.connectors(search: search)
+            connectors = payload
+            if payload.error != nil {
+                connectorsError = "Composio did not answer. Check the key, then try again."
+            } else if !quiet {
+                connectorsError = nil
+            }
+        } catch {
+            connectorsError = "Could not load connectors."
+        }
+    }
+
+    func saveConnectorsKey(_ key: String) async {
+        connectorBusy = "key"
+        connectorsError = nil
+        do {
+            try await client.setConnectorsKey(key)
+            await loadConnectors()
+        } catch {
+            let code = (error as? BackendError)?.providerCode
+            connectorsError = code == "connectors_key" ? "That key looks invalid." : "Could not save the key."
+        }
+        connectorBusy = nil
+    }
+
+    func removeConnectorsKey() async {
+        connectorBusy = "key"
+        connectorsError = nil
+        stopConnectorPoll()
+        do {
+            try await client.setConnectorsKey(nil)
+            await loadConnectors()
+        } catch {
+            connectorsError = "Could not remove the key."
+        }
+        connectorBusy = nil
+    }
+
+    /// Opens Composio's hosted sign-in for one app in the default browser and
+    /// polls until the account is active, or gives up after two minutes.
+    func connectConnector(_ row: ConnectorToolkit, search: String) async {
+        connectorBusy = row.slug
+        connectorsError = nil
+        connectorTimedOut = nil
+        do {
+            let target = try await client.authorizeConnector(slug: row.slug)
+            guard let url = URL(string: target), let scheme = url.scheme?.lowercased(),
+                  scheme == "https" || scheme == "http" else {
+                throw BackendError.decoding
+            }
+            NSWorkspace.shared.open(url)
+            startConnectorPoll(slug: row.slug, search: search)
+        } catch {
+            connectorsError = "Could not start connecting \(row.name)."
+        }
+        connectorBusy = nil
+    }
+
+    func disconnectConnector(_ row: ConnectorToolkit, search: String) async {
+        guard let accountId = row.accountId else { return }
+        connectorBusy = row.slug
+        connectorsError = nil
+        do {
+            try await client.disconnectConnector(accountId: accountId)
+            await loadConnectors(search: search, quiet: true)
+        } catch {
+            connectorsError = "Could not disconnect \(row.name)."
+        }
+        connectorBusy = nil
+    }
+
+    func stopConnectorPoll() {
+        connectorPoll?.cancel()
+        connectorPoll = nil
+        connectorPending = nil
+    }
+
+    private func startConnectorPoll(slug: String, search: String) {
+        stopConnectorPoll()
+        connectorPending = slug
+        let started = Date()
+        connectorPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled else { return }
+                await self.loadConnectors(search: search, quiet: true)
+                if self.connectors?.toolkits.first(where: { $0.slug == slug })?.connected == true {
+                    self.connectorPending = nil
+                    self.connectorPoll = nil
+                    return
+                }
+                if Date().timeIntervalSince(started) > 120 {
+                    self.connectorPending = nil
+                    self.connectorTimedOut = slug
+                    self.connectorPoll = nil
+                    return
+                }
+            }
+        }
     }
 
     func loadUsage() async {
