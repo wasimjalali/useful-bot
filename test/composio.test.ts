@@ -198,11 +198,36 @@ test("listing puts connected first, then featured in order, then the rest, and r
   assert.deepEqual(readConnectorsStore(path).connectedToolkits, ["gmail"]);
 });
 
-test("listing with a search filters by slug or name", async () => {
-  const { factory } = stub({ toolkitItems: [SLACK, GMAIL] });
+test("listing with a search filters by slug or name, lowercased", async () => {
+  const { state, factory } = stub({ toolkitItems: [SLACK, GMAIL] });
   setComposioFactory(factory);
-  const rows = await listConnectorToolkits({ search: "sla" }, tmpPath());
+  const rows = await listConnectorToolkits({ search: "Sla" }, tmpPath());
   assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
+  assert.equal(state.searched.length, 0);
+});
+
+test("a one or two character search never reaches Composio", async () => {
+  const calls: Array<Record<string, unknown> | undefined> = [];
+  const { factory } = stub({ toolkitItems: [SLACK, GMAIL, PENDING] });
+  const wrapped = () => {
+    const client = factory("ak_stub");
+    const create = client.sessions.create.bind(client.sessions);
+    client.sessions.create = async (userId, config) => {
+      const session = await create(userId, config);
+      const toolkits = session.toolkits.bind(session);
+      session.toolkits = async (options) => {
+        calls.push(options);
+        if (options?.search && options.search.length < 3) throw Object.assign(new Error("Validation error"), { statusCode: 400 });
+        return toolkits(options);
+      };
+      return session;
+    };
+    return client;
+  };
+  setComposioFactory(wrapped);
+  const rows = await listConnectorToolkits({ search: "sl" }, tmpPath());
+  assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
+  assert.equal(calls.some((options) => options?.search !== undefined), false);
 });
 
 test("an empty connected page clears the cache, and a search never rewrites it", async () => {
