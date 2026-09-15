@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync } from "node:fs";
+import { catalogueReady, resetCatalogueMemo } from "../shared/composio-catalogue.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConnectorsStore, setConnectedToolkits, setConnectorsKey, updateConnectorsStore } from "../shared/connectors-store.ts";
@@ -9,6 +10,7 @@ import {
   connectorsSession,
   disconnectConnector,
   executeConnectorTool,
+  forgetConnected,
   listConnectorToolkits,
   searchConnectorTools,
   isKeyRejected,
@@ -21,7 +23,13 @@ import {
 type ToolkitItem = Awaited<ReturnType<ComposioSessionLike["toolkits"]>>["items"][number];
 
 function tmpPath(withKey = true): string {
-  const path = join(mkdtempSync(join(tmpdir(), "ub-composio-")), "connectors.json");
+  const dir = mkdtempSync(join(tmpdir(), "ub-composio-"));
+  const path = join(dir, "connectors.json");
+  // Each test gets its own catalogue cache file too, and no memo from the last one.
+  process.env.UB_CATALOGUE_PATH = join(dir, "catalogue.json");
+  resetCatalogueMemo();
+  // Stub session ids repeat across tests, so the connected memo must not carry over.
+  forgetConnected();
   if (withKey) updateConnectorsStore((store) => setConnectorsKey(store, "ak_stub_1234567890"), path);
   return path;
 }
@@ -39,6 +47,7 @@ interface StubState {
   deleted: string[];
   accounts: Record<string, Array<{ id: string; toolkit?: { slug: string } }>>;
   executeThrows: unknown;
+  directTools: Array<{ slug: string; description?: string; inputParameters?: Record<string, unknown>; toolkit?: { slug: string } }>;
 }
 
 function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: (key: string) => ComposioLike } {
@@ -55,6 +64,7 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
     deleted: [],
     accounts: {},
     executeThrows: null,
+    directTools: [],
     ...overrides,
   };
   let counter = 0;
@@ -111,6 +121,11 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
       async delete(id) {
         state.deleted.push(id);
         return {};
+      },
+    },
+    tools: {
+      async getRawComposioTools() {
+        return state.directTools;
       },
     },
   });
@@ -190,13 +205,22 @@ test("listing puts connected first, then featured in order, then the rest, and r
   const { factory } = stub({ toolkitItems: [ZULIP, SLACK, PENDING, AIRTABLE, GMAIL, NOAUTH] });
   setComposioFactory(factory);
   const path = tmpPath();
-  const rows = await listConnectorToolkits({}, path);
+  // A cold open shows the connected and popular apps; the catalogue walk
+  // runs behind it and the next listing has everything.
+  const cold = await listConnectorToolkits({}, path);
+  assert.deepEqual(cold.rows.map((row) => row.slug), ["gmail", "slack", "notion", "airtable"]);
+  await catalogueReady();
+  const { rows, total, nextOffset } = await listConnectorToolkits({}, path);
+  assert.equal(total, 5);
+  assert.equal(nextOffset, null);
   assert.deepEqual(
     rows.map((row) => [row.slug, row.connected, row.accountId, row.status]),
     [
       ["gmail", true, "ca_gmail", "ACTIVE"],
       ["slack", false, null, null],
-      ["notion", false, "ca_notion", "INITIATED"],
+      // A half-finished connection is not connected; the dialog tracks its
+      // own pending state, so the row carries no account.
+      ["notion", false, null, null],
       ["airtable", false, null, null],
       ["zulip", false, null, null],
     ],
@@ -207,16 +231,42 @@ test("listing puts connected first, then featured in order, then the rest, and r
 test("listing with a search filters by slug or name, lowercased", async () => {
   const { state, factory } = stub({ toolkitItems: [SLACK, GMAIL] });
   setComposioFactory(factory);
-  const rows = await listConnectorToolkits({ search: "Sla" }, tmpPath());
+  const { rows } = await listConnectorToolkits({ search: "Sla" }, tmpPath());
   assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
   const remote = state.listed.filter((options) => options?.search !== undefined).map((options) => options?.search);
   assert.deepEqual(remote, ["sla"]);
 });
 
+test("paging walks the list and the catalogue cache makes the second open local", async () => {
+  const many: ToolkitItem[] = Array.from({ length: 70 }, (_, index) => ({
+    slug: `app${String(index).padStart(2, "0")}`,
+    name: `App ${String(index).padStart(2, "0")}`,
+    isNoAuth: false,
+    logo: undefined,
+  }));
+  const { state, factory } = stub({ toolkitItems: [GMAIL, ...many] });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  const first = await listConnectorToolkits({ limit: 30 }, path);
+  assert.equal(first.rows[0]?.slug, "gmail");
+  await catalogueReady();
+  const second = await listConnectorToolkits({ limit: 30 }, path);
+  assert.equal(second.total, 71);
+  assert.equal(second.nextOffset, 30);
+  const third = await listConnectorToolkits({ offset: 60, limit: 30 }, path);
+  assert.equal(third.rows.length, 11);
+  assert.equal(third.nextOffset, null);
+  // With the cache in place, a search touches nothing but the connected page.
+  const before = state.listed.length;
+  const found = await listConnectorToolkits({ search: "app 6" }, path);
+  assert.equal(found.rows[0]?.slug, "app60");
+  assert.equal(state.listed.slice(before).every((options) => options?.isConnected === true), true);
+});
+
 test("a one or two character search never reaches Composio", async () => {
   const { state, factory } = stub({ toolkitItems: [SLACK, GMAIL, PENDING] });
   setComposioFactory(factory);
-  const rows = await listConnectorToolkits({ search: "sl" }, tmpPath());
+  const { rows } = await listConnectorToolkits({ search: "sl" }, tmpPath());
   assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
   assert.equal(state.listed.some((options) => options?.search !== undefined), false);
 });
@@ -231,6 +281,7 @@ test("an empty connected page clears the cache, and a search never rewrites it",
   assert.deepEqual(readConnectorsStore(path).connectedToolkits, ["gmail"]);
   // Nothing connected at all: the cache empties, the agent tools refuse.
   state.toolkitItems = [SLACK];
+  forgetConnected();
   await listConnectorToolkits({}, path);
   assert.deepEqual(readConnectorsStore(path).connectedToolkits, []);
 });
@@ -303,11 +354,12 @@ test("search is restricted to connected toolkits and trimmed", async () => {
         },
         SLACK_SEND_MESSAGE: { toolkit: "SLACK", toolSlug: "SLACK_SEND_MESSAGE", description: "Send" },
       },
-      toolkits: [
+      toolkitConnectionStatuses: [
         { toolkit: "GMAIL", hasActiveConnection: true },
         { toolkit: "SLACK", hasActiveConnection: false },
       ],
     },
+    directTools: [{ slug: "GMAIL_LIST_LABELS", description: "List labels", toolkit: { slug: "gmail" } }],
   });
   setComposioFactory(factory);
   const path = tmpPath();
@@ -315,10 +367,32 @@ test("search is restricted to connected toolkits and trimmed", async () => {
   updateConnectorsStore((store) => setConnectedToolkits(store, ["gmail"]), path);
   const result = await searchConnectorTools("unread mail", path);
   assert.deepEqual(state.searched, [{ query: "unread mail", toolkits: ["gmail"] }]);
-  assert.deepEqual(result.tools.map((hit) => hit.tool), ["GMAIL_FETCH_EMAILS"]);
+  assert.deepEqual(result.tools.map((hit) => hit.tool), ["GMAIL_FETCH_EMAILS", "GMAIL_LIST_LABELS"]);
   assert.equal(result.tools[0]?.toolkit, "gmail");
   assert.deepEqual(result.guidance, ["Use max_results.", "Labels are case sensitive."]);
   assert.deepEqual(result.notConnected, ["slack"]);
+});
+
+test("an MCP variant's own tools are found and its plain app is not reported missing", async () => {
+  const { factory } = stub({
+    searchResponse: {
+      results: [{ primaryToolSlugs: ["NOTION_SEARCH_NOTION_PAGE"] }],
+      toolSchemas: {
+        NOTION_SEARCH_NOTION_PAGE: { toolkit: "NOTION", toolSlug: "NOTION_SEARCH_NOTION_PAGE", description: "Search" },
+      },
+      toolkitConnectionStatuses: [{ toolkit: "notion", hasActiveConnection: false }],
+    },
+    directTools: [
+      { slug: "NOTION_MCP_NOTION_AI_SEARCH", description: "AI search", toolkit: { slug: "notion_mcp" } },
+      { slug: "GMAIL_FETCH_EMAILS", description: "not connected here", toolkit: { slug: "gmail" } },
+    ],
+  });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  updateConnectorsStore((store) => setConnectedToolkits(store, ["notion_mcp"]), path);
+  const result = await searchConnectorTools("search notion pages", path);
+  assert.deepEqual(result.tools.map((hit) => [hit.tool, hit.toolkit]), [["NOTION_MCP_NOTION_AI_SEARCH", "notion_mcp"]]);
+  assert.deepEqual(result.notConnected, []);
 });
 
 test("execute refuses toolkits that are not connected before touching the network", async () => {

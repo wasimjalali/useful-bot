@@ -480,9 +480,12 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
 public struct ConnectorsPayload: Codable, Equatable, Sendable {
     public let hasKey: Bool
     public let last4: String?
-    public let toolkits: [ConnectorToolkit]
+    public var toolkits: [ConnectorToolkit]
     /// Set when the route could not reach Composio; the rows are then empty.
     public let error: String?
+    /// Rows matching the query in total, and where the next page starts.
+    public let total: Int
+    public var nextOffset: Int?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -490,16 +493,20 @@ public struct ConnectorsPayload: Codable, Equatable, Sendable {
         last4 = try? c.decodeIfPresent(String.self, forKey: .last4)
         toolkits = (try? c.decode([ConnectorToolkit].self, forKey: .toolkits)) ?? []
         error = try? c.decodeIfPresent(String.self, forKey: .error)
+        total = (try? c.decode(Int.self, forKey: .total)) ?? toolkits.count
+        nextOffset = try? c.decodeIfPresent(Int.self, forKey: .nextOffset)
     }
 
-    public init(hasKey: Bool, last4: String?, toolkits: [ConnectorToolkit], error: String?) {
+    public init(hasKey: Bool, last4: String?, toolkits: [ConnectorToolkit], error: String?, total: Int? = nil, nextOffset: Int? = nil) {
         self.hasKey = hasKey
         self.last4 = last4
         self.toolkits = toolkits
         self.error = error
+        self.total = total ?? toolkits.count
+        self.nextOffset = nextOffset
     }
 
     enum CodingKeys: String, CodingKey {
-        case hasKey, last4, toolkits, error
+        case hasKey, last4, toolkits, error, total, nextOffset
     }
 }

@@ -939,10 +939,16 @@ final class AppModel: ObservableObject {
 
     /// A quiet load (poll, debounce) never replaces a message from Connect or
     /// Disconnect with a load error, and clears only a load error on success.
+    static let connectorPageSize = 30
+    @Published private(set) var connectorMoreBusy = false
+
+    /// A quiet reload keeps however many rows are on screen, so a poll never
+    /// collapses a list the owner expanded.
     func loadConnectors(search: String = "", quiet: Bool = false) async {
         if !quiet { connectorsError = nil }
+        let limit = quiet ? max(Self.connectorPageSize, connectors?.toolkits.count ?? 0) : Self.connectorPageSize
         do {
-            let payload = try await client.connectors(search: search)
+            let payload = try await client.connectors(search: search, limit: limit)
             connectors = payload
             if let code = payload.error {
                 let message = code == "key_rejected" ? Self.connectorKeyRejected : Self.connectorUpstreamError
@@ -957,6 +963,22 @@ final class AppModel: ObservableObject {
                 connectorsError = "Could not load connectors."
             }
         }
+    }
+
+    func loadMoreConnectors(search: String) async {
+        guard let offset = connectors?.nextOffset, !connectorMoreBusy else { return }
+        connectorMoreBusy = true
+        do {
+            let page = try await client.connectors(search: search, offset: offset, limit: Self.connectorPageSize)
+            if var current = connectors {
+                current.toolkits.append(contentsOf: page.toolkits)
+                current.nextOffset = page.nextOffset
+                connectors = current
+            }
+        } catch {
+            connectorsError = "Could not load connectors."
+        }
+        connectorMoreBusy = false
     }
 
     func saveConnectorsKey(_ key: String) async {

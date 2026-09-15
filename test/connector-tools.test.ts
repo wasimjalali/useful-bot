@@ -117,7 +117,7 @@ function sandbox(connected: string[] = ["gmail"], withKey = true): Box {
             inputSchema: { type: "object", properties: { max_results: { type: "integer" } } },
           },
         },
-        toolkits: [{ toolkit: "GMAIL", hasActiveConnection: true }],
+        toolkitConnectionStatuses: [{ toolkit: "GMAIL", hasActiveConnection: true }],
       };
     },
     async execute(slug, args) {
@@ -140,6 +140,11 @@ function sandbox(connected: string[] = ["gmail"], withKey = true): Box {
       },
       async delete() {
         return {};
+      },
+    },
+    tools: {
+      async getRawComposioTools() {
+        return [];
       },
     },
   };

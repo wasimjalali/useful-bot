@@ -450,15 +450,17 @@ public actor BackendClient {
     /// The Connectors catalogue, optionally narrowed by a search string. A 502
     /// (Composio unreachable) still decodes: `error` is set and the rows are
     /// empty, so the dialog can say what happened instead of going blank.
-    public func connectors(search: String? = nil) async throws -> ConnectorsPayload {
+    public func connectors(search: String? = nil, offset: Int = 0, limit: Int = 30) async throws -> ConnectorsPayload {
         let (data, response) = try await perform { client, _ in
             var components = URLComponents(
                 url: client.base.appendingPathComponent("api/connectors"),
                 resolvingAgainstBaseURL: false
             )
+            var items = [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "limit", value: String(limit))]
             if let search, !search.isEmpty {
-                components?.queryItems = [URLQueryItem(name: "search", value: search)]
+                items.append(URLQueryItem(name: "search", value: search))
             }
+            components?.queryItems = items
             guard let url = components?.url else { throw BackendError.decoding }
             return URLRequest(url: url)
         }

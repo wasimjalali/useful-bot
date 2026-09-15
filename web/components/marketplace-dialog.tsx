@@ -26,7 +26,11 @@ type Payload = {
   hasKey?: boolean;
   last4?: string | null;
   toolkits?: Toolkit[];
+  total?: number;
+  nextOffset?: number | null;
 };
+
+const PAGE_SIZE = 30;
 
 const POLL_MS = 3000;
 const POLL_LIMIT_MS = 120_000;
@@ -70,13 +74,23 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
   const searchLive = useRef("");
   searchLive.current = search;
 
-  const load = useCallback(async (query: string, quiet = false) => {
+  const [more, setMore] = useState(false);
+  const shown = useRef(PAGE_SIZE);
+
+  /**
+   * Loads the first `shown` rows for a query. A quiet reload keeps however
+   * many rows are on screen, so a poll never collapses an expanded list.
+   */
+  const load = useCallback(async (query: string, quiet = false, limit = PAGE_SIZE) => {
     if (!quiet) setLoading(true);
     try {
-      const params = query.trim() ? `?search=${encodeURIComponent(query.trim())}` : "";
-      const res = await fetch(`/api/connectors${params}`, { credentials: "include" });
+      const params = new URLSearchParams();
+      if (query.trim()) params.set("search", query.trim());
+      params.set("limit", String(limit));
+      const res = await fetch(`/api/connectors?${params}`, { credentials: "include" });
       const body = (await res.json()) as Payload;
       if (!res.ok && res.status !== 502) throw new Error(body.error ?? "connectors_failed");
+      shown.current = Math.max(PAGE_SIZE, body.toolkits?.length ?? 0);
       setPayload(body);
       // A quiet poll only clears a load error it could have caused; a message
       // from Connect or Disconnect stays until the owner acts again.
@@ -93,10 +107,35 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(search), payload ? 250 : 0);
+    shown.current = PAGE_SIZE;
+    const timer = window.setTimeout(() => void load(search), payload ? 150 : 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, load]);
+
+  async function showMore() {
+    const offset = payload?.nextOffset;
+    if (offset === null || offset === undefined) return;
+    setMore(true);
+    try {
+      const params = new URLSearchParams();
+      if (search.trim()) params.set("search", search.trim());
+      params.set("offset", String(offset));
+      params.set("limit", String(PAGE_SIZE));
+      const res = await fetch(`/api/connectors?${params}`, { credentials: "include" });
+      const body = (await res.json()) as Payload;
+      if (!res.ok || !body.ok) throw new Error("more_failed");
+      setPayload((current) => {
+        const merged = [...(current?.toolkits ?? []), ...(body.toolkits ?? [])];
+        shown.current = merged.length;
+        return { ...(current ?? {}), ...body, toolkits: merged };
+      });
+    } catch {
+      setError(LOAD_ERROR);
+    } finally {
+      setMore(false);
+    }
+  }
 
   useEffect(() => {
     const target = payload?.hasKey ? searchRef.current : keyRef.current;
@@ -142,7 +181,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
     if (!pending) return;
     const timer = window.setInterval(() => {
       void (async () => {
-        const body = await load(searchLive.current, true);
+        const body = await load(searchLive.current, true, shown.current);
         const row = body?.toolkits?.find((item) => item.slug === pending.slug);
         if (row?.connected) {
           setPending(null);
@@ -245,7 +284,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       });
       const body = (await res.json()) as { ok?: boolean };
       if (!res.ok || !body.ok) throw new Error(`Could not disconnect ${row.name}.`);
-      await load(search, true);
+      await load(search, true, shown.current);
     } catch (err) {
       setError(err instanceof Error ? err.message : `Could not disconnect ${row.name}.`);
     } finally {
@@ -403,6 +442,13 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
                   })}
                 </ul>
               )}
+              {payload?.nextOffset !== null && payload?.nextOffset !== undefined && rows.length > 0 ? (
+                <div className="flex items-center justify-center pt-3">
+                  <button className="btn btn-secondary min-h-9 px-4 text-xs" disabled={more} onClick={() => void showMore()} type="button">
+                    {more ? "Loading" : `Show more (${(payload.total ?? 0) - rows.length} left)`}
+                  </button>
+                </div>
+              ) : null}
             </div>
           </>
         )}
