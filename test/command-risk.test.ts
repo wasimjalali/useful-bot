@@ -95,6 +95,13 @@ test("a line is judged by the script it runs", () => {
     assert.match(commandRisk("npm install", hooks) ?? "", /package\.json postinstall: deletes files/);
     assert.match(commandRisk("pnpm i", hooks) ?? "", /postinstall/);
     assert.equal(commandRisk("npm run build", hooks), null);
+    // A tool installed in the folder runs through npx; one that would be
+    // fetched asks.
+    mkdirSync(join(box.root, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(box.root, "node_modules", ".bin", "tsc"), "#!/bin/sh\necho tsc\n", { mode: 0o755 });
+    assert.equal(commandRisk("npx tsc --noEmit", box.root), null);
+    assert.equal(commandRisk("npm exec tsc", box.root), null);
+    assert.match(commandRisk("npx vitest", box.root) ?? "", /downloads and runs a package/);
   } finally {
     box.drop();
   }
@@ -125,8 +132,11 @@ test("everyday work runs without a card in Auto mode", () => {
     "npm test",
     "npm run build",
     "npm install",
-    "npx tsc --noEmit",
     "git status",
+    "git config user.name",
+    "git config --get remote.origin.url",
+    "git config --list",
+    "git remote -v",
     "git add -A && git commit -m 'feat: delete old rows from the table view'",
     "git push origin feat/x",
     "git checkout -b feat/y",
@@ -230,6 +240,28 @@ test("deleting, rewriting history and escalating need the owner", () => {
     ["git -c alias.nuke='!rm -rf .' nuke", /git config on the command line/],
     ["git -c core.sshCommand=evil push", /git config on the command line/],
     ["git --git-dir=.git --work-tree . reset --hard", /discards changes/],
+    ["git config alias.cleanup '!rm -rf .'", /writes git config/],
+    ["git config --unset user.name", /writes git config/],
+    ["git remote set-url origin evil", /rewrites a remote/],
+    ["git clone -c core.hooksPath=x repo", /git config on the command line/],
+    // Versioned interpreters, more launchers, valued wrapper options.
+    ["python3.12 -c \"import shutil\"", /inline code/],
+    ["pypy3 -c 'x'", /inline code/],
+    ["nodejs -e 'x'", /inline code/],
+    ["arch -arm64 rm -rf build", /deletes files/],
+    ["xcrun rm -rf build", /deletes files/],
+    ["exec -a backup rm -rf build", /deletes files/],
+    ["timeout -s KILL 5 rm -rf build", /deletes files/],
+    ["mystery-launcher --flag rm -rf build", /deletes files \(mystery-launcher rm\)/],
+    // Every -exec, GNU xargs options, package runners, make --eval.
+    ["find . -exec true {} \\; -exec rm -rf {} \\;", /deletes files.*find -exec/],
+    ["ls | xargs --max-args 1 rm -rf", /deletes files.*xargs/],
+    ["ls | xargs --max-args=1 rm -rf", /deletes files.*xargs/],
+    ["npm exec -- rm -rf build", /deletes files.*npm/],
+    ["npx some-remote-tool", /downloads and runs a package/],
+    ["pnpm dlx create-thing", /downloads and runs a package/],
+    ["make --eval='x=$(shell rm -rf .)'", /make --eval/],
+    ["make -f - < payload.mk", /cannot read/],
     ["env -i git reset --hard", /discards changes/],
     ["python3 - < payload.py", /from stdin/],
     ["node < payload.js", /from stdin/],

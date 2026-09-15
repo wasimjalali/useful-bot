@@ -74,13 +74,37 @@ const DESTRUCTIVE_VERBS = new Set([
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 /** Interpreters whose inline-code flag can do anything a shell can. */
-const INTERPRETERS = new Set(["python", "python3", "node", "perl", "ruby", "php", "osascript", "deno"]);
+const INTERPRETERS = new Set(["python", "pypy", "node", "nodejs", "perl", "ruby", "php", "osascript", "deno"]);
 const WRAPPERS = new Set([
   "env", "time", "nohup", "nice", "command", "exec", "builtin", "caffeinate",
   "timeout", "gtimeout", "setsid", "stdbuf", "script", "watch", "unshare", "ionice", "chrt",
+  "arch", "xcrun", "busybox", "toybox", "runuser", "chroot", "flock", "taskset", "cpulimit",
 ]);
+/** Per wrapper, the options that take their value in the next token. */
+const WRAPPER_VALUED: Record<string, Set<string>> = {
+  env: new Set(["-u", "-S", "-C", "-P"]),
+  exec: new Set(["-a"]),
+  timeout: new Set(["-s", "-k"]),
+  gtimeout: new Set(["-s", "-k"]),
+  script: new Set(["-c", "-t"]),
+  nice: new Set(["-n"]),
+  ionice: new Set(["-c", "-n", "-p"]),
+  chrt: new Set(["-p"]),
+  taskset: new Set(["-c", "-p"]),
+  flock: new Set(["-w", "-E"]),
+  watch: new Set(["-n", "-d"]),
+  runuser: new Set(["-u", "-g", "-G"]),
+  chroot: new Set(["-u", "-g", "--userspec", "--groups"]),
+  arch: new Set(["-e", "-d"]),
+  cpulimit: new Set(["-l", "-p"]),
+};
 /** xargs options that take a value in the next token. */
-const XARGS_VALUED = new Set(["-I", "-J", "-L", "-n", "-P", "-R", "-S", "-s", "-d", "-E", "-e"]);
+const XARGS_VALUED = new Set([
+  "-I", "-J", "-L", "-n", "-P", "-R", "-S", "-s", "-d", "-E", "-e", "-a",
+  "--max-args", "--max-procs", "--max-lines", "--max-chars", "--delimiter", "--eof", "--arg-file", "--process-slot-var",
+]);
+/** Package runners that fetch a package and run it. */
+const PACKAGE_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
 
 /** Executables the confined PATH would find anyway; not "outside the folder". */
 const SYSTEM_BIN_PREFIXES = ["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/"];
@@ -129,8 +153,13 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
   while (args.length > 0 && WRAPPERS.has(basename(args[0].text))) {
     // Only the wrapper's own leading options go; the inner command keeps
     // its flags, or `timeout 5 git push --force` would lose its force.
+    // Options with a value take it along, so `exec -a backup rm` does not
+    // leave `backup` as the head.
+    const valued = WRAPPER_VALUED[basename(args[0].text)] ?? new Set<string>();
     let i = 1;
-    while (i < args.length && (isAssignment(args[i]) || args[i].text.startsWith("-") || /^\d+[smhd]?$/.test(args[i].text))) i += 1;
+    while (i < args.length && (isAssignment(args[i]) || args[i].text.startsWith("-") || /^\d+[smhd]?$/.test(args[i].text))) {
+      i += valued.has(args[i].text) ? 2 : 1;
+    }
     args = args.slice(i);
   }
   const head = args[0];
@@ -140,7 +169,8 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
   if (/[$`]/.test(head.text)) return "runs a command from a variable";
   // Quoting is shell syntax, not a safety signal: `"rm"` and `'/bin/rm'`
   // run rm just the same, and `git push "--force"` still forces.
-  const name = basename(head.text);
+  // A version suffix is not a different program: python3.12 is python.
+  const name = basename(head.text).replace(/^(python|pypy|node|ruby|perl|php)[0-9.]+$/, "$1");
   const rest = args.slice(1);
   const flags = rest.map((token) => token.text);
 
@@ -185,12 +215,20 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     return inner ? `${inner.replace(/\)$/, "")} via xargs)` : null;
   }
   if (name === "find") {
-    const at = rest.findIndex((token) => ["-exec", "-execdir", "-ok", "-okdir"].includes(token.text));
-    if (at >= 0) {
-      const inner = commandReason(rest.slice(at + 1), root, false, depth);
+    // Every -exec is judged, each up to its own `;` or `+`.
+    for (let i = 0; i < rest.length; i += 1) {
+      if (!["-exec", "-execdir", "-ok", "-okdir"].includes(rest[i].text)) continue;
+      let end = i + 1;
+      while (end < rest.length && ![";", "\\;", "+"].includes(rest[end].text)) end += 1;
+      const inner = commandReason(rest.slice(i + 1, end), root, false, depth);
       if (inner) return `${inner.replace(/\)$/, "")} via find -exec)`;
+      i = end;
     }
     return rest.some((token) => token.text === "-delete") ? "deletes files (find -delete)" : null;
+  }
+  if (PACKAGE_RUNNERS.has(name) || ((name === "npm" || name === "pnpm" || name === "yarn" || name === "bun")
+    && ["exec", "x", "dlx", "create", "init"].includes(words[0] ?? ""))) {
+    return packageRunnerRisk(name, rest, root, depth);
   }
   if (name === "rsync" && flags.some((flag) => flag.startsWith("--delete"))) return "deletes at the destination (rsync --delete)";
   if (name === "chmod" && flags.some((flag) => /^-[a-zA-Z]*R/.test(flag))) return "changes permissions recursively (chmod -R)";
@@ -212,7 +250,36 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
   }
   // A script from the folder run by path: judged by what it does.
   const script = fileUnderRoot(head.text, root);
-  return script ? scriptRisk(script, root, depth) : null;
+  if (script) return scriptRisk(script, root, depth);
+  // An unknown launcher with a destructive command among its arguments.
+  const carried = rest.find((token) => !token.quoted && DESTRUCTIVE_COMMANDS[basename(token.text)]);
+  if (carried) return `${DESTRUCTIVE_COMMANDS[basename(carried.text)]} (${name} ${basename(carried.text)})`;
+  return null;
+}
+
+/**
+ * `npx tool`, `npm exec tool`, `pnpm dlx`, `yarn dlx`, `bunx`: a tool
+ * already installed in the folder runs; one that would be fetched, or a
+ * plain command smuggled behind `--`, asks.
+ */
+function packageRunnerRisk(name: string, rest: Token[], root: string, depth: number): string | null {
+  let i = 0;
+  if (!PACKAGE_RUNNERS.has(name)) i = 1; // past exec / dlx / create
+  while (i < rest.length && (rest[i].text.startsWith("-") && rest[i].text !== "--")) {
+    i += ["-p", "--package", "-c", "--call"].includes(rest[i].text) ? 2 : 1;
+  }
+  if (rest[i]?.text === "--") i += 1;
+  const tool = rest[i];
+  if (!tool) return null;
+  const inner = commandReason(rest.slice(i), root, false, depth);
+  if (inner) return `${inner.replace(/\)$/, "")} via ${name})`;
+  let local = false;
+  try {
+    local = statSync(join(root, "node_modules", ".bin", basename(tool.text))).isFile();
+  } catch {
+    local = false;
+  }
+  return local ? null : `downloads and runs a package (${name} ${tool.text})`;
 }
 
 // MARK: - Scripts
@@ -331,12 +398,16 @@ function makeRisk(flags: string[], root: string, depth: number): string | null {
   const words: string[] = [];
   for (let i = 0; i < flags.length; i += 1) {
     const flag = flags[i];
+    // Make code on the command line runs at parse time, before any target.
+    if (flag === "--eval" || flag === "-E" || flag.startsWith("--eval=")) return "runs make code from the command line (make --eval)";
     if (flag === "-f" || flag === "--file" || flag === "--makefile") files.push(flags[++i] ?? "");
     else if (flag.startsWith("--file=") || flag.startsWith("--makefile=")) files.push(flag.slice(flag.indexOf("=") + 1));
     else if (flag === "-C" || flag === "--directory") dir = resolve(root, flags[++i] ?? ".");
     else if (flag.startsWith("--directory=")) dir = resolve(root, flag.slice(12));
     else if (!flag.startsWith("-")) words.push(flag);
   }
+  // A makefile from stdin or a device is a payload this cannot read.
+  if (files.some((file) => file === "-" || file.startsWith("/dev/"))) return "runs a makefile this cannot read (make -f -)";
   if (files.length === 0) files.push("Makefile", "makefile", "GNUmakefile");
   let text: string | null = null;
   for (const name of files) {
@@ -482,12 +553,21 @@ function gitRisk(all: string[]): string | null {
       return words.length > 1 && !has("--delete", "-d") ? "rewrites a ref (git symbolic-ref)" : "rewrites a ref (git symbolic-ref)";
     case "worktree":
       return words[1] === "remove" || words[1] === "prune" ? `removes a worktree (git worktree ${words[1]})` : null;
-    case "remote":
-      return words[1] === "remove" || words[1] === "rm" ? "removes a remote (git remote remove)" : null;
     case "rm":
       return "deletes tracked files (git rm)";
     case "update-ref":
       return has("-d") ? "deletes a ref (git update-ref -d)" : "rewrites a ref (git update-ref)";
+    case "config":
+      // Reads are fine; a write can plant an alias that runs a shell later.
+      if (has("--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope")) return null;
+      return words.length >= 3 || has("--unset", "--unset-all", "--add", "--replace-all", "--edit", "-e", "--remove-section", "--rename-section")
+        ? "writes git config (git config)"
+        : null;
+    case "remote":
+      if (words[1] === "remove" || words[1] === "rm") return "removes a remote (git remote remove)";
+      return words[1] === "set-url" ? "rewrites a remote (git remote set-url)" : null;
+    case "clone":
+      return has("-c", "--config") || flags.some((flag) => flag.startsWith("--config=")) ? "sets git config on the command line (git clone -c)" : null;
     default:
       return null;
   }
