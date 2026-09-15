@@ -617,10 +617,17 @@ struct CreateGroupDialog: View {
 }
 
 struct ConnectorsDialog: View {
+    @EnvironmentObject private var model: AppModel
     let onClose: () -> Void
 
+    @State private var search = ""
+    @State private var keyDraft = ""
+    @State private var listHeight: CGFloat = 0
+    @FocusState private var keyFocused: Bool
+    @FocusState private var searchFocused: Bool
+
     var body: some View {
-        NativeDialog(maxWidth: 720, ariaLabel: "Connectors", onClose: onClose) {
+        NativeDialog(maxWidth: 720, ariaLabel: "Connectors", onClose: close) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text("Connectors")
@@ -630,13 +637,291 @@ struct ConnectorsDialog: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 4)
-                Text("No connectors yet. MCP servers you add will show here.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 32)
+                if let payload = model.connectors {
+                    if payload.hasKey {
+                        catalogue(payload)
+                    } else {
+                        keyForm
+                    }
+                } else {
+                    skeletonRows
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 20)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task { await model.loadConnectors() }
+        .onChange(of: search) { _, value in
+            model.connectorSearch = value
+            Task {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard value == search else { return }
+                await model.loadConnectors(search: value, quiet: true)
+            }
+        }
+        .onChange(of: model.connectors?.hasKey) { _, hasKey in
+            if hasKey == true { searchFocused = true } else { keyFocused = true }
+        }
+    }
+
+    private func close() {
+        model.stopConnectorPoll()
+        onClose()
+    }
+
+    // MARK: - No key
+
+    private var keyForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            FieldShell(label: "Composio API key", error: model.connectorsError) {
+                SecureField("Paste key", text: $keyDraft)
+                    .nativeField(focused: keyFocused)
+                    .focused($keyFocused)
+                    .accessibilityLabel("Composio API key")
+                    .onSubmit(saveKey)
+            }
+            HStack(spacing: 12) {
+                NativeButton("Save key", kind: .primary, enabled: canSaveKey, action: saveKey)
+                Link("Get a key at composio.dev", destination: URL(string: "https://platform.composio.dev")!)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.inkMuted)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 24)
+        .onAppear { keyFocused = true }
+    }
+
+    private var canSaveKey: Bool {
+        model.connectorBusy != "key" && !keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func saveKey() {
+        guard canSaveKey else { return }
+        let key = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await model.saveConnectorsKey(key)
+            if model.connectorsError == nil { keyDraft = "" }
+        }
+    }
+
+    // MARK: - Catalogue
+
+    private func catalogue(_ payload: ConnectorsPayload) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.C.inkFaint)
+                    TextField("Search apps", text: $search)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.ink)
+                        .focused($searchFocused)
+                        .accessibilityLabel("Search apps")
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 36)
+                .background(Theme.C.surface)
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(searchFocused ? Theme.C.ink : Theme.C.borderStrong, lineWidth: 1)
+                )
+                .clipShape(Capsule(style: .continuous))
+                .smShadow()
+                HStack(spacing: 8) {
+                    Text("Key ·…\(payload.last4 ?? "")")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .lineLimit(1)
+                    NativeButton("Remove", kind: .secondary, small: true, enabled: model.connectorBusy != "key") {
+                        Task {
+                            await model.removeConnectorsKey()
+                            search = ""
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            if let error = model.connectorsError {
+                HStack(spacing: 12) {
+                    Text(error)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.danger)
+                    NativeButton("Retry", kind: .secondary, small: true) {
+                        Task { await model.loadConnectors(search: search) }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+            }
+            // Short lists size the dialog to their content; long ones scroll
+            // inside a fixed height, so the dialog never grows past the window.
+            ScrollView {
+                catalogueList(payload)
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: CatalogueHeightKey.self, value: proxy.size.height)
+                        }
+                    )
+            }
+            .onPreferenceChange(CatalogueHeightKey.self) { listHeight = $0 }
+            .frame(height: min(max(listHeight, 0), 460))
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 20)
+        }
+    }
+
+    @ViewBuilder
+    private func catalogueList(_ payload: ConnectorsPayload) -> some View {
+        if payload.toolkits.isEmpty && model.connectorsError != nil {
+            EmptyView()
+        } else if payload.toolkits.isEmpty {
+            Text(search.trimmingCharacters(in: .whitespaces).isEmpty
+                ? "No apps to show."
+                : "No apps match \u{201C}\(search.trimmingCharacters(in: .whitespaces))\u{201D}.")
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.C.inkMuted)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(payload.toolkits.enumerated()), id: \.element.id) { index, row in
+                    connectorRow(row, last: index == payload.toolkits.count - 1)
+                }
+            }
+            .background(Theme.C.canvas)
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                    .strokeBorder(Theme.C.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        }
+    }
+
+    private func connectorRow(_ row: ConnectorToolkit, last: Bool) -> some View {
+        let pending = model.connectorPending == row.slug
+        let busy = model.connectorBusy == row.slug
+        return HStack(spacing: 16) {
+            HStack(spacing: 12) {
+                AppLogo(name: row.name, url: row.logo)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Text(statusCopy(row, pending: pending))
+                        .font(.system(size: 12))
+                        .foregroundStyle(row.connected ? Theme.C.success : Theme.C.inkMuted)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+            if row.connected {
+                NativeButton("Disconnect", kind: .secondary, small: true, enabled: !busy && row.accountId != nil) {
+                    Task { await model.disconnectConnector(row, search: search) }
+                }
+            } else {
+                NativeButton(pending ? "Connecting" : "Connect", kind: .primary, small: true, enabled: !busy && model.connectorPending == nil) {
+                    Task { await model.connectConnector(row, search: search) }
+                }
+            }
+        }
+        .frame(minHeight: 52)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            if !last { Hairline() }
+        }
+    }
+
+    private func statusCopy(_ row: ConnectorToolkit, pending: Bool) -> String {
+        if row.connected { return "Connected" }
+        if pending { return "Waiting for approval in the browser" }
+        if model.connectorTimedOut == row.slug { return "Still not connected. Try again." }
+        if row.noAuth { return "No sign-in needed" }
+        return "Not connected"
+    }
+
+    private var skeletonRows: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<4, id: \.self) { index in
+                HStack(spacing: 12) {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Theme.C.border)
+                        .frame(width: 28, height: 28)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Theme.C.border)
+                        .frame(width: 112, height: 14)
+                    Spacer(minLength: 0)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Theme.C.border)
+                        .frame(width: 80, height: 32)
+                }
+                .frame(minHeight: 52)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .overlay(alignment: .bottom) {
+                    if index < 3 { Hairline() }
+                }
+            }
+        }
+        .background(Theme.C.canvas)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .accessibilityLabel("Loading connectors")
+    }
+}
+
+private struct CatalogueHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// An app's logo from Composio, or its initial on a sunken tile when there is
+/// none or it fails to load.
+private struct AppLogo: View {
+    let name: String
+    let url: String?
+
+    var body: some View {
+        Group {
+            if let url, let link = URL(string: url) {
+                AsyncImage(url: link) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        initial
+                    }
+                }
+            } else {
+                initial
+            }
+        }
+        .frame(width: 28, height: 28)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private var initial: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Theme.C.sunken)
+            Text(String(name.prefix(1)).uppercased())
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.C.inkMuted)
         }
     }
 }

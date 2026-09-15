@@ -59,6 +59,28 @@ Test run ignores the pause switch. Pausing stops the schedule, not the button, s
 a paused routine can still be tried by hand; the run does not consume the next
 scheduled slot either way.
 
+## Connectors
+
+Connectors let a bot act in the owner's apps (Gmail, Google Calendar, Slack,
+Notion, GitHub, Linear and the rest of Composio's catalogue). Open Connectors
+from the rail, paste a Composio API key once, then Connect an app: the hosted
+sign-in opens in the browser and the row turns Connected when Composio reports
+the account active. Disconnect revokes it.
+
+The key lives in `~/.useful-bot/connectors.json` (mode 0600) with the Tool
+Router session id and a cache of connected apps. App tokens themselves stay in
+Composio's cloud, keyed to a random user id this app generates once.
+
+The agent reaches apps through two tools. `connector_search` finds tool slugs
+for a use case in the connected apps. `connector_execute` runs one. A read runs
+at once; a write shows an approval card in auto and runs without one in full
+access; a destructive action (delete, remove, archive, revoke) always shows a
+card; read only refuses writes. The card carries the app, the tool and every
+argument, hashed like a shell line, so what is approved is exactly what runs.
+
+Design and research: [docs/plan/CONNECTORS-COMPOSIO.md](docs/plan/CONNECTORS-COMPOSIO.md).
+Live check: `/usr/local/bin/node spikes/s4/probe.mjs` after the key is pasted.
+
 ## Brand assets
 
 The approved mascot package, usage guidelines and visual comparison are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).

@@ -436,3 +436,70 @@ public struct AppStatus: Codable, Equatable, Sendable {
 
     enum TopKeys: String, CodingKey { case `operator`, version, theme }
 }
+
+/// One row of the Connectors catalogue from `/api/connectors`.
+public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
+    public let slug: String
+    public let name: String
+    public let logo: String?
+    public let noAuth: Bool
+    public let connected: Bool
+    public let accountId: String?
+    public let status: String?
+
+    public var id: String { slug }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        slug = try c.decode(String.self, forKey: .slug)
+        name = (try? c.decode(String.self, forKey: .name)) ?? slug
+        logo = try? c.decodeIfPresent(String.self, forKey: .logo)
+        noAuth = (try? c.decode(Bool.self, forKey: .noAuth)) ?? false
+        connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
+        accountId = try? c.decodeIfPresent(String.self, forKey: .accountId)
+        status = try? c.decodeIfPresent(String.self, forKey: .status)
+    }
+
+    public init(slug: String, name: String, logo: String?, noAuth: Bool, connected: Bool, accountId: String?, status: String?) {
+        self.slug = slug
+        self.name = name
+        self.logo = logo
+        self.noAuth = noAuth
+        self.connected = connected
+        self.accountId = accountId
+        self.status = status
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case slug, name, logo, noAuth, connected, accountId, status
+    }
+}
+
+/// `/api/connectors` payload: whether a Composio key is set, its last four
+/// characters, and the catalogue rows. The key itself never travels.
+public struct ConnectorsPayload: Codable, Equatable, Sendable {
+    public let hasKey: Bool
+    public let last4: String?
+    public let toolkits: [ConnectorToolkit]
+    /// Set when the route could not reach Composio; the rows are then empty.
+    public let error: String?
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        hasKey = (try? c.decode(Bool.self, forKey: .hasKey)) ?? false
+        last4 = try? c.decodeIfPresent(String.self, forKey: .last4)
+        toolkits = (try? c.decode([ConnectorToolkit].self, forKey: .toolkits)) ?? []
+        error = try? c.decodeIfPresent(String.self, forKey: .error)
+    }
+
+    public init(hasKey: Bool, last4: String?, toolkits: [ConnectorToolkit], error: String?) {
+        self.hasKey = hasKey
+        self.last4 = last4
+        self.toolkits = toolkits
+        self.error = error
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case hasKey, last4, toolkits, error
+    }
+}

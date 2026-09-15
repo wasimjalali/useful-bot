@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UniformTypeIdentifiers
 import UsefulBotCore
@@ -55,6 +56,20 @@ final class AppModel: ObservableObject {
     @Published private(set) var providerBusy: String?
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
+    /// Connectors dialog: the catalogue, the key state and one in-flight
+    /// OAuth flow the dialog polls for.
+    @Published private(set) var connectors: ConnectorsPayload?
+    @Published var connectorsError: String?
+    @Published private(set) var connectorBusy: String?
+    @Published private(set) var connectorPending: String?
+    @Published private(set) var connectorTimedOut: String?
+    /// The dialog's live search, so a poll started earlier reloads what is on screen.
+    @Published var connectorSearch = ""
+    private var connectorPoll: Task<Void, Never>?
+    private static let connectorLoadErrors: Set<String> = [
+        "Could not load connectors.",
+        "Composio did not answer. Check the key, then try again.",
+    ]
 
     /// Which inline pane is open. One value, so settings and the details pane
     /// can never fight over the 320pt sidebar.
@@ -915,6 +930,126 @@ final class AppModel: ObservableObject {
             providersError = "Could not disconnect."
         }
         providerBusy = nil
+    }
+
+    // MARK: - Connectors
+
+    /// A quiet load (poll, debounce) never replaces a message from Connect or
+    /// Disconnect with a load error, and clears only a load error on success.
+    func loadConnectors(search: String = "", quiet: Bool = false) async {
+        if !quiet { connectorsError = nil }
+        let upstream = "Composio did not answer. Check the key, then try again."
+        do {
+            let payload = try await client.connectors(search: search)
+            connectors = payload
+            if payload.error != nil {
+                if !quiet || connectorsError == nil || Self.connectorLoadErrors.contains(connectorsError ?? "") {
+                    connectorsError = upstream
+                }
+            } else if !quiet || Self.connectorLoadErrors.contains(connectorsError ?? "") {
+                connectorsError = nil
+            }
+        } catch {
+            if !quiet || connectorsError == nil {
+                connectorsError = "Could not load connectors."
+            }
+        }
+    }
+
+    func saveConnectorsKey(_ key: String) async {
+        connectorBusy = "key"
+        connectorsError = nil
+        do {
+            try await client.setConnectorsKey(key)
+            await loadConnectors()
+        } catch {
+            let code = (error as? BackendError)?.providerCode
+            connectorsError = code == "connectors_key" ? "That key looks invalid." : "Could not save the key."
+        }
+        connectorBusy = nil
+    }
+
+    func removeConnectorsKey() async {
+        connectorBusy = "key"
+        connectorsError = nil
+        stopConnectorPoll()
+        do {
+            try await client.setConnectorsKey(nil)
+            await loadConnectors()
+        } catch {
+            connectorsError = "Could not remove the key."
+        }
+        connectorBusy = nil
+    }
+
+    /// Opens Composio's hosted sign-in for one app in the default browser and
+    /// polls until the account is active, or gives up after two minutes.
+    func connectConnector(_ row: ConnectorToolkit, search: String) async {
+        connectorBusy = row.slug
+        connectorsError = nil
+        connectorTimedOut = nil
+        do {
+            let target = try await client.authorizeConnector(slug: row.slug)
+            // Only an https page on Composio's own hosts is handed to the browser.
+            guard let url = URL(string: target), url.scheme?.lowercased() == "https",
+                  let host = url.host?.lowercased(), host == "composio.dev" || host.hasSuffix(".composio.dev") else {
+                connectorsError = "Composio sent a sign-in link this app will not open."
+                connectorBusy = nil
+                return
+            }
+            guard NSWorkspace.shared.open(url) else {
+                connectorsError = "The sign-in page could not be opened in the browser."
+                connectorBusy = nil
+                return
+            }
+            startConnectorPoll(slug: row.slug)
+        } catch {
+            connectorsError = "Could not start connecting \(row.name)."
+        }
+        connectorBusy = nil
+    }
+
+    func disconnectConnector(_ row: ConnectorToolkit, search: String) async {
+        guard let accountId = row.accountId else { return }
+        connectorBusy = row.slug
+        connectorsError = nil
+        do {
+            try await client.disconnectConnector(accountId: accountId)
+            await loadConnectors(search: search, quiet: true)
+        } catch {
+            connectorsError = "Could not disconnect \(row.name)."
+        }
+        connectorBusy = nil
+    }
+
+    func stopConnectorPoll() {
+        connectorPoll?.cancel()
+        connectorPoll = nil
+        connectorPending = nil
+    }
+
+    private func startConnectorPoll(slug: String) {
+        stopConnectorPoll()
+        connectorPending = slug
+        let started = Date()
+        connectorPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled else { return }
+                await self.loadConnectors(search: self.connectorSearch, quiet: true)
+                if self.connectors?.toolkits.first(where: { $0.slug == slug })?.connected == true {
+                    self.connectorPending = nil
+                    self.connectorPoll = nil
+                    return
+                }
+                if Date().timeIntervalSince(started) > 120 {
+                    self.connectorPending = nil
+                    self.connectorTimedOut = slug
+                    self.connectorPoll = nil
+                    return
+                }
+            }
+        }
     }
 
     func loadUsage() async {
