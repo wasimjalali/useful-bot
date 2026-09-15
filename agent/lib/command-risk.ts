@@ -679,8 +679,18 @@ function gitRisk(all: string[], root: string): string | null {
       if (has("-f", "--force")) return "discards working changes (git checkout -f)";
       return has("--", ".") && !has("-b") ? "discards working changes (git checkout)" : null;
     case "submodule":
+      // `foreach` runs its argument as a shell line in every submodule.
+      if (words[1] === "foreach") return commandRisk(words.slice(2).join(" "), root) ?? (words[2] ? null : "runs a shell line (git submodule foreach)");
       return words[1] === "deinit" || words[1] === "absorbgitdirs" || (words[1] === "update" && has("-f", "--force", "--checkout"))
         ? `rewrites a submodule (git submodule ${words[1]})`
+        : null;
+    case "bisect":
+      // `bisect run <cmd>` runs the command at every step.
+      return words[1] === "run" ? commandRisk(words.slice(2).join(" "), root) ?? null : null;
+    case "difftool":
+    case "mergetool":
+      return has("-x", "--extcmd", "--tool", "-t") || flags.some((flag) => flag.startsWith("--extcmd=") || flag.startsWith("--tool="))
+        ? `runs an external tool (git ${sub})`
         : null;
     case "switch":
       return has("-C", "--force-create", "-f", "--force", "--discard-changes", "--orphan") ? "overwrites a branch or discards changes (git switch -C)" : null;
