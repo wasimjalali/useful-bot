@@ -33,12 +33,21 @@ struct ChatView: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 if let error = model.threadError {
-                    Text(error)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.C.danger)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 8)
+                    HStack(spacing: 8) {
+                        Text(error)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Theme.C.danger)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // The banner alone leaves no way back but Cmd+R or a
+                        // bot switch, so offer the same reload those trigger.
+                        if !model.pending {
+                            NativeButton("Retry", kind: .secondary, small: true) {
+                                Task { await model.reloadThread() }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
                 }
                 if let bot = model.selectedBot {
                     header(bot)

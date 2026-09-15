@@ -42,6 +42,9 @@ struct AppSettingsView: View {
     /// The daily limit while it is being typed. The usage tab polls every few
     /// seconds, and the poll must not overwrite a half-typed number.
     @State private var editedBudget: String?
+    /// Tracks the daily-limit field so clicking away commits the typed value
+    /// the way Return does.
+    @FocusState private var budgetFieldFocused: Bool
 
     init(initialTab: AppSettingsTab, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -555,7 +558,15 @@ struct AppSettingsView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Theme.C.ink)
                 .frame(width: 72)
+                .focused($budgetFieldFocused)
                 .onSubmit { commitTypedBudget(budget) }
+                // Clicking away commits the same way Return does; the poll
+                // never overwrites an uncommitted edit, so without this the
+                // field would keep showing a limit the router is not enforcing.
+                .onChange(of: budgetFieldFocused) { _, focused in
+                    guard !focused else { return }
+                    commitTypedBudget(budget)
+                }
                 .accessibilityLabel("Daily token limit in millions")
 
             NativeIconButton(systemImage: "plus", size: 28, iconSize: 12) {

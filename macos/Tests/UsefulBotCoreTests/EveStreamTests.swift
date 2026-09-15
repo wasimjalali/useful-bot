@@ -67,6 +67,11 @@ import Testing
         #expect(EveStream.stripThreadPrefix(group) == "@Echo hi")
         #expect(EveStream.stripThreadPrefix("You are reading a book.") == "You are reading a book.")
         #expect(EveStream.stripThreadPrefix("plain") == "plain")
+        // Only the injected shapes strip: the first line must end with a
+        // period and the marker must start line two, so a message that merely
+        // starts with "You are" is never cut.
+        let lookalike = "You are thinking out loud\nStanding instructions: appear anywhere\n\nkeep me"
+        #expect(EveStream.stripThreadPrefix(lookalike) == lookalike)
     }
 
     @Test func projectionAccumulatesDeltasAndCompletes() {

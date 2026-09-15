@@ -164,4 +164,17 @@ import Testing
         }
         #expect(table.rows[0] == ["a | b", "either"])
     }
+
+    @Test func anEscapedNonPipeKeepsItsBackslash() throws {
+        let blocks = ChatMarkdownParser.blocks(from: """
+        | Path | Note |
+        |---|---|
+        | C:\\path | unchanged |
+        """)
+        guard case .table(let table) = blocks[0] else {
+            Issue.record("expected a table")
+            return
+        }
+        #expect(table.rows[0] == ["C:\\path", "unchanged"])
+    }
 }
