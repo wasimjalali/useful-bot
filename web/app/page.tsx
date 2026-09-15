@@ -77,14 +77,12 @@ export default function Page() {
   const [createSectionId, setCreateSectionId] = useState<string | null>(null);
   const [renameBot, setRenameBot] = useState<ShellBot | null>(null);
   const [deleteBot, setDeleteBot] = useState<ShellBot | null>(null);
-  const [routineNotice, setRoutineNotice] = useState(false);
   const [operator, setOperator] = useState({ name: "Desktop owner", initials: "DO" });
   const [approvals, setApprovals] = useState<Array<{ id: string; hash: string; preview: string; tool: string }>>([]);
   const [proj, setProj] = useState<StreamProjection>(() => createProjection());
 
   const [transcriptUser, setTranscriptUser] = useState<Array<{ id: string; text: string }>>([]);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-  const [failedSend, setFailedSend] = useState<string | null>(null);
   const [busyProposals, setBusyProposals] = useState<ReadonlySet<string>>(() => new Set());
   const [busyApprovals, setBusyApprovals] = useState<ReadonlySet<string>>(() => new Set());
   const busyApprovalsRef = useRef<Set<string>>(new Set());
@@ -332,16 +330,13 @@ export default function Page() {
   useEffect(() => {
     if (!hydrated.current || !selected) return;
     attachBot(selected);
-    setRoutineNotice(false);
   }, [selectedId]);
 
-  async function send(text: string) {
+  async function send(text: string): Promise<boolean> {
     const message = text.trim();
-    if (!message || proj.pending || sendLock.current || !selected) return;
+    if (!message || proj.pending || sendLock.current || !selected) return false;
     sendLock.current = true;
     setError("");
-    setFailedSend(null);
-    setDraft("");
     setPickerOpen(false);
     const optimisticId = nextId();
     stickRef.current = true;
@@ -351,7 +346,8 @@ export default function Page() {
       error: "",
       messages: [...current.messages, { role: "user", text: message, id: optimisticId }],
     }));
-    dispatch({ type: "touchChat", botId: selected.id, preview: message });
+    // The rail preview only moves once the POST landed. Stamping it earlier
+    // leaves the rail showing a message the backend never got.
     try {
       const sessionId = selected.sessionId ?? active;
       const csrf = await csrfHeaders();
@@ -386,21 +382,27 @@ export default function Page() {
         setActive(sid);
         dispatch({ type: "touchChat", botId: selected.id, preview: message, sessionId: sid });
         setQuery(selected.id, sid);
+      } else {
+        dispatch({ type: "touchChat", botId: selected.id, preview: message });
       }
       void refreshThread(selected.id);
+      // Only once the body parsed: cleared earlier, a parse failure below
+      // would lose the text while the composer kept its files.
+      setDraft("");
+      return true;
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Send failed";
       if (reason === "unauthorized") setAuthed(false);
       setError(reason === "unauthorized" ? "Sign in expired" : reason);
-      // The POST never landed: drop the optimistic bubble and give the text back
-      // so the message is not lost.
-      setFailedSend(message);
+      // The POST never landed: drop the optimistic bubble. The composer kept
+      // the text and files, so the owner sends again from there; a banner
+      // retry would re-send the fenced blob and leave the chips behind.
       setProj((current) => ({
         ...current,
         pending: false,
         messages: current.messages.filter((entry) => entry.id !== optimisticId),
       }));
-      setDraft(message);
+      return false;
     } finally {
       sendLock.current = false;
     }
@@ -718,20 +720,6 @@ export default function Page() {
           {displayError ? (
             <div className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm text-danger sm:px-6" role="alert">
               <span className="min-w-0">{displayError}</span>
-              {failedSend ? (
-                <button
-                  className="btn btn-secondary min-h-8 px-3 text-xs"
-                  onClick={() => {
-                    const retry = failedSend;
-                    setFailedSend(null);
-                    setError("");
-                    void send(retry);
-                  }}
-                  type="button"
-                >
-                  Retry
-                </button>
-              ) : null}
             </div>
           ) : null}
           {approvals.length > 0 ? (
@@ -775,10 +763,12 @@ export default function Page() {
                 onClose={() => setPickerOpen(false)}
                 onCreateBot={() => {
                   setPickerOpen(false);
+                  setCreateSectionId(null);
                   setCreateKind("bot");
                 }}
                 onCreateGroup={() => {
                   setPickerOpen(false);
+                  setCreateSectionId(null);
                   setCreateKind("group");
                 }}
                 onSelectBot={(id) => startNewChat(id)}
@@ -915,7 +905,7 @@ export default function Page() {
                       setAppSettingsTab("providers");
                       setAppSettingsOpen(true);
                     }}
-                    onSend={(text) => void send(text)}
+                    onSend={(text) => send(text)}
                     onStop={() => void cancel()}
                     pending={pending}
                     placeholder={bot.kind === "group"
@@ -939,11 +929,8 @@ export default function Page() {
                   bot={bot}
                   onClose={() => {
                     setSettingsOpen(false);
-                    setRoutineNotice(false);
                   }}
-                  onCreateRoutine={() => setRoutineNotice(true)}
                   onPatch={(patch) => dispatch({ type: "updateBot", botId: bot.id, patch })}
-                  routineNotice={routineNotice}
                 />
               ) : null}
             </div>

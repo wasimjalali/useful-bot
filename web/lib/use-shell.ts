@@ -112,18 +112,23 @@ export function useShell(authed: boolean) {
             setError("");
           }
         } catch (err) {
-          if (mine === gen.current) {
-            dirty.current = false;
-            setError(err instanceof Error ? err.message : "Shell save failed");
-            // The optimistic store may not exist on the server. Put the server
-            // snapshot back so the next poll cannot resurrect a rejected edit.
-            try {
-              const fresh = await load();
+          // A failed save must surface even when a newer action has taken
+          // over: gated on the generation, the rejected edit would sit on
+          // screen with no error until the newer save resolved.
+          if (mine === gen.current) dirty.current = false;
+          setError(err instanceof Error ? err.message : "Shell save failed");
+          // The optimistic store may not exist on the server. Put the server
+          // snapshot back so the next poll cannot resurrect a rejected edit.
+          try {
+            const fresh = await load();
+            // A newer action's optimistic state is live and its own result
+            // will replace the view, so this reload must not overwrite it.
+            if (mine === gen.current) {
               latest.current = fresh;
               setStore(fresh);
-            } catch {
-              /* server unreachable: keep the last known view */
             }
+          } catch {
+            /* server unreachable: keep the last known view */
           }
         }
       })

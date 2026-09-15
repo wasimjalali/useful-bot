@@ -27,6 +27,8 @@ type UsagePayload = {
   requests: number;
   window_start: string;
   activeProviderId?: string;
+  charged?: { input_tokens: number; output_tokens: number };
+  week?: { observed_input_tokens: number; observed_output_tokens: number; requests: number; window_start: string };
   by_model: Array<{ provider: string; model: string; requests: number; inputTokens: number; outputTokens: number }>;
   caps: { requests24h: number; input24h: number; output24h: number };
 };
@@ -391,28 +393,33 @@ function UsagePane() {
     return <p className="text-sm text-danger" role="alert">{error || "Could not load usage."}</p>;
   }
 
-  const total = data.observed_input_tokens + data.observed_output_tokens;
+  // The meter reads what the router enforces: observed use plus the turns
+  // it has reserved for and not yet reconciled.
+  const chargedInput = data.charged?.input_tokens ?? data.observed_input_tokens;
+  const chargedOutput = data.charged?.output_tokens ?? data.observed_output_tokens;
+  const total = chargedInput + chargedOutput;
   const cap = data.caps.input24h + data.caps.output24h;
+  const weekTokens = data.week ? data.week.observed_input_tokens + data.week.observed_output_tokens : null;
 
   return (
     <div className="flex flex-col gap-6">
       <section>
-        <h3 className="settings-block-label">This week</h3>
+        <h3 className="settings-block-label">Last 24 hours</h3>
         <div className="settings-group">
           <div className="settings-row">
             <div>
               <p className="text-sm">Tokens</p>
-              <p className="text-xs text-ink-muted">Observed from the active provider responses.</p>
+              <p className="text-xs text-ink-muted">Includes reserved turns.</p>
             </div>
             <span className="settings-value tnum">{formatCount(total)}</span>
           </div>
           <div className="settings-row">
             <p className="text-sm">Input</p>
-            <span className="settings-value tnum">{formatCount(data.observed_input_tokens)}</span>
+            <span className="settings-value tnum">{formatCount(chargedInput)}</span>
           </div>
           <div className="settings-row">
             <p className="text-sm">Output</p>
-            <span className="settings-value tnum">{formatCount(data.observed_output_tokens)}</span>
+            <span className="settings-value tnum">{formatCount(chargedOutput)}</span>
           </div>
           <div className="settings-row">
             <p className="text-sm">Requests</p>
@@ -423,6 +430,21 @@ function UsagePane() {
           <span style={{ width: `${Math.min(100, cap ? (total / cap) * 100 : 0)}%` }} />
         </div>
       </section>
+      {data.week ? (
+        <section>
+          <h3 className="settings-block-label">This week</h3>
+          <div className="settings-group">
+            <div className="settings-row">
+              <p className="text-sm">Tokens</p>
+              <span className="settings-value tnum">{formatCount(weekTokens ?? 0)}</span>
+            </div>
+            <div className="settings-row">
+              <p className="text-sm">Requests</p>
+              <span className="settings-value tnum">{formatCount(data.week.requests)}</span>
+            </div>
+          </div>
+        </section>
+      ) : null}
       <section>
         <h3 className="settings-block-label">By model</h3>
         {data.by_model.length === 0 ? (

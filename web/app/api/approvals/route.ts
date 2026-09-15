@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../agent/lib/approvals.ts";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
-import { rateLimited } from "../../../lib/api-guard";
+import { errorCode, rateLimited } from "../../../lib/api-guard";
 
 export const runtime = "nodejs";
 
@@ -17,5 +17,16 @@ export async function GET(request: Request) {
   if (rateLimited(`approvals:${gate.session.callerId}`, 240)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
-  return NextResponse.json({ ok: true, approvals: store().listPending() });
+  try {
+    return NextResponse.json({ ok: true, approvals: store().listPending() });
+  } catch (err) {
+    const code = errorCode(err, "approval_error");
+    // Contention on the store lock is transient, so ask the caller to retry.
+    // The decide route maps this the same way; without it the 1.5s poll gets
+    // an unhandled 500 whenever the agent process holds the lock.
+    if (code === "approvals_locked") {
+      return NextResponse.json({ ok: false, error: "approvals_locked" }, { status: 503 });
+    }
+    return NextResponse.json({ ok: false, error: code }, { status: 400 });
+  }
 }

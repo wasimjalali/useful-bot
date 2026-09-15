@@ -15,10 +15,6 @@ const TABS: Array<{ id: SearchTab; label: string }> = [
   { id: "messages", label: "Messages" },
   { id: "bots", label: "Bots" },
   { id: "groups", label: "Groups" },
-  { id: "files", label: "Files" },
-  { id: "links", label: "Links" },
-  { id: "routines", label: "Routines" },
-  { id: "actions", label: "Actions" },
 ];
 
 export function ChatSearchDialog({

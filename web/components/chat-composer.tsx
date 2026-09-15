@@ -272,7 +272,7 @@ export function ChatComposer({
   onChange: (value: string) => void;
   onOpenConnectors?: () => void;
   onOpenProviders?: () => void;
-  onSend: (text: string) => void;
+  onSend: (text: string) => Promise<boolean>;
   onStop?: () => void;
   pending: boolean;
   placeholder?: string;
@@ -359,9 +359,12 @@ export function ChatComposer({
     return () => document.removeEventListener("mousedown", onPointer);
   }, [plusOpen]);
 
-  function submit() {
+  async function submit() {
     if (disabled || pending || !composed) return;
-    onSend(composed);
+    // The text and files stay put until the send lands, so a failure keeps
+    // the typed text with its chips instead of a fenced dump without them.
+    const ok = await onSend(composed);
+    if (!ok) return;
     onChange("");
     for (const file of files) {
       if (file.preview) URL.revokeObjectURL(file.preview);
@@ -374,7 +377,7 @@ export function ChatComposer({
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submit();
+      void submit();
     }
   }
 
@@ -387,9 +390,15 @@ export function ChatComposer({
         body: JSON.stringify(patch),
       });
       const body = await res.json() as { composer?: ComposerPublic };
-      if (res.ok && body.composer) setComposer(body.composer);
+      if (res.ok && body.composer) {
+        setComposer(body.composer);
+        return;
+      }
+      // Keep the previous chip and say the save missed.
+      setAttachError("That setting did not save.");
     } catch {
-      /* keep last */
+      // Keep the previous chip and say the save missed.
+      setAttachError("That setting did not save.");
     }
   }
 
@@ -485,7 +494,7 @@ export function ChatComposer({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          submit();
+          void submit();
         }}
       >
         <div className={shell}>

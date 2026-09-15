@@ -17,15 +17,11 @@ type MemoryNote = {
 export function BotSettingsPanel({
   bot,
   onClose,
-  onCreateRoutine,
   onPatch,
-  routineNotice = false,
 }: {
   bot: ShellBot;
   onClose: () => void;
-  onCreateRoutine: () => void;
   onPatch: (patch: BotProfilePatch) => void;
-  routineNotice?: boolean;
 }) {
   const [name, setName] = useState(bot.name);
   const [label, setLabel] = useState(bot.label);
@@ -168,17 +164,7 @@ export function BotSettingsPanel({
         </section>
         <section>
           <h3 className="text-[13px] font-medium text-ink-muted">Routines</h3>
-          <div className="mt-2 rounded-xl border border-border px-3 py-3">
-            <p className="text-sm text-ink-muted">No routines yet. Scheduler is not wired.</p>
-            <button className="btn btn-secondary mt-3 min-h-9 px-3 text-sm" onClick={onCreateRoutine} type="button">
-              Create routine
-            </button>
-            {routineNotice ? (
-              <p className="mt-2 text-xs text-ink-muted">
-                Create routine is stubbed until the scheduler API ships.
-              </p>
-            ) : null}
-          </div>
+          <p className="mt-2 text-sm text-ink-muted">Routines are managed in the Useful Bot app.</p>
         </section>
       </div>
     </aside>
