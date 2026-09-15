@@ -139,7 +139,7 @@ The 25 scored attempts are five each: answer a research question with two checke
 - Grok/Responses and Anthropic-compatible protocol adapters, generic API keys, additional subscriptions and paid model APIs. Future paid inference follows AWS Bedrock, DigitalOcean and then Vertex preferences. No Azure AI Foundry product inference.
 - Additional coder/researcher subagents, automatic fallback, model picker, step-level routing and parallel agent workflows. Step-level routing has no presumed future approval.
 - Hermes memory migration, bulk skills, semantic embeddings, automatic memory summarization and knowledge ingestion.
-- MCP including GitHub, schedules/digests, CLI bridges including gh/Aside/remindctl/imsg, messaging, browser automation and unattended host actions.
+- MCP including GitHub, schedules/digests, CLI bridges including gh/Aside/remindctl/imsg, messaging, browser automation and unattended host actions. App connectors left this list on 2026-09-15 through Composio; see `docs/plan/CONNECTORS-COMPOSIO.md`.
 - VM installation or Docker provisioning, expanded network access and autonomous workspace writes.
 - Menu bar controls, global hotkey, notifications, visual polish program, multimodal uploads, multi-user support and cloud hosting.
 

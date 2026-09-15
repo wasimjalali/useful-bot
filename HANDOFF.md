@@ -81,6 +81,19 @@ model's answer. Two root causes, both already identified:
    signed the same way `signChannelJwt` in `scripts/service.mjs` does, to see the
    exact event shape before coding the parser.
 
+## Connectors (Composio), 2026-09-15
+
+App integrations landed through Composio rather than per-app OAuth. The
+pieces: `shared/connectors-store.ts` (0600 key store), `shared/composio.ts`
+(the only file that imports `@composio/core`), `web/app/api/connectors`
+(guarded routes plus a stateless loopback OAuth callback), the agent tools
+`connector_search` and `connector_execute` gated by the approval cards, and the
+Connectors dialog in both shells. `docs/plan/CONNECTORS-COMPOSIO.md` holds the
+research and the design. The router registry pins the sha256 of
+`package-lock.json`; any dependency change must bump both `packageLockHash`
+values in `shared/registry.json` or every router test fails with
+`package-lock hash mismatch`.
+
 ## Remaining PRs, in order
 
 1. **Seven-day usage trial on the Mac.** Cloud release verify cannot complete
@@ -111,6 +124,10 @@ daily use.
 
 - eve walks everything under `agent/`. Never put Next route files back under
   `agent/channels/web`.
+- `service.mjs web` signs the eve channel JWT once at start with a 12 hour
+  expiry. A web process older than that gets 401 from the eve proxy, the web
+  UI shows "Waiting for the local server" and the macOS app says the device
+  token was rejected. Restart the web service; nothing is wrong with the token.
 - Subagent `agent.ts` needs a non-empty `description` or eve refuses to boot.
 - A custom `LanguageModel` on `defineAgent` must carry
   `modelContextWindowTokens` or eve exits at compile (Gateway metadata lookup).

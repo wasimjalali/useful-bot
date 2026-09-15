@@ -30,6 +30,23 @@ type Payload = {
 
 const POLL_MS = 3000;
 const POLL_LIMIT_MS = 120_000;
+const LOAD_ERROR = "Could not load connectors.";
+const UPSTREAM_ERROR = "Composio did not answer. Check the key, then try again.";
+const RATE_ERROR = "Too many requests. Wait a moment.";
+/** Errors a background poll may clear; an action's own message stays until the next action. */
+const LOAD_ERRORS = new Set([LOAD_ERROR, UPSTREAM_ERROR, RATE_ERROR]);
+
+/** Only an https page from Composio's own hosts is opened for sign-in. */
+function safeSignInUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return null;
+    if (!/(^|\.)composio\.dev$/.test(url.hostname)) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
 
 async function csrfHeaders(): Promise<Record<string, string>> {
   const res = await fetch("/api/auth/session", { credentials: "include" });
@@ -48,6 +65,9 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
   const [timedOut, setTimedOut] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const keyRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const searchLive = useRef("");
+  searchLive.current = search;
 
   const load = useCallback(async (query: string, quiet = false) => {
     if (!quiet) setLoading(true);
@@ -55,12 +75,16 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       const params = query.trim() ? `?search=${encodeURIComponent(query.trim())}` : "";
       const res = await fetch(`/api/connectors${params}`, { credentials: "include" });
       const body = (await res.json()) as Payload;
-      if (!res.ok && body.error !== "connectors_unavailable") throw new Error(body.error ?? "connectors_failed");
+      if (!res.ok && res.status !== 502) throw new Error(body.error ?? "connectors_failed");
       setPayload(body);
-      setError(body.ok === false ? "Composio did not answer. Check the key, then try again." : "");
+      // A quiet poll only clears a load error it could have caused; a message
+      // from Connect or Disconnect stays until the owner acts again.
+      const next = body.ok === false ? UPSTREAM_ERROR : "";
+      setError((current) => (quiet && !LOAD_ERRORS.has(current) && current ? current : next));
       return body;
     } catch (err) {
-      setError(err instanceof Error && err.message === "rate_limited" ? "Too many requests. Wait a moment." : "Could not load connectors.");
+      const message = err instanceof Error && err.message === "rate_limited" ? RATE_ERROR : LOAD_ERROR;
+      setError((current) => (quiet && current ? current : message));
       return null;
     } finally {
       if (!quiet) setLoading(false);
@@ -78,13 +102,46 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
     target?.focus();
   }, [payload?.hasKey]);
 
+  // Escape closes, Tab stays inside, and focus returns to the rail button on
+  // close, the same contract as the shared Dialog.
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      const panel = panelRef.current;
+      if (event.key !== "Tab" || !panel) return;
+      const items = Array.from(
+        panel.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled])"),
+      );
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previous?.focus?.();
+    };
+  }, [onClose]);
+
   // While an OAuth tab is open, ask Composio every few seconds whether the
   // account is active yet. Stops on success, on close, or after two minutes.
   useEffect(() => {
     if (!pending) return;
     const timer = window.setInterval(() => {
       void (async () => {
-        const body = await load(search, true);
+        const body = await load(searchLive.current, true);
         const row = body?.toolkits?.find((item) => item.slug === pending.slug);
         if (row?.connected) {
           setPending(null);
@@ -95,7 +152,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       })();
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [pending, search, load]);
+  }, [pending, load]);
 
   async function saveKey() {
     const apiKey = keyDraft.trim();
@@ -154,7 +211,10 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       });
       const body = (await res.json()) as { ok?: boolean; redirectUrl?: string; error?: string };
       if (!res.ok || !body.ok || !body.redirectUrl) throw new Error(`Could not start connecting ${row.name}.`);
-      window.open(body.redirectUrl, "_blank", "noopener");
+      const target = safeSignInUrl(body.redirectUrl);
+      if (!target) throw new Error("Composio sent a sign-in link this app will not open.");
+      const opened = window.open(target.toString(), "_blank", "noopener");
+      if (!opened) throw new Error("The sign-in page was blocked. Allow pop-ups for this page, then try again.");
       setPending({ slug: row.slug, since: Date.now() });
     } catch (err) {
       setError(err instanceof Error ? err.message : `Could not start connecting ${row.name}.`);
@@ -195,7 +255,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       }}
       role="presentation"
     >
-      <div aria-label="Connectors" aria-modal="true" className="market-modal" role="dialog">
+      <div aria-label="Connectors" aria-modal="true" className="market-modal" ref={panelRef} role="dialog">
         <header className="flex items-center justify-between gap-3 px-5 pt-5">
           <h2 className="text-[15px] font-semibold">Connectors</h2>
           <button aria-label="Close connectors" className="icon-btn size-8" onClick={onClose} type="button">
@@ -305,7 +365,9 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
                           <AppLogo name={row.name} src={row.logo} />
                           <div className="min-w-0">
                             <p className="truncate text-sm text-ink">{row.name}</p>
-                            <p className={`text-xs ${row.connected ? "text-success" : "text-ink-muted"}`}>{statusText}</p>
+                            <p aria-live="polite" className={`text-xs ${row.connected ? "text-success" : "text-ink-muted"}`} role="status">
+                              {statusText}
+                            </p>
                           </div>
                         </div>
                         {row.connected ? (
@@ -320,7 +382,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
                         ) : (
                           <button
                             className="btn btn-primary min-h-8 px-3 text-xs"
-                            disabled={busy === row.slug || isPending}
+                            disabled={busy === row.slug || pending !== null}
                             onClick={() => void connect(row)}
                             type="button"
                           >

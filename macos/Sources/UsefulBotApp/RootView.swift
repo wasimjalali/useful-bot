@@ -622,6 +622,7 @@ struct ConnectorsDialog: View {
 
     @State private var search = ""
     @State private var keyDraft = ""
+    @State private var listHeight: CGFloat = 0
     @FocusState private var keyFocused: Bool
     @FocusState private var searchFocused: Bool
 
@@ -652,6 +653,7 @@ struct ConnectorsDialog: View {
         }
         .task { await model.loadConnectors() }
         .onChange(of: search) { _, value in
+            model.connectorSearch = value
             Task {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard value == search else { return }
@@ -761,11 +763,16 @@ struct ConnectorsDialog: View {
             }
             // Short lists size the dialog to their content; long ones scroll
             // inside a fixed height, so the dialog never grows past the window.
-            ViewThatFits(in: .vertical) {
+            ScrollView {
                 catalogueList(payload)
-                ScrollView { catalogueList(payload) }
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: CatalogueHeightKey.self, value: proxy.size.height)
+                        }
+                    )
             }
-            .frame(maxHeight: 460)
+            .onPreferenceChange(CatalogueHeightKey.self) { listHeight = $0 }
+            .frame(height: min(max(listHeight, 0), 460))
             .padding(.horizontal, 20)
             .padding(.top, 16)
             .padding(.bottom, 20)
@@ -822,7 +829,7 @@ struct ConnectorsDialog: View {
                     Task { await model.disconnectConnector(row, search: search) }
                 }
             } else {
-                NativeButton(pending ? "Connecting" : "Connect", kind: .primary, small: true, enabled: !busy && !pending) {
+                NativeButton(pending ? "Connecting" : "Connect", kind: .primary, small: true, enabled: !busy && model.connectorPending == nil) {
                     Task { await model.connectConnector(row, search: search) }
                 }
             }
@@ -873,6 +880,13 @@ struct ConnectorsDialog: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .accessibilityLabel("Loading connectors")
+    }
+}
+
+private struct CatalogueHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

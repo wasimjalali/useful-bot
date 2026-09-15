@@ -1,6 +1,6 @@
 # Connectors on Composio
 
-Date: 2026-09-15. Status: proposed, waiting for owner approval. Nothing here is built.
+Date: 2026-09-15. Status: approved by the owner the same day (all five decisions in section 6: yes) and built on `feat/connectors-composio`. Two changes from the plan as written: the enabled-toolkits toggle was dropped, because connected and enabled are the same thing for one owner, and the Composio session is created without a toolkit filter so the catalogue listing stays complete; the agent tools restrict themselves to the connected apps instead.
 
 ## 1. Where the repo stands
 
