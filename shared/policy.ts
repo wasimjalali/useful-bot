@@ -45,9 +45,10 @@ export const MAX_MESSAGE_COUNT = 256;
  * there are. 32 was one below what this app actually sends (26 agent tools
  * plus eve's own, 33 in total on 2026-09-15), so adding a single tool killed
  * every turn with `unsupported_parameter`. The headroom here is for the
- * connector tools a bot picks up, which vary per roster.
+ * connector and per-session tools a bot picks up, which vary per roster;
+ * the byte bound below is what actually protects the upstream.
  */
-export const MAX_TOOL_SCHEMAS = 96;
+export const MAX_TOOL_SCHEMAS = 300;
 export const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
 
 export const FORBIDDEN_PATH_SUBSTRINGS = [
