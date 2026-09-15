@@ -18,7 +18,10 @@ export const WRITE_MAX_BYTES = 64 * 1024;
 export const READ_MAX_BYTES = 16 * 1024;
 
 export const CALLER_LIMITS = {
-  desktop: { aliases: ["workhorse"], search: true, rpm: 12, requests24h: 200, input24h: 2_000_000, output24h: 200_000 },
+  // Owner decision 2026-09-15: every bot shares the desktop caller, so its day
+  // is sized for a whole team, not one chat. OpenCode Go's own fair-use limit
+  // is the real ceiling above this.
+  desktop: { aliases: ["workhorse"], search: true, rpm: 12, requests24h: 2_000, input24h: 30_000_000, output24h: 3_000_000 },
   phone: { aliases: ["workhorse"], search: true, rpm: 4, requests24h: 40, input24h: 400_000, output24h: 40_000 },
   reviewer: { aliases: ["reviewer"], search: false, rpm: 4, requests24h: 20, input24h: 300_000, output24h: 80_000 },
   eval: { aliases: ["workhorse", "reviewer"], search: true, rpm: 12, requests24h: 80, input24h: 1_000_000, output24h: 160_000 },
@@ -27,9 +30,9 @@ export const CALLER_LIMITS = {
 
 // Aggregate ceiling shared by every model caller, not a subscription entitlement.
 export const AGGREGATE_LIMITS = {
-  requests24h: 300,
-  input24h: 3_000_000,
-  output24h: 400_000,
+  requests24h: 2_500,
+  input24h: 32_000_000,
+  output24h: 3_500_000,
 } as const;
 
 export const MAX_ACTIVE_UPSTREAM = 2;
