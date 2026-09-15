@@ -39,7 +39,7 @@ make -C macos bundle && open "macos/dist/Useful Bot.app"
 
 Keychain items exist: `com.usefulbot.device.desktop`,
 `com.usefulbot.router.desktop`, `com.usefulbot.router.ops`,
-`com.usefulbot.channel.desktop`, and Wasim pasted the OpenCode Go key into
+`com.usefulbot.router.reviewer`, `com.usefulbot.channel.desktop`, and Wasim pasted the OpenCode Go key into
 `com.usefulbot.opencode-go` himself. `scripts/setup-local.mjs` writes the token
 Keychain items and `~/.useful-bot/config.json` (digests only, never values).
 
