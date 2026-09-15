@@ -69,17 +69,30 @@ const VERB_CLIS = new Set([
 const DESTRUCTIVE_VERBS = new Set([
   "delete", "destroy", "purge", "prune", "drop", "wipe", "terminate",
   "remove", "rm", "rmi", "rimraf", "uninstall", "unpublish", "publish", "deprecate",
-  "reset", "teardown", "kill",
+  "reset", "teardown", "kill", "clean", "cleanup",
 ]);
 
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "fish", "csh", "tcsh", "ash", "yash", "pwsh", "powershell", "nu", "elvish"]);
 /** Interpreters whose inline-code flag can do anything a shell can. */
-const INTERPRETERS = new Set(["python", "pypy", "node", "nodejs", "perl", "ruby", "php", "osascript", "deno"]);
+const INTERPRETERS = new Set(["python", "pypy", "node", "nodejs", "bun", "tsx", "ts-node", "perl", "ruby", "php", "osascript", "deno"]);
 const WRAPPERS = new Set([
   "env", "time", "nohup", "nice", "command", "exec", "builtin", "caffeinate",
-  "timeout", "gtimeout", "setsid", "stdbuf", "script", "watch", "unshare", "ionice", "chrt",
-  "arch", "xcrun", "busybox", "toybox", "runuser", "chroot", "flock", "taskset", "cpulimit",
+  "timeout", "gtimeout", "setsid", "stdbuf", "watch", "ionice", "chrt",
+  "arch", "xcrun", "busybox", "toybox", "taskset", "cpulimit",
 ]);
+/**
+ * Launchers that take a file, a directory or an identity before the
+ * command, or change who the command runs as. Peeling them guessed wrong
+ * about where the command starts, so they ask instead.
+ */
+const OPAQUE_LAUNCHERS: Record<string, string> = {
+  script: "runs a command behind a transcript (script)",
+  flock: "runs a command behind a lock (flock)",
+  chroot: "changes the root directory (chroot)",
+  runuser: "runs as another user (runuser)",
+  unshare: "changes namespaces (unshare)",
+  nsenter: "enters another namespace (nsenter)",
+};
 /** Per wrapper, the options that take their value in the next token. */
 const WRAPPER_VALUED: Record<string, Set<string>> = {
   env: new Set(["-u", "-S", "-C", "-P"]),
@@ -156,12 +169,10 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
   // Peel wrappers, their flags and their numeric arguments so `env -i FOO=1
   // rm -rf x`, `timeout 5 rm x` and `exec rm x` still see `rm`.
   while (args.length > 0 && WRAPPERS.has(basename(args[0].text))) {
-    // `script -c '...'` and `env -S '...'` carry a whole command line as an
-    // option value: judged as a line of its own.
+    // `env -S '...'` carries a whole command line as an option value:
+    // judged as a line of its own.
     const wrapper = basename(args[0].text);
-    const carriesLine = (token: Token) => (["script", "flock", "runuser", "chroot"].includes(wrapper) && token.text === "-c")
-      || (wrapper === "env" && (token.text === "-S" || token.text.startsWith("--split-string")));
-    const carriedAt = args.findIndex((token, at) => at > 0 && carriesLine(token));
+    const carriedAt = args.findIndex((token, at) => at > 0 && wrapper === "env" && (token.text === "-S" || token.text.startsWith("--split-string")));
     if (carriedAt > 0) {
       const option = args[carriedAt].text;
       const line = option.includes("=") ? option.slice(option.indexOf("=") + 1) : args[carriedAt + 1]?.text;
@@ -195,6 +206,7 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
   const words = flags.filter((flag) => !flag.startsWith("-"));
 
   if (DESTRUCTIVE_COMMANDS[name]) return `${DESTRUCTIVE_COMMANDS[name]} (${name})`;
+  if (OPAQUE_LAUNCHERS[name]) return OPAQUE_LAUNCHERS[name];
   if (SHELLS.has(name)) {
     if (afterPipe) return `pipes into a shell (${name})`;
     // `sh -c "..."` runs its argument: classify that line on its own. A
@@ -220,8 +232,31 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     if (flags.some((flag) => flag === "-" || flag === "<" || flag.startsWith("<") || flag.startsWith("/dev/"))) {
       return `runs code from stdin (${name})`;
     }
-    const script = words[0] ? fileUnderRoot(words[0], root) : null;
-    return script ? scriptRisk(script, root, depth, "source") : null;
+    // `python -m pip install .` is pip; other modules are the interpreter's own.
+    const moduleAt = flags.indexOf("-m");
+    if (moduleAt >= 0) {
+      const module = flags[moduleAt + 1];
+      if ((module === "pip" || module === "pip3") && flags.includes("install")
+        && flags.some((flag) => flag === "." || flag === "-e" || flag === "--editable" || flag.startsWith("./"))) {
+        return "runs the project's setup (pip install .)";
+      }
+      return null;
+    }
+    if (name === "deno") {
+      if (words[0] === "eval") return "runs inline code (deno eval)";
+      if (words[0] === "run" || words[0] === "task") {
+        const target = words.slice(1).find((word) => !word.startsWith("-"));
+        if (!target) return null;
+        const script = fileUnderRoot(target, root);
+        return script ? scriptRisk(script, root, depth, "source") : `downloads and runs a package (deno run ${target})`;
+      }
+      return null;
+    }
+    // bun is a package manager too: only its interpreter forms end here.
+    if (name !== "bun" || (words[0] && fileUnderRoot(words[0], root))) {
+      const script = words[0] ? fileUnderRoot(words[0], root) : null;
+      return script ? scriptRisk(script, root, depth, "source") : null;
+    }
   }
   if (name === "xargs") {
     // Skip xargs's own options to the command it runs, then judge that.
@@ -605,10 +640,20 @@ function gitRisk(all: string[]): string | null {
         ? "writes git config (git config)"
         : null;
     case "remote":
-      if (words[1] === "remove" || words[1] === "rm") return "removes a remote (git remote remove)";
+      if (words[1] === "remove" || words[1] === "rm" || words[1] === "prune") return `removes from a remote (git remote ${words[1]})`;
       return words[1] === "set-url" ? "rewrites a remote (git remote set-url)" : null;
     case "clone":
       return has("-c", "--config") || flags.some((flag) => flag.startsWith("--config=")) ? "sets git config on the command line (git clone -c)" : null;
+    case "fetch":
+    case "pull":
+      return has("-p", "--prune", "--prune-tags") ? `deletes stale refs (git ${sub} --prune)` : null;
+    case "prune":
+    case "prune-packed":
+      return `deletes unreachable objects (git ${sub})`;
+    case "repack":
+      return has("-d", "-A") ? "deletes packed objects (git repack -d)" : null;
+    case "notes":
+      return words[1] === "remove" || words[1] === "prune" ? `deletes notes (git notes ${words[1]})` : null;
     default:
       return null;
   }
