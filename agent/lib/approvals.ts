@@ -25,6 +25,12 @@ import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
 const BOOT_EPOCH = randomUUID();
 const LOCK_TIMEOUT_MS = 5000;
 /**
+ * Settled records are pruned once they are this far past their own expiry, so
+ * the file stays bounded while a card that was just decided is still visible
+ * to a slow poll.
+ */
+const PRUNE_GRACE_MS = 60 * 60 * 1000;
+/**
  * A crashed holder must be reclaimable well before the acquire deadline, or
  * every caller blocks for the difference and then throws. Stale stays under the
  * timeout so a reclaim plus a retry still fits inside it.
@@ -346,6 +352,12 @@ export class ApprovalStore {
 
   private persist(): void {
     if (!this.persistPath) return;
+    // Nothing consumes a settled record, so dropping the ones past the grace
+    // window here keeps every write path from rewriting an unbounded file.
+    const cutoff = this.now() - POLICY_APPROVAL_TTL_MS - PRUNE_GRACE_MS;
+    for (const [id, record] of this.records) {
+      if (record.status !== "pending" && record.expiresAt < cutoff) this.records.delete(id);
+    }
     mkdirSync(dirname(this.persistPath), { recursive: true, mode: 0o700 });
     const tmp = `${this.persistPath}.${process.pid}.${Date.now()}.tmp`;
     const body = `${JSON.stringify({ records: [...this.records.values()] })}\n`;

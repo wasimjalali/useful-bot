@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { activeBotId } from "../lib/active-bot.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { rosterLine, speakersFrom } from "../../shared/threads.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -8,12 +9,12 @@ export default defineTool({
   description:
     "List every bot, section and group chat on this Mac with its id. Read only, needs no approval. Call it before sendToBot or postToGroup so you address the right teammate by id.",
   inputSchema: z.object({}),
-  execute() {
+  execute(_input, ctx) {
     const shell = readShell();
     const speakers = speakersFrom(shell.bots);
     const nameOf = (id: string) => speakers.find((bot) => bot.id === id)?.name ?? id;
     return {
-      activeBotId: process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId,
+      activeBotId: activeBotId(shell, ctx),
       bots: shell.bots
         .filter((bot) => bot.kind === "bot")
         .map((bot) => ({

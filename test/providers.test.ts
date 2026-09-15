@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyReasoning, modelsFor, snapComposer } from "../shared/models.ts";
@@ -35,6 +35,17 @@ test("provider keys persist without leaking in public view", () => {
   store = clearProviderKey(loaded, "openai");
   assert.equal(store.keys.openai, undefined);
   assert.equal(store.activeProviderId, "opencode-go");
+});
+
+test("a corrupt providers file is set aside instead of throwing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-prov-"));
+  const path = join(dir, "providers.json");
+  writeFileSync(path, "{ torn", "utf8");
+  const loaded = readProviderStore(path);
+  assert.deepEqual(loaded.keys, {});
+  assert.equal(existsSync(path), false);
+  const backup = readdirSync(dir).find((name: string) => name.includes(".invalid."));
+  assert.equal(typeof backup, "string");
 });
 
 test("resolveUpstream prefers the active compatible provider", () => {

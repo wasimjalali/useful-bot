@@ -452,9 +452,11 @@ export function botTag(botId: string): string {
 }
 
 export function tagsForBot(tags: string[], botId: string): string[] {
-  const next = tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX) && tag.trim());
+  // The bot tag must survive: a note with eight user tags would otherwise
+  // lose it to the slice and never show in that bot's list.
+  const next = tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX) && tag.trim()).slice(0, 7);
   next.push(botTag(botId));
-  return next.slice(0, 8);
+  return next;
 }
 
 export function noteBelongsToBot(tags: string[], botId: string): boolean {

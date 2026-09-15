@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { activeBotId } from "../lib/active-bot.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { clearThread } from "../../shared/agent-store.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
@@ -24,7 +25,7 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     const shell = readShell();
-    const activeBotId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
+    const selfId = activeBotId(shell, ctx);
     if (input.all === true && input.botId) {
       return {
         status: "refused",
@@ -37,7 +38,7 @@ export default defineTool({
     if (input.all === true) {
       targets = shell.bots;
     } else {
-      const requested = (input.botId ?? activeBotId ?? "").trim();
+      const requested = (input.botId ?? selfId ?? "").trim();
       if (!requested) {
         return { status: "not_found", error: "no bot to clear", hint: "Call list_bots for exact ids." };
       }

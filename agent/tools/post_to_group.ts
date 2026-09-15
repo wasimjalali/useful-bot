@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { activeBotId } from "../lib/active-bot.ts";
 import { appendAgentEvent, createProposal, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID, GROUP_MIN_MEMBERS } from "../../shared/shell-store.ts";
@@ -13,7 +14,7 @@ export default defineTool({
     message: z.string().min(1).max(2000),
     requestId: z.string().min(1).max(120).optional(),
   }),
-  execute(input) {
+  execute(input, ctx) {
     const shell = readShell();
     const requested = input.groupId.trim();
     const group = shell.bots.find((bot) => (
@@ -31,7 +32,7 @@ export default defineTool({
         hint: "Add a member in the group settings first.",
       };
     }
-    const sourceId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
+    const sourceId = activeBotId(shell, ctx);
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : null;
     const message = input.message.trim();

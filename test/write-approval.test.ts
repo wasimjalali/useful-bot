@@ -146,3 +146,24 @@ test("a directory swapped for a symlink during review is rejected after consume"
   await assert.rejects(pending, /path_symlink/);
   assert.equal(existsSync(join(outside, "file.txt")), false);
 });
+
+test("the write card carries a clipped content preview", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
+  process.env.UB_WORKSPACE_ROOT = root;
+  const store = new ApprovalStore(() => 1_000);
+  setApprovalStore(store);
+  await approvedWrite({
+    path: "out.txt",
+    content: "a".repeat(600),
+    expectedSha256: null,
+    sessionId: "s",
+    turnId: "t",
+    toolCallId: "c8",
+    autoDecision: "approve",
+  });
+  const [record] = [...store.records.values()];
+  assert.ok(record, "the card was written");
+  assert.equal(record.preview.startsWith("write out.txt: "), true);
+  // The cut is explicit and the true size is on the card.
+  assert.equal(record.preview.includes(" ... (600 bytes)"), true);
+});

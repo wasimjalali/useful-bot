@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { activeBotId } from "../lib/active-bot.ts";
 import {
   appendAgentEvent,
   createProposal,
@@ -24,9 +25,9 @@ export default defineTool({
     reason: z.string().max(300).optional(),
     requestId: z.string().min(1).max(120).optional(),
   }),
-  execute(input) {
+  execute(input, ctx) {
     const shell = readShell();
-    const requested = input.botId ?? process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
+    const requested = input.botId ?? activeBotId(shell, ctx);
     const target = shell.bots.find((bot) => bot.id === requested) ?? null;
     if (!target) {
       return { status: "not_found", error: `no bot with id ${requested}` };
@@ -37,7 +38,7 @@ export default defineTool({
     if (input.avatarColor !== undefined && !isAvatarColor(input.avatarColor)) {
       return { status: "invalid", error: "unknown avatarColor", allowed: [...AVATAR_COLORS] };
     }
-    const sourceId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
+    const sourceId = activeBotId(shell, ctx);
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
     const sourceBotId = source && source.id !== DEFAULT_BOT_ID ? source.id : null;
     const patch = {

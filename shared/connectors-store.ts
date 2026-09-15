@@ -89,7 +89,15 @@ export function parseConnectorsStore(raw: unknown): ConnectorsStore {
 
 export function readConnectorsStore(path = connectorsPath()): ConnectorsStore {
   if (!existsSync(path)) return emptyConnectorsStore();
-  return parseConnectorsStore(JSON.parse(readFileSync(path, "utf8")));
+  try {
+    return parseConnectorsStore(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    // A corrupt file must not throw forever: keep the evidence aside and
+    // start empty, the way the shell store reseeds a bad file.
+    const bak = `${path}.invalid.${Date.now()}`;
+    try { renameSync(path, bak); } catch { /* ignore */ }
+    return emptyConnectorsStore();
+  }
 }
 
 /**

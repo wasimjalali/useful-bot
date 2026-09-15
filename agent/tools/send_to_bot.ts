@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { activeBotId } from "../lib/active-bot.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import { listThreadEvents, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { HANDOFF_DEPTH_MAX, readHandoff } from "../../shared/handoffs.ts";
@@ -15,7 +16,7 @@ export default defineTool({
     message: z.string().min(1).max(4000),
     requestId: z.string().min(1).max(120).optional(),
   }),
-  execute(input) {
+  execute(input, ctx) {
     const shell = readShell();
     const requested = input.botId.trim();
     const exact = shell.bots.find((bot) => bot.id === requested) ?? null;
@@ -43,11 +44,15 @@ export default defineTool({
     if (target.hidden) {
       return { status: "invalid", error: `${target.name} is hidden; it cannot receive a handoff` };
     }
-    const sourceId = process.env.UB_ACTIVE_BOT_ID ?? shell.selectedBotId;
+    const sourceId = activeBotId(shell, ctx);
     if (target.id === sourceId) {
       return { status: "invalid", error: "that is this bot; answer directly instead" };
     }
     const source = shell.bots.find((bot) => bot.id === sourceId) ?? null;
+    // A one-member group is still a group: the handoff carries the group so
+    // the reply lands in the group thread instead of flipping its kind to a
+    // plain bot chat.
+    let handoffGroup: { id: string; name: string } | null = null;
     if (target.kind === "group") {
       const members = groupMembers(speakersFrom(shell.bots), target.memberIds);
       if (members.length === 0) {
@@ -60,6 +65,7 @@ export default defineTool({
           memberCount: members.length,
         };
       }
+      handoffGroup = { id: target.id, name: target.name };
     }
     // Forwarding a handoff this bot just received increments the hop count; a
     // chain that bounces back and forth is refused rather than run forever.
@@ -86,6 +92,7 @@ export default defineTool({
       record = sendHandoff({
         source: source && source.id !== DEFAULT_BOT_ID ? { id: source.id, name: source.name } : null,
         target: { id: target.id, name: target.name },
+        group: handoffGroup,
         message: input.message.trim(),
         depth,
       });
