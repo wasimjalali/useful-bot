@@ -68,6 +68,8 @@ test("a line is judged by the script it runs", () => {
       ["./scripts/noext", /rewrites or deletes/],
       ["python3 tools/clean.py", /tools\/clean\.py: deletes files/],
       ["python tools/shell.py", /tools\/shell\.py: shells out/],
+      ["python tools/clean.py -m fast", /tools\/clean\.py: deletes files/],
+      ["node tools/wipe.js -m x", /tools\/wipe\.js: deletes files/],
       ["node tools/wipe.js", /tools\/wipe\.js: deletes files/],
       ["npm run build", /package\.json prebuild: deletes files/],
       ["npm run clean", /removes something \(npm clean\)/],

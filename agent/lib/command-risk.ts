@@ -232,9 +232,12 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     if (flags.some((flag) => flag === "-" || flag === "<" || flag.startsWith("<") || flag.startsWith("/dev/"))) {
       return `runs code from stdin (${name})`;
     }
-    // `python -m pip install .` is pip; other modules are the interpreter's own.
+    // `python -m pip install .` is pip; other modules are the interpreter's
+    // own. Only python has this form, and only before the first positional:
+    // a `-m` after a script name belongs to the script.
+    const firstWordAt = flags.findIndex((flag) => !flag.startsWith("-"));
     const moduleAt = flags.indexOf("-m");
-    if (moduleAt >= 0) {
+    if ((name === "python" || name === "pypy") && moduleAt >= 0 && (firstWordAt === -1 || moduleAt < firstWordAt)) {
       const module = flags[moduleAt + 1];
       if ((module === "pip" || module === "pip3") && flags.includes("install")
         && flags.some((flag) => flag === "." || flag === "-e" || flag === "--editable" || flag.startsWith("./"))) {
