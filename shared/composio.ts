@@ -112,6 +112,12 @@ export function toolkitOf(toolSlug: string, known: readonly string[]): string | 
   return null;
 }
 
+/** Composio answered 401: the stored key is not one it knows. */
+export function isKeyRejected(err: unknown): boolean {
+  const rec = err as { statusCode?: unknown; status?: unknown } | null;
+  return Boolean(rec && typeof rec === "object" && (rec.statusCode === 401 || rec.status === 401));
+}
+
 function requireKey(store: ConnectorsStore): string {
   if (!store.apiKey) throw new Error("connectors_no_key");
   return store.apiKey;

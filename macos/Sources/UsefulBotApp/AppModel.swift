@@ -66,9 +66,12 @@ final class AppModel: ObservableObject {
     /// The dialog's live search, so a poll started earlier reloads what is on screen.
     @Published var connectorSearch = ""
     private var connectorPoll: Task<Void, Never>?
+    private static let connectorUpstreamError = "Composio did not answer. Try again in a moment."
+    private static let connectorKeyRejected = "Composio rejected this key. Remove it and paste a fresh one from platform.composio.dev."
     private static let connectorLoadErrors: Set<String> = [
         "Could not load connectors.",
-        "Composio did not answer. Check the key, then try again.",
+        connectorUpstreamError,
+        connectorKeyRejected,
     ]
 
     /// Which inline pane is open. One value, so settings and the details pane
@@ -938,13 +941,13 @@ final class AppModel: ObservableObject {
     /// Disconnect with a load error, and clears only a load error on success.
     func loadConnectors(search: String = "", quiet: Bool = false) async {
         if !quiet { connectorsError = nil }
-        let upstream = "Composio did not answer. Check the key, then try again."
         do {
             let payload = try await client.connectors(search: search)
             connectors = payload
-            if payload.error != nil {
+            if let code = payload.error {
+                let message = code == "key_rejected" ? Self.connectorKeyRejected : Self.connectorUpstreamError
                 if !quiet || connectorsError == nil || Self.connectorLoadErrors.contains(connectorsError ?? "") {
-                    connectorsError = upstream
+                    connectorsError = message
                 }
             } else if !quiet || Self.connectorLoadErrors.contains(connectorsError ?? "") {
                 connectorsError = nil
@@ -963,8 +966,14 @@ final class AppModel: ObservableObject {
             try await client.setConnectorsKey(key)
             await loadConnectors()
         } catch {
-            let code = (error as? BackendError)?.providerCode
-            connectorsError = code == "connectors_key" ? "That key looks invalid." : "Could not save the key."
+            switch (error as? BackendError)?.providerCode {
+            case "connectors_key_consumer":
+                connectorsError = "That is a Composio For You key. This app needs a Platform project key, which starts with ak_."
+            case "connectors_key":
+                connectorsError = "That key looks invalid."
+            default:
+                connectorsError = "Could not save the key."
+            }
         }
         connectorBusy = nil
     }

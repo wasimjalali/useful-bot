@@ -11,6 +11,7 @@ import {
   executeConnectorTool,
   listConnectorToolkits,
   searchConnectorTools,
+  isKeyRejected,
   setComposioFactory,
   toolkitOf,
   type ComposioLike,
@@ -309,6 +310,14 @@ test("execute refuses toolkits that are not connected before touching the networ
   const out = await executeConnectorTool("GMAIL_FETCH_EMAILS", { max_results: 2 }, path);
   assert.deepEqual(state.executed, [{ slug: "GMAIL_FETCH_EMAILS", args: { max_results: 2 } }]);
   assert.deepEqual(out, { data: { ok: true, slug: "GMAIL_FETCH_EMAILS" }, successful: true });
+});
+
+test("isKeyRejected recognises Composio's 401 only", () => {
+  assert.equal(isKeyRejected(Object.assign(new Error("x"), { statusCode: 401 })), true);
+  assert.equal(isKeyRejected(Object.assign(new Error("x"), { status: 401 })), true);
+  assert.equal(isKeyRejected(Object.assign(new Error("x"), { statusCode: 404 })), false);
+  assert.equal(isKeyRejected(new Error("x")), false);
+  assert.equal(isKeyRejected(null), false);
 });
 
 test("toolkitOf matches a whole connected toolkit segment, longest first", () => {

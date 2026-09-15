@@ -8,7 +8,7 @@ import {
   setConnectorsKey,
   updateConnectorsStore,
 } from "../../../../shared/connectors-store.ts";
-import { authorizeConnector, disconnectConnector, listConnectorToolkits } from "../../../../shared/composio.ts";
+import { authorizeConnector, disconnectConnector, isKeyRejected, listConnectorToolkits } from "../../../../shared/composio.ts";
 
 export const runtime = "nodejs";
 
@@ -51,10 +51,9 @@ export async function GET(request: Request) {
     const toolkits = await listConnectorToolkits({ search });
     return NextResponse.json({ ok: true, ...publicConnectors(readConnectorsStore()), toolkits });
   } catch (err) {
-    return NextResponse.json(
-      { ok: false, error: errorCode(err, "connectors_unavailable"), ...pub, toolkits: [] },
-      { status: 502 },
-    );
+    // Composio's own 401 is the one failure the owner can fix from the dialog.
+    const error = isKeyRejected(err) ? "key_rejected" : errorCode(err, "connectors_unavailable");
+    return NextResponse.json({ ok: false, error, ...pub, toolkits: [] }, { status: 502 });
   }
 }
 

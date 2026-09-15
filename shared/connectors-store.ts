@@ -161,7 +161,11 @@ export function updateConnectorsStore<T>(
  * rather than refused; a key that is still too short or too long is refused.
  */
 export function setConnectorsKey(store: ConnectorsStore, key: string): void {
-  const trimmed = key.replace(/\s+/g, "");
+  const trimmed = normaliseKey(key);
+  // A "Composio For You" consumer key (ck_) is for MCP clients; the SDK this
+  // app uses needs a Platform project key (ak_). Say so instead of failing
+  // later with Composio's generic 401.
+  if (/^ck_/i.test(trimmed)) throw new Error("connectors_key_consumer");
   if (trimmed.length < 8 || trimmed.length > 4096) throw new Error("connectors_key");
   if (store.apiKey !== trimmed) {
     // A new key means a new Composio project: the old session and its
@@ -170,6 +174,18 @@ export function setConnectorsKey(store: ConnectorsStore, key: string): void {
     store.connectedToolkits = [];
   }
   store.apiKey = trimmed;
+}
+
+/**
+ * What people paste is rarely just the key: Composio's docs show it as
+ * `export COMPOSIO_API_KEY=ak_...`, often quoted. Everything but the key is
+ * dropped so the saved value is what Composio expects in the header.
+ */
+export function normaliseKey(raw: string): string {
+  let value = raw.replace(/\s+/g, "");
+  value = value.replace(/^(export)?COMPOSIO_API_KEY=/i, "");
+  value = value.replace(/^["'`]+|["'`,;]+$/g, "");
+  return value;
 }
 
 export function clearConnectorsKey(store: ConnectorsStore): void {

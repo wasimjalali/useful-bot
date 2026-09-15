@@ -55,6 +55,12 @@ test("key validation strips whitespace and refuses short or long keys", () => {
   assert.equal(store.apiKey, "ak_trimmed_ok");
   setConnectorsKey(store, "ak_pasted\n with_break ");
   assert.equal(store.apiKey, "ak_pastedwith_break");
+  // The docs snippet, quoted, with the export in front: only the key survives.
+  setConnectorsKey(store, "export COMPOSIO_API_KEY=\"ak_from_docs_1234\"\n");
+  assert.equal(store.apiKey, "ak_from_docs_1234");
+  setConnectorsKey(store, "composio_api_key='ak_lower_case_ok'");
+  assert.equal(store.apiKey, "ak_lower_case_ok");
+  assert.throws(() => setConnectorsKey(store, "ck_for_you_consumer_key"), /connectors_key_consumer/);
 });
 
 test("user id survives a locked update and stays stable across reads", () => {
