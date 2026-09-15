@@ -42,7 +42,6 @@ public enum ShellActions {
             [
                 "path": ws.path,
                 "permission": ws.permission,
-                "finalConfirm": ws.finalConfirm,
             ] as [String: Any]
         } ?? NSNull()
         return ["type": "setWorkspace", "botId": botId, "workspace": payload]

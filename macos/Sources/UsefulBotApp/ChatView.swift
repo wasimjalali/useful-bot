@@ -374,9 +374,10 @@ struct ChatView: View {
             if ws.isReadOnly {
                 return "Runs locally on this Mac. Reads only in the attached folder; writes and commands are off."
             }
-            if ws.isFullAccess, !ws.finalConfirm {
-                return "Runs locally on this Mac. Commands need your approval; writes in the attached folder don't."
+            if ws.isFullAccess {
+                return "Runs locally on this Mac. Works in the attached folder without asking."
             }
+            return "Runs locally on this Mac. Works in the attached folder on its own; deleting and other destructive commands need your approval."
         }
         return "Runs locally on this Mac. Writes and commands need your approval."
     }

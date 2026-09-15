@@ -75,7 +75,6 @@ struct WorkspaceProjectsResponse: Codable {
 public struct BotWorkspace: Codable, Equatable, Sendable {
     public let path: String
     public let permission: String
-    public var finalConfirm: Bool
 
     /// A folder name comes from the filesystem, so control characters are
     /// stripped before it can reach the composer or a message.
@@ -108,22 +107,21 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
         switch permission {
         case "read_only": return "Read only"
         case "full_access": return "Full access"
-        default: return "Guard"
+        default: return "Auto"
         }
     }
 
     enum CodingKeys: String, CodingKey {
-        case path, permission, finalConfirm
+        case path, permission
     }
 
-    public init?(path: String, permission: String, finalConfirm: Bool) {
+    public init?(path: String, permission: String) {
         // A grant is a filesystem capability: an empty or relative path is no
         // folder, and a workspace that cannot say where it points must not
         // render as one.
         guard !path.isEmpty, path.hasPrefix("/") else { return nil }
         self.path = path
         self.permission = permission
-        self.finalConfirm = finalConfirm
     }
 
     public init(from decoder: Decoder) throws {
@@ -136,8 +134,10 @@ public struct BotWorkspace: Codable, Equatable, Sendable {
             ))
         }
         path = decodedPath
-        permission = (try? c.decode(String.self, forKey: .permission)) ?? "guard"
-        finalConfirm = (try? c.decode(Bool.self, forKey: .finalConfirm)) ?? false
+        // "guard" is what this mode was called before it became Auto; a store
+        // written by that build still reads as the same posture.
+        let decoded = (try? c.decode(String.self, forKey: .permission)) ?? "auto"
+        permission = decoded == "guard" ? "auto" : decoded
     }
 }
 
