@@ -135,6 +135,14 @@ const SQL_DESTRUCTIVE = /\b(drop|truncate)\s+(table|database|schema|index|view)\
  */
 export function commandRisk(command: string, root: string, depth = 0): string | null {
   if (SQL_DESTRUCTIVE.test(command)) return "runs a destructive SQL statement";
+  // A substitution runs wherever it sits, quotes or not: `echo "$(rm x)"`
+  // still deletes. Each one is judged as a line of its own.
+  for (const match of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+    const inner = (match[1] ?? match[2] ?? "").trim();
+    if (!inner) continue;
+    const reason = commandRisk(inner, root, depth);
+    if (reason) return reason;
+  }
   for (const segment of split(tokenize(command))) {
     // What the command does comes first: `sudo rm -rf /` is "runs as root",
     // which says more than the path it reaches.
@@ -228,6 +236,8 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     if (flags.some((flag) => /^-[a-zA-Z]*[ceEpr]/.test(flag) || flag === "--eval" || flag === "--print")) {
       return `runs inline code (${name} -e)`;
     }
+    // `curl ... | python3` runs whatever came down the pipe.
+    if (afterPipe && !words[0]) return `runs code from stdin (${name})`;
     // Code from stdin, or from a descriptor, is a payload this cannot read.
     if (flags.some((flag) => flag === "-" || flag === "<" || flag.startsWith("<") || flag.startsWith("/dev/"))) {
       return `runs code from stdin (${name})`;
@@ -239,8 +249,7 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     const moduleAt = flags.indexOf("-m");
     if ((name === "python" || name === "pypy") && moduleAt >= 0 && (firstWordAt === -1 || moduleAt < firstWordAt)) {
       const module = flags[moduleAt + 1];
-      if ((module === "pip" || module === "pip3") && flags.includes("install")
-        && flags.some((flag) => flag === "." || flag === "-e" || flag === "--editable" || flag.startsWith("./"))) {
+      if ((module === "pip" || module === "pip3") && flags.includes("install") && flags.some(isLocalInstall)) {
         return "runs the project's setup (pip install .)";
       }
       return null;
@@ -287,13 +296,21 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     return packageRunnerRisk(name, rest, root, depth);
   }
   if (name === "awk" || name === "gawk" || name === "mawk" || name === "nawk") {
-    // An awk program can shell out; that is a command this cannot read.
-    const program = rest.find((token) => /\bsystem\s*\(|\|\s*"|"\s*\||\bgetline\b/.test(token.text));
-    if (program) return `runs a command from awk (${name} system())`;
+    // An awk program can shell out; that is a command this cannot read,
+    // whether it sits on the line or in a -f file.
+    const shellsOut = /\bsystem\s*\(|\|\s*"|"\s*\||\bgetline\b/;
+    if (rest.some((token) => shellsOut.test(token.text))) return `runs a command from awk (${name} system())`;
+    const fileAt = flags.indexOf("-f");
+    if (fileAt >= 0) {
+      const file = flags[fileAt + 1] ? fileUnderRoot(flags[fileAt + 1], root) : null;
+      const text = file ? readScript(file) : null;
+      if (!text) return `runs an awk program this cannot read (${name} -f)`;
+      if (shellsOut.test(text)) return `runs a command from awk (${name} -f ${flags[fileAt + 1]})`;
+    }
   }
   if (name === "rsync" && flags.some((flag) => flag.startsWith("--delete"))) return "deletes at the destination (rsync --delete)";
   if (name === "chmod" && flags.some((flag) => /^-[a-zA-Z]*R/.test(flag))) return "changes permissions recursively (chmod -R)";
-  if (name === "git") return gitRisk(flags);
+  if (name === "git") return gitRisk(flags, root);
   if (name === "make") return makeRisk(flags, root, depth);
   if (VERB_CLIS.has(name)) {
     const verbs = words.slice(0, 2);
@@ -303,8 +320,7 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
       return packageScriptRisk(name, words, root, depth);
     }
     // Installing the project itself runs its setup code.
-    if ((name === "pip" || name === "pip3" || name === "uv") && words[0] === "install"
-      && flags.some((flag) => flag === "." || flag === "-e" || flag === "--editable" || flag.startsWith("./"))) {
+    if ((name === "pip" || name === "pip3" || name === "uv") && words[0] === "install" && flags.some(isLocalInstall)) {
       return `runs the project's setup (${name} install .)`;
     }
     return null;
@@ -493,7 +509,7 @@ function makeRisk(flags: string[], root: string, depth: number): string | null {
   }
   if (!text) return null;
   // Make functions that run commands at parse time, before any target.
-  const fn = /\$\((shell|eval|file)\b/.exec(text);
+  const fn = /\$[({](shell|eval|file)\b/.exec(text);
   if (fn) return `Makefile: runs a shell at parse time ($(${fn[1]}))`;
   const targets = new Map<string, { deps: string[]; recipe: string[] }>();
   // Plain `NAME = value` definitions, so `rm -rf $(APP)` is judged on the
@@ -559,7 +575,12 @@ function makeRisk(flags: string[], root: string, depth: number): string | null {
 /** Git's own options that take a value, before the subcommand. */
 const GIT_VALUED_GLOBALS = new Set(["-C", "--git-dir", "--work-tree", "--exec-path", "--namespace"]);
 
-function gitRisk(all: string[]): string | null {
+/** `.`, `-e .`, `-e.`, `--editable=.`, `./pkg`: installing the project itself. */
+function isLocalInstall(flag: string): boolean {
+  return flag === "." || flag.startsWith("./") || flag.startsWith("-e") || flag.startsWith("--editable");
+}
+
+function gitRisk(all: string[], root: string): string | null {
   // `-c alias.x='!rm -rf .' x` runs a shell through git's config; no
   // subcommand parse can see that, so config on the line always asks.
   const flags: string[] = [];
@@ -591,9 +612,10 @@ function gitRisk(all: string[]): string | null {
       // Moving the branch to another commit rewrites its history even when
       // the working tree is kept; unstaging (`git reset HEAD file`) does not.
       if (has("--soft", "--mixed")) return "moves the branch (git reset --soft)";
-      return words[1] && words[1] !== "HEAD" && !has("--") && /^(HEAD[~^]|[0-9a-f]{7,40}$|refs\/|origin\/|@\{)/.test(words[1])
-        ? "moves the branch (git reset <commit>)"
-        : null;
+      // `git reset HEAD`, `git reset -- path` and `git reset path` unstage;
+      // any other first word is a commit the branch would move to.
+      if (!words[1] || words[1] === "HEAD" || has("--")) return null;
+      return fileUnderRoot(words[1], root) ? null : "moves the branch (git reset <commit>)";
     case "clean":
       return "deletes untracked files (git clean)";
     case "push":
@@ -605,10 +627,10 @@ function gitRisk(all: string[]): string | null {
       if (has("-d", "-D", "--delete")) return "deletes a branch (git branch -D)";
       return has("-f", "--force", "-m", "-M", "--move") ? "moves or overwrites a branch (git branch -f)" : null;
     case "checkout":
-      if (has("-B")) return "overwrites a branch (git checkout -B)";
+      if (has("-B", "--orphan")) return "overwrites or restarts a branch (git checkout -B)";
       return has("--", ".", "-f", "--force") && !has("-b") ? "discards working changes (git checkout)" : null;
     case "switch":
-      return has("-C", "--force-create", "-f", "--force", "--discard-changes") ? "overwrites a branch or discards changes (git switch -C)" : null;
+      return has("-C", "--force-create", "-f", "--force", "--discard-changes", "--orphan") ? "overwrites a branch or discards changes (git switch -C)" : null;
     case "restore":
       return has("--staged", "-S") && !has("--worktree", "-W") ? null : "discards working changes (git restore)";
     case "stash":
@@ -670,7 +692,7 @@ function outsideFolder(tokens: Token[], root: string): string | null {
     const text = token.text.replace(/^[0-9]*[<>|&]+/, "");
     if (!text.startsWith("/")) continue;
     if (text === root || text.startsWith(inside)) continue;
-    if (DEVICE_PATHS.some((device) => text === device || text.startsWith(device))) continue;
+    if (DEVICE_PATHS.some((device) => text === device || text.startsWith(device.endsWith("/") ? device : `${device}/`))) continue;
     if (SYSTEM_BIN_PREFIXES.some((prefix) => text.startsWith(prefix) && !text.slice(prefix.length).includes("/"))) continue;
     return `reaches outside the folder (${text})`;
   }
