@@ -1,4 +1,5 @@
 import { Composio } from "@composio/core";
+import { readCatalogue } from "./composio-catalogue.ts";
 import {
   connectorsPath,
   isToolkitSlug,
@@ -83,6 +84,23 @@ export interface ComposioLike {
     }>;
     delete(id: string): Promise<unknown>;
   };
+  tools: {
+    getRawComposioTools(params: { toolkits?: string[]; search?: string; limit?: number }): Promise<
+      Array<{
+        slug: string;
+        description?: string;
+        inputParameters?: Record<string, unknown>;
+        toolkit?: { slug: string };
+      }>
+    >;
+  };
+}
+
+/** One page of the catalogue for the dialog. */
+export interface ConnectorPage {
+  rows: ConnectorToolkit[];
+  total: number;
+  nextOffset: number | null;
 }
 
 export type ComposioFactory = (apiKey: string) => ComposioLike;
@@ -243,70 +261,114 @@ async function withSession<T>(
   }
 }
 
+type ToolkitItem = Awaited<ReturnType<ComposioSessionLike["toolkits"]>>["items"][number];
+
 /**
- * Catalogue rows for the dialog. Connected rows come first. Also refreshes the
- * store's connected cache from the connected page Composio returned, so the
- * agent tools see a disconnect made from Composio's own dashboard on the next
- * listing. The cache is written only from that page, never from a search.
+ * The connected page, live but memoised for a couple of seconds: every
+ * keystroke in the search box and every poll during an OAuth flow asks for
+ * it, and it does not change between two keystrokes.
+ */
+const CONNECTED_TTL_MS = 2000;
+let connectedMemo: { at: number; sessionId: string; rows: ConnectorToolkit[] } | null = null;
+
+async function connectedRows(session: ComposioSessionLike, path: string): Promise<ConnectorToolkit[]> {
+  if (connectedMemo && connectedMemo.sessionId === session.sessionId && Date.now() - connectedMemo.at < CONNECTED_TTL_MS) {
+    return connectedMemo.rows;
+  }
+  const rows: ConnectorToolkit[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const connected = await session.toolkits({ isConnected: true, limit: PAGE_MAX, cursor });
+    for (const item of connected.items) rows.push(toRow(item));
+    cursor = connected.cursor;
+    if (!cursor || connected.items.length === 0) break;
+  }
+  const connectedSlugs = rows.filter((row) => row.connected).map((row) => row.slug);
+  updateConnectorsStore((store) => setConnectedToolkits(store, connectedSlugs), path);
+  connectedMemo = { at: Date.now(), sessionId: session.sessionId, rows };
+  return rows;
+}
+
+/** Drops the connected memo, for right after a connect or disconnect. */
+export function forgetConnected(): void {
+  connectedMemo = null;
+}
+
+/**
+ * Catalogue page for the dialog. Order: connected apps, then the popular
+ * set in its fixed order, then everything else by name. The catalogue itself
+ * comes from a local cache (see composio-catalogue.ts) so paging and search
+ * are instant; only the connection state is asked of Composio, and that is
+ * memoised briefly. Before the cache exists, the popular set is shown and a
+ * search of three characters or more is sent to Composio directly.
+ *
+ * MCP variants of an app (notion_mcp beside notion) are Composio's endpoints
+ * for MCP clients; they are hidden unless already connected, so the plain
+ * app is the one people connect.
  */
 export async function listConnectorToolkits(
-  options: { search?: string; limit?: number } = {},
+  options: { search?: string; offset?: number; limit?: number } = {},
   path = connectorsPath(),
-): Promise<ConnectorToolkit[]> {
-  const limit = Math.min(Math.max(options.limit ?? 160, 1), 200);
-  // Slugs are lowercase and Composio's search is case sensitive, so the
-  // query goes over lowercased; the local match below is lowercase too.
+): Promise<ConnectorPage> {
+  const limit = Math.min(Math.max(options.limit ?? 30, 1), 200);
+  const offset = Math.max(options.offset ?? 0, 0);
   const search = options.search?.trim().toLowerCase() || undefined;
   return withSession(path, async (session) => {
     const rows = new Map<string, ConnectorToolkit>();
-    // Composio pages at 50; walk the connected set fully, it is short.
-    let cursor: string | undefined;
-    for (let page = 0; page < 10; page += 1) {
-      const connected = await session.toolkits({ isConnected: true, limit: PAGE_MAX, cursor });
-      for (const item of connected.items) rows.set(item.slug, toRow(item));
-      cursor = connected.cursor;
-      if (!cursor || connected.items.length === 0) break;
-    }
-    const connectedSlugs = [...rows.values()].filter((row) => row.connected).map((row) => row.slug);
-    updateConnectorsStore((store) => setConnectedToolkits(store, connectedSlugs), path);
-    const add = (items: Awaited<ReturnType<ComposioSessionLike["toolkits"]>>["items"]) => {
+    for (const row of await connectedRows(session, path)) rows.set(row.slug, row);
+    const add = (items: ToolkitItem[]) => {
       for (const item of items) if (!rows.has(item.slug)) rows.set(item.slug, toRow(item));
     };
-    // The popular set is always loaded: it is what a short or misspelt search
-    // should still find, and Composio's search misses some of it.
-    add((await session.toolkits({ toolkits: FEATURED_TOOLKITS, limit: PAGE_MAX })).items);
-    if (search && search.length >= SEARCH_MIN) {
-      add((await session.toolkits({ search, limit: PAGE_MAX })).items);
+    const catalogue = readCatalogue(session);
+    if (catalogue) {
+      add(catalogue);
     } else {
-      let next: string | undefined;
-      // Bounded by pages, not only by rows: a page of duplicates adds nothing
-      // and must not turn into a walk through the whole catalogue.
-      for (let page = 0; page < 4 && rows.size < limit; page += 1) {
-        const batch = await session.toolkits({ limit: PAGE_MAX, cursor: next });
-        add(batch.items);
-        next = batch.cursor;
-        if (!next || batch.items.length === 0) break;
-      }
+      add((await session.toolkits({ toolkits: FEATURED_TOOLKITS, limit: PAGE_MAX })).items);
+      if (search && search.length >= SEARCH_MIN) add((await session.toolkits({ search, limit: PAGE_MAX })).items);
     }
-    // Composio's own no-sign-in toolkits (composio_search, exa and the like)
-    // have no account to connect, so they have no place in this list.
-    const list = [...rows.values()].filter((row) => !row.noAuth && (!search || matches(row, search)));
+    const list = [...rows.values()].filter(
+      (row) => !row.noAuth && (row.connected || !row.slug.endsWith("_mcp")) && (!search || score(row, search) > 0),
+    );
     const rank = new Map(FEATURED_TOOLKITS.map((slug, index) => [slug, index]));
     const tier = (row: ConnectorToolkit) => (row.connected ? 0 : rank.has(row.slug) ? 1 : 2);
-    list.sort((a, b) =>
-      tier(a) - tier(b) ||
-      (tier(a) === 1 ? (rank.get(a.slug) ?? 0) - (rank.get(b.slug) ?? 0) : a.name.localeCompare(b.name)),
-    );
-    return list.slice(0, limit);
+    list.sort((a, b) => {
+      if (search) {
+        const byScore = score(b, search) - score(a, search);
+        if (byScore !== 0) return byScore;
+      }
+      return (
+        tier(a) - tier(b) ||
+        (tier(a) === 1 ? (rank.get(a.slug) ?? 0) - (rank.get(b.slug) ?? 0) : a.name.localeCompare(b.name))
+      );
+    });
+    const page = list.slice(offset, offset + limit);
+    return { rows: page, total: list.length, nextOffset: offset + limit < list.length ? offset + limit : null };
   });
 }
 
-function matches(row: ConnectorToolkit, search: string): boolean {
-  const needle = search.toLowerCase();
-  return row.slug.includes(needle) || row.name.toLowerCase().includes(needle);
+/**
+ * Search relevance: a name that starts with the query beats a slug that
+ * does, which beats a word inside the name, which beats any other
+ * substring. Zero means no match. Connected apps get a nudge so "goog"
+ * shows a connected Google app before the rest.
+ */
+function score(row: ConnectorToolkit, search: string): number {
+  const name = row.name.toLowerCase();
+  const slug = row.slug.replace(/_/g, " ");
+  let base = 0;
+  if (name.startsWith(search)) base = 40;
+  else if (slug.startsWith(search)) base = 35;
+  else if (name.split(/\s+/).some((word) => word.startsWith(search))) base = 30;
+  else if (name.includes(search) || slug.includes(search)) base = 20;
+  else {
+    const words = search.split(/\s+/).filter(Boolean);
+    if (words.length > 1 && words.every((word) => name.includes(word) || slug.includes(word))) base = 15;
+  }
+  if (base === 0) return 0;
+  return base + (row.connected ? 5 : 0) + (FEATURED_TOOLKITS.includes(row.slug) ? 2 : 0);
 }
 
-function toRow(item: Awaited<ReturnType<ComposioSessionLike["toolkits"]>>["items"][number]): ConnectorToolkit {
+function toRow(item: ToolkitItem): ConnectorToolkit {
   const account = item.connection?.connectedAccount;
   const connected = item.connection?.isActive === true && account?.status === "ACTIVE";
   return {
@@ -330,6 +392,7 @@ export async function authorizeConnector(
   return withSession(path, async (session) => {
     const request = await session.authorize(toolkit, { callbackUrl });
     if (!request.redirectUrl) throw new Error("authorize_no_redirect");
+    forgetConnected();
     return { redirectUrl: request.redirectUrl, accountId: request.id };
   });
 }
@@ -348,6 +411,7 @@ export async function disconnectConnector(accountId: string, path = connectorsPa
   if (!account) throw new Error("account_foreign");
   await client.connectedAccounts.delete(accountId);
   cached = null;
+  forgetConnected();
   const slug = account.toolkit?.slug;
   if (slug) {
     updateConnectorsStore((scratch) => {
@@ -356,20 +420,29 @@ export async function disconnectConnector(accountId: string, path = connectorsPa
   }
 }
 
-/** Search restricted to the connected toolkits, trimmed for the model. */
+/**
+ * Tools for a use case in the connected apps, trimmed for the model. Two
+ * sources merged: Composio's semantic search, which ranks well but ignores
+ * the toolkit filter and maps an MCP variant to its plain app, and a direct
+ * listing of the connected toolkits' own tools, which is exact. Only tools
+ * of connected toolkits are returned.
+ */
 export async function searchConnectorTools(
   useCase: string,
   path = connectorsPath(),
 ): Promise<ConnectorSearchResult> {
   const store = readConnectorsStore(path);
   if (store.connectedToolkits.length === 0) throw new Error("no_connectors");
-  const raw = (await withSession(path, (session) =>
-    session.search({ query: useCase, toolkits: store.connectedToolkits }),
-  )) as {
-    results?: Array<{ primaryToolSlugs?: string[]; relatedToolSlugs?: string[]; executionGuidance?: string; knownPitfalls?: string[] }>;
-    toolSchemas?: Record<string, { toolkit: string; toolSlug: string; description?: string; inputSchema?: Record<string, unknown> }>;
-    toolkits?: Array<{ toolkit: string; hasActiveConnection: boolean }>;
-  };
+  const allowed = new Set(store.connectedToolkits);
+  const client = factory(requireKey(store));
+  const [raw, direct] = await Promise.all([
+    withSession(path, (session) => session.search({ query: useCase, toolkits: store.connectedToolkits })) as Promise<{
+      results?: Array<{ primaryToolSlugs?: string[]; relatedToolSlugs?: string[]; executionGuidance?: string; knownPitfalls?: string[] }>;
+      toolSchemas?: Record<string, { toolkit: string; toolSlug: string; description?: string; inputSchema?: Record<string, unknown> }>;
+      toolkitConnectionStatuses?: Array<{ toolkit: string; hasActiveConnection: boolean }>;
+    }>,
+    client.tools.getRawComposioTools({ toolkits: store.connectedToolkits, search: useCase, limit: 15 }).catch(() => null),
+  ]);
   const wanted = new Set<string>();
   const guidance: string[] = [];
   for (const result of raw.results ?? []) {
@@ -378,22 +451,38 @@ export async function searchConnectorTools(
     if (result.executionGuidance) guidance.push(result.executionGuidance);
     for (const pitfall of result.knownPitfalls ?? []) guidance.push(pitfall);
   }
-  const tools: ConnectorSearchHit[] = [];
-  const allowed = new Set(store.connectedToolkits);
+  const tools = new Map<string, ConnectorSearchHit>();
   for (const [slug, schema] of Object.entries(raw.toolSchemas ?? {})) {
     if (!wanted.has(slug) && wanted.size > 0) continue;
-    if (!allowed.has(schema.toolkit.toLowerCase())) continue;
-    tools.push({
-      toolkit: schema.toolkit.toLowerCase(),
+    const toolkit = schema.toolkit.toLowerCase();
+    if (!allowed.has(toolkit)) continue;
+    tools.set(schema.toolSlug, {
+      toolkit,
       tool: schema.toolSlug,
       description: schema.description ?? "",
       inputSchema: schema.inputSchema ?? null,
     });
   }
-  const notConnected = (raw.toolkits ?? [])
+  // A failed direct listing is said out loud rather than passed off as a
+  // complete answer: the model then knows a missing tool may still exist.
+  if (direct === null) guidance.push("The direct tool listing failed, so this list may be incomplete. Search again if a tool you expect is missing.");
+  for (const tool of direct ?? []) {
+    const toolkit = tool.toolkit?.slug.toLowerCase() ?? toolkitOf(tool.slug, store.connectedToolkits) ?? "";
+    if (!allowed.has(toolkit) || tools.has(tool.slug)) continue;
+    tools.set(tool.slug, {
+      toolkit,
+      tool: tool.slug,
+      description: tool.description ?? "",
+      inputSchema: tool.inputParameters ?? null,
+    });
+  }
+  // A plain app reported unconnected while its MCP variant is connected is
+  // not a missing connection; the variant's tools are in the list above.
+  const notConnected = (raw.toolkitConnectionStatuses ?? [])
     .filter((item) => !item.hasActiveConnection)
-    .map((item) => item.toolkit.toLowerCase());
-  return { tools, guidance: guidance.slice(0, 8), notConnected };
+    .map((item) => item.toolkit.toLowerCase())
+    .filter((toolkit) => !allowed.has(toolkit) && !allowed.has(`${toolkit}_mcp`));
+  return { tools: [...tools.values()], guidance: guidance.slice(0, 8), notConnected };
 }
 
 /** Executes one tool. The caller has already decided the approval question. */

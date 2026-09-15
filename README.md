@@ -69,7 +69,10 @@ the account active. Disconnect revokes it.
 
 The key lives in `~/.useful-bot/connectors.json` (mode 0600) with the Tool
 Router session id and a cache of connected apps. App tokens themselves stay in
-Composio's cloud, keyed to a random user id this app generates once.
+Composio's cloud, keyed to a random user id this app generates once. The app
+catalogue (names, slugs, logos, no connection state) is cached for a day in
+`~/.useful-bot/composio-catalogue.json`, so the dialog pages and searches it
+locally; delete the file to force a refresh.
 
 The agent reaches apps through two tools. `connector_search` finds tool slugs
 for a use case in the connected apps. `connector_execute` runs one. A read runs

@@ -47,9 +47,21 @@ export async function GET(request: Request) {
   if (!pub.hasKey) return NextResponse.json({ ok: true, ...pub, toolkits: [] });
   const params = new URL(request.url).searchParams;
   const search = params.get("search") ?? undefined;
+  const offset = Number.parseInt(params.get("offset") ?? "0", 10);
+  const limit = Number.parseInt(params.get("limit") ?? "30", 10);
   try {
-    const toolkits = await listConnectorToolkits({ search });
-    return NextResponse.json({ ok: true, ...publicConnectors(readConnectorsStore()), toolkits });
+    const page = await listConnectorToolkits({
+      search,
+      offset: Number.isFinite(offset) ? offset : 0,
+      limit: Number.isFinite(limit) ? limit : 30,
+    });
+    return NextResponse.json({
+      ok: true,
+      ...publicConnectors(readConnectorsStore()),
+      toolkits: page.rows,
+      total: page.total,
+      nextOffset: page.nextOffset,
+    });
   } catch (err) {
     // Composio's own 401 is the one failure the owner can fix from the dialog.
     const error = isKeyRejected(err) ? "key_rejected" : errorCode(err, "connectors_unavailable");

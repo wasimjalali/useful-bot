@@ -939,10 +939,26 @@ final class AppModel: ObservableObject {
 
     /// A quiet load (poll, debounce) never replaces a message from Connect or
     /// Disconnect with a load error, and clears only a load error on success.
+    static let connectorPageSize = 30
+    @Published private(set) var connectorMoreBusy = false
+
+    /// A quiet reload keeps however many rows are on screen, so a poll never
+    /// collapses a list the owner expanded.
     func loadConnectors(search: String = "", quiet: Bool = false) async {
         if !quiet { connectorsError = nil }
+        // The server caps a page at 200; a quiet reload never asks for more.
+        let limit = quiet ? min(max(Self.connectorPageSize, connectors?.toolkits.count ?? 0), 200) : Self.connectorPageSize
         do {
-            let payload = try await client.connectors(search: search)
+            let payload = try await client.connectors(search: search, limit: limit)
+            // Fast typing on a slow answer: a quiet result for a query that is
+            // no longer in the box is dropped rather than shown over the
+            // current one. An explicit load (open, key saved, retry) always
+            // lands and resets the live query to what it loaded.
+            if quiet {
+                guard search == connectorSearch else { return }
+            } else {
+                connectorSearch = search
+            }
             connectors = payload
             if let code = payload.error {
                 let message = code == "key_rejected" ? Self.connectorKeyRejected : Self.connectorUpstreamError
@@ -957,6 +973,26 @@ final class AppModel: ObservableObject {
                 connectorsError = "Could not load connectors."
             }
         }
+    }
+
+    func loadMoreConnectors(search: String) async {
+        guard let offset = connectors?.nextOffset, !connectorMoreBusy else { return }
+        connectorMoreBusy = true
+        do {
+            let page = try await client.connectors(search: search, offset: offset, limit: Self.connectorPageSize)
+            // The search may have moved on while the page was in flight; a
+            // page for an old query is dropped, and rows on screen never repeat.
+            if connectorSearch == search, var current = connectors {
+                let seen = Set(current.toolkits.map(\.slug))
+                current.toolkits.append(contentsOf: page.toolkits.filter { !seen.contains($0.slug) })
+                current.nextOffset = page.nextOffset
+                current.total = page.total
+                connectors = current
+            }
+        } catch {
+            connectorsError = "Could not load connectors."
+        }
+        connectorMoreBusy = false
     }
 
     func saveConnectorsKey(_ key: String) async {

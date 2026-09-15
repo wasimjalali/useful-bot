@@ -656,7 +656,7 @@ struct ConnectorsDialog: View {
         .onChange(of: search) { _, value in
             model.connectorSearch = value
             Task {
-                try? await Task.sleep(for: .milliseconds(250))
+                try? await Task.sleep(for: .milliseconds(150))
                 guard value == search else { return }
                 await model.loadConnectors(search: value, quiet: true)
             }
@@ -780,7 +780,8 @@ struct ConnectorsDialog: View {
 
     private func catalogueHeight(_ payload: ConnectorsPayload) -> CGFloat {
         if payload.toolkits.isEmpty { return model.connectorsError != nil ? 0 : 100 }
-        return min(CGFloat(payload.toolkits.count) * Self.rowHeight + 2, Self.listMaxHeight)
+        let more: CGFloat = payload.nextOffset != nil ? 48 : 0
+        return min(CGFloat(payload.toolkits.count) * Self.rowHeight + 2 + more, Self.listMaxHeight)
     }
 
     @ViewBuilder
@@ -807,6 +808,21 @@ struct ConnectorsDialog: View {
                     .strokeBorder(Theme.C.border, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+            if let next = payload.nextOffset, next > 0 {
+                HStack {
+                    Spacer(minLength: 0)
+                    NativeButton(
+                        model.connectorMoreBusy ? "Loading" : "Show more (\(max(payload.total - payload.toolkits.count, 0)) left)",
+                        kind: .secondary,
+                        small: true,
+                        enabled: !model.connectorMoreBusy
+                    ) {
+                        Task { await model.loadMoreConnectors(search: search) }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 12)
+            }
         }
     }
 
