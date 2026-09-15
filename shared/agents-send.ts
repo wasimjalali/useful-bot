@@ -19,7 +19,7 @@ export function sendHandoff(input: {
   receiver?: { id: string; name: string } | null;
   /** Hop count; callers forwarding a received handoff increment it. */
   depth?: number;
-}): HandoffRecord {
+}): HandoffRecord & { transcriptMiss?: string } {
   const sourceId = input.source?.id ?? "bot-useful";
   const sourceName = input.source?.name ?? "Useful Bot";
   const receiver = input.receiver ?? input.group ?? input.target;
@@ -35,25 +35,37 @@ export function sendHandoff(input: {
     message: input.message,
     depth: input.depth,
   });
-  appendAgentEvent(sourceId, {
-    kind: "handoff",
-    text: input.message,
-    authorBotId: sourceId,
-    authorName: sourceName,
-    targetBotIds: [input.target.id],
-    handoffId: record.id,
-  });
-  appendAgentEvent(receiver.id, {
-    kind: "post",
-    threadKind,
-    text: input.message,
-    authorBotId: sourceId,
-    authorName: sourceName,
-    targetBotIds: [input.target.id],
-    handoffId: record.id,
-  });
+  // The record is durable now, so a transcript miss is non-fatal: throwing
+  // here would release the requestId reserve and queue a second handoff on
+  // retry. Report the miss on the return instead and still wake the pump.
+  let transcriptMiss = "";
+  try {
+    appendAgentEvent(sourceId, {
+      kind: "handoff",
+      text: input.message,
+      authorBotId: sourceId,
+      authorName: sourceName,
+      targetBotIds: [input.target.id],
+      handoffId: record.id,
+    });
+  } catch (err) {
+    transcriptMiss = err instanceof Error ? err.message : "transcript_miss";
+  }
+  try {
+    appendAgentEvent(receiver.id, {
+      kind: "post",
+      threadKind,
+      text: input.message,
+      authorBotId: sourceId,
+      authorName: sourceName,
+      targetBotIds: [input.target.id],
+      handoffId: record.id,
+    });
+  } catch (err) {
+    transcriptMiss = transcriptMiss || (err instanceof Error ? err.message : "transcript_miss");
+  }
   wakePump();
-  return record;
+  return transcriptMiss ? { ...record, transcriptMiss } : record;
 }
 
 /**

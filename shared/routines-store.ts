@@ -590,6 +590,11 @@ export function createRoutine(draft: RoutineDraft, path = routinesStorePath(), a
   const instruction = clip(draft.instruction, INSTRUCTION_MAX).trim();
   if (!instruction) throw new Error("routine_instruction_required");
   if (!isId(draft.botId)) throw new Error("routine_bot_required");
+  // The same shape rule updateRoutine applies: a non-array is a caller bug,
+  // not a routine that silently never fires.
+  if (draft.schedules !== undefined && !Array.isArray(draft.schedules)) {
+    throw new Error("routine_schedules_invalid");
+  }
   const schedules = parseSchedules(draft.schedules);
   const stamp = at.toISOString();
   const routine: Routine = {

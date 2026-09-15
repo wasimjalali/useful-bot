@@ -97,8 +97,10 @@ export default defineTool({
         depth,
       });
     } catch (err) {
-      // A crash between reserve and queue must not burn the requestId.
-      if (requestId) releaseSend("handoff", requestId);
+      // sendHandoff only throws before the durable write; a queued record
+      // reports a transcript miss on its return instead. A crash between
+      // reserve and queue must not burn the requestId.
+      if (requestId && !record) releaseSend("handoff", requestId);
       throw err;
     }
     return {

@@ -144,6 +144,12 @@ test("group members and persist roundtrip", () => {
     }),
     /shell_group_members/,
   );
+  // A group cannot ride a createBot action either: it would seed a memberless
+  // group that createGroup's minimum exists to prevent.
+  assert.throws(
+    () => applyShellAction(store, { type: "createBot", name: "Sneaky", kind: "group" }),
+    /shell_group_members/,
+  );
   const second = applyShellAction(store, { type: "createBot", name: "Writer" });
   store = second.store;
   const group = applyShellAction(store, {

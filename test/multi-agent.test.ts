@@ -301,6 +301,48 @@ test("thread prefix keeps the default bot prefix empty and describes a bot role"
   assert.match(prefix, /Standing instructions:/);
 });
 
+test("a description with blank lines cannot split the prefix boundary", () => {
+  const botPrefix = threadPrefix({
+    bot: {
+      id: "bot-x",
+      kind: "bot",
+      name: "Drive Admin",
+      label: "Admin",
+      description: "First paragraph.\n\nSecond paragraph.",
+    },
+  });
+  // stripThreadPrefix cuts at the first blank line, so the embedded
+  // description must be collapsed: the only blank line is the trailing
+  // boundary the prefix ends with.
+  assert.equal(botPrefix.indexOf("\n\n"), botPrefix.length - 2);
+  assert.equal(stripThreadPrefix(`${botPrefix}hello there`), "hello there");
+  const groupPrefix = threadPrefix({
+    bot: { id: "bot-g", kind: "group", name: "Room", label: "", description: "Rules one.\n\nRules two." },
+    members: [],
+    mentionNames: [],
+  });
+  assert.equal(groupPrefix.indexOf("\n\n"), groupPrefix.length - 2);
+  assert.equal(stripThreadPrefix(`${groupPrefix}hello there`), "hello there");
+});
+
+test("a label identical to the bot name is not repeated in the prefix", () => {
+  const prefix = threadPrefix({
+    bot: {
+      id: "bot-x",
+      kind: "bot",
+      name: "Drive Admin",
+      label: " drive admin ",
+      description: "",
+    },
+  });
+  assert.match(prefix, /^You are Drive Admin\.\n/);
+  assert.doesNotMatch(prefix, /Drive Admin, Drive Admin/);
+  const distinct = threadPrefix({
+    bot: { id: "bot-x", kind: "bot", name: "Drive Admin", label: "Admin", description: "" },
+  });
+  assert.match(distinct, /^You are Drive Admin, Admin\.\n/);
+});
+
 test("hidden bots drop out of group routing", () => {
   let store = withBots();
   const writer = store.bots.find((bot) => bot.name === "Writer");

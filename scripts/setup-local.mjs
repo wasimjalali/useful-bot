@@ -135,8 +135,8 @@ if (addMissing) {
   config = readExistingConfig();
   // A revoked row is a decision, not a gap: it stays as it is and is never
   // re-minted here (that is what --rotate is for). Only an id with no row at
-  // all, or an active row whose Keychain value no longer matches its digest,
-  // counts as missing.
+  // all, an active row whose Keychain value no longer matches its digest, or
+  // an active row past its expiry counts as missing.
   const rows = config.credentials.filter((row) => row && typeof row.id === "string");
   const known = new Set(rows.map((row) => row.id));
   const active = new Map(rows.filter((row) => row.revokedAt === null).map((row) => [row.id, row]));
@@ -144,7 +144,12 @@ if (addMissing) {
     .filter((cred) => {
       if (!known.has(cred.id)) return true;
       const row = active.get(cred.id);
-      return row !== undefined && !keychainMatches(cred.keychain, row);
+      if (row === undefined) return false;
+      if (!keychainMatches(cred.keychain, row)) return true;
+      // Credentials expire 30 days after setup; an expired-but-matching row
+      // is refreshed here so the install does not need a full --rotate.
+      const expires = Date.parse(row.expiresAt);
+      return Number.isNaN(expires) || expires <= Date.now();
     })
     .map(mint);
   if (!hasKeychain(CHANNEL_KEYCHAIN)) {

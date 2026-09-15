@@ -50,6 +50,12 @@ export default defineTool({
         sourceBotId,
         threadId: group.id,
       });
+    } catch (err) {
+      // Nothing durable was written, so the requestId stays usable.
+      if (requestId && !proposal) releaseSend("proposal", requestId);
+      throw err;
+    }
+    try {
       appendAgentEvent(group.id, {
         kind: "proposal",
         threadKind: "group",
@@ -59,9 +65,9 @@ export default defineTool({
         proposalId: proposal.id,
         targetBotIds: members.map((member) => member.id),
       });
-    } catch (err) {
-      if (requestId) releaseSend("proposal", requestId);
-      throw err;
+    } catch {
+      // The proposal is durable now, so a transcript miss is non-fatal:
+      // releasing here would let a retry propose the fan-out a second time.
     }
     return {
       status: "awaiting_owner_confirmation",

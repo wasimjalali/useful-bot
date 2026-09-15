@@ -200,6 +200,12 @@ test("routine CRUD round-trips through the locked store", () => {
       () => createRoutine({ botId: "bot-a", name: "x", instruction: "  " }),
       /routine_instruction_required/,
     );
+    // A malformed schedules value must fail the create like updateRoutine
+    // does, not become a live routine that never fires.
+    assert.throws(
+      () => createRoutine({ botId: "bot-a", name: "Broken", instruction: "x", schedules: "daily" }),
+      /routine_schedules_invalid/,
+    );
 
     assert.equal(deleteRoutine(created.id), true);
     assert.equal(deleteRoutine(created.id), false);

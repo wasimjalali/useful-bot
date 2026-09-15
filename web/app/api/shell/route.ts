@@ -132,7 +132,10 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
   };
   switch (proposal.kind) {
     case "createBot":
+      // A group cannot ride a createBot card: applyShellAction rejects kind
+      // "group" here, so the shape check must reject it too.
       return action.type === "createBot"
+        && action.kind !== "group"
         && sameName(action.name, proposal.name)
         && (action.petname ?? "") === proposal.petname
         && (action.label ?? "") === proposal.title
@@ -254,7 +257,10 @@ export async function PUT(request: Request) {
           return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
         }
         if (existing.status !== "pending") return settled(existing.status);
-        if (Date.parse(existing.expiresAt) <= Date.now()) {
+        // An unparsable expiry is expired, matching claimProposal: a corrupt
+        // proposal must not stay confirmable while the pending list hides it.
+        const expiresAt = Date.parse(existing.expiresAt);
+        if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
           return NextResponse.json({ ok: false, error: "proposal_expired" }, { status: 410 });
         }
         if (!proposalMatchesAction(existing, body.action)) {

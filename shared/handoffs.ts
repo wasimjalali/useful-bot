@@ -167,11 +167,15 @@ export function claimHandoff(id: string, dir = handoffDir()): string | null {
   const first = create();
   if (first) return first;
   const current = readClaim(id, dir);
-  if (!current || stamp - current.at > CLAIM_STALE_MS) {
-    try { unlinkSync(path); } catch { /* ignore */ }
-    return create();
-  }
-  return null;
+  if (current && stamp - current.at <= CLAIM_STALE_MS) return null;
+  // The stale read above is a snapshot, not a lock: read, unlink, create is
+  // not atomic, so a live claim another process wrote after the read would be
+  // unlinked and stolen. Re-read immediately before deleting and abort when
+  // the file no longer holds the claim that was read.
+  const latest = readClaim(id, dir);
+  if (latest?.token !== current?.token) return null;
+  try { unlinkSync(path); } catch { /* ignore */ }
+  return create();
 }
 
 export function ownsHandoffClaim(id: string, token: string, dir = handoffDir()): boolean {
