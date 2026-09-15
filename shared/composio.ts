@@ -93,6 +93,9 @@ export function setComposioFactory(next: ComposioFactory | null): void {
   cached = null;
 }
 
+/** Composio refuses a page larger than this. */
+const PAGE_MAX = 50;
+
 export const SESSION_CONFIG = {
   manageConnections: { enable: false },
   sandbox: { enable: false },
@@ -195,19 +198,27 @@ export async function listConnectorToolkits(
   options: { search?: string; limit?: number } = {},
   path = connectorsPath(),
 ): Promise<ConnectorToolkit[]> {
-  const limit = Math.min(Math.max(options.limit ?? 40, 1), 100);
+  const limit = Math.min(Math.max(options.limit ?? 40, 1), PAGE_MAX);
   const search = options.search?.trim() || undefined;
   return withSession(path, async (session) => {
     const rows = new Map<string, ConnectorToolkit>();
-    const connected = await session.toolkits({ isConnected: true, limit: 100 });
-    for (const item of connected.items) rows.set(item.slug, toRow(item));
+    // Composio pages at 50; walk the connected set fully, it is short.
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const connected = await session.toolkits({ isConnected: true, limit: PAGE_MAX, cursor });
+      for (const item of connected.items) rows.set(item.slug, toRow(item));
+      cursor = connected.cursor;
+      if (!cursor || connected.items.length === 0) break;
+    }
     const connectedSlugs = [...rows.values()].filter((row) => row.connected).map((row) => row.slug);
     updateConnectorsStore((store) => setConnectedToolkits(store, connectedSlugs), path);
     if (search || rows.size < limit) {
       const page = await session.toolkits({ search, limit });
       for (const item of page.items) if (!rows.has(item.slug)) rows.set(item.slug, toRow(item));
     }
-    const list = [...rows.values()].filter((row) => !search || matches(row, search));
+    // Composio's own no-sign-in toolkits (composio_search, exa and the like)
+    // have no account to connect, so they have no place in this list.
+    const list = [...rows.values()].filter((row) => !row.noAuth && (!search || matches(row, search)));
     list.sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name));
     return list.slice(0, limit);
   });

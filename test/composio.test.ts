@@ -63,6 +63,7 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
       return { id: `ca_${toolkit}`, redirectUrl: `https://connect.composio.dev/${toolkit}` };
     },
     async toolkits(options) {
+      if ((options?.limit ?? 0) > 50) throw Object.assign(new Error("payload.limit must be <= 50"), { statusCode: 400 });
       const items = options?.isConnected
         ? state.toolkitItems.filter((item) => item.connection?.isActive)
         : state.toolkitItems.filter((item) => !options?.search || item.slug.includes(options.search));
@@ -166,6 +167,7 @@ const GMAIL: ToolkitItem = {
   connection: { isActive: true, connectedAccount: { status: "ACTIVE", id: "ca_gmail" } },
 };
 const SLACK: ToolkitItem = { slug: "slack", name: "Slack", isNoAuth: false, logo: undefined };
+const NOAUTH: ToolkitItem = { slug: "composio_search", name: "Composio Search", isNoAuth: true, logo: undefined };
 const PENDING: ToolkitItem = {
   slug: "notion",
   name: "Notion",
@@ -174,7 +176,7 @@ const PENDING: ToolkitItem = {
 };
 
 test("listing puts connected first and refreshes the connected cache", async () => {
-  const { factory } = stub({ toolkitItems: [SLACK, PENDING, GMAIL] });
+  const { factory } = stub({ toolkitItems: [SLACK, PENDING, GMAIL, NOAUTH] });
   setComposioFactory(factory);
   const path = tmpPath();
   const rows = await listConnectorToolkits({}, path);
