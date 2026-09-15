@@ -93,6 +93,42 @@ import Testing
         #expect(!projection.failed)
     }
 
+    @Test func projectionReadsTheTurnActivity() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        #expect(projection.activity == .thinking)
+
+        let requested = #"{"type":"actions.requested","meta":{"id":"2"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}"#
+        projection.apply(EveStream.parseLine(requested)!)
+        #expect(projection.activity == .tool("web_search"))
+        #expect(projection.activity.label == "Searching the web")
+
+        projection.apply(EveEvent(type: "action.result", id: "3"))
+        #expect(projection.activity == .thinking)
+
+        let streaming = #"{"type":"action.input.appended","meta":{"id":"4"},"data":{"toolName":"bash","inputTextDelta":"ls"}}"#
+        projection.apply(EveStream.parseLine(streaming)!)
+        #expect(projection.activity.label == "Running a command")
+
+        // Text is arriving: the row must stop claiming a tool is running.
+        projection.apply(EveEvent(type: "message.appended", id: "5", messageDelta: "Here"))
+        #expect(projection.activity == .working)
+    }
+
+    @Test func activityLabelsSpeakEnglishForUnknownTools() {
+        #expect(TurnActivity.toolLabel("memory_search") == "Searching memory")
+        #expect(TurnActivity.toolLabel("COMPOSIO_gmail_send") == "Using composio gmail send")
+        #expect(TurnActivity.toolLabel("") == "Working")
+        #expect(TurnActivity.thinking.label == "Thinking")
+    }
+
+    @Test func subagentCallsNameThemselves() {
+        let line = #"{"type":"actions.requested","meta":{"id":"1"},"data":{"actions":[{"callId":"c1","kind":"subagent-call","subagentName":"scout"}]}}"#
+        var projection = StreamProjection()
+        projection.apply(EveStream.parseLine(line)!)
+        #expect(projection.activity == .tool("scout"))
+    }
+
     @Test func projectionIgnoresReplayedEventIds() {
         var projection = StreamProjection()
         projection.apply(EveEvent(type: "message.received", id: "same", message: "hi"))

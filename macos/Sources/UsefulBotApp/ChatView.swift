@@ -284,7 +284,7 @@ struct ChatView: View {
                         // last row landed, and with the content bottom-aligned
                         // that pulled everything down by its height.
                         if model.pending, model.transcript.last?.kind != .assistant {
-                            WorkingRow(bot: bot)
+                            WorkingRow(bot: bot, activity: model.activity)
                         }
                         if !model.searchHits.isEmpty {
                             SearchChipsRow(chips: model.searchHits)
@@ -600,17 +600,48 @@ struct TranscriptRowView: View, Equatable {
 
 private struct WorkingRow: View {
     let bot: ShellBot
+    let activity: TurnActivity
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var started = Date()
+
+    /// One breath. The avatar swells and the label dims on the same wave, so
+    /// the row reads as one living thing rather than two loaders side by side.
+    /// 1.6s is the house loading pulse.
+    private static let breath: Double = 1.6
 
     var body: some View {
-        // Sits where the reply will, so the text does not jump sideways when
-        // the first token lands.
-        HStack(alignment: .center, spacing: 10) {
-            BrandMotionView(size: 24, color: BrandAssets.colorID(for: bot), avatar: true)
-            Text("Working.")
-                .font(.system(size: DesignTokens.FontSize.chatBody))
-                .foregroundStyle(Theme.C.inkMuted)
-            Spacer(minLength: 0)
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || scenePhase != .active)) { context in
+            let wave = reduceMotion ? 0 : Self.wave(context.date.timeIntervalSince(started))
+            // Sits where the reply will, so the text does not jump sideways
+            // when the first token lands.
+            HStack(alignment: .center, spacing: 10) {
+                // The face is drawn a shade larger than a reply avatar, but
+                // its box is not, so the label keeps the reply's left edge.
+                BrandMotionView(size: 28, color: BrandAssets.colorID(for: bot), avatar: true)
+                    .scaleEffect(1 + 0.04 * wave)
+                    .frame(width: 24, height: 24)
+                Text(activity.label)
+                    .font(.system(size: DesignTokens.FontSize.chatBody))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .opacity(1 - 0.5 * wave)
+                    .contentTransition(.opacity)
+                    .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: activity)
+                Spacer(minLength: 0)
+            }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(activity.label)
+    }
+
+    /// 0 → 1 → 0 over one breath, flat at both ends. A cosine is the
+    /// ease-in-out in both directions that a repeating SwiftUI animation only
+    /// approximates, and it cannot be restarted by a redraw mid-cycle.
+    private static func wave(_ elapsed: TimeInterval) -> Double {
+        guard elapsed.isFinite, elapsed > 0 else { return 0 }
+        let phase = elapsed.truncatingRemainder(dividingBy: breath) / breath
+        return (1 - cos(2 * .pi * phase)) / 2
     }
 }
 

@@ -46,6 +46,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var approvalError: String?
     /// Web results the live turn surfaced, shown as chips under the transcript.
     @Published private(set) var searchHits: [SearchChip] = []
+    /// What the live turn is doing, shown in the working row until the reply
+    /// takes its place.
+    @Published private(set) var activity: TurnActivity = .thinking
     /// Operator identity plus build info for the settings dialog.
     @Published private(set) var appStatus: AppStatus?
     /// App settings dialog, opened from the rail account row or the composer.
@@ -554,6 +557,7 @@ final class AppModel: ObservableObject {
               let bot = selectedBot, bot.id == selectedBotId else { return }
         cancelSend()
         pending = true
+        activity = .thinking
         threadError = nil
         stickyThreadError = nil
         sendGeneration += 1
@@ -841,16 +845,25 @@ final class AppModel: ObservableObject {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             searchHits = projection.searchHits
+            publishActivity()
             return
         }
         transcript = rows
         transcriptBlocks = TranscriptBlocks.build(rows: rows, selectedBotId: selectedBotId)
         searchHits = projection.searchHits
+        publishActivity()
         // An empty result only replaces the cache once the load has finished
         // and said so; before that it is the blank the switch just cleared.
         if let selectedBotId, transcriptReady || !rows.isEmpty {
             transcriptCache[selectedBotId] = (rows, transcriptBlocks)
         }
+    }
+
+    /// Only on a real change: the label is read off every streamed event, and
+    /// republishing the same one would redraw the transcript on each delta.
+    private func publishActivity() {
+        guard projection.activity != activity else { return }
+        activity = projection.activity
     }
 
     // MARK: - Approvals
@@ -1365,6 +1378,7 @@ final class AppModel: ObservableObject {
         transcript = []
         transcriptBlocks = []
         searchHits = []
+        activity = .thinking
         memoryNotes = nil
         memoryError = nil
         pending = false
