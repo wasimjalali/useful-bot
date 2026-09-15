@@ -59,6 +59,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var providerBusy: String?
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
+    /// A budget change in flight, so the stepper cannot fire twice.
+    @Published private(set) var usageBusy = false
+    /// Bumped on every budget write, so a poll from before it is discarded.
+    private var usageGeneration: UInt64 = 0
     /// Connectors dialog: the catalogue, the key state and one in-flight
     /// OAuth flow the dialog polls for.
     @Published private(set) var connectors: ConnectorsPayload?
@@ -451,7 +455,12 @@ final class AppModel: ObservableObject {
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot.
             let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
-            threadError = sticky ?? (projection.failed ? "The last turn failed." : nil)
+            // The replay ends on whatever the last turn did. When that was a
+            // failure the reader is told why, and that it was the last turn,
+            // not something that just happened.
+            threadError = sticky ?? (projection.failed
+                ? ["The last turn failed.", projection.failure?.reason].compactMap { $0 }.joined(separator: " ")
+                : nil)
         } catch is CancellationError {
             return
         } catch {
@@ -573,6 +582,9 @@ final class AppModel: ObservableObject {
         // rebuilding from durable rows erased every message the reader could
         // see and left them alone with the line they had just sent until the
         // turn finished and the replay put it all back.
+        // A new turn owns its own outcome: whatever the last one did, this one
+        // has not failed yet.
+        projection.beginTurn()
         projection.apply(EveEvent(
             type: "message.received",
             id: "\(EveStream.optimisticUserPrefix)\(UUID().uuidString)",
@@ -638,7 +650,7 @@ final class AppModel: ObservableObject {
                 self.publishTranscript(force: true)
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 if self.projection.failed {
-                    self.stickyThreadError = "The turn failed."
+                    self.stickyThreadError = self.projection.failure?.message ?? "The turn failed."
                 } else if !sawUserTurn {
                     self.stickyThreadError = "The turn did not start."
                 }
@@ -1111,11 +1123,47 @@ final class AppModel: ObservableObject {
     }
 
     func loadUsage() async {
+        // The pane polls every few seconds while the owner can also be moving
+        // the limit. A poll that started before the write must not land after
+        // it: the pane would show a budget the router is not enforcing.
+        let generation = usageGeneration
         do {
-            usage = try await client.usage()
+            let fresh = try await client.usage()
+            guard generation == usageGeneration else { return }
+            usage = fresh
             usageError = nil
         } catch {
+            guard generation == usageGeneration else { return }
             usageError = "Could not load usage."
+        }
+    }
+
+    /// A limit the pane refused before it ever reached the server.
+    func reportUsageError(_ message: String) {
+        usageError = message
+    }
+
+    /// Move the router's daily token budget. The answer carries the budget the
+    /// server stored, so a refused number never sticks on screen.
+    func setDailyTokenBudget(_ tokens: Int?) {
+        guard !usageBusy else { return }
+        usageBusy = true
+        usageError = nil
+        // Any poll already in flight belongs to the budget before this write.
+        usageGeneration &+= 1
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let confirmed = try await self.client.setDailyTokenBudget(tokens)
+                // And any poll started while the write was in flight.
+                self.usageGeneration &+= 1
+                self.usage = confirmed
+            } catch BackendError.provider(let code) where code == "budget_range" {
+                self.usageError = "That budget is outside the range this router accepts."
+            } catch {
+                self.usageError = "Could not change the limit."
+            }
+            self.usageBusy = false
         }
     }
 

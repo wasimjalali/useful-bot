@@ -39,6 +39,9 @@ struct AppSettingsView: View {
     let onClose: () -> Void
     @State private var tab: AppSettingsTab
     @State private var drafts: [String: String] = [:]
+    /// The daily limit while it is being typed. The usage tab polls every few
+    /// seconds, and the poll must not overwrite a half-typed number.
+    @State private var editedBudget: String?
 
     init(initialTab: AppSettingsTab, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -401,54 +404,85 @@ struct AppSettingsView: View {
 
     private var usagePane: some View {
         VStack(alignment: .leading, spacing: 24) {
-            if let error = model.usageError {
-                Text(error)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.danger)
-            } else if let usage = model.usage {
-                section("This week") {
+            if let usage = model.usage {
+                if let error = model.usageError {
+                    // A failed poll keeps the last good numbers on screen; the
+                    // line above them says they may be stale.
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.danger)
+                }
+                section("Today") {
                     settingsGroup {
-                        settingsRow {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Tokens")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Theme.C.ink)
-                                Text("Observed from the active provider responses.")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Theme.C.inkMuted)
-                            }
-                            Spacer(minLength: 0)
-                            settingsValue(count(usage.totalTokens))
-                        }
-                        settingsRow {
-                            Text("Input")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Theme.C.ink)
-                            Spacer(minLength: 0)
-                            settingsValue(count(usage.observedInputTokens))
-                        }
-                        settingsRow {
-                            Text("Output")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Theme.C.ink)
-                            Spacer(minLength: 0)
-                            settingsValue(count(usage.observedOutputTokens))
-                        }
+                        usageMeterRow(
+                            label: "Input",
+                            used: usage.chargedInputTokens,
+                            cap: usage.caps.input24h
+                        )
+                        usageMeterRow(
+                            label: "Output",
+                            used: usage.chargedOutputTokens,
+                            cap: usage.caps.output24h
+                        )
                         settingsRow(last: true) {
                             Text("Requests")
                                 .font(.system(size: 14))
                                 .foregroundStyle(Theme.C.ink)
                             Spacer(minLength: 0)
-                            settingsValue(count(usage.requests))
+                            settingsValue(usage.caps.requests24h > 0
+                                ? "\(compact(usage.requests)) of \(compact(usage.caps.requests24h))"
+                                : compact(usage.requests))
                         }
                     }
-                    usageMeter(fraction: usage.totalCap > 0
-                        ? min(1, Double(usage.totalTokens) / Double(usage.totalCap))
-                        : 0)
+                }
+                if let budget = usage.budget {
+                    section("Daily limit") {
+                        settingsGroup {
+                            settingsRow(last: true) {
+                                Text("Tokens a day")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Theme.C.ink)
+                                Spacer(minLength: 0)
+                                if !budget.isDefault {
+                                    Button("Reset") {
+                                        editedBudget = nil
+                                        model.setDailyTokenBudget(nil)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Theme.C.inkMuted)
+                                    .pointerOnHover()
+                                    .disabled(model.usageBusy)
+                                }
+                                budgetStepper(budget)
+                            }
+                        }
+                    }
+                }
+                if let week = usage.week {
+                    section("This week") {
+                        settingsGroup {
+                            settingsRow {
+                                Text("Tokens")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Theme.C.ink)
+                                Spacer(minLength: 0)
+                                settingsValue(compact(week.totalTokens))
+                                    .help(count(week.totalTokens))
+                            }
+                            settingsRow(last: true) {
+                                Text("Requests")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Theme.C.ink)
+                                Spacer(minLength: 0)
+                                settingsValue(compact(week.requests))
+                            }
+                        }
+                    }
                 }
                 section("By model") {
                     if usage.byModel.isEmpty {
-                        Text("No model traffic in this window yet.")
+                        Text("No model traffic this week yet.")
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.C.inkMuted)
                     } else {
@@ -460,17 +494,22 @@ struct AppSettingsView: View {
                                             .font(.system(size: 14))
                                             .foregroundStyle(Theme.C.ink)
                                             .lineLimit(1)
-                                        Text("\(row.provider) · \(count(row.requests)) requests")
+                                        Text("\(row.provider) · \(compact(row.requests)) requests")
                                             .font(.system(size: 12))
                                             .foregroundStyle(Theme.C.inkMuted)
                                     }
                                     Spacer(minLength: 0)
-                                    settingsValue(count(row.inputTokens + row.outputTokens))
+                                    settingsValue(compact(row.inputTokens + row.outputTokens))
+                                        .help(count(row.inputTokens + row.outputTokens))
                                 }
                             }
                         }
                     }
                 }
+            } else if let error = model.usageError {
+                Text(error)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.danger)
             } else {
                 Text("Loading usage.")
                     .font(.system(size: 14))
@@ -479,21 +518,161 @@ struct AppSettingsView: View {
         }
     }
 
+    /// One capped quantity: the numbers on the row, the meter under them. The
+    /// window is the rolling day the caps are enforced over, so the bar can be
+    /// read as how close the day is to stopping.
+    private func usageMeterRow(label: String, used: Int, cap: Int) -> some View {
+        settingsRow {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 16) {
+                    Text(label)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.ink)
+                    Spacer(minLength: 0)
+                    settingsValue(cap > 0 ? "\(compact(used)) of \(compact(cap))" : compact(used))
+                        .help(count(used))
+                }
+                usageMeter(fraction: cap > 0 ? min(1, Double(used) / Double(cap)) : 0)
+            }
+        }
+    }
+
+    /// Minus, the budget, plus. The field takes a typed number as well, since
+    /// moving from 30M to 100M is a sentence, not thirteen taps.
+    private func budgetStepper(_ budget: UsagePayload.Budget) -> some View {
+        let step = Self.budgetStep(for: budget.tokens)
+        return HStack(spacing: 2) {
+            NativeIconButton(systemImage: "minus", size: 28, iconSize: 12) {
+                commitBudget(budget.tokens - step, budget)
+            }
+            .disabled(model.usageBusy || budget.tokens <= budget.min)
+            .opacity(budget.tokens <= budget.min ? 0.4 : 1)
+            .accessibilityLabel("Lower the daily limit")
+
+            TextField("", text: budgetText(budget))
+                .textFieldStyle(.plain)
+                .font(.system(size: 14, weight: .medium).monospacedDigit())
+                .multilineTextAlignment(.center)
+                .foregroundStyle(Theme.C.ink)
+                .frame(width: 72)
+                .onSubmit { commitTypedBudget(budget) }
+                .accessibilityLabel("Daily token limit in millions")
+
+            NativeIconButton(systemImage: "plus", size: 28, iconSize: 12) {
+                commitBudget(budget.tokens + step, budget)
+            }
+            .disabled(model.usageBusy || budget.tokens >= budget.max)
+            .opacity(budget.tokens >= budget.max ? 0.4 : 1)
+            .accessibilityLabel("Raise the daily limit")
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 32)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+    }
+
+    /// Below ten million a million at a time is the useful move; above it the
+    /// same step would take thirty taps to double the day.
+    private static func budgetStep(for tokens: Int) -> Int {
+        tokens >= 10_000_000 ? 5_000_000 : 1_000_000
+    }
+
+    /// The field shows whole millions. While it is being typed the poll must
+    /// not overwrite it, so the edit lives here until it is committed.
+    private func budgetText(_ budget: UsagePayload.Budget) -> Binding<String> {
+        Binding(
+            get: { editedBudget ?? Self.budgetLabel(budget.tokens) },
+            set: { editedBudget = $0 }
+        )
+    }
+
+    /// Millions, with a tenth only when the budget has one. Showing 3,500,000
+    /// as "3M" would be the field lying about what is enforced.
+    private static func budgetLabel(_ tokens: Int) -> String {
+        let millions = Double(tokens) / 1_000_000
+        return millions == millions.rounded()
+            ? "\(Int(millions))M"
+            : String(format: "%.1fM", millions)
+    }
+
+    /// The field is in millions. "35", "35M" and "3.5" all mean what they look
+    /// like; anything else is refused rather than reinterpreted, because
+    /// stripping the punctuation out of "3.5M" would raise the spend limit
+    /// tenfold and call it a typo.
+    private func commitTypedBudget(_ budget: UsagePayload.Budget) {
+        guard let typed = editedBudget else { return }
+        editedBudget = nil
+        let cleaned = typed
+            .trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "M", with: "", options: [.caseInsensitive])
+            .trimmingCharacters(in: .whitespaces)
+        guard !cleaned.isEmpty,
+              cleaned.allSatisfy({ $0.isNumber || $0 == "." }),
+              cleaned.filter({ $0 == "." }).count <= 1,
+              let millions = Double(cleaned),
+              millions.isFinite, millions > 0 else {
+            model.reportUsageError("Type the limit in millions, like 30 or 3.5.")
+            return
+        }
+        let tokens = (millions * 1_000_000).rounded()
+        // A typed number is refused when it is out of range, never quietly
+        // clamped: someone who asks for 900M and gets 500M has been given a
+        // limit they did not choose.
+        guard tokens >= Double(budget.min), tokens <= Double(budget.max) else {
+            model.reportUsageError(
+                "The limit has to be between \(budget.min / 1_000_000)M and \(budget.max / 1_000_000)M."
+            )
+            return
+        }
+        guard Int(tokens) != budget.tokens else { return }
+        model.setDailyTokenBudget(Int(tokens))
+    }
+
+    /// The stepper's own moves: pressing + at the ceiling stops at the ceiling
+    /// rather than erroring. Typed input takes the stricter path above.
+    private func commitBudget(_ tokens: Int, _ budget: UsagePayload.Budget) {
+        let clamped = max(budget.min, min(budget.max, tokens))
+        guard clamped != budget.tokens else { return }
+        editedBudget = nil
+        model.setDailyTokenBudget(clamped)
+    }
+
     private func usageMeter(fraction: Double) -> some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 Capsule().fill(Theme.C.sunken)
                 Capsule()
-                    .fill(Theme.C.ink)
-                    .frame(width: proxy.size.width * fraction)
+                    .fill(fraction >= 0.9 ? Theme.C.danger : Theme.C.ink)
+                    .frame(width: max(fraction > 0 ? 2 : 0, proxy.size.width * fraction))
             }
         }
         .frame(height: 4)
-        .padding(.top, 10)
     }
 
+    /// Grouped in the language the app is written in. The machine's locale
+    /// would render 2,000 as "2.000" beside English labels, which reads as two.
     private func count(_ value: Int) -> String {
-        value.formatted(.number.grouping(.automatic))
+        value.formatted(.number.grouping(.automatic).locale(Locale(identifier: "en_US")))
+    }
+
+    /// 1,238,402 reads as noise in a meter row; 1.2M reads as a quantity. The
+    /// exact number stays one hover away.
+    private func compact(_ value: Int) -> String {
+        if value >= 1_000_000 {
+            let millions = Double(value) / 1_000_000
+            // A round budget is "30M", not "30.0M"; a real total keeps its
+            // tenth, because 2.2M and 2.9M are a different day.
+            if millions >= 100 || millions == millions.rounded() {
+                return "\(Int(millions.rounded()))M"
+            }
+            return String(format: "%.1fM", millions)
+        }
+        if value >= 10_000 {
+            return "\(Int((Double(value) / 1_000).rounded()))K"
+        }
+        return count(value)
     }
 
     // MARK: - Updates

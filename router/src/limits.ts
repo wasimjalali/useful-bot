@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { RouterError } from "./errors.ts";
-import { AGGREGATE_LIMITS, CALLER_LIMITS } from "../../shared/policy.ts";
+import { currentBudget, effectiveLimits } from "../../shared/limits-store.ts";
 import type { AuthedCaller } from "./auth.ts";
 
 export interface UsageRow {
@@ -191,7 +191,12 @@ export class LimitStore {
     now: number,
     reservation?: { id: string; alias: string; inputUnits: number; outputUnits: number },
   ): void {
-    const limits = CALLER_LIMITS[caller.profile];
+    // Read at enforce time, not at import: the owner can move the daily budget
+    // from the settings pane and the next turn must respect it without a
+    // router restart.
+    const effective = effectiveLimits(caller.profile, currentBudget());
+    const limits = effective.caller;
+    const aggregate = effective.aggregate;
     const minuteAgo = now - 60_000;
     const recent = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE caller_id = ? AND ts > ?").get(
       caller.callerId,
@@ -224,14 +229,14 @@ export class LimitStore {
       throw this.policyError("caller_budget_exhausted");
     }
     const totalDay = this.db.prepare("SELECT COUNT(*) AS c FROM hits WHERE ts > ?").get(dayAgo) as { c: number };
-    if (AGGREGATE_LIMITS.requests24h > 0 && totalDay.c >= AGGREGATE_LIMITS.requests24h) {
+    if (aggregate.requests24h > 0 && totalDay.c >= aggregate.requests24h) {
       throw this.policyError("global_budget_exhausted");
     }
     const totalTokens = this.chargedTokens(null, dayAgo);
-    if ((AGGREGATE_LIMITS.input24h > 0
-        && (totalTokens.input >= AGGREGATE_LIMITS.input24h || totalTokens.input + incomingInput > AGGREGATE_LIMITS.input24h))
-      || (AGGREGATE_LIMITS.output24h > 0
-        && (totalTokens.output >= AGGREGATE_LIMITS.output24h || totalTokens.output + incomingOutput > AGGREGATE_LIMITS.output24h))) {
+    if ((aggregate.input24h > 0
+        && (totalTokens.input >= aggregate.input24h || totalTokens.input + incomingInput > aggregate.input24h))
+      || (aggregate.output24h > 0
+        && (totalTokens.output >= aggregate.output24h || totalTokens.output + incomingOutput > aggregate.output24h))) {
       throw this.policyError("global_budget_exhausted");
     }
     this.db.prepare("INSERT INTO hits (caller_id, ts) VALUES (?, ?)").run(caller.callerId, now);

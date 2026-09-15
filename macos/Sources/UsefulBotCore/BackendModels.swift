@@ -391,14 +391,60 @@ public struct UsagePayload: Codable, Equatable, Sendable {
         public let output24h: Int
     }
 
+    /// The seven-day totals, shown as history beside the day the caps govern.
+    public struct Window: Codable, Equatable, Sendable {
+        public let observedInputTokens: Int
+        public let observedOutputTokens: Int
+        public let requests: Int
+
+        public var totalTokens: Int { observedInputTokens + observedOutputTokens }
+
+        enum CodingKeys: String, CodingKey {
+            case observedInputTokens = "observed_input_tokens"
+            case observedOutputTokens = "observed_output_tokens"
+            case requests
+        }
+    }
+
+    /// What the router charges against the caps right now: observed usage plus
+    /// the turns it has reserved for. This, not the observed half, is what the
+    /// meter compares against the cap.
+    public struct Charged: Codable, Equatable, Sendable {
+        public let inputTokens: Int
+        public let outputTokens: Int
+
+        enum CodingKeys: String, CodingKey {
+            case inputTokens = "input_tokens"
+            case outputTokens = "output_tokens"
+        }
+    }
+
+    /// The owner's daily token budget and the range the control may move it in.
+    public struct Budget: Codable, Equatable, Sendable {
+        public let tokens: Int
+        public let isDefault: Bool
+        public let `default`: Int
+        public let min: Int
+        public let max: Int
+        public let step: Int
+    }
+
     public let observedInputTokens: Int
     public let observedOutputTokens: Int
     public let requests: Int
     public let byModel: [ModelRow]
     public let caps: Caps
+    public let week: Window?
+    public let budget: Budget?
+    public let charged: Charged?
 
+    /// Tokens spent in the rolling 24 hours the caps are measured over.
     public var totalTokens: Int { observedInputTokens + observedOutputTokens }
     public var totalCap: Int { caps.input24h + caps.output24h }
+    /// What the meters read. A server that does not report the charged totals
+    /// falls back to the observed ones rather than drawing nothing.
+    public var chargedInputTokens: Int { charged?.inputTokens ?? observedInputTokens }
+    public var chargedOutputTokens: Int { charged?.outputTokens ?? observedOutputTokens }
 
     enum CodingKeys: String, CodingKey {
         case observedInputTokens = "observed_input_tokens"
@@ -406,6 +452,9 @@ public struct UsagePayload: Codable, Equatable, Sendable {
         case requests
         case byModel = "by_model"
         case caps
+        case week
+        case budget
+        case charged
     }
 }
 

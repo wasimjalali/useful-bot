@@ -522,6 +522,29 @@ public actor BackendClient {
         return decoded
     }
 
+    /// Move the router's daily token budget. `nil` restores the shipped
+    /// default. Answers with the refreshed usage so the pane never shows a
+    /// number the server did not accept.
+    public func setDailyTokenBudget(_ tokens: Int?) async throws -> UsagePayload {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/usage"))
+            request.httpMethod = "PUT"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            let body: [String: Any] = ["dailyTokenBudget": tokens as Any? ?? NSNull()]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let decoded = try? JSONDecoder().decode(ConnectorsErrorResponse.self, from: data)
+            throw BackendError.provider(decoded?.error ?? "budget_failed")
+        }
+        guard let decoded = try? JSONDecoder().decode(UsagePayload.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
     /// Ask the proxy to cancel the active turn on a session.
     public func cancel(sessionId: String) async throws {
         let (_, response) = try await perform { client, token in
