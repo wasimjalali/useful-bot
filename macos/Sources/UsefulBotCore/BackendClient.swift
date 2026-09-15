@@ -32,7 +32,25 @@ public enum BackendError: Error, LocalizedError, Equatable {
         case .unauthorized:
             return "The local server rejected the device token."
         case .http(let status):
-            return "The local server answered with status \(status)."
+            // A status code is not an answer. The ones a send can actually
+            // meet get said in words; the rest keep the number, which is at
+            // least something to search for.
+            switch status {
+            case 409:
+                // Busy session, a replayed request and a stale revision all
+                // land here, and the honest thing they share is that this one
+                // did not take. Nothing is promised about sending again.
+                return "That request conflicted with one already in flight."
+            case 429:
+                // A rate limit clears in seconds; an exhausted day does not.
+                // The turn-failure banner names the budget when it knows; this
+                // is the generic case, so it points at both.
+                return "The router refused this: either too many requests just now, or the daily token limit is used up."
+            case 502, 503, 504:
+                return "The local server could not complete this request."
+            default:
+                return "The local server answered with status \(status)."
+            }
         case .decoding:
             return "The local server sent data this app could not read."
         case .provider(let code):
