@@ -159,9 +159,14 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     // `script -c '...'` and `env -S '...'` carry a whole command line as an
     // option value: judged as a line of its own.
     const wrapper = basename(args[0].text);
-    const carriedAt = args.findIndex((token, at) => at > 0 && ((wrapper === "script" && token.text === "-c") || (wrapper === "env" && token.text === "-S")));
-    if (carriedAt > 0 && args[carriedAt + 1]) {
-      const carried = commandRisk(args[carriedAt + 1].text, root, depth);
+    const carriesLine = (token: Token) => (["script", "flock", "runuser", "chroot"].includes(wrapper) && token.text === "-c")
+      || (wrapper === "env" && (token.text === "-S" || token.text.startsWith("--split-string")));
+    const carriedAt = args.findIndex((token, at) => at > 0 && carriesLine(token));
+    if (carriedAt > 0) {
+      const option = args[carriedAt].text;
+      const line = option.includes("=") ? option.slice(option.indexOf("=") + 1) : args[carriedAt + 1]?.text;
+      if (!line) return `runs a command from the command line (${wrapper} ${option})`;
+      const carried = commandRisk(line, root, depth);
       if (carried) return carried;
     }
     // Only the wrapper's own leading options go; the inner command keeps
@@ -284,11 +289,20 @@ function packageRunnerRisk(name: string, rest: Token[], root: string, depth: num
   let i = 0;
   if (!PACKAGE_RUNNERS.has(name)) i = 1; // past exec / dlx / create
   while (i < rest.length && (rest[i].text.startsWith("-") && rest[i].text !== "--")) {
-    i += ["-p", "--package", "-c", "--call"].includes(rest[i].text) ? 2 : 1;
+    const option = rest[i].text;
+    // `-c` carries a shell line; `-p` names a package to fetch.
+    if (option === "-c" || option === "--call" || option.startsWith("--call=")) {
+      const line = option.includes("=") ? option.slice(option.indexOf("=") + 1) : rest[i + 1]?.text;
+      return (line ? commandRisk(line, root, depth) : null) ?? `runs a shell line (${name} --call)`;
+    }
+    if (option === "-p" || option === "--package" || option.startsWith("--package=")) {
+      return `downloads and runs a package (${name} --package)`;
+    }
+    i += 1;
   }
   if (rest[i]?.text === "--") i += 1;
   const tool = rest[i];
-  if (!tool) return null;
+  if (!tool) return rest.length > 0 ? `runs something this cannot read (${name})` : null;
   const inner = commandReason(rest.slice(i), root, false, depth);
   if (inner) return `${inner.replace(/\)$/, "")} via ${name})`;
   let local = false;
