@@ -4,6 +4,7 @@ import {
   evePostAllowed,
   eveSessionRoute,
   isEveSessionPost,
+  relayedEveCode,
   rewriteEveTurnBody,
   sessionRouteHeader,
   type SessionRoute,
@@ -120,10 +121,17 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     const upstream = await fetch(target, { method, headers, body: body?.buffer as ArrayBuffer | undefined, signal });
     if (!upstream.ok) {
       // Keep the upstream status but never relay eve's internal error body to
-      // the caller; it can carry runtime and prompt detail.
-      await upstream.body?.cancel().catch(() => undefined);
+      // the caller; it can carry runtime and prompt detail. The one exception
+      // is the code that says the session is gone for good, which the client
+      // needs to start a fresh one instead of dead-ending the chat.
+      // Only a 409 body is read, and eve's is a few dozen bytes; every
+      // other failure body is dropped unread as before.
+      const text = upstream.status === 409
+        ? await upstream.text().catch(() => "")
+        : (await upstream.body?.cancel().catch(() => undefined), "");
+      const code = relayedEveCode(upstream.status, text);
       return Response.json(
-        { ok: false, error: "eve_error", status: upstream.status },
+        { ok: false, error: "eve_error", status: upstream.status, ...(code ? { code } : {}) },
         { status: upstream.status },
       );
     }

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   eveGetAllowed,
   evePostAllowed,
+  relayedEveCode,
   rewriteEveTurnBody,
 } from "../shared/eve-proxy.ts";
 import { threadPrefix } from "../shared/threads.ts";
@@ -51,4 +52,16 @@ test("turn rewrite prefixes specialist bots and drops the routing botId", () => 
   // The proxy resolves the route from the raw body and strips botId before eve
   // sees the turn; the transcript cannot leak it back to the model.
   assert.equal(parsed.botId, undefined);
+});
+
+test("eve proxy relays only the session_not_active code from an upstream error", () => {
+  assert.equal(
+    relayedEveCode(409, '{"code":"session_not_active","error":"The session is no longer active.","ok":false}'),
+    "session_not_active",
+  );
+  // Any other code, status or body shape stays behind the proxy.
+  assert.equal(relayedEveCode(409, '{"code":"something_else","ok":false}'), null);
+  assert.equal(relayedEveCode(500, '{"code":"session_not_active","ok":false}'), null);
+  assert.equal(relayedEveCode(409, "not json"), null);
+  assert.equal(relayedEveCode(409, ""), null);
 });

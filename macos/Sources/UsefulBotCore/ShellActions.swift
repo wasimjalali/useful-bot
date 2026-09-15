@@ -36,6 +36,12 @@ public enum ShellActions {
         ["type": "clearThread", "botId": botId]
     }
 
+    /// Point a bot at a session, or at none. `nil` drops the pointer so the
+    /// next send starts a fresh session; the transcript rows stay.
+    public static func setSession(botId: String, sessionId: String?) -> [String: Any] {
+        ["type": "setSession", "botId": botId, "sessionId": sessionId ?? NSNull()]
+    }
+
     /// Attach or detach the folder this conversation works in. `nil` detaches.
     public static func setWorkspace(botId: String, workspace: BotWorkspace?) -> [String: Any] {
         let payload: Any = workspace.map { ws in

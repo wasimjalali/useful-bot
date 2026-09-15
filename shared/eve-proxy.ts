@@ -27,6 +27,23 @@ export function isEveSessionPost(suffix: string): boolean {
   return suffix === "session" || SESSION_ONE.test(suffix);
 }
 
+/**
+ * The one upstream error code a client is allowed to see. eve answers 409
+ * `session_not_active` for a session that failed or was retired, and the
+ * only way forward is a fresh session, so the client has to be told which
+ * 409 it got. Every other error body stays behind the proxy: it can carry
+ * runtime and prompt detail.
+ */
+export function relayedEveCode(status: number, body: string): string | null {
+  if (status !== 409 || !body) return null;
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return parsed.code === "session_not_active" ? "session_not_active" : null;
+  } catch {
+    return null;
+  }
+}
+
 export type SessionRoute = Route & { mentionNames: string[] };
 
 /**

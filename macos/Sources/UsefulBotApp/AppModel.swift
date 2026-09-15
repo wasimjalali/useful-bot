@@ -657,11 +657,28 @@ final class AppModel: ObservableObject {
                     }
                 }
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
-                let sessionId = try await self.client.send(
-                    botId: bot.id,
-                    sessionId: sendSessionId,
-                    message: message
-                )
+                let sessionId: String
+                do {
+                    sessionId = try await self.client.send(
+                        botId: bot.id,
+                        sessionId: sendSessionId,
+                        message: message
+                    )
+                } catch BackendError.sessionEnded where sendSessionId != nil {
+                    // eve retires a session whose turn failed, and the stored
+                    // pointer kept sending every later message to it: 409 on
+                    // each, a chat that looked dead. Drop the pointer and
+                    // start a fresh session with this same message. The turn
+                    // ids snapshot belongs to the old session, so it is
+                    // cleared too.
+                    guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                    await self.dropSession(botId: bot.id)
+                    // Stop pressed while the pointer was being dropped: no
+                    // second session gets created only to be cancelled.
+                    guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                    history = []
+                    sessionId = try await self.client.send(botId: bot.id, sessionId: nil, message: message)
+                }
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else {
                     // The turn was stopped while it was being created: the
                     // session exists now, so cancel it best-effort instead of
@@ -802,6 +819,18 @@ final class AppModel: ObservableObject {
             message: message
         ), live: true)
         return fresh
+    }
+
+    /// Forget a session eve has retired, locally and in the stored shell, so
+    /// the next send creates a new one. A failed shell write is not fatal
+    /// here: the send that follows stamps the fresh pointer through
+    /// `updateSession`, which overwrites the stale one either way.
+    private func dropSession(botId: String) async {
+        if var current = store, let index = current.bots.firstIndex(where: { $0.id == botId }) {
+            current.bots[index].sessionId = nil
+            store = current
+        }
+        _ = try? await client.shellAction(ShellActions.setSession(botId: botId, sessionId: nil))
     }
 
     private func updateSession(botId: String, sessionId: String, preview: String) async {
