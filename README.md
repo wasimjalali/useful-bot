@@ -76,12 +76,20 @@ catalogue (names, slugs, logos, no connection state) is cached for a day in
 `~/.useful-bot/composio-catalogue.json`, so the dialog pages and searches it
 locally; delete the file to force a refresh.
 
-The agent reaches apps through two tools. `connector_search` finds tool slugs
+The agent reaches apps through four tools. `connector_search` finds tool slugs
 for a use case in the connected apps. `connector_execute` runs one. A read runs
 at once; a write shows an approval card in auto and runs without one in full
 access; a destructive action (delete, remove, archive, revoke) always shows a
 card; read only refuses writes. The card carries the app, the tool and every
 argument, hashed like a shell line, so what is approved is exactly what runs.
+
+A bot can also ask for an app it doesn't have yet. `connector_catalog` searches
+the whole catalogue, connected or not, and `propose_connector` puts a Connect
+app card above the composer. Authorize opens the hosted sign-in; the card waits
+(Reopen if the tab was lost, ten minutes before it times out), turns Connected
+when Composio reports the account active, and the bot gets a turn to continue
+what it was doing. MCP variants ("Notion MCP" beside "Notion") list in the
+dialog and the catalogue too; connect whichever fits the job.
 
 Design and research: [docs/plan/CONNECTORS-COMPOSIO.md](docs/plan/CONNECTORS-COMPOSIO.md).
 Live check: `/usr/local/bin/node spikes/s4/probe.mjs` after the key is pasted.

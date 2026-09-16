@@ -159,6 +159,9 @@ public enum ProposalActions {
                 "message": proposal.message ?? "",
                 "sourceBotId": proposal.sourceBotId ?? NSNull(),
             ]
+        case .connectApp:
+            guard let slug = proposal.slug, !slug.isEmpty else { return nil }
+            return ["type": "connectApp", "slug": slug]
         case .unknown:
             return nil
         }

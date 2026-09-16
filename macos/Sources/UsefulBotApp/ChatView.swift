@@ -129,7 +129,8 @@ struct ChatView: View {
                             pending: model.busyProposals.contains(proposal.id),
                             onDecision: { confirmed in
                                 model.decideProposal(proposal, confirmed: confirmed)
-                            }
+                            },
+                            onReopen: { model.reopenConnect(proposal) }
                         )
                     }
                 }
@@ -304,7 +305,7 @@ struct ChatView: View {
                         // until the end of the turn, it was removed after the
                         // last row landed, and with the content bottom-aligned
                         // that pulled everything down by its height.
-                        if model.pending, model.transcript.last?.kind != .assistant {
+                        if model.pending || model.backgroundWorking, model.transcript.last?.kind != .assistant {
                             WorkingRow(bot: bot, activity: model.activity)
                         }
                         if !model.searchHits.isEmpty {

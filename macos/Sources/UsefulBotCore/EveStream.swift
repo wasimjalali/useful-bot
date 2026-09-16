@@ -244,6 +244,20 @@ public enum EveStream {
         pattern: "^Group chat: [^\\n]+\\.\\n"
     )
 
+    /// Port of `handoffEnvelope` in `web/lib/agent-exec.ts`: a user turn the
+    /// handoff pump sent on the owner's behalf. Its first two lines are fixed.
+    private static let handoffEnvelope = try! NSRegularExpression(
+        pattern: "^Handoff from [^\\n]+\\.\\n(This arrives in your own chat\\.|This belongs to the group chat [^\\n]+\\.)\\n"
+    )
+
+    /// True for a user turn the pump delivered (a teammate handoff, a connect
+    /// resume). The durable thread already carries that message as its own
+    /// row, so the transcript does not show the envelope as an owner bubble.
+    public static func isHandoffEnvelope(_ text: String) -> Bool {
+        let whole = NSRange(text.startIndex..., in: text)
+        return handoffEnvelope.firstMatch(in: text, range: whole) != nil
+    }
+
     /// Remove the identity prefix the web proxy injects into a stored user
     /// turn, so the transcript shows the owner's original message.
     public static func stripThreadPrefix(_ text: String) -> String {

@@ -85,6 +85,9 @@ public enum Transcript {
             switch message.role {
             case .user:
                 if consume(&durableUserCounts, message.text) { continue }
+                // A turn the pump sent (handoff, connect resume) is background
+                // plumbing, not something the owner typed.
+                if EveStream.isHandoffEnvelope(message.text) { continue }
                 live.append(TranscriptRow(id: message.id, kind: .user, text: message.text, at: message.at))
             case .assistant:
                 if consume(&durableAssistantCounts, message.text) { continue }

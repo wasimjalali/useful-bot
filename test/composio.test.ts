@@ -11,6 +11,7 @@ import {
   disconnectConnector,
   executeConnectorTool,
   forgetConnected,
+  countToolkitTools,
   listConnectorToolkits,
   searchConnectorTools,
   isKeyRejected,
@@ -200,6 +201,7 @@ const PENDING: ToolkitItem = {
 
 const AIRTABLE: ToolkitItem = { slug: "airtable", name: "Airtable", isNoAuth: false, logo: undefined };
 const ZULIP: ToolkitItem = { slug: "zulip", name: "Zulip", isNoAuth: false, logo: undefined };
+const NOTION_MCP: ToolkitItem = { slug: "notion_mcp", name: "Notion MCP", isNoAuth: false, logo: undefined };
 
 test("listing puts connected first, then featured in order, then the rest, and refreshes the cache", async () => {
   const { factory } = stub({ toolkitItems: [ZULIP, SLACK, PENDING, AIRTABLE, GMAIL, NOAUTH] });
@@ -235,6 +237,18 @@ test("listing with a search filters by slug or name, lowercased", async () => {
   assert.deepEqual(rows.map((row) => row.slug), ["slack"]);
   const remote = state.listed.filter((options) => options?.search !== undefined).map((options) => options?.search);
   assert.deepEqual(remote, ["sla"]);
+});
+
+test("an MCP variant is listed after its plain app and hides only when no-auth", async () => {
+  const { factory } = stub({ toolkitItems: [NOTION_MCP, PENDING, NOAUTH] });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  await listConnectorToolkits({}, path);
+  await catalogueReady();
+  const { rows } = await listConnectorToolkits({ search: "notion" }, path);
+  assert.deepEqual(rows.map((row) => row.slug), ["notion", "notion_mcp"]);
+  const all = await listConnectorToolkits({}, path);
+  assert.ok(!all.rows.some((row) => row.noAuth));
 });
 
 test("paging walks the list and the catalogue cache makes the second open local", async () => {
@@ -427,4 +441,32 @@ test("toolkitOf matches a whole connected toolkit segment, longest first", () =>
   assert.equal(toolkitOf("GMAILX_FETCH", known), null);
   assert.equal(toolkitOf("GOOGLECALENDAR_CREATE_EVENT", known), null);
   assert.equal(toolkitOf("weird", known), null);
+});
+
+test("an exact slug with underscores is found first", async () => {
+  const { factory } = stub({ toolkitItems: [NOTION_MCP, PENDING] });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  await listConnectorToolkits({}, path);
+  await catalogueReady();
+  const { rows } = await listConnectorToolkits({ search: "notion_mcp" }, path);
+  assert.deepEqual(rows.map((row) => row.slug), ["notion_mcp"]);
+});
+
+test("countToolkitTools counts one toolkit's tools and returns null on failure", async () => {
+  const { state, factory } = stub({
+    toolkitItems: [GMAIL],
+    directTools: [
+      { slug: "GMAIL_FETCH_EMAILS", toolkit: { slug: "gmail" } },
+      { slug: "GMAIL_SEND_EMAIL", toolkit: { slug: "gmail" } },
+      { slug: "SLACK_POST", toolkit: { slug: "slack" } },
+    ],
+  });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  assert.equal(await countToolkitTools("gmail", path), 2);
+  assert.equal(await countToolkitTools("not a slug", path), null);
+  state.directTools = null as never;
+  assert.equal(await countToolkitTools("gmail", path), null);
+  assert.equal(await countToolkitTools("gmail", tmpPath(false)), null);
 });

@@ -9,13 +9,16 @@ import {
   createProposal,
   isReserved,
   listPendingProposals,
+  listProposalsOfKind,
   listThreadEvents,
   newProposalId,
   parseAgentStore,
   readAgentStore,
+  readProposal,
   reserveKey,
   reserveSend,
   threadSnapshot,
+  updateProposal,
   writeAgentStore,
 } from "../shared/agent-store.ts";
 import {
@@ -331,4 +334,41 @@ test("group fan-out sends one handoff per member and one card per target thread"
     if (previousDir === undefined) delete process.env.UB_HANDOFF_DIR;
     else process.env.UB_HANDOFF_DIR = previousDir;
   }
+});
+
+test("a connectApp proposal round-trips its phase fields and can be patched in place", () => {
+  const { storePath } = tempPaths();
+  const proposal = createProposal({
+    kind: "connectApp",
+    slug: "gmail",
+    name: "Gmail",
+    logo: "https://logos.composio.dev/api/gmail",
+    purpose: "Read the last invoice thread",
+    sourceBotId: "b1",
+    threadId: "b1",
+    phase: "proposed",
+    accountId: null,
+    waitingSince: null,
+    toolCount: null,
+    handoffId: null,
+  }, storePath);
+  const stored = readProposal(proposal.id, storePath);
+  assert.equal(stored?.kind, "connectApp");
+  assert.equal(stored && stored.kind === "connectApp" ? stored.phase : null, "proposed");
+  updateProposal(proposal.id, (item) => {
+    if (item.kind === "connectApp") {
+      item.phase = "waiting";
+      item.accountId = "ca_gmail";
+      item.waitingSince = "2026-09-16T10:00:00.000Z";
+    }
+  }, storePath);
+  const waiting = listProposalsOfKind("connectApp", storePath);
+  assert.equal(waiting.length, 1);
+  assert.equal(waiting[0].phase, "waiting");
+  assert.equal(waiting[0].accountId, "ca_gmail");
+  assert.equal(waiting[0].logo, "https://logos.composio.dev/api/gmail");
+  // A bad phase on disk reads as proposed, never as connected.
+  updateProposal(proposal.id, (item) => { (item as { phase: string }).phase = "bogus"; }, storePath);
+  assert.equal(listProposalsOfKind("connectApp", storePath)[0].phase, "proposed");
+  assert.equal(updateProposal("prp_missing", () => undefined, storePath), null);
 });

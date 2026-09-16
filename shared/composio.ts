@@ -303,8 +303,8 @@ export function forgetConnected(): void {
  * search of three characters or more is sent to Composio directly.
  *
  * MCP variants of an app (notion_mcp beside notion) are Composio's endpoints
- * for MCP clients; they are hidden unless already connected, so the plain
- * app is the one people connect.
+ * for MCP clients. They list beside the plain app; on a tie the plain app
+ * sorts first by name, so "Notion" comes before "Notion MCP".
  */
 export async function listConnectorToolkits(
   options: { search?: string; offset?: number; limit?: number } = {},
@@ -327,7 +327,7 @@ export async function listConnectorToolkits(
       if (search && search.length >= SEARCH_MIN) add((await session.toolkits({ search, limit: PAGE_MAX })).items);
     }
     const list = [...rows.values()].filter(
-      (row) => !row.noAuth && (row.connected || !row.slug.endsWith("_mcp")) && (!search || score(row, search) > 0),
+      (row) => !row.noAuth && (!search || score(row, search) > 0),
     );
     const rank = new Map(FEATURED_TOOLKITS.map((slug, index) => [slug, index]));
     const tier = (row: ConnectorToolkit) => (row.connected ? 0 : rank.has(row.slug) ? 1 : 2);
@@ -356,7 +356,10 @@ function score(row: ConnectorToolkit, search: string): number {
   const name = row.name.toLowerCase();
   const slug = row.slug.replace(/_/g, " ");
   let base = 0;
-  if (name.startsWith(search)) base = 40;
+  // The exact slug outranks everything: the agent tools and the connect pump
+  // look a toolkit up by slug, underscores included.
+  if (row.slug === search) base = 50;
+  else if (name.startsWith(search)) base = 40;
   else if (slug.startsWith(search)) base = 35;
   else if (name.split(/\s+/).some((word) => word.startsWith(search))) base = 30;
   else if (name.includes(search) || slug.includes(search)) base = 20;
@@ -483,6 +486,23 @@ export async function searchConnectorTools(
     .map((item) => item.toolkit.toLowerCase())
     .filter((toolkit) => !allowed.has(toolkit) && !allowed.has(`${toolkit}_mcp`));
   return { tools: [...tools.values()], guidance: guidance.slice(0, 8), notConnected };
+}
+
+/**
+ * How many tools one toolkit publishes, for the connect card. Best effort:
+ * any failure is null, never a thrown error, because the count decorates a
+ * card that is already connected.
+ */
+export async function countToolkitTools(slug: string, path = connectorsPath()): Promise<number | null> {
+  if (!isToolkitSlug(slug)) return null;
+  try {
+    const client = factory(requireKey(readConnectorsStore(path)));
+    const tools = await client.tools.getRawComposioTools({ toolkits: [slug], limit: 200 });
+    if (!Array.isArray(tools)) return null;
+    return tools.filter((tool) => (tool.toolkit?.slug ?? toolkitOf(tool.slug, [slug]) ?? "").toLowerCase() === slug).length;
+  } catch {
+    return null;
+  }
 }
 
 /** Executes one tool. The caller has already decided the approval question. */
