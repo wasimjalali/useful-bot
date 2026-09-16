@@ -511,6 +511,29 @@ test("oversize stream event is rejected", async () => {
   });
 });
 
+test("mid-stream protocol failures open the alias circuit", async () => {
+  await withRouter(async (base, tokens) => {
+    const call = () => fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], stream: true }),
+    });
+    for (let i = 0; i < 3; i += 1) {
+      const res = await call();
+      assert.equal(res.status, 200);
+      assert.equal((await res.text()).includes("upstream_protocol_error"), true);
+    }
+    const opened = await call();
+    assert.equal(opened.status, 503);
+    assert.equal((await opened.json()).error.code, "circuit_open");
+  }, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`);
+    res.write(`data: ${"a".repeat(300 * 1024)}`);
+    res.end();
+  });
+});
+
 test("shared retry-after parser accepts seconds and http dates", () => {
   assert.equal(retryAfterMs(new Response(null, { headers: { "retry-after": "2" } })), 2000);
   const dated = retryAfterMs(new Response(null, { headers: { "retry-after": new Date(Date.now() + 3000).toUTCString() } }));

@@ -167,6 +167,11 @@ export class MemoryStore {
     return this.skippedRows;
   }
 
+  /** Release the SQLite handle; the tools share one store per process. */
+  close(): void {
+    this.db.close();
+  }
+
   /**
    * A write marks the store dirty before the markdown rename and clears the
    * marker only after the row is indexed. A crash in between leaves the marker,
@@ -289,9 +294,18 @@ export class MemoryStore {
 
   list(audience: Audience, limit = 100, botId?: string): MemoryNoteCard[] {
     const now = new Date().toISOString();
-    const rows = this.db.prepare(
-      "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT ?",
-    ).all(audience, now, limit) as Array<{ id: string }>;
+    // The bot filter must land before LIMIT: the index holds every bot's
+    // notes, so limiting the audience first drops a bot's own note once
+    // newer notes from other bots fill the window. Tags are stored
+    // space-joined, so the tag is matched with space boundaries the same way
+    // noteBelongsToBot does it, untagged notes included.
+    const rows = (botId
+      ? this.db.prepare(
+          "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) AND instr(' ' || tags || ' ', ?) > 0 ORDER BY updated_at DESC, id LIMIT ?",
+        ).all(audience, now, ` ${botTag(botId)} `, limit)
+      : this.db.prepare(
+          "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT ?",
+        ).all(audience, now, limit)) as Array<{ id: string }>;
     const cards: MemoryNoteCard[] = [];
     for (const row of rows) {
       const excerpt = this.readExcerpt(row.id, audience);
@@ -359,6 +373,13 @@ export class MemoryStore {
       throw new Error("memory_meta");
     }
     if (input.id !== undefined) assertNoteId(input.id);
+    // The schema accepts an offset timestamp, but the index compares the
+    // stored string against a Z-form now: an offset expiry would sort
+    // wrongly, so every value is normalised to a UTC instant at write time.
+    if (input.expiresAt !== null && !Number.isFinite(Date.parse(input.expiresAt))) {
+      throw new Error("memory_meta");
+    }
+    const expiresAt = input.expiresAt === null ? null : new Date(input.expiresAt).toISOString();
     const lowered = `${input.title}\n${input.body}`.toLowerCase();
     if (containsSecret(lowered)) {
       throw new Error("memory_secret_refused");
@@ -393,7 +414,7 @@ export class MemoryStore {
         audience: input.audience,
         createdAt: now,
         updatedAt: now,
-        expiresAt: input.expiresAt,
+        expiresAt,
         sourceSessionId: input.sessionId,
         approvedBy: "owner",
         status: "active",
@@ -466,5 +487,25 @@ export function noteBelongsToBot(tags: string[], botId: string): boolean {
 export function resetMemoryDir(root: string): void {
   if (existsSync(root)) rmSync(root, { recursive: true, force: true });
   mkdirSync(join(root, "notes"), { recursive: true, mode: 0o700 });
+}
+
+let sharedStore: MemoryStore | null = null;
+let sharedRoot = "";
+
+/**
+ * One store per process and root for the memory tools. Each tool call used
+ * to open its own SQLite handle that only GC released; sharing one instance
+ * keeps the handles bounded. Keyed by the resolved root so a changed
+ * UB_MEMORY_ROOT (tests use one per case) does not keep the old directory.
+ * Tests and the web route keep using the constructor.
+ */
+export function sharedMemoryStore(): MemoryStore {
+  const root = memoryRoot();
+  if (!sharedStore || sharedRoot !== root) {
+    sharedStore?.close();
+    sharedStore = new MemoryStore(root);
+    sharedRoot = root;
+  }
+  return sharedStore;
 }
 

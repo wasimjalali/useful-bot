@@ -44,9 +44,21 @@ export default defineTool({
     if (!sectionOnly) {
       const requested = input.botId?.trim() ?? "";
       if (!requested) return { status: "invalid", error: `${input.action} needs a botId` };
-      const target = shell.bots.find((bot) => (
-        bot.id === requested || bot.name.toLowerCase() === requested.toLowerCase()
-      ));
+      // An id is exact. A name is not: the roster allows two bots whose names
+      // differ only in case, so an ambiguous match comes back as a question
+      // rather than a coin toss, the way `deleteBot` does.
+      const byId = shell.bots.find((bot) => bot.id === requested) ?? null;
+      const byName = byId
+        ? []
+        : shell.bots.filter((bot) => bot.name.toLowerCase() === requested.toLowerCase());
+      if (byName.length > 1) {
+        return {
+          status: "ambiguous",
+          error: `${byName.length} bots are named ${requested}`,
+          hint: `Call rail_action again with one of these ids: ${byName.map((bot) => bot.id).join(", ")}.`,
+        };
+      }
+      const target = byId ?? byName[0] ?? null;
       if (!target) {
         return { status: "not_found", error: `no bot matches ${requested}`, hint: "Call listBots for exact ids." };
       }
