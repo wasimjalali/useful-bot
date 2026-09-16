@@ -44,15 +44,18 @@ export async function POST(request: Request) {
     }
     // An image goes back as a data URL so the turn can carry it as a file
     // part. The bytes decide the type, not the name: a `.jpg` that holds a
-    // PNG is still a picture, while a renamed binary is not, and the URL
-    // reaches a model provider.
+    // PNG is still a picture, and a `.png` that holds something else (a
+    // HEIC, a truncated download) attaches as a plain file the way it did
+    // before, rather than failing the attach over its name. Only bytes that
+    // are an image become a URL a model provider receives.
     let mediaType: string | undefined;
     let dataUrl: string | undefined;
     if (imageMediaType(name, type)) {
       const sniffed = sniffImageType(bytes);
-      if (!sniffed) throw new Error("attachment_image_invalid");
-      mediaType = sniffed;
-      dataUrl = `data:${sniffed};base64,${bytes.toString("base64")}`;
+      if (sniffed) {
+        mediaType = sniffed;
+        dataUrl = `data:${sniffed};base64,${bytes.toString("base64")}`;
+      }
     }
     return NextResponse.json({ ok: true, name, type, bytes: bytes.length, text, mediaType, dataUrl });
   } catch (err) {

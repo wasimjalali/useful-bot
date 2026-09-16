@@ -132,7 +132,13 @@ struct ComposerView: View {
             // same way.
             .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
                 DroppedFiles.urls(from: providers) { urls in
-                    model.addAttachments(urls)
+                    // A drop this view claimed has to end in something: an
+                    // attachment, or a line saying why not.
+                    if urls.isEmpty {
+                        model.attachError = "That file could not be read."
+                    } else {
+                        model.addAttachments(urls)
+                    }
                 }
                 return true
             }
@@ -510,10 +516,15 @@ struct ComposerView: View {
 }
 
 /// File URLs out of a drop's item providers, delivered once on the main actor.
+/// The completion always fires, with an empty list when nothing loaded, so
+/// the caller can say so instead of swallowing the drop.
 enum DroppedFiles {
     static func urls(from providers: [NSItemProvider], completion: @escaping @MainActor ([URL]) -> Void) {
         let candidates = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
-        guard !candidates.isEmpty else { return }
+        guard !candidates.isEmpty else {
+            Task { @MainActor in completion([]) }
+            return
+        }
         let group = DispatchGroup()
         let lock = NSLock()
         var urls: [URL?] = Array(repeating: nil, count: candidates.count)
@@ -529,7 +540,6 @@ enum DroppedFiles {
         }
         group.notify(queue: .main) {
             let found = urls.compactMap { $0 }
-            guard !found.isEmpty else { return }
             Task { @MainActor in completion(found) }
         }
     }
