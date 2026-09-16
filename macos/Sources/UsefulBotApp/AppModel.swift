@@ -453,8 +453,10 @@ final class AppModel: ObservableObject {
                     // Only this write's fence: a newer select queued behind
                     // it owns the fence now, and clearing it would let the
                     // poll bounce back before that write lands.
-                    if self.pendingSelectionBotId == botId { self.pendingSelectionBotId = nil }
-                    self.saveError = "Could not save the selection."
+                    if self.pendingSelectionBotId == botId {
+                        self.pendingSelectionBotId = nil
+                        self.saveError = "Could not save the selection."
+                    }
                 }
             }
         }
