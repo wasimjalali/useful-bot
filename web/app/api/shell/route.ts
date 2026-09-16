@@ -298,7 +298,15 @@ export async function PUT(request: Request) {
         try {
           syncSessionWorkspace(bot.sessionId, bot);
         } catch {
-          /* the next turn's stamp is the backstop; the roster action already stood */
+          // The roster action stood but the grant still says the old
+          // permission, and a card already open re-reads that grant before
+          // it spends. No grant at all reads as Read only, so revoking is
+          // the fail-closed answer; the next turn's stamp restores it.
+          try {
+            removeSessionGrant(bot.sessionId);
+          } catch {
+            /* a store locked twice in a row: the next turn's stamp settles it */
+          }
         }
       }
     }
