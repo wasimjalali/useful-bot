@@ -119,6 +119,8 @@ export type ConnectAppProposal = {
   waitingSince: string | null;
   /** Filled when connected; null when the count call failed. */
   toolCount: number | null;
+  /** The resume handoff, once queued; the card leaves the dock when it lands. */
+  handoffId: string | null;
 };
 
 export type ProposalPayload = BotProposal | GroupProposal | ProfileProposal | FanoutProposal | ConnectAppProposal;
@@ -315,6 +317,7 @@ function parseProposal(raw: unknown): Proposal | null {
       toolCount: typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount)
         ? Math.max(0, Math.trunc(rec.toolCount))
         : null,
+      handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
     };
   }
   const targetIds = Array.isArray(rec.targetIds)

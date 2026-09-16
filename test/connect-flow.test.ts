@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProposal, listThreadEvents, readProposal } from "../shared/agent-store.ts";
 import { resetCatalogueMemo } from "../shared/composio-catalogue.ts";
-import { CONNECT_WAIT_MS, pumpConnects, resetConnectMemo, startConnectAuthorize } from "../shared/connect-flow.ts";
+import { CONNECT_LINGER_MS, CONNECT_WAIT_MS, pumpConnects, resetConnectMemo, startConnectAuthorize } from "../shared/connect-flow.ts";
 import { forgetConnected, setComposioFactory, type ComposioLike, type ComposioSessionLike } from "../shared/composio.ts";
 import { setConnectorsKey, updateConnectorsStore } from "../shared/connectors-store.ts";
-import { listHandoffs } from "../shared/handoffs.ts";
+import { claimHandoff, listHandoffs, markDelivered } from "../shared/handoffs.ts";
 import { writeShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 
@@ -100,6 +100,7 @@ function seed(storePath: string) {
     accountId: null,
     waitingSince: null,
     toolCount: null,
+    handoffId: null,
   }, storePath);
 }
 
@@ -139,21 +140,29 @@ test("the pump connects a waiting card once, writes the note and queues one resu
   const first = await pumpConnects({ now: Date.now() + 6_000 });
   assert.deepEqual(first.connected, [proposal.id]);
   const stored = readProposal(proposal.id, storePath);
-  assert.equal(stored?.status, "confirmed");
+  // Still pending: the Connected pill stays until the resume lands.
+  assert.equal(stored?.status, "pending");
   assert.equal(stored?.kind === "connectApp" && stored.phase, "connected");
   assert.equal(stored?.kind === "connectApp" && stored.toolCount, 3);
   const handoffs = listHandoffs();
   assert.equal(handoffs.length, 1);
+  assert.equal(stored?.kind === "connectApp" && stored.handoffId, handoffs[0].id);
   assert.equal(handoffs[0].targetBotId, "b1");
   assert.equal(handoffs[0].targetName, "Mailer");
   assert.equal(handoffs[0].depth, 0);
   assert.match(handoffs[0].message, /connected Gmail/);
   assert.match(handoffs[0].message, /Find the invoice/);
   assert.ok(listThreadEvents("b1", storePath).some((event) => event.kind === "note" && event.text === "Gmail connected"));
-  // A second tick does nothing more.
+  // A second tick does nothing more while the handoff is still queued.
   resetConnectMemo();
   assert.deepEqual(await pumpConnects({ now: Date.now() + 12_000 }), { connected: [], expired: [] });
   assert.equal(listHandoffs().length, 1);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
+  // Once the handoff lands, the card is confirmed and leaves the dock.
+  const token = claimHandoff(handoffs[0].id);
+  markDelivered(handoffs[0].id, "on it", undefined, token ?? "");
+  await pumpConnects({ now: Date.now() + 18_000 });
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
 });
 
 test("the pump respects the 5 s memo, expires after 10 min, and leaves toolCount null on a count failure", async () => {
@@ -170,9 +179,12 @@ test("the pump respects the 5 s memo, expires after 10 min, and leaves toolCount
   assert.equal((readProposal(proposal.id, storePath) as { phase: string }).phase, "waiting");
   state.countThrows = true;
   await pumpConnects({ now: t0 + 6_000 });
-  const stored = readProposal(proposal.id, storePath) as { phase: string; toolCount: number | null };
+  const stored = readProposal(proposal.id, storePath) as { phase: string; toolCount: number | null; status: string };
   assert.equal(stored.phase, "connected");
   assert.equal(stored.toolCount, null);
+  // A resume that never lands still lets the card go after the linger cap.
+  await pumpConnects({ now: t0 + 6_000 + CONNECT_LINGER_MS + 1_000 });
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
 
   const second = seed(storePath);
   await startConnectAuthorize(second.id, CALLBACK, { now: t0 });

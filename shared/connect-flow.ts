@@ -8,7 +8,7 @@ import {
 } from "./agent-store.ts";
 import { authorizeConnector, countToolkitTools, forgetConnected, listConnectorToolkits } from "./composio.ts";
 import { connectorsPath as defaultConnectorsPath } from "./connectors-store.ts";
-import { queueHandoff } from "./handoffs.ts";
+import { queueHandoff, readHandoff } from "./handoffs.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
@@ -22,6 +22,8 @@ import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
 export const CONNECT_WAIT_MS = 10 * 60 * 1000;
 export const CONNECT_CHECK_MS = 5_000;
+/** How long a Connected card may wait for its resume to land before it leaves anyway. */
+export const CONNECT_LINGER_MS = 10 * 60 * 1000;
 
 const lastCheck = new Map<string, number>();
 
@@ -69,9 +71,21 @@ export async function pumpConnects(
   const connectorsPath = opts.connectorsPath ?? defaultConnectorsPath();
   const connected: string[] = [];
   const expired: string[] = [];
-  const waiting = listProposalsOfKind("connectApp", storePath).filter(
-    (item) => item.status === "pending" && item.phase === "waiting",
-  );
+  const cards = listProposalsOfKind("connectApp", storePath).filter((item) => item.status === "pending");
+  // A Connected card stays docked until its resume handoff has landed (or
+  // given up), so the owner sees the pill until the bot's next turn starts.
+  for (const card of cards.filter((item) => item.phase === "connected")) {
+    const handoff = card.handoffId ? readHandoff(card.handoffId) : null;
+    const landed = !handoff || handoff.status !== "pending";
+    const since = Date.parse(card.waitingSince ?? "");
+    const lingered = !Number.isFinite(since) || now - since > CONNECT_LINGER_MS;
+    if (landed || lingered) {
+      updateProposal(card.id, (item) => {
+        item.status = "confirmed";
+      }, storePath);
+    }
+  }
+  const waiting = cards.filter((item) => item.phase === "waiting");
   for (const card of waiting) {
     const since = Date.parse(card.waitingSince ?? "");
     if (!Number.isFinite(since) || now - since > CONNECT_WAIT_MS) {
@@ -115,7 +129,7 @@ export async function pumpConnects(
     } catch {
       /* the name is cosmetic */
     }
-    queueHandoff({
+    const handoff = queueHandoff({
       sourceBotId: DEFAULT_BOT_ID,
       sourceName: "Useful Bot",
       targetBotId: targetId,
@@ -123,8 +137,12 @@ export async function pumpConnects(
       message: `The owner connected ${card.name}. Continue the task: ${card.purpose}`,
       depth: 0,
     });
+    // Still pending: the card shows Connected until the handoff lands, and
+    // waitingSince now bounds how long that can take.
     updateProposal(card.id, (item) => {
-      item.status = "confirmed";
+      if (item.kind !== "connectApp") return;
+      item.handoffId = handoff.id;
+      item.waitingSince = new Date(now).toISOString();
     }, storePath);
     lastCheck.delete(card.id);
     connected.push(card.id);

@@ -350,6 +350,7 @@ test("a connectApp proposal round-trips its phase fields and can be patched in p
     accountId: null,
     waitingSince: null,
     toolCount: null,
+    handoffId: null,
   }, storePath);
   const stored = readProposal(proposal.id, storePath);
   assert.equal(stored?.kind, "connectApp");

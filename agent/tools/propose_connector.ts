@@ -65,6 +65,7 @@ export default defineTool({
         accountId: null,
         waitingSince: null,
         toolCount: null,
+        handoffId: null,
       });
       const bot = shell.bots.find((item) => item.id === botId);
       appendAgentEvent(threadId, {
