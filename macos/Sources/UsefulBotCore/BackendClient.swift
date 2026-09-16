@@ -1004,10 +1004,17 @@ public actor BackendClient {
     /// Turn ids the session already has. The next turn is the first with an id
     /// outside this set, which keeps a resend of identical text from arming the
     /// stream on the earlier turn.
-    public func historyTurnIds(sessionId: String) async throws -> Set<String> {
+    ///
+    /// With `terminalOnly`, only turns whose completion, cancellation or
+    /// failure is in the replay count: a turn still running when the ids are
+    /// read must stay unknown to a follower, or its events are never applied.
+    public func historyTurnIds(sessionId: String, terminalOnly: Bool = false) async throws -> Set<String> {
         var ids = Set<String>()
         for try await event in stream(sessionId: sessionId, expectedSuffix: nil) {
             if let turnId = event.turnId, !turnId.isEmpty {
+                if terminalOnly, !["turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
+                    continue
+                }
                 ids.insert(turnId)
             }
         }

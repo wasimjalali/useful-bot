@@ -47,4 +47,24 @@ import Testing
         #expect(!supervisor.isOwnNodeProcess("node some-other-app", repoPath: repo))
         #expect(!supervisor.isOwnNodeProcess("Chrome", repoPath: repo))
     }
+
+    @Test func aSiblingCheckoutWithALongerPathIsNotOurs() {
+        // A sibling checkout (`useful-bot-2`) extends this repo's path, so a
+        // raw substring match would count its processes as our own and
+        // signal them.
+        let supervisor = ServiceSupervisor()
+        let sibling = "\(repo)-2"
+        #expect(!supervisor.isOwnNodeProcess(
+            "/usr/local/bin/node \(sibling)/node_modules/next/dist/bin/next dev \(sibling)/web --port 4320",
+            repoPath: repo
+        ))
+        #expect(!supervisor.isOwnNodeProcess(
+            "node --experimental-strip-types \(sibling)/router/src/index.ts",
+            repoPath: repo
+        ))
+        #expect(!supervisor.isOwnNodeProcess(
+            "/usr/local/bin/node \(sibling)/scripts/service.mjs web",
+            repoPath: repo
+        ))
+    }
 }

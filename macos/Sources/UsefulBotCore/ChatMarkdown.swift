@@ -9,7 +9,7 @@ public enum MarkdownBlock: Equatable, Sendable {
     case orderedList([String])
     case code(lang: String, text: String)
     case table(MarkdownTable)
-    case quote(String)
+    case quote([MarkdownBlock])
     case rule
 }
 
@@ -81,7 +81,10 @@ public enum ChatMarkdownParser {
                     quoted.append(replace(quote, in: lines[i], with: ""))
                     i += 1
                 }
-                blocks.append(.quote(quoted.joined(separator: "\n")))
+                // The de-quoted lines go back through the same block parser,
+                // so a fenced code block inside a quote stays a code block
+                // instead of rendering as loose backticks and inline code.
+                blocks.append(.quote(Self.blocks(from: quoted.joined(separator: "\n"))))
                 continue
             }
             if let match = firstMatch(heading, in: line) {

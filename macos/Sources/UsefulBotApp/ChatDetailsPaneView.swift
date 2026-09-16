@@ -324,6 +324,33 @@ private struct RoutineEditorView: View {
         }
         .onAppear(perform: seed)
         .onChange(of: routine?.id) { _, _ in seed() }
+        // A server-side turn can edit the routine while the pane is open.
+        // The refreshed row reseeds the fields, unless the owner is typing
+        // in one of them: a poll must never overwrite an edit in progress,
+        // the way the settings pane guards its own reseed on focus.
+        .onChange(of: routine) { _, _ in
+            let id = routine?.id ?? "new"
+            if loadedId != id {
+                seed()
+                return
+            }
+            // A write of this routine still in flight owns the rows: a poll
+            // that lands between the edit and its echo would put the old
+            // server copy back over it.
+            guard focus == nil, let current = routine, !model.routineBusy.contains(current.id) else { return }
+            name = current.name
+            instruction = current.instruction
+            schedules = current.schedules
+        }
+        // A refused schedule write leaves the rows showing a schedule the
+        // server does not have. Put the server's copy back so the rows match
+        // what the next edit starts from. The error is shared by every
+        // routine write, so only a routine with no write of its own in
+        // flight is restored: for that one the server copy is the truth.
+        .onChange(of: model.routinesError) { _, next in
+            guard next != nil, let routine, !model.routineBusy.contains(routine.id) else { return }
+            schedules = routine.schedules
+        }
         .onChange(of: focus) { _, next in
             if next == nil {
                 commitName()

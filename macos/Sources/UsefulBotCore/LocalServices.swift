@@ -486,7 +486,20 @@ public struct FoundationProcessRunner: ProcessRunner {
         logDirectory.appendingPathComponent("service-\(label).log")
     }
 
+    /// Service logs are appended forever, so the open path rotates them past
+    /// this size instead of letting one chatty service grow without bound.
+    private static let logMaxBytes = 8 * 1024 * 1024
+
     private static func openLog(_ url: URL) -> FileHandle? {
+        // Service logs are appended forever with no cap, so a log over the
+        // cap is rotated aside before opening and the service starts fresh.
+        // The previous rotation is replaced, keeping one spare, not a series.
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+        if size >= logMaxBytes {
+            let previous = url.appendingPathExtension("1")
+            try? FileManager.default.removeItem(at: previous)
+            try? FileManager.default.moveItem(at: url, to: previous)
+        }
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }

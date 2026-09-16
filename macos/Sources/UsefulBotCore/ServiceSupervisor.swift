@@ -69,7 +69,12 @@ public struct ServiceSupervisor: Sendable {
     /// Next.js or eve process on the same port is never signalled.
     public func isOwnNodeProcess(_ commandLine: String, repoPath: String) -> Bool {
         if commandLine.contains(scriptPath(repoPath: repoPath)) { return true }
-        guard commandLine.contains(repoPath) else { return false }
+        // A raw substring match would also match a sibling checkout whose
+        // path extends this one (`useful-bot-2`), so the repo path only
+        // counts on a path boundary. The bare suffix covers the
+        // working-directory fallback, which appends the path with nothing
+        // after it.
+        guard commandLine.contains(repoPath + "/") || commandLine.hasSuffix(repoPath) else { return false }
         return commandLine.contains("next/dist/bin/next")
             || commandLine.contains("next-server")
             || commandLine.contains("router/src/index.ts")
