@@ -586,11 +586,13 @@ final class AppModel: ObservableObject {
                 continue
             }
             if seededSessionId != sessionId {
-                // The turn ids the session already has. A turn is remembered
-                // only once its terminal event passed, so a follow stream
-                // that dropped mid-turn replays it whole and its completion
-                // fills the reply back in.
-                if let turns = try? await client.historyTurnIds(sessionId: sessionId) {
+                // The turn ids the session already finished. Only terminal
+                // turns count: one still running while the ids are read must
+                // stay unknown here, or every event it has left, and its
+                // completion, would be skipped below and the turn would never
+                // render until the bot is re-selected. Events the replay has
+                // already shown are dropped by the projection's id dedupe.
+                if let turns = try? await client.historyTurnIds(sessionId: sessionId, terminalOnly: true) {
                     seededSessionId = sessionId
                     knownTurnIds = turns
                 }
@@ -1443,10 +1445,13 @@ final class AppModel: ObservableObject {
     }
 
     func perform(_ action: [String: Any]) {
+        // Captured at the call, not when the queued work runs: a switch that
+        // lands ahead of it in the chain would otherwise make the action's
+        // outcome belong to the new bot.
+        let botId = selectedBotId
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
-            let botId = self.selectedBotId
             do {
                 let result = try await self.client.shellActionResult(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
@@ -1454,6 +1459,9 @@ final class AppModel: ObservableObject {
                 // The roster change stood; something hanging off it did not.
                 // The tick sweeps the rest, so this says so and moves on
                 // rather than presenting a completed action as a failure.
+                // Scoped like the failure below: a late outcome must not
+                // clear or overwrite the banner of a bot it did not run for.
+                guard botId == self.selectedBotId else { return }
                 self.saveError = result.detachError == nil
                     ? nil
                     : "Saved, but some of its data is still being cleared up."
@@ -1489,7 +1497,12 @@ final class AppModel: ObservableObject {
             // server's stale pointer; otherwise a failed select write would
             // let the next idle poll switch straight back to the last bot.
             if selected != selectedBotId, pendingSelectionBotId == nil {
+                // A select write that failed twice is why this repair runs at
+                // all; the switch clears per-thread state, so the explanation
+                // has to survive it or the bounce looks unexplained.
+                let selectFailure = saveError == "Could not save the selection." ? saveError : nil
                 switchToBot(selected)
+                if let selectFailure { saveError = selectFailure }
             }
         } else if let current = selectedBotId, !next.bots.contains(where: { $0.id == current }) {
             if let first = next.bots.first?.id {
