@@ -228,6 +228,40 @@ test("a card that lost its handoff id adopts the queued resume instead of queuei
   assert.equal((readProposal(proposal.id, storePath) as { handoffId: string }).handoffId, first);
 });
 
+test("an overdue card whose sign-in finished while no tick ran still connects", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  const t0 = Date.now();
+  await startConnectAuthorize(proposal.id, CALLBACK, { now: t0 });
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  const out = await pumpConnects({ now: t0 + CONNECT_WAIT_MS + 60_000 });
+  assert.deepEqual(out.expired, []);
+  assert.deepEqual(out.connected, [proposal.id]);
+  assert.equal(listHandoffs().length, 1);
+});
+
+test("a failed resume is re-queued, not adopted", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  await startConnectAuthorize(proposal.id, CALLBACK);
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  resetConnectMemo();
+  await pumpConnects();
+  const first = listHandoffs()[0];
+  const dir = process.env.UB_HANDOFF_DIR ?? "";
+  writeFileSync(join(dir, `${first.id}.json`), JSON.stringify({ ...first, status: "failed", attempts: 3 }));
+  updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") { p.handoffId = null; p.status = "pending"; } }, storePath);
+  await pumpConnects();
+  assert.equal(listHandoffs().length, 2);
+  const id = (readProposal(proposal.id, storePath) as { handoffId: string }).handoffId;
+  assert.notEqual(id, first.id);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
+});
+
 test("a reopen that lands during the expiry check is not expired", async () => {
   const { storePath } = paths();
   const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };

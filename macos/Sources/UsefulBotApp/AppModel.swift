@@ -1792,10 +1792,14 @@ final class AppModel: ObservableObject {
                            url.scheme?.lowercased() == "https",
                            let host = url.host?.lowercased(), host == "composio.dev" || host.hasSuffix(".composio.dev") {
                             if !NSWorkspace.shared.open(url) {
-                                self.threadError = "The sign-in page could not be opened in the browser. Use Reopen."
+                                // Sticky: the reload this branch starts would
+                                // otherwise wipe the banner a moment later.
+                                self.stickyThreadError = "The sign-in page could not be opened in the browser. Use Reopen."
+                                self.threadError = self.stickyThreadError
                             }
                         } else {
-                            self.threadError = "Composio sent a sign-in link this app will not open."
+                            self.stickyThreadError = "Composio sent a sign-in link this app will not open."
+                            self.threadError = self.stickyThreadError
                         }
                         // Authorize from Proposed or Reopen from Expired stays
                         // busy until the poll renders the card in Waiting

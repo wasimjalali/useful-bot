@@ -114,6 +114,8 @@ function queueResume(card: Stored, now: number, storePath: string): boolean {
       (record) => record.targetBotId === targetId
         && record.message === message
         && record.sourceBotId === DEFAULT_BOT_ID
+        // A resume that gave up never reached the bot: queue a fresh one.
+        && record.status !== "failed"
         && Number.isFinite(flippedAt)
         && Date.parse(record.createdAt) >= flippedAt - 1_000,
     );
@@ -179,7 +181,23 @@ async function pumpConnectsOnce(
   const waiting = cards.filter((item) => item.phase === "waiting");
   for (const card of waiting) {
     const since = Date.parse(card.waitingSince ?? "");
-    if (!Number.isFinite(since) || now - since > CONNECT_WAIT_MS) {
+    const overdue = !Number.isFinite(since) || now - since > CONNECT_WAIT_MS;
+    // An overdue card is asked about once more before it expires: a sign-in
+    // that finished while no tick ran (app closed, Mac asleep) must still
+    // connect, not time out.
+    const checked = lastCheck.get(card.id) ?? 0;
+    if (now - checked < CONNECT_CHECK_MS && !overdue) continue;
+    lastCheck.set(card.id, now);
+    let active = false;
+    try {
+      forgetConnected();
+      const page = await listConnectorToolkits({ search: card.slug, limit: 20 }, connectorsPath);
+      active = page.rows.some((row) => row.slug === card.slug && row.connected);
+    } catch {
+      continue;
+    }
+    if (!active) {
+      if (!overdue) continue;
       // Only if still waiting on the same sign-in: a Reopen that landed
       // since the read above restamped waitingSince and must not expire.
       let didExpire = false;
@@ -193,18 +211,6 @@ async function pumpConnectsOnce(
       if (didExpire) expired.push(card.id);
       continue;
     }
-    const checked = lastCheck.get(card.id) ?? 0;
-    if (now - checked < CONNECT_CHECK_MS) continue;
-    lastCheck.set(card.id, now);
-    let active = false;
-    try {
-      forgetConnected();
-      const page = await listConnectorToolkits({ search: card.slug, limit: 20 }, connectorsPath);
-      active = page.rows.some((row) => row.slug === card.slug && row.connected);
-    } catch {
-      continue;
-    }
-    if (!active) continue;
     const toolCount = await countToolkitTools(card.slug, connectorsPath);
     // Flip under the lock, and only from waiting: a dismiss that landed
     // between the check and here must win, and a pump that overlapped this
