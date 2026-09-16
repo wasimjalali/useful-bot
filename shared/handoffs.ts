@@ -172,8 +172,10 @@ export function claimHandoff(id: string, dir = handoffDir()): string | null {
   // not atomic, so a live claim another process wrote after the read would be
   // unlinked and stolen. Re-read immediately before deleting and abort when
   // the file no longer holds the claim that was read.
+  // A claim that vanished between the reads (released or pruned) is free,
+  // so only a file holding a different token stops the takeover.
   const latest = readClaim(id, dir);
-  if (latest?.token !== current?.token) return null;
+  if (latest && latest.token !== current?.token) return null;
   try { unlinkSync(path); } catch { /* ignore */ }
   return create();
 }
