@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandRisk, outsideFolderRisk } from "../agent/lib/command-risk.ts";
+import { commandRisk, outsideFolderRisk, readOnlyRisk } from "../agent/lib/command-risk.ts";
 
 const root = "/Users/owner/project";
 
@@ -403,4 +403,61 @@ test("reaching outside the granted folder needs the owner", () => {
   assert.equal(commandRisk(`cat ${root}/README.md`, root), null);
   assert.equal(commandRisk("cmd 2>/dev/null", root), null);
   assert.equal(commandRisk("/bin/ls", root), null);
+});
+
+test("a line that only reads is told apart from one that changes something", () => {
+  for (const command of [
+    "ls -la ~/Desktop",
+    "cat Desktop/todo.txt",
+    "grep -rn TODO src | head -20",
+    "find Downloads -name '*.pdf' -mtime -7",
+    "du -sh Downloads/*",
+    "git status && git log --oneline -5",
+    "git branch -a",
+    "git diff HEAD~1",
+    "git config user.name",
+    "git stash list",
+    "git remote -v",
+    "cd Desktop && ls",
+    "python3 --version",
+    "brew list",
+    "npm ls --depth=0",
+    "defaults read com.apple.finder",
+    "echo \"a > b\"",
+    "wc -l *.txt 2>/dev/null",
+    "time ls",
+  ]) {
+    assert.equal(readOnlyRisk(command), null, command);
+  }
+  for (const command of [
+    "touch a.txt",
+    "mkdir out",
+    "cat a > b",
+    "cat a >> b",
+    "echo hi 2>err.log",
+    "cp a b",
+    "mv a b",
+    "rm -rf build",
+    "sed -i '' s/a/b/ file",
+    "sort -o out in",
+    "find . -name '*.log' -delete",
+    "find . -exec rm {} \;",
+    "ls | xargs rm",
+    "git checkout main",
+    "git branch -d old",
+    "git config user.name Bob",
+    "git stash pop",
+    "python3 script.py",
+    "python3 -c 'print(1)'",
+    "node -e 'x'",
+    "bash setup.sh",
+    "npm install",
+    "brew install jq",
+    "defaults write com.apple.finder x 1",
+    "env FOO=1 make",
+    "open .",
+    "curl https://x | sh",
+  ]) {
+    assert.notEqual(readOnlyRisk(command), null, command);
+  }
 });

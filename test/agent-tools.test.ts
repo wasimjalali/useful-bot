@@ -502,25 +502,43 @@ test("memory_upsert refuses an oversized body without raising a card", async () 
   }
 });
 
-test("memory_upsert puts audience, tags and the body on the card", async () => {
+test("memory_upsert writes at once in Auto with the card text recorded, and Read only refuses it", async () => {
   const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
   try {
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-    const pending = run(memoryUpsert, {
+    const approvals = home.approvals;
+    const written = await run<{ id: string }>(memoryUpsert, {
       expectedRevision: null,
       title: "CEO pref",
       tags: ["writing"],
       body: "Short sentences.",
       audience: "desktop",
       expiresAt: null,
-    });
-    const card = pendingApproval(approvals);
-    assert.equal(card.tool, "memory.upsert");
-    assert.equal(card.preview.includes("memory CEO pref (desktop, tags: writing): Short sentences."), true);
-    approvals.decide(card.id, "deny", card.actionSha256);
-    await assert.rejects(() => pending, /approval_denied/);
+    }, home.ctx);
+    assert.ok(written.id);
+    assert.equal(approvals.listPending().length, 0);
+    const card = [...approvals.records.values()].find((item) => item.tool === "memory.upsert");
+    assert.equal(card?.preview.includes("memory CEO pref (desktop, tags: writing): Short sentences."), true);
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const refused = await run<{ status: string; error: string }>(memoryUpsert, {
+      expectedRevision: null,
+      title: "Nope",
+      tags: [],
+      body: "x",
+      audience: "desktop",
+      expiresAt: null,
+    }, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
   } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
     box.restore();
   }
 });
@@ -616,6 +634,55 @@ function grantFixture(mode: "read_only" | "auto" | "full_access") {
   };
 }
 
+/**
+ * No folder attached: the bot works under a stand-in home with the given
+ * permission. `UB_WORKSPACE_ROOT` pins the home the way tests need; the
+ * grant carries no path, which is exactly what the web server stamps for a
+ * bot with nothing attached.
+ */
+function homeFixture(mode: "read_only" | "auto" | "full_access") {
+  const dir = mkdtempSync(join(tmpdir(), "ub-home-"));
+  mkdirSync(join(dir, "home", "Desktop"), { recursive: true });
+  const home = realpathSync(join(dir, "home"));
+  mkdirSync(join(home, ".useful-bot"), { recursive: true });
+  writeFileSync(join(home, "Desktop", "todo.txt"), "buy milk\n", "utf8");
+  writeFileSync(join(home, ".useful-bot", "approvals.json"), "{}", "utf8");
+  const previous = {
+    store: process.env.UB_WORKSPACE_STORE_PATH,
+    approvals: process.env.UB_APPROVALS_PATH,
+    root: process.env.UB_WORKSPACE_ROOT,
+  };
+  process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+  process.env.UB_APPROVALS_PATH = join(dir, "approvals.json");
+  process.env.UB_WORKSPACE_ROOT = home;
+  const approvals = new ApprovalStore(Date.now, join(dir, "approvals.json"));
+  setApprovalStore(approvals);
+  upsertSessionGrant({ sessionId: "sess-home", path: null, permission: mode }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+  return {
+    home,
+    approvals,
+    ctx: { session: { id: "sess-home" } },
+    restore() {
+      const put = (key: string, value: string | undefined) => {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      };
+      put("UB_WORKSPACE_STORE_PATH", previous.store);
+      put("UB_APPROVALS_PATH", previous.approvals);
+      put("UB_WORKSPACE_ROOT", previous.root);
+      setApprovalStore(new ApprovalStore(() => 1_000));
+    },
+  };
+}
+
+/** Wait a beat, then the one card that should be open. */
+async function openCard(approvals: ApprovalStore) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const cards = approvals.listPending();
+  assert.equal(cards.length, 1, "exactly one card should be open");
+  return cards[0];
+}
+
 test("read_file and list_dir work inside a granted folder, in every mode", async () => {
   const box = grantFixture("read_only");
   try {
@@ -643,9 +710,14 @@ test("read_only refuses writes and commands inside the folder", async () => {
         }),
       /workspace_read_only/,
     );
-    const result = await run<{ status: string; error: string }>(bash, { command: "echo hi" }, { session: { id: "sess-1" } });
+    // A line that only reads runs even here: reading is what Read only means.
+    const read = await run<{ stdout: string }>(bash, { command: "cat note.txt" }, { session: { id: "sess-1" } });
+    assert.equal(read.stdout.includes("hello from the project"), true);
+    assert.equal(box.approvals.listPending().length, 0);
+    const result = await run<{ status: string; error: string }>(bash, { command: "touch out.txt" }, { session: { id: "sess-1" } });
     assert.equal(result.status, "blocked");
     assert.equal(result.error, "workspace_read_only");
+    assert.equal(existsSync(join(box.project, "out.txt")), false);
   } finally {
     box.restore();
   }
@@ -739,14 +811,19 @@ test("full access runs commands without a card, asks before a reach outside, and
     assert.equal(result.stdout.includes(basename(box.project)), true);
     assert.equal(box.approvals.listPending().length, 0);
 
+    // Looking outside the folder is a read and runs; changing something
+    // outside it waits for the owner.
+    const look = await run<{ stdout: string }>(bash, { command: "ls /Users" }, { session: { id: "sess-1" } });
+    assert.equal(typeof look.stdout, "string");
+    assert.equal(box.approvals.listPending().length, 0, "a read outside the folder needs no card");
     let settled = false;
-    const outside = run<{ stdout: string }>(bash, { command: "ls /Users" }, { session: { id: "sess-1" } })
+    const outside = run<{ stdout: string }>(bash, { command: "touch /Users/Shared/ub-test-file" }, { session: { id: "sess-1" } })
       .then((value) => {
         settled = true;
         return value;
       });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(settled, false, "a path outside the folder must wait for the owner");
+    assert.equal(settled, false, "a write outside the folder must wait for the owner");
     const cards = box.approvals.listPending();
     assert.equal(cards.length, 1);
     assert.equal(cards[0].preview.includes("outside the folder"), true);
@@ -871,11 +948,11 @@ test("railAction pins, hides, moves and creates sections", async () => {
   }
 });
 
-test("railAction removeSection asks the owner, refuses a non-empty section and honours a denial", async () => {
+test("railAction removeSection applies at once in Auto, refuses a non-empty section, and Read only refuses it", async () => {
   const box = sandbox();
+  const home = homeFixture("auto");
   try {
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
+    const approvals = home.approvals;
     const store = seedRoster(["CEO", "Research"]);
     const ceo = idOf(store, "CEO");
     const section = await run<{ status: string; sectionId: string }>(railAction, {
@@ -896,30 +973,32 @@ test("railAction removeSection asks the owner, refuses a non-empty section and h
 
     await run(railAction, { action: "move", botId: ceo, sectionId: null });
 
-    // Denied: the section stays.
-    const denied = run<{ status: string }>(railAction, { action: "removeSection", sectionId: section.sectionId });
-    let card = pendingApproval(approvals);
-    assert.equal(card.tool, "remove_section");
-    assert.equal(card.preview, `remove section Finance (${section.sectionId})`);
-    approvals.decide(card.id, "deny", card.actionSha256);
-    await assert.rejects(() => denied, /approval_denied/);
+    // Read only: nothing on the rail changes.
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const refused = await run<{ status: string; error: string }>(railAction, { action: "removeSection", sectionId: section.sectionId }, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
+    const pinned = await run<{ status: string; error: string }>(railAction, { action: "pin", botId: ceo }, home.ctx);
+    assert.equal(pinned.status, "blocked");
     assert.ok(readShell().sections.some((item) => item.id === section.sectionId));
 
-    // Approved: the section goes, and a replay of the same card has no effect.
-    const approved = run<{ status: string; sectionId: string }>(railAction, {
+    // Auto: the empty section goes at once. The approval record is still
+    // written and bound, so the audit trail keeps what was removed.
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const removed = await run<{ status: string; sectionId: string }>(railAction, {
       action: "removeSection",
       sectionId: section.sectionId,
-    });
-    card = pendingApproval(approvals);
-    approvals.decide(card.id, "approve", card.actionSha256);
-    const removed = await approved;
+    }, home.ctx);
     assert.equal(removed.status, "removed");
     assert.equal(removed.sectionId, section.sectionId);
     assert.equal(readShell().sections.some((item) => item.id === section.sectionId), false);
-    const again = await run<{ status: string }>(railAction, { action: "removeSection", sectionId: section.sectionId });
-    assert.equal(again.status, "not_found");
     assert.equal(approvals.listPending().length, 0);
+    const record = [...approvals.records.values()].find((item) => item.tool === "remove_section");
+    assert.equal(record?.preview, `remove section Finance (${section.sectionId})`);
+    const again = await run<{ status: string }>(railAction, { action: "removeSection", sectionId: section.sectionId }, home.ctx);
+    assert.equal(again.status, "not_found");
   } finally {
+    home.restore();
     box.restore();
   }
 });
@@ -981,18 +1060,16 @@ test("routine tools create, list, update and queue a run", async () => {
     const approvals = new ApprovalStore(() => 1_000);
     setApprovalStore(approvals);
 
-    const pendingCreate = run<{ status: string; routineId: string; nextRunAt: string | null }>(createRoutine, {
+    // Auto creates the routine at once; the card text is still recorded.
+    const created = await run<{ status: string; routineId: string; nextRunAt: string | null }>(createRoutine, {
       name: "Weekly SEO check",
       instruction: "Check rankings and draft a post.",
       schedules: [{ kind: "weekly", days: [1], time: "09:00" }],
       timezone: "Europe/Berlin",
     });
-    const card = pendingApproval(approvals);
-    assert.equal(card.tool, "create_routine");
-    // Nothing is scheduled while the owner has not decided.
-    assert.equal(storedRoutines(seo).length, 0);
-    approvals.decide(card.id, "approve", card.actionSha256);
-    const created = await pendingCreate;
+    assert.equal(approvals.listPending().length, 0);
+    const card = [...approvals.records.values()].find((item) => item.tool === "create_routine");
+    assert.equal(card?.preview.includes("Weekly SEO check"), true);
     assert.equal(created.status, "created");
     assert.ok(created.nextRunAt);
     assert.equal(storedRoutines(seo).length, 1);
@@ -1015,15 +1092,10 @@ test("routine tools create, list, update and queue a run", async () => {
     assert.equal((await run<{ status: string }>(runRoutine, { routineId: created.routineId })).status, "paused");
     assert.equal(readRoutine(created.routineId)?.manualRunRequested, false);
 
-    // Resuming puts the routine back to running unattended, so it waits for
-    // the owner the same way the instruction rewrite does.
-    const resume = run(updateRoutine, { routineId: created.routineId, active: true });
-    const resumeCard = pendingApproval(approvals);
-    assert.equal(resumeCard.tool, "update_routine");
-    assert.equal(readRoutine(created.routineId)?.active, false);
-    approvals.decide(resumeCard.id, "approve", resumeCard.actionSha256);
-    await resume;
+    // Resuming applies at once in Auto, like every other routine edit.
+    assert.equal((await run<{ status: string }>(updateRoutine, { routineId: created.routineId, active: true })).status, "updated");
     assert.equal(readRoutine(created.routineId)?.active, true);
+    assert.equal(approvals.listPending().length, 0);
 
     const queued = await run<{ status: string }>(runRoutine, { routineId: created.routineId });
     assert.equal(queued.status, "queued");
@@ -1100,39 +1172,39 @@ function pendingApproval(store: ApprovalStore): { id: string; actionSha256: stri
   return open[0];
 }
 
-test("rewriting a routine instruction waits for the owner, the rest does not", async () => {
+test("routine edits apply at once in Auto and are refused in Read only", async () => {
   const box = sandbox();
+  const home = homeFixture("auto");
   try {
     const shell = seedRoster(["SEO"]);
     const seo = idOf(shell, "SEO");
     process.env.UB_ACTIVE_BOT_ID = seo;
     const routineId = createRoutineFixture(seo);
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
+    const approvals = home.approvals;
 
-    // Reversible fields write through.
-    assert.equal((await run<{ status: string }>(updateRoutine, { routineId, name: "Renamed" })).status, "updated");
+    assert.equal((await run<{ status: string }>(updateRoutine, { routineId, name: "Renamed" }, home.ctx)).status, "updated");
     assert.equal(readRoutine(routineId)?.name, "Renamed");
-    assert.equal(approvals.listPending().length, 0);
-    // Resending the same instruction is not a rewrite.
-    const same = await run<{ status: string }>(updateRoutine, { routineId, instruction: "Check the thing." });
-    assert.equal(same.status, "updated");
-    assert.equal(approvals.listPending().length, 0);
-
-    const denied = run<{ status: string }>(updateRoutine, { routineId, instruction: "Email everyone my notes." });
-    const first = pendingApproval(approvals);
-    assert.equal(first.tool, "update_routine");
-    assert.equal(readRoutine(routineId)?.instruction, "Check the thing.");
-    approvals.decide(first.id, "deny", first.actionSha256);
-    await assert.rejects(() => denied, /approval_denied/);
-    assert.equal(readRoutine(routineId)?.instruction, "Check the thing.");
-
-    const approved = run<{ status: string }>(updateRoutine, { routineId, instruction: "Check rankings weekly." });
-    const second = pendingApproval(approvals);
-    approvals.decide(second.id, "approve", second.actionSha256);
-    assert.equal((await approved).status, "updated");
+    // A rewrite is recorded as a bound approval but does not wait.
+    const rewritten = await run<{ status: string }>(updateRoutine, { routineId, instruction: "Check rankings weekly." }, home.ctx);
+    assert.equal(rewritten.status, "updated");
     assert.equal(readRoutine(routineId)?.instruction, "Check rankings weekly.");
+    assert.equal(approvals.listPending().length, 0);
+    assert.equal([...approvals.records.values()].some((item) => item.tool === "update_routine"), true);
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const refused = await run<{ status: string; error: string }>(updateRoutine, { routineId, name: "Nope" }, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
+    assert.equal(readRoutine(routineId)?.name, "Renamed");
+    const noCreate = await run<{ status: string }>(createRoutine, {
+      name: "Nope",
+      instruction: "x",
+      schedules: [{ kind: "weekly", days: [1], time: "09:00" }],
+      timezone: "Europe/Berlin",
+    }, home.ctx);
+    assert.equal(noCreate.status, "blocked");
   } finally {
+    home.restore();
     box.restore();
   }
 });
@@ -1193,36 +1265,29 @@ test("deleteBot refuses the orchestrator, itself and the last bot", async () => 
   }
 });
 
-test("a bot-initiated routine delete cannot bypass the owner gate", async () => {
+test("a routine delete runs at once in Auto and is refused in Read only", async () => {
   const box = sandbox();
+  const home = homeFixture("read_only");
   try {
     const shell = seedRoster(["SEO"]);
     const seo = idOf(shell, "SEO");
     process.env.UB_ACTIVE_BOT_ID = seo;
     const routineId = createRoutineFixture(seo);
+    const approvals = home.approvals;
 
-    const approvals = new ApprovalStore(() => 1_000);
-    setApprovalStore(approvals);
-
-    assert.equal((await run<{ status: string }>(deleteRoutine, { routineId: "rtn_nope" })).status, "not_found");
+    assert.equal((await run<{ status: string }>(deleteRoutine, { routineId: "rtn_nope" }, home.ctx)).status, "not_found");
+    const refused = await run<{ status: string; error: string }>(deleteRoutine, { routineId }, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
+    assert.equal(readRoutine(routineId) !== null, true);
     assert.equal(approvals.listPending().length, 0);
 
-    const denied = run<{ status: string }>(deleteRoutine, { routineId });
-    const first = pendingApproval(approvals);
-    assert.equal(first.tool, "delete_routine");
-    assert.equal(readRoutine(routineId) !== null, true);
-    approvals.decide(first.id, "deny", first.actionSha256);
-    await assert.rejects(() => denied, /approval_denied/);
-    assert.equal(readRoutine(routineId) !== null, true);
-
-    const approved = run<{ status: string }>(deleteRoutine, { routineId });
-    const second = pendingApproval(approvals);
-    // A card approved for one routine is spent on that routine only.
-    assert.equal(second.actionSha256 === first.actionSha256, true);
-    approvals.decide(second.id, "approve", second.actionSha256);
-    assert.equal((await approved).status, "deleted");
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    assert.equal((await run<{ status: string }>(deleteRoutine, { routineId }, home.ctx)).status, "deleted");
     assert.equal(readRoutine(routineId), null);
+    assert.equal(approvals.listPending().length, 0);
   } finally {
+    home.restore();
     box.restore();
   }
 });
@@ -1537,6 +1602,187 @@ test("clearHistory clears its own chat by default and every chat on request", as
     assert.equal((await run<{ status: string }>(clearHistory, { botId: "nope" })).status, "not_found");
     assert.equal(approvals.listPending().length, 0);
   } finally {
+    box.restore();
+  }
+});
+
+// MARK: - No folder attached: the owner's home
+
+test("with no folder attached, reads work under the home in every mode", async () => {
+  for (const mode of ["read_only", "auto", "full_access"] as const) {
+    const home = homeFixture(mode);
+    try {
+      const listing = await run<{ rows: string[] }>(listDir, { path: "Desktop" }, home.ctx);
+      assert.equal(listing.rows.some((row) => row.includes("todo.txt")), true, mode);
+      const read = await run<{ text: string }>(readFile, { path: "Desktop/todo.txt" }, home.ctx);
+      assert.equal(read.text.includes("buy milk"), true, mode);
+      const shell = await run<{ stdout: string; status?: string }>(bash, { command: "ls Desktop && cat Desktop/todo.txt" }, home.ctx);
+      assert.equal(shell.stdout?.includes("buy milk"), true, `${mode}: ${JSON.stringify(shell)}`);
+      assert.equal(home.approvals.listPending().length, 0, mode);
+      // The app's own stores are never readable, whatever the mode.
+      await assert.rejects(() => run(readFile, { path: ".useful-bot/approvals.json" }, home.ctx), /path_forbidden/);
+      await assert.rejects(() => run(listDir, { path: ".useful-bot" }, home.ctx), /path_forbidden/);
+    } finally {
+      home.restore();
+    }
+  }
+});
+
+test("with no folder attached, Auto creates new files freely but asks before changing what exists", async () => {
+  const home = homeFixture("auto");
+  try {
+    await approvedWrite({
+      path: "Desktop/new-note.txt",
+      content: "fresh",
+      expectedSha256: null,
+      sessionId: "sess-home",
+      turnId: "t",
+      toolCallId: "c1",
+    });
+    assert.equal(readFileSync(join(home.home, "Desktop", "new-note.txt"), "utf8"), "fresh");
+    assert.equal(home.approvals.listPending().length, 0, "a new file needs no card");
+
+    const overwrite = approvedWrite({
+      path: "Desktop/todo.txt",
+      content: "replaced",
+      expectedSha256: null,
+      sessionId: "sess-home",
+      turnId: "t",
+      toolCallId: "c2",
+    });
+    const card = await openCard(home.approvals);
+    assert.equal(card.tool, "write_file");
+    assert.equal(readFileSync(join(home.home, "Desktop", "todo.txt"), "utf8"), "buy milk\n");
+    home.approvals.decide(card.id, "deny", card.actionSha256);
+    await assert.rejects(overwrite, /approval_denied/);
+    assert.equal(readFileSync(join(home.home, "Desktop", "todo.txt"), "utf8"), "buy milk\n");
+  } finally {
+    home.restore();
+  }
+});
+
+test("with no folder attached, Auto asks before any shell line that changes something", async () => {
+  const home = homeFixture("auto");
+  try {
+    let settled = false;
+    const touch = run<{ stdout: string }>(bash, { command: "touch Desktop/made.txt" }, home.ctx).then((value) => {
+      settled = true;
+      return value;
+    });
+    const card = await openCard(home.approvals);
+    assert.equal(settled, false);
+    assert.equal(card.preview.includes("changes files outside a project folder"), true);
+    home.approvals.decide(card.id, "approve", card.actionSha256);
+    await touch;
+    assert.equal(existsSync(join(home.home, "Desktop", "made.txt")), true);
+    // Destructive lines say why, the way they do in a folder.
+    const remove = run(bash, { command: "rm Desktop/made.txt" }, home.ctx);
+    const second = await openCard(home.approvals);
+    assert.equal(second.preview.includes("deletes files"), true);
+    home.approvals.decide(second.id, "deny", second.actionSha256);
+    await assert.rejects(remove);
+    assert.equal(existsSync(join(home.home, "Desktop", "made.txt")), true);
+  } finally {
+    home.restore();
+  }
+});
+
+test("with no folder attached, Full access changes files under the home without a card", { skip: process.platform !== "darwin" }, async () => {
+  const home = homeFixture("full_access");
+  try {
+    const result = await run<{ stdout: string; status?: string }>(bash, { command: "touch Desktop/made.txt && ls Desktop" }, home.ctx);
+    assert.equal(result.stdout?.includes("made.txt"), true, JSON.stringify(result));
+    assert.equal(home.approvals.listPending().length, 0);
+    await approvedWrite({
+      path: "Desktop/todo.txt",
+      content: "replaced",
+      expectedSha256: null,
+      sessionId: "sess-home",
+      turnId: "t",
+      toolCallId: "c3",
+    });
+    assert.equal(readFileSync(join(home.home, "Desktop", "todo.txt"), "utf8"), "replaced");
+    assert.equal(home.approvals.listPending().length, 0);
+    // Still no writes into the app's own stores, even here.
+    await assert.rejects(() => approvedWrite({
+      path: ".useful-bot/approvals.json",
+      content: "{}",
+      expectedSha256: null,
+      sessionId: "sess-home",
+      turnId: "t",
+      toolCallId: "c4",
+    }), /path_forbidden/);
+  } finally {
+    home.restore();
+  }
+});
+
+test("a read-only shell line runs with every write refused, whatever the mode", { skip: process.platform !== "darwin" }, async () => {
+  const home = homeFixture("read_only");
+  try {
+    // `cat` is a read, so the line runs without a card; but the redirection
+    // makes it a write, and the classifier sees that first.
+    const blocked = await run<{ status: string; error: string }>(bash, { command: "cat Desktop/todo.txt > Desktop/copy.txt" }, home.ctx);
+    assert.equal(blocked.status, "blocked");
+    assert.equal(blocked.error, "workspace_read_only");
+    assert.equal(existsSync(join(home.home, "Desktop", "copy.txt")), false);
+    const version = await run<{ stdout: string }>(bash, { command: "python3 --version 2>/dev/null; echo done" }, home.ctx);
+    assert.equal(version.stdout.includes("done"), true);
+  } finally {
+    home.restore();
+  }
+});
+
+test("deleting a bot still asks in Auto, runs in Full access, and is refused in Read only", async () => {
+  const box = sandbox();
+  const home = homeFixture("read_only");
+  try {
+    const shell = seedRoster(["CEO", "Research", "Ops"]);
+    const ceo = idOf(shell, "CEO");
+    const research = idOf(shell, "Research");
+    const ops = idOf(shell, "Ops");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+
+    const refused = await run<{ status: string; error: string }>(deleteBot, { botId: research }, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
+    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const pending = run<{ status: string }>(deleteBot, { botId: research }, home.ctx);
+    const card = await openCard(home.approvals);
+    assert.equal(card.tool, "delete_bot");
+    home.approvals.decide(card.id, "approve", card.actionSha256);
+    assert.equal((await pending).status, "deleted");
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "full_access" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    assert.equal((await run<{ status: string }>(deleteBot, { botId: ops }, home.ctx)).status, "deleted");
+    assert.equal(home.approvals.listPending().length, 0);
+    assert.equal(readShell().bots.some((bot) => bot.id === ops), false);
+  } finally {
+    home.restore();
+    box.restore();
+  }
+});
+
+test("clearing a chat is refused in Read only and still asks in Auto", async () => {
+  const box = sandbox();
+  const home = homeFixture("read_only");
+  try {
+    const shell = seedRoster(["CEO"]);
+    const ceo = idOf(shell, "CEO");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    const refused = await run<{ status: string; error: string }>(clearHistory, {}, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const pending = run<{ status: string }>(clearHistory, {}, home.ctx);
+    const card = await openCard(home.approvals);
+    assert.equal(card.tool, "clear_history");
+    home.approvals.decide(card.id, "deny", card.actionSha256);
+    await assert.rejects(pending, /approval_denied/);
+  } finally {
+    home.restore();
     box.restore();
   }
 });

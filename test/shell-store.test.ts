@@ -325,3 +325,35 @@ test("staleSessionIds revokes nothing when there is no action", () => {
   }).store;
   assert.deepEqual(staleSessionIds(undefined, base, base), []);
 });
+
+test("setPermission is the bot's own setting, mirrored onto an attached folder", () => {
+  let store = seedStore();
+  assert.equal(store.bots[0].permission, "auto");
+  store = applyShellAction(store, { type: "setPermission", botId: DEFAULT_BOT_ID, permission: "read_only" }).store;
+  assert.equal(store.bots[0].permission, "read_only");
+  assert.equal(store.bots[0].workspace, null);
+  store = applyShellAction(store, {
+    type: "setWorkspace",
+    botId: DEFAULT_BOT_ID,
+    workspace: { path: "/tmp/project", permission: "auto" },
+  }).store;
+  // Attaching a folder with a permission sets the bot's, so the two never disagree.
+  assert.equal(store.bots[0].permission, "auto");
+  store = applyShellAction(store, { type: "setPermission", botId: DEFAULT_BOT_ID, permission: "full_access" }).store;
+  assert.equal(store.bots[0].permission, "full_access");
+  assert.equal(store.bots[0].workspace?.permission, "full_access");
+  assert.throws(
+    () => applyShellAction(store, { type: "setPermission", botId: "nope", permission: "auto" }),
+    /shell_bot_missing/,
+  );
+  assert.throws(
+    () => applyShellAction(store, { type: "setPermission", botId: DEFAULT_BOT_ID, permission: "root" as never }),
+    /workspace_permission_invalid/,
+  );
+  // A roster from before the bot-level field keeps the folder's value.
+  const legacy = parseShell({
+    ...seedStore(),
+    bots: seedStore().bots.map((bot) => ({ ...bot, permission: undefined, workspace: { path: "/tmp/p", permission: "read_only" } })),
+  });
+  assert.equal(legacy.bots[0].permission, "read_only");
+});

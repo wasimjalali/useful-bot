@@ -1,7 +1,8 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import { deleteRoutine, readRoutine } from "../../shared/routines-store.ts";
 
 export default defineTool({
@@ -16,6 +17,10 @@ export default defineTool({
     if (!routine) {
       return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call listRoutines." };
     }
+    // A routine is recreated in one call, so Auto removes it when asked;
+    // Read only refuses.
+    const gate = inAppGate(sessionPermission(ctx));
+    if (gate === "refuse") return READ_ONLY_BLOCKED;
     // The hash binds the approval to this routine at this revision, so a card
     // the owner approved cannot be spent on another routine.
     const hash = actionSha256({
@@ -35,7 +40,7 @@ export default defineTool({
       // tool; the owner has to be able to tell two "Weekly report" cards apart.
       preview: `delete routine ${routine.name} (${routine.id})`,
     });
-    await waitUntilNotPending(store, record.id);
+    await settle(store, record.id, hash, gate);
     return executeIfApproved(store, record.id, hash, () => {
       // The routine could have been edited while the owner was reading the
       // card; the approval belongs to the revision they saw, not to the id.

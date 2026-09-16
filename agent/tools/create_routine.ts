@@ -1,8 +1,9 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { activeBotId } from "../lib/active-bot.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import {
   createRoutine,
   hostTimeZone,
@@ -71,6 +72,10 @@ export default defineTool({
       schedules,
       timezone,
     };
+    // Read only refuses; Auto and Full access create the routine at once:
+    // the owner asked for it, sees it in the pane, and can pause or delete it.
+    const gate = inAppGate(sessionPermission(ctx));
+    if (gate === "refuse") return READ_ONLY_BLOCKED;
     const hash = actionSha256({
       tool: "create_routine",
       canonicalArgs: JSON.stringify(draft),
@@ -88,7 +93,7 @@ export default defineTool({
       // on the card; without it they would be approving only a name.
       preview: `create routine ${draft.name} on ${bot.name}, running: ${clipPreview(draft.instruction)}`,
     });
-    await waitUntilNotPending(store, record.id);
+    await settle(store, record.id, hash, gate);
     return executeIfApproved(store, record.id, hash, () => {
       // The bot can be deleted while the owner is deciding; a routine for a
       // bot that no longer exists would fail on every tick forever. Its profile

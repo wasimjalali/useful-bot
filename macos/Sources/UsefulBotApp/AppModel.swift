@@ -2106,18 +2106,25 @@ final class AppModel: ObservableObject {
         dispatchWorkspace(nil, botId: bot.id)
     }
 
+    /// The permission is the bot's, with or without a folder: it covers the
+    /// attached folder when there is one, the owner's home otherwise, and
+    /// everything the bot does inside the app and in connected apps.
     func setWorkspacePermission(_ permission: String) {
         guard let bot = selectedBot else { return }
-        guard let workspace = liveBot(bot).workspace else {
-            // A silent no-op would read as a broken chip; say why instead.
-            workspaceError = "Attach a folder first."
-            return
-        }
         workspaceError = nil
-        dispatchWorkspace(
-            BotWorkspace(path: workspace.path, permission: permission),
-            botId: bot.id
-        )
+        let epoch = storeEpoch
+        enqueue { [weak self] in
+            guard let self else { return }
+            do {
+                let next = try await self.client.shellAction(
+                    ShellActions.setPermission(botId: bot.id, permission: permission)
+                )
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
+                self.applyStore(next)
+            } catch {
+                self.workspaceError = (error as? LocalizedError)?.errorDescription ?? "That permission change failed."
+            }
+        }
     }
 
     private func dispatchWorkspace(

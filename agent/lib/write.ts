@@ -41,13 +41,20 @@ export async function approvedWrite(input: {
   }
   // One grant read for root AND permission: two reads could pair a root from
   // before a permission change with the permission after it.
-  const { root, grant } = effectiveRoot(input.sessionId || undefined);
-  const permission = grant ? grant.permission : null;
+  const { root, permission, scope } = effectiveRoot(input.sessionId || undefined);
   if (permission === "read_only") {
     throw new Error("workspace_read_only");
   }
-  // Reject a bad path before it ever reaches the owner.
-  resolveWorkspacePath(input.path, root);
+  // Reject a bad path before it ever reaches the owner. Whether the target
+  // already exists is what decides, under the owner's home, if Auto asks.
+  const target = resolveWorkspacePath(input.path, root);
+  let targetExists = false;
+  try {
+    lstatSync(target);
+    targetExists = true;
+  } catch {
+    targetExists = false;
+  }
   const hash = actionSha256({
     tool: "write_file",
     canonicalArgs: JSON.stringify({ path: input.path, content: input.content, expectedSha256: input.expectedSha256 }),
@@ -70,7 +77,7 @@ export async function approvedWrite(input: {
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);
-  } else if (autoApproved(permission)) {
+  } else if (autoApproved(permission, scope, targetExists)) {
     approvals.decide(rec.id, "approve", hash);
   } else {
     await waitUntilNotPending(approvals, rec.id);
@@ -85,9 +92,7 @@ export async function approvedWrite(input: {
     } catch {
       throw new Error("workspace_changed");
     }
-    const permissionAtRequest = permission ?? null;
-    const permissionNow = refreshed.grant?.permission ?? null;
-    if (refreshed.root !== root || permissionNow !== permissionAtRequest) {
+    if (refreshed.root !== root || refreshed.permission !== permission) {
       throw new Error("workspace_changed");
     }
   }

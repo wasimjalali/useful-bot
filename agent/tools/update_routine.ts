@@ -1,7 +1,8 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import {
   isValidTimeZone,
   parseSchedules,
@@ -88,6 +89,8 @@ export default defineTool({
     // rewriting the instruction, and resuming one the owner paused. Both wait
     // for the owner. Renaming, rescheduling and pausing do not, because they
     // are reversible and visible in the pane.
+    const gate = inAppGate(sessionPermission(ctx));
+    if (gate === "refuse") return READ_ONLY_BLOCKED;
     const rewrite = typeof patch.instruction === "string" && patch.instruction.trim() !== existing.instruction;
     const resume = patch.active === true && !existing.active;
     if (!rewrite && !resume) return apply();
@@ -113,7 +116,7 @@ export default defineTool({
       actionSha256: hash,
       preview: `update routine ${existing.name} (${existing.id}), ${reasons}`,
     });
-    await waitUntilNotPending(store, record.id);
+    await settle(store, record.id, hash, gate);
     return executeIfApproved(store, record.id, hash, () => {
       // The approval belongs to the revision on the card; a routine edited in
       // the meantime is not silently overwritten.

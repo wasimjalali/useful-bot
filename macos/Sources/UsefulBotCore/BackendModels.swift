@@ -21,15 +21,30 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
     public var avatarColor: String
     public var avatarImage: String?
     public var avatarCustom: Bool
+    /// What the bot may do on this Mac, in the attached folder or under the
+    /// owner's home. A string, like `BotWorkspace.permission`, so a newer
+    /// server's value survives the decode.
+    public var permission: String
     public var workspace: BotWorkspace?
 
     public var isGroup: Bool { kind == "group" }
+
+    public var isReadOnly: Bool { permission == "read_only" }
+    public var isFullAccess: Bool { permission == "full_access" }
+
+    public var permissionLabel: String {
+        switch permission {
+        case "read_only": return "Read only"
+        case "full_access": return "Full access"
+        default: return "Auto"
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, kind, name, petname, label, description, notify, pinned, hidden
         case sectionId, sessionId, memberIds, lastPreview, lastAt
         case avatarShape, avatarColor, avatarImage, avatarCustom
-        case workspace
+        case permission, workspace
     }
 
     public init(from decoder: Decoder) throws {
@@ -53,6 +68,9 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
         avatarImage = try? c.decodeIfPresent(String.self, forKey: .avatarImage)
         avatarCustom = (try? c.decode(Bool.self, forKey: .avatarCustom)) ?? false
         workspace = try? c.decodeIfPresent(BotWorkspace.self, forKey: .workspace)
+        // An older server carried the permission on the folder only.
+        let decoded = (try? c.decode(String.self, forKey: .permission)) ?? workspace?.permission ?? "auto"
+        permission = decoded == "guard" ? "auto" : decoded
     }
 }
 

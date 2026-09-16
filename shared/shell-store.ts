@@ -66,6 +66,12 @@ export type ShellBot = {
   avatarColor: AvatarColor;
   avatarImage: string | null;
   avatarCustom: boolean;
+  /**
+   * What this bot may do on this Mac: in the attached folder when there is
+   * one, otherwise under the owner's home. The folder is where; this is how
+   * much. `workspace.permission` mirrors it for older readers.
+   */
+  permission: WorkspacePermission;
   workspace: BotWorkspace | null;
 };
 
@@ -151,6 +157,7 @@ export type ShellAction =
       botId: string;
       workspace: BotWorkspace | null;
     }
+  | { type: "setPermission"; botId: string; permission: WorkspacePermission }
   | { type: "sendToBot"; botId: string; message: string; sourceBotId?: string | null }
   | { type: "touchChat"; botId: string; preview: string; sessionId?: string | null }
   | { type: "newChat"; botId?: string }
@@ -206,6 +213,7 @@ export function seedStore(at = new Date()): ShellStore {
         avatarColor: "ink",
         avatarImage: null,
         avatarCustom: false,
+        permission: "auto",
         workspace: null,
       },
     ],
@@ -262,6 +270,11 @@ function parseBot(raw: unknown): ShellBot {
     avatarColor: isAvatarColor(rec.avatarColor) ? rec.avatarColor : face.color,
     avatarImage: parseAvatarImage(rec.avatarImage),
     avatarCustom: typeof rec.avatarCustom === "boolean" ? rec.avatarCustom : rec.id !== DEFAULT_BOT_ID,
+    // A roster written before the permission lived on the bot carried it on
+    // the folder; that value is kept rather than reset to the default.
+    permission: parseWorkspacePermission(rec.permission)
+      ?? parseWorkspace(rec.workspace)?.permission
+      ?? "auto",
     workspace: parseWorkspace(rec.workspace),
   };
 }
@@ -370,6 +383,9 @@ export function isGrantableRootPath(path: string): boolean {
  * `resolveWorkspacePath`, for everything under it.
  */
 export const FORBIDDEN_CHILD_SEGMENTS = new Set([
+  // The app's own stores: approvals, the roster, the grants. A bot that
+  // could edit these could approve itself.
+  ".useful-bot",
   ".docker",
   ".kube",
   ".pypirc",
@@ -574,6 +590,7 @@ export function applyShellAction(
         avatarColor: face.color,
         avatarImage: null,
         avatarCustom: true,
+        permission: "auto",
         workspace: null,
       };
       return {
@@ -609,6 +626,7 @@ export function applyShellAction(
         avatarColor: face.color,
         avatarImage: null,
         avatarCustom: true,
+        permission: "auto",
         workspace: null,
       };
       return {
@@ -794,7 +812,28 @@ export function applyShellAction(
         store: {
           ...store,
           bots: store.bots.map((bot) => (
-            bot.id === action.botId ? touch(bot, stamp, { workspace }) : bot
+            bot.id === action.botId
+              // The folder carries the same permission as the bot: one value,
+              // written in both places, so neither reader can disagree.
+              ? touch(bot, stamp, { workspace, ...(workspace ? { permission: workspace.permission } : {}) })
+              : bot
+          )),
+        },
+      };
+    }
+    case "setPermission": {
+      if (!store.bots.some((bot) => bot.id === action.botId)) throw new Error("shell_bot_missing");
+      const permission = parseWorkspacePermissionStrict(action.permission);
+      return {
+        store: {
+          ...store,
+          bots: store.bots.map((bot) => (
+            bot.id === action.botId
+              ? touch(bot, stamp, {
+                permission,
+                workspace: bot.workspace ? { ...bot.workspace, permission } : null,
+              })
+              : bot
           )),
         },
       };

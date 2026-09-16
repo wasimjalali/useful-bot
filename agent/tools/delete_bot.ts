@@ -1,8 +1,9 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { activeBotId } from "../lib/active-bot.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import { deleteThread } from "../../shared/agent-store.ts";
 import { deleteRoutinesForBot } from "../../shared/routines-store.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
@@ -48,6 +49,11 @@ export default defineTool({
       return { status: "refused", error: "the last bot cannot be deleted" };
     }
 
+    // A bot takes its chat, memory and routines with it and nothing brings
+    // them back, so Auto still shows the card; Full access runs it; Read
+    // only refuses.
+    const gate = inAppGate(sessionPermission(ctx), true);
+    if (gate === "refuse") return READ_ONLY_BLOCKED;
     // The hash binds the approval to this exact bot, so a card the owner
     // approved cannot be spent on a different one.
     const hash = actionSha256({
@@ -67,7 +73,7 @@ export default defineTool({
       // has to be able to tell two similarly named cards apart.
       preview: `delete ${target.kind === "group" ? "group" : "bot"} ${target.name} (${target.id})`,
     });
-    await waitUntilNotPending(store, record.id);
+    await settle(store, record.id, hash, gate);
     return executeIfApproved(store, record.id, hash, () => {
       // Re-read under the store lock: the roster can have changed while the
       // owner was deciding. The approval belongs to the revision on the card,

@@ -20,6 +20,8 @@ export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 const PROTECTED_NAMES = [
   ".env", ".ssh", ".aws", ".gnupg", ".netrc", "netrc", ".npmrc", ".pypirc",
   ".docker", ".kube", "id_rsa", "id_ecdsa", "id_ed25519", "keychains", "auth.json",
+  // The app's own stores and the launch agents that start it.
+  ".useful-bot", "LaunchAgents",
 ];
 
 export function sandboxAvailable(): boolean {
@@ -34,8 +36,13 @@ function regexEscape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function sandboxProfile(root: string): string {
-  const real = realpathSync(root);
+/**
+ * `root` is the folder the line may write under. Null means none at all: a
+ * line judged read-only runs with every write refused except the temp and
+ * cache dirs, so a misjudged line still cannot change a file.
+ */
+export function sandboxProfile(root: string | null): string {
+  const real = root === null ? null : realpathSync(root);
   // Tools that ignore TMPDIR fall back to the darwin per-user dirs; those
   // sit beside each other under one parent (.../T for temp, .../C for cache).
   const temp = realpathSync(tmpdir());
@@ -47,7 +54,7 @@ export function sandboxProfile(root: string): string {
     "(version 1)",
     "(allow default)",
     "(deny file-write*)",
-    `(allow file-write* (subpath ${sbplString(real)}))`,
+    ...(real === null ? [] : [`(allow file-write* (subpath ${sbplString(real)}))`]),
     `(allow file-write* (subpath ${sbplString(temp)}))`,
     `(allow file-write* (subpath ${sbplString(cache)}))`,
     '(allow file-write* (subpath "/dev"))',
@@ -55,7 +62,7 @@ export function sandboxProfile(root: string): string {
   ].join("\n");
 }
 
-/** The argv that runs `command` confined to `root`. */
-export function confinedCommand(root: string, command: string): string[] {
+/** The argv that runs `command` confined to `root` (null: no writes at all). */
+export function confinedCommand(root: string | null, command: string): string[] {
   return [SANDBOX_EXEC, "-p", sandboxProfile(root), "/bin/sh", "-c", command];
 }

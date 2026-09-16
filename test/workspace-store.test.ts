@@ -259,3 +259,18 @@ test("the credential folders added in round 3 are refused as grant roots", () =>
   );
   assert.equal(readSessionGrant("s1", path)?.path, "/Users/someone/keychain-viewer-app");
 });
+
+test("a grant with no folder carries the permission alone and survives a round-trip", () => {
+  const path = tempStore();
+  upsertSessionGrant({ sessionId: "s1", path: null, permission: "read_only" }, new Date(), path);
+  const grant = readSessionGrant("s1", path);
+  assert.equal(grant?.path, null);
+  assert.equal(grant?.permission, "read_only");
+  // A folder can still be attached later, and detached back to none.
+  upsertSessionGrant({ sessionId: "s1", path: "/tmp/a", permission: "auto" }, new Date(Date.now() + 1000), path);
+  assert.equal(readSessionGrant("s1", path)?.path, "/tmp/a");
+  upsertSessionGrant({ sessionId: "s1", path: null, permission: "auto" }, new Date(Date.now() + 2000), path);
+  assert.equal(readSessionGrant("s1", path)?.path, null);
+  // The root of the disk is still not a folder anyone can be granted.
+  assert.throws(() => upsertSessionGrant({ sessionId: "s2", path: "/", permission: "auto" }, new Date(), path), /workspace_path_invalid/);
+});

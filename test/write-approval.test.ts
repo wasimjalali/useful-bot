@@ -129,6 +129,9 @@ test("a directory swapped for a symlink during review is rejected after consume"
   const store = new ApprovalStore(() => 1_000);
   setApprovalStore(store);
   mkdirSync(join(root, "sub"), { recursive: true });
+  // With no folder attached, Auto asks only before changing a file that
+  // exists, so the card this test needs comes from an overwrite.
+  writeFileSync(join(root, "sub", "file.txt"), "before", "utf8");
   const pending = approvedWrite({
     path: "sub/file.txt",
     content: "nope",

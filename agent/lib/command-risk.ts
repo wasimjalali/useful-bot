@@ -832,3 +832,143 @@ function tokenize(command: string): (Token | { separator: string })[] {
   flush();
   return out;
 }
+
+/**
+ * Whether a line only looks: every command in it reads, prints or measures,
+ * nothing is redirected into a file, and nothing that runs other programs
+ * (`xargs`, `find -exec`, a shell, an interpreter with code) is on it. Such
+ * a line runs without a card in every posture, because reading is what the
+ * owner expects a bot to do on its own, and it runs with every write refused
+ * anyway. Returns why the line is not read-only, or null when it is.
+ */
+const READ_ONLY_COMMANDS = new Set([
+  "ls", "cat", "head", "tail", "less", "more", "wc", "grep", "egrep", "fgrep", "rg", "ag",
+  "fd", "stat", "file", "du", "df", "pwd", "echo", "printf", "date", "cal", "which", "whereis",
+  "type", "uname", "id", "whoami", "hostname", "sw_vers", "printenv", "tree", "diff", "cmp",
+  "comm", "sort", "cut", "tr", "column", "nl", "od", "xxd", "hexdump", "strings", "basename",
+  "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "cksum", "base64",
+  "jq", "yq", "mdfind", "mdls", "ps", "lsof", "netstat", "ifconfig", "system_profiler", "sysctl",
+  "uptime", "w", "who", "last", "env", "locale", "getconf", "xattr", "codesign", "spctl",
+  "cd", "pushd", "popd", "true", "false", "test", "[", ":", "seq", "expr", "bc", "sleep",
+  "tput", "tty", "otool", "nm", "plutil", "iconv", "expand", "unexpand", "fold", "fmt", "paste",
+  "join", "look", "rev", "tac", "zcat", "gzcat", "bzcat", "xzcat", "zipinfo", "tar",
+  "git", "brew", "npm", "pip", "pip3", "docker", "defaults", "launchctl",
+]);
+
+/** Commands whose first argument decides: only these forms read. */
+const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
+  brew: new Set(["list", "ls", "info", "deps", "outdated", "search", "config", "doctor", "--version", "-v", "--prefix"]),
+  npm: new Set(["ls", "list", "view", "info", "outdated", "explain", "why", "-v", "--version", "root", "prefix"]),
+  pip: new Set(["list", "show", "freeze", "check", "--version"]),
+  pip3: new Set(["list", "show", "freeze", "check", "--version"]),
+  docker: new Set(["ps", "images", "inspect", "logs", "version", "info", "stats", "top", "port"]),
+  defaults: new Set(["read", "domains", "find"]),
+  launchctl: new Set(["list", "print", "version", "blame", "dumpstate"]),
+  tar: new Set(["-t", "-tf", "-tvf", "-tzf", "-tjf", "--list", "tf", "tvf", "tzf"]),
+};
+
+/** Interpreters may only report their version; anything else runs code. */
+const VERSION_FLAGS = new Set(["--version", "-V", "-v", "version"]);
+
+const GIT_READS = new Set([
+  "status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "grep", "describe",
+  "shortlog", "cat-file", "rev-list", "count-objects", "check-ignore", "diff-tree", "name-rev", "var",
+]);
+/** Per subcommand, the flags and words that make a listing form write. */
+const GIT_WRITES: Record<string, Set<string>> = {
+  branch: new Set(["-d", "-D", "-m", "-M", "-c", "-C", "-u", "-f", "--delete", "--move", "--copy", "--force", "--set-upstream-to", "--unset-upstream", "--edit-description"]),
+  tag: new Set(["-a", "-s", "-u", "-m", "-F", "-d", "-f", "--annotate", "--sign", "--delete", "--force", "--edit"]),
+  config: new Set(["--add", "--unset", "--unset-all", "--replace-all", "--edit", "-e", "--rename-section", "--remove-section", "--global", "--system", "--worktree", "--local"]),
+  remote: new Set(["add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune", "update"]),
+  stash: new Set(["pop", "apply", "drop", "push", "save", "clear", "branch", "create", "store"]),
+  worktree: new Set(["add", "remove", "move", "prune", "lock", "unlock", "repair"]),
+  reflog: new Set(["expire", "delete", "exists"]),
+};
+
+/** `git <sub> <rest>`: true when that form only reads. */
+function gitReadOnly(sub: string, rest: string[]): boolean {
+  if (GIT_READS.has(sub)) return true;
+  const writes = GIT_WRITES[sub];
+  if (!writes) return false;
+  if (rest.some((word) => writes.has(word) || writes.has(word.split("=")[0]))) return false;
+  const positional = rest.filter((word) => !word.startsWith("-"));
+  switch (sub) {
+    case "branch":
+    case "tag":
+      // Bare or with listing flags it lists; a name creates one.
+      return positional.length === 0 || rest.some((word) => word === "-l" || word === "--list" || word.startsWith("--contains") || word.startsWith("--points-at") || word.startsWith("--merged") || word.startsWith("--no-merged"));
+    case "remote":
+      return positional.length === 0 || positional[0] === "show" || positional[0] === "get-url";
+    case "stash":
+      return positional[0] === "list" || positional[0] === "show";
+    case "worktree":
+      return positional[0] === "list";
+    case "reflog":
+      return positional.length === 0 || positional[0] === "show";
+    case "config":
+      // `git config user.name` reads; a second positional sets it.
+      return rest.some((word) => word === "--get" || word === "--get-all" || word === "--get-regexp" || word === "--list" || word === "-l" || word === "--show-origin" || word === "--show-scope")
+        ? true
+        : positional.length === 1;
+    default:
+      return false;
+  }
+}
+
+/** Redirections are judged in `readOnlyRisk`; here they are not arguments. */
+const isRedirection = (text: string) => /^[0-9]*[<>]|^&>/.test(text);
+
+function readOnlySegment(tokens: Token[]): string | null {
+  let args = tokens.filter((token) => !isAssignment(token) && !(!token.quoted && isRedirection(token.text)));
+  // Peel timing and priority wrappers the way commandReason does; `env` with
+  // a command after it is itself a launcher, handled below.
+  while (args.length > 0 && WRAPPERS.has(basename(args[0].text)) && basename(args[0].text) !== "env") {
+    const valued = WRAPPER_VALUED[basename(args[0].text)] ?? new Set<string>();
+    let i = 1;
+    while (i < args.length && (isAssignment(args[i]) || args[i].text.startsWith("-") || /^\d+[smhd]?$/.test(args[i].text))) {
+      i += valued.has(args[i].text) ? 2 : 1;
+    }
+    args = args.slice(i);
+  }
+  if (args.length === 0) return null;
+  const head = basename(args[0].text);
+  const rest = args.slice(1).map((token) => token.text);
+  if (head === "xargs" || head === "parallel") return `runs other commands (${head})`;
+  if (head === "env") return rest.length === 0 ? null : "env runs another command";
+  if (head === "find") {
+    const refused = rest.find((word) => ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls", "-fprint0"].includes(word));
+    return refused ? `find ${refused} changes or runs things` : null;
+  }
+  // `python3`, `python3.12`, `node22`: the interpreter, whatever its version suffix.
+  const bare = head.replace(/[0-9.]+$/, "");
+  if (SHELLS.has(head) || INTERPRETERS.has(head) || INTERPRETERS.has(bare)) {
+    return rest.length === 1 && VERSION_FLAGS.has(rest[0]) ? null : `${head} runs code`;
+  }
+  if (!READ_ONLY_COMMANDS.has(head)) return `${head} is not a read-only command`;
+  if (head === "git") {
+    const sub = rest.find((word) => !word.startsWith("-")) ?? "";
+    const after = rest.slice(rest.indexOf(sub) + 1);
+    return sub && gitReadOnly(sub, after) ? null : `git ${sub || "(no subcommand)"} is not read-only`;
+  }
+  const subs = READ_ONLY_SUBCOMMANDS[head];
+  if (subs) {
+    const first = rest[0] ?? "";
+    return subs.has(first) ? null : `${head} ${first || "(no subcommand)"} is not read-only`;
+  }
+  if (head === "sort" && rest.some((word) => word === "-o" || word.startsWith("--output"))) return "sort -o writes a file";
+  return null;
+}
+
+export function readOnlyRisk(command: string): string | null {
+  for (const item of tokenize(command)) {
+    if ("separator" in item || item.quoted) continue;
+    // Output redirection is a write, except into the bit bucket.
+    const match = /^([0-9]*)(>>?|&>|>\|)(.*)$/.exec(item.text);
+    if (match && match[3] !== "/dev/null") return `redirects output into a file (${item.text})`;
+  }
+  for (const segment of split(tokenize(command))) {
+    const reason = readOnlySegment(segment.tokens);
+    if (reason) return reason;
+  }
+  return null;
+}

@@ -53,6 +53,12 @@ public enum ShellActions {
         return ["type": "setWorkspace", "botId": botId, "workspace": payload]
     }
 
+    /// What the bot may do on this Mac: read_only, auto or full_access. With
+    /// or without a folder attached.
+    public static func setPermission(botId: String, permission: String) -> [String: Any] {
+        ["type": "setPermission", "botId": botId, "permission": permission]
+    }
+
     public static func openRecent(recentId: String) -> [String: Any] {
         ["type": "openRecent", "recentId": recentId]
     }

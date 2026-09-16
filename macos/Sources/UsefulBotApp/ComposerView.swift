@@ -250,7 +250,7 @@ struct ComposerView: View {
                 if permissionOpen {
                     VStack(spacing: 0) {
                         PermissionMenu(
-                            permission: workspace?.permission,
+                            permission: bot.permission,
                             onPermission: { id in
                                 model.setWorkspacePermission(id)
                                 permissionOpen = false
@@ -369,26 +369,25 @@ struct ComposerView: View {
             permissionOpen.toggle()
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: permissionIcon(workspace?.permission))
+                Image(systemName: permissionIcon(bot.permission))
                     .font(.system(size: 12))
-                Text(workspace?.permissionLabel ?? "Permission")
+                Text(bot.permissionLabel)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .medium))
             }
             .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
-            .foregroundStyle(workspace?.isFullAccess == true ? Theme.C.accentStrong : Theme.C.inkMuted)
+            .foregroundStyle(bot.isFullAccess ? Theme.C.accentStrong : Theme.C.inkMuted)
             .frame(height: DesignTokens.Control.composerInput)
         }
         .buttonStyle(ModeChipStyle())
         .pointerOnHover()
         .trackWindowFrame($permissionChipFrame)
-        .accessibilityLabel("What the bot may do in the working folder")
+        .accessibilityLabel("What the bot may do on this Mac")
     }
 
-    private func permissionIcon(_ permission: String?) -> String {
-        guard let permission else { return "bolt.shield" }
-        return PermissionMenu.options.first { $0.id == permission }?.icon ?? "bolt.shield"
+    private func permissionIcon(_ permission: String) -> String {
+        PermissionMenu.options.first { $0.id == permission }?.icon ?? "bolt.shield"
     }
 
     private var modeChip: some View {
@@ -744,9 +743,9 @@ private struct ProjectMenu: View {
     }
 }
 
-/// `.composer-permission-card`: what the bot may do in the granted folder.
+/// `.composer-permission-card`: what the bot may do on this Mac.
 private struct PermissionMenu: View {
-    let permission: String?
+    let permission: String
     let onPermission: (_ id: String) -> Void
 
     static let options: [(id: String, label: String, icon: String)] = [

@@ -48,14 +48,12 @@ const DELIVER_TIMEOUT_MS = 120_000;
  */
 export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
   if (!sessionId) return;
-  if (!bot.workspace) {
-    removeSessionGrant(sessionId);
-    return;
-  }
+  // Always stamped: the permission is the bot's whether or not a folder is
+  // attached. No folder means the bot works under the owner's home.
   upsertSessionGrant({
     sessionId,
-    path: bot.workspace.path,
-    permission: bot.workspace.permission,
+    path: bot.workspace?.path ?? null,
+    permission: bot.permission,
   });
 }
 
