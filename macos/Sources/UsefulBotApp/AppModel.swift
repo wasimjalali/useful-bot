@@ -1766,11 +1766,17 @@ final class AppModel: ObservableObject {
                     if proposal.kind == .connectApp {
                         // The card stays: the sign-in finishes in the browser
                         // and the poll moves it through waiting and connected.
-                        if let raw = result.redirectUrl, let url = URL(string: raw), url.scheme == "https" {
-                            NSWorkspace.shared.open(url)
+                        // Same rule as the Connectors dialog: only an https page on
+                        // Composio's own hosts is handed to the browser.
+                        if let raw = result.redirectUrl, let url = URL(string: raw),
+                           url.scheme?.lowercased() == "https",
+                           let host = url.host?.lowercased(), host == "composio.dev" || host.hasSuffix(".composio.dev") {
+                            if !NSWorkspace.shared.open(url) {
+                                self.threadError = "The sign-in page could not be opened in the browser. Use Reopen."
+                            }
+                        } else {
+                            self.threadError = "Composio sent a sign-in link this app will not open."
                         }
-                        self.threadError = nil
-                        self.stickyThreadError = nil
                         self.busyProposals.remove(proposal.id)
                         self.startReload()
                         return
