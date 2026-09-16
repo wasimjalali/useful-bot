@@ -3,8 +3,10 @@
 Date: 2026-09-16. Status: design, awaiting owner review.
 
 Sub-project 1 of 3. Sub-project 2 is MCP and OpenAPI connections for bots
-(Excalidraw first). Sub-project 3 is the native mobile app. The Telegram and
-Tailscale phone paths are cancelled.
+(Excalidraw first). Sub-project 3 is the native mobile app, deferred to its own
+session: SwiftUI on `UsefulBotCore` (no AppKit imports there today), same
+experience as the desktop app, the Mac stays the always-on host. The Telegram
+and Tailscale phone paths are cancelled.
 
 ## Goal
 
@@ -25,6 +27,27 @@ Out: the web UI card (secondary surface, not ported, said so in the PR), apps
 outside the Composio catalogue (sub-project 2), the Composio API key step (a
 missing key is still a Connectors settings step, the bot says so and stops).
 
+## MCP variants in the catalogue
+
+Composio lists an MCP variant beside many apps (`notion_mcp` "Notion MCP" next
+to `notion`; 116 of the 1534 toolkits). Once connected, its tools already flow
+through `connector_search` and `connector_execute` like any toolkit. The only
+gap is discovery: `listConnectorToolkits` in `shared/composio.ts` drops every
+`_mcp` row that isn't connected, so the dialog search never shows "Notion MCP"
+and a bot could not propose it.
+
+Change: remove the `_mcp` hide. Both rows show in the Connectors dialog and in
+`connector_catalog`, plain app first (the ranking already sorts "Notion" before
+"Notion MCP" on a tie). Nothing else about the rows changes: same connect and
+disconnect, same logo, the name Composio gives already carries "MCP".
+
+Instructions: prefer the plain connector; propose the MCP variant when the
+owner asks for MCP or when the plain app's tools don't cover the task.
+
+Out of scope, noted for later: the 18 no-auth MCP toolkits (and no-auth apps
+in general) stay hidden because the connected-toolkit gate in
+`searchConnectorTools` cannot admit an app that never connects.
+
 ## Bot side
 
 ### `connector_catalog` (new tool, `agent/tools/connector_catalog.ts`)
@@ -33,8 +56,8 @@ Input: `query` (3 to 80 chars). Output: up to 8 matches from the cached
 catalogue (`~/.useful-bot/composio-catalogue.json`) with `slug`, `name`,
 `connected`, plus `hasKey`. Read-only, never carded, works with zero apps
 connected. Scoring reuses `listConnectorToolkits` in `shared/composio.ts` so
-the bot and the dialog rank the same way. Hidden rows stay hidden (`_mcp`
-variants, no-auth toolkits). No key: `{ status: "blocked", error: "connectors_not_set_up" }`.
+the bot and the dialog rank the same way, MCP variants included; no-auth
+toolkits stay hidden. No key: `{ status: "blocked", error: "connectors_not_set_up" }`.
 Catalogue not built yet: `listConnectorToolkits` already falls back to a live
 Composio search, so the tool returns whatever that gives.
 
@@ -168,8 +191,9 @@ Transcript note "{name} connected". No em dashes, no helper text.
 Node (`test/connector-tools.test.ts`, `test/agents.test.ts`, new
 `test/connect-pump.test.ts`, all on the stubbed `setComposioFactory`):
 
-- catalog: ranks by name, hides `_mcp` and no-auth rows, reports connected,
-  blocks without a key.
+- catalog: ranks by name, shows `_mcp` rows after the plain app, hides no-auth
+  rows, reports connected, blocks without a key. `listConnectorToolkits` test
+  updated for the visible MCP rows.
 - propose: creates the card, refuses an unknown slug, an already-connected app
   and a duplicate open card, honours `requestId`.
 - confirm: waiting phase set, `accountId` stored, URL returned once, CSRF and
