@@ -485,6 +485,23 @@ export async function searchConnectorTools(
   return { tools: [...tools.values()], guidance: guidance.slice(0, 8), notConnected };
 }
 
+/**
+ * How many tools one toolkit publishes, for the connect card. Best effort:
+ * any failure is null, never a thrown error, because the count decorates a
+ * card that is already connected.
+ */
+export async function countToolkitTools(slug: string, path = connectorsPath()): Promise<number | null> {
+  if (!isToolkitSlug(slug)) return null;
+  try {
+    const client = factory(requireKey(readConnectorsStore(path)));
+    const tools = await client.tools.getRawComposioTools({ toolkits: [slug], limit: 200 });
+    if (!Array.isArray(tools)) return null;
+    return tools.filter((tool) => (tool.toolkit?.slug ?? toolkitOf(tool.slug, [slug]) ?? "").toLowerCase() === slug).length;
+  } catch {
+    return null;
+  }
+}
+
 /** Executes one tool. The caller has already decided the approval question. */
 export async function executeConnectorTool(
   toolSlug: string,

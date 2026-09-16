@@ -11,6 +11,7 @@ import {
   disconnectConnector,
   executeConnectorTool,
   forgetConnected,
+  countToolkitTools,
   listConnectorToolkits,
   searchConnectorTools,
   isKeyRejected,
@@ -440,4 +441,22 @@ test("toolkitOf matches a whole connected toolkit segment, longest first", () =>
   assert.equal(toolkitOf("GMAILX_FETCH", known), null);
   assert.equal(toolkitOf("GOOGLECALENDAR_CREATE_EVENT", known), null);
   assert.equal(toolkitOf("weird", known), null);
+});
+
+test("countToolkitTools counts one toolkit's tools and returns null on failure", async () => {
+  const { state, factory } = stub({
+    toolkitItems: [GMAIL],
+    directTools: [
+      { slug: "GMAIL_FETCH_EMAILS", toolkit: { slug: "gmail" } },
+      { slug: "GMAIL_SEND_EMAIL", toolkit: { slug: "gmail" } },
+      { slug: "SLACK_POST", toolkit: { slug: "slack" } },
+    ],
+  });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  assert.equal(await countToolkitTools("gmail", path), 2);
+  assert.equal(await countToolkitTools("not a slug", path), null);
+  state.directTools = null as never;
+  assert.equal(await countToolkitTools("gmail", path), null);
+  assert.equal(await countToolkitTools("gmail", tmpPath(false)), null);
 });
