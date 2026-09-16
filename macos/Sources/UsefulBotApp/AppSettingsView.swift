@@ -560,6 +560,10 @@ struct AppSettingsView: View {
                 .frame(width: 72)
                 .focused($budgetFieldFocused)
                 .onSubmit { commitTypedBudget(budget) }
+                // The typed value stays until the router confirms it: cleared
+                // here on the new server value, so a refused write leaves the
+                // text the error is talking about in the field.
+                .onChange(of: budget.tokens) { _, _ in editedBudget = nil }
                 // Clicking away commits the same way Return does; the poll
                 // never overwrites an uncommitted edit, so without this the
                 // field would keep showing a limit the router is not enforcing.
@@ -643,7 +647,6 @@ struct AppSettingsView: View {
             editedBudget = nil
             return
         }
-        editedBudget = nil
         model.setDailyTokenBudget(Int(tokens))
     }
 

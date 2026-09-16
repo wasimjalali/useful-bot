@@ -334,16 +334,21 @@ private struct RoutineEditorView: View {
                 seed()
                 return
             }
-            guard focus == nil else { return }
-            name = routine?.name ?? ""
-            instruction = routine?.instruction ?? ""
-            schedules = routine?.schedules ?? [.weekly(days: [1], time: "09:00")]
+            // A write of this routine still in flight owns the rows: a poll
+            // that lands between the edit and its echo would put the old
+            // server copy back over it.
+            guard focus == nil, let current = routine, !model.routineBusy.contains(current.id) else { return }
+            name = current.name
+            instruction = current.instruction
+            schedules = current.schedules
         }
         // A refused schedule write leaves the rows showing a schedule the
         // server does not have. Put the server's copy back so the rows match
-        // what the next edit starts from.
+        // what the next edit starts from. The error is shared by every
+        // routine write, so only a routine with no write of its own in
+        // flight is restored: for that one the server copy is the truth.
         .onChange(of: model.routinesError) { _, next in
-            guard next != nil, let routine else { return }
+            guard next != nil, let routine, !model.routineBusy.contains(routine.id) else { return }
             schedules = routine.schedules
         }
         .onChange(of: focus) { _, next in
