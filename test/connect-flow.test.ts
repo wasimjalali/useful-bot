@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProposal, listThreadEvents, readProposal } from "../shared/agent-store.ts";
+import { createProposal, listThreadEvents, readProposal, updateProposal } from "../shared/agent-store.ts";
 import { resetCatalogueMemo } from "../shared/composio-catalogue.ts";
 import { CONNECT_LINGER_MS, CONNECT_WAIT_MS, pumpConnects, resetConnectMemo, startConnectAuthorize } from "../shared/connect-flow.ts";
 import { forgetConnected, setComposioFactory, type ComposioLike, type ComposioSessionLike } from "../shared/composio.ts";
@@ -125,6 +125,33 @@ test("authorize moves the card to waiting, stores the account id and returns the
   assert.equal(state.authorized, 2);
   assert.equal((readProposal(proposal.id, storePath) as { accountId: string }).accountId, "ca_gmail_2");
   await assert.rejects(startConnectAuthorize("prp_missing", CALLBACK), /proposal_missing/);
+  // Two clicks in flight mint one account, and a card past its TTL is refused.
+  const [one, two] = await Promise.allSettled([
+    startConnectAuthorize(proposal.id, CALLBACK),
+    startConnectAuthorize(proposal.id, CALLBACK),
+  ]);
+  assert.equal([one, two].filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(state.authorized, 3);
+  updateProposal(proposal.id, (item) => { item.expiresAt = "2000-01-01T00:00:00.000Z"; }, storePath);
+  await assert.rejects(startConnectAuthorize(proposal.id, CALLBACK), /proposal_expired/);
+});
+
+test("a resume that cannot be queued puts the card back to waiting", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  await startConnectAuthorize(proposal.id, CALLBACK);
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  // An unwritable handoff dir makes queueHandoff throw.
+  const dir = process.env.UB_HANDOFF_DIR ?? "";
+  writeFileSync(dir, "not a directory");
+  resetConnectMemo();
+  const out = await pumpConnects({ now: Date.now() + 6_000 });
+  assert.deepEqual(out.connected, []);
+  const stored = readProposal(proposal.id, storePath) as { phase: string; status: string };
+  assert.equal(stored.phase, "waiting");
+  assert.equal(stored.status, "pending");
 });
 
 test("the pump connects a waiting card once, writes the note and queues one resume handoff", async () => {

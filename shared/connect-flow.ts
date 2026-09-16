@@ -26,9 +26,12 @@ export const CONNECT_CHECK_MS = 5_000;
 export const CONNECT_LINGER_MS = 10 * 60 * 1000;
 
 const lastCheck = new Map<string, number>();
+/** Cards whose authorize call is in flight, so a double click mints one account, not two. */
+const authorizing = new Set<string>();
 
 export function resetConnectMemo(): void {
   lastCheck.clear();
+  authorizing.clear();
 }
 
 type Stored = Extract<Proposal, { kind: "connectApp" }>;
@@ -47,20 +50,29 @@ export async function startConnectAuthorize(
   if (!isConnect(proposal)) throw new Error("proposal_missing");
   if (proposal.status !== "pending") throw new Error("proposal_settled");
   if (proposal.phase === "connected") throw new Error("already_connected");
-  const { redirectUrl, accountId } = await authorizeConnector(
-    proposal.slug,
-    callbackUrl,
-    opts.connectorsPath ?? defaultConnectorsPath(),
-  );
-  const now = new Date(opts.now ?? Date.now()).toISOString();
-  updateProposal(proposalId, (item) => {
-    if (item.kind !== "connectApp") return;
-    item.phase = "waiting";
-    item.accountId = accountId;
-    item.waitingSince = now;
-  }, storePath);
-  lastCheck.delete(proposalId);
-  return { redirectUrl };
+  // Same rule as every other confirm: a card past its TTL is not confirmable.
+  const expiresAt = Date.parse(proposal.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= (opts.now ?? Date.now())) throw new Error("proposal_expired");
+  if (authorizing.has(proposalId)) throw new Error("authorize_in_flight");
+  authorizing.add(proposalId);
+  try {
+    const { redirectUrl, accountId } = await authorizeConnector(
+      proposal.slug,
+      callbackUrl,
+      opts.connectorsPath ?? defaultConnectorsPath(),
+    );
+    const now = new Date(opts.now ?? Date.now()).toISOString();
+    updateProposal(proposalId, (item) => {
+      if (item.kind !== "connectApp" || item.status !== "pending") return;
+      item.phase = "waiting";
+      item.accountId = accountId;
+      item.waitingSince = now;
+    }, storePath);
+    lastCheck.delete(proposalId);
+    return { redirectUrl };
+  } finally {
+    authorizing.delete(proposalId);
+  }
 }
 
 export async function pumpConnects(
@@ -129,19 +141,30 @@ export async function pumpConnects(
     } catch {
       /* the name is cosmetic */
     }
-    const handoff = queueHandoff({
-      sourceBotId: DEFAULT_BOT_ID,
-      sourceName: "Useful Bot",
-      targetBotId: targetId,
-      targetName,
-      message: `The owner connected ${card.name}. Continue the task: ${card.purpose}`,
-      depth: 0,
-    });
+    let handoffId: string;
+    try {
+      handoffId = queueHandoff({
+        sourceBotId: DEFAULT_BOT_ID,
+        sourceName: "Useful Bot",
+        targetBotId: targetId,
+        targetName,
+        message: `The owner connected ${card.name}. Continue the task: ${card.purpose}`,
+        depth: 0,
+      }).id;
+    } catch {
+      // No resume record means no resume. Put the card back to waiting so
+      // the next tick sees the active account again and tries once more.
+      updateProposal(card.id, (item) => {
+        if (item.kind === "connectApp" && item.phase === "connected") item.phase = "waiting";
+      }, storePath);
+      lastCheck.delete(card.id);
+      continue;
+    }
     // Still pending: the card shows Connected until the handoff lands, and
     // waitingSince now bounds how long that can take.
     updateProposal(card.id, (item) => {
       if (item.kind !== "connectApp") return;
-      item.handoffId = handoff.id;
+      item.handoffId = handoffId;
       item.waitingSince = new Date(now).toISOString();
     }, storePath);
     lastCheck.delete(card.id);

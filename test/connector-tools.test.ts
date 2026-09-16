@@ -10,7 +10,7 @@ import connectorExecute from "../agent/tools/connector_execute.ts";
 import connectorSearch from "../agent/tools/connector_search.ts";
 import connectorCatalog from "../agent/tools/connector_catalog.ts";
 import proposeConnector from "../agent/tools/propose_connector.ts";
-import { listPendingProposals, readProposal } from "../shared/agent-store.ts";
+import { listPendingProposals, readProposal, updateProposal } from "../shared/agent-store.ts";
 import { resetCatalogueMemo } from "../shared/composio-catalogue.ts";
 import { forgetConnected } from "../shared/composio.ts";
 import { setComposioFactory, type ComposioLike, type ComposioSessionLike } from "../shared/composio.ts";
@@ -485,10 +485,15 @@ test("propose_connector creates one card, refuses unknown, connected and duplica
     const second = await run<{ status: string; openSlug: string }>(proposeConnector, { slug: "notion_mcp", purpose: "Also" });
     assert.equal(second.status, "duplicate");
     assert.equal(second.openSlug, "notion");
+    // A card that timed out or already connected no longer blocks.
+    updateProposal(first.proposalId, (item) => { if (item.kind === "connectApp") item.phase = "expired"; });
+    const third = await run<{ status: string }>(proposeConnector, { slug: "notion_mcp", purpose: "Also" });
+    assert.equal(third.status, "awaiting_owner_confirmation");
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "gmail", purpose: "Mail" })).status, "already_connected");
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "nope_app", purpose: "x" })).status, "unknown_app");
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "../x", purpose: "x" })).status, "unknown_app");
-    assert.equal(listPendingProposals("bot-useful").length, 1);
+    // The expired card and the new one; nothing else was created.
+    assert.equal(listPendingProposals("bot-useful").length, 2);
   } finally {
     box.restore();
   }

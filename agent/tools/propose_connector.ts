@@ -43,7 +43,9 @@ export default defineTool({
     // One open connect card per bot: the instructions say one app per turn,
     // and this is what makes a second proposal in the same turn a no-op
     // instead of a stack of cards for the owner to clear.
-    const open = listPendingProposals(threadId).find((item) => item.kind === "connectApp");
+    const open = listPendingProposals(threadId).find(
+      (item) => item.kind === "connectApp" && (item.phase === "proposed" || item.phase === "waiting"),
+    );
     if (open && open.kind === "connectApp") {
       return { status: "duplicate", slug, name: row.name, openSlug: open.slug, openName: open.name };
     }

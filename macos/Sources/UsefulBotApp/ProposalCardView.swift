@@ -140,7 +140,17 @@ struct ProposalCardView: View {
                 case .expired:
                     waitingRow(text: "Sign-in timed out", tone: Theme.C.warning)
                 case .connected:
-                    EmptyView()
+                    // The pill stays until the bot resumes; Not now puts the
+                    // card away early without touching the connection.
+                    HStack {
+                        Spacer(minLength: 0)
+                        NativeButton(kind: .secondary, small: true, enabled: !pending) {
+                            onDecision(false)
+                        } label: {
+                            Text("Not now")
+                        }
+                    }
+                    .padding(.top, 14)
                 }
             }
         case .unknown:
