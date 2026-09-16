@@ -737,7 +737,7 @@ public actor BackendClient {
     /// Drain the handoff pump the way the web poll does. Best effort: the next
     /// poll retries and the agent-side wake-up also drives the queue. Returns
     /// bot ids with a handoff currently being delivered, so the rail can pulse.
-    public func tick() async -> [String] {
+    public func tick() async -> [String]? {
         let result = try? await perform { client, token in
             var components = URLComponents(
                 url: client.base.appendingPathComponent("api/agent/tick"),
@@ -750,9 +750,10 @@ public actor BackendClient {
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             return request
         }
-        guard let (data, _) = result else { return [] }
+        guard let (data, _) = result else { return nil }
         struct TickBody: Decodable { let workingBotIds: [String]? }
-        return (try? JSONDecoder().decode(TickBody.self, from: data))?.workingBotIds ?? []
+        guard let decoded = try? JSONDecoder().decode(TickBody.self, from: data) else { return nil }
+        return decoded.workingBotIds ?? []
     }
 
     // MARK: - Writes

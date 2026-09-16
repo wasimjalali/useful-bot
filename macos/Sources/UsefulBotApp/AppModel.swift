@@ -217,7 +217,9 @@ final class AppModel: ObservableObject {
     /// first layout is the finished one and `defaultScrollAnchor(.bottom)`
     /// puts it on the newest turn with nothing to animate.
     @Published private(set) var transcriptReady = false
-    private var chatGeneration = 0
+    /// Per-bot fence for New Chat / Open Recent. A global counter aborted
+    /// background sends on every other bot.
+    private var chatGenerations: [String: Int] = [:]
     /// The rows each chat last rendered, keyed by bot id. A switch back shows
     /// them at once: the fresh load replaces the old empty state a beat later,
     /// and that beat read as the chat opening blank, or on its start page,
@@ -757,9 +759,10 @@ final class AppModel: ObservableObject {
         tickInFlight = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let ids = await self.client.tick()
-            let next = Set(ids)
-            if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
+            if let ids = await self.client.tick() {
+                let next = Set(ids)
+                if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
+            }
             self.tickInFlight = false
         }
     }
@@ -823,7 +826,7 @@ final class AppModel: ObservableObject {
         stickyThreadError = nil
         sendGenerations[bot.id] = (sendGenerations[bot.id] ?? 0) + 1
         let generation = sendGenerations[bot.id] ?? 1
-        let chatGen = chatGeneration
+        let chatGen = chatGenerations[bot.id] ?? 0
         sendBotId = bot.id
         markWorking(bot.id, true)
         let draftSnapshot = draft
@@ -879,7 +882,10 @@ final class AppModel: ObservableObject {
                         sendSessionId = nil
                     }
                 }
-                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                    self.finishSend(botId: bot.id)
+                    return
+                }
                 let sessionId: String
                 do {
                     sessionId = try await self.postSession(
@@ -895,11 +901,17 @@ final class AppModel: ObservableObject {
                     // start a fresh session with this same message. The turn
                     // ids snapshot belongs to the old session, so it is
                     // cleared too.
-                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                        self.finishSend(botId: bot.id)
+                        return
+                    }
                     await self.dropSession(botId: bot.id)
                     // Stop pressed while the pointer was being dropped: no
                     // second session gets created only to be cancelled.
-                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                        self.finishSend(botId: bot.id)
+                        return
+                    }
                     history = []
                     sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
                 }
@@ -913,6 +925,7 @@ final class AppModel: ObservableObject {
                     Task { [weak self] in
                         _ = try? await self?.client.cancel(sessionId: sessionId)
                     }
+                    self.finishSend(botId: bot.id)
                     return
                 }
                 self.inflightSessions[bot.id] = sessionId
@@ -922,21 +935,30 @@ final class AppModel: ObservableObject {
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: echo)
-                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                    self.finishSend(botId: bot.id)
+                    return
+                }
                 var sawUserTurn = false
                 for try await event in self.client.stream(
                     sessionId: sessionId,
                     expectedSuffix: echo,
                     historyTurnIds: history
                 ) {
-                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                        self.finishSend(botId: bot.id)
+                        return
+                    }
                     if event.type == "message.received" { sawUserTurn = true }
                     self.applyLiveEvent(event, botId: bot.id)
                 }
                 if self.selectedBotId == bot.id {
                     self.publishTranscript(force: true)
                 }
-                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                    self.finishSend(botId: bot.id)
+                    return
+                }
                 let live: StreamProjection? = self.selectedBotId == bot.id
                     ? self.projection
                     : self.backgroundProjections[bot.id]
@@ -962,9 +984,13 @@ final class AppModel: ObservableObject {
                     await self.refreshDurable()
                 }
             } catch is CancellationError {
+                self.finishSend(botId: bot.id)
                 return
             } catch {
-                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                    self.finishSend(botId: bot.id)
+                    return
+                }
                 if delivered {
                     // The server has the turn, so the draft stays cleared and
                     // the transcript keeps what the stream already applied.
@@ -1075,7 +1101,13 @@ final class AppModel: ObservableObject {
     }
 
     private func sendStillCurrent(_ botId: String, generation: Int, chatGen: Int) -> Bool {
-        generation == (sendGenerations[botId] ?? 0) && chatGen == chatGeneration
+        generation == (sendGenerations[botId] ?? 0) && chatGen == (chatGenerations[botId] ?? 0)
+    }
+
+    private func bumpChatGeneration(for botId: String) -> Int {
+        let next = (chatGenerations[botId] ?? 0) + 1
+        chatGenerations[botId] = next
+        return next
     }
 
     private func finishSend(botId: String) {
@@ -1083,6 +1115,7 @@ final class AppModel: ObservableObject {
         inflightSessions[botId] = nil
         backgroundProjections[botId] = nil
         markWorking(botId, false)
+        if sendBotId == botId { sendBotId = nil }
         if selectedBotId == botId {
             pending = false
             sendTask = nil
@@ -1780,18 +1813,17 @@ final class AppModel: ObservableObject {
         // Other bots keep working.
         let runningSession = inflightSessions[id] ?? (activeSession?.botId == id ? activeSession?.sessionId : nil)
         cancelSend(for: id)
-        chatGeneration += 1
-        let generation = chatGeneration
+        let generation = bumpChatGeneration(for: id)
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
             if let runningSession, !runningSession.isEmpty {
                 _ = try? await self.client.cancel(sessionId: runningSession)
             }
-            guard generation == self.chatGeneration else { return }
+            guard generation == (self.chatGenerations[id] ?? 0) else { return }
             if self.store?.selectedBotId != id {
                 if let next = try? await self.client.shellAction(ShellActions.select(botId: id)) {
-                    guard generation == self.chatGeneration else { return }
+                    guard generation == (self.chatGenerations[id] ?? 0) else { return }
                     self.applyStore(next)
                 }
             }
@@ -1799,13 +1831,13 @@ final class AppModel: ObservableObject {
             // let the next poll re-sync.
             do {
                 let cleared = try await self.client.shellAction(ShellActions.clearThread(botId: id))
-                guard generation == self.chatGeneration else { return }
+                guard generation == (self.chatGenerations[id] ?? 0) else { return }
                 self.applyStore(cleared)
             } catch {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."
                 return
             }
-            guard generation == self.chatGeneration, epoch == self.storeEpoch else { return }
+            guard generation == (self.chatGenerations[id] ?? 0), epoch == self.storeEpoch else { return }
             self.resetThread(cancelRunningTurns: false)
             // The old conversation is gone server-side; it must not come back
             // from the cache on the next switch.
@@ -1830,14 +1862,15 @@ final class AppModel: ObservableObject {
         // Opening an old session replaces the live one for this bot; other
         // bots keep working.
         if let id = selectedBotId { cancelSend(for: id) }
-        chatGeneration += 1
-        let generation = chatGeneration
+        let fenceId = selectedBotId
+        let generation = fenceId.map { bumpChatGeneration(for: $0) } ?? 0
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
             do {
                 let next = try await self.client.shellAction(ShellActions.openRecent(recentId: recentId))
-                guard !Task.isCancelled, epoch == self.storeEpoch, generation == self.chatGeneration else { return }
+                guard !Task.isCancelled, epoch == self.storeEpoch else { return }
+                if let fenceId, generation != (self.chatGenerations[fenceId] ?? 0) { return }
                 let switched = next.selectedBotId != self.selectedBotId
                 self.applyStore(next)
                 self.saveError = nil

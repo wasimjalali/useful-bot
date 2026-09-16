@@ -4,7 +4,7 @@ import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permissi
 import { activeBotId } from "../lib/active-bot.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import { listThreadEvents, releaseSend, reserveSend } from "../../shared/agent-store.ts";
-import { HANDOFF_DEPTH_MAX, listHandoffs, readHandoff, waitForHandoff } from "../../shared/handoffs.ts";
+import { HANDOFF_DEPTH_MAX, pendingHandoffCycle, readHandoff, waitForHandoff } from "../../shared/handoffs.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
@@ -115,12 +115,7 @@ export default defineTool({
     const budget = Number.isFinite(waitMs) ? waitMs : HANDOFF_WAIT_DEFAULT_MS;
     // If the target already has a pending handoff to us, waiting would
     // deadlock both turns until the timeout. Queue and let the pump finish.
-    const cycle = listHandoffs().some((item) => (
-      item.id !== record.id
-      && item.status === "pending"
-      && item.sourceBotId === target.id
-      && item.targetBotId === sourceId
-    ));
+    const cycle = pendingHandoffCycle(sourceId, target.id, record.id);
     if (budget <= 0 || cycle) {
       return {
         status: "queued",

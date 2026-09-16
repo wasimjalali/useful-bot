@@ -349,6 +349,35 @@ export function dropHandoff(id: string, dir = handoffDir()): void {
  * last snapshot (still pending) rather than throwing: the pump keeps
  * working and both transcripts still get the reply.
  */
+/**
+ * True if adding source→target would close a wait-cycle in the pending
+ * queue (A waits on B waits on C waits on A). Direct A↔B is the common case.
+ */
+export function pendingHandoffCycle(
+  sourceId: string,
+  targetId: string,
+  skipId = "",
+  dir = handoffDir(),
+): boolean {
+  const pending = listHandoffs(dir).filter((item) => item.status === "pending" && item.id !== skipId)
+  const outgoing = new Map<string, string[]>()
+  for (const item of pending) {
+    const list = outgoing.get(item.sourceBotId) ?? []
+    list.push(item.targetBotId)
+    outgoing.set(item.sourceBotId, list)
+  }
+  const seen = new Set<string>()
+  const stack = [targetId]
+  while (stack.length) {
+    const current = stack.pop() as string
+    if (current === sourceId) return true
+    if (seen.has(current)) continue
+    seen.add(current)
+    for (const next of outgoing.get(current) ?? []) stack.push(next)
+  }
+  return false
+}
+
 export async function waitForHandoff(
   id: string,
   timeoutMs: number,

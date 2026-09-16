@@ -31,6 +31,7 @@ import {
   ownsHandoffClaim,
   queueHandoff,
   readHandoff,
+  pendingHandoffCycle,
   waitForHandoff,
 } from "../shared/handoffs.ts";
 import { sendHandoff, writeHandoffReply } from "../shared/agents-send.ts";
@@ -336,6 +337,26 @@ test("waitForHandoff resolves when the record is delivered", async () => {
   const done = await waitForHandoff(record.id, 1000, handoffDir, 10);
   assert.equal(done?.status, "delivered");
   assert.equal(done?.response, "here");
+});
+
+test("pendingHandoffCycle sees a three-hop wait loop", () => {
+  const { handoffDir } = tempPaths();
+  queueHandoff({
+    sourceBotId: "a",
+    sourceName: "A",
+    targetBotId: "b",
+    targetName: "B",
+    message: "one",
+  }, handoffDir);
+  queueHandoff({
+    sourceBotId: "b",
+    sourceName: "B",
+    targetBotId: "c",
+    targetName: "C",
+    message: "two",
+  }, handoffDir);
+  assert.equal(pendingHandoffCycle("c", "a", "", handoffDir), true);
+  assert.equal(pendingHandoffCycle("a", "b", "", handoffDir), false);
 });
 
 test("waitForHandoff returns the pending snapshot when the budget expires", async () => {
