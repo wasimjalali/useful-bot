@@ -486,6 +486,8 @@ test("the read-only gate refuses what changes state through a read-looking binar
     "echo `rm -rf x`",
     "echo hi > out.txt",
     "ls > listing",
+    "echo hi>out.txt",
+    "cat a>>b",
     "fd . --exec rm {}",
     "fd -x rm",
     "rg --pre=sh pattern",
@@ -504,6 +506,8 @@ test("a tilde or $HOME path is outside a project folder", () => {
   assert.notEqual(outsideFolderRisk("cat ~/.s*/id_r*", root), null);
   assert.notEqual(outsideFolderRisk("cp $HOME/notes.txt .", root), null);
   assert.notEqual(outsideFolderRisk("ls ~", root), null);
-  assert.equal(outsideFolderRisk("ls '~/literal'", root), null);
+  assert.notEqual(outsideFolderRisk("cp \"$HOME/notes.txt\" .", root), null);
+  assert.notEqual(outsideFolderRisk("cat ${HOME}/x", root), null);
+  assert.notEqual(outsideFolderRisk("cat ~root/x", root), null);
   assert.equal(outsideFolderRisk("ls src", root), null);
 });

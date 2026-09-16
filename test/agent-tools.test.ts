@@ -1865,3 +1865,27 @@ test("a glob cannot read a credential store through a read-only line", { skip: p
     home.restore();
   }
 });
+
+test("Read only refuses handoffs, group posts and routine runs", async () => {
+  const box = sandbox();
+  const home = homeFixture("read_only");
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(shell, "CEO");
+    const research = idOf(shell, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    const routineId = createRoutineFixture(research);
+    const sent = await run<{ status: string; error: string }>(sendToBot, { botId: research, message: "go" }, home.ctx);
+    assert.equal(sent.status, "blocked");
+    assert.equal(sent.error, "workspace_read_only");
+    assert.equal(listHandoffs().length, 0);
+    const posted = await run<{ status: string }>(postToGroup, { groupId: research, message: "go" }, home.ctx);
+    assert.equal(posted.status, "blocked");
+    const ran = await run<{ status: string }>(runRoutine, { routineId }, home.ctx);
+    assert.equal(ran.status, "blocked");
+    assert.equal(readRoutine(routineId)?.manualRunRequested, false);
+  } finally {
+    home.restore();
+    box.restore();
+  }
+});

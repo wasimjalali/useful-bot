@@ -757,8 +757,12 @@ function outsideFolder(tokens: Token[], root: string): string | null {
     // `~/x` and `$HOME/x` are the home, spelled the way the shell expands
     // them, so a project folder does not mistake them for a relative path.
     let text = token.text.replace(/^[0-9]*[<>|&]+/, "");
-    if (!token.quoted && (text === "~" || text.startsWith("~/"))) text = home + text.slice(1);
-    else if (!token.quoted && (text === "$HOME" || text.startsWith("$HOME/"))) text = home + text.slice(5);
+    // Quoted or not: double quotes still expand `$HOME`, and the tokenizer
+    // does not say which quotes it saw, so both spellings count as the home.
+    // `~user/x` is another home altogether, outside every folder.
+    if (text === "~" || text.startsWith("~/")) text = home + text.slice(1);
+    else if (/^\$\{?HOME\}?(\/|$)/.test(text)) text = home + text.replace(/^\$\{?HOME\}?/, "");
+    else if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) text = `/${text}`;
     if (!text.startsWith("/")) continue;
     if (text === root || text.startsWith(inside)) continue;
     if (DEVICE_PATHS.some((device) => text === device || text.startsWith(device.endsWith("/") ? device : `${device}/`))) continue;
@@ -1015,14 +1019,15 @@ export function readOnlyRisk(command: string): string | null {
     if (item.quoted && /\$\(|`/.test(item.text)) return "runs a command inside quotes";
     if (item.quoted) continue;
     // Output redirection is a write, except into the bit bucket or onto
-    // another descriptor (`2>&1`). The target may sit in the next token.
-    const match = /^([0-9]*)(>>?|&>|>\|)(.*)$/.exec(item.text);
+    // another descriptor (`2>&1`). The operator may start the token, sit
+    // glued after a word (`hi>out.txt`), or have its target in the next one.
+    const match = /^(.*?)([0-9]*)(>>?|&>|>\|)(.*)$/.exec(item.text);
     if (!match) continue;
-    if (/^&[0-9]+$/.test(match[3])) continue;
+    if (/^&[0-9]+$/.test(match[4])) continue;
     const next = items[i + 1];
-    const target = match[3] || (next && !("separator" in next) && !next.quoted ? next.text : "");
+    const target = match[4] || (next && !("separator" in next) && !next.quoted ? next.text : "");
     if (target === "/dev/null") continue;
-    return `redirects output into a file (${item.text}${match[3] ? "" : ` ${target}`})`;
+    return `redirects output into a file (${item.text}${match[4] ? "" : ` ${target}`})`;
   }
   for (const segment of split(items)) {
     const reason = readOnlySegment(segment.tokens);

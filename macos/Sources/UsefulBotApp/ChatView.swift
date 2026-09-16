@@ -393,7 +393,7 @@ struct ChatView: View {
         // to make was not true in every one of them.
         let place = bot.workspace == nil ? "under your home folder" : "in the attached folder"
         if bot.isReadOnly {
-            return "Runs locally on this Mac. Reads only \(place); changes, commands and app edits are off."
+            return "Runs locally on this Mac. Reads only, wherever it looks; writes, commands that change anything, app edits and connector writes are off."
         }
         if bot.isFullAccess {
             return "Runs locally on this Mac. Works \(place) and in the app without asking; only a command reaching outside it or a destructive connector action still asks."

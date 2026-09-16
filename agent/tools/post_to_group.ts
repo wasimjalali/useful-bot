@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permission.ts";
 import { activeBotId } from "../lib/active-bot.ts";
 import { appendAgentEvent, createProposal, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
@@ -15,6 +16,9 @@ export default defineTool({
     requestId: z.string().min(1).max(120).optional(),
   }),
   execute(input, ctx) {
+    // A handoff or a run starts a teammate turn and writes transcripts, so
+    // Read only refuses it like every other change inside the app.
+    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const shell = readShell();
     const requested = input.groupId.trim();
     const group = shell.bots.find((bot) => (

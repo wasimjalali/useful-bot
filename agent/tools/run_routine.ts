@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permission.ts";
 import { readRoutine, requestRoutineRun } from "../../shared/routines-store.ts";
 
 export default defineTool({
@@ -8,7 +9,10 @@ export default defineTool({
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
   }),
-  execute(input) {
+  execute(input, ctx) {
+    // A run starts a teammate turn and writes transcripts, so Read only
+    // refuses it like every other change inside the app.
+    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     const routine = readRoutine(input.routineId);
     if (!routine) {
       return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call listRoutines." };
