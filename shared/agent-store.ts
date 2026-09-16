@@ -102,7 +102,26 @@ export type FanoutProposal = {
   threadId: string;
 };
 
-export type ProposalPayload = BotProposal | GroupProposal | ProfileProposal | FanoutProposal;
+export type ConnectPhase = "proposed" | "waiting" | "connected" | "expired";
+
+export type ConnectAppProposal = {
+  kind: "connectApp";
+  slug: string;
+  name: string;
+  logo: string | null;
+  /** One line from the bot: what it will do there. */
+  purpose: string;
+  sourceBotId: string | null;
+  threadId: string;
+  phase: ConnectPhase;
+  /** Composio connected-account id once authorize ran. */
+  accountId: string | null;
+  waitingSince: string | null;
+  /** Filled when connected; null when the count call failed. */
+  toolCount: number | null;
+};
+
+export type ProposalPayload = BotProposal | GroupProposal | ProfileProposal | FanoutProposal | ConnectAppProposal;
 export type ProposalKind = ProposalPayload["kind"];
 
 export type Proposal = ProposalPayload & {
@@ -225,7 +244,8 @@ function isProposalKind(value: unknown): value is ProposalKind {
   return value === "createBot"
     || value === "createGroup"
     || value === "updateBotProfile"
-    || value === "fanout";
+    || value === "fanout"
+    || value === "connectApp";
 }
 
 function parseProposal(raw: unknown): Proposal | null {
@@ -276,6 +296,25 @@ function parseProposal(raw: unknown): Proposal | null {
         avatarShape: typeof patchRaw.avatarShape === "string" ? patchRaw.avatarShape : null,
         avatarColor: typeof patchRaw.avatarColor === "string" ? patchRaw.avatarColor : null,
       },
+    };
+  }
+  if (rec.kind === "connectApp") {
+    const phase: ConnectPhase = rec.phase === "waiting" || rec.phase === "connected" || rec.phase === "expired"
+      ? rec.phase
+      : "proposed";
+    return {
+      ...base,
+      kind: "connectApp",
+      slug: clip(rec.slug, 80),
+      name: clip(rec.name, 80),
+      logo: typeof rec.logo === "string" && rec.logo ? rec.logo.slice(0, 500) : null,
+      purpose: clip(rec.purpose, 120),
+      phase,
+      accountId: isId(rec.accountId, 120) ? rec.accountId : null,
+      waitingSince: typeof rec.waitingSince === "string" ? rec.waitingSince : null,
+      toolCount: typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount)
+        ? Math.max(0, Math.trunc(rec.toolCount))
+        : null,
     };
   }
   const targetIds = Array.isArray(rec.targetIds)
@@ -556,6 +595,29 @@ export function listPendingProposals(threadId: string, path = agentStorePath()):
 
 export function readProposal(id: string, path = agentStorePath()): Proposal | null {
   return readAgentStore(path).proposals.find((item) => item.id === id) ?? null;
+}
+
+/** Patch one proposal under the store lock. Returns the patched record or null. */
+export function updateProposal(
+  id: string,
+  patch: (proposal: Proposal) => void,
+  path = agentStorePath(),
+): Proposal | null {
+  return withAgentStore((store) => {
+    const proposal = store.proposals.find((item) => item.id === id);
+    if (!proposal) return null;
+    patch(proposal);
+    return proposal;
+  }, path);
+}
+
+export function listProposalsOfKind<K extends ProposalKind>(
+  kind: K,
+  path = agentStorePath(),
+): Array<Extract<Proposal, { kind: K }>> {
+  return readAgentStore(path).proposals.filter(
+    (item): item is Extract<Proposal, { kind: K }> => item.kind === kind,
+  );
 }
 
 export function reserveKey(kind: ReserveKind, requestId: string): string {
