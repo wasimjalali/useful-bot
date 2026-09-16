@@ -225,8 +225,9 @@ test("a reopen that lands during the expiry check is not expired", async () => {
   const stale = readProposal(proposal.id, storePath);
   updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") p.waitingSince = fresh; }, storePath);
   assert.ok(stale);
-  await pumpConnects({ now: t0 + CONNECT_WAIT_MS + 60_000 });
+  const out = await pumpConnects({ now: t0 + CONNECT_WAIT_MS + 60_000 });
   assert.equal((readProposal(proposal.id, storePath) as { phase: string }).phase, "waiting");
+  assert.deepEqual(out.expired, []);
 });
 
 test("an authorize that overlaps the pump's flip does not rewind a connected card", async () => {

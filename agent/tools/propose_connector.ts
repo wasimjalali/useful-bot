@@ -32,6 +32,9 @@ export default defineTool({
     if (!store.apiKey) return { status: "blocked", error: "connectors_not_set_up" };
     const slug = input.slug.trim().toLowerCase();
     if (!isToolkitSlug(slug)) return { status: "unknown_app", slug };
+    // Validate what is stored, not the raw input: the resume turn quotes it.
+    const purpose = input.purpose.trim();
+    if (purpose.length < 3) return { status: "invalid_purpose", error: "purpose must say what you will do there" };
     let row;
     try {
       const page = await listConnectorToolkits({ search: slug, limit: 20 });
@@ -65,7 +68,7 @@ export default defineTool({
         slug,
         name: row.name,
         logo: row.logo,
-        purpose: input.purpose.trim(),
+        purpose,
         sourceBotId: botId,
         threadId,
         phase: "proposed",

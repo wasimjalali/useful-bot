@@ -490,8 +490,9 @@ test("propose_connector creates one card, refuses unknown, connected and duplica
     const third = await run<{ status: string }>(proposeConnector, { slug: "notion_mcp", purpose: "Also" });
     assert.equal(third.status, "awaiting_owner_confirmation");
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "gmail", purpose: "Mail" })).status, "already_connected");
-    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "nope_app", purpose: "x" })).status, "unknown_app");
-    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "../x", purpose: "x" })).status, "unknown_app");
+    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "nope_app", purpose: "Look it up" })).status, "unknown_app");
+    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "../x", purpose: "Look it up" })).status, "unknown_app");
+    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "notion_mcp", purpose: "     " })).status, "invalid_purpose");
     // The expired card and the new one; nothing else was created.
     assert.equal(listPendingProposals("bot-useful").length, 2);
   } finally {

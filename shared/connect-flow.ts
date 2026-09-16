@@ -187,13 +187,15 @@ async function pumpConnectsOnce(
     if (!Number.isFinite(since) || now - since > CONNECT_WAIT_MS) {
       // Only if still waiting on the same sign-in: a Reopen that landed
       // since the read above restamped waitingSince and must not expire.
+      let didExpire = false;
       updateProposal(card.id, (item) => {
         if (item.kind === "connectApp" && item.phase === "waiting" && item.waitingSince === card.waitingSince) {
           item.phase = "expired";
+          didExpire = true;
         }
       }, storePath);
       lastCheck.delete(card.id);
-      expired.push(card.id);
+      if (didExpire) expired.push(card.id);
       continue;
     }
     const checked = lastCheck.get(card.id) ?? 0;
