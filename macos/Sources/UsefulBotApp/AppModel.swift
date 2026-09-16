@@ -1776,9 +1776,8 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                // The created bot starts fresh. Other bots keep their turns.
-                self.stashCurrentThread()
-                self.resetThread()
+                // applyStore selects the new bot; switchToBot stashes any
+                // outgoing send so it keeps running.
                 self.applyStore(next)
             self.saveError = nil
             } catch {
@@ -1795,8 +1794,6 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                self.stashCurrentThread()
-                self.resetThread()
                 self.applyStore(next)
                 self.saveError = nil
                 self.settingsOpen = true
@@ -1917,7 +1914,10 @@ final class AppModel: ObservableObject {
 
     private func stashCurrentThread() {
         guard let old = selectedBotId else { return }
-        backgroundProjections[old] = projection
+        // Do not clobber a live stash with an empty post-reset projection.
+        if !projection.messages.isEmpty || backgroundProjections[old] == nil {
+            backgroundProjections[old] = projection
+        }
         if transcriptReady || !transcript.isEmpty {
             transcriptCache[old] = (transcript, transcriptBlocks)
         }
