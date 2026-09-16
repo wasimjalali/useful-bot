@@ -1,25 +1,16 @@
-import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { MemoryStore } from "../../../../agent/lib/memory.ts";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 
 export const runtime = "nodejs";
 
-// The pane polls every few seconds, so one store per process root: a fresh
+// The pane polls every few seconds, so one store per process: a fresh
 // MemoryStore per request leaks its sqlite handle until GC and re-runs the
-// migration each time. The root matches the store's own default.
-function memoryRootResolved(): string {
-  return process.env.UB_MEMORY_ROOT ?? join(process.env.HOME ?? "/tmp", ".useful-bot/memory");
-}
-
+// migration each time. The store resolves its own root, so nothing here can
+// drift from it.
 let sharedStore: MemoryStore | null = null;
-let sharedRoot = "";
 function memoryStore(): MemoryStore {
-  const root = memoryRootResolved();
-  if (!sharedStore || sharedRoot !== root) {
-    sharedStore = new MemoryStore(root);
-    sharedRoot = root;
-  }
+  if (!sharedStore) sharedStore = new MemoryStore();
   return sharedStore;
 }
 

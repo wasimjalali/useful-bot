@@ -388,18 +388,6 @@ export default function Page() {
       setTranscriptUser((current) => [...current, { id: `u-${nextSeq()}`, text: message }]);
       const body = (await res.json()) as { sessionId?: string };
       const sid = body.sessionId ?? sessionId;
-      if (sid && controller.signal.aborted) {
-        // Stop was pressed while the turn was being created: the session
-        // exists now, so cancel it best effort instead of leaving it
-        // running with no UI attached.
-        void fetch(`/eve/v1/session/${sid}/cancel`, {
-          method: "POST",
-          credentials: "include",
-          headers: csrf,
-        }).catch(() => undefined);
-        setProj((current) => ({ ...current, pending: false }));
-        return false;
-      }
       if (sid) {
         projSession.current = sid;
         setActive(sid);
@@ -412,6 +400,18 @@ export default function Page() {
       // Only once the body parsed: cleared earlier, a parse failure below
       // would lose the text while the composer kept its files.
       setDraft("");
+      if (sid && controller.signal.aborted) {
+        // Stop was pressed while the turn was being created: the session
+        // exists and the pointer above is stored (the message landed), so
+        // cancel it best effort instead of leaving it running with no UI
+        // attached.
+        void fetch(`/eve/v1/session/${sid}/cancel`, {
+          method: "POST",
+          credentials: "include",
+          headers: csrf,
+        }).catch(() => undefined);
+        setProj((current) => ({ ...current, pending: false }));
+      }
       return true;
     } catch (err) {
       // Stop pressed while the create POST was going out: a deliberate
