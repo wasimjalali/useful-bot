@@ -1,0 +1,190 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createProposal, listThreadEvents, readProposal } from "../shared/agent-store.ts";
+import { resetCatalogueMemo } from "../shared/composio-catalogue.ts";
+import { CONNECT_WAIT_MS, pumpConnects, resetConnectMemo, startConnectAuthorize } from "../shared/connect-flow.ts";
+import { forgetConnected, setComposioFactory, type ComposioLike, type ComposioSessionLike } from "../shared/composio.ts";
+import { setConnectorsKey, updateConnectorsStore } from "../shared/connectors-store.ts";
+import { listHandoffs } from "../shared/handoffs.ts";
+import { writeShell } from "../shared/shell-io.ts";
+import { seedStore } from "../shared/shell-store.ts";
+
+type Item = {
+  slug: string;
+  name: string;
+  isNoAuth: boolean;
+  logo?: string;
+  connection?: { isActive: boolean; connectedAccount?: { status: string; id: string } };
+};
+
+const CALLBACK = "http://127.0.0.1:4320/api/connectors/callback";
+
+function paths() {
+  const dir = mkdtempSync(join(tmpdir(), "ub-connect-"));
+  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
+  process.env.UB_CONNECTORS_PATH = join(dir, "connectors.json");
+  process.env.UB_CATALOGUE_PATH = join(dir, "catalogue.json");
+  process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
+  process.env.UB_SHELL_PATH = join(dir, "shell.json");
+  resetCatalogueMemo();
+  forgetConnected();
+  resetConnectMemo();
+  updateConnectorsStore((store) => setConnectorsKey(store, "ak_stub_1234567890"));
+  return { storePath: process.env.UB_AGENT_STORE_PATH };
+}
+
+function stubComposio(items: Item[], toolCount = 3) {
+  const state = { items, authorized: 0, countThrows: false };
+  const session: ComposioSessionLike = {
+    sessionId: "trs_1",
+    async authorize(toolkit) {
+      state.authorized += 1;
+      return { id: `ca_${toolkit}_${state.authorized}`, redirectUrl: `https://connect.composio.dev/${toolkit}` };
+    },
+    async toolkits(options) {
+      const rows = options?.isConnected ? state.items.filter((item) => item.connection?.isActive) : state.items;
+      return { items: rows, cursor: undefined };
+    },
+    async search() {
+      return { results: [], toolSchemas: {}, toolkits: [] };
+    },
+    async execute() {
+      return {};
+    },
+  };
+  const client: ComposioLike = {
+    sessions: {
+      async create() {
+        return session;
+      },
+      async use() {
+        return session;
+      },
+    },
+    connectedAccounts: {
+      async list() {
+        return { items: [] };
+      },
+      async delete() {
+        return {};
+      },
+    },
+    tools: {
+      async getRawComposioTools() {
+        if (state.countThrows) throw new Error("boom");
+        return Array.from({ length: toolCount }, (_, index) => ({ slug: `GMAIL_T${index}`, toolkit: { slug: "gmail" } }));
+      },
+    },
+  };
+  setComposioFactory(() => client);
+  return state;
+}
+
+function seed(storePath: string) {
+  const shell = seedStore();
+  shell.bots.push({ ...shell.bots[0], id: "b1", name: "Mailer" });
+  shell.selectedBotId = "b1";
+  writeShell(shell);
+  return createProposal({
+    kind: "connectApp",
+    slug: "gmail",
+    name: "Gmail",
+    logo: null,
+    purpose: "Find the invoice",
+    sourceBotId: "b1",
+    threadId: "b1",
+    phase: "proposed",
+    accountId: null,
+    waitingSince: null,
+    toolCount: null,
+  }, storePath);
+}
+
+test.afterEach(() => {
+  setComposioFactory(null);
+  resetConnectMemo();
+});
+
+test("authorize moves the card to waiting, stores the account id and returns the URL once", async () => {
+  const { storePath } = paths();
+  const state = stubComposio([{ slug: "gmail", name: "Gmail", isNoAuth: false }]);
+  const proposal = seed(storePath);
+  const { redirectUrl } = await startConnectAuthorize(proposal.id, CALLBACK);
+  assert.equal(redirectUrl, "https://connect.composio.dev/gmail");
+  const stored = readProposal(proposal.id, storePath);
+  assert.equal(stored?.kind === "connectApp" && stored.phase, "waiting");
+  assert.equal(stored?.kind === "connectApp" && stored.accountId, "ca_gmail_1");
+  assert.equal(stored?.status, "pending");
+  assert.ok(!JSON.stringify(stored).includes("composio.dev"));
+  // Reopen: a second authorize issues a new account id.
+  await startConnectAuthorize(proposal.id, CALLBACK);
+  assert.equal(state.authorized, 2);
+  assert.equal((readProposal(proposal.id, storePath) as { accountId: string }).accountId, "ca_gmail_2");
+  await assert.rejects(startConnectAuthorize("prp_missing", CALLBACK), /proposal_missing/);
+});
+
+test("the pump connects a waiting card once, writes the note and queues one resume handoff", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  await startConnectAuthorize(proposal.id, CALLBACK);
+  // Not active yet: nothing happens.
+  assert.deepEqual(await pumpConnects({ now: Date.now() }), { connected: [], expired: [] });
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "ca_gmail_1" } };
+  resetConnectMemo();
+  const first = await pumpConnects({ now: Date.now() + 6_000 });
+  assert.deepEqual(first.connected, [proposal.id]);
+  const stored = readProposal(proposal.id, storePath);
+  assert.equal(stored?.status, "confirmed");
+  assert.equal(stored?.kind === "connectApp" && stored.phase, "connected");
+  assert.equal(stored?.kind === "connectApp" && stored.toolCount, 3);
+  const handoffs = listHandoffs();
+  assert.equal(handoffs.length, 1);
+  assert.equal(handoffs[0].targetBotId, "b1");
+  assert.equal(handoffs[0].targetName, "Mailer");
+  assert.equal(handoffs[0].depth, 0);
+  assert.match(handoffs[0].message, /connected Gmail/);
+  assert.match(handoffs[0].message, /Find the invoice/);
+  assert.ok(listThreadEvents("b1", storePath).some((event) => event.kind === "note" && event.text === "Gmail connected"));
+  // A second tick does nothing more.
+  resetConnectMemo();
+  assert.deepEqual(await pumpConnects({ now: Date.now() + 12_000 }), { connected: [], expired: [] });
+  assert.equal(listHandoffs().length, 1);
+});
+
+test("the pump respects the 5 s memo, expires after 10 min, and leaves toolCount null on a count failure", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  const state = stubComposio([item]);
+  const proposal = seed(storePath);
+  const t0 = Date.now();
+  await startConnectAuthorize(proposal.id, CALLBACK, { now: t0 });
+  await pumpConnects({ now: t0 });
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  // Within 5 s of the last check: no Composio call, still waiting.
+  await pumpConnects({ now: t0 + 2_000 });
+  assert.equal((readProposal(proposal.id, storePath) as { phase: string }).phase, "waiting");
+  state.countThrows = true;
+  await pumpConnects({ now: t0 + 6_000 });
+  const stored = readProposal(proposal.id, storePath) as { phase: string; toolCount: number | null };
+  assert.equal(stored.phase, "connected");
+  assert.equal(stored.toolCount, null);
+
+  const second = seed(storePath);
+  await startConnectAuthorize(second.id, CALLBACK, { now: t0 });
+  item.connection = undefined;
+  resetConnectMemo();
+  const late = await pumpConnects({ now: t0 + CONNECT_WAIT_MS + 60_000 });
+  assert.deepEqual(late.expired, [second.id]);
+  const expired = readProposal(second.id, storePath) as { phase: string; status: string };
+  assert.equal(expired.phase, "expired");
+  assert.equal(expired.status, "pending");
+  assert.equal(listHandoffs().length, 1);
+  // Reopen after a timeout goes back to waiting.
+  await startConnectAuthorize(second.id, CALLBACK, { now: t0 + CONNECT_WAIT_MS + 61_000 });
+  assert.equal((readProposal(second.id, storePath) as { phase: string }).phase, "waiting");
+});
