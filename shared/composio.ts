@@ -303,8 +303,8 @@ export function forgetConnected(): void {
  * search of three characters or more is sent to Composio directly.
  *
  * MCP variants of an app (notion_mcp beside notion) are Composio's endpoints
- * for MCP clients; they are hidden unless already connected, so the plain
- * app is the one people connect.
+ * for MCP clients. They list beside the plain app; on a tie the plain app
+ * sorts first by name, so "Notion" comes before "Notion MCP".
  */
 export async function listConnectorToolkits(
   options: { search?: string; offset?: number; limit?: number } = {},
@@ -327,7 +327,7 @@ export async function listConnectorToolkits(
       if (search && search.length >= SEARCH_MIN) add((await session.toolkits({ search, limit: PAGE_MAX })).items);
     }
     const list = [...rows.values()].filter(
-      (row) => !row.noAuth && (row.connected || !row.slug.endsWith("_mcp")) && (!search || score(row, search) > 0),
+      (row) => !row.noAuth && (!search || score(row, search) > 0),
     );
     const rank = new Map(FEATURED_TOOLKITS.map((slug, index) => [slug, index]));
     const tier = (row: ConnectorToolkit) => (row.connected ? 0 : rank.has(row.slug) ? 1 : 2);
