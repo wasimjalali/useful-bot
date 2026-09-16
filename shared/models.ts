@@ -11,7 +11,24 @@ export type ModelOption = {
   defaultEffort: EffortId | null;
   speeds: SpeedId[];
   defaultSpeed: SpeedId;
+  /** Context window in tokens from the models.dev catalog; absent when unknown. */
+  contextTokens?: number;
+  /** Input modalities from the catalog ("text", "image", ...); absent when unknown. */
+  inputs?: string[];
 };
+
+/** Catalog facts about one model that the live list cannot tell on its own. */
+export type ModelMeta = { contextTokens?: number; inputs?: string[] };
+
+/**
+ * Whether the model takes image input. Null when the catalog has not said:
+ * a caller that gates on it lets the upstream decide rather than refusing
+ * on missing data.
+ */
+export function modelSeesImages(model: Pick<ModelOption, "inputs"> | null | undefined): boolean | null {
+  if (!model?.inputs) return null;
+  return model.inputs.includes("image");
+}
 
 export type ComposerPublic = {
   providerId: string;
@@ -211,20 +228,23 @@ export function inferCapabilities(
   return { ...standard, efforts: [], defaultEffort: null };
 }
 
-export function hydrateModel(providerId: string, id: string, label?: string): ModelOption {
+export function hydrateModel(providerId: string, id: string, label?: string, meta?: ModelMeta): ModelOption {
   const known = modelsFor(providerId).find((item) => item.id === id);
-  if (known) return { ...known, label: label?.trim() || known.label };
-  const inferred = inferCapabilities(id, providerId);
-  return {
-    id,
-    label: label?.trim() || humanizeModelId(id),
-    ...inferred,
-  };
+  const base = known
+    ? { ...known, label: label?.trim() || known.label }
+    : { id, label: label?.trim() || humanizeModelId(id), ...inferCapabilities(id, providerId) };
+  if (meta?.contextTokens) base.contextTokens = meta.contextTokens;
+  if (meta?.inputs) base.inputs = meta.inputs;
+  return base;
 }
 
-export function mergeLiveModels(providerId: string, ids: string[]): ModelOption[] {
+export function mergeLiveModels(
+  providerId: string,
+  ids: string[],
+  meta: Record<string, ModelMeta> = {},
+): ModelOption[] {
   const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
-  const models = unique.map((id) => hydrateModel(providerId, id));
+  const models = unique.map((id) => hydrateModel(providerId, id, undefined, meta[id]));
   const preferred = modelsFor(providerId)[0]?.id;
   return models.sort((a, b) => {
     if (a.id === preferred) return -1;

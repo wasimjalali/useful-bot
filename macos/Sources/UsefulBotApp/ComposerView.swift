@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import UsefulBotCore
@@ -24,8 +25,8 @@ struct ComposerView: View {
 
     @State private var plusOpen = false
     @State private var modeOpen = false
-    @State private var showFileImporter = false
     @State private var showFolderImporter = false
+    @State private var dropTargeted = false
     @State private var projectOpen = false
     @State private var permissionOpen = false
     @State private var plusButtonFrame = CGRect.zero
@@ -51,16 +52,9 @@ struct ComposerView: View {
         }
         .padding(.top, DesignTokens.Space.composerTop)
         .padding(.bottom, DesignTokens.Space.composerBottom)
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls): model.addAttachments(urls)
-            case .failure: model.attachError = "That file could not be read."
-            }
-        }
+        // One `fileImporter` per view: SwiftUI keeps only the last presentation
+        // modifier of a kind on a view, so a second importer here for files
+        // never opened. Files go through `NSOpenPanel` directly (`pickFiles`).
         .fileImporter(
             isPresented: $showFolderImporter,
             allowedContentTypes: [.folder],
@@ -125,9 +119,29 @@ struct ComposerView: View {
                     style: .continuous
                 )
                 // The caret is thin and the placeholder greys out either way,
-                // so the edge is what tells you the field is live.
-                .strokeBorder(focused ? Theme.C.borderStrong : Theme.C.border, lineWidth: 1)
+                // so the edge is what tells you the field is live. A file
+                // held over it lights the edge in the accent: the drop lands
+                // as an attachment.
+                .strokeBorder(
+                    dropTargeted ? Theme.C.accentStrong : (focused ? Theme.C.borderStrong : Theme.C.border),
+                    lineWidth: 1
+                )
             )
+            // Drops on the chips, the padding or the buttons; the text view
+            // catches the ones over the field itself and forwards them the
+            // same way.
+            .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+                DroppedFiles.urls(from: providers) { urls in
+                    // A drop this view claimed has to end in something: an
+                    // attachment, or a line saying why not.
+                    if urls.isEmpty {
+                        model.attachError = "That file could not be read."
+                    } else {
+                        model.addAttachments(urls)
+                    }
+                }
+                return true
+            }
             .clipShape(
                 RoundedRectangle(
                     cornerRadius: stacked || focused ? DesignTokens.Radius.composerExpanded : 26,
@@ -148,7 +162,7 @@ struct ComposerView: View {
                         PlusMenu(
                             onAttach: {
                                 plusOpen = false
-                                showFileImporter = true
+                                pickFiles()
                             },
                             onAttachFolder: {
                                 plusOpen = false
@@ -286,7 +300,8 @@ struct ComposerView: View {
                 canSend: { canSend },
                 pending: { model.pending },
                 onSend: { send() },
-                onFocusChange: { focused = $0 }
+                onFocusChange: { focused = $0 },
+                onDropFiles: { model.addAttachments($0) }
             )
             .accessibilityLabel(placeholder)
         }
@@ -466,6 +481,24 @@ struct ComposerView: View {
         .padding(.top, 2)
     }
 
+    /// The native open panel, for files. Not `fileImporter`: see `body`.
+    private func pickFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Add files to this message"
+        let handler: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK else { return }
+            model.addAttachments(panel.urls)
+        }
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            panel.begin(completionHandler: handler)
+        }
+    }
+
     private func send() {
         guard canSend, !model.pending else { return }
         // The folder is not mentioned in the message. The grant travels by
@@ -479,6 +512,36 @@ struct ComposerView: View {
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.
         model.send(message)
+    }
+}
+
+/// File URLs out of a drop's item providers, delivered once on the main actor.
+/// The completion always fires, with an empty list when nothing loaded, so
+/// the caller can say so instead of swallowing the drop.
+enum DroppedFiles {
+    static func urls(from providers: [NSItemProvider], completion: @escaping @MainActor ([URL]) -> Void) {
+        let candidates = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !candidates.isEmpty else {
+            Task { @MainActor in completion([]) }
+            return
+        }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls: [URL?] = Array(repeating: nil, count: candidates.count)
+        for (index, provider) in candidates.enumerated() {
+            group.enter()
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                defer { group.leave() }
+                guard let data, let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else { return }
+                lock.lock()
+                urls[index] = url
+                lock.unlock()
+            }
+        }
+        group.notify(queue: .main) {
+            let found = urls.compactMap { $0 }
+            Task { @MainActor in completion(found) }
+        }
     }
 }
 

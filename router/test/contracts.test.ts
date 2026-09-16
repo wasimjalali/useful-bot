@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRouter } from "../src/index.ts";
-import { LimitStore } from "../src/limits.ts";
+import { LimitStore, estimateInputUnits } from "../src/limits.ts";
 import { ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs } from "../src/retry-after.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
@@ -222,7 +222,7 @@ test("completion maps model to alias", async () => {
   });
 });
 
-test("opencode-go forwards the registry upstream model id", async () => {
+test("opencode-go forwards the model selected in the composer and reports it", async () => {
   let forwarded: Record<string, unknown> = {};
   await withRouter(async (base, tokens) => {
     writeFileSync(process.env.UB_PROVIDERS_PATH!, JSON.stringify({
@@ -239,8 +239,8 @@ test("opencode-go forwards the registry upstream model id", async () => {
       body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
     });
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get("x-useful-upstream-model"), "glm-5.3-flash");
-    assert.equal(forwarded.model, "glm-5.3-flash");
+    assert.equal(res.headers.get("x-useful-upstream-model"), "glm-5.3");
+    assert.equal(forwarded.model, "glm-5.3");
     assert.equal(forwarded.reasoning_effort, "high");
   }, (req, res) => {
     const chunks: Buffer[] = [];
@@ -257,6 +257,134 @@ test("opencode-go forwards the registry upstream model id", async () => {
       }));
     });
   });
+});
+
+function withModelsCache(fn: (path: string) => Promise<void>): Promise<void> {
+  const previous = process.env.UB_MODELS_CACHE_PATH;
+  const path = join(mkdtempSync(join(tmpdir(), "ub-router-models-")), "models-cache.json");
+  writeFileSync(path, JSON.stringify({
+    schemaVersion: 2,
+    providers: {
+      "opencode-go": {
+        fetchedAt: Date.now(),
+        models: [
+          { id: "glm-5.3-flash", label: "GLM 5.3 Flash", efforts: ["low", "high", "max"], defaultEffort: "low", speeds: ["standard"], defaultSpeed: "standard", contextTokens: 1_000_000, inputs: ["text", "image"] },
+          { id: "glm-5.3", label: "GLM 5.3", efforts: ["low", "high", "max"], defaultEffort: "high", speeds: ["standard"], defaultSpeed: "standard", contextTokens: 1_000_000, inputs: ["text"] },
+        ],
+      },
+    },
+  }));
+  process.env.UB_MODELS_CACHE_PATH = path;
+  return fn(path).finally(() => {
+    if (previous === undefined) delete process.env.UB_MODELS_CACHE_PATH;
+    else process.env.UB_MODELS_CACHE_PATH = previous;
+  });
+}
+
+const PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+function imageTurn(extra: Record<string, unknown> = {}) {
+  return {
+    model: "workhorse",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "what is in this picture" },
+        { type: "image_url", image_url: { url: PNG_DATA_URL } },
+      ],
+    }],
+    ...extra,
+  };
+}
+
+test("a user image part reaches a vision model unchanged", async () => {
+  let forwarded: Record<string, unknown> = {};
+  await withModelsCache(() => withRouter(async (base, tokens) => {
+    writeFileSync(process.env.UB_PROVIDERS_PATH!, JSON.stringify({
+      schemaVersion: 1,
+      activeProviderId: "opencode-go",
+      keys: { "opencode-go": { key: "test-upstream-key", updatedAt: new Date().toISOString() } },
+      selectedModel: "glm-5.3-flash",
+      effort: "low",
+      speed: "standard",
+    }));
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify(imageTurn()),
+    });
+    assert.equal(res.status, 200);
+    const content = (forwarded.messages as Array<{ content: unknown }>)[0]?.content as Array<Record<string, unknown>>;
+    assert.equal(content[1]?.type, "image_url");
+    assert.equal((content[1]?.image_url as { url: string }).url, PNG_DATA_URL);
+  }, (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      jsonFixture(req, res);
+    });
+  }));
+});
+
+test("a text-only model gets a note where the image was", async () => {
+  let forwarded: Record<string, unknown> = {};
+  await withModelsCache(() => withRouter(async (base, tokens) => {
+    writeFileSync(process.env.UB_PROVIDERS_PATH!, JSON.stringify({
+      schemaVersion: 1,
+      activeProviderId: "opencode-go",
+      keys: { "opencode-go": { key: "test-upstream-key", updatedAt: new Date().toISOString() } },
+      selectedModel: "glm-5.3",
+      effort: "high",
+      speed: "standard",
+    }));
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify(imageTurn()),
+    });
+    assert.equal(res.status, 200);
+    const content = (forwarded.messages as Array<{ content: unknown }>)[0]?.content as Array<Record<string, unknown>>;
+    assert.equal(content[0]?.type, "text");
+    assert.equal(content[1]?.type, "text");
+    assert.equal(String(content[1]?.text).includes("cannot see images"), true);
+    assert.equal(JSON.stringify(forwarded).includes("base64"), false);
+  }, (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      jsonFixture(req, res);
+    });
+  }));
+});
+
+test("image parts are refused off the user role, as remote urls, and past the cap", async () => {
+  await withRouter(async (base, tokens) => {
+    const image = { type: "image_url", image_url: { url: PNG_DATA_URL } };
+    const bodies: Array<Record<string, unknown>> = [
+      { model: "workhorse", messages: [{ role: "assistant", content: [{ type: "text", text: "hi" }] }] },
+      { model: "workhorse", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.com/a.png" } }] }] },
+      { model: "workhorse", messages: [{ role: "user", content: [{ type: "input_audio", data: "x" }] }] },
+      { model: "workhorse", messages: [{ role: "user", content: [image, image, image, image, image, image] }] },
+      { model: "workhorse", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: PNG_DATA_URL, extra: 1 } }] }] },
+    ];
+    for (const body of bodies) {
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).error.code, "unsupported_parameter");
+    }
+  });
+});
+
+test("estimateInputUnits reserves an image at its encoded size, an upper bound on what a model can bill", () => {
+  const text = estimateInputUnits({ messages: [{ role: "user", content: "hi" }] });
+  const withImage = estimateInputUnits(imageTurn());
+  assert.equal(withImage >= text + PNG_DATA_URL.length, true);
 });
 
 test("device credential cannot authenticate to router", async () => {

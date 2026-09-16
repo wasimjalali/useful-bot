@@ -32,6 +32,10 @@ struct ComposerTextView: NSViewRepresentable {
     /// tell the owner. Defaults to nothing: the field and the model stay in
     /// sync without it.
     var onClip: () -> Void = {}
+    /// Files dropped on the field. `NSTextView` takes a file drop itself and
+    /// pastes the path as text, which is not an attachment; this hands the
+    /// URLs to the composer instead.
+    var onDropFiles: ([URL]) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -51,6 +55,9 @@ struct ComposerTextView: NSViewRepresentable {
         let textView = FocusReportingTextView()
         textView.onFocusChange = { [weak coordinator = context.coordinator] focused in
             coordinator?.onFocusChange(focused)
+        }
+        textView.onDropFiles = { [weak coordinator = context.coordinator] urls in
+            coordinator?.onDropFiles(urls)
         }
         textView.delegate = context.coordinator
         textView.isRichText = false
@@ -89,6 +96,7 @@ struct ComposerTextView: NSViewRepresentable {
         context.coordinator.onSend = onSend
         context.coordinator.onFocusChange = onFocusChange
         context.coordinator.onClip = onClip
+        context.coordinator.onDropFiles = onDropFiles
         context.coordinator.returnSends = returnSends
         context.coordinator.syncFromModel(into: textView, text: text, writeToken: writeToken)
     }
@@ -117,6 +125,7 @@ struct ComposerTextView: NSViewRepresentable {
         var onSend: () -> Void = {}
         var onFocusChange: (Bool) -> Void = { _ in }
         var onClip: () -> Void = {}
+        var onDropFiles: ([URL]) -> Void = { _ in }
         init(text: Binding<String>) {
             self._text = text
         }
@@ -218,6 +227,35 @@ struct ComposerTextView: NSViewRepresentable {
 /// content that will not delete.
 private final class FocusReportingTextView: NSTextView {
     var onFocusChange: (Bool) -> Void = { _ in }
+    var onDropFiles: ([URL]) -> Void = { _ in }
+
+    /// File URLs on the drag, or nil when the drag carries none, in which
+    /// case the text view handles it as it always did (dropped text).
+    private func droppedFileURLs(_ sender: NSDraggingInfo) -> [URL]? {
+        let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+        return urls.isEmpty ? nil : urls
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(sender) == nil ? super.draggingEntered(sender) : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(sender) == nil ? super.draggingUpdated(sender) : .copy
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        droppedFileURLs(sender) == nil ? super.prepareForDragOperation(sender) : true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = droppedFileURLs(sender) else { return super.performDragOperation(sender) }
+        onDropFiles(urls)
+        return true
+    }
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()

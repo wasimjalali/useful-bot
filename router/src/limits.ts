@@ -64,7 +64,12 @@ interface TokenTotals {
 /**
  * Conservative input upper bound in reservation units. An exact tokenizer is
  * unavailable at the router, so SPEC.md:242 mandates UTF-8 bytes plus fixed
- * message/tool framing. These are never reported as measured tokens.
+ * message/tool framing. These are never reported as measured tokens. The
+ * slack is deliberate: a reservation is settled to the observed usage right
+ * after the response, but an observation above the reservation is an overrun
+ * that disables the alias for the process. An image part counts by its
+ * base64 length for the same reason: a model bills a picture by its pixels,
+ * not its bytes, and the encoded size is the bound that cannot be exceeded.
  */
 export function estimateInputUnits(body: unknown): number {
   const rec = body && typeof body === "object" ? body as Record<string, unknown> : {};

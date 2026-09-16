@@ -1,6 +1,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { defineAgent } from "eve";
+import { defineAgent, defineDynamic } from "eve";
 import { POLICY_WINDOW_TOKENS } from "../shared/policy.ts";
+import { currentWindowTokens } from "./lib/model-window.ts";
 
 const PLANTED = "S2-TOOL-PLANT-001";
 
@@ -168,7 +169,21 @@ function requireModel() {
   return provider.chatModel("workhorse");
 }
 
+// One provider object for the process: the router picks the upstream model
+// per request, so the handle never changes, only the window it reports.
+const ROUTER_MODEL = requireModel();
+
 export default defineAgent({
-  model: requireModel(),
-  modelContextWindowTokens: POLICY_WINDOW_TOKENS,
+  // Selected per model step rather than once per session, because the window
+  // follows whatever model the owner picked in the composer, and that can
+  // change between two steps of one turn. `step.started` is also the only
+  // scope allowed to return a live LanguageModel rather than a gateway id.
+  model: defineDynamic({
+    events: {
+      "step.started": () => ({
+        model: ROUTER_MODEL,
+        modelContextWindowTokens: process.env.UB_S2_FIXTURE === "1" ? POLICY_WINDOW_TOKENS : currentWindowTokens(),
+      }),
+    },
+  }),
 });
