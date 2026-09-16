@@ -508,7 +508,7 @@ test("propose_connector creates one card, refuses unknown, connected and duplica
   const broken = sandbox(["gmail"]);
   try {
     broken.toolkitItems = null as never;
-    const out = await run<{ status: string }>(proposeConnector, { slug: "notion", purpose: "x" });
+    const out = await run<{ status: string }>(proposeConnector, { slug: "notion", purpose: "Look it up" });
     assert.equal(out.status, "error");
   } finally {
     broken.restore();
