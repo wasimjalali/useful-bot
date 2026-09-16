@@ -76,7 +76,11 @@ export async function PUT(request: Request) {
     if (typeof body.key === "string" && body.providerId) {
       const id = asId(body.providerId);
       store = setProviderKey(store, id, body.key);
-      if (catalogItem(id).compatible && store.activeProviderId !== id) {
+      // Connect and Use are separate actions: only take over when the active
+      // provider has no usable key of its own.
+      const activeKey = store.keys[store.activeProviderId]?.key
+        ?? (store.activeProviderId === "opencode-go" ? process.env.UB_OPENCODE_GO_KEY : undefined);
+      if (!activeKey && catalogItem(id).compatible && store.activeProviderId !== id) {
         store = setActiveProvider(store, id);
       }
       modelsDirty = true;

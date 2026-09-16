@@ -57,6 +57,13 @@ test("resolveUpstream prefers the active compatible provider", () => {
   assert.equal(resolved.opencodeSession, false);
 });
 
+test("resolveUpstream prefers the stored key over the env key", () => {
+  let store = setProviderKey(emptyProviderStore(), "opencode-go", "stored-key-12345678");
+  const resolved = resolveUpstream(store, "workhorse", { UB_OPENCODE_GO_KEY: "go-env-key-12345678" });
+  assert.equal(resolved.providerId, "opencode-go");
+  assert.equal(resolved.key, "stored-key-12345678");
+});
+
 test("resolveUpstream falls back to OpenCode env when the active key is missing", () => {
   const resolved = resolveUpstream(emptyProviderStore(), "workhorse", { UB_OPENCODE_GO_KEY: "go-env-key" });
   assert.equal(resolved.providerId, "opencode-go");

@@ -523,9 +523,12 @@ export function claimProposal(
     const proposal = store.proposals.find((item) => item.id === id);
     if (!proposal || proposal.status !== "pending") return null;
     // An expired proposal is not confirmable, even though it still reads as
-    // pending until the snapshot filters it out. Dismissing stays allowed so
-    // the card can always be cleared.
-    if (status === "confirmed" && Date.parse(proposal.expiresAt) <= Date.now()) return null;
+    // pending until the snapshot filters it out. An unparsable expiry counts
+    // as expired too, so a corrupt proposal is refused the way the pending
+    // list already refuses it. Dismissing stays allowed so the card can
+    // always be cleared.
+    const expiresAt = Date.parse(proposal.expiresAt);
+    if (status === "confirmed" && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) return null;
     proposal.status = status;
     return proposal;
   }, path);

@@ -101,8 +101,13 @@ export async function refreshProviderModels(input: {
     const ids = await fetchProviderModelIds(input.baseUrl, input.key, input.fetchImpl);
     if (ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
     const models = mergeLiveModels(input.providerId, ids);
-    cache.providers[input.providerId] = { fetchedAt: Date.now(), models };
-    writeModelsCache(cache, path);
+    // The fetch awaited above can overlap a refresh for a different provider,
+    // so the snapshot taken before the await is stale by write time. Re-read
+    // the cache and set only this provider's entry, or the write would clobber
+    // the models the overlapping refresh just stored.
+    const latest = readModelsCache(path);
+    latest.providers[input.providerId] = { fetchedAt: Date.now(), models };
+    writeModelsCache(latest, path);
     return models;
   } catch {
     return current?.models?.length ? current.models : modelsFor(input.providerId);
