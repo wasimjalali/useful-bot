@@ -40,8 +40,13 @@ export default defineTool({
     const shell = readShell();
     const botId = activeBotId(shell, ctx);
     const threadId = threadIdFor(botId);
-    const open = listPendingProposals(threadId).some((item) => item.kind === "connectApp" && item.slug === slug);
-    if (open) return { status: "duplicate", slug, name: row.name };
+    // One open connect card per bot: the instructions say one app per turn,
+    // and this is what makes a second proposal in the same turn a no-op
+    // instead of a stack of cards for the owner to clear.
+    const open = listPendingProposals(threadId).find((item) => item.kind === "connectApp");
+    if (open && open.kind === "connectApp") {
+      return { status: "duplicate", slug, name: row.name, openSlug: open.slug, openName: open.name };
+    }
 
     const requestId = input.requestId?.trim();
     if (requestId && !reserveSend("proposal", requestId)) {

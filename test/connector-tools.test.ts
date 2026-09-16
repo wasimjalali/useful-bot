@@ -456,8 +456,10 @@ test("catalog blocks without a key, then lists matches with connected state and 
     );
     assert.equal(result.status, "ok");
     assert.deepEqual(result.apps.map((app) => [app.slug, app.connected]), [["notion", false], ["notion_mcp", false]]);
-    const mail = await run<{ apps: Array<{ slug: string; connected: boolean }> }>(connectorCatalog, { query: "gmail" });
-    assert.deepEqual(mail.apps, [{ slug: "gmail", name: "Gmail", connected: true }]);
+    const mail = await run<{ apps: Array<{ slug: string; connected: boolean }>; names: string }>(connectorCatalog, { query: "gmail" });
+    assert.deepEqual(mail.apps, [{ slug: "gmail", connected: true }]);
+    assert.equal(mail.names.startsWith(UNTRUSTED_PREAMBLE), true);
+    assert.equal(mail.names.includes("gmail: Gmail"), true);
   } finally {
     box.restore();
   }
@@ -466,7 +468,7 @@ test("catalog blocks without a key, then lists matches with connected state and 
 test("propose_connector creates one card, refuses unknown, connected and duplicate apps", async () => {
   const box = sandbox(["gmail"]);
   try {
-    box.toolkitItems = [GMAIL_CONNECTED, NOTION];
+    box.toolkitItems = [GMAIL_CONNECTED, NOTION, NOTION_MCP];
     const first = await run<{ status: string; proposalId: string; name: string }>(
       proposeConnector,
       { slug: "notion", purpose: "Find the launch page" },
@@ -479,6 +481,10 @@ test("propose_connector creates one card, refuses unknown, connected and duplica
     assert.equal(stored?.kind === "connectApp" && stored.purpose, "Find the launch page");
     assert.equal(listPendingProposals("bot-useful").length, 1);
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "notion", purpose: "Again" })).status, "duplicate");
+    // A second app while one card is open is refused too: one card per bot.
+    const second = await run<{ status: string; openSlug: string }>(proposeConnector, { slug: "notion_mcp", purpose: "Also" });
+    assert.equal(second.status, "duplicate");
+    assert.equal(second.openSlug, "notion");
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "gmail", purpose: "Mail" })).status, "already_connected");
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "nope_app", purpose: "x" })).status, "unknown_app");
     assert.equal((await run<{ status: string }>(proposeConnector, { slug: "../x", purpose: "x" })).status, "unknown_app");
