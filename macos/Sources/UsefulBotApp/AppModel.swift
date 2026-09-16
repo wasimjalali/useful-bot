@@ -427,6 +427,7 @@ final class AppModel: ObservableObject {
             if transcriptReady || !transcript.isEmpty {
                 transcriptCache[old] = (transcript, transcriptBlocks)
             }
+            if sendTasks[old] == nil { markWorking(old, false) }
         }
         attachError = nil
         threadError = nil
@@ -883,7 +884,7 @@ final class AppModel: ObservableObject {
                     }
                 }
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                    self.finishSend(botId: bot.id)
+                    self.finishSend(botId: bot.id, generation: generation)
                     return
                 }
                 let sessionId: String
@@ -902,14 +903,14 @@ final class AppModel: ObservableObject {
                     // ids snapshot belongs to the old session, so it is
                     // cleared too.
                     guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                        self.finishSend(botId: bot.id)
+                        self.finishSend(botId: bot.id, generation: generation)
                         return
                     }
                     await self.dropSession(botId: bot.id)
                     // Stop pressed while the pointer was being dropped: no
                     // second session gets created only to be cancelled.
                     guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                        self.finishSend(botId: bot.id)
+                        self.finishSend(botId: bot.id, generation: generation)
                         return
                     }
                     history = []
@@ -925,7 +926,7 @@ final class AppModel: ObservableObject {
                     Task { [weak self] in
                         _ = try? await self?.client.cancel(sessionId: sessionId)
                     }
-                    self.finishSend(botId: bot.id)
+                    self.finishSend(botId: bot.id, generation: generation)
                     return
                 }
                 self.inflightSessions[bot.id] = sessionId
@@ -936,7 +937,7 @@ final class AppModel: ObservableObject {
                 // text or files added while it was in flight survive.
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: echo)
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                    self.finishSend(botId: bot.id)
+                    self.finishSend(botId: bot.id, generation: generation)
                     return
                 }
                 var sawUserTurn = false
@@ -946,7 +947,7 @@ final class AppModel: ObservableObject {
                     historyTurnIds: history
                 ) {
                     guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                        self.finishSend(botId: bot.id)
+                        self.finishSend(botId: bot.id, generation: generation)
                         return
                     }
                     if event.type == "message.received" { sawUserTurn = true }
@@ -956,7 +957,7 @@ final class AppModel: ObservableObject {
                     self.publishTranscript(force: true)
                 }
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                    self.finishSend(botId: bot.id)
+                    self.finishSend(botId: bot.id, generation: generation)
                     return
                 }
                 let live: StreamProjection? = self.selectedBotId == bot.id
@@ -971,7 +972,7 @@ final class AppModel: ObservableObject {
                     self.stickyThreadError = "The turn did not start."
                     self.threadError = self.stickyThreadError
                 }
-                self.finishSend(botId: bot.id)
+                self.finishSend(botId: bot.id, generation: generation)
                 // Not a full reload. Rebuilding the thread here reset the
                 // projection to empty, and since the durable store holds no
                 // conversation rows the transcript briefly had none at all:
@@ -984,11 +985,11 @@ final class AppModel: ObservableObject {
                     await self.refreshDurable()
                 }
             } catch is CancellationError {
-                self.finishSend(botId: bot.id)
+                self.finishSend(botId: bot.id, generation: generation)
                 return
             } catch {
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                    self.finishSend(botId: bot.id)
+                    self.finishSend(botId: bot.id, generation: generation)
                     return
                 }
                 if delivered {
@@ -1009,13 +1010,13 @@ final class AppModel: ObservableObject {
                     self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
                     self.threadError = self.stickyThreadError
                 }
-                self.finishSend(botId: bot.id)
+                self.finishSend(botId: bot.id, generation: generation)
                 if self.selectedBotId == bot.id {
                     await self.reloadThread()
                 }
             }
             if generation == (self.sendGenerations[bot.id] ?? 0) {
-                self.finishSend(botId: bot.id)
+                self.finishSend(botId: bot.id, generation: generation)
             }
         }
         sendTasks[bot.id] = task
@@ -1110,7 +1111,9 @@ final class AppModel: ObservableObject {
         return next
     }
 
-    private func finishSend(botId: String) {
+    private func finishSend(botId: String, generation: Int) {
+        // A cancelled older task must not wipe a newer send on the same bot.
+        guard generation == (sendGenerations[botId] ?? 0) else { return }
         sendTasks[botId] = nil
         inflightSessions[botId] = nil
         backgroundProjections[botId] = nil
@@ -1712,6 +1715,7 @@ final class AppModel: ObservableObject {
             if transcriptReady || !transcript.isEmpty {
                 transcriptCache[old] = (transcript, transcriptBlocks)
             }
+            if sendTasks[old] == nil { markWorking(old, false) }
         }
         resetThread(cancelRunningTurns: false)
         selectedBotId = id
