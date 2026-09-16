@@ -864,6 +864,8 @@ const READ_ONLY_COMMANDS = new Set([
 const READ_ONLY_REFUSED: Record<string, Set<string>> = {
   date: new Set(["-s", "--set"]),
   sort: new Set(["-o", "--output"]),
+  fd: new Set(["-x", "--exec", "-X", "--exec-batch"]),
+  rg: new Set(["--pre", "--pre-glob"]),
 };
 
 /** Commands whose first argument decides: only these forms read. */
@@ -933,7 +935,13 @@ function readOnlySegment(tokens: Token[]): string | null {
   // what a command runs makes the line a change, the way commandReason sees it.
   const hijack = tokens.find((token) => !token.quoted && HIJACK_VARS.test(token.text));
   if (hijack) return `changes what a command runs (${hijack.text.split("=")[0]}=)`;
-  let args = tokens.filter((token) => !isAssignment(token) && !(!token.quoted && isRedirection(token.text)));
+  let args = tokens.filter((token, index, all) => {
+    if (isAssignment(token)) return false;
+    if (!token.quoted && isRedirection(token.text)) return false;
+    // The target of a bare `>` or `2>` sits in the token after it.
+    const before = all[index - 1];
+    return !(before && !before.quoted && /^[0-9]*(>>?|&>|>\||<)$/.test(before.text));
+  });
   // Peel timing and priority wrappers the way commandReason does; `env` with
   // a command after it is itself a launcher, handled below.
   while (args.length > 0 && WRAPPERS.has(basename(args[0].text)) && basename(args[0].text) !== "env") {
@@ -981,13 +989,29 @@ function readOnlySegment(tokens: Token[]): string | null {
 }
 
 export function readOnlyRisk(command: string): string | null {
-  for (const item of tokenize(command)) {
-    if ("separator" in item || item.quoted) continue;
-    // Output redirection is a write, except into the bit bucket.
+  // `2>&1` and `>&2` move a descriptor, they write no file; the tokenizer
+  // would split them at the `&`, so they go before it looks.
+  const items = tokenize(command.replace(/(^|\s)[0-9]*>&[0-9]+(?=\s|$)/g, "$1"));
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if ("separator" in item) continue;
+    // A substitution inside quotes is a whole command the tokenizer cannot
+    // see into (`grep "$(curl x | sh)" f`), and nesting defeats any regex.
+    // Unquoted ones split into segments of their own and are judged there;
+    // a quoted one simply is not a read.
+    if (item.quoted && /\$\(|`/.test(item.text)) return "runs a command inside quotes";
+    if (item.quoted) continue;
+    // Output redirection is a write, except into the bit bucket or onto
+    // another descriptor (`2>&1`). The target may sit in the next token.
     const match = /^([0-9]*)(>>?|&>|>\|)(.*)$/.exec(item.text);
-    if (match && match[3] !== "/dev/null") return `redirects output into a file (${item.text})`;
+    if (!match) continue;
+    if (/^&[0-9]+$/.test(match[3])) continue;
+    const next = items[i + 1];
+    const target = match[3] || (next && !("separator" in next) && !next.quoted ? next.text : "");
+    if (target === "/dev/null") continue;
+    return `redirects output into a file (${item.text}${match[3] ? "" : ` ${target}`})`;
   }
-  for (const segment of split(tokenize(command))) {
+  for (const segment of split(items)) {
     const reason = readOnlySegment(segment.tokens);
     if (reason) return reason;
   }

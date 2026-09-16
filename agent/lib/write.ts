@@ -102,6 +102,18 @@ export async function approvedWrite(input: {
     // that ran before the approval is not enough. Writing to the re-resolved
     // target closes that window.
     const target = resolveWorkspacePath(input.path, root);
+    // Under the home, Auto ran without a card because the file did not exist.
+    // A file that appeared since is one the owner never agreed to replace.
+    if (!targetExists && scope === "computer" && permission === "auto") {
+      let existsNow = false;
+      try {
+        lstatSync(target);
+        existsNow = true;
+      } catch {
+        existsNow = false;
+      }
+      if (existsNow) throw new Error("workspace_changed");
+    }
     // expectedSha256 is optimistic concurrency: the owner approved a write
     // against a known revision, so a file that changed since the proposal must
     // not be silently clobbered.

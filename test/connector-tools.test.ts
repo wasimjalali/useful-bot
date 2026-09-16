@@ -263,6 +263,7 @@ test("execute cards a write in auto and runs it only after approval", async () =
 test("a denied card runs nothing", async () => {
   const box = sandbox(["gmail"]);
   try {
+    grant(box.dir, "auto");
     const pending = run<{ status: string }>(
       connectorExecute,
       { tool: "GMAIL_SEND_EMAIL", arguments: { to: "a@b.c" } },
@@ -330,6 +331,7 @@ test("read only refuses writes and runs reads", async () => {
 test("a write whose arguments would not fit on a card is refused, not clipped", async () => {
   const box = sandbox(["gmail"]);
   try {
+    grant(box.dir, "auto");
     const out = await run<{ status: string; error: string }>(
       connectorExecute,
       { tool: "GMAIL_SEND_EMAIL", arguments: { body: "x".repeat(5000) } },
@@ -371,6 +373,28 @@ test("a failed upstream call is an error, and a huge result is truncated", async
     assert.equal(big.status, "ok");
     assert.equal(big.truncated, true);
     assert.equal(big.result.length < 26_000, true);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a session the web server never stamped refuses a connector write and still reads", async () => {
+  const box = sandbox(["gmail"]);
+  try {
+    const out = await run<{ status: string; error: string }>(
+      connectorExecute,
+      { tool: "GMAIL_SEND_EMAIL", arguments: { to: "a@b.c" } },
+      { session: { id: "sess-unstamped" } },
+    );
+    assert.equal(out.status, "blocked");
+    assert.equal(out.error, "workspace_read_only");
+    assert.equal(box.executed.length, 0);
+    const read = await run<{ status: string }>(
+      connectorExecute,
+      { tool: "GMAIL_FETCH_EMAILS", arguments: {} },
+      { session: { id: "sess-unstamped" } },
+    );
+    assert.equal(read.status, "ok");
   } finally {
     box.restore();
   }

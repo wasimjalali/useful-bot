@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { executeConnectorTool, toolkitOf, FEATURED_TOOLKITS } from "../../shared/composio.ts";
 import { readConnectorsStore } from "../../shared/connectors-store.ts";
-import { readSessionGrant } from "../../shared/workspace-store.ts";
+import { sessionPermission } from "../lib/permission.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { connectorGate, connectorRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
@@ -40,8 +40,9 @@ export default defineTool({
     if (!toolkit) {
       return { status: "blocked", error: "not_connected", toolkit: hintToolkit(tool) };
     }
-    const grant = ctx?.session?.id ? readSessionGrant(ctx.session.id) : null;
-    const permission = grant?.permission ?? null;
+    // The bot's permission, failing closed for a session the web server
+    // never stamped, the same way bash, write_file and the in-app tools do.
+    const permission = sessionPermission(ctx);
     const risk = connectorRisk(tool, toolkit);
     const gate = connectorGate(risk, permission);
     if (gate === "refuse") return { status: "blocked", error: "workspace_read_only", risk };
@@ -72,8 +73,7 @@ export default defineTool({
       await waitUntilNotPending(approvals, rec.id);
       // The posture may have changed while the card sat open. A read-only
       // switch mid-wait refuses; a widened one is not spent on this call.
-      const now = ctx?.session?.id ? readSessionGrant(ctx.session.id)?.permission ?? null : null;
-      if (now !== permission) return { status: "blocked", error: "permission_changed" };
+      if (sessionPermission(ctx) !== permission) return { status: "blocked", error: "permission_changed" };
     }
     return executeIfApproved(approvals, rec.id, hash, async () => {
       try {
