@@ -226,6 +226,9 @@ final class AppModel: ObservableObject {
     /// before the conversation snapped in.
     private var transcriptCache: [String: (rows: [TranscriptRow], blocks: [TranscriptBlock])] = [:]
     private var sendBotId: String?
+    /// Per-bot send failure, so a turn that died in the background still
+    /// explains itself when the owner comes back.
+    private var sendErrors: [String: String] = [:]
     private var started = false
     /// Rebuilding the transcript on every streamed event re-parses markdown
     /// for every row; the replay of a long session contains thousands of
@@ -440,7 +443,7 @@ final class AppModel: ObservableObject {
         // Clear the old thread synchronously so the new bot never flashes the
         // previous transcript while its state loads. Do not cancel the
         // outgoing send: that turn belongs to the bot we left.
-        resetThread(cancelRunningTurns: false)
+        resetThread()
         if let stored = backgroundProjections[botId] {
             projection = stored
             pending = sendTasks[botId] != nil
@@ -456,6 +459,10 @@ final class AppModel: ObservableObject {
         }
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
+        if let err = sendErrors[botId] {
+            stickyThreadError = err
+            threadError = err
+        }
         startReload()
         persistSelection(botId)
     }
@@ -825,6 +832,7 @@ final class AppModel: ObservableObject {
         activity = .thinking
         threadError = nil
         stickyThreadError = nil
+        sendErrors[bot.id] = nil
         sendGenerations[bot.id] = (sendGenerations[bot.id] ?? 0) + 1
         let generation = sendGenerations[bot.id] ?? 1
         let chatGen = chatGenerations[bot.id] ?? 0
@@ -964,13 +972,9 @@ final class AppModel: ObservableObject {
                     ? self.projection
                     : self.backgroundProjections[bot.id]
                 if live?.failed == true {
-                    if self.selectedBotId == bot.id {
-                        self.stickyThreadError = live?.failure?.message ?? "The turn failed."
-                        self.threadError = self.stickyThreadError
-                    }
-                } else if !sawUserTurn, self.selectedBotId == bot.id {
-                    self.stickyThreadError = "The turn did not start."
-                    self.threadError = self.stickyThreadError
+                    self.recordSendError(bot.id, live?.failure?.message ?? "The turn failed.")
+                } else if !sawUserTurn {
+                    self.recordSendError(bot.id, "The turn did not start.")
                 }
                 self.finishSend(botId: bot.id, generation: generation)
                 // Not a full reload. Rebuilding the thread here reset the
@@ -997,18 +1001,22 @@ final class AppModel: ObservableObject {
                     // the transcript keeps what the stream already applied.
                     // Only the reply itself is missing, so say that, then let
                     // the reload resync with what eve stored.
-                    if self.selectedBotId == bot.id {
-                        self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "The reply could not be read."
-                        self.threadError = self.stickyThreadError
-                    }
-                } else if self.selectedBotId == bot.id {
+                    self.recordSendError(
+                        bot.id,
+                        (error as? LocalizedError)?.errorDescription ?? "The reply could not be read."
+                    )
+                } else {
                     // The composer was cleared when the turn was committed, so
                     // a send that never reached the server has to give the text
                     // and its files back. Anything typed or attached since is
                     // kept.
-                    self.restoreUnsentDraft(draftSnapshot, sentAttachments: sentAttachments)
-                    self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
-                    self.threadError = self.stickyThreadError
+                    if self.selectedBotId == bot.id {
+                        self.restoreUnsentDraft(draftSnapshot, sentAttachments: sentAttachments)
+                    }
+                    self.recordSendError(
+                        bot.id,
+                        (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                    )
                 }
                 self.finishSend(botId: bot.id, generation: generation)
                 if self.selectedBotId == bot.id {
@@ -1116,13 +1124,21 @@ final class AppModel: ObservableObject {
         guard generation == (sendGenerations[botId] ?? 0) else { return }
         sendTasks[botId] = nil
         inflightSessions[botId] = nil
-        backgroundProjections[botId] = nil
         markWorking(botId, false)
         if sendBotId == botId { sendBotId = nil }
         if selectedBotId == botId {
+            backgroundProjections[botId] = nil
             pending = false
             sendTask = nil
             if activeSession?.botId == botId { activeSession = nil }
+        }
+    }
+
+    private func recordSendError(_ botId: String, _ message: String) {
+        sendErrors[botId] = message
+        if selectedBotId == botId {
+            stickyThreadError = message
+            threadError = message
         }
     }
 
@@ -1701,7 +1717,7 @@ final class AppModel: ObservableObject {
             } else {
                 selectedBotId = nil
                 cancelSend(for: current)
-                resetThread(cancelRunningTurns: false)
+                resetThread()
                 clearPerThreadState()
             }
         }
@@ -1717,7 +1733,7 @@ final class AppModel: ObservableObject {
             }
             if sendTasks[old] == nil { markWorking(old, false) }
         }
-        resetThread(cancelRunningTurns: false)
+        resetThread()
         selectedBotId = id
         clearRoutineState()
         clearPerThreadState()
@@ -1734,6 +1750,10 @@ final class AppModel: ObservableObject {
         }
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
+        if let err = sendErrors[id] {
+            stickyThreadError = err
+            threadError = err
+        }
         startReload()
     }
 
@@ -1763,7 +1783,7 @@ final class AppModel: ObservableObject {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 // The created bot starts fresh. Other bots keep their turns.
-                self.resetThread(cancelRunningTurns: false)
+                self.resetThread()
                 self.applyStore(next)
             self.saveError = nil
             } catch {
@@ -1780,7 +1800,7 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                self.resetThread(cancelRunningTurns: false)
+                self.resetThread()
                 self.applyStore(next)
                 self.saveError = nil
                 self.settingsOpen = true
@@ -1842,7 +1862,7 @@ final class AppModel: ObservableObject {
                 return
             }
             guard generation == (self.chatGenerations[id] ?? 0), epoch == self.storeEpoch else { return }
-            self.resetThread(cancelRunningTurns: false)
+            self.resetThread()
             // The old conversation is gone server-side; it must not come back
             // from the cache on the next switch.
             self.transcriptCache[id] = nil
@@ -1881,7 +1901,7 @@ final class AppModel: ObservableObject {
                 if !switched {
                     // Same bot, different stored session: reset the thread and
                     // reload outside the chain so a replay cannot block writes.
-                    self.resetThread(cancelRunningTurns: false)
+                    self.resetThread()
                     self.startReload()
                 }
             } catch {
@@ -1894,14 +1914,9 @@ final class AppModel: ObservableObject {
         perform(ShellActions.toggleSection(sectionId: sectionId))
     }
 
-    private func resetThread(cancelRunningTurns: Bool = true) {
-        // A stream still running for the old thread must not apply into the
-        // fresh projection. Switching away does not cancel the server turn:
-        // that send keeps writing to its own projection. Stop and New Chat
-        // still cancel.
-        if cancelRunningTurns {
-            cancelSend()
-        }
+    private func resetThread() {
+        // Clears the visible thread only. Stop, New Chat and delete cancel
+        // the server turn at their call sites; switching must not.
         loadGeneration += 1
         reloadTask?.cancel()
         followTask?.cancel()
@@ -1921,9 +1936,6 @@ final class AppModel: ObservableObject {
         memoryError = nil
         pending = false
         backgroundWorking = false
-        if cancelRunningTurns {
-            activeSession = nil
-        }
     }
 
     // MARK: - Proposals
