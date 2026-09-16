@@ -8,7 +8,7 @@ import { resetCatalogueMemo } from "../shared/composio-catalogue.ts";
 import { CONNECT_LINGER_MS, CONNECT_WAIT_MS, pumpConnects, resetConnectMemo, startConnectAuthorize } from "../shared/connect-flow.ts";
 import { forgetConnected, setComposioFactory, type ComposioLike, type ComposioSessionLike } from "../shared/composio.ts";
 import { setConnectorsKey, updateConnectorsStore } from "../shared/connectors-store.ts";
-import { claimHandoff, listHandoffs, markDelivered } from "../shared/handoffs.ts";
+import { claimHandoff, listHandoffs, markDelivered, queueHandoff } from "../shared/handoffs.ts";
 import { writeShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 
@@ -186,20 +186,47 @@ test("a card that lost its handoff id adopts the queued resume instead of queuei
   const { storePath } = paths();
   const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
   stubComposio([item]);
+  // A resume from an earlier connect of the same app, same purpose, long
+  // delivered: it must not be mistaken for this cycle's resume.
+  const stale = queueHandoff({ sourceBotId: "bot-useful", sourceName: "Useful Bot", targetBotId: "b1", targetName: "Mailer", message: "The owner connected the app gmail. Continue the task: Find the invoice" });
+  const earlier = new Date(Date.now() - 60_000).toISOString();
+  writeFileSync(join(process.env.UB_HANDOFF_DIR ?? "", `${stale.id}.json`), JSON.stringify({ ...stale, status: "delivered", createdAt: earlier, updatedAt: earlier }));
   const proposal = seed(storePath);
   await startConnectAuthorize(proposal.id, CALLBACK);
   item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
   resetConnectMemo();
-  await pumpConnects({ now: Date.now() + 6_000 });
-  const first = listHandoffs()[0].id;
+  // Real time here: the record's createdAt must not predate the flip stamp.
+  await pumpConnects();
+  assert.equal(listHandoffs().length, 2);
+  const first = (readProposal(proposal.id, storePath) as { handoffId: string }).handoffId;
+  assert.notEqual(first, stale.id);
   // The id write is lost (simulated) and the resume was delivered meanwhile;
   // the sweep must find that same record, not queue another.
   const token = claimHandoff(first);
   markDelivered(first, "on it", undefined, token ?? "");
   updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") p.handoffId = null; }, storePath);
-  await pumpConnects({ now: Date.now() + 12_000 });
-  assert.equal(listHandoffs().length, 1);
+  await pumpConnects();
+  assert.equal(listHandoffs().length, 2);
   assert.equal((readProposal(proposal.id, storePath) as { handoffId: string }).handoffId, first);
+});
+
+test("a reopen that lands during the expiry check is not expired", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  const t0 = Date.now();
+  await startConnectAuthorize(proposal.id, CALLBACK, { now: t0 });
+  // The pump's snapshot is stale: the owner reopened after it was read.
+  await startConnectAuthorize(proposal.id, CALLBACK, { now: t0 + CONNECT_WAIT_MS + 30_000 });
+  const fresh = (readProposal(proposal.id, storePath) as { waitingSince: string }).waitingSince;
+  // Simulate the stale read by rewinding only what the pump compares.
+  updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") p.waitingSince = new Date(t0).toISOString(); }, storePath);
+  const stale = readProposal(proposal.id, storePath);
+  updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") p.waitingSince = fresh; }, storePath);
+  assert.ok(stale);
+  await pumpConnects({ now: t0 + CONNECT_WAIT_MS + 60_000 });
+  assert.equal((readProposal(proposal.id, storePath) as { phase: string }).phase, "waiting");
 });
 
 test("an authorize that overlaps the pump's flip does not rewind a connected card", async () => {

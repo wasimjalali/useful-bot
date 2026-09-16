@@ -106,9 +106,16 @@ function queueResume(card: Stored, now: number, storePath: string): boolean {
   try {
     // Idempotent: a resume already queued for this card (the id write failed
     // last time) is adopted, never queued twice, whatever its status now,
-    // since a delivered one already gave the bot its turn.
+    // since a delivered one already gave the bot its turn. Only this cycle's
+    // record counts: waitingSince is stamped at the flip, so an older record
+    // from an earlier connect of the same app is not this card's resume.
+    const flippedAt = Date.parse(card.waitingSince ?? "");
     const existing = listHandoffs().find(
-      (record) => record.targetBotId === targetId && record.message === message && record.sourceBotId === DEFAULT_BOT_ID,
+      (record) => record.targetBotId === targetId
+        && record.message === message
+        && record.sourceBotId === DEFAULT_BOT_ID
+        && Number.isFinite(flippedAt)
+        && Date.parse(record.createdAt) >= flippedAt - 1_000,
     );
     handoffId = existing?.id ?? queueHandoff({
       sourceBotId: DEFAULT_BOT_ID,
@@ -178,8 +185,12 @@ async function pumpConnectsOnce(
   for (const card of waiting) {
     const since = Date.parse(card.waitingSince ?? "");
     if (!Number.isFinite(since) || now - since > CONNECT_WAIT_MS) {
+      // Only if still waiting on the same sign-in: a Reopen that landed
+      // since the read above restamped waitingSince and must not expire.
       updateProposal(card.id, (item) => {
-        if (item.kind === "connectApp") item.phase = "expired";
+        if (item.kind === "connectApp" && item.phase === "waiting" && item.waitingSince === card.waitingSince) {
+          item.phase = "expired";
+        }
       }, storePath);
       lastCheck.delete(card.id);
       expired.push(card.id);
