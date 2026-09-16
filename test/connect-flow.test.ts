@@ -182,6 +182,23 @@ test("overlapping pumps queue the resume once", async () => {
   assert.equal(listThreadEvents("b1", storePath).filter((e) => e.kind === "note").length, 1);
 });
 
+test("a card that lost its handoff id adopts the queued resume instead of queueing another", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  await startConnectAuthorize(proposal.id, CALLBACK);
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  resetConnectMemo();
+  await pumpConnects({ now: Date.now() + 6_000 });
+  const first = listHandoffs()[0].id;
+  // The id write is lost (simulated); the sweep must find the same record.
+  updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") p.handoffId = null; }, storePath);
+  await pumpConnects({ now: Date.now() + 12_000 });
+  assert.equal(listHandoffs().length, 1);
+  assert.equal((readProposal(proposal.id, storePath) as { handoffId: string }).handoffId, first);
+});
+
 test("an authorize that overlaps the pump's flip does not rewind a connected card", async () => {
   const { storePath } = paths();
   const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
@@ -222,7 +239,8 @@ test("the pump connects a waiting card once, writes the note and queues one resu
   assert.equal(handoffs[0].targetBotId, "b1");
   assert.equal(handoffs[0].targetName, "Mailer");
   assert.equal(handoffs[0].depth, 0);
-  assert.match(handoffs[0].message, /connected Gmail/);
+  assert.match(handoffs[0].message, /connected the app gmail\./);
+  assert.ok(!handoffs[0].message.includes("Gmail"));
   assert.match(handoffs[0].message, /Find the invoice/);
   assert.ok(listThreadEvents("b1", storePath).some((event) => event.kind === "note" && event.text === "Gmail connected"));
   // A second tick does nothing more while the handoff is still queued.

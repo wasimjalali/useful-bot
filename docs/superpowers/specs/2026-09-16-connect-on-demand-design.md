@@ -136,8 +136,11 @@ and `pumpRoutines`. For each `connectApp` proposal in `waiting`:
   (null on failure, never blocks). Set `phase: "connected"`, append a `note`
   event "Gmail connected" on the thread, then queue one handoff through
   `sendHandoff` from `bot-useful` to the source bot:
-  "The owner connected Gmail. Continue the task: <purpose>", and store its id
-  on the card. The card stays `pending` in phase `connected` (the pill is on
+  "The owner connected the app gmail. Continue the task: <purpose>" (the app
+  is named by its validated slug, never by the catalogue display name, which
+  is data, not an instruction), and store its id on the card. Queueing is
+  idempotent: a pending resume with the same message is adopted, and the
+  pump is single-flight like the handoff pump. The card stays `pending` in phase `connected` (the pill is on
   screen) until that handoff is delivered or has given up, then turns
   `confirmed` and leaves the dock; ten minutes is the cap if the resume never
   lands. The handoff record is the resume; it survives an app restart the same

@@ -8,7 +8,7 @@ import {
 } from "./agent-store.ts";
 import { authorizeConnector, countToolkitTools, forgetConnected, listConnectorToolkits } from "./composio.ts";
 import { connectorsPath as defaultConnectorsPath } from "./connectors-store.ts";
-import { queueHandoff, readHandoff } from "./handoffs.ts";
+import { listDeliverable, queueHandoff, readHandoff } from "./handoffs.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
@@ -40,9 +40,17 @@ function isConnect(proposal: Proposal | null): proposal is Stored {
   return proposal?.kind === "connectApp";
 }
 
-/** Catalogue and bot text on one line: the resume is an instruction channel. */
+/** The bot's own purpose line, flattened: the resume is an instruction channel. */
 function oneLine(value: string, max: number): string {
   return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, max);
+}
+
+/**
+ * The resume turn. Only the validated slug names the app: the display name
+ * comes from Composio's catalogue and is data, not an instruction.
+ */
+function resumeMessage(card: Stored): string {
+  return `The owner connected the app ${card.slug}. Continue the task: ${oneLine(card.purpose, 120)}`;
 }
 
 export async function startConnectAuthorize(
@@ -93,23 +101,34 @@ function queueResume(card: Stored, now: number, storePath: string): boolean {
   } catch {
     /* the name is cosmetic */
   }
+  const message = resumeMessage(card);
   let handoffId: string;
   try {
-    handoffId = queueHandoff({
+    // Idempotent: a resume already queued for this card (the id write failed
+    // last time) is adopted, never queued twice.
+    const existing = listDeliverable().find(
+      (record) => record.targetBotId === targetId && record.message === message && record.sourceBotId === DEFAULT_BOT_ID,
+    );
+    handoffId = existing?.id ?? queueHandoff({
       sourceBotId: DEFAULT_BOT_ID,
       sourceName: "Useful Bot",
       targetBotId: targetId,
       targetName,
-      message: `The owner connected ${oneLine(card.name, 80)} (${card.slug}). Continue the task: ${oneLine(card.purpose, 120)}`,
+      message,
       depth: 0,
     }).id;
   } catch {
     return false;
   }
-  updateProposal(card.id, (item) => {
-    if (item.kind !== "connectApp" || item.handoffId) return;
-    item.handoffId = handoffId;
-  }, storePath);
+  try {
+    updateProposal(card.id, (item) => {
+      if (item.kind !== "connectApp" || item.handoffId) return;
+      item.handoffId = handoffId;
+    }, storePath);
+  } catch {
+    // The record exists; the next sweep finds it by message and records it.
+    return false;
+  }
   return true;
 }
 
