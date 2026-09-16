@@ -1,8 +1,9 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { activeBotId } from "../lib/active-bot.ts";
-import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
 import { applyShellAction, DEFAULT_BOT_ID, type ShellAction } from "../../shared/shell-store.ts";
 
@@ -15,7 +16,7 @@ import { applyShellAction, DEFAULT_BOT_ID, type ShellAction } from "../../shared
  */
 export default defineTool({
   description:
-    "Organise the owner's sidebar: pin or unpin a bot, hide or unhide it, move it into an existing section by sectionId (or out of one with null), create a section, rename one with updateSection, or remove an empty one with removeSection. Everything except removeSection is reversible and applies at once. removeSection shows the owner an approval card with the section's name and id, and refuses while any bot is still in the section; move those bots out first. deleteBot leaves an emptied section in place, so call removeSection afterwards to tidy it. Call listBots first for exact bot and section ids.",
+    "Organise the owner's sidebar: pin or unpin a bot, hide or unhide it, move it into an existing section by sectionId (or out of one with null), create a section, rename one with updateSection, or remove an empty one with removeSection. Everything applies at once in Auto and Full access and is refused in Read only. removeSection removes an empty section by its id, and refuses while any bot is still in the section; move those bots out first. deleteBot leaves an emptied section in place, so call removeSection afterwards to tidy it. Call listBots first for exact bot and section ids.",
   inputSchema: z.object({
     action: z.enum([
       "pin",
@@ -83,6 +84,11 @@ export default defineTool({
           hint: "Move them out with action move (sectionId null) and call removeSection again.",
         };
       }
+      // Read only changes nothing on the rail; Auto and Full access remove
+      // an empty section at once, since the owner asked and a section is
+      // recreated in one step. The approval record still binds the action.
+      const gate = inAppGate(sessionPermission(ctx));
+      if (gate === "refuse") return READ_ONLY_BLOCKED;
       // The hash binds the approval to this exact section by id and name, so
       // a card the owner approved cannot be spent on a renamed or different one.
       const hash = actionSha256({
@@ -102,7 +108,7 @@ export default defineTool({
         // owner has to be able to tell two similarly named cards apart.
         preview: `remove section ${section.name} (${section.id})`,
       });
-      await waitUntilNotPending(store, record.id);
+      await settle(store, record.id, hash, gate);
       return executeIfApproved(store, record.id, hash, () => {
         // Re-read under the store lock: the rail can have changed while the
         // owner was deciding. The approval belongs to the empty section on the
@@ -118,6 +124,9 @@ export default defineTool({
       });
     }
 
+    // Every other rail change is reversible and applies at once, unless the
+    // owner set Read only, which means the bot changes nothing.
+    if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
     let action: ShellAction;
     switch (input.action) {
       case "pin":

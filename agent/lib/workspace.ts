@@ -1,4 +1,5 @@
 import { resolve, relative, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
 import { lstatSync, realpathSync } from "node:fs";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
 import { FORBIDDEN_CHILD_SEGMENTS, isGrantableRootPath } from "../../shared/shell-store.ts";
@@ -10,26 +11,46 @@ import {
 
 export type { WorkspacePermission };
 
+/**
+ * Where a bot works when no folder is attached: the owner's home, or the
+ * root the environment pins (tests, and a machine whose owner wants the
+ * scope narrower than home).
+ */
 export function workspaceRoot(): string {
   const fromEnv = process.env.UB_WORKSPACE_ROOT;
-  if (!fromEnv) {
-    throw new Error("workspace_unconfigured");
-  }
-  return resolve(fromEnv);
+  return resolve(fromEnv || homedir());
 }
 
+export type WorkspaceScope = "folder" | "computer";
+
+export type EffectiveWorkspace = {
+  root: string;
+  grant: SessionGrant | null;
+  /** The bot's permission; Auto when the session carries no grant at all. */
+  permission: WorkspacePermission;
+  /** `folder` inside an attached folder, `computer` under the owner's home. */
+  scope: WorkspaceScope;
+};
+
 /**
- * The folder a conversation works in, verified at tool time. The grant is
- * read ONCE here: pairing a root from one read with a permission from
- * another is a race a concurrent permission change could exploit. A root
- * that is itself a symlink, or whose path segments name a credential store,
- * is refused here regardless of what any route accepted earlier.
+ * Where a conversation works and how much it may do there, verified at tool
+ * time. The grant is read ONCE here: pairing a root from one read with a
+ * permission from another is a race a concurrent permission change could
+ * exploit. An attached folder that is itself a symlink, or whose path
+ * segments name a credential store, is refused here regardless of what any
+ * route accepted earlier. A grant with no folder is the computer scope:
+ * the owner's home under the bot's permission. A session with no grant at
+ * all is one the web server did not stamp, so it fails closed to Read
+ * only; only a call with no session (tests, evals) defaults to Auto.
  */
-export function effectiveRoot(sessionId?: string): { root: string; grant: SessionGrant | null } {
+export function effectiveRoot(sessionId?: string): EffectiveWorkspace {
   const grant = sessionId ? readSessionGrant(sessionId) : null;
-  if (!grant) return { root: workspaceRoot(), grant: null };
+  const permission = grant?.permission ?? (sessionId ? "read_only" : "auto");
+  if (!grant || grant.path === null) {
+    return { root: workspaceRoot(), grant, permission, scope: "computer" };
+  }
   assertSafeRoot(grant.path);
-  return { root: resolve(grant.path), grant };
+  return { root: resolve(grant.path), grant, permission, scope: "folder" };
 }
 
 /**
@@ -56,13 +77,16 @@ export function assertSafeRoot(path: string): string {
 }
 
 /**
- * Whether a write inside the granted folder may land without asking the
- * owner. Auto and Full access both let the bot edit the folder it was
- * given; Read only refuses earlier, and no grant at all (the legacy root)
- * still waits for the owner. Commands have their own gate in `bash`.
+ * Whether a write may land without asking the owner. Inside an attached
+ * folder, Auto and Full access both let the bot edit what it was given.
+ * Under the owner's home, Auto creates new files freely but asks before
+ * changing one that already exists; Full access writes either way. Read
+ * only refuses earlier. Commands have their own gate in `bash`.
  */
-export function autoApproved(permission: WorkspacePermission | null): boolean {
-  return permission === "full_access" || permission === "auto";
+export function autoApproved(permission: WorkspacePermission, scope: WorkspaceScope, targetExists: boolean): boolean {
+  if (permission === "full_access") return true;
+  if (permission !== "auto") return false;
+  return scope === "folder" || !targetExists;
 }
 
 /**

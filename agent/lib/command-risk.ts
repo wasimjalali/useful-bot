@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 type Token = { text: string; quoted: boolean };
@@ -750,9 +751,18 @@ function gitRisk(all: string[], root: string): string | null {
 /** An absolute path that is neither the folder, a system binary nor a device. */
 function outsideFolder(tokens: Token[], root: string): string | null {
   const inside = root.endsWith("/") ? root : `${root}/`;
+  const home = homedir();
   for (const token of tokens) {
     // `>/tmp/x` and `2>/var/log/y` carry the path behind the redirection.
-    const text = token.text.replace(/^[0-9]*[<>|&]+/, "");
+    // `~/x` and `$HOME/x` are the home, spelled the way the shell expands
+    // them, so a project folder does not mistake them for a relative path.
+    let text = token.text.replace(/^[0-9]*[<>|&]+/, "");
+    // Quoted or not: double quotes still expand `$HOME`, and the tokenizer
+    // does not say which quotes it saw, so both spellings count as the home.
+    // `~user/x` is another home altogether, outside every folder.
+    if (text === "~" || text.startsWith("~/")) text = home + text.slice(1);
+    else if (/^\$\{?HOME\}?(\/|$)/.test(text)) text = home + text.replace(/^\$\{?HOME\}?/, "");
+    else if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) text = `/${text}`;
     if (!text.startsWith("/")) continue;
     if (text === root || text.startsWith(inside)) continue;
     if (DEVICE_PATHS.some((device) => text === device || text.startsWith(device.endsWith("/") ? device : `${device}/`))) continue;
@@ -831,4 +841,197 @@ function tokenize(command: string): (Token | { separator: string })[] {
   }
   flush();
   return out;
+}
+
+/**
+ * Whether a line only looks: every command in it reads, prints or measures,
+ * nothing is redirected into a file, and nothing that runs other programs
+ * (`xargs`, `find -exec`, a shell, an interpreter with code) is on it. Such
+ * a line runs without a card in every posture, because reading is what the
+ * owner expects a bot to do on its own, and it runs with every write refused
+ * anyway. Returns why the line is not read-only, or null when it is.
+ */
+const READ_ONLY_COMMANDS = new Set([
+  "ls", "cat", "head", "tail", "less", "more", "wc", "grep", "egrep", "fgrep", "rg", "ag",
+  "fd", "stat", "file", "du", "df", "pwd", "echo", "printf", "date", "cal", "which", "whereis",
+  "type", "uname", "id", "whoami", "sw_vers", "printenv", "tree", "diff", "cmp",
+  "comm", "sort", "cut", "tr", "column", "nl", "od", "xxd", "hexdump", "strings", "basename",
+  "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "cksum", "base64",
+  "jq", "yq", "mdfind", "mdls", "ps", "lsof", "netstat", "system_profiler",
+  "uptime", "w", "who", "last", "env", "locale", "getconf",
+  "cd", "pushd", "popd", "true", "false", "test", "[", ":", "seq", "expr", "bc", "sleep",
+  "tput", "tty", "otool", "nm", "iconv", "expand", "unexpand", "fold", "fmt", "paste",
+  "join", "look", "rev", "tac", "zcat", "gzcat", "bzcat", "xzcat", "zipinfo",
+  "git", "brew", "npm", "pip", "pip3", "docker", "defaults", "launchctl",
+]);
+// Deliberately absent: anything that reads AND writes through one binary
+// with a flag (`sysctl -w`, `hostname name`, `ifconfig ... up`, `xattr -d`,
+// `plutil -replace`, `codesign -s`, `spctl --master-disable`), and `tar`,
+// whose listing form still runs a program per member with `--to-command`.
+// Those ask like any other change.
+
+/** Per command, the flags that turn a read into a change. */
+const READ_ONLY_REFUSED: Record<string, Set<string>> = {
+  date: new Set(["-s", "--set"]),
+  sort: new Set(["-o", "--output"]),
+  fd: new Set(["-x", "--exec", "-X", "--exec-batch"]),
+  rg: new Set(["--pre", "--pre-glob"]),
+};
+
+/** Commands whose first argument decides: only these forms read. */
+const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
+  brew: new Set(["list", "ls", "info", "deps", "outdated", "search", "config", "doctor", "--version", "-v", "--prefix"]),
+  npm: new Set(["ls", "list", "view", "info", "outdated", "explain", "why", "-v", "--version", "root", "prefix"]),
+  pip: new Set(["list", "show", "freeze", "check", "--version"]),
+  pip3: new Set(["list", "show", "freeze", "check", "--version"]),
+  docker: new Set(["ps", "images", "inspect", "logs", "version", "info", "stats", "top", "port"]),
+  defaults: new Set(["read", "domains", "find"]),
+  launchctl: new Set(["list", "print", "version", "blame", "dumpstate"]),
+};
+
+/** Interpreters may only report their version; anything else runs code. */
+const VERSION_FLAGS = new Set(["--version", "-V", "-v", "version"]);
+
+const GIT_READS = new Set([
+  "status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "grep", "describe",
+  "shortlog", "cat-file", "rev-list", "count-objects", "check-ignore", "diff-tree", "name-rev", "var",
+]);
+/** Per subcommand, the flags and words that make a listing form write. */
+const GIT_WRITES: Record<string, Set<string>> = {
+  branch: new Set(["-d", "-D", "-m", "-M", "-c", "-C", "-u", "-f", "--delete", "--move", "--copy", "--force", "--set-upstream-to", "--unset-upstream", "--edit-description"]),
+  tag: new Set(["-a", "-s", "-u", "-m", "-F", "-d", "-f", "--annotate", "--sign", "--delete", "--force", "--edit"]),
+  config: new Set(["--add", "--unset", "--unset-all", "--replace-all", "--edit", "-e", "--rename-section", "--remove-section", "--global", "--system", "--worktree", "--local"]),
+  remote: new Set(["add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune", "update"]),
+  stash: new Set(["pop", "apply", "drop", "push", "save", "clear", "branch", "create", "store"]),
+  worktree: new Set(["add", "remove", "move", "prune", "lock", "unlock", "repair"]),
+  reflog: new Set(["expire", "delete", "exists"]),
+};
+
+/** `git <sub> <rest>`: true when that form only reads. */
+function gitReadOnly(sub: string, rest: string[]): boolean {
+  if (GIT_READS.has(sub)) return true;
+  const writes = GIT_WRITES[sub];
+  if (!writes) return false;
+  if (rest.some((word) => writes.has(word) || writes.has(word.split("=")[0]))) return false;
+  const positional = rest.filter((word) => !word.startsWith("-"));
+  switch (sub) {
+    case "branch":
+    case "tag":
+      // Bare or with listing flags it lists; a name creates one.
+      return positional.length === 0 || rest.some((word) => word === "-l" || word === "--list" || word.startsWith("--contains") || word.startsWith("--points-at") || word.startsWith("--merged") || word.startsWith("--no-merged"));
+    case "remote":
+      return positional.length === 0 || positional[0] === "show" || positional[0] === "get-url";
+    case "stash":
+      return positional[0] === "list" || positional[0] === "show";
+    case "worktree":
+      return positional[0] === "list";
+    case "reflog":
+      return positional.length === 0 || positional[0] === "show";
+    case "config":
+      // `git config user.name` reads; a second positional sets it.
+      return rest.some((word) => word === "--get" || word === "--get-all" || word === "--get-regexp" || word === "--list" || word === "-l" || word === "--show-origin" || word === "--show-scope")
+        ? true
+        : positional.length === 1;
+    default:
+      return false;
+  }
+}
+
+/** Redirections are judged in `readOnlyRisk`; here they are not arguments. */
+const isRedirection = (text: string) => /^[0-9]*[<>]|^&>/.test(text);
+
+function readOnlySegment(tokens: Token[]): string | null {
+  // `GIT_EXTERNAL_DIFF=/bin/rm git diff` runs rm: an assignment that changes
+  // what a command runs makes the line a change, the way commandReason sees it.
+  const hijack = tokens.find((token) => !token.quoted && HIJACK_VARS.test(token.text));
+  if (hijack) return `changes what a command runs (${hijack.text.split("=")[0]}=)`;
+  let args = tokens.filter((token, index, all) => {
+    if (isAssignment(token)) return false;
+    if (!token.quoted && isRedirection(token.text)) return false;
+    // The target of a bare `>` or `2>` sits in the token after it.
+    const before = all[index - 1];
+    return !(before && !before.quoted && /^[0-9]*(>>?|&>|>\||<)$/.test(before.text));
+  });
+  // Peel timing and priority wrappers the way commandReason does; `env` with
+  // a command after it is itself a launcher, handled below.
+  while (args.length > 0 && WRAPPERS.has(basename(args[0].text)) && basename(args[0].text) !== "env") {
+    const valued = WRAPPER_VALUED[basename(args[0].text)] ?? new Set<string>();
+    let i = 1;
+    while (i < args.length && (isAssignment(args[i]) || args[i].text.startsWith("-") || /^\d+[smhd]?$/.test(args[i].text))) {
+      i += valued.has(args[i].text) ? 2 : 1;
+    }
+    args = args.slice(i);
+  }
+  if (args.length === 0) return null;
+  // A head with a path in it is a program the owner did not necessarily
+  // install: `./ls`, `node_modules/.bin/cat`. Only the system directories
+  // vouch for a name; anything else is judged as a change.
+  const headText = args[0].text;
+  if (headText.includes("/") && !SYSTEM_BIN_PREFIXES.some((prefix) => headText.startsWith(prefix) && !headText.slice(prefix.length).includes("/"))) {
+    return `runs a program by path (${headText})`;
+  }
+  const head = basename(headText);
+  const rest = args.slice(1).map((token) => token.text);
+  if (head === "xargs" || head === "parallel") return `runs other commands (${head})`;
+  if (head === "env") return rest.length === 0 ? null : "env runs another command";
+  if (head === "find") {
+    const refused = rest.find((word) => ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls", "-fprint0"].includes(word));
+    return refused ? `find ${refused} changes or runs things` : null;
+  }
+  // `python3`, `python3.12`, `node22`: the interpreter, whatever its version suffix.
+  const bare = head.replace(/[0-9.]+$/, "");
+  if (SHELLS.has(head) || INTERPRETERS.has(head) || INTERPRETERS.has(bare)) {
+    return rest.length === 1 && VERSION_FLAGS.has(rest[0]) ? null : `${head} runs code`;
+  }
+  if (!READ_ONLY_COMMANDS.has(head)) return `${head} is not a read-only command`;
+  if (head === "git") {
+    const at = rest.findIndex((word) => !word.startsWith("-"));
+    const sub = at >= 0 ? rest[at] : "";
+    // A global option ahead of the subcommand (`--exec-path=`, `-c`,
+    // `--git-dir`) changes which git runs or what it reads; none is a read.
+    if (at > 0) return `git ${rest[0]} changes how git runs`;
+    const after = rest.slice(at + 1);
+    if (after.some((word) => word === "--ext-diff" || word.startsWith("--output"))) return "git runs an external tool or writes a file";
+    return sub && gitReadOnly(sub, after) ? null : `git ${sub || "(no subcommand)"} is not read-only`;
+  }
+  const subs = READ_ONLY_SUBCOMMANDS[head];
+  if (subs) {
+    const first = rest[0] ?? "";
+    return subs.has(first) ? null : `${head} ${first || "(no subcommand)"} is not read-only`;
+  }
+  const refused = READ_ONLY_REFUSED[head];
+  const bad = refused ? rest.find((word) => refused.has(word) || refused.has(word.split("=")[0])) : undefined;
+  if (bad) return `${head} ${bad} changes things`;
+  return null;
+}
+
+export function readOnlyRisk(command: string): string | null {
+  // `2>&1` and `>&2` move a descriptor, they write no file; the tokenizer
+  // would split them at the `&`, so they go before it looks.
+  const items = tokenize(command.replace(/(^|\s)[0-9]*>&[0-9]+(?=\s|$)/g, "$1"));
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if ("separator" in item) continue;
+    // A substitution inside quotes is a whole command the tokenizer cannot
+    // see into (`grep "$(curl x | sh)" f`), and nesting defeats any regex.
+    // Unquoted ones split into segments of their own and are judged there;
+    // a quoted one simply is not a read.
+    if (item.quoted && /\$\(|`/.test(item.text)) return "runs a command inside quotes";
+    if (item.quoted) continue;
+    // Output redirection is a write, except into the bit bucket or onto
+    // another descriptor (`2>&1`). The operator may start the token, sit
+    // glued after a word (`hi>out.txt`), or have its target in the next one.
+    const match = /^(.*?)([0-9]*)(>>?|&>|>\|)(.*)$/.exec(item.text);
+    if (!match) continue;
+    if (/^&[0-9]+$/.test(match[4])) continue;
+    const next = items[i + 1];
+    const target = match[4] || (next && !("separator" in next) && !next.quoted ? next.text : "");
+    if (target === "/dev/null") continue;
+    return `redirects output into a file (${item.text}${match[4] ? "" : ` ${target}`})`;
+  }
+  for (const segment of split(items)) {
+    const reason = readOnlySegment(segment.tokens);
+    if (reason) return reason;
+  }
+  return null;
 }

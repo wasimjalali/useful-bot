@@ -41,13 +41,20 @@ export async function approvedWrite(input: {
   }
   // One grant read for root AND permission: two reads could pair a root from
   // before a permission change with the permission after it.
-  const { root, grant } = effectiveRoot(input.sessionId || undefined);
-  const permission = grant ? grant.permission : null;
+  const { root, permission, scope } = effectiveRoot(input.sessionId || undefined);
   if (permission === "read_only") {
     throw new Error("workspace_read_only");
   }
-  // Reject a bad path before it ever reaches the owner.
-  resolveWorkspacePath(input.path, root);
+  // Reject a bad path before it ever reaches the owner. Whether the target
+  // already exists is what decides, under the owner's home, if Auto asks.
+  const target = resolveWorkspacePath(input.path, root);
+  let targetExists = false;
+  try {
+    lstatSync(target);
+    targetExists = true;
+  } catch {
+    targetExists = false;
+  }
   const hash = actionSha256({
     tool: "write_file",
     canonicalArgs: JSON.stringify({ path: input.path, content: input.content, expectedSha256: input.expectedSha256 }),
@@ -70,7 +77,7 @@ export async function approvedWrite(input: {
   });
   if (input.autoDecision) {
     approvals.decide(rec.id, input.autoDecision, hash);
-  } else if (autoApproved(permission)) {
+  } else if (autoApproved(permission, scope, targetExists)) {
     approvals.decide(rec.id, "approve", hash);
   } else {
     await waitUntilNotPending(approvals, rec.id);
@@ -85,9 +92,7 @@ export async function approvedWrite(input: {
     } catch {
       throw new Error("workspace_changed");
     }
-    const permissionAtRequest = permission ?? null;
-    const permissionNow = refreshed.grant?.permission ?? null;
-    if (refreshed.root !== root || permissionNow !== permissionAtRequest) {
+    if (refreshed.root !== root || refreshed.permission !== permission) {
       throw new Error("workspace_changed");
     }
   }
@@ -97,6 +102,18 @@ export async function approvedWrite(input: {
     // that ran before the approval is not enough. Writing to the re-resolved
     // target closes that window.
     const target = resolveWorkspacePath(input.path, root);
+    // Under the home, Auto ran without a card because the file did not exist.
+    // A file that appeared since is one the owner never agreed to replace.
+    if (!targetExists && scope === "computer" && permission === "auto") {
+      let existsNow = false;
+      try {
+        lstatSync(target);
+        existsNow = true;
+      } catch {
+        existsNow = false;
+      }
+      if (existsNow) throw new Error("workspace_changed");
+    }
     // expectedSha256 is optimistic concurrency: the owner approved a write
     // against a known revision, so a file that changed since the proposal must
     // not be silently clobbered.

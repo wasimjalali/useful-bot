@@ -27,6 +27,19 @@ test("the profile names the folder and refuses credential files inside it", () =
   assert.ok(profile.includes(`(allow file-write* (subpath "${realpathSync(root)}"))`));
   assert.ok(profile.includes('(deny file-write* (regex #"/\\.env($|[/.])"))'));
   assert.ok(profile.startsWith("(version 1)\n(allow default)\n(deny file-write*)"));
+  // Credential stores are not readable either; a glob defeats the text
+  // tripwire, the kernel does not care how the path was spelled.
+  assert.ok(profile.includes('(deny file-read* (regex #"/\\.ssh($|[/.])"))'));
+  assert.ok(profile.includes('(deny file-read* (regex #"/\\.useful-bot($|[/.])"))'));
+  // Under the home and for read-only lines .env is denied too; inside a
+  // project folder the build tooling reads it, so there it stays readable.
+  assert.ok(profile.includes('(deny file-read* (regex #"/\\.env($|[/.])"))'));
+  const folder = sandboxProfile(root, "folder");
+  assert.equal(folder.includes('(deny file-read* (regex #"/\\.env($|[/.])"))'), false);
+  assert.ok(folder.includes('(deny file-read* (regex #"/\\.ssh($|[/.])"))'));
+  const readOnly = sandboxProfile(null);
+  assert.equal(readOnly.includes("(allow file-write* (subpath \"/Users"), false);
+  assert.ok(readOnly.includes('(deny file-read* (regex #"/\\.env($|[/.])"))'));
 });
 
 test("a pinned just-bash stays just-bash even when docker is on PATH", () => {

@@ -12,7 +12,7 @@ import {
   threadIdFor,
   type Proposal,
 } from "../../../../shared/agent-store.ts";
-import { fanOut } from "../../../lib/agent-exec";
+import { fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
@@ -289,6 +289,27 @@ export async function PUT(request: Request) {
     // live for the rest of an in-flight turn and for any approval card still
     // open — the owner's decision has to take effect when they make it.
     revokeGrantsFor(action, current, next);
+    // A permission or folder change takes effect now, not at the next turn:
+    // the tools re-read the grant before spending a card, so a card raised
+    // under Auto must see the Read only the owner just picked.
+    if (action?.type === "setPermission" || action?.type === "setWorkspace") {
+      const bot = next.bots.find((item) => item.id === action.botId);
+      if (bot?.sessionId) {
+        try {
+          syncSessionWorkspace(bot.sessionId, bot);
+        } catch {
+          // The roster action stood but the grant still says the old
+          // permission, and a card already open re-reads that grant before
+          // it spends. No grant at all reads as Read only, so revoking is
+          // the fail-closed answer; the next turn's stamp restores it.
+          try {
+            removeSessionGrant(bot.sessionId);
+          } catch {
+            /* a store locked twice in a row: the next turn's stamp settles it */
+          }
+        }
+      }
+    }
     // Only once the roster commit stood. A failure here is reported, not
     // swallowed, and the tick's sweep clears whatever was left behind.
     const detachError = action?.type === "deleteBot" ? detachBot(action.botId) : null;

@@ -391,16 +391,17 @@ struct ChatView: View {
         }
         // The posture is the owner's own choice, so the flat promise this used
         // to make was not true in every one of them.
-        if let ws = bot.workspace {
-            if ws.isReadOnly {
-                return "Runs locally on this Mac. Reads only in the attached folder; writes and commands are off."
-            }
-            if ws.isFullAccess {
-                return "Runs locally on this Mac. Works in the attached folder without asking."
-            }
-            return "Runs locally on this Mac. Works in the attached folder on its own; deleting and other destructive commands need your approval."
+        let place = bot.workspace == nil ? "under your home folder" : "in the attached folder"
+        if bot.isReadOnly {
+            return "Runs locally on this Mac. Reads only, wherever it looks; writes, commands that change anything, app edits and connector writes are off."
         }
-        return "Runs locally on this Mac. Writes and commands need your approval."
+        if bot.isFullAccess {
+            return "Runs locally on this Mac. Works \(place) and in the app without asking; only a command reaching outside it or a destructive connector action still asks."
+        }
+        if bot.workspace == nil {
+            return "Runs locally on this Mac. Reads and creates new files under your home on its own; any command that changes something, edits to existing files and connector writes need your approval."
+        }
+        return "Runs locally on this Mac. Works in the attached folder on its own; deleting, other destructive commands and connector writes need your approval."
     }
 
     // MARK: - Composer column

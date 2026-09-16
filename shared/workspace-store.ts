@@ -42,7 +42,8 @@ export const PROJECTS_MAX = 12;
 
 export type SessionGrant = {
   sessionId: string;
-  path: string;
+  /** The attached folder, or null when the bot works under the owner's home. */
+  path: string | null;
   permission: WorkspacePermission;
   updatedAt: string;
 };
@@ -79,11 +80,14 @@ function parseGrant(raw: unknown): SessionGrant | null {
   // hand back a grant on `/` or on a credential folder that this build would
   // refuse to create. The tool re-checks too, but a row nothing can use has no
   // business occupying one of the store's slots.
-  const path = typeof rec.path === "string" && rec.path.length <= 1024 && isGrantableRootPath(rec.path)
-    ? rec.path
-    : null;
+  // A null path is a grant with no folder: the permission alone, applied to
+  // the owner's home. A path that fails the screen drops the whole row.
+  let path: string | null;
+  if (rec.path === null || rec.path === undefined) path = null;
+  else if (typeof rec.path === "string" && rec.path.length <= 1024 && isGrantableRootPath(rec.path)) path = rec.path;
+  else return null;
   const permission = parseWorkspacePermission(rec.permission);
-  if (!sessionId || !path || !permission) return null;
+  if (!sessionId || !permission) return null;
   return {
     sessionId,
     path,
@@ -240,7 +244,7 @@ export function readSessionGrant(sessionId: string, path = defaultWorkspacePath(
 }
 
 export function upsertSessionGrant(
-  input: { sessionId: string; path: string; permission: WorkspacePermission },
+  input: { sessionId: string; path: string | null; permission: WorkspacePermission },
   at = new Date(),
   path = defaultWorkspacePath(),
 ): void {
@@ -251,8 +255,8 @@ export function upsertSessionGrant(
   }
   // Segment screen and root refusal, not just "looks absolute": a grant on
   // `/` or on a credential folder must not reach the store even when a caller
-  // hands it over typed.
-  if (input.path.length > 1024 || !isGrantableRootPath(input.path)) {
+  // hands it over typed. No folder at all is the home scope, and valid.
+  if (input.path !== null && (input.path.length > 1024 || !isGrantableRootPath(input.path))) {
     throw new Error("workspace_path_invalid");
   }
   // The type says WorkspacePermission; a JS caller can still pass anything,

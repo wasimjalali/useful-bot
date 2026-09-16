@@ -1,9 +1,10 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { sharedMemoryStore, tagsForBot } from "../lib/memory.ts";
-import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { activeBotId } from "../lib/active-bot.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
 import { readShell } from "../../shared/shell-io.ts";
 
 const PREVIEW_MAX = 300;
@@ -15,7 +16,7 @@ function clipPreview(value: string): string {
 }
 
 export default defineTool({
-  description: "Create or update a memory note. Requires desktop approval.",
+  description: "Create or update a memory note. Applies at once in Auto and Full access; refused in Read only.",
   inputSchema: z.object({
     id: z.string().regex(/^[A-Za-z0-9-]{1,80}$/).optional(),
     expectedRevision: z.number().nullable(),
@@ -51,6 +52,10 @@ export default defineTool({
     if (botId && !shell.bots.some((item) => item.id === botId)) {
       return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call listBots for exact ids." };
     }
+    // A note is the bot's own memory, edited again in one call, so Auto
+    // writes it at once; Read only refuses.
+    const gate = inAppGate(sessionPermission(ctx));
+    if (gate === "refuse") return READ_ONLY_BLOCKED;
     const actor = approvalActor(ctx);
     const hash = actionSha256({
       tool: "memory.upsert",
@@ -68,7 +73,7 @@ export default defineTool({
       // card next to the metadata the hash binds.
       preview: `memory ${input.title} (${input.audience}${input.tags.length ? ", tags: " + input.tags.join(", ") : ""}${input.expiresAt ? ", expires " + input.expiresAt : ""}): ${clipPreview(input.body)}`,
     });
-    await waitUntilNotPending(getApprovalStore(), rec.id);
+    await settle(getApprovalStore(), rec.id, hash, gate);
     return executeIfApproved(getApprovalStore(), rec.id, hash, () => {
       // Resolved again after the wait: the acting bot or the roster can have
       // changed while the card was open, and the write must not land in a

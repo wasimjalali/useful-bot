@@ -2,8 +2,9 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
-import { commandRisk, outsideFolderRisk } from "../lib/command-risk.ts";
+import { commandRisk, outsideFolderRisk, readOnlyRisk } from "../lib/command-risk.ts";
 import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -27,6 +28,9 @@ const BLOCKED_COMMAND_SUBSTRINGS = [
   // `echo "a..b"`: the owner still sees the command on a card, so a false
   // block is a retype, while a miss is a read the card made look routine.
   "..",
+  // The app's own stores: approvals, the roster, the grants. read_file and
+  // list_dir refuse the same name; a shell line must not be the way round.
+  ".useful-bot",
   "/etc",
   "/private/etc",
   "/var/db",
@@ -43,7 +47,7 @@ function blockedReason(command: string): string | null {
 }
 
 export default defineTool({
-  description: "Run an approved command in the Useful Bot workspace. Not a login shell.",
+  description: "Run a shell command on this Mac, in the attached folder or under the owner's home when none is attached. Lines that only read run at once; what else runs without asking depends on the owner's permission. Not a login shell.",
   inputSchema: z.object({
     command: z.string().min(1).max(8192),
     timeoutMs: z.number().int().min(1).max(60_000).optional(),
@@ -55,8 +59,12 @@ export default defineTool({
     }
     // One grant read for root AND permission: two reads could pair a root
     // from before a permission change with the permission after it.
-    const { root, grant } = effectiveRoot(ctx?.session?.id);
-    if (grant?.permission === "read_only") {
+    const { root, permission, scope } = effectiveRoot(ctx?.session?.id);
+    // A line that only reads runs in every posture, with every write refused
+    // by the sandbox in case the classifier misjudged it. Reading is what the
+    // owner expects a bot to do on its own, wherever it is looking.
+    const readOnly = readOnlyRisk(input.command) === null;
+    if (permission === "read_only" && !readOnly) {
       return { status: "blocked", error: "workspace_read_only" };
     }
     const hash = actionSha256({
@@ -67,28 +75,28 @@ export default defineTool({
       backend: "just-bash",
       toolVersion: "1",
     });
-    // The posture decides who answers the card. Auto runs the everyday
-    // lines and stops for one that deletes, rewrites history, escalates,
-    // runs a payload it cannot read, or reaches outside the folder. Full
-    // access runs every line inside the folder and stops only for a reach
-    // outside it: the grant was for this folder. No grant at all (the
-    // legacy root) always waits for the owner. The tripwire above still
-    // refuses credential paths in every posture.
-    const permission = grant?.permission ?? null;
+    // The posture decides who answers the card. In an attached folder, Auto
+    // runs the everyday lines and stops for one that deletes, rewrites
+    // history, escalates, runs a payload it cannot read, or reaches outside
+    // the folder. Under the owner's home with no folder attached, Auto runs
+    // only the lines that read; anything that changes a file asks, because
+    // nothing there was handed over the way a project folder is. Full
+    // access runs every line inside the scope and stops only for a reach
+    // outside it. The tripwire above still refuses credential paths in
+    // every posture.
     let risk: string | null = null;
     let askOwner = true;
-    switch (permission) {
-      case "auto":
-        risk = commandRisk(input.command, root);
-        askOwner = risk !== null;
-        break;
-      case "full_access":
-        risk = outsideFolderRisk(input.command, root);
-        askOwner = risk !== null;
-        break;
-      default:
-        // No grant, or a posture this build does not know: the owner decides.
-        askOwner = true;
+    if (readOnly) {
+      askOwner = false;
+    } else if (permission === "full_access") {
+      risk = outsideFolderRisk(input.command, root);
+      askOwner = risk !== null;
+    } else if (scope === "folder") {
+      risk = commandRisk(input.command, root);
+      askOwner = risk !== null;
+    } else {
+      risk = commandRisk(input.command, root) ?? "changes files outside a project folder";
+      askOwner = true;
     }
     // Nothing runs unconfined without the owner: a system with no sandbox
     // gets a card for every line instead of a bare shell.
@@ -120,16 +128,18 @@ export default defineTool({
         // run in. That is the workspace changing, not a tool crash.
         return { status: "blocked", error: "workspace_changed" };
       }
-      const permissionNow = refreshed.grant?.permission ?? null;
-      if (refreshed.root !== root || permissionNow !== permission) {
+      if (refreshed.root !== root || refreshed.permission !== permission) {
         return { status: "blocked", error: "workspace_changed" };
       }
     }
     return executeIfApproved(store, rec.id, hash, async () => {
-      // What ran without a card runs confined to the folder, so a line the
-      // classifier misjudged still cannot write outside it. A line the
-      // owner approved runs as they read it.
-      const args = askOwner ? ["/bin/sh", "-c", input.command] : confinedCommand(root, input.command);
+      // What ran without a card runs confined: a read-only line with every
+      // write refused, an everyday line with writes kept inside the scope,
+      // so a line the classifier misjudged still cannot write outside it. A
+      // line the owner approved runs as they read it.
+      const args = askOwner
+        ? ["/bin/sh", "-c", input.command]
+        : confinedCommand(readOnly ? null : root, input.command, scope);
       let stdout: string;
       let stderr: string;
       try {
@@ -144,7 +154,9 @@ export default defineTool({
           env: {
             PATH: "/usr/bin:/bin",
             HOME: root,
-            TMPDIR: root,
+            // A read-only line runs with no writable root at all, so its
+            // temp dir is the system one the sandbox profile allows.
+            TMPDIR: readOnly ? tmpdir() : root,
             LANG: "C",
           },
         }));
