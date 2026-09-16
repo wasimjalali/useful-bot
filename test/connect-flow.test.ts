@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProposal, listThreadEvents, readProposal, updateProposal } from "../shared/agent-store.ts";
@@ -136,7 +136,7 @@ test("authorize moves the card to waiting, stores the account id and returns the
   await assert.rejects(startConnectAuthorize(proposal.id, CALLBACK), /proposal_expired/);
 });
 
-test("a resume that cannot be queued puts the card back to waiting", async () => {
+test("a resume that cannot be queued leaves the card Connected and is retried", async () => {
   const { storePath } = paths();
   const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
   stubComposio([item]);
@@ -148,10 +148,40 @@ test("a resume that cannot be queued puts the card back to waiting", async () =>
   writeFileSync(dir, "not a directory");
   resetConnectMemo();
   const out = await pumpConnects({ now: Date.now() + 6_000 });
-  assert.deepEqual(out.connected, []);
-  const stored = readProposal(proposal.id, storePath) as { phase: string; status: string };
-  assert.equal(stored.phase, "waiting");
+  assert.deepEqual(out.connected, [proposal.id]);
+  const stored = readProposal(proposal.id, storePath) as { phase: string; status: string; handoffId: string | null };
+  assert.equal(stored.phase, "connected");
   assert.equal(stored.status, "pending");
+  assert.equal(stored.handoffId, null);
+  const notes = () => listThreadEvents("b1", storePath).filter((e) => e.kind === "note").length;
+  assert.equal(notes(), 1);
+  // Still broken: no second note, still no handoff, card unchanged.
+  await pumpConnects({ now: Date.now() + 12_000 });
+  assert.equal(notes(), 1);
+  assert.equal((readProposal(proposal.id, storePath) as { handoffId: string | null }).handoffId, null);
+  // Repaired: the sweep queues the resume once.
+  rmSync(dir, { force: true });
+  await pumpConnects({ now: Date.now() + 18_000 });
+  assert.equal(listHandoffs().length, 1);
+  assert.equal((readProposal(proposal.id, storePath) as { handoffId: string | null }).handoffId, listHandoffs()[0].id);
+  assert.equal(notes(), 1);
+});
+
+test("an authorize that overlaps the pump's flip does not rewind a connected card", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  await startConnectAuthorize(proposal.id, CALLBACK);
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  resetConnectMemo();
+  // Authorize reads the card as waiting, then the pump connects it before
+  // authorize writes back.
+  const pending = pumpConnects({ now: Date.now() + 6_000 });
+  await pending;
+  await assert.rejects(startConnectAuthorize(proposal.id, CALLBACK), /already_connected/);
+  assert.equal((readProposal(proposal.id, storePath) as { phase: string }).phase, "connected");
+  assert.equal(listHandoffs().length, 1);
 });
 
 test("the pump connects a waiting card once, writes the note and queues one resume handoff", async () => {

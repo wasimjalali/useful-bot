@@ -68,7 +68,8 @@ export async function startConnectAuthorize(
     );
     const now = new Date(opts.now ?? Date.now()).toISOString();
     updateProposal(proposalId, (item) => {
-      if (item.kind !== "connectApp" || item.status !== "pending") return;
+      // Never rewind a card the pump connected while authorize was in flight.
+      if (item.kind !== "connectApp" || item.status !== "pending" || item.phase === "connected") return;
       item.phase = "waiting";
       item.accountId = accountId;
       item.waitingSince = now;
@@ -78,6 +79,38 @@ export async function startConnectAuthorize(
   } finally {
     authorizing.delete(proposalId);
   }
+}
+
+/**
+ * Queue the bot's resume for a connected card and record its id. Returns
+ * false when the record could not be written; the caller retries later.
+ */
+function queueResume(card: Stored, now: number, storePath: string): boolean {
+  const targetId = card.sourceBotId ?? card.threadId;
+  let targetName = "Useful Bot";
+  try {
+    targetName = readShell().bots.find((bot) => bot.id === targetId)?.name ?? targetName;
+  } catch {
+    /* the name is cosmetic */
+  }
+  let handoffId: string;
+  try {
+    handoffId = queueHandoff({
+      sourceBotId: DEFAULT_BOT_ID,
+      sourceName: "Useful Bot",
+      targetBotId: targetId,
+      targetName,
+      message: `The owner connected ${oneLine(card.name, 80)} (${card.slug}). Continue the task: ${oneLine(card.purpose, 120)}`,
+      depth: 0,
+    }).id;
+  } catch {
+    return false;
+  }
+  updateProposal(card.id, (item) => {
+    if (item.kind !== "connectApp" || item.handoffId) return;
+    item.handoffId = handoffId;
+  }, storePath);
+  return true;
 }
 
 export async function pumpConnects(
@@ -92,10 +125,15 @@ export async function pumpConnects(
   // A Connected card stays docked until its resume handoff has landed (or
   // given up), so the owner sees the pill until the bot's next turn starts.
   for (const card of cards.filter((item) => item.phase === "connected")) {
-    const handoff = card.handoffId ? readHandoff(card.handoffId) : null;
-    const landed = !handoff || handoff.status !== "pending";
     const since = Date.parse(card.waitingSince ?? "");
     const lingered = !Number.isFinite(since) || now - since > CONNECT_LINGER_MS;
+    if (!card.handoffId && !lingered) {
+      // The flip landed but the resume could not be queued then; try again.
+      queueResume(card, now, storePath);
+      continue;
+    }
+    const handoff = card.handoffId ? readHandoff(card.handoffId) : null;
+    const landed = !handoff || handoff.status !== "pending";
     if (landed || lingered) {
       // Only from pending: a dismiss that landed since the read above wins.
       updateProposal(card.id, (item) => {
@@ -128,51 +166,26 @@ export async function pumpConnects(
     if (!active) continue;
     const toolCount = await countToolkitTools(card.slug, connectorsPath);
     // Flip under the lock, and only from waiting: a dismiss that landed
-    // between the check and here must win.
-    const flipped = updateProposal(card.id, (item) => {
+    // between the check and here must win, and a pump that overlapped this
+    // one must not flip (and resume) the same card twice.
+    let didFlip = false;
+    updateProposal(card.id, (item) => {
       if (item.kind !== "connectApp" || item.status !== "pending" || item.phase !== "waiting") return;
       item.phase = "connected";
       item.toolCount = toolCount;
+      // From here waitingSince bounds how long the pill may wait for its resume.
+      item.waitingSince = new Date(now).toISOString();
+      didFlip = true;
     }, storePath);
-    if (!flipped || flipped.kind !== "connectApp" || flipped.phase !== "connected") continue;
+    if (!didFlip) continue;
     try {
       appendAgentEvent(card.threadId, { kind: "note", text: `${card.name} connected` }, storePath);
     } catch {
-      /* the resume below still tells the owner */
+      /* the resume still tells the owner */
     }
-    const targetId = card.sourceBotId ?? card.threadId;
-    let targetName = "Useful Bot";
-    try {
-      targetName = readShell().bots.find((bot) => bot.id === targetId)?.name ?? targetName;
-    } catch {
-      /* the name is cosmetic */
-    }
-    let handoffId: string;
-    try {
-      handoffId = queueHandoff({
-        sourceBotId: DEFAULT_BOT_ID,
-        sourceName: "Useful Bot",
-        targetBotId: targetId,
-        targetName,
-        message: `The owner connected ${oneLine(card.name, 80)} (${card.slug}). Continue the task: ${oneLine(card.purpose, 120)}`,
-        depth: 0,
-      }).id;
-    } catch {
-      // No resume record means no resume. Put the card back to waiting so
-      // the next tick sees the active account again and tries once more.
-      updateProposal(card.id, (item) => {
-        if (item.kind === "connectApp" && item.phase === "connected") item.phase = "waiting";
-      }, storePath);
-      lastCheck.delete(card.id);
-      continue;
-    }
-    // Still pending: the card shows Connected until the handoff lands, and
-    // waitingSince now bounds how long that can take.
-    updateProposal(card.id, (item) => {
-      if (item.kind !== "connectApp") return;
-      item.handoffId = handoffId;
-      item.waitingSince = new Date(now).toISOString();
-    }, storePath);
+    // A queue failure leaves the card Connected with no handoff id; the sweep
+    // above retries it on the next tick instead of oscillating the card.
+    queueResume(card, now, storePath);
     lastCheck.delete(card.id);
     connected.push(card.id);
   }

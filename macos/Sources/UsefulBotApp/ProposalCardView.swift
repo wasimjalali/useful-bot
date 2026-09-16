@@ -122,7 +122,7 @@ struct ProposalCardView: View {
                                 .foregroundStyle(Theme.C.inkMuted)
                         }
                         if proposal.phase == .connected, let count = proposal.toolCount {
-                            Text("\(count) tools")
+                            Text(count == 1 ? "1 tool" : "\(count) tools")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.C.inkFaint)
                         }
