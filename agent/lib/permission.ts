@@ -3,13 +3,14 @@ import type { ApprovalStore } from "./approvals.ts";
 import { waitUntilNotPending } from "./approvals.ts";
 
 /**
- * The bot's permission for this session. Auto when the session carries no
- * grant: that only happens for a turn the web server did not stamp, which is
- * the owner's own channel.
+ * The bot's permission for this session. A session with no grant is one the
+ * web server did not stamp, so it fails closed to Read only; a call with no
+ * session at all (tests, evals) is Auto.
  */
 export function sessionPermission(ctx?: { session?: { id?: string } }): WorkspacePermission {
-  const grant = ctx?.session?.id ? readSessionGrant(ctx.session.id) : null;
-  return grant?.permission ?? "auto";
+  const id = ctx?.session?.id;
+  if (!id) return "auto";
+  return readSessionGrant(id)?.permission ?? "read_only";
 }
 
 export type Gate = "run" | "ask" | "refuse";
@@ -30,14 +31,27 @@ export function inAppGate(permission: WorkspacePermission, irreversible = false)
 /**
  * Settle a requested card the way the gate says: approve it on the spot, or
  * wait for the owner. Callers still go through `executeIfApproved`, so the
- * approval record binds the action either way and a replay is refused.
+ * approval record binds the action either way and a replay is refused. A
+ * card that waited was raised under one permission; if the owner narrowed
+ * it while the card sat open, the approval must not spend on the old
+ * posture, the way bash and write_file refuse a changed workspace.
  */
-export async function settle(store: ApprovalStore, id: string, hash: string, gate: Exclude<Gate, "refuse">): Promise<void> {
+export async function settle(
+  store: ApprovalStore,
+  id: string,
+  hash: string,
+  gate: Exclude<Gate, "refuse">,
+  ctx?: { session?: { id?: string } },
+  permissionAtRequest?: WorkspacePermission,
+): Promise<void> {
   if (gate === "run") {
     store.decide(id, "approve", hash);
     return;
   }
   await waitUntilNotPending(store, id);
+  if (permissionAtRequest !== undefined && sessionPermission(ctx) !== permissionAtRequest) {
+    throw new Error("permission_changed");
+  }
 }
 
 /** The blocked result every gated tool returns when Read only refuses it. */

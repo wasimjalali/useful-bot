@@ -461,3 +461,29 @@ test("a line that only reads is told apart from one that changes something", () 
     assert.notEqual(readOnlyRisk(command), null, command);
   }
 });
+
+test("the read-only gate refuses what changes state through a read-looking binary", () => {
+  for (const command of [
+    "spctl --master-disable",
+    "sysctl -w kern.maxfiles=1",
+    "hostname evil",
+    "ifconfig en0 down",
+    "xattr -d com.apple.quarantine app",
+    "plutil -replace key -string v file.plist",
+    "codesign -s - app",
+    "date -s '2020-01-01'",
+    "tar -tf a.tar --to-command='sh'",
+    "git --exec-path=/tmp/evil status",
+    "git -c core.pager=rm log",
+    "git diff --ext-diff",
+    "GIT_EXTERNAL_DIFF=/bin/rm git diff",
+    "PATH=/tmp/bin:$PATH ls",
+    "DYLD_INSERT_LIBRARIES=/tmp/x.dylib ls",
+    "env FOO=1 ls",
+  ]) {
+    assert.notEqual(readOnlyRisk(command), null, command);
+  }
+  for (const command of ["date", "date +%Y-%m-%d", "git log -p -3", "git branch --list", "git config --get user.email", "FOO=1 ls"]) {
+    assert.equal(readOnlyRisk(command), null, command);
+  }
+});

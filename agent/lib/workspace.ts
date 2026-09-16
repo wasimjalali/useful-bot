@@ -38,12 +38,14 @@ export type EffectiveWorkspace = {
  * permission from another is a race a concurrent permission change could
  * exploit. An attached folder that is itself a symlink, or whose path
  * segments name a credential store, is refused here regardless of what any
- * route accepted earlier. A grant with no folder, or no grant at all, is
- * the computer scope: the owner's home under the bot's permission.
+ * route accepted earlier. A grant with no folder is the computer scope:
+ * the owner's home under the bot's permission. A session with no grant at
+ * all is one the web server did not stamp, so it fails closed to Read
+ * only; only a call with no session (tests, evals) defaults to Auto.
  */
 export function effectiveRoot(sessionId?: string): EffectiveWorkspace {
   const grant = sessionId ? readSessionGrant(sessionId) : null;
-  const permission = grant?.permission ?? "auto";
+  const permission = grant?.permission ?? (sessionId ? "read_only" : "auto");
   if (!grant || grant.path === null) {
     return { root: workspaceRoot(), grant, permission, scope: "computer" };
   }

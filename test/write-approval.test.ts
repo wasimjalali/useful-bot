@@ -7,10 +7,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApprovalStore, executeIfApproved } from "../agent/lib/approvals.ts";
 import { approvedWrite, getApprovalStore, setApprovalStore } from "../agent/lib/write.ts";
+import { upsertSessionGrant } from "../shared/workspace-store.ts";
+
+/**
+ * Session "s" works with no folder attached under the pinned root, in Auto.
+ * A session the web server never stamped fails closed to Read only, so the
+ * grant is written the way agent-exec writes it.
+ */
+function stampAuto(): void {
+  const dir = mkdtempSync(join(tmpdir(), "ub-ws-store-"));
+  process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+  upsertSessionGrant({ sessionId: "s", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+}
 
 test("denied write does not create the file", async () => {
   const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
   process.env.UB_WORKSPACE_ROOT = root;
+  stampAuto();
   setApprovalStore(new ApprovalStore(() => 1_000));
   await assert.rejects(
     () => approvedWrite({
@@ -30,6 +43,7 @@ test("denied write does not create the file", async () => {
 test("approved write is exact bytes and replay is rejected", async () => {
   const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
   process.env.UB_WORKSPACE_ROOT = root;
+  stampAuto();
   mkdirSync(root, { recursive: true });
   setApprovalStore(new ApprovalStore(() => 1_000));
   const first = await approvedWrite({
@@ -52,6 +66,7 @@ test("approved write is exact bytes and replay is rejected", async () => {
 test("path escape is rejected before write", async () => {
   const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
   process.env.UB_WORKSPACE_ROOT = root;
+  stampAuto();
   setApprovalStore(new ApprovalStore(() => 1_000));
   await assert.rejects(
     () => approvedWrite({
@@ -71,6 +86,7 @@ test("a symlinked parent directory cannot escape the workspace", async () => {
   const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
   const outside = mkdtempSync(join(tmpdir(), "ub-out-"));
   process.env.UB_WORKSPACE_ROOT = root;
+  stampAuto();
   setApprovalStore(new ApprovalStore(() => 1_000));
   symlinkSync(outside, join(root, "link"));
   await assert.rejects(
@@ -91,6 +107,7 @@ test("a symlinked parent directory cannot escape the workspace", async () => {
 test("expectedSha256 refuses to clobber a changed file", async () => {
   const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
   process.env.UB_WORKSPACE_ROOT = root;
+  stampAuto();
   setApprovalStore(new ApprovalStore(() => 1_000));
   const target = join(root, "note.txt");
   writeFileSync(target, "current", { encoding: "utf8", mode: 0o600 });
@@ -126,6 +143,7 @@ test("a directory swapped for a symlink during review is rejected after consume"
   const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
   const outside = mkdtempSync(join(tmpdir(), "ub-out-"));
   process.env.UB_WORKSPACE_ROOT = root;
+  stampAuto();
   const store = new ApprovalStore(() => 1_000);
   setApprovalStore(store);
   mkdirSync(join(root, "sub"), { recursive: true });
@@ -153,6 +171,7 @@ test("a directory swapped for a symlink during review is rejected after consume"
 test("the write card carries a clipped content preview", async () => {
   const root = mkdtempSync(join(tmpdir(), "ub-ws-"));
   process.env.UB_WORKSPACE_ROOT = root;
+  stampAuto();
   const store = new ApprovalStore(() => 1_000);
   setApprovalStore(store);
   await approvedWrite({

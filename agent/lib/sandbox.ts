@@ -22,6 +22,9 @@ const PROTECTED_NAMES = [
   ".docker", ".kube", "id_rsa", "id_ecdsa", "id_ed25519", "keychains", "auth.json",
   // The app's own stores and the launch agents that start it.
   ".useful-bot", "LaunchAgents",
+  // Shell startup files: a planted line runs in the owner's own shell.
+  ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
+  ".bash_profile", ".bashrc", ".bash_login", ".bash_logout", ".profile", ".inputrc",
 ];
 
 export function sandboxAvailable(): boolean {

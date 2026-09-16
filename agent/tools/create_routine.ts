@@ -33,7 +33,7 @@ const schedule = z.object({
 
 export default defineTool({
   description:
-    "Create a routine: a standing instruction a bot runs on a schedule. Use it when the owner asks for recurring work (\"check this every Monday morning\"). Times are wall clock in the routine's timezone, so 09:00 stays 09:00 across a clock change. Defaults to this bot. The owner approves the card before the routine exists, because it then runs on its own; after that they can pause or edit it in the chat details pane.",
+    "Create a routine: a standing instruction a bot runs on a schedule. Use it when the owner asks for recurring work (\"check this every Monday morning\"). Times are wall clock in the routine's timezone, so 09:00 stays 09:00 across a clock change. Defaults to this bot. It applies at once in Auto and Full access and is refused in Read only; after that they can pause or edit it in the chat details pane.",
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     instruction: z.string().min(1).max(4000),

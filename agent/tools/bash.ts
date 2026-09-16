@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
 import { commandRisk, outsideFolderRisk, readOnlyRisk } from "../lib/command-risk.ts";
 import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
@@ -27,6 +28,9 @@ const BLOCKED_COMMAND_SUBSTRINGS = [
   // `echo "a..b"`: the owner still sees the command on a card, so a false
   // block is a retype, while a miss is a read the card made look routine.
   "..",
+  // The app's own stores: approvals, the roster, the grants. read_file and
+  // list_dir refuse the same name; a shell line must not be the way round.
+  ".useful-bot",
   "/etc",
   "/private/etc",
   "/var/db",
@@ -150,7 +154,9 @@ export default defineTool({
           env: {
             PATH: "/usr/bin:/bin",
             HOME: root,
-            TMPDIR: root,
+            // A read-only line runs with no writable root at all, so its
+            // temp dir is the system one the sandbox profile allows.
+            TMPDIR: readOnly ? tmpdir() : root,
             LANG: "C",
           },
         }));

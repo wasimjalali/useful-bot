@@ -7,7 +7,7 @@ import { deleteRoutine, readRoutine } from "../../shared/routines-store.ts";
 
 export default defineTool({
   description:
-    "Delete a routine for good, including its run history. The owner sees an approval card and nothing is removed until they approve it. Prefer updateRoutine with active false when the owner only wants it paused.",
+    "Delete a routine for good, including its run history. It applies at once in Auto and Full access and is refused in Read only. Prefer updateRoutine with active false when the owner only wants it paused.",
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
     reason: z.string().max(300).optional(),

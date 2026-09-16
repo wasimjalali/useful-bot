@@ -386,6 +386,11 @@ export const FORBIDDEN_CHILD_SEGMENTS = new Set([
   // The app's own stores: approvals, the roster, the grants. A bot that
   // could edit these could approve itself.
   ".useful-bot",
+  // Shell startup files: a line planted in one runs in the owner's own
+  // shell next time they open a terminal, outside every gate here.
+  ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
+  ".bash_profile", ".bashrc", ".bash_login", ".bash_logout", ".profile",
+  ".inputrc", ".hushlogin",
   ".docker",
   ".kube",
   ".pypirc",

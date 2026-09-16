@@ -16,7 +16,7 @@ function clipPreview(value: string): string {
 }
 
 export default defineTool({
-  description: "Create or update a memory note. Requires desktop approval.",
+  description: "Create or update a memory note. Applies at once in Auto and Full access; refused in Read only.",
   inputSchema: z.object({
     id: z.string().regex(/^[A-Za-z0-9-]{1,80}$/).optional(),
     expectedRevision: z.number().nullable(),

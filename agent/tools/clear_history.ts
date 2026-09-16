@@ -18,7 +18,7 @@ import { applyShellAction } from "../../shared/shell-store.ts";
  */
 export default defineTool({
   description:
-    "Clear the message history of a chat: this bot's own, another bot's, or every bot's at once. The owner sees an approval card listing exactly which chats it will empty, and nothing is cleared until they approve. This cannot be undone, so confirm which chat they mean before calling it.",
+    "Clear the message history of a chat: this bot's own, another bot's, or every bot's at once. This cannot be undone, so in Auto the owner sees an approval card listing exactly which chats it will empty and nothing is cleared until they approve; Full access clears at once; Read only refuses. Confirm which chat they mean before calling it.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80).optional(),
     all: z.boolean().optional(),
@@ -87,7 +87,8 @@ export default defineTool({
       : `clear the chat history of ${targets.length} chats: ${names.join(", ")}`;
     // A cleared chat is gone for good, so Auto still shows the card; Full
     // access runs it; Read only refuses.
-    const gate = inAppGate(sessionPermission(ctx), true);
+    const permission = sessionPermission(ctx);
+    const gate = inAppGate(permission, true);
     if (gate === "refuse") return READ_ONLY_BLOCKED;
     const store = getApprovalStore();
     const record = store.request({
@@ -96,7 +97,7 @@ export default defineTool({
       actionSha256: hash,
       preview,
     });
-    await settle(store, record.id, hash, gate);
+    await settle(store, record.id, hash, gate, ctx, permission);
     return executeIfApproved(store, record.id, hash, () => {
       // Re-read under the store lock: the roster can have changed while the
       // owner was deciding, and the approval belongs to the revisions on the

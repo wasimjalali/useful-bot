@@ -12,7 +12,7 @@ import { removeSessionGrant } from "../../shared/workspace-store.ts";
 
 export default defineTool({
   description:
-    "Delete a teammate bot or group chat when the owner asks for it. The owner sees an approval card and nothing is removed until they approve it. This also removes that bot's routines and recent chats, and it cannot be undone, so confirm which bot they mean before calling it. The section it sat in stays; call railAction removeSection to tidy an emptied one.",
+    "Delete a teammate bot or group chat when the owner asks for it. It cannot be undone, so in Auto the owner sees an approval card and nothing is removed until they approve it; Full access deletes at once; Read only refuses. This also removes that bot's routines and recent chats, and it cannot be undone, so confirm which bot they mean before calling it. The section it sat in stays; call railAction removeSection to tidy an emptied one.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80),
     reason: z.string().max(300).optional(),
@@ -52,7 +52,8 @@ export default defineTool({
     // A bot takes its chat, memory and routines with it and nothing brings
     // them back, so Auto still shows the card; Full access runs it; Read
     // only refuses.
-    const gate = inAppGate(sessionPermission(ctx), true);
+    const permission = sessionPermission(ctx);
+    const gate = inAppGate(permission, true);
     if (gate === "refuse") return READ_ONLY_BLOCKED;
     // The hash binds the approval to this exact bot, so a card the owner
     // approved cannot be spent on a different one.
@@ -73,7 +74,7 @@ export default defineTool({
       // has to be able to tell two similarly named cards apart.
       preview: `delete ${target.kind === "group" ? "group" : "bot"} ${target.name} (${target.id})`,
     });
-    await settle(store, record.id, hash, gate);
+    await settle(store, record.id, hash, gate, ctx, permission);
     return executeIfApproved(store, record.id, hash, () => {
       // Re-read under the store lock: the roster can have changed while the
       // owner was deciding. The approval belongs to the revision on the card,

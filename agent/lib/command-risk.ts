@@ -844,16 +844,27 @@ function tokenize(command: string): (Token | { separator: string })[] {
 const READ_ONLY_COMMANDS = new Set([
   "ls", "cat", "head", "tail", "less", "more", "wc", "grep", "egrep", "fgrep", "rg", "ag",
   "fd", "stat", "file", "du", "df", "pwd", "echo", "printf", "date", "cal", "which", "whereis",
-  "type", "uname", "id", "whoami", "hostname", "sw_vers", "printenv", "tree", "diff", "cmp",
+  "type", "uname", "id", "whoami", "sw_vers", "printenv", "tree", "diff", "cmp",
   "comm", "sort", "cut", "tr", "column", "nl", "od", "xxd", "hexdump", "strings", "basename",
   "dirname", "realpath", "readlink", "md5", "md5sum", "shasum", "sha256sum", "cksum", "base64",
-  "jq", "yq", "mdfind", "mdls", "ps", "lsof", "netstat", "ifconfig", "system_profiler", "sysctl",
-  "uptime", "w", "who", "last", "env", "locale", "getconf", "xattr", "codesign", "spctl",
+  "jq", "yq", "mdfind", "mdls", "ps", "lsof", "netstat", "system_profiler",
+  "uptime", "w", "who", "last", "env", "locale", "getconf",
   "cd", "pushd", "popd", "true", "false", "test", "[", ":", "seq", "expr", "bc", "sleep",
-  "tput", "tty", "otool", "nm", "plutil", "iconv", "expand", "unexpand", "fold", "fmt", "paste",
-  "join", "look", "rev", "tac", "zcat", "gzcat", "bzcat", "xzcat", "zipinfo", "tar",
+  "tput", "tty", "otool", "nm", "iconv", "expand", "unexpand", "fold", "fmt", "paste",
+  "join", "look", "rev", "tac", "zcat", "gzcat", "bzcat", "xzcat", "zipinfo",
   "git", "brew", "npm", "pip", "pip3", "docker", "defaults", "launchctl",
 ]);
+// Deliberately absent: anything that reads AND writes through one binary
+// with a flag (`sysctl -w`, `hostname name`, `ifconfig ... up`, `xattr -d`,
+// `plutil -replace`, `codesign -s`, `spctl --master-disable`), and `tar`,
+// whose listing form still runs a program per member with `--to-command`.
+// Those ask like any other change.
+
+/** Per command, the flags that turn a read into a change. */
+const READ_ONLY_REFUSED: Record<string, Set<string>> = {
+  date: new Set(["-s", "--set"]),
+  sort: new Set(["-o", "--output"]),
+};
 
 /** Commands whose first argument decides: only these forms read. */
 const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
@@ -864,7 +875,6 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
   docker: new Set(["ps", "images", "inspect", "logs", "version", "info", "stats", "top", "port"]),
   defaults: new Set(["read", "domains", "find"]),
   launchctl: new Set(["list", "print", "version", "blame", "dumpstate"]),
-  tar: new Set(["-t", "-tf", "-tvf", "-tzf", "-tjf", "--list", "tf", "tvf", "tzf"]),
 };
 
 /** Interpreters may only report their version; anything else runs code. */
@@ -919,6 +929,10 @@ function gitReadOnly(sub: string, rest: string[]): boolean {
 const isRedirection = (text: string) => /^[0-9]*[<>]|^&>/.test(text);
 
 function readOnlySegment(tokens: Token[]): string | null {
+  // `GIT_EXTERNAL_DIFF=/bin/rm git diff` runs rm: an assignment that changes
+  // what a command runs makes the line a change, the way commandReason sees it.
+  const hijack = tokens.find((token) => !token.quoted && HIJACK_VARS.test(token.text));
+  if (hijack) return `changes what a command runs (${hijack.text.split("=")[0]}=)`;
   let args = tokens.filter((token) => !isAssignment(token) && !(!token.quoted && isRedirection(token.text)));
   // Peel timing and priority wrappers the way commandReason does; `env` with
   // a command after it is itself a launcher, handled below.
@@ -946,8 +960,13 @@ function readOnlySegment(tokens: Token[]): string | null {
   }
   if (!READ_ONLY_COMMANDS.has(head)) return `${head} is not a read-only command`;
   if (head === "git") {
-    const sub = rest.find((word) => !word.startsWith("-")) ?? "";
-    const after = rest.slice(rest.indexOf(sub) + 1);
+    const at = rest.findIndex((word) => !word.startsWith("-"));
+    const sub = at >= 0 ? rest[at] : "";
+    // A global option ahead of the subcommand (`--exec-path=`, `-c`,
+    // `--git-dir`) changes which git runs or what it reads; none is a read.
+    if (at > 0) return `git ${rest[0]} changes how git runs`;
+    const after = rest.slice(at + 1);
+    if (after.some((word) => word === "--ext-diff" || word.startsWith("--output"))) return "git runs an external tool or writes a file";
     return sub && gitReadOnly(sub, after) ? null : `git ${sub || "(no subcommand)"} is not read-only`;
   }
   const subs = READ_ONLY_SUBCOMMANDS[head];
@@ -955,7 +974,9 @@ function readOnlySegment(tokens: Token[]): string | null {
     const first = rest[0] ?? "";
     return subs.has(first) ? null : `${head} ${first || "(no subcommand)"} is not read-only`;
   }
-  if (head === "sort" && rest.some((word) => word === "-o" || word.startsWith("--output"))) return "sort -o writes a file";
+  const refused = READ_ONLY_REFUSED[head];
+  const bad = refused ? rest.find((word) => refused.has(word) || refused.has(word.split("=")[0])) : undefined;
+  if (bad) return `${head} ${bad} changes things`;
   return null;
 }
 

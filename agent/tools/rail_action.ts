@@ -16,7 +16,7 @@ import { applyShellAction, DEFAULT_BOT_ID, type ShellAction } from "../../shared
  */
 export default defineTool({
   description:
-    "Organise the owner's sidebar: pin or unpin a bot, hide or unhide it, move it into an existing section by sectionId (or out of one with null), create a section, rename one with updateSection, or remove an empty one with removeSection. Everything except removeSection is reversible and applies at once. removeSection shows the owner an approval card with the section's name and id, and refuses while any bot is still in the section; move those bots out first. deleteBot leaves an emptied section in place, so call removeSection afterwards to tidy it. Call listBots first for exact bot and section ids.",
+    "Organise the owner's sidebar: pin or unpin a bot, hide or unhide it, move it into an existing section by sectionId (or out of one with null), create a section, rename one with updateSection, or remove an empty one with removeSection. Everything applies at once in Auto and Full access and is refused in Read only. removeSection removes an empty section by its id, and refuses while any bot is still in the section; move those bots out first. deleteBot leaves an emptied section in place, so call removeSection afterwards to tidy it. Call listBots first for exact bot and section ids.",
   inputSchema: z.object({
     action: z.enum([
       "pin",

@@ -28,7 +28,7 @@ const schedule = z.object({
 
 export default defineTool({
   description:
-    "Edit one routine: rename it, change what it does, change when it runs, or pause and resume it with active. Renaming, rescheduling and pausing apply immediately because they are reversible. Rewriting the instruction needs the owner's approval first, because that is the text the routine runs on its own. Passing schedules replaces the whole list, so send every schedule the routine should keep. Call listRoutines first for the id and the current schedule.",
+    "Edit one routine: rename it, change what it does, change when it runs, or pause and resume it with active. Every edit applies at once in Auto and Full access and is refused in Read only. Passing schedules replaces the whole list, so send every schedule the routine should keep. Call listRoutines first for the id and the current schedule.",
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
     name: z.string().min(1).max(80).optional(),
@@ -85,10 +85,10 @@ export default defineTool({
       };
     };
 
-    // Two transitions put the routine back to running something unattended:
-    // rewriting the instruction, and resuming one the owner paused. Both wait
-    // for the owner. Renaming, rescheduling and pausing do not, because they
-    // are reversible and visible in the pane.
+    // Rewriting the instruction and resuming a paused routine put it back
+    // to running something unattended, so they go through the approval
+    // record (bound, replay-refused) even though Auto settles it at once;
+    // renaming, rescheduling and pausing write straight through.
     const gate = inAppGate(sessionPermission(ctx));
     if (gate === "refuse") return READ_ONLY_BLOCKED;
     const rewrite = typeof patch.instruction === "string" && patch.instruction.trim() !== existing.instruction;
