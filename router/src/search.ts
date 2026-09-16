@@ -4,6 +4,33 @@ import { retryAfterMs } from "./retry-after.ts";
 import type { AuthedCaller } from "./auth.ts";
 
 const FIRECRAWL = "https://api.firecrawl.dev/v2/search";
+const SEARCH_BODY_LIMIT_BYTES = 1 * 1024 * 1024;
+
+// Smallest copy of the router's capped reader: search.ts must not import
+// index.ts, and the body must stay bounded while the slot is held.
+async function readCappedBody(response: Response, limit: number): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let size = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      throw new RouterError({
+        status: 502,
+        type: "upstream_error",
+        code: "upstream_protocol_error",
+        message: "upstream body too large",
+      });
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
 
 export async function search(caller: AuthedCaller, body: unknown): Promise<unknown> {
   if (!caller.search) {
@@ -44,46 +71,48 @@ export async function search(caller: AuthedCaller, body: unknown): Promise<unkno
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
-  let response: Response;
   try {
-    response = await fetch(FIRECRAWL, {
+    const response = await fetch(FIRECRAWL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ query, limit: count }),
       signal: controller.signal,
     });
+    if (response.status === 429) {
+      throw new RouterError({
+        status: 429,
+        type: "rate_limit_error",
+        code: "upstream_rate_limited",
+        message: "search rate limited",
+        retryable: true,
+        retryAfterMs: retryAfterMs(response),
+      });
+    }
+    if (!response.ok) {
+      throw new RouterError({
+        status: 502,
+        type: "upstream_error",
+        code: "upstream_protocol_error",
+        message: "search failed",
+      });
+    }
+    // The timer stays armed through the body read and parse: headers alone
+    // do not release the concurrency slot the caller holds.
+    const text = await readCappedBody(response, SEARCH_BODY_LIMIT_BYTES);
+    const json = JSON.parse(text) as {
+      data?: { web?: Array<{ title?: string; url?: string; description?: string }> };
+    };
+    const web = json.data?.web ?? [];
+    return {
+      results: web.slice(0, count).map((item) => ({
+        title: String(item.title ?? "").slice(0, 200),
+        url: String(item.url ?? "").slice(0, 2048),
+        snippet: String(item.description ?? "").slice(0, 800),
+      })),
+      provider: "firecrawl-keyless",
+      request_id: randomUUID(),
+    };
   } finally {
     clearTimeout(timer);
   }
-  if (response.status === 429) {
-    throw new RouterError({
-      status: 429,
-      type: "rate_limit_error",
-      code: "upstream_rate_limited",
-      message: "search rate limited",
-      retryable: true,
-      retryAfterMs: retryAfterMs(response),
-    });
-  }
-  if (!response.ok) {
-    throw new RouterError({
-      status: 502,
-      type: "upstream_error",
-      code: "upstream_protocol_error",
-      message: "search failed",
-    });
-  }
-  const json = (await response.json()) as {
-    data?: { web?: Array<{ title?: string; url?: string; description?: string }> };
-  };
-  const web = json.data?.web ?? [];
-  return {
-    results: web.slice(0, count).map((item) => ({
-      title: String(item.title ?? "").slice(0, 200),
-      url: String(item.url ?? "").slice(0, 2048),
-      snippet: String(item.description ?? "").slice(0, 800),
-    })),
-    provider: "firecrawl-keyless",
-    request_id: randomUUID(),
-  };
 }

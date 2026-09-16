@@ -136,6 +136,10 @@ export default defineTool({
         ({ stdout, stderr } = await execFileAsync(args[0], args.slice(1), {
           cwd: root,
           timeout: input.timeoutMs ?? 30_000,
+          // The turn's signal reaches the child: a Stop must not leave a
+          // cancelled line running to its own timeout with side effects
+          // landing after the owner gave up.
+          signal: ctx?.abortSignal,
           maxBuffer: INPUT_MAX_BYTES,
           env: {
             PATH: "/usr/bin:/bin",

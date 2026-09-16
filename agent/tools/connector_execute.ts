@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { executeConnectorTool, toolkitOf } from "../../shared/composio.ts";
+import { executeConnectorTool, toolkitOf, FEATURED_TOOLKITS } from "../../shared/composio.ts";
 import { readConnectorsStore } from "../../shared/connectors-store.ts";
 import { readSessionGrant } from "../../shared/workspace-store.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -38,7 +38,7 @@ export default defineTool({
     if (!store.apiKey) return { status: "blocked", error: "connectors_not_set_up" };
     const toolkit = toolkitOf(tool, store.connectedToolkits);
     if (!toolkit) {
-      return { status: "blocked", error: "not_connected", toolkit: tool.split("_")[0]?.toLowerCase() ?? "unknown" };
+      return { status: "blocked", error: "not_connected", toolkit: hintToolkit(tool) };
     }
     const grant = ctx?.session?.id ? readSessionGrant(ctx.session.id) : null;
     const permission = grant?.permission ?? null;
@@ -87,6 +87,18 @@ export default defineTool({
     });
   },
 });
+
+function hintToolkit(tool: string): string {
+  // A hint only, never a lookup that throws: the known toolkit prefix when
+  // the slug starts with one, else the lowercased slug without its last
+  // action word.
+  try {
+    const fallback = tool.toLowerCase().split("_").slice(0, -1).join("_");
+    return toolkitOf(tool, FEATURED_TOOLKITS) ?? (fallback || "unknown");
+  } catch {
+    return "unknown";
+  }
+}
 
 function preview(toolkit: string, tool: string, argsText: string, risk: string): string {
   const head = `${toolkit} · ${tool}${risk === "destructive" ? " (destructive)" : ""}`;

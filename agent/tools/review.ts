@@ -26,7 +26,10 @@ export default defineTool({
         hint: "The reviewer credential is not provisioned on this Mac.",
       };
     }
-    const res = await fetch(process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1/chat/completions", {
+    // UB_ROUTER_BASE_URL is a base ending in /v1, the way agent.ts reads it;
+    // the chat path is appended here rather than baked into the default.
+    const base = process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1";
+    const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,

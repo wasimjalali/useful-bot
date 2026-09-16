@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 export default defineTool({
   description: "Search the public web via the local router. No search key is held here.",
@@ -24,6 +25,9 @@ export default defineTool({
     if (!res.ok) {
       throw new Error(`search_failed:${res.status}`);
     }
-    return res.json();
+    // Titles, urls and snippets are outside text: serialise the payload and
+    // mark it untrusted, the way connector_search does for app text.
+    const json = await res.json();
+    return wrapUntrusted("web search", JSON.stringify(json));
   },
 });

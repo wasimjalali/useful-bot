@@ -75,7 +75,9 @@ export class AliasCircuit {
       current.disabled = true;
       return;
     }
-    if (error.code === "upstream_protocol_error") {
+    // A timeout is a 5xx-class failure too: three in the window open the
+    // alias the same way a protocol error does.
+    if (error.code === "upstream_protocol_error" || error.code === "upstream_timeout") {
       current.failures = current.failures.filter((at) => now - at < FAILURE_WINDOW_MS);
       current.failures.push(now);
       if (current.failures.length >= FAILURE_THRESHOLD) {

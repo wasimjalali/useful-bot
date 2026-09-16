@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { MemoryStore, tagsForBot } from "../lib/memory.ts";
+import { sharedMemoryStore, tagsForBot } from "../lib/memory.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { activeBotId } from "../lib/active-bot.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -43,6 +43,14 @@ export default defineTool({
         hint: "Keep the title under 120 characters and the tags to 8.",
       };
     }
+    // A botId tags the note into that bot's namespace, so it must name a real
+    // bot. The roster check runs before the card, the way create_routine.ts
+    // does it, so the owner never approves a write that cannot land.
+    const shell = readShell();
+    const botId = input.botId ?? activeBotId(shell, ctx);
+    if (botId && !shell.bots.some((item) => item.id === botId)) {
+      return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call listBots for exact ids." };
+    }
     const actor = approvalActor(ctx);
     const hash = actionSha256({
       tool: "memory.upsert",
@@ -62,9 +70,16 @@ export default defineTool({
     });
     await waitUntilNotPending(getApprovalStore(), rec.id);
     return executeIfApproved(getApprovalStore(), rec.id, hash, () => {
-      const botId = input.botId ?? activeBotId(readShell(), ctx);
-      const tags = botId ? tagsForBot(input.tags, botId) : input.tags;
-      return new MemoryStore().upsert({
+      // Resolved again after the wait: the acting bot or the roster can have
+      // changed while the card was open, and the write must not land in a
+      // namespace that no longer exists.
+      const fresh = readShell();
+      const target = input.botId ?? activeBotId(fresh, ctx);
+      if (target && !fresh.bots.some((item) => item.id === target)) {
+        throw new Error("memory_bot_missing");
+      }
+      const tags = target ? tagsForBot(input.tags, target) : input.tags;
+      return sharedMemoryStore().upsert({
         id: input.id,
         expectedRevision: input.expectedRevision,
         title: input.title,

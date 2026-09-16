@@ -483,10 +483,26 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               signal,
             });
           } catch (error) {
-            if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
+            if (error instanceof RouterError) {
+              circuit.recordFailure(entry.alias, error);
+              throw error;
+            }
+            // A header-phase abort is not a RouterError: a client disconnect
+            // ends quietly, an idle or total timeout maps the way the
+            // streaming paths do, anything else keeps its current shape.
+            const kind = abortKind(signal);
+            if (kind === "client") return;
+            if (kind === "idle" || kind === "total") {
+              const timeout = timeoutError(false);
+              circuit.recordFailure(entry.alias, timeout);
+              throw timeout;
+            }
             throw error;
           }
-          circuit.recordSuccess(entry.alias);
+          // Success is recorded once the exchange completes, not when the
+          // headers arrive: clearing the failure window here let every
+          // mid-stream failure start from zero, so three in a minute could
+          // never open the alias.
           const outHeaders: Record<string, string> = {
             "x-useful-request-id": stepId,
             "x-useful-upstream-model": upstream.model,
@@ -521,6 +537,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (!upstream.response.body) {
               writeHeaders();
               res.end();
+              circuit.recordSuccess(entry.alias);
               return;
             }
             const reader = upstream.response.body.getReader();
@@ -589,11 +606,17 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                 }
                 armIdle(IDLE_EVENT_MS);
               }
+            } catch (error) {
+              // Mid-stream protocol and timeout failures feed the circuit the
+              // way header-phase ones do, so three in a minute open the alias.
+              if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
+              throw error;
             } finally {
               clearTimeout(idleTimer);
             }
             if (!firstEvent) writeHeaders();
             res.end();
+            circuit.recordSuccess(entry.alias);
             return;
           }
           const firstByteTimer = setTimeout(() => controller.abort(new Error("idle_timeout")), FIRST_EVENT_MS);
@@ -603,7 +626,14 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           } catch (error) {
             const kind = abortKind(signal);
             if (kind === "client") return;
-            if (kind === "idle" || kind === "total") throw timeoutError(false);
+            // A capped-body protocol failure and a first-byte timeout both
+            // feed the circuit before they propagate.
+            if (kind === "idle" || kind === "total") {
+              const timeout = timeoutError(false);
+              circuit.recordFailure(entry.alias, timeout);
+              throw timeout;
+            }
+            if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
             throw error;
           } finally {
             clearTimeout(firstByteTimer);
@@ -615,6 +645,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           }
           record(usageFromPayload(json));
           send(res, upstream.response.status, json, outHeaders);
+          if (upstream.response.status < 500) circuit.recordSuccess(entry.alias);
           return;
         } finally {
           concurrency.release(caller.callerId);
