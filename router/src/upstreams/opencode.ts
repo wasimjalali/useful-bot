@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { RouterError } from "../errors.ts";
 import type { RegistryEntry } from "../registry.ts";
-import { applyReasoning } from "../../../shared/models.ts";
+import { applyReasoning, modelOption, modelSeesImages } from "../../../shared/models.ts";
+import { catalogFor } from "../../../shared/live-models.ts";
 import { readProviderStore, resolveUpstream } from "../../../shared/providers.ts";
 import { retryAfterMs } from "../retry-after.ts";
 
@@ -26,6 +27,29 @@ export function upstreamConfigError(error: unknown): RouterError {
 
 const CLIENT_CONTROLLED_KEYS = new Set(["reasoning_effort", "service_tier"]);
 
+const IMAGE_OMITTED = "[Attached image omitted: the selected model cannot see images.]";
+
+/**
+ * A history with pictures in it outlives the model it was made with. When
+ * the owner switches to a model the catalog says is text-only, the image
+ * parts become a note in their place so the turn still runs; a model the
+ * catalog does not know keeps them, and the upstream decides.
+ */
+export function withoutImagesForTextModel(messages: unknown, sees: boolean | null): unknown {
+  if (sees !== false || !Array.isArray(messages)) return messages;
+  return messages.map((message) => {
+    const entry = message as { content?: unknown };
+    if (!entry || !Array.isArray(entry.content)) return message;
+    return {
+      ...entry,
+      content: entry.content.map((part) => {
+        const p = part as { type?: unknown };
+        return p?.type === "image_url" ? { type: "text", text: IMAGE_OMITTED } : part;
+      }),
+    };
+  });
+}
+
 export async function completeUpstream(input: {
   entry: RegistryEntry;
   body: unknown;
@@ -45,9 +69,16 @@ export async function completeUpstream(input: {
   for (const [key, value] of Object.entries(payload)) {
     if (!CLIENT_CONTROLLED_KEYS.has(key)) forwardedBody[key] = value;
   }
-  const model = input.entry.upstreamModelId;
+  // The model the owner picked in the composer, resolved from the providers
+  // store the same way the provider and key are. Pinning the registry id here
+  // (audit round 1) made the model menu a placebo: every workhorse call went
+  // to glm-5.3-flash whatever the chip said. The registry still names the
+  // alias, its window policy and the fallback; the selection names the model.
+  const model = resolved.model;
+  const sees = modelSeesImages(modelOption(resolved.providerId, model, catalogFor(resolved.providerId)));
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
+    messages: withoutImagesForTextModel(forwardedBody.messages, sees),
     model,
     max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : input.entry.maxOutputTokens,
   });

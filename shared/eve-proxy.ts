@@ -1,5 +1,13 @@
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 import type { ShellBot, ShellStore } from "./shell-store.ts";
+import {
+  IMAGE_DATA_URL,
+  MAX_IMAGE_DATA_URL_CHARS,
+  MAX_IMAGE_PARTS,
+  type TurnFilePart,
+  type TurnMessage,
+  type TurnTextPart,
+} from "./attachments.ts";
 import { resolveRoute, speakersFrom, threadPrefix, type Route, type Speaker } from "./threads.ts";
 import type { ThreadKind } from "./agent-store.ts";
 
@@ -47,6 +55,50 @@ export function relayedEveCode(status: number, body: string): string | null {
 export type SessionRoute = Route & { mentionNames: string[] };
 
 /**
+ * The `message` field of a turn as this proxy accepts it: a string, or text
+ * parts with image file parts. Anything else is refused here rather than
+ * relayed, so eve only ever sees the shapes this build has reasoned about.
+ * Returns null for a shape it does not accept.
+ */
+export function parseTurnMessage(value: unknown): TurnMessage | null {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const parts: Array<TurnTextPart | TurnFilePart> = [];
+  let images = 0;
+  for (const item of value) {
+    if (!item || typeof item !== "object") return null;
+    const rec = item as Record<string, unknown>;
+    if (rec.type === "text") {
+      if (typeof rec.text !== "string" || rec.text.length === 0) return null;
+      parts.push({ type: "text", text: rec.text });
+      continue;
+    }
+    if (rec.type === "file") {
+      if (typeof rec.data !== "string" || rec.data.length > MAX_IMAGE_DATA_URL_CHARS) return null;
+      if (!IMAGE_DATA_URL.test(rec.data)) return null;
+      const mediaType = rec.data.slice("data:".length, rec.data.indexOf(";"));
+      if (rec.mediaType !== mediaType) return null;
+      if (typeof rec.filename !== "string" || rec.filename.length === 0 || rec.filename.length > 120) return null;
+      if (++images > MAX_IMAGE_PARTS) return null;
+      parts.push({ type: "file", data: rec.data, mediaType, filename: rec.filename });
+      continue;
+    }
+    return null;
+  }
+  return parts;
+}
+
+/** The text of a turn: the string itself, or its text parts joined. */
+export function turnText(message: TurnMessage): string {
+  if (typeof message === "string") return message;
+  return message.filter((part): part is TurnTextPart => part.type === "text").map((part) => part.text).join("\n");
+}
+
+export function turnHasImages(message: TurnMessage): boolean {
+  return typeof message !== "string" && message.some((part) => part.type === "file");
+}
+
+/**
  * Resolve the bot or group an eve turn belongs to, plus its @mentions, from the
  * stored shell. The caller hands the route back to the UI so the transcript can
  * attribute the reply to the bot that actually answered.
@@ -57,7 +109,8 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
   try {
     const json = JSON.parse(raw) as { botId?: unknown; message?: unknown };
     botId = typeof json.botId === "string" ? json.botId : "";
-    message = typeof json.message === "string" ? json.message : "";
+    const parsed = parseTurnMessage(json.message);
+    message = parsed === null ? "" : turnText(parsed);
   } catch {
     return null;
   }
@@ -90,9 +143,10 @@ export function rewriteEveTurnBody(
   members: Speaker[] = [],
 ): string {
   const json = JSON.parse(raw) as { message?: unknown };
-  if (typeof json.message !== "string") throw new Error("eve_message");
+  const message = parseTurnMessage(json.message);
+  if (message === null) throw new Error("eve_message");
   if (!bot || bot.id === DEFAULT_BOT_ID) {
-    return JSON.stringify({ message: json.message });
+    return JSON.stringify({ message });
   }
   const prefix = threadPrefix({
     bot: {
@@ -105,7 +159,16 @@ export function rewriteEveTurnBody(
     members: members.length > 0 ? members : undefined,
     mentionNames: route?.mentionNames ?? [],
   });
-  return JSON.stringify({ message: `${prefix}${json.message}` });
+  if (typeof message === "string") {
+    return JSON.stringify({ message: `${prefix}${message}` });
+  }
+  // The prefix goes on the first text part; the images ride beside it. A
+  // turn with only images gets a text part of its own to carry the prefix.
+  const first = message.findIndex((part) => part.type === "text");
+  const prefixed = first >= 0
+    ? message.map((part, index) => (index === first && part.type === "text" ? { ...part, text: `${prefix}${part.text}` } : part))
+    : [{ type: "text" as const, text: prefix.trim() }, ...message];
+  return JSON.stringify({ message: prefixed });
 }
 
 export function sessionRouteHeader(route: SessionRoute | null): string | null {

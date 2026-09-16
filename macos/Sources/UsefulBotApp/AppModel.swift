@@ -774,6 +774,12 @@ final class AppModel: ObservableObject {
         let draftSnapshot = draft
         let sentAttachments = attachments
         let sentAttachmentIds = Set(sentAttachments.map(\.id))
+        // Pictures ride beside the text as file parts; the composed string
+        // already names each one. eve echoes such a turn as the text plus one
+        // `[file: ...]` line per image, and that echo is what the optimistic
+        // row, the rail preview and the stream arming have to match.
+        let images = sentAttachments.filter(\.isImage)
+        let echo = Attachments.echoedMessage(message, images: images)
         // Appended to the projection that is already on screen, never a fresh
         // one built from the durable rows. The durable store holds only the
         // side channel — notes, proposals, handoffs — while the conversation
@@ -787,7 +793,7 @@ final class AppModel: ObservableObject {
         projection.apply(EveEvent(
             type: "message.received",
             id: "\(EveStream.optimisticUserPrefix)\(UUID().uuidString)",
-            message: message
+            message: echo
         ), live: true)
         rebuildTranscript()
         // The composer empties the moment the turn is committed, not when the
@@ -824,7 +830,8 @@ final class AppModel: ObservableObject {
                     sessionId = try await self.postSession(
                         botId: bot.id,
                         sessionId: sendSessionId,
-                        message: message
+                        message: message,
+                        images: images
                     )
                 } catch BackendError.sessionEnded where sendSessionId != nil {
                     // eve retires a session whose turn failed, and the stored
@@ -839,7 +846,7 @@ final class AppModel: ObservableObject {
                     // second session gets created only to be cancelled.
                     guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                     history = []
-                    sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message)
+                    sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
                 }
                 delivered = true
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else {
@@ -854,12 +861,12 @@ final class AppModel: ObservableObject {
                 self.activeSession = (bot.id, sessionId)
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
-                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: message)
+                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: echo)
                 guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
                 var sawUserTurn = false
                 for try await event in self.client.stream(
                     sessionId: sessionId,
-                    expectedSuffix: message,
+                    expectedSuffix: echo,
                     historyTurnIds: history
                 ) {
                     guard generation == self.sendGeneration, chatGen == self.chatGeneration, self.sendBotId == bot.id else { return }
@@ -1007,10 +1014,15 @@ final class AppModel: ObservableObject {
     /// answers with the session id it made when this send was stopped, and
     /// the generation guard at the call site then cancels that session
     /// best-effort instead of leaving it burning with no pointer and no Stop.
-    private func postSession(botId: String, sessionId: String?, message: String) async throws -> String {
+    private func postSession(
+        botId: String,
+        sessionId: String?,
+        message: String,
+        images: [Attachment] = []
+    ) async throws -> String {
         let client = client
         return try await Task.detached {
-            try await client.send(botId: botId, sessionId: sessionId, message: message)
+            try await client.send(botId: botId, sessionId: sessionId, message: message, images: images)
         }.value
     }
 

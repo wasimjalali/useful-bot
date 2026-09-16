@@ -14,6 +14,14 @@ export const ROUTER_PORT = 4319;
 export const EVE_HOST = "127.0.0.1";
 export const EVE_PORT = 4321;
 export const BODY_LIMIT_BYTES = 1_048_576;
+/**
+ * A completion body carries the conversation, and a conversation with images
+ * in it carries their base64. Five 1 MiB attachments come to ~7 MB encoded,
+ * so this route gets its own cap; every other route keeps the 1 MiB one.
+ */
+export const COMPLETION_BODY_LIMIT_BYTES = 8 * 1_048_576;
+/** What one image part counts for against the input budget; bytes would count ten times too much. */
+export const IMAGE_INPUT_UNITS = 2_000;
 export const WRITE_MAX_BYTES = 64 * 1024;
 export const READ_MAX_BYTES = 16 * 1024;
 

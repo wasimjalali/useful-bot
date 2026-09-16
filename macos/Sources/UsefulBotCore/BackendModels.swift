@@ -305,13 +305,21 @@ public struct Attachment: Codable, Identifiable, Equatable, Sendable {
     public var name: String
     public var bytes: Int
     public var text: String?
+    /// Set for images: the media type the turn sends the part with.
+    public var mediaType: String?
+    /// Set for images: a `data:` URL of the bytes, as `/api/attachments` returned it.
+    public var dataUrl: String?
 
-    public init(id: String, name: String, bytes: Int, text: String?) {
+    public init(id: String, name: String, bytes: Int, text: String?, mediaType: String? = nil, dataUrl: String? = nil) {
         self.id = id
         self.name = name
         self.bytes = bytes
         self.text = text
+        self.mediaType = mediaType
+        self.dataUrl = dataUrl
     }
+
+    public var isImage: Bool { mediaType != nil && dataUrl != nil }
 }
 
 /// One pending write or command from `/api/approvals`, shown above the chat.

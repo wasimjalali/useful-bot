@@ -4,8 +4,10 @@ import { apiError, errorCode, rateLimited, readFormData } from "../../../lib/api
 import {
   ATTACH_MAX_BYTES,
   ATTACH_TEXT_MAX,
+  imageMediaType,
   isTextAttachment,
   safeAttachName,
+  sniffImageType,
 } from "../../../../shared/attachments.ts";
 
 // The multipart envelope plus headers ride above the file cap; a little slack
@@ -40,7 +42,19 @@ export async function POST(request: Request) {
       text = bytes.toString("utf8");
       if (text.includes("\0")) text = undefined;
     }
-    return NextResponse.json({ ok: true, name, type, bytes: bytes.length, text });
+    // An image goes back as a data URL so the turn can carry it as a file
+    // part. The bytes decide the type, not the name: a `.jpg` that holds a
+    // PNG is still a picture, while a renamed binary is not, and the URL
+    // reaches a model provider.
+    let mediaType: string | undefined;
+    let dataUrl: string | undefined;
+    if (imageMediaType(name, type)) {
+      const sniffed = sniffImageType(bytes);
+      if (!sniffed) throw new Error("attachment_image_invalid");
+      mediaType = sniffed;
+      dataUrl = `data:${sniffed};base64,${bytes.toString("base64")}`;
+    }
+    return NextResponse.json({ ok: true, name, type, bytes: bytes.length, text, mediaType, dataUrl });
   } catch (err) {
     const guarded = apiError(err);
     if (guarded) return guarded;

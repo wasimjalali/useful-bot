@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { BODY_LIMIT_BYTES, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
+import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
+import { IMAGE_DATA_URL, MAX_IMAGE_DATA_URL_CHARS, MAX_IMAGE_PARTS } from "../../shared/attachments.ts";
 import { AuthTable } from "./auth.ts";
 import { AliasCircuit } from "./circuit.ts";
 import { ConcurrencyGate } from "./concurrency.ts";
@@ -62,7 +63,7 @@ const ROUTE_METHODS: Record<string, string[]> = {
   "/v1/usage": ["GET"],
 };
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
+function readBody(req: IncomingMessage, limit = BODY_LIMIT_BYTES): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -85,7 +86,7 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on("data", (chunk: Buffer) => {
       if (settled) return;
       size += chunk.length;
-      if (size > BODY_LIMIT_BYTES) {
+      if (size > limit) {
         finish(() => reject(new RouterError({
           status: 413,
           type: "invalid_request_error",
@@ -274,9 +275,44 @@ function validateToolChoice(choice: unknown): void {
 }
 
 /**
- * Text-only message history per SPEC.md:151. Rejects multimodal content and
- * validates tool-call identity and outstanding-call references before any
- * dispatch so a malformed history never reaches the upstream.
+ * One part of a user message's content array. Text, or an image as a base64
+ * data URL of a type this app produces: no remote URLs, so the upstream is
+ * never asked to fetch something on the caller's behalf, and no other part
+ * kinds. Anything else is `message_content_part`.
+ */
+function validateContentPart(part: unknown, imagesSoFar: number): number {
+  if (!part || typeof part !== "object") throw validationError("unsupported_parameter", "message_content_part");
+  const rec = part as Record<string, unknown>;
+  const keys = Object.keys(rec);
+  if (rec.type === "text") {
+    if (typeof rec.text !== "string" || keys.some((key) => key !== "type" && key !== "text")) {
+      throw validationError("unsupported_parameter", "message_content_part");
+    }
+    return imagesSoFar;
+  }
+  if (rec.type === "image_url") {
+    const image = rec.image_url;
+    if (!image || typeof image !== "object" || keys.some((key) => key !== "type" && key !== "image_url")) {
+      throw validationError("unsupported_parameter", "message_content_part");
+    }
+    const { url, detail, ...rest } = image as Record<string, unknown>;
+    if (Object.keys(rest).length > 0) throw validationError("unsupported_parameter", "message_content_part");
+    if (detail !== undefined && detail !== "auto" && detail !== "low" && detail !== "high") {
+      throw validationError("unsupported_parameter", "message_content_part");
+    }
+    if (typeof url !== "string" || url.length > MAX_IMAGE_DATA_URL_CHARS || !IMAGE_DATA_URL.test(url)) {
+      throw validationError("unsupported_parameter", "message_content_image");
+    }
+    if (imagesSoFar + 1 > MAX_IMAGE_PARTS) throw validationError("unsupported_parameter", "message_content_images");
+    return imagesSoFar + 1;
+  }
+  throw validationError("unsupported_parameter", "message_content_part");
+}
+
+/**
+ * Message history per SPEC.md:151: text everywhere, plus image data URLs on
+ * user messages. Validates tool-call identity and outstanding-call references
+ * before any dispatch so a malformed history never reaches the upstream.
  */
 function validateMessages(messages: unknown[]): void {
   if (messages.length > MAX_MESSAGE_COUNT) {
@@ -290,8 +326,14 @@ function validateMessages(messages: unknown[]): void {
     if (typeof role !== "string" || !ALLOWED_MESSAGE_ROLES.has(role)) {
       throw validationError("invalid_request");
     }
-    if (Array.isArray(message.content)) throw validationError("unsupported_parameter", "message_content_array");
-    if (message.content !== undefined && message.content !== null && typeof message.content !== "string") {
+    if (Array.isArray(message.content)) {
+      // Only the owner's own turns carry pictures. A system, assistant or
+      // tool message with an array is a shape this build has not reasoned
+      // about, and it stays refused.
+      if (role !== "user") throw validationError("unsupported_parameter", "message_content_array");
+      let images = 0;
+      for (const part of message.content) images = validateContentPart(part, images);
+    } else if (message.content !== undefined && message.content !== null && typeof message.content !== "string") {
       throw validationError("invalid_request");
     }
     if (message.reasoning_content !== undefined && typeof message.reasoning_content !== "string") {
@@ -449,7 +491,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         const sessionId = headerUuid(req, "x-useful-session-id");
         const turnId = headerUuid(req, "x-useful-turn-id");
         const stepId = headerUuid(req, "x-useful-request-id");
-        const raw = await readBody(req);
+        const raw = await readBody(req, COMPLETION_BODY_LIMIT_BYTES);
         const body = parseJsonBody(raw);
         const parsed = validateCompletion(body);
         const alias = auth.assertAlias(caller, parsed.model);

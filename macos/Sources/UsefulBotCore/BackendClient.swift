@@ -24,6 +24,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// The event stream ended before the turn did, so the reply on screen
     /// may be missing its tail.
     case streamInterrupted
+    /// The turn carried an image and the selected model is text-only.
+    case modelNoVision
 
     public var errorDescription: String? {
         switch self {
@@ -69,6 +71,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "This chat's session ended. Send again to start a new one."
         case .streamInterrupted:
             return "The connection dropped before the reply finished."
+        case .modelNoVision:
+            return "This model can't see images. Pick one that can from the model menu."
         }
     }
 
@@ -142,7 +146,7 @@ private struct StateResponse: Decodable {
 private struct SendResponse: Decodable { let sessionId: String? }
 /// The proxy's error envelope for an upstream refusal. `code` is only ever
 /// the one value the proxy relays, `session_not_active`.
-private struct EveErrorResponse: Decodable { let code: String? }
+private struct EveErrorResponse: Decodable { let code: String?; let error: String? }
 private struct ShellErrorResponse: Decodable { let error: String? }
 private struct ProvidersResponse: Decodable {
     let composer: ComposerState?
@@ -163,6 +167,8 @@ private struct AttachmentResponse: Decodable {
     let name: String?
     let bytes: Int?
     let text: String?
+    let mediaType: String?
+    let dataUrl: String?
     let error: String?
 }
 
@@ -785,10 +791,13 @@ public actor BackendClient {
     }
 
 
-    public func send(botId: String, sessionId: String?, message: String) async throws -> String {
+    /// Post a turn. `images` ride beside the text as file parts; with none
+    /// the body is the plain string the text path has always sent.
+    public func send(botId: String, sessionId: String?, message: String, images: [Attachment] = []) async throws -> String {
         // An empty stored session means "start one", not a trailing-slash path
         // the proxy rejects.
         let normalized = sessionId.flatMap { $0.isEmpty ? nil : $0 }
+        let turn = Attachments.turnMessage(formatted: message, images: images)
         let (data, response) = try await perform { client, token in
             let path = normalized.map { "eve/v1/session/\(Self.pathComponent($0))" } ?? "eve/v1/session"
             var request = URLRequest(url: client.base.appendingPathComponent(path))
@@ -796,7 +805,7 @@ public actor BackendClient {
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             request.httpBody = try JSONSerialization.data(withJSONObject: [
-                "message": message,
+                "message": turn,
                 "botId": botId,
             ])
             return request
@@ -807,6 +816,13 @@ public actor BackendClient {
            let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
            failure.code == "session_not_active" {
             throw BackendError.sessionEnded
+        }
+        // The proxy refuses a picture for a model that cannot look at it
+        // before the turn exists, so the draft and its files come back.
+        if let http = response as? HTTPURLResponse, http.statusCode == 400,
+           let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
+           failure.error == "model_no_vision" {
+            throw BackendError.modelNoVision
         }
         try Self.expectOK(response)
         guard let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) else {
@@ -996,7 +1012,20 @@ public actor BackendClient {
         let displayName = (try? Attachments.safeName(resolvedName)) ?? name
         // Clip here too: the prompt must not carry more than the server keeps.
         let text = decoded.text.map { String($0.prefix(Attachments.textMax)) }
-        return Attachment(id: UUID().uuidString, name: displayName, bytes: bytes, text: text)
+        // Only a data URL of an image type goes into a turn; anything else
+        // the server might echo is dropped here rather than sent on.
+        let mediaType = decoded.mediaType.flatMap(Attachments.safeMIME).flatMap { $0.hasPrefix("image/") ? $0 : nil }
+        let dataUrl = decoded.dataUrl.flatMap { url in
+            mediaType.map { url.hasPrefix("data:\($0);base64,") } == true ? url : nil
+        }
+        return Attachment(
+            id: UUID().uuidString,
+            name: displayName,
+            bytes: bytes,
+            text: text,
+            mediaType: dataUrl == nil ? nil : mediaType,
+            dataUrl: dataUrl
+        )
     }
 
     // MARK: - Stream

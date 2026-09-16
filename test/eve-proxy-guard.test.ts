@@ -3,8 +3,11 @@ import test from "node:test";
 import {
   eveGetAllowed,
   evePostAllowed,
+  parseTurnMessage,
   relayedEveCode,
   rewriteEveTurnBody,
+  turnHasImages,
+  turnText,
 } from "../shared/eve-proxy.ts";
 import { threadPrefix } from "../shared/threads.ts";
 
@@ -64,4 +67,55 @@ test("eve proxy relays only the session_not_active code from an upstream error",
   assert.equal(relayedEveCode(500, '{"code":"session_not_active","ok":false}'), null);
   assert.equal(relayedEveCode(409, "not json"), null);
   assert.equal(relayedEveCode(409, ""), null);
+});
+
+test("a turn with image parts is accepted only in the shape the composer sends", () => {
+  const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+  const good = [
+    { type: "text", text: "what is this" },
+    { type: "file", data: dataUrl, mediaType: "image/png", filename: "shot.png" },
+  ];
+  const parsed = parseTurnMessage(good);
+  assert.notEqual(parsed, null);
+  assert.equal(turnHasImages(parsed!), true);
+  assert.equal(turnText(parsed!), "what is this");
+  assert.equal(turnHasImages("plain"), false);
+  assert.equal(parseTurnMessage([]), null);
+  assert.equal(parseTurnMessage([{ type: "text", text: "" }]), null);
+  // A media type that disagrees with the data URL, a remote URL, a PDF and an
+  // unknown part kind are all refused before eve sees them.
+  assert.equal(parseTurnMessage([{ type: "file", data: dataUrl, mediaType: "image/jpeg", filename: "a" }]), null);
+  assert.equal(parseTurnMessage([{ type: "file", data: "https://x/a.png", mediaType: "image/png", filename: "a" }]), null);
+  assert.equal(parseTurnMessage([{ type: "file", data: "data:application/pdf;base64,AAAA", mediaType: "application/pdf", filename: "a.pdf" }]), null);
+  assert.equal(parseTurnMessage([{ type: "image", image: dataUrl }]), null);
+  assert.equal(parseTurnMessage([{ type: "file", data: dataUrl, mediaType: "image/png" }]), null);
+  const six = Array.from({ length: 6 }, () => ({ type: "file", data: dataUrl, mediaType: "image/png", filename: "a.png" }));
+  assert.equal(parseTurnMessage([{ type: "text", text: "x" }, ...six]), null);
+});
+
+test("turn rewrite puts the bot prefix on the first text part and keeps the images", () => {
+  const bot = { id: "bot-seo", kind: "bot" as const, name: "SEO", label: "", description: "Watch rankings." };
+  const prefix = threadPrefix({ bot });
+  const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+  const raw = JSON.stringify({
+    botId: "bot-seo",
+    message: [
+      { type: "file", data: dataUrl, mediaType: "image/png", filename: "shot.png" },
+      { type: "text", text: "rank this" },
+    ],
+  });
+  const parsed = JSON.parse(rewriteEveTurnBody(raw, bot as never, null)) as { message: Array<Record<string, string>>; botId?: string };
+  assert.equal(parsed.botId, undefined);
+  assert.equal(parsed.message.length, 2);
+  assert.equal(parsed.message[0]?.type, "file");
+  assert.equal(parsed.message[1]?.text, `${prefix}rank this`);
+  // Images only: the prefix gets a text part of its own so eve still sees it.
+  const only = JSON.stringify({ botId: "bot-seo", message: [{ type: "file", data: dataUrl, mediaType: "image/png", filename: "shot.png" }] });
+  const onlyParsed = JSON.parse(rewriteEveTurnBody(only, bot as never, null)) as { message: Array<Record<string, string>> };
+  assert.equal(onlyParsed.message[0]?.type, "text");
+  assert.equal(onlyParsed.message[0]?.text, prefix.trim());
+  // The default bot keeps the parts untouched, as it keeps a string untouched.
+  const plain = JSON.parse(rewriteEveTurnBody(raw, null, null)) as { message: unknown };
+  assert.deepEqual(plain.message, JSON.parse(raw).message);
+  assert.throws(() => rewriteEveTurnBody(JSON.stringify({ message: [{ type: "video" }] }), null, null), /eve_message/);
 });

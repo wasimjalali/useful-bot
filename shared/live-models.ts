@@ -1,12 +1,24 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { mergeLiveModels, modelsFor, type ModelOption } from "./models.ts";
+import { mergeLiveModels, modelsFor, type ModelMeta, type ModelOption } from "./models.ts";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
+/** Context windows and modalities change with releases, not by the hour. */
+const META_TTL_MS = 24 * 60 * 60 * 1000;
+export const MODELS_DEV_URL = "https://models.dev/api.json";
+
+/**
+ * Version 2 added the models.dev facts on each row. A version 1 file reads
+ * as empty so the first refresh after the upgrade fetches them instead of
+ * serving a fresh-looking list with no context window on it.
+ */
+const CACHE_SCHEMA = 2;
 
 type CacheFile = {
-  schemaVersion: 1;
+  schemaVersion: typeof CACHE_SCHEMA;
   providers: Record<string, { fetchedAt: number; models: ModelOption[] }>;
+  /** models.dev facts per provider, keyed by the provider's model id. */
+  meta?: { fetchedAt: number; providers: Record<string, Record<string, ModelMeta>> };
 };
 
 export function modelsCachePath(root = process.env.UB_MODELS_CACHE_PATH): string {
@@ -15,14 +27,14 @@ export function modelsCachePath(root = process.env.UB_MODELS_CACHE_PATH): string
 }
 
 function emptyCache(): CacheFile {
-  return { schemaVersion: 1, providers: {} };
+  return { schemaVersion: CACHE_SCHEMA, providers: {} };
 }
 
 export function readModelsCache(path = modelsCachePath()): CacheFile {
   if (!existsSync(path)) return emptyCache();
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as CacheFile;
-    if (raw?.schemaVersion !== 1 || !raw.providers || typeof raw.providers !== "object") return emptyCache();
+    if (raw?.schemaVersion !== CACHE_SCHEMA || !raw.providers || typeof raw.providers !== "object") return emptyCache();
     return raw;
   } catch {
     return emptyCache();
@@ -66,6 +78,71 @@ function idsFromRows(rows: unknown[]): string[] {
   return ids.filter((id) => !/embed|whisper|tts|moderation/i.test(id));
 }
 
+/**
+ * The models.dev catalog, reduced to what this app needs: the context window
+ * and the input modalities per model, per provider. The provider keys there
+ * match this app's provider ids. Rows without a usable limit are skipped.
+ */
+export function parseModelsDev(raw: unknown): Record<string, Record<string, ModelMeta>> {
+  const out: Record<string, Record<string, ModelMeta>> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [providerId, provider] of Object.entries(raw as Record<string, unknown>)) {
+    const models = (provider as { models?: unknown })?.models;
+    if (!models || typeof models !== "object") continue;
+    const rows: Record<string, ModelMeta> = {};
+    for (const [id, model] of Object.entries(models as Record<string, unknown>)) {
+      if (!model || typeof model !== "object") continue;
+      const limit = (model as { limit?: { context?: unknown } }).limit;
+      const inputs = (model as { modalities?: { input?: unknown } }).modalities?.input;
+      const meta: ModelMeta = {};
+      if (limit && Number.isInteger(limit.context) && (limit.context as number) > 0) {
+        meta.contextTokens = limit.context as number;
+      }
+      if (Array.isArray(inputs) && inputs.every((item) => typeof item === "string")) {
+        meta.inputs = inputs as string[];
+      }
+      if (meta.contextTokens || meta.inputs) rows[id] = meta;
+    }
+    if (Object.keys(rows).length > 0) out[providerId] = rows;
+  }
+  return out;
+}
+
+async function fetchModelsDev(fetchImpl: typeof fetch): Promise<Record<string, Record<string, ModelMeta>>> {
+  const res = await fetchImpl(MODELS_DEV_URL, {
+    headers: { accept: "application/json", "user-agent": "useful-bot/1.0" },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!res.ok) return {};
+  return parseModelsDev(await res.json());
+}
+
+/**
+ * Catalog facts for a provider, refreshed from models.dev once a day and
+ * kept in the same cache file as the live list. A failed fetch keeps the
+ * last copy; no copy at all means the models carry no facts, which the
+ * callers treat as unknown rather than as "no".
+ */
+export async function modelMetaFor(
+  providerId: string,
+  path = modelsCachePath(),
+  fetchImpl: typeof fetch = fetch,
+): Promise<Record<string, ModelMeta>> {
+  const cache = readModelsCache(path);
+  const fresh = cache.meta && Date.now() - cache.meta.fetchedAt < META_TTL_MS;
+  if (fresh) return cache.meta?.providers[providerId] ?? {};
+  try {
+    const providers = await fetchModelsDev(fetchImpl);
+    if (Object.keys(providers).length === 0) return cache.meta?.providers[providerId] ?? {};
+    const latest = readModelsCache(path);
+    latest.meta = { fetchedAt: Date.now(), providers };
+    writeModelsCache(latest, path);
+    return providers[providerId] ?? {};
+  } catch {
+    return cache.meta?.providers[providerId] ?? {};
+  }
+}
+
 export async function fetchProviderModelIds(
   baseUrl: string,
   key?: string | null,
@@ -100,7 +177,8 @@ export async function refreshProviderModels(input: {
   try {
     const ids = await fetchProviderModelIds(input.baseUrl, input.key, input.fetchImpl);
     if (ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
-    const models = mergeLiveModels(input.providerId, ids);
+    const meta = await modelMetaFor(input.providerId, path, input.fetchImpl);
+    const models = mergeLiveModels(input.providerId, ids, meta);
     // The fetch awaited above can overlap a refresh for a different provider,
     // so the snapshot taken before the await is stale by write time. Re-read
     // the cache and set only this provider's entry, or the write would clobber

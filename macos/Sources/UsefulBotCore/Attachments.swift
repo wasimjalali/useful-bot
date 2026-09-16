@@ -58,11 +58,44 @@ public enum Attachments {
                 // and turn the rest of the file into instructions.
                 let fence = fence(for: body)
                 parts.append("\n\nAttached file: \(file.name)\n\(fence)\n\(body)\n\(fence)")
+            } else if file.isImage {
+                // The pixels travel as a file part beside this text; the name
+                // is what lets the model refer to one image among several.
+                parts.append("\n\nAttached image: \(file.name)")
             } else {
                 parts.append("\n\nAttached file: \(file.name) (\(file.bytes) bytes). Contents are not readable as text.")
             }
         }
         return parts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The `message` field of a turn, as `shared/attachments.ts` builds it: a
+    /// plain string when nothing needs pixels, so the verified text path stays
+    /// byte identical; text plus file parts when an image is attached.
+    /// `formatted` is the composed message (`formatMessage`), which already
+    /// names each image; formatting it again here doubled those lines.
+    public static func turnMessage(formatted: String, images: [Attachment]) -> Any {
+        let images = images.filter(\.isImage)
+        if images.isEmpty { return formatted }
+        var parts: [[String: String]] = [["type": "text", "text": formatted]]
+        for image in images {
+            guard let data = image.dataUrl, let mediaType = image.mediaType else { continue }
+            parts.append(["type": "file", "data": data, "mediaType": mediaType, "filename": image.name])
+        }
+        return parts
+    }
+
+    /// What eve echoes back in `message.received` for a turn sent as parts:
+    /// the text, then one `[file: name (type)]` line per image, joined by
+    /// newlines (eve's `summarizeUserContent`). The optimistic transcript row
+    /// and the stream arming compare against this, so a picture must not
+    /// leave the sent row duplicated or the reply unarmed.
+    public static func echoedMessage(_ formatted: String, images: [Attachment]) -> String {
+        var lines = [formatted]
+        for image in images where image.isImage {
+            lines.append("[file: \(image.name) (\(image.mediaType ?? "image"))]")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func fence(for body: String) -> String {

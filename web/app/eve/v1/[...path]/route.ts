@@ -4,11 +4,16 @@ import {
   evePostAllowed,
   eveSessionRoute,
   isEveSessionPost,
+  parseTurnMessage,
   relayedEveCode,
   rewriteEveTurnBody,
   sessionRouteHeader,
+  turnHasImages,
   type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
+import { catalogFor } from "../../../../../shared/live-models.ts";
+import { modelOption, modelSeesImages } from "../../../../../shared/models.ts";
+import { composerState, readProviderStore } from "../../../../../shared/providers.ts";
 import { channelJwt, syncSessionWorkspace } from "../../../../lib/agent-exec";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell } from "../../../../../shared/shell-io.ts";
@@ -17,6 +22,13 @@ import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
 const EVE = "http://127.0.0.1:4321";
+
+/** True only when the catalog says the active model is text-only. */
+function rejectsImages(): boolean {
+  const composer = composerState(readProviderStore());
+  const model = modelOption(composer.providerId, composer.modelId, catalogFor(composer.providerId));
+  return modelSeesImages(model) === false;
+}
 
 export async function GET(
   request: Request,
@@ -84,6 +96,14 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const members = bot && bot.kind === "group"
           ? groupMembers(speakersFrom(shell.bots), bot.memberIds)
           : [];
+        // A picture for a model that cannot look at it is refused before the
+        // turn exists: eve would stage the bytes, the upstream would reject
+        // the call, and the session would retire on the failed turn. A model
+        // the catalog does not know goes through, and the upstream decides.
+        const parsed = parseTurnMessage((JSON.parse(raw) as { message?: unknown }).message);
+        if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
+          return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
+        }
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members));
         headers.set("content-type", "application/json");
       } catch {
