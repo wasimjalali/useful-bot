@@ -578,10 +578,13 @@ final class AppModel: ObservableObject {
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot. A
             // recorded background error wins over the replay's generic line.
-            if let recorded = sendErrors[bot.id] {
+            if let recorded = sendErrors[bot.id], projection.failed || sendTasks[bot.id] != nil {
                 stickyThreadError = recorded
                 threadError = recorded
             } else {
+                if sendErrors[bot.id] != nil, !projection.failed {
+                    sendErrors[bot.id] = nil
+                }
                 let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
                 threadError = sticky ?? (projection.failed
                     ? ["The last turn failed.", projection.failure?.reason].compactMap { $0 }.joined(separator: " ")
@@ -678,6 +681,13 @@ final class AppModel: ObservableObject {
                                 .compactMap { $0 }
                                 .joined(separator: " ")
                         )
+                    } else if ["turn.started", "turn.completed", "turn.cancelled"].contains(event.type),
+                              !projection.failed {
+                        sendErrors[current.id] = nil
+                        if selectedBotId == current.id {
+                            stickyThreadError = nil
+                            threadError = nil
+                        }
                     }
                     publishTranscript()
                 }
