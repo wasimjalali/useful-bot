@@ -496,7 +496,10 @@ export async function executeConnectorTool(
   const toolkit = toolkitOf(toolSlug, store.connectedToolkits);
   if (!toolkit) {
     const err = new Error("not_connected") as Error & { toolkit: string };
-    err.toolkit = toolSlug.split("_")[0]?.toLowerCase() ?? "unknown";
+    // The whole toolkit prefix, so MICROSOFT_TEAMS_* names microsoft_teams
+    // and not microsoft.
+    err.toolkit = toolkitOf(toolSlug, FEATURED_TOOLKITS)
+      ?? (toolSlug.toLowerCase().split("_").slice(0, -1).join("_") || "unknown");
     throw err;
   }
   // Never replay an execute: a write that the owner approved once must not

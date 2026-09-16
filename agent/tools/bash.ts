@@ -139,7 +139,7 @@ export default defineTool({
           // The turn's signal reaches the child: a Stop must not leave a
           // cancelled line running to its own timeout with side effects
           // landing after the owner gave up.
-          signal: ctx.abortSignal,
+          signal: ctx?.abortSignal,
           maxBuffer: INPUT_MAX_BYTES,
           env: {
             PATH: "/usr/bin:/bin",

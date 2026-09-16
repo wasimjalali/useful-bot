@@ -55,7 +55,7 @@ export default defineTool({
         return {
           status: "ambiguous",
           error: `${byName.length} bots are named ${requested}`,
-          hint: `Call railAction again with one of these ids: ${byName.map((bot) => bot.id).join(", ")}.`,
+          hint: `Call rail_action again with one of these ids: ${byName.map((bot) => bot.id).join(", ")}.`,
         };
       }
       const target = byId ?? byName[0] ?? null;

@@ -70,7 +70,15 @@ export default defineTool({
     });
     await waitUntilNotPending(getApprovalStore(), rec.id);
     return executeIfApproved(getApprovalStore(), rec.id, hash, () => {
-      const tags = botId ? tagsForBot(input.tags, botId) : input.tags;
+      // Resolved again after the wait: the acting bot or the roster can have
+      // changed while the card was open, and the write must not land in a
+      // namespace that no longer exists.
+      const fresh = readShell();
+      const target = input.botId ?? activeBotId(fresh, ctx);
+      if (target && !fresh.bots.some((item) => item.id === target)) {
+        throw new Error("memory_bot_missing");
+      }
+      const tags = target ? tagsForBot(input.tags, target) : input.tags;
       return sharedMemoryStore().upsert({
         id: input.id,
         expectedRevision: input.expectedRevision,

@@ -490,14 +490,22 @@ export function resetMemoryDir(root: string): void {
 }
 
 let sharedStore: MemoryStore | null = null;
+let sharedRoot = "";
 
 /**
- * One store per process for the memory tools. Each tool call used to open
- * its own SQLite handle that only GC released; sharing one instance keeps
- * the handles bounded. Tests and the web route keep using the constructor.
+ * One store per process and root for the memory tools. Each tool call used
+ * to open its own SQLite handle that only GC released; sharing one instance
+ * keeps the handles bounded. Keyed by the resolved root so a changed
+ * UB_MEMORY_ROOT (tests use one per case) does not keep the old directory.
+ * Tests and the web route keep using the constructor.
  */
 export function sharedMemoryStore(): MemoryStore {
-  if (!sharedStore) sharedStore = new MemoryStore();
+  const root = memoryRoot();
+  if (!sharedStore || sharedRoot !== root) {
+    sharedStore?.close();
+    sharedStore = new MemoryStore(root);
+    sharedRoot = root;
+  }
   return sharedStore;
 }
 
