@@ -450,7 +450,10 @@ final class AppModel: ObservableObject {
                 do {
                     _ = try await self.client.shellAction(action)
                 } catch {
-                    self.pendingSelectionBotId = nil
+                    // Only this write's fence: a newer select queued behind
+                    // it owns the fence now, and clearing it would let the
+                    // poll bounce back before that write lands.
+                    if self.pendingSelectionBotId == botId { self.pendingSelectionBotId = nil }
                     self.saveError = "Could not save the selection."
                 }
             }
@@ -615,6 +618,14 @@ final class AppModel: ObservableObject {
                         }
                     }
                     projection.apply(event, live: true)
+                    // A background turn that fails (a routine run, a handoff,
+                    // a web send) must show the same banner a local one does,
+                    // or it leaves a truncated reply with no explanation.
+                    if event.type == "turn.failed" || event.type == "session.failed", projection.failed {
+                        threadError = ["The last turn failed.", projection.failure?.reason]
+                            .compactMap { $0 }
+                            .joined(separator: " ")
+                    }
                     publishTranscript()
                 }
                 if handedOff { continue }
@@ -626,8 +637,11 @@ final class AppModel: ObservableObject {
                 // reopens.
             }
             guard generation == loadGeneration,
-                  let after = selectedBot, after.id == selectedBotId,
-                  after.sessionId == sessionId else { return }
+                  let after = selectedBot, after.id == selectedBotId else { return }
+            // The pointer can move while the stream sat idle (a web send or a
+            // routine run minted a new session); the next cycle re-seeds and
+            // follows that one instead of ending here.
+            if after.sessionId != sessionId { continue }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
     }
