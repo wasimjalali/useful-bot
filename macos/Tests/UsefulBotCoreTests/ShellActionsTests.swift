@@ -118,4 +118,18 @@ import Testing
         #expect(BackendClient.keychainFailure(for: 1) == .deviceTokenMissing)
         #expect(BackendError.keychainLocked.errorDescription != BackendError.deviceTokenMissing.errorDescription)
     }
+
+    @Test func connectAppConfirmCarriesTheSlug() throws {
+        let proposal = try JSONDecoder().decode(Proposal.self, from: Data("""
+        {"id":"p5","kind":"connectApp","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "slug":"notion","name":"Notion","purpose":"x","phase":"proposed"}
+        """.utf8))
+        let action = try #require(ProposalActions.confirm(proposal))
+        #expect(action["type"] as? String == "connectApp")
+        #expect(action["slug"] as? String == "notion")
+        let blank = try JSONDecoder().decode(Proposal.self, from: Data("""
+        {"id":"p6","kind":"connectApp","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z","slug":""}
+        """.utf8))
+        #expect(ProposalActions.confirm(blank) == nil)
+    }
 }

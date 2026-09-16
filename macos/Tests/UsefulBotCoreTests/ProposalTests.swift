@@ -109,4 +109,24 @@ import Testing
         """)
         #expect(ProposalActions.confirm(proposal) == nil)
     }
+
+    @Test func decodesAConnectAppProposalInEveryPhase() throws {
+        let cases: [(String, Proposal.ConnectPhase)] = [
+            ("proposed", .proposed), ("waiting", .waiting), ("connected", .connected), ("expired", .expired), ("bogus", .proposed),
+        ]
+        for (raw, expected) in cases {
+            let proposal = try decode("""
+            {"id":"p4","kind":"connectApp","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+             "slug":"gmail","name":"Gmail","logo":"https://logos.composio.dev/api/gmail","purpose":"Find the invoice",
+             "phase":"\(raw)","accountId":null,"waitingSince":null,"toolCount":31,"threadId":"b1","sourceBotId":"b1"}
+            """)
+            #expect(proposal.kind == .connectApp)
+            #expect(proposal.slug == "gmail")
+            #expect(proposal.logo == "https://logos.composio.dev/api/gmail")
+            #expect(proposal.purpose == "Find the invoice")
+            #expect(proposal.phase == expected)
+            #expect(proposal.toolCount == 31)
+            #expect(proposal.isOpen())
+        }
+    }
 }

@@ -138,6 +138,8 @@ private struct ShellResponse: Decodable {
     /// what hangs off it (a deleted bot's routines or transcript). The tick
     /// sweeps the remainder, so this is a warning, never a failure.
     let detachError: String?
+    /// Set once, on a connect card's Authorize: the hosted sign-in to open.
+    let redirectUrl: String?
 }
 private struct StateResponse: Decodable {
     let events: [AgentEvent]?
@@ -874,6 +876,7 @@ public actor BackendClient {
     public struct ShellActionResult: Sendable {
         public let store: ShellStore
         public let detachError: String?
+        public let redirectUrl: String?
     }
 
     @discardableResult
@@ -909,7 +912,7 @@ public actor BackendClient {
             }
             throw BackendError.decoding
         }
-        return ShellActionResult(store: decoded.store, detachError: decoded.detachError)
+        return ShellActionResult(store: decoded.store, detachError: decoded.detachError, redirectUrl: decoded.redirectUrl)
     }
 
     /// Resolve a proposal without a shell action (the dismiss path).

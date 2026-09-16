@@ -9,9 +9,15 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         case createGroup
         case updateBotProfile
         case fanout
+        case connectApp
         /// A kind this build does not know. It renders as unsupported and can
         /// never be confirmed; it must not collapse into a known action.
         case unknown
+    }
+
+    /// Where a connect card is, mirroring `ConnectPhase` in the store.
+    public enum ConnectPhase: String, Sendable {
+        case proposed, waiting, connected, expired
     }
 
     public struct ProfilePatch: Decodable, Equatable, Sendable {
@@ -41,6 +47,11 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     public let targetIds: [String]
     public let groupId: String?
     public let sourceBotId: String?
+    public let slug: String?
+    public let logo: String?
+    public let purpose: String?
+    public let phase: ConnectPhase
+    public let toolCount: Int?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -65,11 +76,17 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         targetIds = (try? c.decode([String].self, forKey: .targetIds)) ?? []
         groupId = try? c.decodeIfPresent(String.self, forKey: .groupId)
         sourceBotId = try? c.decodeIfPresent(String.self, forKey: .sourceBotId)
+        slug = try? c.decodeIfPresent(String.self, forKey: .slug)
+        logo = try? c.decodeIfPresent(String.self, forKey: .logo)
+        purpose = try? c.decodeIfPresent(String.self, forKey: .purpose)
+        phase = ConnectPhase(rawValue: (try? c.decodeIfPresent(String.self, forKey: .phase)) ?? "") ?? .proposed
+        toolCount = try? c.decodeIfPresent(Int.self, forKey: .toolCount)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, kind, status, expiresAt, name, petname, title, description
         case sectionId, brief, memberIds, botId, patch, message, targetIds, groupId, sourceBotId
+        case slug, logo, purpose, phase, toolCount
     }
 
     /// Same filter as the web: pending and not past its TTL. A date that does
