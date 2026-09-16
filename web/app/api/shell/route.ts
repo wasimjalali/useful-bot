@@ -229,7 +229,9 @@ export async function PUT(request: Request) {
         return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
       }
       const { redirectUrl } = await startConnectAuthorize(body.proposalId, connectCallbackUrl());
-      return NextResponse.json({ ok: true, store: current, queued: 0, redirectUrl });
+      // Re-read after the network call: the snapshot from before it could
+      // rewind a roster edit the app applied meanwhile.
+      return NextResponse.json({ ok: true, store: readShell(), queued: 0, redirectUrl });
     }
 
     // Resolve fan-out recipients before anything is claimed or written, so an

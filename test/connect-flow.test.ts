@@ -167,6 +167,21 @@ test("a resume that cannot be queued leaves the card Connected and is retried", 
   assert.equal(notes(), 1);
 });
 
+test("overlapping pumps queue the resume once", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  await startConnectAuthorize(proposal.id, CALLBACK);
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  resetConnectMemo();
+  const t = Date.now() + 6_000;
+  const results = await Promise.all([pumpConnects({ now: t }), pumpConnects({ now: t + 6_000 }), pumpConnects({ now: t + 12_000 })]);
+  assert.equal(results.flatMap((r) => r.connected).length, 1);
+  assert.equal(listHandoffs().length, 1);
+  assert.equal(listThreadEvents("b1", storePath).filter((e) => e.kind === "note").length, 1);
+});
+
 test("an authorize that overlaps the pump's flip does not rewind a connected card", async () => {
   const { storePath } = paths();
   const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };

@@ -113,8 +113,21 @@ function queueResume(card: Stored, now: number, storePath: string): boolean {
   return true;
 }
 
-export async function pumpConnects(
+// Single-flight, like the handoff pump: the tick fires this on every poll and
+// two overlapping runs could both read a card with no resume id and queue
+// the resume twice. Callers queue behind the run in progress.
+let pumpQueue: Promise<unknown> = Promise.resolve();
+
+export function pumpConnects(
   opts: { now?: number; storePath?: string; connectorsPath?: string } = {},
+): Promise<{ connected: string[]; expired: string[] }> {
+  const run = pumpQueue.then(() => pumpConnectsOnce(opts), () => pumpConnectsOnce(opts));
+  pumpQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function pumpConnectsOnce(
+  opts: { now?: number; storePath?: string; connectorsPath?: string },
 ): Promise<{ connected: string[]; expired: string[] }> {
   const now = opts.now ?? Date.now();
   const storePath = opts.storePath ?? agentStorePath();
