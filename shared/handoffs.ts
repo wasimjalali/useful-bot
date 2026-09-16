@@ -343,13 +343,6 @@ export function dropHandoff(id: string, dir = handoffDir()): void {
 }
 
 /**
- * Wait until a queued handoff is delivered or fails, or until the timeout.
- * The sending tool uses this so the teammate's reply comes back as tool
- * output instead of dying in the receiver's chat. A timeout returns the
- * last snapshot (still pending) rather than throwing: the pump keeps
- * working and both transcripts still get the reply.
- */
-/**
  * True if adding source→target would close a wait-cycle in the pending
  * queue (A waits on B waits on C waits on A). Direct A↔B is the common case.
  */
@@ -378,6 +371,13 @@ export function pendingHandoffCycle(
   return false
 }
 
+/**
+ * Wait until a queued handoff is delivered or fails, or until the timeout.
+ * The sending tool uses this so the teammate's reply comes back as tool
+ * output instead of dying in the receiver's chat. A timeout returns the
+ * last snapshot (still pending) rather than throwing: the pump keeps
+ * working and both transcripts still get the reply.
+ */
 export async function waitForHandoff(
   id: string,
   timeoutMs: number,

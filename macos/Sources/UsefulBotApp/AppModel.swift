@@ -582,14 +582,17 @@ final class AppModel: ObservableObject {
                 markWorking(bot.id, projection.pending)
             }
             // A send's own failure banner belongs to the bot that sent it; a
-            // switch in the meantime must not show it on the new bot.
-            let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
-            // The replay ends on whatever the last turn did. When that was a
-            // failure the reader is told why, and that it was the last turn,
-            // not something that just happened.
-            threadError = sticky ?? (projection.failed
-                ? ["The last turn failed.", projection.failure?.reason].compactMap { $0 }.joined(separator: " ")
-                : nil)
+            // switch in the meantime must not show it on the new bot. A
+            // recorded background error wins over the replay's generic line.
+            if let recorded = sendErrors[bot.id] {
+                stickyThreadError = recorded
+                threadError = recorded
+            } else {
+                let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
+                threadError = sticky ?? (projection.failed
+                    ? ["The last turn failed.", projection.failure?.reason].compactMap { $0 }.joined(separator: " ")
+                    : nil)
+            }
             // The replay above ends once the stream has been idle a few
             // seconds, and nothing reopened it. Hand the transcript over to
             // the session follower, so a turn started elsewhere for this bot
@@ -1237,6 +1240,9 @@ final class AppModel: ObservableObject {
             try await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
             guard generation == (sendGenerations[botId] ?? 0) else { return }
             // A later success supersedes the pointer-failure notice.
+            if sendErrors[botId] == "The session pointer could not be saved." {
+                sendErrors[botId] = nil
+            }
             if selectedBotId == botId, stickyThreadError == "The session pointer could not be saved." {
                 stickyThreadError = nil
                 threadError = nil
@@ -1245,10 +1251,7 @@ final class AppModel: ObservableObject {
             guard generation == (sendGenerations[botId] ?? 0) else { return }
             // The turn still runs; only the stored pointer failed. Surface it
             // so the next poll's revert is not a mystery.
-            if selectedBotId == botId {
-                stickyThreadError = "The session pointer could not be saved."
-                threadError = stickyThreadError
-            }
+            recordSendError(botId, "The session pointer could not be saved.")
         }
     }
 
@@ -1820,6 +1823,7 @@ final class AppModel: ObservableObject {
 
     func delete(botId: String) {
         transcriptCache[botId] = nil
+        sendErrors[botId] = nil
         let running = inflightSessions[botId]
         cancelSend(for: botId)
         if let running, !running.isEmpty {
@@ -1837,6 +1841,7 @@ final class AppModel: ObservableObject {
         // Other bots keep working.
         let runningSession = inflightSessions[id] ?? (activeSession?.botId == id ? activeSession?.sessionId : nil)
         cancelSend(for: id)
+        sendErrors[id] = nil
         let generation = bumpChatGeneration(for: id)
         enqueue { [weak self] in
             guard let self else { return }
@@ -1885,7 +1890,10 @@ final class AppModel: ObservableObject {
     func openRecent(_ recentId: String) {
         // Opening an old session replaces the live one for this bot; other
         // bots keep working.
-        if let id = selectedBotId { cancelSend(for: id) }
+        if let id = selectedBotId {
+            cancelSend(for: id)
+            sendErrors[id] = nil
+        }
         let fenceId = selectedBotId
         let generation = fenceId.map { bumpChatGeneration(for: $0) } ?? 0
         enqueue { [weak self] in
