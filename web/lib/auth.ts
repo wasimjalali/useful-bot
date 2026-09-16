@@ -38,15 +38,6 @@ export function verifyDeviceToken(token: string): { callerId: string; profile: s
     if (Date.parse(cred.expiresAt) <= now) continue;
     return { callerId: cred.callerId, profile: cred.profile };
   }
-  // Test-only backdoor for minting an owner session. Never honored in a
-  // production build, where it would turn a stray env var into a full owner.
-  const testHash = process.env.NODE_ENV === "production" ? undefined : process.env.UB_WEB_DEVICE_SHA256;
-  if (testHash) {
-    const stored = Buffer.from(testHash, "hex");
-    if (stored.length === 32 && timingSafeEqual(presented, stored)) {
-      return { callerId: "desktop", profile: "desktop" };
-    }
-  }
   return null;
 }
 

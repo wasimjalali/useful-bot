@@ -35,6 +35,9 @@ type UsagePayload = {
 
 async function csrfHeaders(): Promise<Record<string, string>> {
   const res = await fetch("/api/auth/session", { credentials: "include" });
+  // An expired session answers non-200; without this check the empty token
+  // surfaces as a 403 csrf and the generic save copy.
+  if (!res.ok) throw new Error("unauthorized");
   const session = await res.json() as { csrfToken?: string };
   return { "content-type": "application/json", "x-ub-csrf": session.csrfToken ?? "" };
 }
@@ -229,7 +232,7 @@ function ProvidersPane() {
       setRows(body.providers ?? []);
       setDrafts((current) => ({ ...current, [id]: "" }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the key.");
+      setError(err instanceof Error ? (err.message === "unauthorized" ? "Sign in expired" : err.message) : "Could not save the key.");
     } finally {
       setBusy(null);
     }
@@ -249,7 +252,7 @@ function ProvidersPane() {
       if (!res.ok || !body.ok) throw new Error("Could not disconnect.");
       setRows(body.providers ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not disconnect.");
+      setError(err instanceof Error ? (err.message === "unauthorized" ? "Sign in expired" : err.message) : "Could not disconnect.");
     } finally {
       setBusy(null);
     }
@@ -273,7 +276,7 @@ function ProvidersPane() {
       }
       setRows(body.providers ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not switch provider.");
+      setError(err instanceof Error ? (err.message === "unauthorized" ? "Sign in expired" : err.message) : "Could not switch provider.");
     } finally {
       setBusy(null);
     }

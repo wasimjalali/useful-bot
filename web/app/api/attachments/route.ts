@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
-import { apiError, errorCode, readFormData } from "../../../lib/api-guard";
+import { apiError, errorCode, rateLimited, readFormData } from "../../../lib/api-guard";
 import {
   ATTACH_MAX_BYTES,
   ATTACH_TEXT_MAX,
@@ -18,6 +18,11 @@ export async function POST(request: Request) {
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {
     return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
+  }
+  // Each file posts separately, so uploads get the same bucket as the other
+  // writes.
+  if (rateLimited(`attachments:${gate.session.callerId}`, 60)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   // Bound the multipart body before it is buffered. A chunked upload carries
   // no content-length, so the gate has to read through a capped buffer rather

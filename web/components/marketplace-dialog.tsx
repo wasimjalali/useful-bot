@@ -57,6 +57,9 @@ function safeSignInUrl(value: string): URL | null {
 
 async function csrfHeaders(): Promise<Record<string, string>> {
   const res = await fetch("/api/auth/session", { credentials: "include" });
+  // An expired session answers non-200; without this check the empty token
+  // surfaces as a 403 csrf and the generic failure copy.
+  if (!res.ok) throw new Error("unauthorized");
   const session = (await res.json()) as { csrfToken?: string };
   return { "content-type": "application/json", "x-ub-csrf": session.csrfToken ?? "" };
 }
@@ -230,7 +233,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       setKeyDraft("");
       await load("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the key.");
+      setError(err instanceof Error ? (err.message === "unauthorized" ? "Sign in expired" : err.message) : "Could not save the key.");
     } finally {
       setBusy(null);
     }
@@ -251,7 +254,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       setPending(null);
       await load("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove the key.");
+      setError(err instanceof Error ? (err.message === "unauthorized" ? "Sign in expired" : err.message) : "Could not remove the key.");
     } finally {
       setBusy(null);
     }
@@ -276,7 +279,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       if (!opened) throw new Error("The sign-in page was blocked. Allow pop-ups for this page, then try again.");
       setPending({ slug: row.slug, since: Date.now() });
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Could not start connecting ${row.name}.`);
+      setError(err instanceof Error ? (err.message === "unauthorized" ? "Sign in expired" : err.message) : `Could not start connecting ${row.name}.`);
     } finally {
       setBusy(null);
     }
@@ -297,7 +300,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
       if (!res.ok || !body.ok) throw new Error(`Could not disconnect ${row.name}.`);
       await load(search, true, shown.current);
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Could not disconnect ${row.name}.`);
+      setError(err instanceof Error ? (err.message === "unauthorized" ? "Sign in expired" : err.message) : `Could not disconnect ${row.name}.`);
     } finally {
       setBusy(null);
     }

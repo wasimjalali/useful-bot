@@ -26,6 +26,20 @@ function usageDbPath(): string {
   return process.env.UB_ROUTER_DB ?? join(process.env.HOME ?? "/tmp", ".useful-bot/router/usage.sqlite");
 }
 
+// The pane polls every few seconds, so one store per process path: a fresh
+// LimitStore per request leaks its sqlite handle until GC and re-runs the
+// migration each time.
+let sharedStore: LimitStore | null = null;
+let sharedPath = "";
+function usageStore(): LimitStore {
+  const path = usageDbPath();
+  if (!sharedStore || sharedPath !== path) {
+    sharedStore = new LimitStore(path);
+    sharedPath = path;
+  }
+  return sharedStore;
+}
+
 /**
  * The limits are per rolling 24 hours, so the meter reads the same window.
  * The week is reported alongside it as history, never as the number compared
@@ -33,7 +47,7 @@ function usageDbPath(): string {
  * and showed a bar that could sit past full while nothing was throttled.
  */
 function payload() {
-  const store = new LimitStore(usageDbPath());
+  const store = usageStore();
   // The caps below belong to the desktop caller, so the totals must too. An
   // aggregate summary measured against one caller's budget is a meter that
   // does not match the limit it is drawn under.

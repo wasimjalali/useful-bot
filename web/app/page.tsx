@@ -93,6 +93,7 @@ export default function Page() {
   const stickRef = useRef(true);
   const hydrated = useRef(false);
   const sendLock = useRef(false);
+  const sendAbort = useRef<AbortController | null>(null);
   const { store, error: shellError, dispatch, resolveOnly, selected } = useShell(Boolean(authed));
   const selectedIdForThread = selected?.id ?? null;
   const {
@@ -296,6 +297,9 @@ export default function Page() {
   function attachBot(bot: ShellBot) {
     setPickerOpen(false);
     setRailOpen(false);
+    // One banner serves every chat, so a failure from the previous bot must
+    // not hang over this one.
+    setError("");
     const sid = bot.sessionId;
     if (sid !== activeRef.current) {
       projSession.current = null;
@@ -317,6 +321,7 @@ export default function Page() {
     if (botId) dispatch({ type: "select", botId });
     if (id) dispatch({ type: "clearThread", botId: id });
     setTranscriptUser([]);
+    setError("");
     projSession.current = null;
     stickRef.current = true;
     setActive(null);
@@ -336,6 +341,11 @@ export default function Page() {
     const message = text.trim();
     if (!message || proj.pending || sendLock.current || !selected) return false;
     sendLock.current = true;
+    // Held so Stop can tear this attempt down: while the create POST is in
+    // flight an abort settles it below; once the POST has answered, the
+    // aborted check cancels the session it created instead.
+    const controller = new AbortController();
+    sendAbort.current = controller;
     setError("");
     setPickerOpen(false);
     const optimisticId = nextId();
@@ -354,6 +364,7 @@ export default function Page() {
       const post = (sid: string | null) => fetch(sid ? `/eve/v1/session/${sid}` : "/eve/v1/session", {
         method: "POST",
         credentials: "include",
+        signal: controller.signal,
         headers: { "content-type": "application/json", ...csrf },
         body: JSON.stringify({ message, botId: selected.id }),
       });
@@ -389,8 +400,31 @@ export default function Page() {
       // Only once the body parsed: cleared earlier, a parse failure below
       // would lose the text while the composer kept its files.
       setDraft("");
+      if (sid && controller.signal.aborted) {
+        // Stop was pressed while the turn was being created: the session
+        // exists and the pointer above is stored (the message landed), so
+        // cancel it best effort instead of leaving it running with no UI
+        // attached.
+        void fetch(`/eve/v1/session/${sid}/cancel`, {
+          method: "POST",
+          credentials: "include",
+          headers: csrf,
+        }).catch(() => undefined);
+        setProj((current) => ({ ...current, pending: false }));
+      }
       return true;
     } catch (err) {
+      // Stop pressed while the create POST was going out: a deliberate
+      // stop, not a failure. Drop the bubble like a dead send, keep the
+      // draft for a resend, and leave the banner clear.
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setProj((current) => ({
+          ...current,
+          pending: false,
+          messages: current.messages.filter((entry) => entry.id !== optimisticId),
+        }));
+        return false;
+      }
       const reason = err instanceof Error ? err.message : "Send failed";
       if (reason === "unauthorized") setAuthed(false);
       setError(reason === "unauthorized" ? "Sign in expired" : reason);
@@ -405,11 +439,19 @@ export default function Page() {
       return false;
     } finally {
       sendLock.current = false;
+      sendAbort.current = null;
     }
   }
 
   async function cancel() {
-    if (!active) return;
+    if (!active) {
+      // With no session on screen the pending flag belongs to a create POST
+      // still in flight. Aborting it settles the send (the bubble drops,
+      // the draft stays); once the POST has answered, the send cancels the
+      // session it returned instead.
+      sendAbort.current?.abort();
+      return;
+    }
     const settle = () => setProj((current) => ({ ...current, pending: false }));
     try {
       const csrf = await csrfHeaders();
@@ -445,12 +487,18 @@ export default function Page() {
         }
         return;
       }
-      const out = await fetch(`/api/approvals/${item.id}`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json", ...csrf },
-        body: JSON.stringify({ decision, actionSha256: item.hash }),
-      });
+      let out: Response;
+      try {
+        out = await fetch(`/api/approvals/${item.id}`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json", ...csrf },
+          body: JSON.stringify({ decision, actionSha256: item.hash }),
+        });
+      } catch {
+        setError("Approval failed");
+        return;
+      }
       if (!out.ok) {
         setError("Approval failed");
         return;
