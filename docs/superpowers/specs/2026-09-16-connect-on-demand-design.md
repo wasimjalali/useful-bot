@@ -138,9 +138,18 @@ and `pumpRoutines`. For each `connectApp` proposal in `waiting`:
   `sendHandoff` from `bot-useful` to the source bot:
   "The owner connected the app gmail. Continue the task: <purpose>" (the app
   is named by its validated slug, never by the catalogue display name, which
-  is data, not an instruction), and store its id on the card. Queueing is
-  idempotent: a pending resume with the same message is adopted, and the
-  pump is single-flight like the handoff pump. The card stays `pending` in phase `connected` (the pill is on
+  is data, not an instruction), store its id on the card and turn the card
+  `confirmed` at once, so it leaves the dock the moment the resume is queued
+  (owner decision on 2026-09-16 after seeing the pill wait for the whole
+  reply). A card whose resume could not be queued stays Connected with Not
+  now, is retried each tick, and leaves after ten minutes regardless.
+  Queueing is idempotent: a resume with the same message from this cycle is
+  adopted, and the pump is single-flight like the handoff pump.
+- The resume runs as a background turn. The macOS transcript hides the
+  handoff envelope the pump sends (it is plumbing, not an owner message; the
+  "Gmail connected" note row and the bot's reply tell the story), and the
+  session follower publishes a background working state so the same working
+  row shows while the bot continues. The card stays `pending` in phase `connected` (the pill is on
   screen) until that handoff is delivered or has given up, then turns
   `confirmed` and leaves the dock; ten minutes is the cap if the resume never
   lands. The handoff record is the resume; it survives an app restart the same
@@ -164,10 +173,9 @@ New `Kind.connectApp` decoded with `slug`, `name`, `logo`, `purpose`, `phase`,
 - waiting: `ProgressView` at 12 pt plus "Waiting for Gmail sign-in" in 13 muted
   on the left, Reopen (secondary, small) on the right. Not now stays.
 - connected: green pill "Connected" (checkmark, `Theme.C.success` soft
-  background) and "31 tools" in 12 faint when `toolCount` is set. No actions.
-  The card leaves the dock when the proposal turns `confirmed`, which is when
-  the resume handoff is queued, so the pill is visible until the bot's next
-  turn starts.
+  background) and "31 tools" in 12 faint when `toolCount` is set, plus Not
+  now. Normally seen for one poll at most: the card leaves the dock as soon as
+  the resume is queued, and the working row takes over.
 - expired: "Sign-in timed out" in 13 warning, Reopen and Not now.
 
 `decideProposal` gains the connect path: confirm returns `redirectUrl`, the

@@ -8,7 +8,7 @@ import {
 } from "./agent-store.ts";
 import { authorizeConnector, countToolkitTools, forgetConnected, listConnectorToolkits } from "./composio.ts";
 import { connectorsPath as defaultConnectorsPath } from "./connectors-store.ts";
-import { listHandoffs, queueHandoff, readHandoff } from "./handoffs.ts";
+import { listHandoffs, queueHandoff } from "./handoffs.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
@@ -22,7 +22,7 @@ import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
 export const CONNECT_WAIT_MS = 10 * 60 * 1000;
 export const CONNECT_CHECK_MS = 5_000;
-/** How long a Connected card may wait for its resume to land before it leaves anyway. */
+/** How long a Connected card whose resume cannot be queued stays before it leaves anyway. */
 export const CONNECT_LINGER_MS = 10 * 60 * 1000;
 
 const lastCheck = new Map<string, number>();
@@ -162,19 +162,14 @@ async function pumpConnectsOnce(
   const connected: string[] = [];
   const expired: string[] = [];
   const cards = listProposalsOfKind("connectApp", storePath).filter((item) => item.status === "pending");
-  // A Connected card stays docked until its resume handoff has landed (or
-  // given up), so the owner sees the pill until the bot's next turn starts.
+  // A Connected card still pending is one whose resume could not be queued
+  // when it flipped: queue it now and let the card go, or give up after the
+  // linger cap so the owner is not left with a stuck pill.
   for (const card of cards.filter((item) => item.phase === "connected")) {
     const since = Date.parse(card.waitingSince ?? "");
     const lingered = !Number.isFinite(since) || now - since > CONNECT_LINGER_MS;
-    if (!card.handoffId && !lingered) {
-      // The flip landed but the resume could not be queued then; try again.
-      queueResume(card, now, storePath);
-      continue;
-    }
-    const handoff = card.handoffId ? readHandoff(card.handoffId) : null;
-    const landed = !handoff || handoff.status !== "pending";
-    if (landed || lingered) {
+    const queued = card.handoffId ? true : queueResume(card, now, storePath);
+    if (queued || lingered) {
       // Only from pending: a dismiss that landed since the read above wins.
       updateProposal(card.id, (item) => {
         if (item.status === "pending") item.status = "confirmed";
@@ -229,9 +224,14 @@ async function pumpConnectsOnce(
     } catch {
       /* the resume still tells the owner */
     }
-    // A queue failure leaves the card Connected with no handoff id; the sweep
-    // above retries it on the next tick instead of oscillating the card.
-    queueResume(card, now, storePath);
+    // The card leaves the dock the moment the resume is queued: the note row
+    // and the bot's next turn tell the rest. A queue failure leaves it
+    // Connected with no handoff id and the sweep above retries next tick.
+    if (queueResume(card, now, storePath)) {
+      updateProposal(card.id, (item) => {
+        if (item.status === "pending") item.status = "confirmed";
+      }, storePath);
+    }
     lastCheck.delete(card.id);
     connected.push(card.id);
   }

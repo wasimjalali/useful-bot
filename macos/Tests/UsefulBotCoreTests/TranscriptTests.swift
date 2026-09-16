@@ -200,5 +200,19 @@ import Testing
         let messages = [ChatMessage(id: "l1", role: .user, text: "three", at: date("2026-09-14T11:00:00.000Z"))]
         #expect(Transcript.merge(events: events, messages: messages).map(\.id) == ["d1", "d2", "l1"])
     }
+
+    @Test func mergeHidesHandoffEnvelopeTurns() {
+        let envelope = "Handoff from Useful Bot.\nThis arrives in your own chat.\nDo the work and answer here. The owner reads this transcript.\n\nThe owner connected the app stripe. Continue the task: Read MRR"
+        let group = "Handoff from Writer.\nThis belongs to the group chat Launch.\nDo the work and answer here. The owner reads this transcript.\n\ntask"
+        #expect(EveStream.isHandoffEnvelope(envelope))
+        #expect(EveStream.isHandoffEnvelope(group))
+        #expect(!EveStream.isHandoffEnvelope("Handoff from my manager was rough today"))
+        let rows = Transcript.merge(events: [], messages: [
+            ChatMessage(id: "u1", role: .user, text: envelope),
+            ChatMessage(id: "u2", role: .user, text: "Handoff from my manager was rough today"),
+            ChatMessage(id: "a1", role: .assistant, text: "MRR is 1,200"),
+        ])
+        #expect(rows.map(\.id) == ["u2", "a1"])
+    }
 }
 

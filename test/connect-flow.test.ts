@@ -151,6 +151,7 @@ test("a resume that cannot be queued leaves the card Connected and is retried", 
   assert.deepEqual(out.connected, [proposal.id]);
   const stored = readProposal(proposal.id, storePath) as { phase: string; status: string; handoffId: string | null };
   assert.equal(stored.phase, "connected");
+  // No resume yet, so the card stays until one is queued or the cap passes.
   assert.equal(stored.status, "pending");
   assert.equal(stored.handoffId, null);
   const notes = () => listThreadEvents("b1", storePath).filter((e) => e.kind === "note").length;
@@ -164,7 +165,24 @@ test("a resume that cannot be queued leaves the card Connected and is retried", 
   await pumpConnects({ now: Date.now() + 18_000 });
   assert.equal(listHandoffs().length, 1);
   assert.equal((readProposal(proposal.id, storePath) as { handoffId: string | null }).handoffId, listHandoffs()[0].id);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
   assert.equal(notes(), 1);
+});
+
+test("a card whose resume never queues leaves after the linger cap", async () => {
+  const { storePath } = paths();
+  const item: Item = { slug: "gmail", name: "Gmail", isNoAuth: false };
+  stubComposio([item]);
+  const proposal = seed(storePath);
+  const t0 = Date.now();
+  await startConnectAuthorize(proposal.id, CALLBACK, { now: t0 });
+  item.connection = { isActive: true, connectedAccount: { status: "ACTIVE", id: "x" } };
+  writeFileSync(process.env.UB_HANDOFF_DIR ?? "", "not a directory");
+  resetConnectMemo();
+  await pumpConnects({ now: t0 + 6_000 });
+  assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
+  await pumpConnects({ now: t0 + 6_000 + CONNECT_LINGER_MS + 1_000 });
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
 });
 
 test("overlapping pumps queue the resume once", async () => {
@@ -204,7 +222,7 @@ test("a card that lost its handoff id adopts the queued resume instead of queuei
   // the sweep must find that same record, not queue another.
   const token = claimHandoff(first);
   markDelivered(first, "on it", undefined, token ?? "");
-  updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") p.handoffId = null; }, storePath);
+  updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") { p.handoffId = null; p.status = "pending"; } }, storePath);
   await pumpConnects();
   assert.equal(listHandoffs().length, 2);
   assert.equal((readProposal(proposal.id, storePath) as { handoffId: string }).handoffId, first);
@@ -242,7 +260,7 @@ test("an authorize that overlaps the pump's flip does not rewind a connected car
   // authorize writes back.
   const pending = pumpConnects({ now: Date.now() + 6_000 });
   await pending;
-  await assert.rejects(startConnectAuthorize(proposal.id, CALLBACK), /already_connected/);
+  await assert.rejects(startConnectAuthorize(proposal.id, CALLBACK), /proposal_settled|already_connected/);
   assert.equal((readProposal(proposal.id, storePath) as { phase: string }).phase, "connected");
   assert.equal(listHandoffs().length, 1);
 });
@@ -260,8 +278,9 @@ test("the pump connects a waiting card once, writes the note and queues one resu
   const first = await pumpConnects({ now: Date.now() + 6_000 });
   assert.deepEqual(first.connected, [proposal.id]);
   const stored = readProposal(proposal.id, storePath);
-  // Still pending: the Connected pill stays until the resume lands.
-  assert.equal(stored?.status, "pending");
+  // Confirmed the moment the resume is queued: the card leaves the dock and
+  // the note row plus the bot's next turn tell the rest.
+  assert.equal(stored?.status, "confirmed");
   assert.equal(stored?.kind === "connectApp" && stored.phase, "connected");
   assert.equal(stored?.kind === "connectApp" && stored.toolCount, 3);
   const handoffs = listHandoffs();
@@ -274,20 +293,10 @@ test("the pump connects a waiting card once, writes the note and queues one resu
   assert.ok(!handoffs[0].message.includes("Gmail"));
   assert.match(handoffs[0].message, /Find the invoice/);
   assert.ok(listThreadEvents("b1", storePath).some((event) => event.kind === "note" && event.text === "Gmail connected"));
-  // A second tick does nothing more while the handoff is still queued.
+  // A second tick does nothing more.
   resetConnectMemo();
   assert.deepEqual(await pumpConnects({ now: Date.now() + 12_000 }), { connected: [], expired: [] });
   assert.equal(listHandoffs().length, 1);
-  assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
-  // Once the handoff lands, the card is confirmed and leaves the dock, unless
-  // the owner already put it away.
-  const token = claimHandoff(handoffs[0].id);
-  markDelivered(handoffs[0].id, "on it", undefined, token ?? "");
-  updateProposal(proposal.id, (item) => { item.status = "dismissed"; }, storePath);
-  await pumpConnects({ now: Date.now() + 18_000 });
-  assert.equal(readProposal(proposal.id, storePath)?.status, "dismissed");
-  updateProposal(proposal.id, (item) => { item.status = "pending"; }, storePath);
-  await pumpConnects({ now: Date.now() + 24_000 });
   assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
 });
 
@@ -308,9 +317,7 @@ test("the pump respects the 5 s memo, expires after 10 min, and leaves toolCount
   const stored = readProposal(proposal.id, storePath) as { phase: string; toolCount: number | null; status: string };
   assert.equal(stored.phase, "connected");
   assert.equal(stored.toolCount, null);
-  // A resume that never lands still lets the card go after the linger cap.
-  await pumpConnects({ now: t0 + 6_000 + CONNECT_LINGER_MS + 1_000 });
-  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
+  assert.equal(stored.status, "confirmed");
 
   const second = seed(storePath);
   await startConnectAuthorize(second.id, CALLBACK, { now: t0 });

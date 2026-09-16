@@ -24,6 +24,10 @@ final class AppModel: ObservableObject {
     /// transcript on each one is what made typing feel heavy.
     @Published private(set) var transcriptBlocks: [TranscriptBlock] = []
     @Published private(set) var pending = false
+    /// A turn is running in this bot's session that this app did not send (a
+    /// handoff, a connect resume, a routine). Drives the working row the same
+    /// way `pending` does; the follower keeps it in step with the stream.
+    @Published private(set) var backgroundWorking = false
     /// Thread load and send failures surface in the chat column.
     @Published private(set) var threadError: String?
     /// Profile save failures surface inside the settings pane.
@@ -338,6 +342,7 @@ final class AppModel: ObservableObject {
         reloadTask = nil
         loadGeneration += 1
         pending = false
+        backgroundWorking = false
         started = false
         await start()
     }
@@ -620,6 +625,7 @@ final class AppModel: ObservableObject {
                         }
                     }
                     projection.apply(event, live: true)
+                    if backgroundWorking != projection.pending { backgroundWorking = projection.pending }
                     // A background turn that fails (a routine run, a handoff,
                     // a web send) must show the same banner a local one does,
                     // or it leaves a truncated reply with no explanation.
