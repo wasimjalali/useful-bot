@@ -510,6 +510,9 @@ final class AppModel: ObservableObject {
             } else {
                 projection = StreamProjection()
             }
+            // A fresh projection knows of no running turn; the follower sets
+            // the flag again when the replay reaches one.
+            backgroundWorking = false
             if let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
@@ -725,10 +728,10 @@ final class AppModel: ObservableObject {
     }
 
     private func pruneBusyProposals() {
-        // Open cards keep their busy mark, except a connect card that has left
-        // the proposed phase: its Authorize was applied and the poll now
-        // renders Waiting, so the mark has done its job.
-        let live = Set(proposals.filter { $0.isOpen() && !($0.kind == .connectApp && $0.phase != .proposed) }.map(\.id))
+        // Open cards keep their busy mark, except a connect card the poll now
+        // renders in Waiting: its Authorize or Reopen was applied, so the mark
+        // has done its job.
+        let live = Set(proposals.filter { $0.isOpen() && !($0.kind == .connectApp && $0.phase == .waiting) }.map(\.id))
         busyProposals = busyProposals.intersection(live)
     }
 
@@ -773,6 +776,9 @@ final class AppModel: ObservableObject {
         }
         cancelSend()
         pending = true
+        // The local send owns the working row from here; a background flag
+        // left over from the follower must not outlive it.
+        backgroundWorking = false
         activity = .thinking
         threadError = nil
         stickyThreadError = nil
@@ -1742,6 +1748,7 @@ final class AppModel: ObservableObject {
         memoryNotes = nil
         memoryError = nil
         pending = false
+        backgroundWorking = false
         activeSession = nil
     }
 
@@ -1790,11 +1797,12 @@ final class AppModel: ObservableObject {
                         } else {
                             self.threadError = "Composio sent a sign-in link this app will not open."
                         }
-                        // A first Authorize stays busy until the poll shows the
-                        // card in Waiting (pruneBusyProposals clears it), so the
-                        // stale Authorize button cannot mint a second account.
-                        // Reopen already renders Waiting and clears at once.
-                        if proposal.phase != .proposed {
+                        // Authorize from Proposed or Reopen from Expired stays
+                        // busy until the poll renders the card in Waiting
+                        // (pruneBusyProposals clears it), so the stale button
+                        // cannot mint a second account. A Reopen from Waiting
+                        // already renders Waiting and clears at once.
+                        if proposal.phase == .waiting {
                             self.busyProposals.remove(proposal.id)
                         }
                         self.startReload()
