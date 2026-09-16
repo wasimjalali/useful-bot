@@ -489,10 +489,21 @@ test("the read-only gate refuses what changes state through a read-looking binar
     "fd . --exec rm {}",
     "fd -x rm",
     "rg --pre=sh pattern",
+    "./ls --version",
+    "./git status",
+    "node_modules/.bin/cat x",
   ]) {
     assert.notEqual(readOnlyRisk(command), null, command);
   }
-  for (const command of ["date", "date +%Y-%m-%d", "git log -p -3", "git branch --list", "git config --get user.email", "FOO=1 ls", "fd . Desktop", "echo hi > /dev/null", "ls missing 2>&1", "ls missing 2> /dev/null", "grep -c x file 2>/dev/null"]) {
+  for (const command of ["date", "date +%Y-%m-%d", "git log -p -3", "git branch --list", "git config --get user.email", "FOO=1 ls", "fd . Desktop", "/bin/ls -la", "/usr/bin/git status", "echo hi > /dev/null", "ls missing 2>&1", "ls missing 2> /dev/null", "grep -c x file 2>/dev/null"]) {
     assert.equal(readOnlyRisk(command), null, command);
   }
+});
+
+test("a tilde or $HOME path is outside a project folder", () => {
+  assert.notEqual(outsideFolderRisk("cat ~/.s*/id_r*", root), null);
+  assert.notEqual(outsideFolderRisk("cp $HOME/notes.txt .", root), null);
+  assert.notEqual(outsideFolderRisk("ls ~", root), null);
+  assert.equal(outsideFolderRisk("ls '~/literal'", root), null);
+  assert.equal(outsideFolderRisk("ls src", root), null);
 });

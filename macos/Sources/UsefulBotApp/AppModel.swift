@@ -2081,14 +2081,17 @@ final class AppModel: ObservableObject {
             return
         }
         workspaceError = nil
-        let existing = liveBot(bot).workspace
+        // The folder takes the bot's own permission: a Read only bot that
+        // attaches a folder stays Read only, and a Full access one stays
+        // Full access. Reading it off the previous folder reset it to Auto.
+        let permission = liveBot(bot).permission
         // The init is failable, and a nil here would reach dispatchWorkspace as
         // a detach: the owner would see their folder vanish instead of an
         // error. The picker only ever hands back absolute paths, so this is
         // belt and braces, but a silent detach is the wrong belt.
         guard let workspace = BotWorkspace(
             path: url.path,
-            permission: existing?.permission ?? "auto"
+            permission: permission
         ) else {
             workspaceError = "That folder could not be attached."
             return

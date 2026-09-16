@@ -396,10 +396,10 @@ struct ChatView: View {
             return "Runs locally on this Mac. Reads only \(place); changes, commands and app edits are off."
         }
         if bot.isFullAccess {
-            return "Runs locally on this Mac. Works \(place) and in the app without asking."
+            return "Runs locally on this Mac. Works \(place) and in the app without asking; only a command reaching outside it or a destructive connector action still asks."
         }
         if bot.workspace == nil {
-            return "Runs locally on this Mac. Reads and creates files under your home on its own; changing existing files, deleting and connector writes need your approval."
+            return "Runs locally on this Mac. Reads and creates new files under your home on its own; any command that changes something, edits to existing files and connector writes need your approval."
         }
         return "Runs locally on this Mac. Works in the attached folder on its own; deleting, other destructive commands and connector writes need your approval."
     }

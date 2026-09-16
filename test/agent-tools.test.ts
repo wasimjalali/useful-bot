@@ -1842,3 +1842,26 @@ test("a delete card raised in Auto does not spend after the owner drops to Read 
     box.restore();
   }
 });
+
+test("a glob cannot read a credential store through a read-only line", { skip: process.platform !== "darwin" }, async () => {
+  const home = homeFixture("full_access");
+  try {
+    mkdirSync(join(home.home, ".ssh"), { recursive: true });
+    writeFileSync(join(home.home, ".ssh", "id_rsa"), "PRIVATE KEY", "utf8");
+    // Neither spelling names `.ssh`, so the text tripwire passes both; the
+    // sandbox refuses the read, and the store never reaches the output.
+    for (const command of ["cat .s*/id_r*", "cat ~/.s*/id_r*", "cat $HOME/.useful-*/approvals.json"]) {
+      let stdout = "";
+      try {
+        const result = await run<{ stdout: string }>(bash, { command }, home.ctx);
+        stdout = result.stdout;
+      } catch (error) {
+        stdout = String((error as { stdout?: string }).stdout ?? "");
+      }
+      assert.equal(stdout.includes("PRIVATE KEY"), false, command);
+      assert.equal(stdout.includes("{}"), false, command);
+    }
+  } finally {
+    home.restore();
+  }
+});

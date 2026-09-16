@@ -139,7 +139,7 @@ export default defineTool({
       // line the owner approved runs as they read it.
       const args = askOwner
         ? ["/bin/sh", "-c", input.command]
-        : confinedCommand(readOnly ? null : root, input.command);
+        : confinedCommand(readOnly ? null : root, input.command, scope);
       let stdout: string;
       let stderr: string;
       try {

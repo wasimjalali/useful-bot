@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 type Token = { text: string; quoted: boolean };
@@ -750,9 +751,14 @@ function gitRisk(all: string[], root: string): string | null {
 /** An absolute path that is neither the folder, a system binary nor a device. */
 function outsideFolder(tokens: Token[], root: string): string | null {
   const inside = root.endsWith("/") ? root : `${root}/`;
+  const home = homedir();
   for (const token of tokens) {
     // `>/tmp/x` and `2>/var/log/y` carry the path behind the redirection.
-    const text = token.text.replace(/^[0-9]*[<>|&]+/, "");
+    // `~/x` and `$HOME/x` are the home, spelled the way the shell expands
+    // them, so a project folder does not mistake them for a relative path.
+    let text = token.text.replace(/^[0-9]*[<>|&]+/, "");
+    if (!token.quoted && (text === "~" || text.startsWith("~/"))) text = home + text.slice(1);
+    else if (!token.quoted && (text === "$HOME" || text.startsWith("$HOME/"))) text = home + text.slice(5);
     if (!text.startsWith("/")) continue;
     if (text === root || text.startsWith(inside)) continue;
     if (DEVICE_PATHS.some((device) => text === device || text.startsWith(device.endsWith("/") ? device : `${device}/`))) continue;
@@ -953,7 +959,14 @@ function readOnlySegment(tokens: Token[]): string | null {
     args = args.slice(i);
   }
   if (args.length === 0) return null;
-  const head = basename(args[0].text);
+  // A head with a path in it is a program the owner did not necessarily
+  // install: `./ls`, `node_modules/.bin/cat`. Only the system directories
+  // vouch for a name; anything else is judged as a change.
+  const headText = args[0].text;
+  if (headText.includes("/") && !SYSTEM_BIN_PREFIXES.some((prefix) => headText.startsWith(prefix) && !headText.slice(prefix.length).includes("/"))) {
+    return `runs a program by path (${headText})`;
+  }
+  const head = basename(headText);
   const rest = args.slice(1).map((token) => token.text);
   if (head === "xargs" || head === "parallel") return `runs other commands (${head})`;
   if (head === "env") return rest.length === 0 ? null : "env runs another command";
