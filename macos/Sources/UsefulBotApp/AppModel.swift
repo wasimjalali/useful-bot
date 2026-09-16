@@ -425,13 +425,7 @@ final class AppModel: ObservableObject {
         // Stash the outgoing turn so it keeps running. Switching used to
         // cancel the server session, which is why a bot stopped the moment
         // the owner opened another chat.
-        if let old = selectedBotId {
-            backgroundProjections[old] = projection
-            if transcriptReady || !transcript.isEmpty {
-                transcriptCache[old] = (transcript, transcriptBlocks)
-            }
-            if sendTasks[old] == nil { markWorking(old, false) }
-        }
+        stashCurrentThread()
         attachError = nil
         threadError = nil
         stickyThreadError = nil
@@ -678,9 +672,12 @@ final class AppModel: ObservableObject {
                     // a web send) must show the same banner a local one does,
                     // or it leaves a truncated reply with no explanation.
                     if event.type == "turn.failed" || event.type == "session.failed", projection.failed {
-                        threadError = ["The last turn failed.", projection.failure?.reason]
-                            .compactMap { $0 }
-                            .joined(separator: " ")
+                        recordSendError(
+                            current.id,
+                            ["The last turn failed.", projection.failure?.reason]
+                                .compactMap { $0 }
+                                .joined(separator: " ")
+                        )
                     }
                     publishTranscript()
                 }
@@ -1729,13 +1726,7 @@ final class AppModel: ObservableObject {
     /// The server-driven equivalent of a rail click. The outgoing bot's turn
     /// keeps running; only the visible thread is swapped.
     private func switchToBot(_ id: String) {
-        if let old = selectedBotId {
-            backgroundProjections[old] = projection
-            if transcriptReady || !transcript.isEmpty {
-                transcriptCache[old] = (transcript, transcriptBlocks)
-            }
-            if sendTasks[old] == nil { markWorking(old, false) }
-        }
+        stashCurrentThread()
         resetThread()
         selectedBotId = id
         clearRoutineState()
@@ -1786,6 +1777,7 @@ final class AppModel: ObservableObject {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 // The created bot starts fresh. Other bots keep their turns.
+                self.stashCurrentThread()
                 self.resetThread()
                 self.applyStore(next)
             self.saveError = nil
@@ -1803,6 +1795,7 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
+                self.stashCurrentThread()
                 self.resetThread()
                 self.applyStore(next)
                 self.saveError = nil
@@ -1920,6 +1913,15 @@ final class AppModel: ObservableObject {
 
     func toggleSection(_ sectionId: String) {
         perform(ShellActions.toggleSection(sectionId: sectionId))
+    }
+
+    private func stashCurrentThread() {
+        guard let old = selectedBotId else { return }
+        backgroundProjections[old] = projection
+        if transcriptReady || !transcript.isEmpty {
+            transcriptCache[old] = (transcript, transcriptBlocks)
+        }
+        if sendTasks[old] == nil { markWorking(old, false) }
     }
 
     private func resetThread() {
