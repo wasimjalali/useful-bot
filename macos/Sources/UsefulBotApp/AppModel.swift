@@ -719,7 +719,10 @@ final class AppModel: ObservableObject {
     }
 
     private func pruneBusyProposals() {
-        let live = Set(proposals.filter { $0.isOpen() }.map(\.id))
+        // Open cards keep their busy mark, except a connect card that has left
+        // the proposed phase: its Authorize was applied and the poll now
+        // renders Waiting, so the mark has done its job.
+        let live = Set(proposals.filter { $0.isOpen() && !($0.kind == .connectApp && $0.phase != .proposed) }.map(\.id))
         busyProposals = busyProposals.intersection(live)
     }
 
@@ -1781,7 +1784,13 @@ final class AppModel: ObservableObject {
                         } else {
                             self.threadError = "Composio sent a sign-in link this app will not open."
                         }
-                        self.busyProposals.remove(proposal.id)
+                        // A first Authorize stays busy until the poll shows the
+                        // card in Waiting (pruneBusyProposals clears it), so the
+                        // stale Authorize button cannot mint a second account.
+                        // Reopen already renders Waiting and clears at once.
+                        if proposal.phase != .proposed {
+                            self.busyProposals.remove(proposal.id)
+                        }
                         self.startReload()
                         return
                     }

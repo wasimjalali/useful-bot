@@ -8,7 +8,7 @@ import {
 } from "./agent-store.ts";
 import { authorizeConnector, countToolkitTools, forgetConnected, listConnectorToolkits } from "./composio.ts";
 import { connectorsPath as defaultConnectorsPath } from "./connectors-store.ts";
-import { listDeliverable, queueHandoff, readHandoff } from "./handoffs.ts";
+import { listHandoffs, queueHandoff, readHandoff } from "./handoffs.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
@@ -105,8 +105,9 @@ function queueResume(card: Stored, now: number, storePath: string): boolean {
   let handoffId: string;
   try {
     // Idempotent: a resume already queued for this card (the id write failed
-    // last time) is adopted, never queued twice.
-    const existing = listDeliverable().find(
+    // last time) is adopted, never queued twice, whatever its status now,
+    // since a delivered one already gave the bot its turn.
+    const existing = listHandoffs().find(
       (record) => record.targetBotId === targetId && record.message === message && record.sourceBotId === DEFAULT_BOT_ID,
     );
     handoffId = existing?.id ?? queueHandoff({

@@ -192,7 +192,10 @@ test("a card that lost its handoff id adopts the queued resume instead of queuei
   resetConnectMemo();
   await pumpConnects({ now: Date.now() + 6_000 });
   const first = listHandoffs()[0].id;
-  // The id write is lost (simulated); the sweep must find the same record.
+  // The id write is lost (simulated) and the resume was delivered meanwhile;
+  // the sweep must find that same record, not queue another.
+  const token = claimHandoff(first);
+  markDelivered(first, "on it", undefined, token ?? "");
   updateProposal(proposal.id, (p) => { if (p.kind === "connectApp") p.handoffId = null; }, storePath);
   await pumpConnects({ now: Date.now() + 12_000 });
   assert.equal(listHandoffs().length, 1);
