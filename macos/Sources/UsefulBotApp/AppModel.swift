@@ -1753,7 +1753,7 @@ final class AppModel: ObservableObject {
                         self.threadError = "This proposal cannot be confirmed by this app. Dismiss it instead."
                         return
                     }
-                    let next = try await self.client.shellAction(
+                    let result = try await self.client.shellActionResult(
                         action,
                         proposalId: proposal.id,
                         proposalStatus: "confirmed"
@@ -1762,7 +1762,19 @@ final class AppModel: ObservableObject {
                         self.busyProposals.remove(proposal.id)
                         return
                     }
-                    self.applyStore(next)
+                    self.applyStore(result.store)
+                    if proposal.kind == .connectApp {
+                        // The card stays: the sign-in finishes in the browser
+                        // and the poll moves it through waiting and connected.
+                        if let raw = result.redirectUrl, let url = URL(string: raw), url.scheme == "https" {
+                            NSWorkspace.shared.open(url)
+                        }
+                        self.threadError = nil
+                        self.stickyThreadError = nil
+                        self.busyProposals.remove(proposal.id)
+                        self.startReload()
+                        return
+                    }
                 } else {
                     let next = try await self.client.resolveProposal(
                         proposalId: proposal.id,
@@ -1791,6 +1803,13 @@ final class AppModel: ObservableObject {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Proposal failed."
             }
         }
+    }
+
+    /// Reopen the sign-in for a waiting or timed-out connect card. The busy
+    /// guard in decideProposal keeps a double click from starting two.
+    func reopenConnect(_ proposal: Proposal) {
+        guard proposal.kind == .connectApp else { return }
+        decideProposal(proposal, confirmed: true)
     }
 
     // MARK: - Onboarding

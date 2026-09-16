@@ -7,6 +7,8 @@ struct ProposalCardView: View {
     let bots: [ShellBot]
     let pending: Bool
     let onDecision: (_ confirmed: Bool) -> Void
+    /// Reopen the hosted sign-in for a connect card that is waiting or timed out.
+    var onReopen: () -> Void = {}
 
     private func nameOf(_ id: String) -> String {
         bots.first { $0.id == id }?.name ?? "a bot"
@@ -106,6 +108,41 @@ struct ProposalCardView: View {
                     confirmDisabled: targetId == nil
                 )
             }
+        case .connectApp:
+            let name = proposal.name ?? "this app"
+            card(title: "Connect app", tone: .accent) {
+                HStack(alignment: .center, spacing: 12) {
+                    AppLogo(name: name, url: proposal.logo)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name)
+                            .font(Theme.font(15, .semibold))
+                        if let purpose = proposal.purpose, !purpose.isEmpty {
+                            Text(purpose)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                        if proposal.phase == .connected, let count = proposal.toolCount {
+                            Text("\(count) tools")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.C.inkFaint)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if proposal.phase == .connected {
+                        connectedPill
+                    }
+                }
+                switch proposal.phase {
+                case .proposed:
+                    actions(confirm: "Authorize", dismiss: "Not now")
+                case .waiting:
+                    waitingRow(text: "Waiting for \(name) sign-in", tone: Theme.C.inkMuted)
+                case .expired:
+                    waitingRow(text: "Sign-in timed out", tone: Theme.C.warning)
+                case .connected:
+                    EmptyView()
+                }
+            }
         case .unknown:
             card(title: "Unsupported proposal", tone: .plain) {
                 Text("This app does not know how to confirm this proposal yet. Update Useful Bot and try again.")
@@ -186,6 +223,45 @@ struct ProposalCardView: View {
                         .font(.system(size: 12, weight: .medium))
                     Text(dismiss)
                 }
+            }
+        }
+        .padding(.top, 14)
+    }
+
+    private var connectedPill: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 11, weight: .semibold))
+            Text("Connected")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .foregroundStyle(Theme.C.success)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Theme.C.successSoft)
+        .clipShape(Capsule())
+    }
+
+    @ViewBuilder
+    private func waitingRow(text: String, tone: Color) -> some View {
+        HStack(spacing: 8) {
+            if proposal.phase == .waiting {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(tone)
+            Spacer(minLength: 0)
+            NativeButton(kind: .secondary, small: true, enabled: !pending) {
+                onReopen()
+            } label: {
+                Text("Reopen")
+            }
+            NativeButton(kind: .secondary, small: true, enabled: !pending) {
+                onDecision(false)
+            } label: {
+                Text("Not now")
             }
         }
         .padding(.top, 14)

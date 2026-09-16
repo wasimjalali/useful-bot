@@ -129,7 +129,8 @@ struct ChatView: View {
                             pending: model.busyProposals.contains(proposal.id),
                             onDecision: { confirmed in
                                 model.decideProposal(proposal, confirmed: confirmed)
-                            }
+                            },
+                            onReopen: { model.reopenConnect(proposal) }
                         )
                     }
                 }
