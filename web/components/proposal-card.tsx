@@ -122,6 +122,25 @@ export function ProposalCard({
     );
   }
 
+  if (proposal.kind === "connectApp") {
+    // Not ported: the macOS app owns the sign-in flow. This card can only be
+    // put away here.
+    return (
+      <Card title="Connect app" tone="plain">
+        <p className="text-[15px] font-semibold">{proposal.name}</p>
+        <p className="mt-2 text-[13px] text-ink-muted">Authorize this app in the macOS app.</p>
+        <Actions
+          confirmLabel="Authorize"
+          dismissLabel="Not now"
+          onConfirm={() => undefined}
+          onDismiss={dismiss}
+          pending={pending}
+          confirmDisabled
+        />
+      </Card>
+    );
+  }
+
   const group = proposal.groupId ? bots.find((bot) => bot.id === proposal.groupId) : null;
   // A pruned or corrupt fanout can lose every target; confirm must be a no-op
   // instead of dispatching an action with an undefined botId.

@@ -10,6 +10,7 @@ import {
   routinesInFlight,
   sweepOrphanState,
 } from "../../../../lib/agent-exec";
+import { pumpConnects } from "../../../../../shared/connect-flow.ts";
 
 /**
  * Handoff pump and routine scheduler. The sending agent tool only queues a
@@ -89,6 +90,9 @@ export async function POST(request: Request) {
   // Routines share the tick so the owner needs nothing running but the app.
   // Both pumps are single-flight, so a fast poll cannot stack work.
   void pumpRoutines(limit).catch(() => undefined);
+  // Connect cards share the tick too: the owner's sign-in finishes in a
+  // browser tab, and this is what notices it and wakes the bot.
+  void pumpConnects().catch(() => undefined);
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),

@@ -13,6 +13,7 @@ import {
   type Proposal,
 } from "../../../../shared/agent-store.ts";
 import { fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
+import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
@@ -121,6 +122,15 @@ function detachBot(botId: string): string | null {
   return errors.length > 0 ? errors.join(",") : null;
 }
 
+/**
+ * Where Composio sends the browser back after the hosted sign-in. Fixed to
+ * the loopback origin the service binds, never derived from the request.
+ */
+function connectCallbackUrl(): string {
+  const base = process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
+  return new URL("/api/connectors/callback", base).toString();
+}
+
 /** The action a card sends must match every field the proposal carried. */
 function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefined): boolean {
   if (!action) return false;
@@ -157,6 +167,9 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
       return action.type === "sendToBot"
         && action.message === proposal.message
         && (action.botId === proposal.groupId || proposal.targetIds.includes(action.botId));
+    case "connectApp":
+      return (action as { type?: string }).type === "connectApp"
+        && (action as { slug?: string }).slug === proposal.slug;
   }
 }
 
@@ -197,6 +210,27 @@ export async function PUT(request: Request) {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
     const current = readShell();
+
+    // A connect card confirms by starting the hosted sign-in, not by claiming:
+    // the card stays pending (phase waiting) until the tick sees the account
+    // active and hands the bot its resume. The URL goes back once, to be
+    // opened in the browser, and is never stored.
+    const connectAction = body.action as { type?: string; slug?: string } | undefined;
+    if (body.proposalId && body.proposalStatus !== "dismissed" && connectAction?.type === "connectApp") {
+      const existing = readProposal(body.proposalId);
+      if (!existing) return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
+      if (existing.kind !== "connectApp" || !proposalMatchesAction(existing, body.action)) {
+        return NextResponse.json({ ok: false, error: "proposal_mismatch" }, { status: 400 });
+      }
+      if (existing.status !== "pending") {
+        return NextResponse.json({ ok: false, error: "proposal_conflict", status: existing.status }, { status: 409 });
+      }
+      if (rateLimited(`connectors:${gate.session.callerId}`, 60)) {
+        return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+      }
+      const { redirectUrl } = await startConnectAuthorize(body.proposalId, connectCallbackUrl());
+      return NextResponse.json({ ok: true, store: current, queued: 0, redirectUrl });
+    }
 
     // Resolve fan-out recipients before anything is claimed or written, so an
     // empty or missing group cannot consume a proposal or leave a phantom card.
