@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { appendAgentEvent, sweepOrphanThreads, type ThreadKind } from "../../shared/agent-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
+import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import {
   claimHandoff,
@@ -344,7 +345,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
   let sessionId = bot.sessionId ?? "";
   let reply = "";
   try {
-    const historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
+    let historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
     if (sessionId) syncSessionWorkspaceFresh(sessionId, bot.id);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
@@ -352,6 +353,45 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
       body: JSON.stringify({ message: sent, botId: bot.id }),
       signal: controller.signal,
     });
+    if (!res.ok && res.status === 409 && sessionId) {
+      // eve retired the stored session (a failed turn ends it for good), so
+      // drop the pointer and start a fresh one with this same message, the
+      // way the UI clients recover.
+      const text = await res.text().catch(() => "");
+      if (relayedEveCode(409, text) === "session_not_active") {
+        const retry = await fetch(`${EVE}/eve/v1/session`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
+          body: JSON.stringify({ message: sent, botId: bot.id }),
+          signal: controller.signal,
+        });
+        if (!retry.ok) throw new Error(`eve_send_${retry.status}`);
+        const retryBody = await retry.json() as { sessionId?: string };
+        sessionId = retryBody.sessionId ?? "";
+        if (!sessionId) throw new Error("eve_session_missing");
+        // Persist the fresh pointer now, so a crash before the reply still
+        // leaves later handoffs and routines on the live session.
+        const stamp = new Date().toISOString();
+        updateShell((current) => ({
+          ...current,
+          bots: current.bots.map((item) => (
+            item.id === bot.id
+              ? { ...item, sessionId, lastAt: stamp, updatedAt: stamp }
+              : item
+          )),
+        }));
+        historyIds = new Set<string>();
+        syncSessionWorkspaceFresh(sessionId, bot.id);
+        const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
+          headers: { authorization: `Bearer ${jwt}` },
+          signal: controller.signal,
+        });
+        if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
+        reply = await readHandoffStream(stream.body, controller.signal, historyIds, sent);
+        return { sessionId, reply };
+      }
+      throw new Error(`eve_send_${res.status}`);
+    }
     if (!res.ok) throw new Error(`eve_send_${res.status}`);
     const body = await res.json() as { sessionId?: string };
     sessionId = body.sessionId ?? sessionId;
@@ -459,10 +499,31 @@ async function pumpOnce(limit: number): Promise<{
       const message = err instanceof Error ? err.message : "handoff_failed";
       if (message === "claim_lost") continue;
       const next = markFailed(record.id, message, undefined, claimToken);
+      const terminal = next && next.status === "failed" && next.attempts >= HANDOFF_ATTEMPTS_MAX;
+      if (terminal) {
+        // The sender card still reads as a normal outgoing handoff, so say
+        // here that delivery gave up, the way a failed routine run does.
+        try {
+          let threadKind: ThreadKind = "bot";
+          try {
+            const sender = readShell().bots.find((item) => item.id === record.sourceBotId);
+            if (sender?.kind === "group") threadKind = "group";
+          } catch {
+            /* unreadable roster keeps the default kind */
+          }
+          appendAgentEvent(record.sourceBotId, {
+            kind: "note",
+            threadKind,
+            text: `Handoff to ${record.targetName} failed: ${message}`.slice(0, 300),
+          });
+        } catch {
+          /* the failed status still records the outcome */
+        }
+      }
       failed.push({
         id: record.id,
-        error: next && next.status === "failed" && next.attempts >= HANDOFF_ATTEMPTS_MAX
-          ? `gave up after ${next.attempts} tries: ${message}`
+        error: terminal
+          ? `gave up after ${next?.attempts} tries: ${message}`
           : message,
       });
     } finally {

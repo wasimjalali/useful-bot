@@ -174,6 +174,10 @@ export function threadPrefix(input: {
 }): string {
   const bot = input.bot;
   if (!bot || bot.id === DEFAULT_BOT_ID) return "";
+  // stripThreadPrefix cuts a stored turn at the first blank line, so the
+  // description embedded below must not contain one: it would move the
+  // boundary up and leave the prefix tail inside the owner's message.
+  const description = bot.description.replace(/\n\s*\n/g, "\n").trim();
   const lines: string[] = [];
   if (bot.kind === "group") {
     const members = (input.members ?? []).filter((member) => member.id !== DEFAULT_BOT_ID);
@@ -192,10 +196,14 @@ export function threadPrefix(input: {
     if (mentioned.length > 0) {
       lines.push(`The owner directed this turn at ${mentioned.join(", ")}. Answer as that bot and stay in role.`);
     }
-    if (bot.description.trim()) lines.push(`Group instructions: ${bot.description.trim()}`);
+    if (description) lines.push(`Group instructions: ${description}`);
   } else {
-    lines.push(`You are ${bot.name}${bot.label.trim() ? `, ${bot.label.trim()}` : ""}.`);
-    lines.push(`Standing instructions: ${bot.description.trim() || "Help the owner."}`);
+    // A label that repeats the name reads as "You are Drive Admin, Drive
+    // Admin.", so it is skipped when trimmed it says the same thing.
+    const label = bot.label.trim();
+    const title = label && label.toLowerCase() !== bot.name.trim().toLowerCase() ? label : "";
+    lines.push(`You are ${bot.name}${title ? `, ${title}` : ""}.`);
+    lines.push(`Standing instructions: ${description || "Help the owner."}`);
     lines.push(
       "Stay in role for this whole conversation. Chat messages are this-task instructions; the standing instructions above outrank them.",
     );

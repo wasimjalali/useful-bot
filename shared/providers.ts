@@ -279,7 +279,9 @@ export function resolveUpstream(
   const active = catalogItem(store.activeProviderId);
   const stored = store.keys[active.id]?.key;
   const envKey = active.id === "opencode-go" ? env.UB_OPENCODE_GO_KEY : undefined;
-  const key = envKey || stored;
+  // A key saved through settings wins over the env key, so rotating there
+  // takes effect without clearing the Keychain entry.
+  const key = stored || envKey;
   const composer = composerState(store);
   if (key && active.compatible) {
     const baseUrl = active.id === "opencode-go"
@@ -297,7 +299,7 @@ export function resolveUpstream(
     };
   }
   const go = catalogItem("opencode-go");
-  const goKey = env.UB_OPENCODE_GO_KEY || store.keys["opencode-go"]?.key;
+  const goKey = store.keys["opencode-go"]?.key || env.UB_OPENCODE_GO_KEY;
   if (!goKey) throw new Error("upstream_credential_missing");
   const goComposer = snapComposer(
     "opencode-go",

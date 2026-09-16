@@ -80,8 +80,11 @@ export function useShell(authed: boolean) {
     });
     if (res.status === 401) throw new Error("unauthorized");
     if (!res.ok) throw new Error("Shell save failed");
-    const body = (await res.json()) as { store?: unknown };
-    return parseShell(body.store ?? seedStore());
+    const body = (await res.json()) as { store?: unknown; detachError?: string | null };
+    return {
+      store: parseShell(body.store ?? seedStore()),
+      detachError: body.detachError ?? null,
+    };
   }, []);
 
   // The previous version queued the save from inside the setState updater.
@@ -107,9 +110,12 @@ export function useShell(authed: boolean) {
           const saved = await persist(action, meta);
           if (mine === gen.current) {
             dirty.current = false;
-            latest.current = saved;
-            setStore(saved);
-            setError("");
+            latest.current = saved.store;
+            setStore(saved.store);
+            // The roster change stood; something hanging off it did not
+            // finish. Say so rather than presenting the delete as a clean
+            // save.
+            setError(saved.detachError ? "Saved, but some of its data is still being cleared up." : "");
           }
         } catch (err) {
           // A failed save must surface even when a newer action has taken

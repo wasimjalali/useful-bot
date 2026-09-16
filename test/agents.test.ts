@@ -8,6 +8,7 @@ import {
   claimProposal,
   createProposal,
   isReserved,
+  listPendingProposals,
   listThreadEvents,
   newProposalId,
   parseAgentStore,
@@ -133,6 +134,28 @@ test("an expired proposal cannot be claimed", () => {
   const store = readAgentStore(storePath);
   store.proposals[0].expiresAt = new Date(Date.now() - 1000).toISOString();
   writeAgentStore(store, storePath);
+  assert.equal(claimProposal(proposal.id, "confirmed", storePath), null);
+});
+
+test("a corrupt expiry is treated as expired, not confirmable", () => {
+  const { storePath } = tempPaths();
+  const proposal = createProposal({
+    kind: "createBot",
+    name: "Corrupt",
+    petname: "New Bot 1",
+    title: "",
+    description: "",
+    sectionId: null,
+    sourceBotId: null,
+    threadId: "b1",
+    brief: "",
+  }, storePath);
+  const store = readAgentStore(storePath);
+  store.proposals[0].expiresAt = "not-a-date";
+  writeAgentStore(store, storePath);
+  // The pending list already hides an unparsable expiry; confirming must fail
+  // the same way instead of letting a corrupt card through.
+  assert.deepEqual(listPendingProposals("b1", storePath), []);
   assert.equal(claimProposal(proposal.id, "confirmed", storePath), null);
 });
 

@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
 import { createServer } from "node:net";
 
-const NODE = "/usr/local/bin/node";
+// The interpreter running this script, not a fixed path: the supervisor
+// accepts more than one install location and launches this file with it.
+const NODE = process.execPath;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2];
 

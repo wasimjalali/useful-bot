@@ -545,11 +545,15 @@ export function applyShellAction(
       return { store: { ...store, selectedBotId: action.botId } };
     }
     case "createBot": {
+      // Groups are built through createGroup, which enforces the member
+      // minimum; a createBot action carrying kind "group" would seed a
+      // memberless one.
+      if (action.kind === "group") throw new Error("shell_group_members");
       const id = crypto.randomUUID();
       const face = defaultFaceFor(id);
       const bot: ShellBot = {
         id,
-        kind: action.kind === "group" ? "group" : "bot",
+        kind: "bot",
         name: uniqueName(store, requireName(action.name)),
         petname: action.petname !== undefined ? clip(action.petname, NAME_MAX) || null : null,
         label: clip(action.label ?? "", LABEL_MAX),

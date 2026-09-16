@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -109,8 +109,13 @@ export function readConnectorsStore(path = connectorsPath()): ConnectorsStore {
 export function writeConnectorsStore(store: ConnectorsStore, path = connectorsPath()): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
+  // The fsync before the rename is what makes the rename mean something: the
+  // key and the user id are not derivable, so a torn write here loses them.
   writeFileSync(tmp, `${JSON.stringify(store)}\n`, { encoding: "utf8", mode: 0o600 });
   chmodSync(tmp, 0o600);
+  const fd = openSync(tmp, "r");
+  fsyncSync(fd);
+  closeSync(fd);
   renameSync(tmp, path);
 }
 
