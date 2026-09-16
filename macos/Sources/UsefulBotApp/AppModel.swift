@@ -186,6 +186,8 @@ final class AppModel: ObservableObject {
     private var backgroundProjections: [String: StreamProjection] = [:]
     /// Bots with a turn still running, selected or not. Drives the rail pulse.
     @Published private(set) var workingBotIds: Set<String> = []
+    /// Handoff deliveries in flight on bots the owner is not looking at.
+    @Published private(set) var handoffWorkingIds: Set<String> = []
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
     /// The newest session this app started, scoped to its bot so a Stop on
@@ -755,7 +757,9 @@ final class AppModel: ObservableObject {
         tickInFlight = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.client.tick()
+            let ids = await self.client.tick()
+            let next = Set(ids)
+            if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             self.tickInFlight = false
         }
     }
@@ -1077,6 +1081,7 @@ final class AppModel: ObservableObject {
     private func finishSend(botId: String) {
         sendTasks[botId] = nil
         inflightSessions[botId] = nil
+        backgroundProjections[botId] = nil
         markWorking(botId, false)
         if selectedBotId == botId {
             pending = false
@@ -1092,7 +1097,9 @@ final class AppModel: ObservableObject {
     }
 
     func isWorking(_ botId: String) -> Bool {
-        workingBotIds.contains(botId) || (botId == selectedBotId && (pending || backgroundWorking))
+        workingBotIds.contains(botId)
+            || handoffWorkingIds.contains(botId)
+            || (botId == selectedBotId && (pending || backgroundWorking))
     }
 
     /// Apply a live event to the bot it belongs to. If that bot is on screen
@@ -1657,7 +1664,8 @@ final class AppModel: ObservableObject {
                 switchToBot(first)
             } else {
                 selectedBotId = nil
-                resetThread()
+                cancelSend(for: current)
+                resetThread(cancelRunningTurns: false)
                 clearPerThreadState()
             }
         }
@@ -1755,6 +1763,13 @@ final class AppModel: ObservableObject {
 
     func delete(botId: String) {
         transcriptCache[botId] = nil
+        let running = inflightSessions[botId]
+        cancelSend(for: botId)
+        if let running, !running.isEmpty {
+            Task { @MainActor [weak self] in
+                _ = try? await self?.client.cancel(sessionId: running)
+            }
+        }
         perform(ShellActions.deleteBot(botId: botId))
     }
 

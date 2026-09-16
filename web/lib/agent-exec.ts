@@ -423,12 +423,14 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
   // Transcript and shell row first, delivery marker last: a crash in between
   // leaves the record claimed/pending so the next pump retries, and the event
   // dedupe keeps the retry from appending a second copy.
+  const sender = shell.bots.find((item) => item.id === handoff.sourceBotId);
   writeHandoffReply({
     handoff,
     reply,
     sessionId,
     receiverId: bot.id,
     threadKind: kind,
+    sourceThreadKind: sender?.kind === "group" ? "group" : "bot",
   });
   const stamp = new Date().toISOString();
   const preview = reply ? reply.slice(0, 160) : "";
@@ -456,6 +458,16 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
 
 export function handoffsInFlight(): string[] {
   return [...inflight];
+}
+
+/** Bot ids currently receiving a handoff, for the rail working pulse. */
+export function handoffWorkingBotIds(): string[] {
+  const ids = new Set<string>();
+  for (const id of inflight) {
+    const record = readHandoff(id);
+    if (record) ids.add(record.targetBotId);
+  }
+  return [...ids];
 }
 
 // Pumps are single-flight: the UI poll, wakePump and fan-out confirmations can

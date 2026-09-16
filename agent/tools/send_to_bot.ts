@@ -4,7 +4,7 @@ import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permissi
 import { activeBotId } from "../lib/active-bot.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import { listThreadEvents, releaseSend, reserveSend } from "../../shared/agent-store.ts";
-import { HANDOFF_DEPTH_MAX, readHandoff, waitForHandoff } from "../../shared/handoffs.ts";
+import { HANDOFF_DEPTH_MAX, listHandoffs, readHandoff, waitForHandoff } from "../../shared/handoffs.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
@@ -113,16 +113,35 @@ export default defineTool({
     }
     const waitMs = Number(process.env.UB_HANDOFF_WAIT_MS ?? HANDOFF_WAIT_DEFAULT_MS);
     const budget = Number.isFinite(waitMs) ? waitMs : HANDOFF_WAIT_DEFAULT_MS;
-    if (budget <= 0) {
+    // If the target already has a pending handoff to us, waiting would
+    // deadlock both turns until the timeout. Queue and let the pump finish.
+    const cycle = listHandoffs().some((item) => (
+      item.id !== record.id
+      && item.status === "pending"
+      && item.sourceBotId === target.id
+      && item.targetBotId === sourceId
+    ));
+    if (budget <= 0 || cycle) {
       return {
         status: "queued",
         handoffId: record.id,
         to: { id: target.id, name: target.name },
-        note: "The teammate runs on its own. Their reply will land in both chats.",
+        note: cycle
+          ? "The teammate is already waiting on this chat. Their reply will land in both transcripts."
+          : "The teammate runs on its own. Their reply will land in both chats.",
       };
     }
     const done = await waitForHandoff(record.id, budget);
     if (done?.status === "delivered") {
+      if (!done.response) {
+        return {
+          status: "delivered",
+          handoffId: record.id,
+          to: { id: target.id, name: target.name },
+          reply: "",
+          note: "The teammate finished with no reply.",
+        };
+      }
       return {
         status: "delivered",
         handoffId: record.id,

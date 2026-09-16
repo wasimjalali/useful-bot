@@ -314,6 +314,7 @@ test("writeHandoffReply records the answer on both transcripts", () => {
     assert.equal(sender[1].authorName, "Research");
     assert.equal(receiver.map((event) => event.kind).join(","), "post,assistant");
     assert.equal(receiver[1].text, "Forty.");
+    assert.equal(sender[1].kind, "post");
   } finally {
     if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
     else process.env.UB_AGENT_STORE_PATH = previousStore;
@@ -335,6 +336,51 @@ test("waitForHandoff resolves when the record is delivered", async () => {
   const done = await waitForHandoff(record.id, 1000, handoffDir, 10);
   assert.equal(done?.status, "delivered");
   assert.equal(done?.response, "here");
+});
+
+test("waitForHandoff returns the pending snapshot when the budget expires", async () => {
+  const { handoffDir } = tempPaths();
+  const record = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "still going",
+  }, handoffDir);
+  const done = await waitForHandoff(record.id, 40, handoffDir, 10);
+  assert.equal(done?.status, "pending");
+  assert.equal(done?.id, record.id);
+});
+
+test("writeHandoffReply records a note on both sides when the reply is empty", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-empty-"));
+  const storePath = join(dir, "agents.json");
+  const previousStore = process.env.UB_AGENT_STORE_PATH;
+  process.env.UB_AGENT_STORE_PATH = storePath;
+  try {
+    const record = sendHandoff({
+      source: { id: "bot-ceo", name: "CEO" },
+      target: { id: "bot-research", name: "Research" },
+      message: "Anything?",
+    });
+    writeHandoffReply({
+      handoff: record,
+      reply: "",
+      sessionId: "sess_1",
+      receiverId: "bot-research",
+      threadKind: "bot",
+      sourceThreadKind: "bot",
+    });
+    const sender = listThreadEvents("bot-ceo", storePath);
+    const receiver = listThreadEvents("bot-research", storePath);
+    assert.equal(sender.at(-1)?.kind, "note");
+    assert.match(sender.at(-1)?.text ?? "", /no reply/);
+    assert.equal(receiver.at(-1)?.kind, "note");
+    assert.match(receiver.at(-1)?.text ?? "", /no reply/);
+  } finally {
+    if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
+    else process.env.UB_AGENT_STORE_PATH = previousStore;
+  }
 });
 
 test("a corrupt store reads as empty rather than throwing", () => {

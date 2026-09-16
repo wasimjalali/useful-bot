@@ -12,7 +12,14 @@ import {
   readProposal,
   sweepOrphanThreads,
 } from "../shared/agent-store.ts";
-import { HANDOFF_DEPTH_MAX, listHandoffs, markDelivered, queueHandoff } from "../shared/handoffs.ts";
+import {
+  HANDOFF_ATTEMPTS_MAX,
+  HANDOFF_DEPTH_MAX,
+  listHandoffs,
+  markDelivered,
+  markFailed,
+  queueHandoff,
+} from "../shared/handoffs.ts";
 import { UNTRUSTED_PREAMBLE, wrapUntrusted } from "../shared/untrusted.ts";
 import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
 import bash from "../agent/tools/bash.ts";
@@ -188,6 +195,76 @@ test("sendToBot waits for the teammate reply and returns it", async () => {
     const result = await pending;
     assert.equal(result.status, "delivered");
     assert.match(result.reply ?? "", /Forty/);
+  } finally {
+    box.restore();
+  }
+});
+
+test("sendToBot returns failed when delivery gives up", async () => {
+  const box = sandbox();
+  try {
+    process.env.UB_HANDOFF_WAIT_MS = "1000";
+    const store = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(store, "CEO");
+    const research = idOf(store, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    const pending = run<{ status: string; error?: string }>(sendToBot, {
+      botId: research,
+      message: "What is the price?",
+    });
+    const queued = listHandoffs()[0];
+    assert.ok(queued);
+    for (let i = 0; i < HANDOFF_ATTEMPTS_MAX; i += 1) {
+      markFailed(queued.id, "boom");
+    }
+    const result = await pending;
+    assert.equal(result.status, "failed");
+    assert.match(result.error ?? "", /boom/);
+  } finally {
+    box.restore();
+  }
+});
+
+test("sendToBot returns queued when the wait budget expires", async () => {
+  const box = sandbox();
+  try {
+    process.env.UB_HANDOFF_WAIT_MS = "50";
+    const store = seedRoster(["CEO", "Research"]);
+    process.env.UB_ACTIVE_BOT_ID = idOf(store, "CEO");
+    const result = await run<{ status: string; note?: string }>(sendToBot, {
+      botId: idOf(store, "Research"),
+      message: "Still working?",
+    });
+    assert.equal(result.status, "queued");
+    assert.match(result.note ?? "", /still working/i);
+  } finally {
+    box.restore();
+  }
+});
+
+test("sendToBot does not wait when the target already has a pending handoff back", async () => {
+  const box = sandbox();
+  try {
+    process.env.UB_HANDOFF_WAIT_MS = "5000";
+    const store = seedRoster(["CEO", "Research"]);
+    const ceo = idOf(store, "CEO");
+    const research = idOf(store, "Research");
+    process.env.UB_ACTIVE_BOT_ID = ceo;
+    queueHandoff({
+      sourceBotId: research,
+      sourceName: "Research",
+      targetBotId: ceo,
+      targetName: "CEO",
+      message: "already waiting",
+    });
+    const started = Date.now();
+    const result = await run<{ status: string; note?: string }>(sendToBot, {
+      botId: research,
+      message: "ping",
+    });
+    assert.equal(result.status, "queued");
+    assert.match(result.note ?? "", /already waiting/);
+    assert.ok(Date.now() - started < 1000);
   } finally {
     box.restore();
   }

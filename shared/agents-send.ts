@@ -80,8 +80,32 @@ export function writeHandoffReply(input: {
   sessionId: string;
   receiverId: string;
   threadKind: ThreadKind;
+  sourceThreadKind?: ThreadKind;
 }): void {
-  if (!input.reply) return;
+  const sourceKind = input.sourceThreadKind ?? "bot";
+  if (!input.reply) {
+    const note = `${input.handoff.targetName} finished with no reply.`;
+    appendAgentEvent(input.receiverId, {
+      kind: "note",
+      threadKind: input.threadKind,
+      sessionId: input.sessionId,
+      text: note,
+      authorBotId: input.handoff.targetBotId,
+      authorName: input.handoff.targetName,
+      handoffId: input.handoff.id,
+    });
+    if (input.handoff.sourceBotId && input.handoff.sourceBotId !== input.receiverId) {
+      appendAgentEvent(input.handoff.sourceBotId, {
+        kind: "note",
+        threadKind: sourceKind,
+        text: note,
+        authorBotId: input.handoff.targetBotId,
+        authorName: input.handoff.targetName,
+        handoffId: input.handoff.id,
+      });
+    }
+    return;
+  }
   appendAgentEvent(input.receiverId, {
     kind: "assistant",
     threadKind: input.threadKind,
@@ -94,6 +118,7 @@ export function writeHandoffReply(input: {
   if (input.handoff.sourceBotId && input.handoff.sourceBotId !== input.receiverId) {
     appendAgentEvent(input.handoff.sourceBotId, {
       kind: "post",
+      threadKind: sourceKind,
       text: input.reply,
       authorBotId: input.handoff.targetBotId,
       authorName: input.handoff.targetName,

@@ -8,6 +8,7 @@ import {
   pumpHandoffs,
   pumpRoutines,
   routinesInFlight,
+  handoffWorkingBotIds,
   sweepOrphanState,
 } from "../../../../lib/agent-exec";
 import { pumpConnects } from "../../../../../shared/connect-flow.ts";
@@ -55,6 +56,7 @@ export async function GET(request: Request) {
     ok: true,
     enabled: agentsEnabled(),
     inFlight: handoffsInFlight(),
+    workingBotIds: handoffWorkingBotIds(),
     routinesInFlight: routinesInFlight(),
   });
 }
@@ -99,6 +101,7 @@ export async function POST(request: Request) {
     started: true,
     swept: swept.length,
     inFlight: handoffsInFlight(),
+    workingBotIds: handoffWorkingBotIds(),
     routinesInFlight: routinesInFlight(),
   });
 }
