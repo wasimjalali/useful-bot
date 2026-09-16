@@ -20,8 +20,6 @@ export const BODY_LIMIT_BYTES = 1_048_576;
  * so this route gets its own cap; every other route keeps the 1 MiB one.
  */
 export const COMPLETION_BODY_LIMIT_BYTES = 8 * 1_048_576;
-/** What one image part counts for against the input budget; bytes would count ten times too much. */
-export const IMAGE_INPUT_UNITS = 2_000;
 export const WRITE_MAX_BYTES = 64 * 1024;
 export const READ_MAX_BYTES = 16 * 1024;
 

@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { RouterError } from "./errors.ts";
-import { IMAGE_INPUT_UNITS, SEARCH_LIMITS } from "../../shared/policy.ts";
+import { SEARCH_LIMITS } from "../../shared/policy.ts";
 import { currentBudget, effectiveLimits } from "../../shared/limits-store.ts";
 import type { AuthedCaller } from "./auth.ts";
 
@@ -64,31 +64,16 @@ interface TokenTotals {
 /**
  * Conservative input upper bound in reservation units. An exact tokenizer is
  * unavailable at the router, so SPEC.md:242 mandates UTF-8 bytes plus fixed
- * message/tool framing. These are never reported as measured tokens.
- */
-/**
- * The byte size of the history, with each image part counted as a fixed
- * number of units instead of its base64 length. A model reads a picture as
- * a few thousand tokens; its encoding is a megabyte, and reserving that
- * would spend the day's budget on one screenshot.
+ * message/tool framing. These are never reported as measured tokens. The
+ * slack is deliberate: a reservation is settled to the observed usage right
+ * after the response, but an observation above the reservation is an overrun
+ * that disables the alias for the process. An image part counts by its
+ * base64 length for the same reason: a model bills a picture by its pixels,
+ * not its bytes, and the encoded size is the bound that cannot be exceeded.
  */
 export function estimateInputUnits(body: unknown): number {
   const rec = body && typeof body === "object" ? body as Record<string, unknown> : {};
-  let images = 0;
-  const textOnly = Array.isArray(rec.messages)
-    ? rec.messages.map((message) => {
-      const entry = message as { content?: unknown };
-      if (!entry || !Array.isArray(entry.content)) return message;
-      const content = entry.content.map((part) => {
-        const p = part as { type?: unknown };
-        if (p?.type !== "image_url") return part;
-        images += 1;
-        return { type: "image_url" };
-      });
-      return { ...entry, content };
-    })
-    : [];
-  const messages = Buffer.byteLength(JSON.stringify(textOnly), "utf8") + images * IMAGE_INPUT_UNITS;
+  const messages = Buffer.byteLength(JSON.stringify(rec.messages ?? []), "utf8");
   const tools = Buffer.byteLength(JSON.stringify(rec.tools ?? []), "utf8");
   const messageCount = Array.isArray(rec.messages) ? rec.messages.length : 0;
   const toolCount = Array.isArray(rec.tools) ? rec.tools.length : 0;

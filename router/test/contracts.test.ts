@@ -11,7 +11,7 @@ import { ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs } from "../src/retry-after.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
-import { IMAGE_INPUT_UNITS, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
+import { MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
 type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -381,11 +381,10 @@ test("image parts are refused off the user role, as remote urls, and past the ca
   });
 });
 
-test("estimateInputUnits counts an image as a fixed cost, not its base64", () => {
+test("estimateInputUnits reserves an image at its encoded size, an upper bound on what a model can bill", () => {
   const text = estimateInputUnits({ messages: [{ role: "user", content: "hi" }] });
   const withImage = estimateInputUnits(imageTurn());
-  assert.equal(withImage < text + IMAGE_INPUT_UNITS + 200, true);
-  assert.equal(withImage > text, true);
+  assert.equal(withImage >= text + PNG_DATA_URL.length, true);
 });
 
 test("device credential cannot authenticate to router", async () => {

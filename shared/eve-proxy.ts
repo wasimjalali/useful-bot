@@ -4,10 +4,12 @@ import {
   IMAGE_DATA_URL,
   MAX_IMAGE_DATA_URL_CHARS,
   MAX_IMAGE_PARTS,
+  safeAttachName,
   type TurnFilePart,
   type TurnMessage,
   type TurnTextPart,
 } from "./attachments.ts";
+
 import { resolveRoute, speakersFrom, threadPrefix, type Route, type Speaker } from "./threads.ts";
 import type { ThreadKind } from "./agent-store.ts";
 
@@ -55,6 +57,22 @@ export function relayedEveCode(status: number, body: string): string | null {
 export type SessionRoute = Route & { mentionNames: string[] };
 
 /**
+ * A file part's name goes verbatim into eve's `[file: name (type)]` transcript
+ * line and into the model's context, so it takes the same alphabet
+ * `/api/attachments` hands out: nothing that can split a line, and no
+ * credential-looking names. First-party clients already send such names;
+ * this is the check for anyone posting to the proxy directly.
+ */
+function safeTurnFilename(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    return safeAttachName(value) === value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The `message` field of a turn as this proxy accepts it: a string, or text
  * parts with image file parts. Anything else is refused here rather than
  * relayed, so eve only ever sees the shapes this build has reasoned about.
@@ -78,9 +96,10 @@ export function parseTurnMessage(value: unknown): TurnMessage | null {
       if (!IMAGE_DATA_URL.test(rec.data)) return null;
       const mediaType = rec.data.slice("data:".length, rec.data.indexOf(";"));
       if (rec.mediaType !== mediaType) return null;
-      if (typeof rec.filename !== "string" || rec.filename.length === 0 || rec.filename.length > 120) return null;
+      const filename = safeTurnFilename(rec.filename);
+      if (filename === null) return null;
       if (++images > MAX_IMAGE_PARTS) return null;
-      parts.push({ type: "file", data: rec.data, mediaType, filename: rec.filename });
+      parts.push({ type: "file", data: rec.data, mediaType, filename });
       continue;
     }
     return null;
@@ -162,12 +181,15 @@ export function rewriteEveTurnBody(
   if (typeof message === "string") {
     return JSON.stringify({ message: `${prefix}${message}` });
   }
-  // The prefix goes on the first text part; the images ride beside it. A
-  // turn with only images gets a text part of its own to carry the prefix.
-  const first = message.findIndex((part) => part.type === "text");
-  const prefixed = first >= 0
-    ? message.map((part, index) => (index === first && part.type === "text" ? { ...part, text: `${prefix}${part.text}` } : part))
-    : [{ type: "text" as const, text: prefix.trim() }, ...message];
+  // The prefix has to be the first thing eve summarizes: the transcript
+  // strips it only from index 0, and the stream arms on what follows it. So
+  // it goes onto the text part at index 0 when there is one, and otherwise
+  // into a text part of its own ahead of everything, ending in the newline
+  // that, joined by eve's own, makes the blank line the strip cuts at.
+  const head = message[0];
+  const prefixed = head?.type === "text"
+    ? [{ ...head, text: `${prefix}${head.text}` }, ...message.slice(1)]
+    : [{ type: "text" as const, text: `${prefix.trimEnd()}\n` }, ...message];
   return JSON.stringify({ message: prefixed });
 }
 
