@@ -372,3 +372,40 @@ test("a connectApp proposal round-trips its phase fields and can be patched in p
   assert.equal(listProposalsOfKind("connectApp", storePath)[0].phase, "proposed");
   assert.equal(updateProposal("prp_missing", () => undefined, storePath), null);
 });
+
+test("a connectServer proposal round-trips auth and phase fields", () => {
+  const { storePath } = tempPaths();
+  const proposal = createProposal({
+    kind: "connectServer",
+    connectionKind: "mcp",
+    connectionId: "excalidraw",
+    name: "Excalidraw",
+    description: "Draw diagrams",
+    url: "https://mcp.excalidraw.com/mcp",
+    urlHost: "mcp.excalidraw.com",
+    purpose: "Draw a cat",
+    authKind: "none",
+    authHeader: null,
+    sourceBotId: "b1",
+    threadId: "b1",
+    phase: "proposed",
+    redirectHost: null,
+    waitingSince: null,
+    toolCount: null,
+    handoffId: null,
+  }, storePath);
+  assert.equal(readProposal(proposal.id, storePath)?.kind, "connectServer");
+  updateProposal(proposal.id, (item) => {
+    if (item.kind === "connectServer") {
+      item.phase = "waiting";
+      item.redirectHost = "auth.example.com";
+    }
+  }, storePath);
+  const waiting = listProposalsOfKind("connectServer", storePath);
+  assert.equal(waiting.length, 1);
+  assert.equal(waiting[0].phase, "waiting");
+  assert.equal(waiting[0].redirectHost, "auth.example.com");
+  assert.equal(waiting[0].urlHost, "mcp.excalidraw.com");
+  updateProposal(proposal.id, (item) => { (item as { phase: string }).phase = "bogus"; }, storePath);
+  assert.equal(listProposalsOfKind("connectServer", storePath)[0].phase, "proposed");
+});

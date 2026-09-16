@@ -3,11 +3,20 @@ function defaultPort(url: URL): string {
   return url.protocol === "https:" ? "443" : "80";
 }
 
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   return hostname === "127.0.0.1"
     || hostname === "localhost"
     || hostname === "::1"
     || hostname === "[::1]";
+}
+
+/** True when the request URL itself is loopback. Fail closed on parse errors. */
+export function requestIsLoopback(requestUrl: string): boolean {
+  try {
+    return isLoopbackHost(new URL(requestUrl).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 export function originHeaderAllowed(origin: string | null, requestUrl: string): boolean {

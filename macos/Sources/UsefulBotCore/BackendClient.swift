@@ -140,6 +140,8 @@ private struct ShellResponse: Decodable {
     let detachError: String?
     /// Set once, on a connect card's Authorize: the hosted sign-in to open.
     let redirectUrl: String?
+    /// Authorize host the server stored on the card. Required to open it.
+    let redirectHost: String?
 }
 private struct StateResponse: Decodable {
     let events: [AgentEvent]?
@@ -877,6 +879,7 @@ public actor BackendClient {
         public let store: ShellStore
         public let detachError: String?
         public let redirectUrl: String?
+        public let redirectHost: String?
     }
 
     @discardableResult
@@ -912,7 +915,36 @@ public actor BackendClient {
             }
             throw BackendError.decoding
         }
-        return ShellActionResult(store: decoded.store, detachError: decoded.detachError, redirectUrl: decoded.redirectUrl)
+        return ShellActionResult(
+            store: decoded.store,
+            detachError: decoded.detachError,
+            redirectUrl: decoded.redirectUrl,
+            redirectHost: decoded.redirectHost
+        )
+    }
+
+    public func persistWidget(botId: String, widget: LiveWidget) async throws {
+        var arguments: [String: Any] = [:]
+        for (key, value) in widget.arguments {
+            arguments[key] = value.jsonObject
+        }
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/agent/widget"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "botId": botId,
+                "callId": widget.callId,
+                "data": [
+                    "toolName": widget.toolName,
+                    "arguments": arguments,
+                ],
+            ])
+            return request
+        }
+        try Self.expectOK(response)
+        _ = data
     }
 
     /// Resolve a proposal without a shell action (the dismiss path).

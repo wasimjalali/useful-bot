@@ -11,6 +11,8 @@ import {
   sweepOrphanState,
 } from "../../../../lib/agent-exec";
 import { pumpConnects } from "../../../../../shared/connect-flow.ts";
+import { pumpConnections } from "../../../../../shared/connection-flow.ts";
+import { seedDefaultConnections } from "../../../../../shared/connections-store.ts";
 
 /**
  * Handoff pump and routine scheduler. The sending agent tool only queues a
@@ -93,6 +95,8 @@ export async function POST(request: Request) {
   // Connect cards share the tick too: the owner's sign-in finishes in a
   // browser tab, and this is what notices it and wakes the bot.
   void pumpConnects().catch(() => undefined);
+  void pumpConnections().catch(() => undefined);
+  try { seedDefaultConnections(); } catch { /* a locked file retries next tick */ }
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),

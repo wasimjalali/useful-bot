@@ -132,4 +132,14 @@ import Testing
         """.utf8))
         #expect(ProposalActions.confirm(blank) == nil)
     }
+
+    @Test func connectServerConfirmCarriesTheId() throws {
+        let proposal = try JSONDecoder().decode(Proposal.self, from: Data("""
+        {"id":"p7","kind":"connectServer","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "connectionId":"excalidraw","name":"Excalidraw","authKind":"none","phase":"proposed"}
+        """.utf8))
+        let action = try #require(ProposalActions.confirm(proposal))
+        #expect(action["type"] as? String == "connectServer")
+        #expect(action["connectionId"] as? String == "excalidraw")
+    }
 }

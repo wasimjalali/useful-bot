@@ -2,7 +2,7 @@ import Foundation
 
 public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case user, assistant, handoff, post, note
+        case user, assistant, handoff, post, note, widget
     }
 
     public var id: String
@@ -62,7 +62,7 @@ public enum Transcript {
             durable.append(TranscriptRow(
                 id: event.id,
                 kind: kind,
-                text: text,
+                text: kind == .widget ? (event.widgetId ?? text) : text,
                 // Only a durable author label renders; the web treats an
                 // unattributed stream echo as unlabelled.
                 author: event.authorName,
@@ -171,6 +171,7 @@ public enum Transcript {
         case "assistant": return .assistant
         case "handoff": return .handoff
         case "post": return .post
+        case "widget": return .widget
         default: return .note
         }
     }

@@ -506,9 +506,11 @@ final class AppModel: ObservableObject {
             // chat for the length of the replay.
             if projection.messages.isEmpty {
                 projection = StreamProjection()
+                persistedWidgets = []
                 rebuildTranscript()
             } else {
                 projection = StreamProjection()
+                persistedWidgets = []
             }
             // A fresh projection knows of no running turn; the follower sets
             // the flag again when the replay reaches one.
@@ -731,7 +733,7 @@ final class AppModel: ObservableObject {
         // Open cards keep their busy mark, except a connect card the poll now
         // renders in Waiting: its Authorize or Reopen was applied, so the mark
         // has done its job.
-        let live = Set(proposals.filter { $0.isOpen() && !($0.kind == .connectApp && $0.phase == .waiting) }.map(\.id))
+        let live = Set(proposals.filter { $0.isOpen() && !(($0.kind == .connectApp || $0.kind == .connectServer) && $0.phase == .waiting) }.map(\.id))
         busyProposals = busyProposals.intersection(live)
     }
 
@@ -1107,6 +1109,19 @@ final class AppModel: ObservableObject {
         rebuildTranscript()
     }
 
+    private var persistedWidgets: Set<String> = []
+
+    private func persistNewWidgets() {
+        guard let botId = selectedBotId else { return }
+        for widget in projection.widgets where !persistedWidgets.contains(widget.id) {
+            persistedWidgets.insert(widget.id)
+            let client = client
+            Task {
+                try? await client.persistWidget(botId: botId, widget: widget)
+            }
+        }
+    }
+
     private func publishTranscript(force: Bool = false) {
         let now = Date()
         let since = now.timeIntervalSince(lastTranscriptPublish)
@@ -1114,6 +1129,7 @@ final class AppModel: ObservableObject {
             pendingPublish?.cancel()
             pendingPublish = nil
             lastTranscriptPublish = now
+            persistNewWidgets()
             rebuildTranscript()
             return
         }
@@ -1124,6 +1140,7 @@ final class AppModel: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             self.pendingPublish = nil
             self.lastTranscriptPublish = Date()
+            self.persistNewWidgets()
             self.rebuildTranscript()
         }
     }
@@ -1133,6 +1150,10 @@ final class AppModel: ObservableObject {
             events: durableEvents,
             messages: projection.messages
         )
+        let seenWidgets = Set(rows.filter { $0.kind == .widget }.compactMap { $0.text })
+        for widget in projection.widgets where !seenWidgets.contains(widget.id) {
+            rows.append(TranscriptRow(id: "live-\(widget.id)", kind: .widget, text: widget.id, at: Date()))
+        }
         if let bot = selectedBot, bot.isGroup, let store {
             let roster = Threads.groupMembers(
                 Threads.speakers(from: store.bots),
@@ -1741,6 +1762,7 @@ final class AppModel: ObservableObject {
         durableEvents = []
         proposals = []
         projection = StreamProjection()
+        persistedWidgets = []
         transcript = []
         transcriptBlocks = []
         searchHits = []
@@ -1754,7 +1776,7 @@ final class AppModel: ObservableObject {
 
     // MARK: - Proposals
 
-    func decideProposal(_ proposal: Proposal, confirmed: Bool) {
+    func decideProposal(_ proposal: Proposal, confirmed: Bool, secret: String? = nil) {
         guard !busyProposals.contains(proposal.id) else { return }
         busyProposals.insert(proposal.id)
         enqueue { [weak self] in
@@ -1762,12 +1784,15 @@ final class AppModel: ObservableObject {
             let epoch = self.storeEpoch
             do {
                 if confirmed {
-                    guard let action = ProposalActions.confirm(proposal) else {
+                    guard var action = ProposalActions.confirm(proposal) else {
                         // Never mark an action confirmed that this build could
                         // not build; the card offers dismiss for those.
                         self.busyProposals.remove(proposal.id)
                         self.threadError = "This proposal cannot be confirmed by this app. Dismiss it instead."
                         return
+                    }
+                    if proposal.kind == .connectServer, let secret, !secret.isEmpty {
+                        action["secret"] = secret
                     }
                     let result = try await self.client.shellActionResult(
                         action,
@@ -1779,33 +1804,34 @@ final class AppModel: ObservableObject {
                         return
                     }
                     self.applyStore(result.store)
-                    if proposal.kind == .connectApp {
+                    if proposal.kind == .connectApp || proposal.kind == .connectServer {
                         // The card stays: the sign-in finishes in the browser
                         // and the poll moves it through waiting and connected.
                         // A good Authorize clears any earlier banner; the two
                         // failures below set their own.
                         self.threadError = nil
                         self.stickyThreadError = nil
-                        // Same rule as the Connectors dialog: only an https page on
-                        // Composio's own hosts is handed to the browser.
-                        if let raw = result.redirectUrl, let url = URL(string: raw),
-                           url.scheme?.lowercased() == "https",
-                           let host = url.host?.lowercased(), host == "composio.dev" || host.hasSuffix(".composio.dev") {
-                            if !NSWorkspace.shared.open(url) {
-                                // Sticky: the reload this branch starts would
-                                // otherwise wipe the banner a moment later.
-                                self.stickyThreadError = "The sign-in page could not be opened in the browser. Use Reopen."
+                        if let raw = result.redirectUrl {
+                            let expectedHost = proposal.kind == .connectServer
+                                ? (result.redirectHost ?? proposal.redirectHost)
+                                : nil
+                            let allowed = Proposal.connectRedirectAllowed(
+                                raw,
+                                kind: proposal.kind,
+                                expectedHost: expectedHost
+                            )
+                            if allowed, let url = URL(string: raw) {
+                                if !NSWorkspace.shared.open(url) {
+                                    self.stickyThreadError = "The sign-in page could not be opened in the browser. Use Reopen."
+                                    self.threadError = self.stickyThreadError
+                                }
+                            } else if result.redirectUrl != nil && !(raw.isEmpty) {
+                                self.stickyThreadError = proposal.kind == .connectApp
+                                    ? "Composio sent a sign-in link this app will not open."
+                                    : "The server sent a sign-in link this app will not open."
                                 self.threadError = self.stickyThreadError
                             }
-                        } else {
-                            self.stickyThreadError = "Composio sent a sign-in link this app will not open."
-                            self.threadError = self.stickyThreadError
                         }
-                        // Authorize from Proposed or Reopen from Expired stays
-                        // busy until the poll renders the card in Waiting
-                        // (pruneBusyProposals clears it), so the stale button
-                        // cannot mint a second account. A Reopen from Waiting
-                        // already renders Waiting and clears at once.
                         if proposal.phase == .waiting {
                             self.busyProposals.remove(proposal.id)
                         }
@@ -1845,7 +1871,7 @@ final class AppModel: ObservableObject {
     /// Reopen the sign-in for a waiting or timed-out connect card. The busy
     /// guard in decideProposal keeps a double click from starting two.
     func reopenConnect(_ proposal: Proposal) {
-        guard proposal.kind == .connectApp else { return }
+        guard proposal.kind == .connectApp || proposal.kind == .connectServer else { return }
         decideProposal(proposal, confirmed: true)
     }
 
@@ -1899,7 +1925,7 @@ final class AppModel: ObservableObject {
                     anchor = row.id
                     awaitingReply = false
                 }
-            case .handoff, .post, .note:
+            case .handoff, .post, .note, .widget:
                 continue
             }
         }

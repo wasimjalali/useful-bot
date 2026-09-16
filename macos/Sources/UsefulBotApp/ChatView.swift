@@ -130,7 +130,10 @@ struct ChatView: View {
                             onDecision: { confirmed in
                                 model.decideProposal(proposal, confirmed: confirmed)
                             },
-                            onReopen: { model.reopenConnect(proposal) }
+                            onReopen: { model.reopenConnect(proposal) },
+                            onConfirmSecret: { secret in
+                                model.decideProposal(proposal, confirmed: true, secret: secret)
+                            }
                         )
                     }
                 }
@@ -551,6 +554,15 @@ struct TranscriptRowView: View, Equatable {
             }
         case .assistant:
             replyRow(showsSpeaker: true)
+        case .widget:
+            WidgetWebView(widgetId: row.text)
+                .frame(height: 480)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
+                        .strokeBorder(Theme.C.border, lineWidth: 1)
+                )
         }
     }
 

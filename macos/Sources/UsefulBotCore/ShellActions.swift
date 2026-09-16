@@ -162,6 +162,9 @@ public enum ProposalActions {
         case .connectApp:
             guard let slug = proposal.slug, !slug.isEmpty else { return nil }
             return ["type": "connectApp", "slug": slug]
+        case .connectServer:
+            guard let id = proposal.connectionId, !id.isEmpty else { return nil }
+            return ["type": "connectServer", "connectionId": id]
         case .unknown:
             return nil
         }
