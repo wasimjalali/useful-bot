@@ -32,8 +32,13 @@ export default defineTool({
     if (!store.apiKey) return { status: "blocked", error: "connectors_not_set_up" };
     const slug = input.slug.trim().toLowerCase();
     if (!isToolkitSlug(slug)) return { status: "unknown_app", slug };
-    const page = await listConnectorToolkits({ search: slug, limit: 20 });
-    const row = page.rows.find((item) => item.slug === slug);
+    let row;
+    try {
+      const page = await listConnectorToolkits({ search: slug, limit: 20 });
+      row = page.rows.find((item) => item.slug === slug);
+    } catch (err) {
+      return { status: "error", error: String((err as Error).message ?? "failed").slice(0, 200) };
+    }
     if (!row) return { status: "unknown_app", slug };
     if (row.connected) return { status: "already_connected", slug, name: row.name };
 

@@ -503,4 +503,13 @@ test("propose_connector creates one card, refuses unknown, connected and duplica
   } finally {
     none.restore();
   }
+  // A Composio failure is a structured status, never a thrown error.
+  const broken = sandbox(["gmail"]);
+  try {
+    broken.toolkitItems = null as never;
+    const out = await run<{ status: string }>(proposeConnector, { slug: "notion", purpose: "x" });
+    assert.equal(out.status, "error");
+  } finally {
+    broken.restore();
+  }
 });

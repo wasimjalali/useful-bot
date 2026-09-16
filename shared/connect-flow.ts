@@ -40,6 +40,11 @@ function isConnect(proposal: Proposal | null): proposal is Stored {
   return proposal?.kind === "connectApp";
 }
 
+/** Catalogue and bot text on one line: the resume is an instruction channel. */
+function oneLine(value: string, max: number): string {
+  return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, max);
+}
+
 export async function startConnectAuthorize(
   proposalId: string,
   callbackUrl: string,
@@ -92,8 +97,9 @@ export async function pumpConnects(
     const since = Date.parse(card.waitingSince ?? "");
     const lingered = !Number.isFinite(since) || now - since > CONNECT_LINGER_MS;
     if (landed || lingered) {
+      // Only from pending: a dismiss that landed since the read above wins.
       updateProposal(card.id, (item) => {
-        item.status = "confirmed";
+        if (item.status === "pending") item.status = "confirmed";
       }, storePath);
     }
   }
@@ -148,7 +154,7 @@ export async function pumpConnects(
         sourceName: "Useful Bot",
         targetBotId: targetId,
         targetName,
-        message: `The owner connected ${card.name}. Continue the task: ${card.purpose}`,
+        message: `The owner connected ${oneLine(card.name, 80)} (${card.slug}). Continue the task: ${oneLine(card.purpose, 120)}`,
         depth: 0,
       }).id;
     } catch {

@@ -13,7 +13,7 @@ export default defineTool({
   description:
     "Search the catalogue of apps the owner can connect (Gmail, Notion, Slack, GitHub and 1500 more, MCP variants included). Returns whether each is connected. Use it before propose_connector.",
   inputSchema: z.object({
-    query: z.string().min(2).max(80),
+    query: z.string().min(3).max(80),
   }),
   async execute(input) {
     const store = readConnectorsStore();

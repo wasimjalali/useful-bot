@@ -1766,6 +1766,10 @@ final class AppModel: ObservableObject {
                     if proposal.kind == .connectApp {
                         // The card stays: the sign-in finishes in the browser
                         // and the poll moves it through waiting and connected.
+                        // A good Authorize clears any earlier banner; the two
+                        // failures below set their own.
+                        self.threadError = nil
+                        self.stickyThreadError = nil
                         // Same rule as the Connectors dialog: only an https page on
                         // Composio's own hosts is handed to the browser.
                         if let raw = result.redirectUrl, let url = URL(string: raw),

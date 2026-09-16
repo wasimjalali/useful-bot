@@ -185,10 +185,15 @@ test("the pump connects a waiting card once, writes the note and queues one resu
   assert.deepEqual(await pumpConnects({ now: Date.now() + 12_000 }), { connected: [], expired: [] });
   assert.equal(listHandoffs().length, 1);
   assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
-  // Once the handoff lands, the card is confirmed and leaves the dock.
+  // Once the handoff lands, the card is confirmed and leaves the dock, unless
+  // the owner already put it away.
   const token = claimHandoff(handoffs[0].id);
   markDelivered(handoffs[0].id, "on it", undefined, token ?? "");
+  updateProposal(proposal.id, (item) => { item.status = "dismissed"; }, storePath);
   await pumpConnects({ now: Date.now() + 18_000 });
+  assert.equal(readProposal(proposal.id, storePath)?.status, "dismissed");
+  updateProposal(proposal.id, (item) => { item.status = "pending"; }, storePath);
+  await pumpConnects({ now: Date.now() + 24_000 });
   assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
 });
 
