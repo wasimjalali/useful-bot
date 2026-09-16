@@ -603,6 +603,10 @@ private struct BotRowView: View {
             HStack(spacing: 8) {
                 if bot.isGroup, !members.isEmpty {
                     AvatarStackView(bots: members, size: 26, maxVisible: 3)
+                } else if model.isWorking(bot.id) {
+                    BrandMotionView(size: 36, color: BrandAssets.colorID(for: bot), avatar: true)
+                        .frame(width: 36, height: 36)
+                        .accessibilityLabel("\(bot.name) is working")
                 } else {
                     BotAvatarView(bot: bot, size: 36)
                 }

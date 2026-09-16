@@ -38,7 +38,7 @@ Teammates are durable: each bot keeps a profile and its own transcript.
 - `proposeBot`: propose a new teammate when a job needs a long-lived owner. It writes a profile card the owner must confirm before the bot exists.
 - `updateBotProfile`: propose profile edits (name, title, description, avatar). Same confirmation rule.
 - `proposeGroup`: propose a group chat with 2 to 6 real member bots. The default Useful Bot orchestrates but is never a member.
-- `sendToBot`: hand one task to one teammate now. The handoff shows in both transcripts and the reply lands in the receiver's chat.
+- `sendToBot`: message one teammate and wait for their reply. The question lands in their chat, they work even if the owner is looking at another bot, and their answer comes back as the tool result and as a message in both transcripts.
 - `postToGroup`: post one message to a group. Every member receives it, and the owner confirms the fan-out first.
 - `listBots`: list bots, sections and groups with ids. Call it before addressing a teammate.
 - `railAction`: pin, unpin, hide, unhide, move a bot into a section by id (or out with null), create a section, rename one with `updateSection`, or remove an empty one with `removeSection`. All of it applies at once in Auto and Full access; `removeSection` refuses while a bot is still in the section. `deleteBot` leaves an emptied section behind, so call `removeSection` after it.

@@ -509,13 +509,15 @@ struct TranscriptRowView: View, Equatable {
         case .user:
             userRow
         case .handoff:
-            // The reference hides the dispatch text and marks the send itself.
-            BotMetaRow(
-                prefix: "Messaged",
-                botIds: recipients.isEmpty ? row.targetBotIds : recipients,
-                names: ["a teammate"],
-                roster: bots
-            )
+            VStack(alignment: .leading, spacing: 8) {
+                BotMetaRow(
+                    prefix: "Messaged",
+                    botIds: recipients.isEmpty ? row.targetBotIds : recipients,
+                    names: ["a teammate"],
+                    roster: bots
+                )
+                replyRow(showsSpeaker: false)
+            }
         case .post:
             let author = row.author ?? ""
             let attributed = row.authorBotId != nil || !author.isEmpty
@@ -530,8 +532,9 @@ struct TranscriptRowView: View, Equatable {
                         roster: bots
                     )
                 }
-                // The strip already names and faces the author.
-                replyRow(showsSpeaker: false)
+                // Incoming teammate questions sit in the same bubble as an
+                // owner message, so the receiving bot's chat reads as a turn.
+                userRow
             }
         case .note:
             HStack(alignment: .top, spacing: 12) {

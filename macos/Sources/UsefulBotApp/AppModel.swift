@@ -174,6 +174,18 @@ final class AppModel: ObservableObject {
     private var reloadTask: Task<Void, Never>?
     private var followTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
+    /// One send task per bot, so a turn on A keeps running while the owner
+    /// talks to B. `sendTask` is the selected bot's task when it has one.
+    private var sendTasks: [String: Task<Void, Never>] = [:]
+    /// Per-bot send generation: bumping one bot must not abort another.
+    private var sendGenerations: [String: Int] = [:]
+    /// Session ids for turns this app started, keyed by bot, including bots
+    /// the owner has switched away from.
+    private var inflightSessions: [String: String] = [:]
+    /// Live projections for bots whose send is still running in the background.
+    private var backgroundProjections: [String: StreamProjection] = [:]
+    /// Bots with a turn still running, selected or not. Drives the rail pulse.
+    @Published private(set) var workingBotIds: Set<String> = []
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
     /// The newest session this app started, scoped to its bot so a Stop on
@@ -189,7 +201,6 @@ final class AppModel: ObservableObject {
     /// A send's own failure banner, preserved across its trailing reload.
     private var stickyThreadError: String?
     private var loadGeneration = 0
-    private var sendGeneration = 0
     /// Bumped once per owner-initiated send. The transcript watches it to jump
     /// to the newest turn: sending is an explicit request to watch the answer,
     /// so it overrides whatever the reader's scroll position was.
@@ -404,10 +415,15 @@ final class AppModel: ObservableObject {
             }
             return
         }
-        // A turn that belongs to the outgoing bot keeps burning server-side
-        // unless it is cancelled here; Stop can no longer reach it after the
-        // switch. `resetThread()` below cancels the local stream.
-        let outgoing = activeSession
+        // Stash the outgoing turn so it keeps running. Switching used to
+        // cancel the server session, which is why a bot stopped the moment
+        // the owner opened another chat.
+        if let old = selectedBotId {
+            backgroundProjections[old] = projection
+            if transcriptReady || !transcript.isEmpty {
+                transcriptCache[old] = (transcript, transcriptBlocks)
+            }
+        }
         attachError = nil
         threadError = nil
         stickyThreadError = nil
@@ -417,21 +433,26 @@ final class AppModel: ObservableObject {
         selectedBotId = botId
         clearRoutineState()
         // Clear the old thread synchronously so the new bot never flashes the
-        // previous transcript while its state loads.
-        resetThread()
-        // A chat already opened this session comes back with its rows on
-        // screen while the reload confirms them.
-        if let cached = transcriptCache[botId] {
+        // previous transcript while its state loads. Do not cancel the
+        // outgoing send: that turn belongs to the bot we left.
+        resetThread(cancelRunningTurns: false)
+        if let stored = backgroundProjections[botId] {
+            projection = stored
+            pending = sendTasks[botId] != nil
+            backgroundWorking = stored.pending && sendTasks[botId] == nil
+            activity = stored.activity
+            markWorking(botId, stored.pending)
+            rebuildTranscript()
+        } else if let cached = transcriptCache[botId] {
+            // A chat already opened this session comes back with its rows on
+            // screen while the reload confirms them.
             transcript = cached.rows
             transcriptBlocks = cached.blocks
         }
+        sendBotId = sendTasks[botId] != nil ? botId : nil
+        sendTask = sendTasks[botId]
         startReload()
         persistSelection(botId)
-        if let outgoing, !outgoing.sessionId.isEmpty {
-            Task { @MainActor [weak self] in
-                _ = try? await self?.client.cancel(sessionId: outgoing.sessionId)
-            }
-        }
     }
 
     /// The bot a persistSelection write is still trying to store. While it is
@@ -500,23 +521,27 @@ final class AppModel: ObservableObject {
             // transcript appears at once instead of after the stream goes idle.
             durableEvents = state.events
             proposals = state.proposals
-            // Only when nothing is on screen yet. A reload that follows Stop
-            // keeps the rows the turn already streamed until the replay below
-            // has them all; rebuilding on an empty projection here blanked the
-            // chat for the length of the replay.
-            if projection.messages.isEmpty {
+            // A send this app started still owns the live projection. Do not
+            // wipe it and replay underneath: the send task is painting, and
+            // the owner just came back to watch it.
+            let localSend = sendTasks[bot.id] != nil
+            if !localSend, projection.messages.isEmpty {
+                // Only when nothing is on screen yet. A reload that follows Stop
+                // keeps the rows the turn already streamed until the replay below
+                // has them all; rebuilding on an empty projection here blanked the
+                // chat for the length of the replay. A restored background turn
+                // already has its rows: keep them, and let the replay dedupe.
                 projection = StreamProjection()
                 rebuildTranscript()
-            } else {
-                projection = StreamProjection()
+                backgroundWorking = false
             }
-            // A fresh projection knows of no running turn; the follower sets
-            // the flag again when the replay reaches one.
-            backgroundWorking = false
-            if let sessionId = bot.sessionId, !sessionId.isEmpty {
+            if !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
-                // `ReplayGate` says it reached the live tail.
+                // `ReplayGate` says it reached the live tail. A turn still
+                // running (a handoff, a routine, a send started before a
+                // switch) publishes live from that point so coming back shows
+                // the working row and the tokens as they arrive.
                 let durable = ReplayGate.Durable(events: state.events)
                 var atLiveTail = durable.startsLive
                 for try await event in client.stream(sessionId: sessionId) {
@@ -525,13 +550,11 @@ final class AppModel: ObservableObject {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
                     projection.apply(event, live: atLiveTail)
-                    // Nothing is published while the session replays. Each
-                    // publish rebuilt the list, so opening a chat used to
-                    // assemble it in 100ms steps in front of the reader; the
-                    // rows are all in hand a moment later and the single
-                    // publish below lays them out once, already at the newest
-                    // turn. A live turn still streams: that goes through
-                    // `send`, which publishes per delta.
+                    if atLiveTail, projection.pending {
+                        if !backgroundWorking { backgroundWorking = true }
+                        markWorking(bot.id, true)
+                        publishTranscript()
+                    }
                 }
             }
             guard generation == loadGeneration else { return }
@@ -540,6 +563,12 @@ final class AppModel: ObservableObject {
             // below is the one that counts as this chat's loaded state.
             transcriptReady = true
             publishTranscript(force: true)
+            if sendTasks[bot.id] != nil {
+                pending = true
+            } else {
+                backgroundWorking = projection.pending
+                markWorking(bot.id, projection.pending)
+            }
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot.
             let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
@@ -629,6 +658,7 @@ final class AppModel: ObservableObject {
                     }
                     projection.apply(event, live: true)
                     if backgroundWorking != projection.pending { backgroundWorking = projection.pending }
+                    markWorking(current.id, projection.pending)
                     // A background turn that fails (a routine run, a handoff,
                     // a web send) must show the same banner a local one does,
                     // or it leaves a truncated reply with no explanation.
@@ -674,19 +704,22 @@ final class AppModel: ObservableObject {
             // cancel the turn, and the poll after it settles does that work.
             var fresh = try await client.shell()
             guard generation == loadGeneration, polledBotId == selectedBotId else { return }
-            if pending {
-                if let botId = sendBotId,
-                   let local = store?.bots.first(where: { $0.id == botId }),
-                   let index = fresh.bots.firstIndex(where: { $0.id == botId }) {
-                    fresh.bots[index].sessionId = local.sessionId
-                    fresh.bots[index].lastPreview = local.lastPreview
-                    fresh.bots[index].lastAt = local.lastAt
-                }
-                store = fresh
-            } else {
-                store = fresh
+            // Every in-flight send owns its session echo, selected or not:
+            // touchChat may not have landed yet, and the fresh copy must not
+            // revert the pointer a background turn is still writing.
+            for (botId, sessionId) in inflightSessions {
+                guard let local = store?.bots.first(where: { $0.id == botId }),
+                      let index = fresh.bots.firstIndex(where: { $0.id == botId }) else { continue }
+                fresh.bots[index].sessionId = sessionId
+                fresh.bots[index].lastPreview = local.lastPreview
+                fresh.bots[index].lastAt = local.lastAt
+            }
+            store = fresh
+            if !pending {
                 // A poll can be the first to see a server-side delete; repair
-                // the selection the same way an action echo does.
+                // the selection the same way an action echo does. A send on
+                // this bot still fences that, so a stale pointer cannot yank
+                // the owner off a live turn.
                 reconcileSelection(fresh)
             }
             guard let bot = selectedBot, bot.id == polledBotId else { return }
@@ -774,7 +807,9 @@ final class AppModel: ObservableObject {
             threadError = "That chat is gone. Pick another bot."
             return
         }
-        cancelSend()
+        // Only this bot's previous send. A teammate still working in the
+        // background must not be cancelled because the owner sent here.
+        cancelSend(for: bot.id)
         pending = true
         // The local send owns the working row from here; a background flag
         // left over from the follower must not outlive it.
@@ -782,10 +817,11 @@ final class AppModel: ObservableObject {
         activity = .thinking
         threadError = nil
         stickyThreadError = nil
-        sendGeneration += 1
-        let generation = sendGeneration
+        sendGenerations[bot.id] = (sendGenerations[bot.id] ?? 0) + 1
+        let generation = sendGenerations[bot.id] ?? 1
         let chatGen = chatGeneration
         sendBotId = bot.id
+        markWorking(bot.id, true)
         let draftSnapshot = draft
         let sentAttachments = attachments
         let sentAttachmentIds = Set(sentAttachments.map(\.id))
@@ -820,7 +856,7 @@ final class AppModel: ObservableObject {
         // An explicit send is an explicit request to watch the answer, so the
         // transcript follows it whatever the reader was doing before.
         sendTick &+= 1
-        sendTask = Task { @MainActor [weak self] in
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
             // True once the POST answered: the server has the turn, so a
             // later failure lost the reply, not the send.
@@ -839,7 +875,7 @@ final class AppModel: ObservableObject {
                         sendSessionId = nil
                     }
                 }
-                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
                 let sessionId: String
                 do {
                     sessionId = try await self.postSession(
@@ -855,51 +891,61 @@ final class AppModel: ObservableObject {
                     // start a fresh session with this same message. The turn
                     // ids snapshot belongs to the old session, so it is
                     // cleared too.
-                    guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
                     await self.dropSession(botId: bot.id)
                     // Stop pressed while the pointer was being dropped: no
                     // second session gets created only to be cancelled.
-                    guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
                     history = []
                     sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
                 }
                 delivered = true
-                guard generation == self.sendGeneration, chatGen == self.chatGeneration else {
-                    // The turn was stopped while it was being created: the
-                    // session exists now, so cancel it best-effort instead of
-                    // leaving it burning with no UI.
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
+                    // The turn was stopped (Stop or New Chat) while it was
+                    // being created: the session exists now, so cancel it
+                    // best-effort instead of leaving it burning with no UI.
+                    // A switch to another bot does not land here: that does
+                    // not bump this bot's send generation.
                     Task { [weak self] in
                         _ = try? await self?.client.cancel(sessionId: sessionId)
                     }
                     return
                 }
-                self.activeSession = (bot.id, sessionId)
+                self.inflightSessions[bot.id] = sessionId
+                if self.selectedBotId == bot.id {
+                    self.activeSession = (bot.id, sessionId)
+                }
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
                 await self.updateSession(botId: bot.id, sessionId: sessionId, preview: echo)
-                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
                 var sawUserTurn = false
                 for try await event in self.client.stream(
                     sessionId: sessionId,
                     expectedSuffix: echo,
                     historyTurnIds: history
                 ) {
-                    guard generation == self.sendGeneration, chatGen == self.chatGeneration, self.sendBotId == bot.id else { return }
+                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
                     if event.type == "message.received" { sawUserTurn = true }
-                    self.projection.apply(event, live: true)
-                    self.publishTranscript()
+                    self.applyLiveEvent(event, botId: bot.id)
                 }
-                self.publishTranscript(force: true)
-                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
-                if self.projection.failed {
-                    self.stickyThreadError = self.projection.failure?.message ?? "The turn failed."
-                } else if !sawUserTurn {
+                if self.selectedBotId == bot.id {
+                    self.publishTranscript(force: true)
+                }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
+                let live: StreamProjection? = self.selectedBotId == bot.id
+                    ? self.projection
+                    : self.backgroundProjections[bot.id]
+                if live?.failed == true {
+                    if self.selectedBotId == bot.id {
+                        self.stickyThreadError = live?.failure?.message ?? "The turn failed."
+                        self.threadError = self.stickyThreadError
+                    }
+                } else if !sawUserTurn, self.selectedBotId == bot.id {
                     self.stickyThreadError = "The turn did not start."
+                    self.threadError = self.stickyThreadError
                 }
-                self.threadError = self.stickyThreadError
-                self.activeSession = nil
-
-                self.pending = false
+                self.finishSend(botId: bot.id)
                 // Not a full reload. Rebuilding the thread here reset the
                 // projection to empty, and since the durable store holds no
                 // conversation rows the transcript briefly had none at all:
@@ -908,19 +954,23 @@ final class AppModel: ObservableObject {
                 // teardown is what made even a one-line exchange jump. The
                 // rows on screen are already the right ones, so only the side
                 // channel needs refreshing.
-                await self.refreshDurable()
+                if self.selectedBotId == bot.id {
+                    await self.refreshDurable()
+                }
             } catch is CancellationError {
                 return
             } catch {
-                guard generation == self.sendGeneration, chatGen == self.chatGeneration else { return }
+                guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else { return }
                 if delivered {
                     // The server has the turn, so the draft stays cleared and
                     // the transcript keeps what the stream already applied.
                     // Only the reply itself is missing, so say that, then let
                     // the reload resync with what eve stored.
-                    self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "The reply could not be read."
-                    self.threadError = self.stickyThreadError
-                } else {
+                    if self.selectedBotId == bot.id {
+                        self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "The reply could not be read."
+                        self.threadError = self.stickyThreadError
+                    }
+                } else if self.selectedBotId == bot.id {
                     // The composer was cleared when the turn was committed, so
                     // a send that never reached the server has to give the text
                     // and its files back. Anything typed or attached since is
@@ -929,26 +979,29 @@ final class AppModel: ObservableObject {
                     self.stickyThreadError = (error as? LocalizedError)?.errorDescription ?? "Send failed."
                     self.threadError = self.stickyThreadError
                 }
-                self.activeSession = nil
-                self.pending = false
-                await self.reloadThread()
+                self.finishSend(botId: bot.id)
+                if self.selectedBotId == bot.id {
+                    await self.reloadThread()
+                }
             }
-            if generation == self.sendGeneration {
-                self.pending = false
-                self.activeSession = nil
+            if generation == (self.sendGenerations[bot.id] ?? 0) {
+                self.finishSend(botId: bot.id)
             }
         }
+        sendTasks[bot.id] = task
+        sendTask = task
     }
 
     func cancel() {
         guard let bot = selectedBot else { return }
         // Nothing live to stop: never cancel a settled session or wipe a tail
-        // the user is reading.
-        guard pending || activeSession != nil else { return }
-        let target = activeSession?.botId == bot.id ? activeSession?.sessionId : bot.sessionId
-        cancelSend()
+        // the user is reading. Only this bot: a teammate working in the
+        // background is not Stop's target.
+        guard pending || inflightSessions[bot.id] != nil || sendTasks[bot.id] != nil else { return }
+        let target = inflightSessions[bot.id] ?? (activeSession?.botId == bot.id ? activeSession?.sessionId : nil) ?? bot.sessionId
+        cancelSend(for: bot.id)
         pending = false
-        activeSession = nil
+        if activeSession?.botId == bot.id { activeSession = nil }
         // Keep the rows already on screen: the conversation lives in the eve
         // session and reaches the app by replay, so clearing the projection
         // here would erase the just-sent message and any partial reply until
@@ -996,13 +1049,66 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func cancelSend() {
-        sendGeneration += 1
-        sendTask?.cancel()
-        sendTask = nil
-        sendBotId = nil
-        activeSession = nil
-        if pending { pending = false }
+    private func cancelSend(for botId: String? = nil) {
+        let ids: [String]
+        if let botId {
+            ids = [botId]
+        } else {
+            ids = Array(Set(sendTasks.keys).union(sendGenerations.keys).union(inflightSessions.keys))
+        }
+        for id in ids {
+            sendGenerations[id] = (sendGenerations[id] ?? 0) + 1
+            sendTasks[id]?.cancel()
+            sendTasks[id] = nil
+            inflightSessions[id] = nil
+            backgroundProjections[id] = nil
+            markWorking(id, false)
+            if sendBotId == id { sendBotId = nil }
+            if activeSession?.botId == id { activeSession = nil }
+        }
+        if botId == nil || botId == selectedBotId, pending { pending = false }
+        if botId == nil || botId == selectedBotId { sendTask = nil }
+    }
+
+    private func sendStillCurrent(_ botId: String, generation: Int, chatGen: Int) -> Bool {
+        generation == (sendGenerations[botId] ?? 0) && chatGen == chatGeneration
+    }
+
+    private func finishSend(botId: String) {
+        sendTasks[botId] = nil
+        inflightSessions[botId] = nil
+        markWorking(botId, false)
+        if selectedBotId == botId {
+            pending = false
+            sendTask = nil
+            if activeSession?.botId == botId { activeSession = nil }
+        }
+    }
+
+    private func markWorking(_ botId: String, _ running: Bool) {
+        var next = workingBotIds
+        if running { next.insert(botId) } else { next.remove(botId) }
+        if next != workingBotIds { workingBotIds = next }
+    }
+
+    func isWorking(_ botId: String) -> Bool {
+        workingBotIds.contains(botId) || (botId == selectedBotId && (pending || backgroundWorking))
+    }
+
+    /// Apply a live event to the bot it belongs to. If that bot is on screen
+    /// the transcript updates now; if the owner switched away, the projection
+    /// is kept so coming back shows the progress that happened in the background.
+    private func applyLiveEvent(_ event: EveEvent, botId: String) {
+        if selectedBotId == botId {
+            projection.apply(event, live: true)
+            markWorking(botId, projection.pending)
+            publishTranscript()
+            return
+        }
+        var proj = backgroundProjections[botId] ?? StreamProjection()
+        proj.apply(event, live: true)
+        backgroundProjections[botId] = proj
+        markWorking(botId, proj.pending)
     }
 
     private func projectionForSend(_ message: String) -> StreamProjection {
@@ -1056,9 +1162,8 @@ final class AppModel: ObservableObject {
     private func updateSession(botId: String, sessionId: String, preview: String) async {
         guard var current = store,
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
-        // A switch or reload during the handshake must not let a stale bot's
-        // session clobber the fresh store.
-        guard selectedBotId == botId else { return }
+        // Persist even if the owner has switched away: the turn is still
+        // running on this bot, and coming back needs the live session pointer.
         current.bots[index].sessionId = sessionId
         // The optimistic rail preview must match the server's clip; the full
         // text still goes to touchChat for the stored copy.
@@ -1067,24 +1172,24 @@ final class AppModel: ObservableObject {
         )
         current.bots[index].lastAt = RailClock.stamp(Date())
         store = current
-        let generation = sendGeneration
-        let chatGen = chatGeneration
+        inflightSessions[botId] = sessionId
+        let generation = sendGenerations[botId] ?? 0
         do {
             try await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
-            guard generation == sendGeneration, chatGen == chatGeneration,
-                  selectedBotId == botId else { return }
+            guard generation == (sendGenerations[botId] ?? 0) else { return }
             // A later success supersedes the pointer-failure notice.
-            if stickyThreadError == "The session pointer could not be saved." {
+            if selectedBotId == botId, stickyThreadError == "The session pointer could not be saved." {
                 stickyThreadError = nil
                 threadError = nil
             }
         } catch {
-            guard generation == sendGeneration, chatGen == chatGeneration,
-                  selectedBotId == botId else { return }
+            guard generation == (sendGenerations[botId] ?? 0) else { return }
             // The turn still runs; only the stored pointer failed. Surface it
             // so the next poll's revert is not a mystery.
-            stickyThreadError = "The session pointer could not be saved."
-            threadError = stickyThreadError
+            if selectedBotId == botId {
+                stickyThreadError = "The session pointer could not be saved."
+                threadError = stickyThreadError
+            }
         }
     }
 
@@ -1558,20 +1663,33 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The server-driven equivalent of a rail click: stop the outgoing turn
-    /// (best-effort server cancel) and clear per-thread state for the new bot.
+    /// The server-driven equivalent of a rail click. The outgoing bot's turn
+    /// keeps running; only the visible thread is swapped.
     private func switchToBot(_ id: String) {
-        let outgoing = activeSession
-        resetThread()
+        if let old = selectedBotId {
+            backgroundProjections[old] = projection
+            if transcriptReady || !transcript.isEmpty {
+                transcriptCache[old] = (transcript, transcriptBlocks)
+            }
+        }
+        resetThread(cancelRunningTurns: false)
         selectedBotId = id
         clearRoutineState()
         clearPerThreadState()
-        startReload()
-        if let outgoing, !outgoing.sessionId.isEmpty {
-            Task { @MainActor [weak self] in
-                _ = try? await self?.client.cancel(sessionId: outgoing.sessionId)
-            }
+        if let stored = backgroundProjections[id] {
+            projection = stored
+            pending = sendTasks[id] != nil
+            backgroundWorking = stored.pending && sendTasks[id] == nil
+            activity = stored.activity
+            markWorking(id, stored.pending)
+            rebuildTranscript()
+        } else if let cached = transcriptCache[id] {
+            transcript = cached.rows
+            transcriptBlocks = cached.blocks
         }
+        sendBotId = sendTasks[id] != nil ? id : nil
+        sendTask = sendTasks[id]
+        startReload()
     }
 
     /// Errors and memory belong to one bot; a switch must not show them on
@@ -1599,10 +1717,8 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                // The created bot starts fresh: stop any turn still streaming
-                // into the previous thread.
-                self.cancelSend()
-                self.resetThread()
+                // The created bot starts fresh. Other bots keep their turns.
+                self.resetThread(cancelRunningTurns: false)
                 self.applyStore(next)
             self.saveError = nil
             } catch {
@@ -1619,8 +1735,7 @@ final class AppModel: ObservableObject {
             do {
                 let next = try await self.client.shellAction(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
-                self.cancelSend()
-                self.resetThread()
+                self.resetThread(cancelRunningTurns: false)
                 self.applyStore(next)
                 self.saveError = nil
                 self.settingsOpen = true
@@ -1646,10 +1761,10 @@ final class AppModel: ObservableObject {
     /// New Bot from the rail: clear the thread server-side and start fresh.
     func startNewChat(botId: String? = nil) {
         guard let id = botId ?? selectedBotId else { return }
-        // Any in-flight turn would repopulate the cleared thread; cancel it
-        // locally and best-effort server-side, whichever bot started it.
-        let runningSession = activeSession?.sessionId
-        cancelSend()
+        // Any in-flight turn on this bot would repopulate the cleared thread.
+        // Other bots keep working.
+        let runningSession = inflightSessions[id] ?? (activeSession?.botId == id ? activeSession?.sessionId : nil)
+        cancelSend(for: id)
         chatGeneration += 1
         let generation = chatGeneration
         enqueue { [weak self] in
@@ -1676,7 +1791,7 @@ final class AppModel: ObservableObject {
                 return
             }
             guard generation == self.chatGeneration, epoch == self.storeEpoch else { return }
-            self.resetThread()
+            self.resetThread(cancelRunningTurns: false)
             // The old conversation is gone server-side; it must not come back
             // from the cache on the next switch.
             self.transcriptCache[id] = nil
@@ -1697,9 +1812,9 @@ final class AppModel: ObservableObject {
     }
 
     func openRecent(_ recentId: String) {
-        // Opening an old session replaces the live one; stop the current turn
-        // and fence its stream like a New Chat does.
-        cancelSend()
+        // Opening an old session replaces the live one for this bot; other
+        // bots keep working.
+        if let id = selectedBotId { cancelSend(for: id) }
         chatGeneration += 1
         let generation = chatGeneration
         enqueue { [weak self] in
@@ -1714,7 +1829,7 @@ final class AppModel: ObservableObject {
                 if !switched {
                     // Same bot, different stored session: reset the thread and
                     // reload outside the chain so a replay cannot block writes.
-                    self.resetThread()
+                    self.resetThread(cancelRunningTurns: false)
                     self.startReload()
                 }
             } catch {
@@ -1727,12 +1842,17 @@ final class AppModel: ObservableObject {
         perform(ShellActions.toggleSection(sectionId: sectionId))
     }
 
-    private func resetThread() {
+    private func resetThread(cancelRunningTurns: Bool = true) {
         // A stream still running for the old thread must not apply into the
-        // fresh projection; cancelSend bumps the send generation and stops it.
-        cancelSend()
+        // fresh projection. Switching away does not cancel the server turn:
+        // that send keeps writing to its own projection. Stop and New Chat
+        // still cancel.
+        if cancelRunningTurns {
+            cancelSend()
+        }
         loadGeneration += 1
         reloadTask?.cancel()
+        followTask?.cancel()
         // A trailing publish queued for the old thread would rebuild over the
         // cleared transcript.
         pendingPublish?.cancel()
@@ -1749,7 +1869,9 @@ final class AppModel: ObservableObject {
         memoryError = nil
         pending = false
         backgroundWorking = false
-        activeSession = nil
+        if cancelRunningTurns {
+            activeSession = nil
+        }
     }
 
     // MARK: - Proposals
@@ -1891,7 +2013,7 @@ final class AppModel: ObservableObject {
         for block in transcriptBlocks {
             guard case .message(let row, _) = block else { continue }
             switch row.kind {
-            case .user:
+            case .user, .post:
                 awaitingReply = true
                 anchor = nil
             case .assistant:
@@ -1899,7 +2021,7 @@ final class AppModel: ObservableObject {
                     anchor = row.id
                     awaitingReply = false
                 }
-            case .handoff, .post, .note:
+            case .handoff, .note:
                 continue
             }
         }

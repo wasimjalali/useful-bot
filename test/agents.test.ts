@@ -31,8 +31,9 @@ import {
   ownsHandoffClaim,
   queueHandoff,
   readHandoff,
+  waitForHandoff,
 } from "../shared/handoffs.ts";
-import { sendHandoff } from "../shared/agents-send.ts";
+import { sendHandoff, writeHandoffReply } from "../shared/agents-send.ts";
 
 function tempPaths() {
   const dir = mkdtempSync(join(tmpdir(), "ub-agents-"));
@@ -286,6 +287,54 @@ test("sendHandoff writes both sides of the transcript and one queue record", () 
     if (previousDir === undefined) delete process.env.UB_HANDOFF_DIR;
     else process.env.UB_HANDOFF_DIR = previousDir;
   }
+});
+
+test("writeHandoffReply records the answer on both transcripts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-reply-"));
+  const storePath = join(dir, "agents.json");
+  const previousStore = process.env.UB_AGENT_STORE_PATH;
+  process.env.UB_AGENT_STORE_PATH = storePath;
+  try {
+    const record = sendHandoff({
+      source: { id: "bot-ceo", name: "CEO" },
+      target: { id: "bot-research", name: "Research" },
+      message: "What is the price?",
+    });
+    writeHandoffReply({
+      handoff: record,
+      reply: "Forty.",
+      sessionId: "sess_1",
+      receiverId: "bot-research",
+      threadKind: "bot",
+    });
+    const sender = listThreadEvents("bot-ceo", storePath);
+    const receiver = listThreadEvents("bot-research", storePath);
+    assert.equal(sender.map((event) => event.kind).join(","), "handoff,post");
+    assert.equal(sender[1].text, "Forty.");
+    assert.equal(sender[1].authorName, "Research");
+    assert.equal(receiver.map((event) => event.kind).join(","), "post,assistant");
+    assert.equal(receiver[1].text, "Forty.");
+  } finally {
+    if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
+    else process.env.UB_AGENT_STORE_PATH = previousStore;
+  }
+});
+
+test("waitForHandoff resolves when the record is delivered", async () => {
+  const { handoffDir } = tempPaths();
+  const record = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "wait for me",
+  }, handoffDir);
+  setTimeout(() => {
+    markDelivered(record.id, "here", handoffDir);
+  }, 40);
+  const done = await waitForHandoff(record.id, 1000, handoffDir, 10);
+  assert.equal(done?.status, "delivered");
+  assert.equal(done?.response, "here");
 });
 
 test("a corrupt store reads as empty rather than throwing", () => {

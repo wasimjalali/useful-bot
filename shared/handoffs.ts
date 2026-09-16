@@ -341,3 +341,28 @@ export function dropHandoff(id: string, dir = handoffDir()): void {
   rmSync(handoffPath(id, dir), { force: true });
   releaseHandoffClaim(id, "", dir);
 }
+
+/**
+ * Wait until a queued handoff is delivered or fails, or until the timeout.
+ * The sending tool uses this so the teammate's reply comes back as tool
+ * output instead of dying in the receiver's chat. A timeout returns the
+ * last snapshot (still pending) rather than throwing: the pump keeps
+ * working and both transcripts still get the reply.
+ */
+export async function waitForHandoff(
+  id: string,
+  timeoutMs: number,
+  dir = handoffDir(),
+  intervalMs = 250,
+): Promise<HandoffRecord | null> {
+  const budget = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0;
+  const step = Number.isFinite(intervalMs) ? Math.max(10, intervalMs) : 250;
+  const start = Date.now();
+  let latest = readHandoff(id, dir);
+  while (Date.now() - start < budget) {
+    latest = readHandoff(id, dir);
+    if (!latest || latest.status === "delivered" || latest.status === "failed") return latest;
+    await new Promise((resolve) => setTimeout(resolve, step));
+  }
+  return readHandoff(id, dir);
+}

@@ -4,20 +4,24 @@ import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permissi
 import { activeBotId } from "../lib/active-bot.ts";
 import { sendHandoff } from "../../shared/agents-send.ts";
 import { listThreadEvents, releaseSend, reserveSend } from "../../shared/agent-store.ts";
-import { HANDOFF_DEPTH_MAX, readHandoff } from "../../shared/handoffs.ts";
+import { HANDOFF_DEPTH_MAX, readHandoff, waitForHandoff } from "../../shared/handoffs.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
+import { wrapUntrusted } from "../../shared/untrusted.ts";
+
+/** How long sendToBot waits for the teammate. Tests set this to 0. */
+const HANDOFF_WAIT_DEFAULT_MS = 180_000;
 
 export default defineTool({
   description:
-    "Hand a task to one teammate bot and keep working. The teammate picks it up asynchronously and the owner sees the handoff in both transcripts. Use it when another bot owns the deliverable or should review your work. One recipient only: use postToGroup for several at once, which asks the owner first. Expect the reply to land in the target bot's chat.",
+    "Message one teammate bot and wait for their reply. The question lands in their chat as an incoming message, they work (including while the owner is in another chat), and their answer comes back here as this tool's result and as a message in both transcripts. Use it when another bot owns the deliverable or should review your work. One recipient only: use postToGroup for several at once, which asks the owner first.",
   inputSchema: z.object({
     botId: z.string().min(1).max(80),
     message: z.string().min(1).max(4000),
     requestId: z.string().min(1).max(120).optional(),
   }),
-  execute(input, ctx) {
+  async execute(input, ctx) {
     // A handoff or a run starts a teammate turn and writes transcripts, so
     // Read only refuses it like every other change inside the app.
     if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
@@ -107,11 +111,39 @@ export default defineTool({
       if (requestId && !record) releaseSend("handoff", requestId);
       throw err;
     }
+    const waitMs = Number(process.env.UB_HANDOFF_WAIT_MS ?? HANDOFF_WAIT_DEFAULT_MS);
+    const budget = Number.isFinite(waitMs) ? waitMs : HANDOFF_WAIT_DEFAULT_MS;
+    if (budget <= 0) {
+      return {
+        status: "queued",
+        handoffId: record.id,
+        to: { id: target.id, name: target.name },
+        note: "The teammate runs on its own. Their reply will land in both chats.",
+      };
+    }
+    const done = await waitForHandoff(record.id, budget);
+    if (done?.status === "delivered") {
+      return {
+        status: "delivered",
+        handoffId: record.id,
+        to: { id: target.id, name: target.name },
+        reply: wrapUntrusted(`handoff:${target.name}`, done.response),
+        note: "The teammate answered. Use their reply here; do not ask the owner to switch chats.",
+      };
+    }
+    if (done?.status === "failed") {
+      return {
+        status: "failed",
+        handoffId: record.id,
+        to: { id: target.id, name: target.name },
+        error: done.lastError || "handoff_failed",
+      };
+    }
     return {
       status: "queued",
       handoffId: record.id,
       to: { id: target.id, name: target.name },
-      note: "The teammate runs on its own and answers in its own chat. The owner sees this handoff.",
+      note: "The teammate is still working. Their reply will land in both chats.",
     };
   },
 });

@@ -69,6 +69,40 @@ export function sendHandoff(input: {
 }
 
 /**
+ * After the receiver answers, both transcripts get the reply: the receiver
+ * as an assistant turn, the sender as a message from that teammate. The
+ * sending tool also returns the same text, so the model can bring it back
+ * without the owner switching chats.
+ */
+export function writeHandoffReply(input: {
+  handoff: HandoffRecord;
+  reply: string;
+  sessionId: string;
+  receiverId: string;
+  threadKind: ThreadKind;
+}): void {
+  if (!input.reply) return;
+  appendAgentEvent(input.receiverId, {
+    kind: "assistant",
+    threadKind: input.threadKind,
+    sessionId: input.sessionId,
+    text: input.reply,
+    authorBotId: input.handoff.targetBotId,
+    authorName: input.handoff.targetName,
+    handoffId: input.handoff.id,
+  });
+  if (input.handoff.sourceBotId && input.handoff.sourceBotId !== input.receiverId) {
+    appendAgentEvent(input.handoff.sourceBotId, {
+      kind: "post",
+      text: input.reply,
+      authorBotId: input.handoff.targetBotId,
+      authorName: input.handoff.targetName,
+      handoffId: input.handoff.id,
+    });
+  }
+}
+
+/**
  * Ask the web server to start delivering queued handoffs now. Best effort by
  * design: the UI poll drains the same queue, so a failed wake-up costs latency
  * only, and the tool never needs the channel credential to be present.
