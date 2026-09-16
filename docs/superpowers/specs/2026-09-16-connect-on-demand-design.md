@@ -102,6 +102,7 @@ export type ConnectAppProposal = {
   accountId: string | null;   // Composio connected-account id once authorize ran
   waitingSince: string | null;
   toolCount: number | null;   // filled when connected, null if the count call fails
+  handoffId: string | null;   // the resume handoff once queued; the card leaves when it lands
 };
 ```
 
@@ -135,9 +136,12 @@ and `pumpRoutines`. For each `connectApp` proposal in `waiting`:
   (null on failure, never blocks). Set `phase: "connected"`, append a `note`
   event "Gmail connected" on the thread, then queue one handoff through
   `sendHandoff` from `bot-useful` to the source bot:
-  "The owner connected Gmail. Continue the task: <purpose>". Then set
-  `status: "confirmed"`. The handoff record is the resume; it survives an app
-  restart the same way teammate handoffs do.
+  "The owner connected Gmail. Continue the task: <purpose>", and store its id
+  on the card. The card stays `pending` in phase `connected` (the pill is on
+  screen) until that handoff is delivered or has given up, then turns
+  `confirmed` and leaves the dock; ten minutes is the cap if the resume never
+  lands. The handoff record is the resume; it survives an app restart the same
+  way teammate handoffs do.
 - Waiting for more than 10 min: `phase: "expired"`. The card shows "Sign-in
   timed out" with Reopen and Not now. No handoff.
 - Dismissed while waiting: no revoke. A half-finished OAuth that later
