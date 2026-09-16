@@ -356,7 +356,10 @@ function score(row: ConnectorToolkit, search: string): number {
   const name = row.name.toLowerCase();
   const slug = row.slug.replace(/_/g, " ");
   let base = 0;
-  if (name.startsWith(search)) base = 40;
+  // The exact slug outranks everything: the agent tools and the connect pump
+  // look a toolkit up by slug, underscores included.
+  if (row.slug === search) base = 50;
+  else if (name.startsWith(search)) base = 40;
   else if (slug.startsWith(search)) base = 35;
   else if (name.split(/\s+/).some((word) => word.startsWith(search))) base = 30;
   else if (name.includes(search) || slug.includes(search)) base = 20;

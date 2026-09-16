@@ -443,6 +443,16 @@ test("toolkitOf matches a whole connected toolkit segment, longest first", () =>
   assert.equal(toolkitOf("weird", known), null);
 });
 
+test("an exact slug with underscores is found first", async () => {
+  const { factory } = stub({ toolkitItems: [NOTION_MCP, PENDING] });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  await listConnectorToolkits({}, path);
+  await catalogueReady();
+  const { rows } = await listConnectorToolkits({ search: "notion_mcp" }, path);
+  assert.deepEqual(rows.map((row) => row.slug), ["notion_mcp"]);
+});
+
 test("countToolkitTools counts one toolkit's tools and returns null on failure", async () => {
   const { state, factory } = stub({
     toolkitItems: [GMAIL],
