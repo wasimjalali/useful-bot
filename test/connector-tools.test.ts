@@ -8,6 +8,11 @@ import { ApprovalStore } from "../agent/lib/approvals.ts";
 import { setApprovalStore } from "../agent/lib/write.ts";
 import connectorExecute from "../agent/tools/connector_execute.ts";
 import connectorSearch from "../agent/tools/connector_search.ts";
+import connectorCatalog from "../agent/tools/connector_catalog.ts";
+import proposeConnector from "../agent/tools/propose_connector.ts";
+import { listPendingProposals, readProposal } from "../shared/agent-store.ts";
+import { resetCatalogueMemo } from "../shared/composio-catalogue.ts";
+import { forgetConnected } from "../shared/composio.ts";
 import { setComposioFactory, type ComposioLike, type ComposioSessionLike } from "../shared/composio.ts";
 import { setConnectedToolkits, setConnectorsKey, updateConnectorsStore } from "../shared/connectors-store.ts";
 import { UNTRUSTED_PREAMBLE } from "../shared/untrusted.ts";
@@ -61,6 +66,14 @@ interface Box {
   executed: Array<{ slug: string; args: Record<string, unknown> | undefined }>;
   searched: Array<{ query: string; toolkits?: string[] }>;
   result: unknown;
+  /** What the stub session lists as the catalogue; empty by default. */
+  toolkitItems: Array<{
+    slug: string;
+    name: string;
+    isNoAuth: boolean;
+    logo?: string;
+    connection?: { isActive: boolean; connectedAccount?: { status: string; id: string } };
+  }>;
   restore(): void;
 }
 
@@ -70,10 +83,18 @@ function sandbox(connected: string[] = ["gmail"], withKey = true): Box {
     connectors: process.env.UB_CONNECTORS_PATH,
     workspace: process.env.UB_WORKSPACE_STORE_PATH,
     approvals: process.env.UB_APPROVALS_PATH,
+    catalogue: process.env.UB_CATALOGUE_PATH,
+    shell: process.env.UB_SHELL_PATH,
+    store: process.env.UB_AGENT_STORE_PATH,
   };
   process.env.UB_CONNECTORS_PATH = join(dir, "connectors.json");
   process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
   process.env.UB_APPROVALS_PATH = join(dir, "approvals.json");
+  process.env.UB_CATALOGUE_PATH = join(dir, "catalogue.json");
+  process.env.UB_SHELL_PATH = join(dir, "shell.json");
+  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
+  resetCatalogueMemo();
+  forgetConnected();
   updateConnectorsStore((store) => {
     if (withKey) setConnectorsKey(store, "ak_stub_1234567890");
     setConnectedToolkits(store, connected);
@@ -86,6 +107,7 @@ function sandbox(connected: string[] = ["gmail"], withKey = true): Box {
     executed: [],
     searched: [],
     result: { successful: true, data: { hello: "world" } },
+    toolkitItems: [],
     restore() {
       const put = (key: string, value: string | undefined) => {
         if (value === undefined) delete process.env[key];
@@ -94,6 +116,9 @@ function sandbox(connected: string[] = ["gmail"], withKey = true): Box {
       put("UB_CONNECTORS_PATH", previous.connectors);
       put("UB_WORKSPACE_STORE_PATH", previous.workspace);
       put("UB_APPROVALS_PATH", previous.approvals);
+      put("UB_CATALOGUE_PATH", previous.catalogue);
+      put("UB_SHELL_PATH", previous.shell);
+      put("UB_AGENT_STORE_PATH", previous.store);
       setComposioFactory(null);
     },
   };
@@ -102,8 +127,13 @@ function sandbox(connected: string[] = ["gmail"], withKey = true): Box {
     async authorize() {
       throw new Error("not used");
     },
-    async toolkits() {
-      return { items: [], cursor: undefined };
+    async toolkits(options) {
+      const items = options?.isConnected
+        ? box.toolkitItems.filter((item) => item.connection?.isActive)
+        : options?.toolkits
+          ? box.toolkitItems.filter((item) => options.toolkits?.includes(item.slug))
+          : box.toolkitItems.filter((item) => !options?.search || item.slug.includes(options.search));
+      return { items, cursor: undefined };
     },
     async search(params) {
       box.searched.push(params);
@@ -397,5 +427,69 @@ test("a session the web server never stamped refuses a connector write and still
     assert.equal(read.status, "ok");
   } finally {
     box.restore();
+  }
+});
+
+const GMAIL_CONNECTED = {
+  slug: "gmail",
+  name: "Gmail",
+  isNoAuth: false,
+  logo: "https://logos.composio.dev/api/gmail",
+  connection: { isActive: true, connectedAccount: { status: "ACTIVE", id: "ca_gmail" } },
+};
+const NOTION = { slug: "notion", name: "Notion", isNoAuth: false, logo: "https://logos.composio.dev/api/notion" };
+const NOTION_MCP = { slug: "notion_mcp", name: "Notion MCP", isNoAuth: false };
+
+test("catalog blocks without a key, then lists matches with connected state and MCP variants", async () => {
+  const none = sandbox([], false);
+  try {
+    assert.deepEqual(await run(connectorCatalog, { query: "notion" }), { status: "blocked", error: "connectors_not_set_up" });
+  } finally {
+    none.restore();
+  }
+  const box = sandbox(["gmail"]);
+  try {
+    box.toolkitItems = [GMAIL_CONNECTED, NOTION, NOTION_MCP];
+    const result = await run<{ status: string; apps: Array<{ slug: string; connected: boolean }> }>(
+      connectorCatalog,
+      { query: "notion" },
+    );
+    assert.equal(result.status, "ok");
+    assert.deepEqual(result.apps.map((app) => [app.slug, app.connected]), [["notion", false], ["notion_mcp", false]]);
+    const mail = await run<{ apps: Array<{ slug: string; connected: boolean }> }>(connectorCatalog, { query: "gmail" });
+    assert.deepEqual(mail.apps, [{ slug: "gmail", name: "Gmail", connected: true }]);
+  } finally {
+    box.restore();
+  }
+});
+
+test("propose_connector creates one card, refuses unknown, connected and duplicate apps", async () => {
+  const box = sandbox(["gmail"]);
+  try {
+    box.toolkitItems = [GMAIL_CONNECTED, NOTION];
+    const first = await run<{ status: string; proposalId: string; name: string }>(
+      proposeConnector,
+      { slug: "notion", purpose: "Find the launch page" },
+    );
+    assert.equal(first.status, "awaiting_owner_confirmation");
+    assert.equal(first.name, "Notion");
+    const stored = readProposal(first.proposalId);
+    assert.equal(stored?.kind, "connectApp");
+    assert.equal(stored?.kind === "connectApp" && stored.logo, "https://logos.composio.dev/api/notion");
+    assert.equal(stored?.kind === "connectApp" && stored.purpose, "Find the launch page");
+    assert.equal(listPendingProposals("bot-useful").length, 1);
+    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "notion", purpose: "Again" })).status, "duplicate");
+    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "gmail", purpose: "Mail" })).status, "already_connected");
+    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "nope_app", purpose: "x" })).status, "unknown_app");
+    assert.equal((await run<{ status: string }>(proposeConnector, { slug: "../x", purpose: "x" })).status, "unknown_app");
+    assert.equal(listPendingProposals("bot-useful").length, 1);
+  } finally {
+    box.restore();
+  }
+  const none = sandbox([], false);
+  try {
+    assert.deepEqual(await run(proposeConnector, { slug: "notion", purpose: "x" }), { status: "blocked", error: "connectors_not_set_up" });
+  } finally {
+    none.restore();
   }
 });
