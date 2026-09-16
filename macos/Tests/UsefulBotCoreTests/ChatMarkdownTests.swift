@@ -149,7 +149,21 @@ import Testing
 
         after
         """)
-        #expect(blocks == [.quote("first\nsecond"), .rule, .paragraph("after")])
+        #expect(blocks == [.quote([.paragraph("first\nsecond")]), .rule, .paragraph("after")])
+    }
+
+    @Test func aFencedBlockInsideAQuoteStaysFenced() {
+        let blocks = ChatMarkdownParser.blocks(from: """
+        > ```js
+        > const ok = true;
+        > ```
+        """)
+        #expect(blocks == [.quote([.code(lang: "js", text: "const ok = true;")])])
+    }
+
+    @Test func aPlainMultilineQuoteStaysOneParagraph() {
+        let blocks = ChatMarkdownParser.blocks(from: "> first\n> second")
+        #expect(blocks == [.quote([.paragraph("first\nsecond")])])
     }
 
     @Test func anEscapedPipeStaysInsideItsCell() throws {

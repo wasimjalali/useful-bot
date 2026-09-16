@@ -28,6 +28,10 @@ struct ComposerTextView: NSViewRepresentable {
     var pending: () -> Bool
     var onSend: () -> Void
     var onFocusChange: (Bool) -> Void
+    /// Fires when an over-cap paste is cut to the cap, so the composer can
+    /// tell the owner. Defaults to nothing: the field and the model stay in
+    /// sync without it.
+    var onClip: () -> Void = {}
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -84,6 +88,7 @@ struct ComposerTextView: NSViewRepresentable {
         context.coordinator.pending = pending
         context.coordinator.onSend = onSend
         context.coordinator.onFocusChange = onFocusChange
+        context.coordinator.onClip = onClip
         context.coordinator.returnSends = returnSends
         context.coordinator.syncFromModel(into: textView, text: text, writeToken: writeToken)
     }
@@ -111,6 +116,7 @@ struct ComposerTextView: NSViewRepresentable {
         var pending: () -> Bool = { false }
         var onSend: () -> Void = {}
         var onFocusChange: (Bool) -> Void = { _ in }
+        var onClip: () -> Void = {}
         init(text: Binding<String>) {
             self._text = text
         }
@@ -169,17 +175,32 @@ struct ComposerTextView: NSViewRepresentable {
         }
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            var next = textView.string
-            if next.utf16.count > ComposerView.maxDraftLength {
-                next = ComposerDraft.clip(next, toUTF16: ComposerView.maxDraftLength)
-                let selection = textView.selectedRanges
-                textView.string = next
-                textView.setSelectedRange(NSRange(location: (next as NSString).length, length: 0))
-                textView.selectedRanges = selection.filter {
-                    $0.rangeValue.location <= (next as NSString).length
+            let current = textView.string
+            guard current.utf16.count > ComposerView.maxDraftLength else {
+                text = current
+                return
+            }
+            // An over-cap paste is cut to the cap. The model is published
+            // first, from the clipped value, and the field is only rewritten
+            // when it still holds the unclipped text: the rewrite re-enters
+            // this method, and publishing after it raced the re-entrant pass,
+            // which left the draft empty or stale while the field showed
+            // text, with Send disabled and Return doing nothing.
+            let clipped = ComposerDraft.clip(current, toUTF16: ComposerView.maxDraftLength)
+            text = clipped
+            if textView.string != clipped {
+                textView.string = clipped
+                let length = (clipped as NSString).length
+                let kept = textView.selectedRanges.filter {
+                    $0.rangeValue.location <= length
+                }
+                if kept.isEmpty {
+                    textView.setSelectedRange(NSRange(location: length, length: 0))
+                } else {
+                    textView.selectedRanges = kept
                 }
             }
-            text = next
+            onClip()
         }
 
         // `textDidBeginEditing` and `textDidEndEditing` are not focus: AppKit

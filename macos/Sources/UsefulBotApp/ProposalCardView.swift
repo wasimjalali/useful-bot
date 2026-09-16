@@ -123,8 +123,15 @@ struct ProposalCardView: View {
     }
 
     private var targetNote: String {
-        if proposal.targetIds.isEmpty {
+        // An empty target list with a group is a valid fan-out: the message
+        // goes to the group, so only a proposal with no target at all has no
+        // recipients.
+        guard proposal.fanoutTargetId != nil else {
             return "No recipients are available for this proposal."
+        }
+        if let groupId = proposal.groupId {
+            let name = bots.first { $0.id == groupId }?.name ?? "the group"
+            return "This will post to \(name)."
         }
         let names = proposal.targetIds.map(nameOf).joined(separator: ", ")
         return "\(proposal.targetIds.count) bots will each run on this: \(names)"

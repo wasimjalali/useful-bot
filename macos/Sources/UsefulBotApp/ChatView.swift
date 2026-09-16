@@ -49,6 +49,18 @@ struct ChatView: View {
                     .padding(.horizontal, 24)
                     .padding(.vertical, 8)
                 }
+                // Rail and dialog writes (rename, delete, create section, the
+                // New Bot picker, recents) close their dialog and show nothing
+                // when the save fails; this row is visible behind all of them.
+                // The message carries its own copy, already plain.
+                if let save = model.saveError {
+                    Text(save)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.danger)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 8)
+                }
                 if let bot = model.selectedBot {
                     header(bot)
                     if model.hasThreadContent || model.pending {
@@ -394,11 +406,22 @@ struct ChatView: View {
     // MARK: - Composer column
 
     private func composerColumn(_ bot: ShellBot) -> some View {
-        ComposerView(
-            bot: bot,
-            onOpenConnectors: onOpenConnectors,
-            onOpenProviders: { model.openAppSettings(.providers) }
-        )
+        VStack(alignment: .leading, spacing: 0) {
+            // A model, effort or speed pick that did not store. Muted rather
+            // than danger: the chip reverted, nothing arrived broken.
+            if let error = model.composerError {
+                Text(error)
+                    .font(.system(size: DesignTokens.FontSize.attachError))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 8)
+            }
+            ComposerView(
+                bot: bot,
+                onOpenConnectors: onOpenConnectors,
+                onOpenProviders: { model.openAppSettings(.providers) }
+            )
+        }
         .frame(maxWidth: DesignTokens.Space.chatColumnMax)
         .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
         .frame(maxWidth: .infinity)

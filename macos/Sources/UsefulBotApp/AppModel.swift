@@ -34,6 +34,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var operatorName = "Desktop owner"
     @Published private(set) var operatorInitials = "DO"
     @Published private(set) var composer: ComposerState?
+    /// A model, effort or speed pick the router would not store, shown by the
+    /// composer so the chip reverting does not read as the tap doing nothing.
+    @Published private(set) var composerError: String?
     @Published private(set) var memoryNotes: [MemoryNote]?
     @Published private(set) var memoryError: String?
 
@@ -165,6 +168,7 @@ final class AppModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var approvalPollTask: Task<Void, Never>?
     private var reloadTask: Task<Void, Never>?
+    private var followTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
@@ -425,11 +429,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The bot a persistSelection write is still trying to store. While it is
+    /// set the idle poll must not switch away from the locally chosen bot on
+    /// the strength of the server's stale pointer.
+    private var pendingSelectionBotId: String?
+
     /// Persist the selection the way the web's select action does, without
     /// applying the echoed store (that would re-enter this method).
     private func persistSelection(_ botId: String) {
+        pendingSelectionBotId = botId
         enqueue { [weak self] in
-            _ = try? await self?.client.shellAction(ShellActions.select(botId: botId))
+            guard let self else { return }
+            let action = ShellActions.select(botId: botId)
+            do {
+                _ = try await self.client.shellAction(action)
+            } catch {
+                // One retry covers a blip. If the select write never lands,
+                // say so and stop fencing the poll, which then repairs the
+                // selection from the server's pointer on the next read.
+                do {
+                    _ = try await self.client.shellAction(action)
+                } catch {
+                    self.pendingSelectionBotId = nil
+                    self.saveError = "Could not save the selection."
+                }
+            }
         }
     }
 
@@ -437,6 +461,7 @@ final class AppModel: ObservableObject {
         loadGeneration += 1
         let generation = loadGeneration
         reloadTask?.cancel()
+        followTask?.cancel()
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.performReload(generation)
@@ -449,6 +474,7 @@ final class AppModel: ObservableObject {
         loadGeneration += 1
         let generation = loadGeneration
         reloadTask?.cancel()
+        followTask?.cancel()
         reloadTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.performReload(generation)
@@ -510,14 +536,97 @@ final class AppModel: ObservableObject {
             threadError = sticky ?? (projection.failed
                 ? ["The last turn failed.", projection.failure?.reason].compactMap { $0 }.joined(separator: " ")
                 : nil)
+            // The replay above ends once the stream has been idle a few
+            // seconds, and nothing reopened it. Hand the transcript over to
+            // the session follower, so a turn started elsewhere for this bot
+            // (a routine run, a handoff delivery, a send from the web UI)
+            // still reaches it while the chat stays open.
+            followTask?.cancel()
+            followTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.followSession(generation: generation)
+            }
         } catch is CancellationError {
             return
         } catch {
             guard generation == loadGeneration else { return }
-            // A thread that will not load still has to render: the error
-            // belongs on screen, not behind a transcript that never appears.
             transcriptReady = true
             threadError = (error as? LocalizedError)?.errorDescription ?? "Thread failed to load."
+        }
+    }
+
+    /// Keep the open bot's session followed after the load's replay stream has
+    /// ended. The history stream finishes about three seconds after the last
+    /// event, so this reopens it in a loop with a short backoff, the way the
+    /// web's `follow()` keeps its stream alive across reconnects. A turn
+    /// started elsewhere for this bot (a routine run, a handoff delivery, a
+    /// send from the web UI) then reaches the transcript as it happens instead
+    /// of waiting for the bot to be re-selected.
+    ///
+    /// The loop only runs while this bot stays selected; a switch bumps
+    /// `loadGeneration`, which cancels it here. While a local send is pending
+    /// it parks instead of following: the send's own stream owns the session
+    /// for that stretch. A local send does not reload when it succeeds, so the
+    /// pointer is re-read every cycle rather than captured once; a session
+    /// that rolled mid-follow is picked up on the next cycle and never
+    /// followed stale.
+    private func followSession(generation: Int) async {
+        var seededSessionId: String?
+        var knownTurnIds: Set<String> = []
+        while generation == loadGeneration,
+              let live = selectedBot,
+              live.id == selectedBotId {
+            if pending {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            guard let sessionId = live.sessionId, !sessionId.isEmpty else {
+                // A fresh chat has no session yet; a send will make one.
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                continue
+            }
+            if seededSessionId != sessionId {
+                // The turn ids the session already has. A turn is remembered
+                // only once its terminal event passed, so a follow stream
+                // that dropped mid-turn replays it whole and its completion
+                // fills the reply back in.
+                if let turns = try? await client.historyTurnIds(sessionId: sessionId) {
+                    seededSessionId = sessionId
+                    knownTurnIds = turns
+                }
+                guard generation == loadGeneration,
+                      let live = selectedBot, live.id == selectedBotId else { return }
+            }
+            do {
+                var handedOff = false
+                for try await event in client.stream(sessionId: sessionId) {
+                    guard generation == loadGeneration,
+                          let current = selectedBot, current.id == selectedBotId else { return }
+                    if pending || current.sessionId != sessionId {
+                        handedOff = true
+                        break
+                    }
+                    if let turnId = event.turnId, !turnId.isEmpty {
+                        if knownTurnIds.contains(turnId) { continue }
+                        if ["turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
+                            knownTurnIds.insert(turnId)
+                        }
+                    }
+                    projection.apply(event, live: true)
+                    publishTranscript()
+                }
+                if handedOff { continue }
+            } catch is CancellationError {
+                return
+            } catch {
+                // A dropped follow stream is not a thread failure: the idle
+                // poll keeps the durable rows fresh and the next cycle
+                // reopens.
+            }
+            guard generation == loadGeneration,
+                  let after = selectedBot, after.id == selectedBotId,
+                  after.sessionId == sessionId else { return }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
     }
 
@@ -605,8 +714,10 @@ final class AppModel: ObservableObject {
     func saveComposer(modelId: String? = nil, effort: String? = nil, speed: String? = nil) async {
         if let next = try? await client.updateComposer(modelId: modelId, effort: effort, speed: speed) {
             composer = next
+            composerError = nil
         } else {
             await refreshComposer()
+            composerError = "That setting did not save."
         }
     }
 
@@ -624,8 +735,15 @@ final class AppModel: ObservableObject {
         }
         // Never send through the selectedBot fallback: the turn must belong to
         // the bot the composer is showing.
-        guard !message.isEmpty, !pending,
-              let bot = selectedBot, bot.id == selectedBotId else { return }
+        guard !message.isEmpty, !pending, let bot = selectedBot else { return }
+        // A server-side delete can leave the selection on the first bot until
+        // the next poll repairs it, and the Send button is enabled on the
+        // draft alone. Keep the draft and say why the tap did nothing rather
+        // than swallowing it silently.
+        guard bot.id == selectedBotId else {
+            threadError = "That chat is gone. Pick another bot."
+            return
+        }
         cancelSend()
         pending = true
         activity = .thinking
@@ -1328,6 +1446,7 @@ final class AppModel: ObservableObject {
         enqueue { [weak self] in
             guard let self else { return }
             let epoch = self.storeEpoch
+            let botId = self.selectedBotId
             do {
                 let result = try await self.client.shellActionResult(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
@@ -1339,6 +1458,10 @@ final class AppModel: ObservableObject {
                     ? nil
                     : "Saved, but some of its data is still being cleared up."
             } catch {
+                // The banner now shows in the chat column too, so a save
+                // that fails after a switch must not land on the new bot,
+                // the way patchBot guards the same thing above.
+                guard epoch == self.storeEpoch, botId == self.selectedBotId else { return }
                 self.saveError = (error as? LocalizedError)?.errorDescription ?? "Save failed."
             }
         }
@@ -1357,7 +1480,15 @@ final class AppModel: ObservableObject {
     /// server-driven switch can never strand `selectedBotId`.
     private func reconcileSelection(_ next: ShellStore) {
         if let selected = next.selectedBotId, next.bots.contains(where: { $0.id == selected }) {
-            if selected != selectedBotId {
+            if selected == pendingSelectionBotId {
+                // The store caught up with the locally chosen bot, so the
+                // fence can go.
+                pendingSelectionBotId = nil
+            }
+            // A local selection that has not been confirmed yet wins over the
+            // server's stale pointer; otherwise a failed select write would
+            // let the next idle poll switch straight back to the last bot.
+            if selected != selectedBotId, pendingSelectionBotId == nil {
                 switchToBot(selected)
             }
         } else if let current = selectedBotId, !next.bots.contains(where: { $0.id == current }) {
@@ -1523,6 +1654,7 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled, epoch == self.storeEpoch, generation == self.chatGeneration else { return }
                 let switched = next.selectedBotId != self.selectedBotId
                 self.applyStore(next)
+                self.saveError = nil
                 if !switched {
                     // Same bot, different stored session: reset the thread and
                     // reload outside the chain so a replay cannot block writes.
@@ -1835,7 +1967,6 @@ final class AppModel: ObservableObject {
                 let outcome = await self.uploadOne(url)
                 if let attachment = outcome.attachment {
                     self.attachments.append(attachment)
-                    self.attachError = nil
                 } else if let message = outcome.error {
                     self.attachError = message
                 }

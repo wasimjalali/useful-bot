@@ -614,7 +614,6 @@ struct AppSettingsView: View {
     /// tenfold and call it a typo.
     private func commitTypedBudget(_ budget: UsagePayload.Budget) {
         guard let typed = editedBudget else { return }
-        editedBudget = nil
         let cleaned = typed
             .trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: "M", with: "", options: [.caseInsensitive])
@@ -624,6 +623,9 @@ struct AppSettingsView: View {
               cleaned.filter({ $0 == "." }).count <= 1,
               let millions = Double(cleaned),
               millions.isFinite, millions > 0 else {
+            // The rejected text stays in the field: clearing it here would
+            // snap the field back to the server value and the error would
+            // name text the owner can no longer see.
             model.reportUsageError("Type the limit in millions, like 30 or 3.5.")
             return
         }
@@ -637,7 +639,11 @@ struct AppSettingsView: View {
             )
             return
         }
-        guard Int(tokens) != budget.tokens else { return }
+        guard Int(tokens) != budget.tokens else {
+            editedBudget = nil
+            return
+        }
+        editedBudget = nil
         model.setDailyTokenBudget(Int(tokens))
     }
 

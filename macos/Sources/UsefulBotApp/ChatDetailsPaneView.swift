@@ -324,6 +324,28 @@ private struct RoutineEditorView: View {
         }
         .onAppear(perform: seed)
         .onChange(of: routine?.id) { _, _ in seed() }
+        // A server-side turn can edit the routine while the pane is open.
+        // The refreshed row reseeds the fields, unless the owner is typing
+        // in one of them: a poll must never overwrite an edit in progress,
+        // the way the settings pane guards its own reseed on focus.
+        .onChange(of: routine) { _, _ in
+            let id = routine?.id ?? "new"
+            if loadedId != id {
+                seed()
+                return
+            }
+            guard focus == nil else { return }
+            name = routine?.name ?? ""
+            instruction = routine?.instruction ?? ""
+            schedules = routine?.schedules ?? [.weekly(days: [1], time: "09:00")]
+        }
+        // A refused schedule write leaves the rows showing a schedule the
+        // server does not have. Put the server's copy back so the rows match
+        // what the next edit starts from.
+        .onChange(of: model.routinesError) { _, next in
+            guard next != nil, let routine else { return }
+            schedules = routine.schedules
+        }
         .onChange(of: focus) { _, next in
             if next == nil {
                 commitName()

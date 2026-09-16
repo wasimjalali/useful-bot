@@ -63,7 +63,7 @@ struct ChatMarkdownView: View, Equatable {
             CodeBlockView(text: body)
         case .table(let table):
             MarkdownTableView(table: table) { inline($0) }
-        case .quote(let content):
+        case .quote(let inner):
             HStack(alignment: .top, spacing: 10) {
                 // The bar carries the quote; no tint, so a quoted line stays
                 // as readable as the prose around it. It takes its height from
@@ -75,10 +75,19 @@ struct ChatMarkdownView: View, Equatable {
                     .fill(Theme.C.borderStrong)
                     .frame(width: 2)
                     .frame(maxHeight: .infinity)
-                Text(inline(content))
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // The nested blocks render inside the bar, so a fenced block
+                // inside a quote keeps its code card instead of flattening
+                // to backticks.
+                // Erased: the recursion would otherwise define the opaque
+                // return type in terms of itself.
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(inner.enumerated()), id: \.offset) { _, block in
+                        AnyView(blockView(block))
+                    }
+                }
+                .foregroundStyle(Theme.C.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .rule:
