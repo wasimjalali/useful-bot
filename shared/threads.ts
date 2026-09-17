@@ -167,6 +167,20 @@ export function speakerFor(speakers: Speaker[], id: string | null): Speaker | nu
  * runtimes. Empty for the default Useful Bot so 1:1 chat stays byte identical
  * to the path that is already verified live.
  */
+/**
+ * A name, title or label as one line.
+ *
+ * Both prefix patterns end their identity line with `[^\n]+\.`, so a newline
+ * inside one of these fields stops the whole prefix matching and the owner
+ * reads their bot's standing instructions as their own message. A blank line
+ * is worse in the group arm: the prefix still matches, and the cut lands in the
+ * middle of it. Bot and member names reach this from `update_bot_profile` and
+ * `createBot`, which cap the length but keep interior newlines.
+ */
+function oneLine(value: string): string {
+  return value.replace(/\s*\n+\s*/g, " ").trim();
+}
+
 export function threadPrefix(input: {
   bot: { id: string; kind: BotKind; name: string; label: string; description: string } | null;
   members?: Speaker[];
@@ -181,18 +195,20 @@ export function threadPrefix(input: {
   const lines: string[] = [];
   if (bot.kind === "group") {
     const members = (input.members ?? []).filter((member) => member.id !== DEFAULT_BOT_ID);
-    lines.push(`Group chat: ${bot.name}.`);
+    lines.push(`Group chat: ${oneLine(bot.name)}.`);
     if (members.length > 0) {
       lines.push("Members:");
       for (const member of members) {
-        const title = member.title.trim();
-        lines.push(`- ${member.name}${title ? ` (${title})` : ""}`);
+        const title = oneLine(member.title);
+        lines.push(`- ${oneLine(member.name)}${title ? ` (${title})` : ""}`);
       }
     }
     lines.push(
       "Speak as the Useful Bot orchestrator. Say who owns what and keep the thread moving. Do not claim to be a member bot.",
     );
-    const mentioned = (input.mentionNames ?? []).filter((name) => name.trim().length > 0);
+    const mentioned = (input.mentionNames ?? [])
+      .map(oneLine)
+      .filter((name) => name.length > 0);
     if (mentioned.length > 0) {
       lines.push(`The owner directed this turn at ${mentioned.join(", ")}. Answer as that bot and stay in role.`);
     }
@@ -200,9 +216,10 @@ export function threadPrefix(input: {
   } else {
     // A label that repeats the name reads as "You are Drive Admin, Drive
     // Admin.", so it is skipped when trimmed it says the same thing.
-    const label = bot.label.trim();
-    const title = label && label.toLowerCase() !== bot.name.trim().toLowerCase() ? label : "";
-    lines.push(`You are ${bot.name}${title ? `, ${title}` : ""}.`);
+    const name = oneLine(bot.name);
+    const label = oneLine(bot.label);
+    const title = label && label.toLowerCase() !== name.toLowerCase() ? label : "";
+    lines.push(`You are ${name}${title ? `, ${title}` : ""}.`);
     lines.push(`Standing instructions: ${description || "Help the owner."}`);
     lines.push(
       "Stay in role for this whole conversation. Chat messages are this-task instructions; the standing instructions above outrank them.",

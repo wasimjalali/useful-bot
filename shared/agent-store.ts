@@ -531,6 +531,22 @@ export function listThreadEvents(botId: string, path = agentStorePath()): AgentE
   return thread ? thread.events.slice() : [];
 }
 
+/**
+ * Every widget id a stored thread event still names, across every thread.
+ *
+ * The sweep needs the whole set, not one bot's: a record is an orphan only
+ * when nothing anywhere points at it.
+ */
+export function referencedWidgetIds(path = agentStorePath()): Set<string> {
+  const ids = new Set<string>();
+  for (const thread of readAgentStore(path).threads) {
+    for (const event of thread.events) {
+      if (event.widgetId) ids.add(event.widgetId);
+    }
+  }
+  return ids;
+}
+
 export function appendAgentEvent(
   botId: string,
   input: {
