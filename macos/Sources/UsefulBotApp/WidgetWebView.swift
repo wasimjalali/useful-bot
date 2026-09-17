@@ -55,6 +55,8 @@ struct WidgetWebView: NSViewRepresentable {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                     } catch {
                         view?.loadHTMLString(Self.failurePage, baseURL: nil)
+                        // Not final: the next view update fetches again.
+                        self.loadedId = nil
                         return
                     }
                 }

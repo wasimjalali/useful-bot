@@ -1295,6 +1295,9 @@ final class AppModel: ObservableObject {
     /// not mark an unsaved drawing as saved, nor post a saved one again.
     private var persistedWidgets: Set<String> = []
     private var savingWidgets: Set<String> = []
+    /// Drawings the server will not keep. They have no page to show, so they
+    /// get no card either.
+    private var refusedWidgets: Set<String> = []
     private var widgetSaveAttempts: [String: Int] = [:]
     private static let widgetSaveAttemptCap = 3
 
@@ -1319,8 +1322,6 @@ final class AppModel: ObservableObject {
                 do {
                     try await client.persistWidget(botId: botId, widget: widget)
                     self?.persistedWidgets.insert(id)
-                } catch BackendError.unauthorized {
-                    refused = true
                 } catch BackendError.http(let status) where (400...499).contains(status) && status != 429 {
                     // Too large, or the thread is at its limit: asking again
                     // cannot succeed.
@@ -1330,9 +1331,13 @@ final class AppModel: ObservableObject {
                 }
                 guard let self else { return }
                 self.savingWidgets.remove(id)
-                if refused { self.persistedWidgets.insert(id) }
+                if refused {
+                    self.persistedWidgets.insert(id)
+                    self.refusedWidgets.insert(id)
+                    if self.selectedBotId == botId { self.rebuildTranscript() }
+                }
                 let gaveUp = refused || (!self.persistedWidgets.contains(id) && attempt >= Self.widgetSaveAttemptCap)
-                if gaveUp, self.selectedBotId == botId {
+                if gaveUp, self.selectedBotId == botId, self.threadError == nil {
                     self.threadError = "This drawing could not be saved to the chat."
                 }
             }
@@ -1368,7 +1373,7 @@ final class AppModel: ObservableObject {
             messages: projection.messages
         )
         let seenWidgets = Set(rows.filter { $0.kind == .widget }.compactMap { $0.text })
-        for widget in projection.widgets where !seenWidgets.contains(widget.id) {
+        for widget in projection.widgets where !seenWidgets.contains(widget.id) && !refusedWidgets.contains(widget.id) {
             rows.append(TranscriptRow(id: "live-\(widget.id)", kind: .widget, text: widget.id, at: Date()))
         }
         if let bot = selectedBot, bot.isGroup, let store {
