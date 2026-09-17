@@ -590,7 +590,9 @@ final class AppModel: ObservableObject {
                 let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
                 threadError = sticky ?? (projection.failed
                     ? ["The last turn failed.", projection.failure?.reason].compactMap { $0 }.joined(separator: " ")
-                    : nil)
+                    // A drawing that could not be saved while this chat was in
+                    // the background says so when the owner comes back.
+                    : widgetSaveErrors[bot.id])
             }
             // The replay above ends once the stream has been idle a few
             // seconds, and nothing reopened it. Hand the transcript over to
@@ -851,6 +853,7 @@ final class AppModel: ObservableObject {
         threadError = nil
         stickyThreadError = nil
         sendErrors[bot.id] = nil
+        widgetSaveErrors[bot.id] = nil
         sendGenerations[bot.id] = (sendGenerations[bot.id] ?? 0) + 1
         let generation = sendGenerations[bot.id] ?? 1
         let chatGen = chatGenerations[bot.id] ?? 0
@@ -1298,6 +1301,9 @@ final class AppModel: ObservableObject {
     /// Drawings the server will not keep. They have no page to show, so they
     /// get no card either.
     private var refusedWidgets: Set<String> = []
+    /// Per chat, until its next send: a save can give up while the chat is in
+    /// the background, where a banner would land on the wrong thread.
+    private var widgetSaveErrors: [String: String] = [:]
     private var widgetSaveAttempts: [String: Int] = [:]
     private static let widgetSaveAttemptCap = 3
 
@@ -1337,8 +1343,12 @@ final class AppModel: ObservableObject {
                     if self.selectedBotId == botId { self.rebuildTranscript() }
                 }
                 let gaveUp = refused || (!self.persistedWidgets.contains(id) && attempt >= Self.widgetSaveAttemptCap)
-                if gaveUp, self.selectedBotId == botId, self.threadError == nil {
-                    self.threadError = "This drawing could not be saved to the chat."
+                if gaveUp {
+                    let message = "This drawing could not be saved to the chat."
+                    self.widgetSaveErrors[botId] = message
+                    if self.selectedBotId == botId, self.threadError == nil {
+                        self.threadError = message
+                    }
                 }
             }
         }
