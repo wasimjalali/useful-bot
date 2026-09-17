@@ -440,7 +440,6 @@ final class AppModel: ObservableObject {
         resetThread()
         if let stored = backgroundProjections[botId] {
             projection = stored
-            persistedWidgets = Set(stored.widgets.map(\.id))
             pending = sendTasks[botId] != nil
             backgroundWorking = stored.pending && sendTasks[botId] == nil
             activity = stored.activity
@@ -541,7 +540,6 @@ final class AppModel: ObservableObject {
                 // One that has only started has no rows yet but is pending:
                 // keep its working state too.
                 projection = StreamProjection()
-                persistedWidgets = []
                 rebuildTranscript()
                 backgroundWorking = false
             }
@@ -1286,7 +1284,13 @@ final class AppModel: ObservableObject {
         rebuildTranscript()
     }
 
+    /// Drawings the server has saved or refused for good. Call ids are unique
+    /// across chats, so this is never reset: a chat switch or a reload must
+    /// not mark an unsaved drawing as saved, nor post a saved one again.
     private var persistedWidgets: Set<String> = []
+    private var savingWidgets: Set<String> = []
+    private var widgetSaveAttempts: [String: Int] = [:]
+    private static let widgetSaveAttemptCap = 3
 
     private func persistNewWidgets() {
         guard let botId = selectedBotId else { return }
@@ -1296,19 +1300,34 @@ final class AppModel: ObservableObject {
     /// Also called for a bot in the background, so a drawing that lands while
     /// the owner is in another chat is saved then, not at the next replay.
     private func persistNewWidgets(_ widgets: [LiveWidget], botId: String) {
-        for widget in widgets where !persistedWidgets.contains(widget.id) {
-            persistedWidgets.insert(widget.id)
+        for widget in widgets {
+            let id = widget.id
+            if persistedWidgets.contains(id) || savingWidgets.contains(id) { continue }
+            let attempt = widgetSaveAttempts[id, default: 0] + 1
+            if attempt > Self.widgetSaveAttemptCap { continue }
+            widgetSaveAttempts[id] = attempt
+            savingWidgets.insert(id)
             let client = client
             Task { [weak self] in
+                var refused = false
                 do {
                     try await client.persistWidget(botId: botId, widget: widget)
+                    self?.persistedWidgets.insert(id)
+                } catch BackendError.unauthorized {
+                    refused = true
                 } catch BackendError.http(let status) where (400...499).contains(status) && status != 429 {
-                    // The server refused this drawing (too large, thread at its
-                    // limit). Asking again cannot succeed.
-                    self?.threadError = "This drawing could not be saved to the chat."
+                    // Too large, or the thread is at its limit: asking again
+                    // cannot succeed.
+                    refused = true
                 } catch {
-                    // Not saved yet: let the next publish try again.
-                    self?.persistedWidgets.remove(widget.id)
+                    // Not saved yet: a later publish tries again, up to the cap.
+                }
+                guard let self else { return }
+                self.savingWidgets.remove(id)
+                if refused { self.persistedWidgets.insert(id) }
+                let gaveUp = refused || (!self.persistedWidgets.contains(id) && attempt >= Self.widgetSaveAttemptCap)
+                if gaveUp, self.selectedBotId == botId {
+                    self.threadError = "This drawing could not be saved to the chat."
                 }
             }
         }
@@ -1782,7 +1801,6 @@ final class AppModel: ObservableObject {
         clearPerThreadState()
         if let stored = backgroundProjections[id] {
             projection = stored
-            persistedWidgets = Set(stored.widgets.map(\.id))
             pending = sendTasks[id] != nil
             backgroundWorking = stored.pending && sendTasks[id] == nil
             activity = stored.activity
@@ -1991,7 +2009,6 @@ final class AppModel: ObservableObject {
         durableEvents = []
         proposals = []
         projection = StreamProjection()
-        persistedWidgets = []
         transcript = []
         transcriptBlocks = []
         searchHits = []

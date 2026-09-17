@@ -466,8 +466,11 @@ export function handoffWorkingBotIds(): string[] {
   const ids = new Set<string>();
   for (const id of inflight) {
     const record = readHandoff(id);
-    // A group handoff runs on the room, not on the member it names.
-    if (record) ids.add(record.groupId ?? record.targetBotId);
+    if (!record) continue;
+    // A group handoff runs on the room, not on the member it names. Same
+    // fallback as the delivery: a room that is gone means the member runs it.
+    const bots = peekShell()?.bots ?? [];
+    ids.add(receiverOf(record, bots)?.bot.id ?? record.targetBotId);
   }
   return [...ids];
 }

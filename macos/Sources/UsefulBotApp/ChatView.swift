@@ -535,9 +535,15 @@ struct TranscriptRowView: View, Equatable {
                         roster: bots
                     )
                 }
-                // Incoming teammate questions sit in the same bubble as an
-                // owner message, so the receiving bot's chat reads as a turn.
-                userRow
+                // An incoming teammate question (it names this bot) sits in
+                // the same bubble as an owner message, so the receiving bot's
+                // chat reads as a turn. A teammate's answer is a reply, and
+                // keeps its markdown.
+                if row.targetBotIds.contains(bot.id) {
+                    userRow
+                } else {
+                    replyRow(showsSpeaker: false)
+                }
             }
         case .note:
             HStack(alignment: .top, spacing: 12) {
