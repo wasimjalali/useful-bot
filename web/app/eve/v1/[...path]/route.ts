@@ -159,6 +159,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);
     out.set("cache-control", "no-store");
+    // A catch-up read (`includeTailIndex=1`) is told where the durable stream
+    // ends, so it can stop there instead of waiting for the stream to go quiet.
+    const tailIndex = upstream.headers.get("x-eve-stream-tail-index");
+    if (tailIndex) out.set("x-eve-stream-tail-index", tailIndex);
     // A session create answers with the fresh session id. Capture the small
     // JSON body to stamp the grant before returning it: a tolerant parse that
     // fails still passes the body through untouched. The shell is re-read so

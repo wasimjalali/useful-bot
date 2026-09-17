@@ -11,6 +11,19 @@ import Testing
     {"type":"input.requested","data":{"requests":[{"action":{"callId":"call_01_q","kind":"tool-call","toolName":"ask_question"},"display":"select","kind":"question","prompt":"Which folder?","requestId":"call_01_q","allowFreeform":true,"options":[{"id":"inbox","label":"Inbox","description":"New files"},{"id":"archive","label":"Archive"}]}]}}
     """
 
+    @Test func aFailedSessionDropsTheCardButAFailedTurnKeepsIt() throws {
+        // eve retires a failed session, so the next message opens an empty one
+        // and an option label sent there answers nothing. A turn that fails
+        // while the session lives on still has the question in its history.
+        var projection = StreamProjection()
+        projection.apply(try line(asked))
+        projection.apply(try line(#"{"type":"turn.failed","data":{"turnId":"turn_0","code":"boom"}}"#))
+        #expect(projection.failed)
+        #expect(projection.questions.count == 1)
+        projection.apply(try line(#"{"type":"session.failed","data":{"code":"boom"}}"#))
+        #expect(projection.questions.isEmpty)
+    }
+
     @Test func aQuestionStaysOpenAfterItsTurnEnds() throws {
         var projection = StreamProjection()
         projection.apply(try line(asked))

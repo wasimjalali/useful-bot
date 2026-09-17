@@ -136,7 +136,7 @@ final class AppModel: ObservableObject {
     @Published var searchOpen = false
     /// Composer draft is page-level on the web, so it survives a bot switch.
     @Published var draft = ""
-    /// Bumped only when the app itself writes `draft` — the send-clear and the
+    /// Bumped only when the app itself writes `draft`: the send-clear and the
     /// restore of a failed send. Typing never bumps it.
     ///
     /// The composer's text view uses this to tell a deliberate write apart from
@@ -195,6 +195,19 @@ final class AppModel: ObservableObject {
     /// The newest session this app started, scoped to its bot so a Stop on
     /// another bot cannot cancel the wrong session.
     private var activeSession: (botId: String, sessionId: String)?
+    /// Where the open chat's follower resumes reading its eve session: the
+    /// index of the first event the projection does not hold yet. The reload's
+    /// replay from zero sets it and the follower advances it, so the follower
+    /// asks the server only for what is new. Before this it re-read the whole
+    /// session every few seconds and decided what was old from a second read,
+    /// and a turn that finished during that second read was taken for history
+    /// and never shown.
+    private var followCursor: (sessionId: String, next: Int)?
+    /// Turns a local send streamed to their end, per session. The follower resumes
+    /// from a cursor that sits before them, so it meets their events again and
+    /// must pass over them rather than lean on the projection's bounded id
+    /// dedupe. Dropped when a reload rebuilds the session from zero.
+    private var localTurnIds: [String: Set<String>] = [:]
     /// One handoff pump at a time; a slow server must not stack ticks.
     private var tickInFlight = false
     /// Consecutive unauthorized polls, surfaced after the second failure.
@@ -214,8 +227,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var sendTick: UInt64 = 0
     /// False from the moment a chat is opened until its rows are all in.
     ///
-    /// A thread arrives in two waves — the durable rows, then the session
-    /// replay — and a scroll view that already exists while they land keeps
+    /// A thread arrives in two waves (the durable rows, then the session
+    /// replay) and a scroll view that already exists while they land keeps
     /// the offset it had, which is the top. Something then has to scroll it
     /// down, and that trip is what reads as "it starts in the middle and
     /// jumps". The transcript is not built at all until this is true, so its
@@ -586,6 +599,10 @@ final class AppModel: ObservableObject {
                 let baselineTail = projection.messages.last?.text.count ?? 0
                 var replay = StreamProjection()
                 var swapped = false
+                // This replay starts at zero and ends holding the whole
+                // session, so the follower's cursor is rebuilt with it.
+                followCursor = (sessionId, 0)
+                localTurnIds[sessionId] = nil
                 if baseline == 0, !projection.pending {
                     // Nothing to preserve: the reload owns the projection. A
                     // turn that has only started has no rows yet but is
@@ -601,6 +618,7 @@ final class AppModel: ObservableObject {
                     // projection from that moment, and the row it painted must
                     // not be replaced by a replay that predates it.
                     if sendTasks[bot.id] != nil { return }
+                    if let index = event.index { followCursor = (sessionId, index + 1) }
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
@@ -722,23 +740,22 @@ final class AppModel: ObservableObject {
     }
 
     /// Keep the open bot's session followed after the load's replay stream has
-    /// ended. The history stream finishes about three seconds after the last
-    /// event, so this reopens it in a loop with a short backoff, the way the
-    /// web's `follow()` keeps its stream alive across reconnects. A turn
-    /// started elsewhere for this bot (a routine run, a handoff delivery, a
-    /// send from the web UI) then reaches the transcript as it happens instead
-    /// of waiting for the bot to be re-selected.
+    /// ended. The stream finishes about three seconds after its last event, so
+    /// this reopens it in a loop with a short backoff, the way the web's
+    /// `follow()` keeps its stream alive across reconnects. A turn started
+    /// elsewhere for this bot (a routine run, a handoff delivery, a send from
+    /// the web UI) then reaches the transcript as it happens instead of
+    /// waiting for the bot to be re-selected.
+    ///
+    /// Each read starts at `followCursor`, so it carries only events the
+    /// projection has not seen, however long the session is.
     ///
     /// The loop only runs while this bot stays selected; a switch bumps
     /// `loadGeneration`, which cancels it here. While a local send is pending
     /// it parks instead of following: the send's own stream owns the session
     /// for that stretch. A local send does not reload when it succeeds, so the
-    /// pointer is re-read every cycle rather than captured once; a session
-    /// that rolled mid-follow is picked up on the next cycle and never
-    /// followed stale.
+    /// pointer is re-read every cycle rather than captured once.
     private func followSession(generation: Int) async {
-        var seededSessionId: String?
-        var knownTurnIds: Set<String> = []
         while generation == loadGeneration,
               let live = selectedBot,
               live.id == selectedBotId {
@@ -751,37 +768,35 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 continue
             }
-            if seededSessionId != sessionId {
-                // The turn ids the session already finished. Only terminal
-                // turns count: one still running while the ids are read must
-                // stay unknown here, or every event it has left, and its
-                // completion, would be skipped below and the turn would never
-                // render until the bot is re-selected. Events the replay has
-                // already shown are dropped by the projection's id dedupe.
-                if let turns = try? await client.historyTurnIds(sessionId: sessionId, terminalOnly: true) {
-                    seededSessionId = sessionId
-                    knownTurnIds = turns
-                }
-                guard generation == loadGeneration,
-                      let live = selectedBot, live.id == selectedBotId else { return }
+            guard let cursor = followCursor, cursor.sessionId == sessionId else {
+                // No position in this session: the pointer moved to one made
+                // elsewhere (a web send or a routine run minted it), or the
+                // load came back to a send in flight and replayed nothing.
+                // Only a load from zero can say what the projection holds, and
+                // it starts the next follower itself.
+                startReload()
+                return
             }
             do {
                 var handedOff = false
-                for try await event in client.stream(sessionId: sessionId) {
+                for try await event in client.stream(sessionId: sessionId, startIndex: cursor.next) {
                     guard generation == loadGeneration,
                           let current = selectedBot, current.id == selectedBotId else { return }
+                    // Checked before the cursor moves: an event left unapplied
+                    // here is read again on the next cycle.
                     if pending || current.sessionId != sessionId {
                         handedOff = true
                         break
                     }
-                    // An answer to a question carries the asking turn's id but
-                    // arrives after that turn completed. Skipping it with the
-                    // rest of the turn left an answered question on screen.
-                    if let turnId = event.turnId, !turnId.isEmpty, event.type != "input.resolved" {
-                        if knownTurnIds.contains(turnId) { continue }
-                        if ["turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
-                            knownTurnIds.insert(turnId)
-                        }
+                    if let index = event.index { followCursor = (sessionId, index + 1) }
+                    // A local send painted its own turn. An answer to a
+                    // question carries the asking turn's id but arrives after
+                    // that turn completed, and skipping it with the rest left
+                    // an answered question on screen.
+                    if let turnId = event.turnId,
+                       localTurnIds[sessionId]?.contains(turnId) == true,
+                       event.type != "input.resolved" {
+                        continue
                     }
                     projection.apply(event, live: true)
                     if backgroundWorking != projection.pending { backgroundWorking = projection.pending }
@@ -813,13 +828,13 @@ final class AppModel: ObservableObject {
             } catch {
                 // A dropped follow stream is not a thread failure: the idle
                 // poll keeps the durable rows fresh and the next cycle
-                // reopens.
+                // reopens from the same cursor.
             }
             guard generation == loadGeneration,
                   let after = selectedBot, after.id == selectedBotId else { return }
             // The pointer can move while the stream sat idle (a web send or a
-            // routine run minted a new session); the next cycle re-seeds and
-            // follows that one instead of ending here.
+            // routine run minted a new session); the next cycle sees a cursor
+            // for the wrong session and reloads.
             if after.sessionId != sessionId { continue }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
@@ -1056,7 +1071,7 @@ final class AppModel: ObservableObject {
         let echo = Attachments.echoedMessage(message, images: images)
         // Appended to the projection that is already on screen, never a fresh
         // one built from the durable rows. The durable store holds only the
-        // side channel — notes, proposals, handoffs — while the conversation
+        // side channel (notes, proposals, handoffs) while the conversation
         // itself lives in the eve session and reaches us by replay, so
         // rebuilding from durable rows erased every message the reader could
         // see and left them alone with the line they had just sent until the
@@ -1105,6 +1120,9 @@ final class AppModel: ObservableObject {
                     return
                 }
                 let sessionId: String
+                // True when this send makes the session rather than joining
+                // one, which is the only case where nothing older exists.
+                var createdSession = (sendSessionId ?? "").isEmpty
                 do {
                     sessionId = try await self.postSession(
                         botId: bot.id,
@@ -1131,9 +1149,17 @@ final class AppModel: ObservableObject {
                         return
                     }
                     history = []
+                    createdSession = true
                     sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
                 }
                 delivered = true
+                if createdSession, self.selectedBotId == bot.id {
+                    // A session this send created holds nothing older than the
+                    // send, so the follower can start at its first event. Asked
+                    // of the send itself, not of the stored pointer: that can
+                    // be re-stamped by a poll between the snapshot and here.
+                    self.followCursor = (sessionId, 0)
+                }
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                     // The turn was stopped (Stop or New Chat) while it was
                     // being created: the session exists now, so cancel it
@@ -1168,6 +1194,15 @@ final class AppModel: ObservableObject {
                         return
                     }
                     if event.type == "message.received" { sawUserTurn = true }
+                    // Only a turn this stream painted to its end is the
+                    // follower's to pass over. One it lost part-way (Stop, a
+                    // dropped connection) still has events to show, and the
+                    // follower reads them from its cursor; the ones already
+                    // applied here fall to the projection's id dedupe.
+                    if let turnId = event.turnId, !turnId.isEmpty,
+                       ["turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
+                        self.localTurnIds[sessionId, default: []].insert(turnId)
+                    }
                     self.applyLiveEvent(event, botId: bot.id)
                 }
                 if self.selectedBotId == bot.id {
@@ -1496,7 +1531,8 @@ final class AppModel: ObservableObject {
         rebuildTranscript()
     }
 
-    /// Drawings the server has saved or refused for good. Call ids are unique
+    /// Drawings whose save is settled: kept, refused for good, or given up on
+    /// after its retries. Call ids are unique
     /// across chats, so this is never reset: a chat switch or a reload must
     /// not mark an unsaved drawing as saved, nor post a saved one again.
     private var persistedWidgets: Set<String> = []
@@ -1507,8 +1543,6 @@ final class AppModel: ObservableObject {
     /// Per chat, until its next send: a save can give up while the chat is in
     /// the background, where a banner would land on the wrong thread.
     private var widgetSaveErrors: [String: String] = [:]
-    private var widgetSaveAttempts: [String: Int] = [:]
-    private static let widgetSaveAttemptCap = 3
 
     private func persistNewWidgets() {
         guard let botId = selectedBotId else { return }
@@ -1521,37 +1555,29 @@ final class AppModel: ObservableObject {
         for widget in widgets {
             let id = widget.id
             if persistedWidgets.contains(id) || savingWidgets.contains(id) { continue }
-            let attempt = widgetSaveAttempts[id, default: 0] + 1
-            if attempt > Self.widgetSaveAttemptCap { continue }
-            widgetSaveAttempts[id] = attempt
             savingWidgets.insert(id)
             let client = client
             Task { [weak self] in
-                var refused = false
-                do {
+                // The save owns its retries. It used to be tried again only
+                // when something else published the transcript, so a drawing
+                // that landed as its turn ended could fail once, never be
+                // asked again, and vanish on reload without a word.
+                let outcome = await WidgetSaveRetry.run {
                     try await client.persistWidget(botId: botId, widget: widget)
-                    self?.persistedWidgets.insert(id)
-                } catch BackendError.http(let status) where (400...499).contains(status) && status != 429 {
-                    // Too large, or the thread is at its limit: asking again
-                    // cannot succeed.
-                    refused = true
-                } catch {
-                    // Not saved yet: a later publish tries again, up to the cap.
                 }
                 guard let self else { return }
                 self.savingWidgets.remove(id)
-                if refused {
-                    self.persistedWidgets.insert(id)
+                // Settled either way, so no later publish starts it over.
+                self.persistedWidgets.insert(id)
+                if outcome == .saved { return }
+                if outcome == .refused {
                     self.refusedWidgets.insert(id)
                     if self.selectedBotId == botId { self.rebuildTranscript() }
                 }
-                let gaveUp = refused || (!self.persistedWidgets.contains(id) && attempt >= Self.widgetSaveAttemptCap)
-                if gaveUp {
-                    let message = "This drawing could not be saved to the chat."
-                    self.widgetSaveErrors[botId] = message
-                    if self.selectedBotId == botId, self.threadError == nil {
-                        self.threadError = message
-                    }
+                let message = "This drawing could not be saved to the chat."
+                self.widgetSaveErrors[botId] = message
+                if self.selectedBotId == botId, self.threadError == nil {
+                    self.threadError = message
                 }
             }
         }
@@ -2243,6 +2269,7 @@ final class AppModel: ObservableObject {
         loadGeneration += 1
         reloadTask?.cancel()
         followTask?.cancel()
+        followCursor = nil
         // A trailing publish queued for the old thread would rebuild over the
         // cleared transcript.
         pendingPublish?.cancel()

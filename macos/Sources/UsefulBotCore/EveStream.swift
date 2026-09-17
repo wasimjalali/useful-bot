@@ -221,6 +221,10 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     public let messageDelta: String?
     public let turnId: String?
     public let data: JSONValue?
+    /// The event's absolute position in its session stream, stamped by the
+    /// reader rather than decoded: eve's `startIndex` counts events from zero,
+    /// so `index + 1` is where a later read resumes without replaying history.
+    public var index: Int?
 
     enum CodingKeys: String, CodingKey { case type, data, meta }
     enum DataKeys: String, CodingKey { case message, messageDelta, turnId }
@@ -237,6 +241,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
         messageDelta = try? data?.decodeIfPresent(String.self, forKey: .messageDelta)
         turnId = try? data?.decodeIfPresent(String.self, forKey: .turnId)
         self.data = try? c.decodeIfPresent(JSONValue.self, forKey: .data)
+        index = nil
     }
 
     public init(
@@ -246,7 +251,8 @@ public struct EveEvent: Decodable, Equatable, Sendable {
         message: String? = nil,
         messageDelta: String? = nil,
         turnId: String? = nil,
-        data: JSONValue? = nil
+        data: JSONValue? = nil,
+        index: Int? = nil
     ) {
         self.type = type
         self.id = id
@@ -255,6 +261,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
         self.messageDelta = messageDelta
         self.turnId = turnId
         self.data = data
+        self.index = index
     }
 }
 
@@ -281,14 +288,23 @@ public enum EveStream {
     public static let optimisticUserPrefix = "local-"
 
     public static func parseLine(_ line: String) -> EveEvent? {
+        guard let payload = payload(of: line),
+              let data = payload.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(EveEvent.self, from: data)
+    }
+
+    /// The event text a stream line carries, or nil for a blank line, a
+    /// comment or the end marker. Every line with a payload is one event in
+    /// eve's count whether or not this build can decode it, so a reader that
+    /// keeps a cursor counts these and not the events it managed to parse.
+    public static func payload(of line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix(":") else { return nil }
         let payload = trimmed.hasPrefix("data:")
             ? String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
             : trimmed
         guard !payload.isEmpty, payload != "[DONE]" else { return nil }
-        guard let data = payload.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(EveEvent.self, from: data)
+        return payload
     }
 
     /// Ports of `BOT_TURN_PREFIX` and `GROUP_TURN_PREFIX` in
@@ -600,6 +616,12 @@ public struct StreamProjection: Equatable, Sendable {
             // stale bubble.
             currentAssistantId = nil
         case "turn.failed", "session.failed":
+            // eve retires a session that failed, and the next message opens a
+            // fresh one with none of this history. A question card left up
+            // would send its option label into that empty session, where it
+            // answers nothing. A failed turn alone keeps the card: the session
+            // lives on, so the label still lands beside the question.
+            if event.type == "session.failed" { questions = [] }
             pending = false
             failed = true
             failure = TurnFailure(
