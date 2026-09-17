@@ -232,6 +232,12 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     /// reader rather than decoded: eve's `startIndex` counts events from zero,
     /// so `index + 1` is where a later read resumes without replaying history.
     public var index: Int?
+    /// How many recorded events were still ahead of this one when the read
+    /// connected: positive inside the history, zero on its last event, below
+    /// zero for an event that happened after. Nil when the server did not say
+    /// where its history ended. It is the one hard line between a replay of
+    /// what already happened and a turn that is happening now.
+    public var historyRemaining: Int?
 
     enum CodingKeys: String, CodingKey { case type, data, meta }
     enum DataKeys: String, CodingKey { case message, messageDelta, turnId }

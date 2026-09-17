@@ -91,6 +91,20 @@ public enum ReplayGate {
         }
     }
 
+    /// Whether a working row may show for a turn the replay found running.
+    ///
+    /// When the server said where its history ended, that is the answer: no
+    /// row while the read is still inside it, however live an old turn looks
+    /// as it goes by. The two older signals stand in only for a server that
+    /// did not say. They misfire on a chat whose rows live in the session and
+    /// not in the store: every id there is one the store never wrote, so the
+    /// whole history read as a turn happening now, and the row walked through
+    /// old steps for as long as the replay took.
+    public static func mayShowWorking(historyRemaining: Int?, drained: Bool, novelStart: Bool) -> Bool {
+        if let historyRemaining { return historyRemaining <= 0 }
+        return drained || novelStart
+    }
+
     /// True once this event proves the replay reached the live tail.
     public static func reachedLiveTail(durable: Durable, event: EveEvent) -> Bool {
         guard let tailId = durable.tailId else { return true }

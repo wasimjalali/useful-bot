@@ -1113,12 +1113,16 @@ public actor BackendClient {
     /// durably recorded index and the stream finishes on reaching it, without
     /// waiting out the quiet period. A server that does not report a tail
     /// leaves the quiet period as the only end, as before.
+    /// With `markHistory` the server is asked for the same tail but the read
+    /// carries on past it: each event says how far it sat from the end of the
+    /// history, and the caller tells a replay from a live turn by that.
     public nonisolated func stream(
         sessionId: String,
         expectedSuffix: String? = nil,
         historyTurnIds: Set<String> = [],
         startIndex: Int = 0,
-        untilTail: Bool = false
+        untilTail: Bool = false,
+        markHistory: Bool = false
     ) -> AsyncThrowingStream<EveEvent, Error> {
         let base = self.base
         let session = self.session
@@ -1134,7 +1138,7 @@ public actor BackendClient {
                             resolvingAgainstBaseURL: false
                         )
                         components?.queryItems = [URLQueryItem(name: "startIndex", value: String(max(0, startIndex)))]
-                        if untilTail {
+                        if untilTail || markHistory {
                             components?.queryItems?.append(URLQueryItem(name: "includeTailIndex", value: "1"))
                         }
                         guard let url = components?.url else { throw BackendError.decoding }
@@ -1157,13 +1161,13 @@ public actor BackendClient {
                         }
                         // Zero-based index of the last recorded event, or -1
                         // for an empty stream. Nil when the server did not say.
-                        let tail = untilTail
+                        let tail = untilTail || markHistory
                             ? (response as? HTTPURLResponse)?
                                 .value(forHTTPHeaderField: "x-eve-stream-tail-index")
                                 .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
                             : nil
                         var nextIndex = max(0, startIndex)
-                        if let tail, tail < nextIndex {
+                        if untilTail, let tail, tail < nextIndex {
                             // Nothing recorded past the cursor.
                             continuation.finish()
                             return
@@ -1184,7 +1188,7 @@ public actor BackendClient {
                             guard EveStream.payload(of: line) != nil else { continue }
                             let index = nextIndex
                             nextIndex += 1
-                            let reachedTail = tail.map { index >= $0 } ?? false
+                            let reachedTail = untilTail && (tail.map { index >= $0 } ?? false)
                             guard var event = EveStream.parseLine(line) else {
                                 if reachedTail {
                                     continuation.finish()
@@ -1193,6 +1197,7 @@ public actor BackendClient {
                                 continue
                             }
                             event.index = index
+                            if markHistory, let tail { event.historyRemaining = tail - index }
                             if !armed {
                                 if event.type == "message.received",
                                    let message = event.message,
