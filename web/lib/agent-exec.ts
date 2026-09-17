@@ -484,6 +484,10 @@ export function handoffWorkingBotIds(): string[] {
 // Pumps are single-flight: the UI poll, wakePump and fan-out confirmations can
 // all call this within the same second, and overlapping pumps would hold many
 // eve deliveries open at once. Callers queue behind the pump in progress.
+// Inside one pump the batch runs together, one delivery per receiving bot: the
+// router takes ten model calls at once now, and a two minute turn on one bot
+// must not hold up a handoff to another. The batch size is the bound on how
+// many eve deliveries this pump holds open (the tick caps it at four).
 let pumpQueue: Promise<unknown> = Promise.resolve();
 
 export function pumpHandoffs(limit = 2): Promise<{
@@ -497,8 +501,10 @@ export function pumpHandoffs(limit = 2): Promise<{
 }
 
 /**
- * Deliver queued handoffs, oldest first, one at a time. Concurrent calls are
- * deduped per handoff id and serialized by pumpHandoffs.
+ * Deliver queued handoffs, oldest first, at most one per receiving bot at a
+ * time: eve runs one turn per session, so a second handoff to a bot that is
+ * already receiving one waits for the next pump. Concurrent calls are deduped
+ * per handoff id and serialized by pumpHandoffs.
  */
 async function pumpOnce(limit: number): Promise<{
   delivered: Array<{ id: string; to: string }>;
@@ -508,19 +514,28 @@ async function pumpOnce(limit: number): Promise<{
   const delivered: Array<{ id: string; to: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
   const candidates = listDeliverable().filter((record) => !inflight.has(record.id));
-  const batch = candidates.slice(0, limit);
-  for (const record of batch) {
+  const bots = peekShell()?.bots ?? [];
+  const receivers = new Set<string>();
+  const batch: HandoffRecord[] = [];
+  for (const record of candidates) {
+    if (batch.length >= limit) break;
+    const receiver = receiverOf(record, bots)?.bot.id ?? record.targetBotId;
+    if (receivers.has(receiver)) continue;
+    receivers.add(receiver);
+    batch.push(record);
+  }
+  await Promise.all(batch.map(async (record) => {
     // Cross-process claim: without it two web servers can both deliver the
     // same record and append two replies to the receiver transcript.
     const claimToken = claimHandoff(record.id);
-    if (!claimToken) continue;
+    if (!claimToken) return;
     inflight.add(record.id);
     try {
       await deliverOne(record, claimToken);
       delivered.push({ id: record.id, to: record.targetName });
     } catch (err) {
       const message = err instanceof Error ? err.message : "handoff_failed";
-      if (message === "claim_lost") continue;
+      if (message === "claim_lost") return;
       const next = markFailed(record.id, message, undefined, claimToken);
       const terminal = next && next.status === "failed" && next.attempts >= HANDOFF_ATTEMPTS_MAX;
       if (terminal) {
@@ -553,7 +568,7 @@ async function pumpOnce(limit: number): Promise<{
       inflight.delete(record.id);
       releaseHandoffClaim(record.id, claimToken);
     }
-  }
+  }));
   return { delivered, failed, queued: Math.max(0, candidates.length - batch.length) };
 }
 
@@ -808,8 +823,9 @@ function recordRun(
   }
 }
 
-// Like the handoff pump: overlapping runs would hold several eve turns open at
-// once, so callers queue behind the run in progress.
+// Like the handoff pump: single-flight across calls, and inside one pump the
+// batch runs together, one routine per bot, so two bots' routines due in the
+// same minute no longer run back to back.
 let routineQueue: Promise<unknown> = Promise.resolve();
 
 export type RoutinePumpResult = {
@@ -831,10 +847,23 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
   const skipped: Array<{ id: string; reason: string }> = [];
   const now = new Date();
   const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
-  for (const candidate of candidates.slice(0, limit)) {
+  // One per bot: a routine is a turn in the bot's own chat, and eve runs one
+  // turn per session. A bot's second due routine waits for the next pump.
+  const owners = new Set<string>();
+  const batch: Routine[] = [];
+  for (const candidate of candidates) {
+    if (batch.length >= limit) break;
+    if (owners.has(candidate.botId)) continue;
+    owners.add(candidate.botId);
+    batch.push(candidate);
+  }
+  // Everything up to `routinesInflight.add` below runs without an await, so
+  // each callback reaches its claim before any of them yields: the mutex with
+  // startRoutineNow holds exactly as it did in the sequential loop.
+  await Promise.all(batch.map(async (candidate) => {
     // Re-checked here, not only when the list was built: a Test run can have
     // started on this routine since, and it marks the set before it yields.
-    if (routinesInflight.has(candidate.id)) continue;
+    if (routinesInflight.has(candidate.id)) return;
     // Both claims flip their marker inside the store lock, so a tick that raced
     // this one finds the request already taken or nothing due. A contended
     // lock is that race, not a fault in this routine: skip the candidate and
@@ -852,9 +881,9 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
       } else {
         failed.push({ id: candidate.id, error });
       }
-      continue;
+      return;
     }
-    if (!claim) continue;
+    if (!claim) return;
     routinesInflight.add(candidate.id);
     try {
       const result = await executeRoutine(claim.routine, manual ? "manual" : "schedule");
@@ -867,7 +896,7 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
     } finally {
       routinesInflight.delete(candidate.id);
     }
-  }
+  }));
   return { ran, failed, skipped };
 }
 
