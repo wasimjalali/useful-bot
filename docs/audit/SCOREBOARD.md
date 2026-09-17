@@ -454,3 +454,138 @@ working row flashing on a settled chat.
 - O-MACCORE-03: decide whether a failed turn should drop an open question card.
 - Em dashes sit in ten code comments under `macos/Sources`. Comments, not copy, and
   pre-existing, but the house rule bans them everywhere.
+
+## Round 4
+
+2026-09-17, same day as round 3 and the same shape: the orchestrator audits and patches,
+Spark and GLM re-review. This round worked the "Open for round 4" list rather than
+re-reading slices, and the first item on it turned out to be the largest defect of the
+audit so far.
+
+### G-MACCORE-03, exercised live at last: it failed
+
+The fix from PR #60 had gone three rounds without anyone running it. The check: open the
+CEO chat in the installed app, create a throwaway routine for CEO through the web API
+(inactive, no schedule, "reply with this one line"), `POST /api/routines/<id>/run`, touch
+nothing, screenshot every four seconds.
+
+eve recorded the whole turn in the open session inside 3.2 seconds (`turn_12`, reply
+`follow-probe ok 1458`). The app painted nothing in the 20 seconds it stayed on that chat.
+The web log shows why. After the reload's replay, the next stream the app opened for that
+session lasted 8.8 seconds and spanned the live turn: that was `followSession`'s seeding
+read, `historyTurnIds(terminalOnly: true)`. It replayed from index 0 and stayed open until
+a 3 second idle watchdog, so it saw the routine's `turn.completed` arrive live, filed that
+turn under `knownTurnIds`, and the follower skipped every event of it from then on. The
+turn would only appear on re-selecting the bot, which is the exact behaviour PR #60 set out
+to remove.
+
+Reading the same log turned up two performance defects nobody had reported:
+
+| ID | Sev | File | What |
+|----|-----|------|------|
+| O-R4-01 | high | macos/Sources/UsefulBotApp/AppModel.swift `followSession` | G-MACCORE-03: a turn that completes during the follower's seeding read is taken for history and never rendered |
+| O-R4-02 | medium | same | The follower re-read the whole session from index 0 about every six seconds for as long as a chat stayed open. On the CEO chat that is 2,311 events and 660 KB per cycle, decoded each time |
+| O-R4-03 | high | macos/Sources/UsefulBotCore/BackendClient.swift `historyTurnIds` | Every send into an existing chat first took a turn id snapshot by full replay, and that read only ended on the 3 second idle watchdog. The log shows a 3.6s stream immediately before each `POST /eve/v1/session/<id>`: every message waited that long before it was even posted |
+
+One fix covers all three. eve's `startIndex` is an absolute event count (checked: the
+first event of `?startIndex=2300` carries the same `meta.id` as line 2301 of the full
+read), and `includeTailIndex=1` makes eve report the last durable index in
+`x-eve-stream-tail-index`.
+
+- `BackendClient.stream` takes `startIndex`, stamps each event with its `index`, and counts
+  every line that carries a payload whether or not this build can decode it, because eve
+  counts those too. With `untilTail` it finishes on reaching the reported tail. The web
+  proxy now relays the header.
+- `historyTurnIds` reads until the tail and returns. The 3.6 second wait in front of every
+  send is gone.
+- `AppModel.followCursor` means "every event below this index is already in the open
+  chat's projection". The reload's replay from zero sets it and the follower advances it,
+  so the follower asks only for what is new and has no seeding read to race against. Turns
+  a local send streamed itself are passed over by turn id. With no cursor for the live
+  session (the pointer moved to a session minted elsewhere, or the load came back to a send
+  in flight) the follower hands over to a reload, which starts the next follower.
+
+Left as a follow-up, deliberately: a send still downloads the session twice, once for the
+snapshot and once for its own armed stream. Neither waits on the watchdog any more, so it
+is cheap on loopback, and starting the armed stream at the tail is a change to the send
+path that deserves its own round.
+
+The probe left one `follow-probe ok 1458` turn in the CEO session. The throwaway routine
+was deleted.
+
+### The rest of the list
+
+| Item | Disposition |
+|------|-------------|
+| O-MACAPP-03, widget save retry | **patched.** `WidgetSaveRetry.run` in core: three attempts with waits of 1s and 4s, stops at once on a 4xx other than 429, and always returns saved, refused or gaveUp. The caller settles the widget in every outcome and shows the error for the last two. The attempt counter and its cap are gone. Loopback was the reason to defer it in round 3, and it is the reason the schedule is short, not a reason to have none: a web service restart or a held store lock is exactly the few-second failure that used to cost a drawing silently |
+| O-MACCORE-03, question card on a failed turn | **settled: `session.failed` drops the card, `turn.failed` alone keeps it.** Round 3 kept the card because its buttons send the option label as a fresh message. That recovery does not survive a failed session: eve retires the session, the next send gets `409 session_not_active`, the app drops the pointer and opens a new session with no history, and a bare "Inbox" or "Yes" lands there answering nothing. The Retry banner is the recovery that works. A turn that fails while its session lives on still has the question in history, so the card stays |
+| Spark R-01 and R-02, `unsentDrafts` surviving New Chat and Open Recent | **rejection stands, now agreed.** Put to Spark once as a ruling rather than a review, with the reasoning and an instruction to break it. It read every entry point and found no sequence worse than a surprising draft: the stash is written only for a bot that is not selected, drained only into that same bot's composer, prepends and never sends, respects the attachment cap, and is cleared on delete |
+| GLM on the final PR #74 diff | **not obtained.** A second attempt with a reading budget in the brief ran 1,191 seconds and exited 0 with no findings block at all, after the round 3 attempt died at the cap. The follower and reload code that diff touched is rewritten by this round's patch, which both models reviewed, so the gap is closed by supersession rather than by the pass that was asked for |
+| Em dashes in code comments | **removed**, all ten |
+
+### Reviewer scorecard
+
+| Model | Passes | Raised | Confirmed | Notes |
+|-------|-------:|-------:|----------:|-------|
+| Spark | 3 | 0 | 0 | The ruling (61s), a clean pass on the round 4 diff (225s) and a clean pass on the fixup (123s). On the main pass it read the follower, the id dedupe and its cap, the send failure paths, the widget route and the store append before returning empty. A fourth run produced zero bytes and died at the 1,500s cap, which reads as a hung provider call; not counted |
+| GLM   | 2 | 2 | 2 | One empty run on the PR #74 diff (above). Then, given only the follower and the stream reader and told to open four functions and nothing else, it finished in 933s with two real findings Spark had missed. Lesson for round 5: GLM finishes when the brief is a slice of the diff, not the diff |
+
+### GLM's findings on the round 4 patch
+
+| Sev | What | Verdict |
+|-----|------|---------|
+| medium | The send recorded its turn id for the follower to skip on the first event it yielded, so a turn whose send stream died before the terminal event (Stop, a dropped connection) was skipped to its end, terminal included: a reply that finished on the server could stay truncated until the next reload | confirmed, **the patch caused it**, fixed: the id is recorded only once the send's own stream has seen that turn end |
+| low | The cursor for a session a send created was set by comparing the new id with the pre-send snapshot's pointer, which a poll can re-stamp in between | confirmed, fixed: set on what the send did (`createdSession`) |
+
+### Found while verifying, not patched: only one bot can think at a time
+
+During the round the owner sent CEO a message while another bot was mid-turn. It failed
+after six seconds with "The last turn failed." The session shows why: three
+`409 session_busy` answers from the router, then `turn.failed`.
+
+SPEC.md:266 says one active turn per SESSION and two globally. `ConcurrencyGate` enforces
+one per CALLER, and the caller is the credential. eve is one caller for every bot, and
+`agent/agent.ts` stamps one process-wide `x-useful-session-id` on every model call, so the
+router could not tell sessions apart even if it wanted to. The result is one model call at
+a time across the whole app: talking to a second bot while the first works fails, and so
+would a routine firing during a chat.
+
+Recorded as **O-R4-04, high**, and left for the owner rather than patched at the tail of a
+round, because the fix moves what the router calls a session, and the budget, duplicate
+and step reservation checks all key on that. The tool side is already safe for parallel
+turns: `activeBotId` resolves the acting bot from the eve session, not from process state.
+Proposed shape: resolve the model per step with the eve session in hand, stamp a stable
+UUID derived from that session id, key the per-caller gate on caller plus session for
+completions, keep the global ceiling of two until the owner sets a number for rollout, and
+have the app say "another bot is working" instead of "the last turn failed" when the code
+is `session_busy` or `global_budget_exhausted`.
+
+### Verified
+
+- `x-eve-stream-tail-index` reaches the app's side of the proxy: `2310` for the 2,311
+  event CEO session.
+- 247 Swift tests (was 245) and 451 node tests pass, `npm run typecheck` is clean.
+- **G-MACCORE-03, live, on the build installed from main after PR #77.** CEO chat open, a
+  second throwaway routine run through the web API, no clicks: six seconds later the chat
+  showed the routine note, its prompt and the reply `follow-probe ok 1612`, and the stale
+  failure banner cleared. Screenshot `r4-follow-verified.png`. The web log shows the
+  follower asking for `?startIndex=2326` on each cycle where it used to ask for `0`.
+- Not yet observed live: the shorter wait in front of a send. No message was typed into
+  the owner's chats to prove it; the next send's log line will show the snapshot read
+  ending in milliseconds rather than 3.6s.
+
+### PRs
+
+| PR | What |
+|----|------|
+| #77 | the cursor follower, the send wait, the widget retry, the question card rule, em dashes |
+
+### Open for round 5
+
+- O-R4-04, the router gate (above). The one that matters for rollout.
+
+- The send path's two full reads per message (above).
+- `performReload` returns before starting a follower when a send begins mid-replay, so
+  that chat is not followed until it is re-selected. Predates this round; rare.
+- `tsc -p web` (not the project's configured typecheck) reports one error in the frozen
+  web UI, `web/app/page.tsx:550`, a `widget` event kind missing from `ThreadRow`.
