@@ -472,9 +472,13 @@ final class AppModel: ObservableObject {
         if let stored = backgroundProjections[botId] {
             projection = stored
             pending = sendTasks[botId] != nil
-            backgroundWorking = stored.pending && sendTasks[botId] == nil
+            // The stash is a snapshot from when this chat was left, and a
+            // turn nobody here sent may have ended since. Only a send this
+            // app still holds is known to be running; for anything else the
+            // reload below reads the session and decides.
+            backgroundWorking = false
             activity = stored.activity
-            markWorking(botId, stored.pending)
+            markWorking(botId, sendTasks[botId] != nil)
             rebuildTranscript()
         } else if let cached = transcriptCache[botId] {
             // A chat already opened this session comes back with its rows on
@@ -2088,9 +2092,13 @@ final class AppModel: ObservableObject {
         if let stored = backgroundProjections[id] {
             projection = stored
             pending = sendTasks[id] != nil
-            backgroundWorking = stored.pending && sendTasks[id] == nil
+            // The stash is a snapshot from when this chat was left, and a
+            // turn nobody here sent may have ended since. Only a send this
+            // app still holds is known to be running; for anything else the
+            // reload below reads the session and decides.
+            backgroundWorking = false
             activity = stored.activity
-            markWorking(id, stored.pending)
+            markWorking(id, sendTasks[id] != nil)
             rebuildTranscript()
         } else if let cached = transcriptCache[id] {
             transcript = cached.rows
