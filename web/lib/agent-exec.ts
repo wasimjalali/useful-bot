@@ -466,7 +466,8 @@ export function handoffWorkingBotIds(): string[] {
   const ids = new Set<string>();
   for (const id of inflight) {
     const record = readHandoff(id);
-    if (record) ids.add(record.targetBotId);
+    // A group handoff runs on the room, not on the member it names.
+    if (record) ids.add(record.groupId ?? record.targetBotId);
   }
   return [...ids];
 }

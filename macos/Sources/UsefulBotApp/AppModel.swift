@@ -532,12 +532,14 @@ final class AppModel: ObservableObject {
             // wipe it and replay underneath: the send task is painting, and
             // the owner just came back to watch it.
             let localSend = sendTasks[bot.id] != nil
-            if !localSend, projection.messages.isEmpty {
+            if !localSend, projection.messages.isEmpty, !projection.pending {
                 // Only when nothing is on screen yet. A reload that follows Stop
                 // keeps the rows the turn already streamed until the replay below
                 // has them all; rebuilding on an empty projection here blanked the
                 // chat for the length of the replay. A restored background turn
                 // already has its rows: keep them, and let the replay dedupe.
+                // One that has only started has no rows yet but is pending:
+                // keep its working state too.
                 projection = StreamProjection()
                 persistedWidgets = []
                 rebuildTranscript()
@@ -1297,8 +1299,17 @@ final class AppModel: ObservableObject {
         for widget in widgets where !persistedWidgets.contains(widget.id) {
             persistedWidgets.insert(widget.id)
             let client = client
-            Task {
-                try? await client.persistWidget(botId: botId, widget: widget)
+            Task { [weak self] in
+                do {
+                    try await client.persistWidget(botId: botId, widget: widget)
+                } catch BackendError.http(let status) where (400...499).contains(status) && status != 429 {
+                    // The server refused this drawing (too large, thread at its
+                    // limit). Asking again cannot succeed.
+                    self?.threadError = "This drawing could not be saved to the chat."
+                } catch {
+                    // Not saved yet: let the next publish try again.
+                    self?.persistedWidgets.remove(widget.id)
+                }
             }
         }
     }
@@ -1953,6 +1964,9 @@ final class AppModel: ObservableObject {
 
     private func stashCurrentThread() {
         guard let old = selectedBotId else { return }
+        // A drawing that arrived inside the publish throttle has not been
+        // saved yet, and the reset that follows cancels that publish.
+        persistNewWidgets()
         // Do not clobber a live stash with an empty post-reset projection.
         if !projection.messages.isEmpty || backgroundProjections[old] == nil {
             backgroundProjections[old] = projection
