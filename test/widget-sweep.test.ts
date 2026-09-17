@@ -83,6 +83,12 @@ test("a store that will not parse stops the sweep instead of emptying it", () =>
     assert.equal(referencedWidgetIds(), null);
     writeFileSync(storePath, JSON.stringify({ schemaVersion: 2, threads: [] }));
     assert.equal(referencedWidgetIds(), null);
+    // parseAgentStore falls back to an empty list for a missing or non-array
+    // `threads`, which would read the same as a store that genuinely has none.
+    writeFileSync(storePath, JSON.stringify({ schemaVersion: 1 }));
+    assert.equal(referencedWidgetIds(), null);
+    writeFileSync(storePath, JSON.stringify({ schemaVersion: 1, threads: null }));
+    assert.equal(referencedWidgetIds(), null);
 
     writeFileSync(storePath, JSON.stringify({ schemaVersion: 1, threads: [], proposals: [], reserves: [] }));
     assert.deepEqual([...(referencedWidgetIds() ?? [])], []);

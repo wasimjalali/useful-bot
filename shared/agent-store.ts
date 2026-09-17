@@ -556,7 +556,12 @@ export function referencedWidgetIds(path = agentStorePath()): Set<string> | null
     // same empty store would read as "nothing references a widget", so the
     // shape is checked before it is parsed.
     if (!raw || typeof raw !== "object") return null;
-    if ((raw as Record<string, unknown>).schemaVersion !== AGENT_SCHEMA) return null;
+    const rec = raw as Record<string, unknown>;
+    if (rec.schemaVersion !== AGENT_SCHEMA) return null;
+    // `threads: []` is a real empty store and every widget is then genuinely
+    // an orphan. A missing or non-array `threads` is a file this build cannot
+    // read, and `parseAgentStore` would answer it with the same empty list.
+    if (!Array.isArray(rec.threads)) return null;
     store = parseAgentStore(raw);
   } catch {
     return null;
