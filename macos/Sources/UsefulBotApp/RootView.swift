@@ -27,8 +27,11 @@ struct RootView: View {
     @State private var deleteBot: ShellBot?
     @State private var connectorsOpen = false
 
+    /// The launch view covers the wait for the local services and nothing
+    /// more: once they answer, the app shows, even mid-animation. Holding it
+    /// for the animation's full length made every warm launch 2.8 s slower.
     private var showingLaunch: Bool {
-        !launchFinished && model.phase != .unavailable && !reduceMotion
+        !launchFinished && model.phase == .starting && !reduceMotion
     }
 
     var body: some View {

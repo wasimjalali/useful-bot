@@ -399,10 +399,16 @@ final class AppModel: ObservableObject {
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { @MainActor [weak self] in
+            // With no window on screen there is nobody to show a fresh rail
+            // or thread to, so those reads drop to every fourth tick. The
+            // handoff pump is not display work and keeps every tick.
+            var hiddenTicks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
                 guard let self else { return }
-                await self.pollOnce()
+                let visible = NSApp.windows.contains { $0.isVisible && $0.occlusionState.contains(.visible) }
+                hiddenTicks = visible ? 0 : (hiddenTicks + 1) % 4
+                await self.pollOnce(displayReads: visible || hiddenTicks == 0)
             }
         }
         // The web polls approvals every 1.5s while the shell is open.
@@ -419,7 +425,8 @@ final class AppModel: ObservableObject {
     private func pollApprovals() async {
         guard phase == .ready else { return }
         if let items = try? await client.approvals() {
-            approvals = items.filter { decidedApprovals[$0.id] == nil }
+            let visible = items.filter { decidedApprovals[$0.id] == nil }
+            if visible != approvals { approvals = visible }
             // A decided id stays hidden until the server stops returning it,
             // so a slow poll cannot resurface the card. In-flight busy ids
             // are owned by the decider, never by the poll.
@@ -685,7 +692,16 @@ final class AppModel: ObservableObject {
                             && projection.pending
                         if backgroundWorking != working { backgroundWorking = working }
                         markWorking(bot.id, working)
-                        publishTranscript()
+                        // Nothing is painted while the read is still inside
+                        // the history the server counted out. A chat whose rows
+                        // live in the session starts "live" from its first
+                        // event, so every one of several thousand old events
+                        // published, each publish laid the whole chat out
+                        // again, and opening a long chat held the main thread
+                        // for minutes. The forced publish after the loop paints
+                        // the history once; a server that sends no count keeps
+                        // the old behaviour.
+                        if (historyRemaining ?? 0) <= 0 { publishTranscript() }
                     }
                 }
                 if !swapped, sendTasks[bot.id] == nil {
@@ -866,11 +882,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func pollOnce() async {
+    private func pollOnce(displayReads: Bool = true) async {
         guard phase == .ready else { return }
         // Handoffs and the rail keep pumping during a turn; the web ticks on
         // the same cadence as its stream rather than waiting for it to end.
         pumpHandoffs()
+        guard displayReads else { return }
         let generation = loadGeneration
         let polledBotId = selectedBotId
         do {
@@ -902,7 +919,11 @@ final class AppModel: ObservableObject {
                 backgroundProjections[botId] = nil
                 transcriptCache[botId] = nil
             }
-            store = fresh
+            // Only a real change is published. Every view observes this whole
+            // model, so assigning an identical store redrew the window, and
+            // re-laid out the transcript, every 2.5 s with nothing happening.
+            let storeChanged = fresh != store
+            if storeChanged { store = fresh }
             if let current = polledBotId, moved.contains(current), !pending {
                 resetThread()
                 rebuildTranscript()
@@ -919,11 +940,25 @@ final class AppModel: ObservableObject {
             guard let bot = selectedBot, bot.id == polledBotId else { return }
             let state = try await client.threadState(botId: bot.id)
             guard generation == loadGeneration, polledBotId == selectedBotId else { return }
-            proposals = state.proposals
+            // A card also closes by the clock (its TTL), with no change on the
+            // wire, so the open set is compared as well as the list.
+            let openIds = Set(state.proposals.filter { $0.isOpen() }.map(\.id))
+            if proposals != state.proposals || openIds != polledOpenProposalIds {
+                proposals = state.proposals
+            }
+            polledOpenProposalIds = openIds
             pruneBusyProposals()
             if !pending {
-                durableEvents = state.events
-                rebuildTranscript()
+                // The rows depend on the durable events, on the roster (group
+                // attribution reads names from the store) and on today's date
+                // (the day dividers say Today and Yesterday). Live text comes
+                // through publishTranscript, not through here.
+                let day = Calendar.current.startOfDay(for: Date())
+                if durableEvents != state.events || storeChanged || day != polledTranscriptDay {
+                    durableEvents = state.events
+                    polledTranscriptDay = day
+                    rebuildTranscript()
+                }
                 // A sticky turn-failure banner is cleared by send/select, not
                 // by an idle poll that knows nothing new.
             }
@@ -943,6 +978,12 @@ final class AppModel: ObservableObject {
             /* keep the last view; the next poll retries */
         }
     }
+
+    /// What the last poll saw, for the two things that change a published
+    /// value without changing the wire: a proposal reaching its TTL and the
+    /// calendar day the dividers are labelled against.
+    private var polledOpenProposalIds: Set<String> = []
+    private var polledTranscriptDay: Date?
 
     /// Bots whose last session pointer this app could not save.
     private var unsavedSessionBots: Set<String> = []
@@ -984,11 +1025,12 @@ final class AppModel: ObservableObject {
         // renders in Waiting: its Authorize or Reopen was applied, so the mark
         // has done its job.
         let live = Set(proposals.filter { $0.isOpen() && !(($0.kind == .connectApp || $0.kind == .connectServer) && $0.phase == .waiting) }.map(\.id))
-        busyProposals = busyProposals.intersection(live)
+        let next = busyProposals.intersection(live)
+        if next != busyProposals { busyProposals = next }
     }
 
     func refreshComposer() async {
-        if let next = try? await client.composer() {
+        if let next = try? await client.composer(), next != composer {
             composer = next
         }
     }
@@ -2526,8 +2568,8 @@ final class AppModel: ObservableObject {
             let next = try await client.routines(botId: botId)
             // A slow response from the previous bot must not land on this one.
             guard botId == selectedBotId else { return }
-            routines = next
-            routinesError = nil
+            if routines != next { routines = next }
+            if routinesError != nil { routinesError = nil }
             if let openRoutineId, !next.contains(where: { $0.id == openRoutineId }) {
                 // The routine was deleted elsewhere; fall back to the list
                 // instead of showing an empty detail view.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,7 +8,9 @@ import {
   catalogFor,
   parseModelList,
   parseModelsDev,
+  readModelsCache,
   refreshProviderModels,
+  writeModelsCache,
 } from "../shared/live-models.ts";
 import { hydrateModel, inferCapabilities, mergeLiveModels, modelSeesImages, snapComposer } from "../shared/models.ts";
 
@@ -92,4 +94,18 @@ test("models.dev facts land on the live rows: context window and image input", a
   assert.equal(mystery?.contextTokens, undefined);
   assert.equal(modelSeesImages(mystery), null);
   assert.equal(catalogFor("opencode-go", path).find((item) => item.id === "glm-5.3")?.inputs?.includes("image"), false);
+});
+
+test("the parsed models cache is reused until another process replaces the file", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-models-memo-")), "models-cache.json");
+  const row = (id: string) => mergeLiveModels("opencode-go", [id]);
+  writeModelsCache({ schemaVersion: 2, providers: { "opencode-go": { fetchedAt: 1, models: row("kimi-k3") } } }, path);
+  const first = readModelsCache(path);
+  assert.equal(readModelsCache(path), first, "an unchanged file is not parsed again");
+  // What another process does: a whole new file renamed over this one, same
+  // byte length, inside the same clock tick.
+  const next = JSON.stringify({ schemaVersion: 2, providers: { "opencode-go": { fetchedAt: 1, models: row("kimi-k4") } } });
+  writeFileSync(`${path}.other`, `${next}\n`);
+  renameSync(`${path}.other`, path);
+  assert.equal(catalogFor("opencode-go", path)[0]?.id, "kimi-k4");
 });

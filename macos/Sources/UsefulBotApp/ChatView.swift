@@ -340,6 +340,12 @@ struct ChatView: View {
 
     private func transcript(_ bot: ShellBot) -> some View {
         let roster = model.store?.bots ?? []
+        // What the rows are handed. A row is skipped while its inputs compare
+        // equal, and a bot's session pointer and last preview change every
+        // time any bot says anything, which made every row in this chat
+        // unequal, and rebuilt its markdown, for a reply in another one.
+        let rowBot = bot.transcriptFace
+        let rowRoster = roster.map(\.transcriptFace)
         // Built once per transcript change in the model, not once per body.
         // This view re-evaluates on every keystroke in the composer, and
         // regrouping several hundred rows there is what made typing stutter.
@@ -364,8 +370,8 @@ struct ChatView: View {
                             case .message(let row, let recipients):
                                 TranscriptRowView(
                                     row: row,
-                                    bot: bot,
-                                    bots: roster,
+                                    bot: rowBot,
+                                    bots: rowRoster,
                                     recipients: recipients,
                                     maxBubbleWidth: columnWidth * 0.85
                                 )
@@ -596,6 +602,18 @@ private struct BotMetaRow: View {
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
+    }
+}
+
+private extension ShellBot {
+    /// This bot without the fields that move on every turn and that no
+    /// transcript row draws: a row shows a name and a face, never a preview.
+    var transcriptFace: ShellBot {
+        var face = self
+        face.sessionId = nil
+        face.lastPreview = ""
+        face.lastAt = nil
+        return face
     }
 }
 
@@ -1018,7 +1036,9 @@ private struct ScrollPinnedTracker: ViewModifier {
                     viewport: geometry.containerSize.height
                 )
             } action: { old, new in
-                viewport = new.viewport
+                // This fires for every scroll frame; the window only changes
+                // height on a resize.
+                if viewport != new.viewport { viewport = new.viewport }
                 // Only the reader's own gesture may break the pin.
                 //
                 // Everything else that moves this geometry is the app's doing

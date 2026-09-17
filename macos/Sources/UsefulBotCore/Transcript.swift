@@ -162,13 +162,28 @@ public enum Transcript {
     public static func attributeGroupReplies(_ rows: [TranscriptRow], roster: [Speaker]) -> [TranscriptRow] {
         guard !roster.isEmpty else { return rows }
         var next = rows
-        for (index, row) in next.enumerated() {
+        // One forward pass. The user turn in force is carried along and its
+        // mentions are resolved once, on the first reply that needs them: a
+        // backward search plus a fresh regex parse per bubble made a long run
+        // of replies under one message quadratic, on every publish.
+        var previousUserText: String?
+        var resolved = false
+        var speaker: Speaker?
+        for (index, row) in rows.enumerated() {
+            if row.kind == .user {
+                previousUserText = row.text
+                resolved = false
+                speaker = nil
+                continue
+            }
             if row.kind != .assistant || row.authorBotId != nil { continue }
-            let previousUser = next[..<index].last { $0.kind == .user }
-            guard let previousUser else { continue }
-            let mentions = Threads.parseMentions(previousUser.text, bots: roster).mentionIds
-            guard mentions.count == 1,
-                  let speaker = roster.first(where: { $0.id == mentions[0] }) else { continue }
+            guard let previousUserText else { continue }
+            if !resolved {
+                resolved = true
+                let mentions = Threads.parseMentions(previousUserText, bots: roster).mentionIds
+                speaker = mentions.count == 1 ? roster.first(where: { $0.id == mentions[0] }) : nil
+            }
+            guard let speaker else { continue }
             next[index].authorBotId = speaker.id
             next[index].author = speaker.name
         }
