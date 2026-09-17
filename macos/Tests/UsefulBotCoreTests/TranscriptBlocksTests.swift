@@ -234,4 +234,17 @@ import Testing
     @Test func orderedUniqueKeepsFirstSeenOrder() {
         #expect(TranscriptBlocks.orderedUnique(["b", "a", "b", "", "c"]) == ["b", "a", "c"])
     }
+
+    @Test func bubblesFromOneBotStackUnderTheFirst() {
+        let rows = [
+            TranscriptRow(id: "u1", kind: .user, text: "Is Gmail connected?"),
+            TranscriptRow(id: "a1", kind: .assistant, text: "Checking."),
+            TranscriptRow(id: "a2", kind: .assistant, text: "It is not."),
+            TranscriptRow(id: "a3", kind: .assistant, text: "From Growth.", authorBotId: "growth"),
+            TranscriptRow(id: "u2", kind: .user, text: "Thanks"),
+            TranscriptRow(id: "a4", kind: .assistant, text: "Any time."),
+        ]
+        let blocks = TranscriptBlocks.build(rows: rows)
+        #expect(TranscriptBlocks.continuationIds(blocks) == ["a2"])
+    }
 }

@@ -120,6 +120,41 @@ import Testing
         #expect(projection.activity == .working)
     }
 
+    @Test func activityNamesWhatTheToolWasPointedAt() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        let requested = #"{"type":"actions.requested","meta":{"id":"2"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"bash","input":{"command":"npm  run\n test"}}]}}"#
+        projection.apply(EveStream.parseLine(requested)!)
+        #expect(projection.activity == .tool("bash", detail: "npm run test"))
+        #expect(projection.activity.label == "Running a command: npm run test")
+
+        // A late input delta for the same call keeps the detail.
+        let late = #"{"type":"action.input.appended","meta":{"id":"3"},"data":{"toolName":"bash","inputTextDelta":"x"}}"#
+        projection.apply(EveStream.parseLine(late)!)
+        #expect(projection.activity == .tool("bash", detail: "npm run test"))
+
+        let long = String(repeating: "a", count: 80)
+        let wide = #"{"type":"actions.requested","meta":{"id":"4"},"data":{"actions":[{"toolName":"web_search","input":{"query":"\#(long)"}}]}}"#
+        projection.apply(EveStream.parseLine(wide)!)
+        guard case .tool(_, let detail?) = projection.activity else {
+            Issue.record("expected a detail")
+            return
+        }
+        #expect(detail.count == 60)
+        #expect(detail.hasSuffix("…"))
+    }
+
+    @Test func aTurnThatSpeaksTwiceKeepsTwoMessages() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        projection.apply(EveEvent(type: "message.appended", id: "2", messageDelta: "Checking"))
+        projection.apply(EveEvent(type: "message.completed", id: "3", message: "Checking Gmail now."))
+        projection.apply(EveEvent(type: "message.appended", id: "4", messageDelta: "Gmail"))
+        projection.apply(EveEvent(type: "message.completed", id: "5", message: "Gmail isn't connected."))
+        #expect(projection.messages.map(\.text) == ["Checking Gmail now.", "Gmail isn't connected."])
+        #expect(projection.pending)
+    }
+
     @Test func activityLabelsSpeakEnglishForUnknownTools() {
         #expect(TurnActivity.toolLabel("memory_search") == "Searching memory")
         #expect(TurnActivity.toolLabel("COMPOSIO_gmail_send") == "Using composio gmail send")

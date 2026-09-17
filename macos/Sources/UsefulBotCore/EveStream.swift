@@ -84,15 +84,22 @@ public struct SearchChip: Equatable, Sendable {
 public enum TurnActivity: Equatable, Sendable {
     case thinking
     case working
-    case tool(String)
+    /// The tool by name, and what it was pointed at when the call says so: the
+    /// command, the query, the path. "Running a command" names the step;
+    /// "Running a command: npm test" is the step.
+    case tool(String, detail: String? = nil)
 
     /// Sentence case, no trailing period: the row swaps between these while
     /// the turn runs, and a period on every one of them reads as a stutter.
     public var label: String {
         switch self {
         case .thinking: return "Thinking"
-        case .working: return "Working"
-        case .tool(let name): return Self.toolLabel(name)
+        // Only reached while text is streaming in, and the row now stays up
+        // under the bubble being written.
+        case .working: return "Writing"
+        case .tool(let name, let detail):
+            guard let detail else { return Self.toolLabel(name) }
+            return "\(Self.toolLabel(name)): \(detail)"
         }
     }
 
@@ -397,6 +404,25 @@ public enum EveStream {
         return nil
     }
 
+    /// What the first named call was pointed at, in one short line. Only the
+    /// fields that read as a sentence are used; ids and payloads are not.
+    static func requestedToolDetail(_ data: JSONValue?) -> String? {
+        guard let actions = data?["actions"]?.arrayValue else { return nil }
+        let named = actions.first { action in
+            ["toolName", "subagentName", "remoteAgentName", "name"].contains {
+                !(action[$0]?.stringValue ?? "").isEmpty
+            }
+        }
+        guard let input = named?["input"] else { return nil }
+        for key in ["command", "query", "path", "url", "use_case", "tool"] {
+            guard let value = input[key]?.stringValue else { continue }
+            let line = value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if line.isEmpty { continue }
+            return line.count > 60 ? String(line.prefix(59)) + "…" : line
+        }
+        return nil
+    }
+
     /// Mirror the web's `String(value)` for scalar fields: numbers and booleans
     /// stringify, compound and null values fall back to the next source.
     private static func chipText(_ value: JSONValue?) -> String? {
@@ -543,7 +569,7 @@ public struct StreamProjection: Equatable, Sendable {
             activity = .thinking
         case "actions.requested":
             if let name = EveStream.requestedToolName(event.data) {
-                activity = .tool(name)
+                activity = .tool(name, detail: EveStream.requestedToolDetail(event.data))
             }
             // The validated call is the one place a drawing is complete and
             // carries its call id. Input deltas are partial JSON, one event
@@ -557,6 +583,9 @@ public struct StreamProjection: Equatable, Sendable {
             }
         case "action.input.appended":
             if let name = event.data?["toolName"]?.stringValue, !name.isEmpty {
+                // A late input delta must not wipe the detail the validated
+                // call already gave this same tool.
+                if case .tool(name, _) = activity { break }
                 activity = .tool(name)
             }
         case "message.appended":

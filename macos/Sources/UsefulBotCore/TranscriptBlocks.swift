@@ -141,6 +141,23 @@ public enum TranscriptBlocks {
         return blocks
     }
 
+    /// The bubbles that follow another bubble from the same bot with nothing
+    /// between them. A turn posts several messages; these stack close under
+    /// the first instead of standing a full turn's gap apart.
+    public static func continuationIds(_ blocks: [TranscriptBlock]) -> Set<String> {
+        var ids = Set<String>()
+        var previous: TranscriptRow?
+        for block in blocks {
+            guard case .message(let row, _) = block, row.kind == .assistant else {
+                previous = nil
+                continue
+            }
+            if let previous, previous.authorBotId == row.authorBotId { ids.insert(row.id) }
+            previous = row
+        }
+        return ids
+    }
+
     /// "Today" / "Yesterday" / "Wed, Aug 26".
     public static func dayLabel(
         _ date: Date,

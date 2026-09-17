@@ -370,6 +370,11 @@ struct ChatView: View {
                                     maxBubbleWidth: columnWidth * 0.85
                                 )
                                 .equatable()
+                                // One turn can post several bubbles; they
+                                // stack close so the turn still reads as one.
+                                .padding(.top, model.continuationIds.contains(row.id)
+                                    ? DesignTokens.Space.bubbleStackGap - DesignTokens.Space.transcriptGap
+                                    : 0)
                                 // Only the newest reply measures itself, and
                                 // only so the scroll can tell an answer that
                                 // overflows the window from one that does not.
@@ -391,14 +396,18 @@ struct ChatView: View {
                                 )
                             }
                         }
-                        // Gone as soon as the reply starts arriving, so the
-                        // reply takes its place rather than following it. Kept
-                        // until the end of the turn, it was removed after the
-                        // last row landed, and with the content bottom-aligned
-                        // that pulled everything down by its height.
-                        if model.pending || model.backgroundWorking, model.transcript.last?.kind != .assistant {
-                            WorkingRow(bot: bot, activity: model.activity)
+                        // Up for the whole turn, under whichever bubble is
+                        // newest, so the owner can see the bot is still going
+                        // after its first message. The slot keeps its height
+                        // when the row leaves: the content is bottom-aligned,
+                        // and a row that vanished pulled everything down by
+                        // its height.
+                        Group {
+                            if model.pending || model.backgroundWorking {
+                                WorkingRow(bot: bot, activity: model.activity)
+                            }
                         }
+                        .frame(height: WorkingRow.height, alignment: .leading)
                         if !model.searchHits.isEmpty {
                             SearchChipsRow(chips: model.searchHits)
                         }
@@ -416,7 +425,9 @@ struct ChatView: View {
                         if width > 0, abs(width - columnWidth) > 1 { columnWidth = width }
                     }
                     .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
-                    .padding(.vertical, DesignTokens.Space.chatPaddingVertical)
+                    .padding(.top, DesignTokens.Space.chatPaddingVertical)
+                    // The working row's slot is most of the bottom margin.
+                    .padding(.bottom, DesignTokens.Space.chatPaddingVertical - WorkingRow.height)
                     .frame(maxWidth: .infinity)
                 }
                 .uvScroll()
@@ -581,11 +592,9 @@ private struct BotMetaRow: View {
     }
 }
 
-/// One transcript row. The two sides are deliberately asymmetric: what the
-/// owner said is a right-aligned bubble, and what a bot said is set straight
-/// onto the chat background at full column width. The reply is the page; the
-/// owner's line is the interruption. It also gives code blocks and tables the
-/// whole column instead of 85% of it.
+/// One transcript row. What the owner said is a right-aligned bubble, and what
+/// a bot said is a left-aligned one a shade off the chat background. Each
+/// message a bot posts is its own bubble, so a turn reads as a run of them.
 /// Equatable so a streamed publish only rebuilds the row whose text changed.
 /// Nothing here reads the environment, so skipping the body is safe.
 struct TranscriptRowView: View, Equatable {
@@ -687,8 +696,8 @@ struct TranscriptRowView: View, Equatable {
         }
     }
 
-    /// A bot's turn, set on the background. No bubble, no width cap: only the
-    /// avatar gutter in a room where more than one bot can answer.
+    /// One message from a bot, in its own bubble. The avatar gutter shows only
+    /// in a room where more than one bot can answer.
     private func replyRow(showsSpeaker: Bool) -> some View {
         let attributed = showsSpeaker && row.authorBotId != nil && row.authorBotId != bot.id
         let showsAvatar = attributed && speaker != nil
@@ -703,7 +712,16 @@ struct TranscriptRowView: View, Equatable {
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                ChatMarkdownView(text: row.text)
+                ChatMarkdownView(text: row.text, expandsWidth: false)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Theme.C.canvas)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(Theme.C.border, lineWidth: 1)
+                    )
+                    .frame(maxWidth: max(160, maxBubbleWidth), alignment: .leading)
             }
             Spacer(minLength: 0)
         }
@@ -745,6 +763,9 @@ private struct WorkingRow: View {
     let bot: ShellBot
     let activity: TurnActivity
 
+    /// The avatar's box, which is also the slot the transcript reserves.
+    static let height: CGFloat = 24
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var started = Date()
@@ -764,8 +785,10 @@ private struct WorkingRow: View {
                 // its box is not, so the label keeps the reply's left edge.
                 BrandMotionView(size: 28, color: BrandAssets.colorID(for: bot), avatar: true)
                     .scaleEffect(1 + 0.04 * wave)
-                    .frame(width: 24, height: 24)
+                    .frame(width: Self.height, height: Self.height)
                 Text(activity.label)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .font(.system(size: DesignTokens.FontSize.chatBody))
                     .foregroundStyle(Theme.C.inkMuted)
                     .opacity(1 - 0.5 * wave)

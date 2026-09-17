@@ -63,6 +63,8 @@ public enum DesignTokens {
         public static let chatColumnPadding: CGFloat = 24
         public static let chatPaddingVertical: CGFloat = 32
         public static let transcriptGap: CGFloat = 24
+        /// Between two bubbles the same bot posted back to back.
+        public static let bubbleStackGap: CGFloat = 6
         public static let composerBottom: CGFloat = 20
         public static let composerTop: CGFloat = 8
         public static let botRow: CGFloat = 36
