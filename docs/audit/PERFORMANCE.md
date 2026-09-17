@@ -32,6 +32,41 @@ workspace credits once and was rerun).
   The stream closes 3 s after its last event, so 3 to 4 s is the floor.
 - Service cost: `ps -axo pid,rss,%cpu,command | grep -E 'next-server|eve'`.
 
+## Batch 2: the web service runs a production build (PR: perf/production-services)
+
+| Measure | Before (`next dev`) | After (standalone build) |
+|---|---|---|
+| Web server memory | 268 MB after 12 h, 166 MB earlier the same day, plus a postcss worker | 114 MB fresh, 131 MB with the app attached |
+| Web service ready after its launcher starts | route compiled on its first hit, "tens of seconds" cold | "Ready in 0ms"; healthy 2.6 s after the app launches, launcher and keychain included |
+| `/api/shell`, `/api/providers`, `/api/approvals`, `/api/agent/state` | 6 to 40 ms average from the dev log, 1,184 ms worst case logged for `/api/providers` | 4 to 5 ms each |
+| Replay of the 3,504 event session through the `/eve` proxy | 1,524 ms logged | 1,128 ms, all 3,504 events, tail header intact |
+
+- **Problem.** `scripts/service.mjs` started the installed app's web service with `next dev`:
+  a compiler, file watchers and a postcss worker on the request path of every poll and stream,
+  and the largest process in the stack.
+- **Fix.** `npm run build:app` now runs `next build web` and copies `static` and `public` into the
+  standalone output (Next leaves that to the caller). `scripts/web-mode.mjs` decides how the
+  service runs: the built server while `web/.next/BUILD_ID` is newer than every source a route
+  can import (`web/`, `shared/`, `agent/`, `router/src`), otherwise `next dev`. The launcher logs
+  one line saying which and why. `UB_WEB_MODE=dev` forces the dev server.
+- **Why a fallback and not a hard failure.** This checkout is both where the code is edited and
+  what the installed app runs. A stale build would serve old routes against new shared code, and
+  a launcher that refused to start would take chat down for an edit. The dev server is always
+  correct, just heavier, so an edit costs memory until the next `build:app`, never correctness.
+- **The lockfile is not a freshness input.** eve restamps `package-lock.json` on its first boot,
+  which would mark every build stale the moment the services came up.
+- **eve stays on `eve dev`, on purpose.** Measured at 20 MB and 0% CPU idle, so there is nothing
+  to win, and `eve start` changes the auth policy, port defaults and build output the rest of the
+  stack depends on.
+- **Supervisor.** `ServiceSupervisor.isOwnNodeProcess` recognises the built server's command line
+  on the same path-boundary rule as the others, so a sibling checkout is still never signalled.
+- **Verified.** Through the web UI's own session on the production server: the four poll routes
+  and a full stream read of the long session. macOS app relaunched against it and rendered.
+- **Caught by.** All five models reported `next dev`. Spark and GLM established that
+  `web/.next/standalone` was a stale manual build that `build:app` never refreshed; Astra
+  confirmed the dates. Astra, Spark and GLM all advised against treating eve the same way
+  without checking its auth and data directory, which is why eve was measured first.
+
 ## Batch 1: idle and render invalidation (PR: perf/idle-and-render-batch-1)
 
 Test chat: Drive Admin, one eve session of 3,504 events, with markdown tables in its history.
@@ -156,7 +191,6 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
 | Transient markdown cache for the growing reply | every streamed prefix is parsed again and kept, up to 2,048 entries | medium | Astra, Spark, GLM |
-| Production web and eve (`next build` + start, `eve build` + `eve start`) | the installed app runs `next dev` and `eve dev`: 166 MB and dev compile on the request path. `web/.next/standalone` is a stale manual build and `build:app` does not make one | high | all five |
 | Send reads the session from zero twice before the first token | time to first token grows with session length | high | all five |
 | Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
 | Windowed transcript (last N blocks, "Show earlier") before any `LazyVStack` | layout still scales with history on a real change. Spark and GLM both advise the window first: laziness breaks the reply-height sum and the tall-reply anchor | high | all five |

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
 import { createServer } from "node:net";
+import { webLaunch } from "./web-mode.mjs";
 
 // The interpreter running this script, not a fixed path: the supervisor
 // accepts more than one install location and launches this file with it.
@@ -213,6 +214,13 @@ async function main() {
     const reviewer = await reviewerToken();
     if (reviewer) env.UB_ROUTER_REVIEWER_TOKEN = reviewer;
     else delete env.UB_ROUTER_REVIEWER_TOKEN;
+    const launch = webLaunch(ROOT);
+    process.stderr.write(`${JSON.stringify({ service: "web", mode: launch.mode, reason: launch.reason })}\n`);
+    if (launch.mode === "production") {
+      // The standalone server reads its address from the environment.
+      run([launch.server], { ...env, NODE_ENV: "production", HOSTNAME: "127.0.0.1", PORT: "4320" });
+      return;
+    }
     run([
       path.join(ROOT, "node_modules/next/dist/bin/next"),
       "dev",

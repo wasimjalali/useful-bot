@@ -33,6 +33,15 @@ import Testing
             "node \(repo)/node_modules/eve/bin/eve.js dev",
             repoPath: repo
         ))
+        // The built web server, as launched and before it renames itself.
+        #expect(supervisor.isOwnNodeProcess(
+            "/usr/local/bin/node \(repo)/web/.next/standalone/web/server.js",
+            repoPath: repo
+        ))
+        #expect(!supervisor.isOwnNodeProcess(
+            "/usr/local/bin/node \(repo)-2/web/.next/standalone/web/server.js",
+            repoPath: repo
+        ))
         #expect(!supervisor.isOwnNodeProcess("next-server (v16.2.1)", repoPath: repo))
         // The runner appends the parent command line, so a title-rewritten
         // Next child is still recognized through its service.mjs launcher.

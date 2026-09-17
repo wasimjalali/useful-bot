@@ -32,3 +32,8 @@ review: fix what it finds, then merge, rebuild the app and install it from local
 A UI change is verified with a real screenshot of the running macOS app, not with tests
 alone. `/Applications/Useful Bot.app` is the installed copy people use; rebuilding means
 `npm run build:app` then `ditto` into `/Applications`.
+
+`build:app` also builds the web service. The installed app serves that build only while it
+is newer than the sources under `web/`, `shared/`, `agent/` and `router/src`; after an edit
+there the launcher falls back to `next dev` until the next `build:app` (see
+`scripts/web-mode.mjs`). The web service has to be restarted to pick either one up.

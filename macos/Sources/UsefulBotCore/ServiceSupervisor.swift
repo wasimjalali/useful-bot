@@ -77,6 +77,8 @@ public struct ServiceSupervisor: Sendable {
         guard commandLine.contains(repoPath + "/") || commandLine.hasSuffix(repoPath) else { return false }
         return commandLine.contains("next/dist/bin/next")
             || commandLine.contains("next-server")
+            // The built web server, before it renames itself `next-server`.
+            || commandLine.contains("web/.next/standalone/web/server.js")
             || commandLine.contains("router/src/index.ts")
             || commandLine.contains("eve/bin/eve.js")
     }

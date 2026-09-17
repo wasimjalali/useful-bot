@@ -2,6 +2,19 @@
 # Build the native app using the sole approved brand/ asset package.
 set -eu
 cd "$(dirname "$0")"
+
+# The web service the app talks to. scripts/service.mjs serves this build while
+# it is newer than its sources and falls back to `next dev` otherwise, so a
+# release always leaves a fresh one behind. The standalone server does not
+# carry its own static files or public folder; Next leaves that copy to us.
+(
+  cd ..
+  /usr/local/bin/node node_modules/next/dist/bin/next build web
+  rm -rf web/.next/standalone/web/.next/static web/.next/standalone/web/public
+  cp -R web/.next/static web/.next/standalone/web/.next/static
+  cp -R web/public web/.next/standalone/web/public
+)
+
 swift build -c release
 APP="dist/Useful Bot.app"
 BIN=".build/release/UsefulBotApp"
