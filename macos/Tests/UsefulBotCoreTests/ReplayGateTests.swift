@@ -169,4 +169,29 @@ import Testing
         live.apply(event("message.completed", id: "a1"), atLiveTail: true)
         #expect(!live.running)
     }
+
+    @Test func aNovelStartProvesTheTurnIsNowWithoutWaitingForAPause() {
+        // The durable store holds a row for every user and assistant message,
+        // so an id it does not know arrived after the reload read the
+        // transcript. A turn that streams straight out of the history burst
+        // with no gap is still proved live by that.
+        var live = ReplayGate.LiveTurn()
+        live.apply(event("message.received", id: "u-new"), atLiveTail: true, novel: true)
+        #expect(live.running)
+        #expect(live.novelStart)
+        live.apply(event("turn.completed", id: "t-end"), atLiveTail: true)
+        #expect(!live.running)
+        #expect(!live.novelStart)
+    }
+
+    @Test func aCardTurnsOwnUserRowIsNotNovel() {
+        // A turn ending in a card leaves the durable tail on the owner's own
+        // message, so the gate opens there and `running` goes true. That row is
+        // already durable, so it is not novel, and the working row waits for
+        // the burst to go quiet rather than flashing.
+        var live = ReplayGate.LiveTurn()
+        live.apply(event("message.received", id: "u-durable"), atLiveTail: true, novel: false)
+        #expect(live.running)
+        #expect(!live.novelStart)
+    }
 }

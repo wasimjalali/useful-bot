@@ -62,6 +62,12 @@ public enum ReplayGate {
     public struct LiveTurn: Equatable, Sendable {
         /// True while a turn that began after the gate opened has not ended.
         public private(set) var running = false
+        /// True when that turn began on an event the durable store has never
+        /// written. The store holds a row for every user and assistant
+        /// message, so an id it does not know is one that arrived after this
+        /// reload read the transcript: proof on its own that the turn is now,
+        /// without waiting for the history burst to go quiet.
+        public private(set) var novelStart = false
 
         public init() {}
 
@@ -71,15 +77,17 @@ public enum ReplayGate {
             "session.completed", "session.failed", "session.waiting",
         ]
 
-        public mutating func apply(_ event: EveEvent, atLiveTail: Bool) {
+        public mutating func apply(_ event: EveEvent, atLiveTail: Bool, novel: Bool = false) {
             // An end counts wherever it lands: a turn the replay watched start
             // is over the moment its terminal event arrives.
             if Self.ends.contains(event.type) {
                 running = false
+                novelStart = false
                 return
             }
             guard atLiveTail, Self.starts.contains(event.type) else { return }
             running = true
+            if novel { novelStart = true }
         }
     }
 

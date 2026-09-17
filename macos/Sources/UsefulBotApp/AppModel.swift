@@ -550,6 +550,9 @@ final class AppModel: ObservableObject {
             // not say while the replay walks a settled conversation. Declared
             // out here because the working row below is decided on it too.
             var liveTurn = ReplayGate.LiveTurn()
+            // True once the history burst has gone quiet. Out here with
+            // `liveTurn` because the working row below is decided on both.
+            var drained = false
             if !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
@@ -564,8 +567,10 @@ final class AppModel: ObservableObject {
                 // happening now. Until then every event is the past being read
                 // back, however recent: a card dismissed a second ago replays
                 // exactly like one dismissed an hour ago.
-                var lastEventAt = Date()
-                var drained = false
+                // Seeded on the first event, never before it: the wait for
+                // the stream to open is not a gap inside the burst, and a slow
+                // open would otherwise read as one.
+                var lastEventAt: Date?
                 // A replay is never applied over rows that are already on
                 // screen. The projection forgets the oldest event ids it has
                 // seen, so a session longer than that cache re-appended the
@@ -600,9 +605,16 @@ final class AppModel: ObservableObject {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
                     let now = Date()
-                    if now.timeIntervalSince(lastEventAt) > Self.replayBurstGap { drained = true }
+                    if let last = lastEventAt, now.timeIntervalSince(last) > Self.replayBurstGap {
+                        drained = true
+                    }
                     lastEventAt = now
-                    liveTurn.apply(event, atLiveTail: atLiveTail)
+                    // An id the durable store never wrote arrived after this
+                    // reload read the transcript, so the turn is now. The gap
+                    // is the other half: a turn already durable when the replay
+                    // started is proved live by the burst going quiet instead.
+                    let novel = event.id.map { !durable.ids.contains($0) } ?? false
+                    liveTurn.apply(event, atLiveTail: atLiveTail, novel: novel)
                     if swapped {
                         projection.apply(event, live: atLiveTail)
                     } else {
@@ -628,7 +640,9 @@ final class AppModel: ObservableObject {
                     // stretch between its last reply and its terminal event,
                     // and that is what flashed a working row on a settled chat.
                     if swapped, atLiveTail {
-                        let working = drained && liveTurn.running && projection.pending
+                        let working = (drained || liveTurn.novelStart)
+                            && liveTurn.running
+                            && projection.pending
                         if backgroundWorking != working { backgroundWorking = working }
                         markWorking(bot.id, working)
                         publishTranscript()
@@ -654,7 +668,14 @@ final class AppModel: ObservableObject {
                 // flight. eve parks a session between turns, and its terminal
                 // event can be written after this read, which left `pending`
                 // true on a chat where nothing was happening.
-                let working = liveTurn.running && projection.pending
+                // Same two signals as inside the loop. A card turn leaves the
+                // durable tail on the owner's own message, so `running` alone
+                // is true at the end of a replay eve has parked without writing
+                // its terminal event yet, and the row would stay up on a chat
+                // where nothing is happening.
+                let working = (drained || liveTurn.novelStart)
+                    && liveTurn.running
+                    && projection.pending
                 backgroundWorking = working
                 markWorking(bot.id, working)
             }
