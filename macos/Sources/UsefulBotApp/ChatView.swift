@@ -38,11 +38,11 @@ struct ChatView: View {
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.C.danger)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        // The banner alone leaves no way back but Cmd+R or a
-                        // bot switch, so offer the same reload those trigger.
+                        // A failed turn is retried by sending it again; any
+                        // other banner just needs the thread re-read.
                         if !model.pending {
                             NativeButton("Retry", kind: .secondary, small: true) {
-                                Task { await model.reloadThread() }
+                                model.retryLastTurn()
                             }
                         }
                     }

@@ -161,6 +161,25 @@ import Testing
         ))
         #expect(projection.failure?.reason == "The daily token limit is used up. Raise it in Settings, under Usage.")
 
+        // What the owner actually hit: the provider answered with nothing, or
+        // did not answer at all. A bare "the turn failed" sent them looking in
+        // the app for a fault that is not there.
+        var empty = StreamProjection()
+        empty.apply(EveEvent(
+            type: "turn.failed",
+            id: "1",
+            message: "The model did not return a response. Please try again."
+        ))
+        #expect(empty.failure?.reason == "The model returned nothing. Send it again.")
+
+        var upstream = StreamProjection()
+        upstream.apply(EveEvent(
+            type: "turn.failed",
+            id: "1",
+            message: "AI_RetryError: Failed after 3 attempts. Last error: AI_APICallError: upstream_protocol_error"
+        ))
+        #expect(upstream.failure?.reason == "The model provider did not answer. Check its status or your usage limit, then send again.")
+
         var other = StreamProjection()
         other.apply(EveEvent(type: "turn.failed", id: "1", message: "the model went away"))
         #expect(other.failure?.reason == nil)

@@ -903,6 +903,29 @@ final class AppModel: ObservableObject {
     // MARK: - Send
 
     func send(_ text: String) {
+        send(text, retrying: false)
+    }
+
+    /// Send the owner's last message again after a turn failed.
+    ///
+    /// The banner's button used to reload the thread, which re-read the same
+    /// failure and put the same banner straight back, so it read as dead. A
+    /// failed turn is retried by sending it again; with nothing to resend
+    /// (a handoff or a routine failed here, not the owner) the reload is
+    /// still the best this button can do.
+    func retryLastTurn() {
+        guard !pending else { return }
+        guard let last = projection.messages.last(where: { $0.role == .user }),
+              !last.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            Task { await reloadThread() }
+            return
+        }
+        send(last.text, retrying: true)
+    }
+
+    /// `retrying` resends a message the composer does not hold, so it must not
+    /// consume the draft or the files waiting there.
+    private func send(_ text: String, retrying: Bool) {
         // The draft is capped in the composer; never clip the formatted
         // message here or attachment bodies and their fences get severed.
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -940,8 +963,8 @@ final class AppModel: ObservableObject {
         let chatGen = chatGenerations[bot.id] ?? 0
         sendBotId = bot.id
         markWorking(bot.id, true)
-        let draftSnapshot = draft
-        let sentAttachments = attachments
+        let draftSnapshot = retrying ? "" : draft
+        let sentAttachments = retrying ? [] : attachments
         let sentAttachmentIds = Set(sentAttachments.map(\.id))
         // Pictures ride beside the text as file parts; the composed string
         // already names each one. eve echoes such a turn as the text plus one
@@ -970,7 +993,9 @@ final class AppModel: ObservableObject {
         // in the field for as long as the network took, which reads as a send
         // that did not happen. `draftSnapshot` is what puts it back if the
         // send fails below.
-        clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
+        if !retrying {
+            clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
+        }
         // An explicit send is an explicit request to watch the answer, so the
         // transcript follows it whatever the reader was doing before.
         sendTick &+= 1
