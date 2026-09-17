@@ -725,6 +725,7 @@ struct TranscriptRowView: View, Equatable {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .strokeBorder(Theme.C.border, lineWidth: 1)
                     )
+                    .shadow(color: Theme.C.ink.opacity(0.06), radius: 3, y: 1)
                     .frame(maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth), alignment: .leading)
             }
             Spacer(minLength: 0)
@@ -763,6 +764,7 @@ struct TranscriptRowView: View, Equatable {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(Theme.C.border, lineWidth: 1)
             )
+            .shadow(color: Theme.C.ink.opacity(0.06), radius: 3, y: 1)
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .ignore)
