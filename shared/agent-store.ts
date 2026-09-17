@@ -549,7 +549,15 @@ export function referencedWidgetIds(path = agentStorePath()): Set<string> | null
   if (!existsSync(path)) return new Set();
   let store: AgentStore;
   try {
-    store = parseAgentStore(JSON.parse(readFileSync(path, "utf8")));
+    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    // `parseAgentStore` answers a wrong shape or a schema it does not know
+    // with an empty store rather than throwing, on purpose: losing every
+    // transcript over a forward-compatible field would be worse. Here that
+    // same empty store would read as "nothing references a widget", so the
+    // shape is checked before it is parsed.
+    if (!raw || typeof raw !== "object") return null;
+    if ((raw as Record<string, unknown>).schemaVersion !== AGENT_SCHEMA) return null;
+    store = parseAgentStore(raw);
   } catch {
     return null;
   }

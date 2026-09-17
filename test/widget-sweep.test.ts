@@ -76,6 +76,14 @@ test("a store that will not parse stops the sweep instead of emptying it", () =>
     writeFileSync(storePath, "{ this is not json");
     assert.equal(referencedWidgetIds(), null);
 
+    // Valid JSON that parseAgentStore answers with an empty store rather than
+    // throwing: a wrong shape, and a schema this build does not know. Both
+    // would otherwise read as "nothing references a widget".
+    writeFileSync(storePath, "[]");
+    assert.equal(referencedWidgetIds(), null);
+    writeFileSync(storePath, JSON.stringify({ schemaVersion: 2, threads: [] }));
+    assert.equal(referencedWidgetIds(), null);
+
     writeFileSync(storePath, JSON.stringify({ schemaVersion: 1, threads: [], proposals: [], reserves: [] }));
     assert.deepEqual([...(referencedWidgetIds() ?? [])], []);
 
