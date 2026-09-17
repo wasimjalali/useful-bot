@@ -41,9 +41,14 @@ How it works:
    URL (SSRF-guarded). It is stored under `~/.useful-bot/widgets/` (mode 0600),
    not in the transcript (the bundle is hundreds of KB).
 4. A durable `widget` agent event points at that id so a reload still shows
-   the drawing. Live streaming uses `ui/notifications/tool-input-partial`
-   while `action.input.appended` is in flight.
-5. WKWebView loads only the loopback host page. The inner iframe may fetch
+   the drawing. The drawing is read from the validated call in
+   `actions.requested` and keyed by eve's `callId`. Input chunks
+   (`action.input.appended`, one event per chunk, partial JSON) are not drawn,
+   so there is no partial streaming yet.
+5. The app fetches the host page with its own session and hands it to the
+   WKWebView as a string. The web view holds no cookie and may only navigate
+   to `about:` pages. The host page carries the same CSP allowlist as the app,
+   because a `srcdoc` frame inherits its parent's policy. The inner iframe may fetch
    origins the resource declared in `_meta.ui.csp` (Excalidraw needs
    `https://esm.sh`). No native bridge besides size-changed. `ui/open-link`
    is refused unless the URL is https on a public host, and then it opens
