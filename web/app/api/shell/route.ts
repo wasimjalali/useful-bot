@@ -12,7 +12,7 @@ import {
   threadIdFor,
   type Proposal,
 } from "../../../../shared/agent-store.ts";
-import { fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
+import { deliverFirstBrief, fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
@@ -183,7 +183,12 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
 }
 
 /** Note that the proposal was answered, on the thread that raised it. */
-function noteProposal(claimed: Proposal, action: ShellAction | undefined, queued: number): void {
+function noteProposal(
+  claimed: Proposal,
+  action: ShellAction | undefined,
+  queued: number,
+  briefFailed = false,
+): void {
   const fallback = action && "botId" in action && typeof action.botId === "string"
     ? threadIdFor(action.botId)
     : "";
@@ -191,9 +196,12 @@ function noteProposal(claimed: Proposal, action: ShellAction | undefined, queued
   if (!threadId) return;
   const label = claimed.status === "confirmed" ? "Confirmed" : "Dismissed";
   const extra = queued > 0 ? ` and queued ${queued} handoff${queued === 1 ? "" : "s"}` : "";
+  // The teammate exists but never got the brief the card promised it, and the
+  // card is spent, so the only way it reaches them now is a fresh message.
+  const tail = briefFailed ? " The first brief was not handed over; send it again." : "";
   appendAgentEvent(threadId, {
     kind: "note",
-    text: `${label} ${claimed.kind}${extra}.`,
+    text: `${label} ${claimed.kind}${extra}.${tail}`,
     threadKind: claimed.kind === "fanout" && claimed.groupId ? "group" : "bot",
   });
 }
@@ -358,8 +366,15 @@ export async function PUT(request: Request) {
     }
 
     const action = body.action;
+    // The roster commit is what assigns a new bot its id, and the brief below
+    // has to reach that exact bot.
+    let createdBotId: string | undefined;
     const next = action
-      ? updateShell((shell) => applyShellAction(shell, action).store)
+      ? updateShell((shell) => {
+        const applied = applyShellAction(shell, action);
+        createdBotId = applied.createdId;
+        return applied.store;
+      })
       : current;
     // Revoking here, not only at the next turn stamp. `syncSessionWorkspace`
     // runs when a turn starts, so without this a detach leaves the capability
@@ -398,6 +413,25 @@ export async function PUT(request: Request) {
         /* the shell action already landed; the handoff pump reports the rest */
       }
     }
+    // The card carried a first brief, so the owner approved that work too.
+    // Without this the brief was only ever shown on the card: the new bot was
+    // created idle and the brief stayed in the proposer's own chat.
+    let briefFailed = false;
+    if (claimed?.kind === "createBot" && claimed.status === "confirmed") {
+      try {
+        queued += deliverFirstBrief({
+          brief: claimed.brief,
+          createdBotId,
+          sourceBotId: claimed.sourceBotId,
+          bots: next.bots,
+        });
+      } catch {
+        // The bot exists and the card is spent, so this cannot be retried
+        // here. Say so on the thread rather than leaving a teammate that
+        // looks briefed and is not.
+        briefFailed = true;
+      }
+    }
     // `appendAgentEvent` upserts, so noting a confirmed delete on the deleted
     // bot's own thread rebuilds the row the teardown just removed. Only that
     // thread is skipped: a delete confirmed from another bot's chat still
@@ -406,7 +440,7 @@ export async function PUT(request: Request) {
       && (claimed?.threadId || threadIdFor(action.botId)) === threadIdFor(action.botId);
     if (claimed && !notesDeletedThread) {
       try {
-        noteProposal(claimed, body.action, queued);
+        noteProposal(claimed, body.action, queued, briefFailed);
       } catch {
         /* the transcript note is best effort */
       }

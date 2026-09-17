@@ -556,6 +556,37 @@ async function pumpOnce(limit: number): Promise<{
  * thread and the room gets one card showing the same message. Replies land back
  * in the group. A single-bot send is the same path with one target and no group.
  */
+/**
+ * Hand a newly created bot the first brief its proposal card carried, as a
+ * message from the bot that proposed it.
+ *
+ * Without this the brief was only ever shown on the card: the owner approved
+ * it, the bot was created idle, and the work stayed in the proposer's chat.
+ * Returns the number of handoffs queued, so a card with no brief and a
+ * creation that did not happen both read as zero.
+ */
+export function deliverFirstBrief(input: {
+  brief: string;
+  createdBotId: string | undefined;
+  sourceBotId: string | null;
+  bots: ShellBot[];
+}): number {
+  const brief = input.brief.trim();
+  if (!brief || !input.createdBotId) return 0;
+  const target = input.bots.find((bot) => bot.id === input.createdBotId);
+  // A group is never created by a createBot card, and a bot that is already
+  // gone cannot be briefed.
+  if (!target || target.kind === "group") return 0;
+  const source = input.sourceBotId
+    ? input.bots.find((bot) => bot.id === input.sourceBotId) ?? null
+    : null;
+  return fanOut({
+    source: source ? { id: source.id, name: source.name } : null,
+    targets: [{ id: target.id, name: target.name }],
+    message: brief,
+  });
+}
+
 export function fanOut(input: {
   source: { id: string; name: string } | null;
   targets: Array<{ id: string; name: string }>;
