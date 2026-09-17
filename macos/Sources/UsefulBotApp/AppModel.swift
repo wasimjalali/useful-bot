@@ -217,6 +217,22 @@ final class AppModel: ObservableObject {
     /// must pass over them rather than lean on the projection's bounded id
     /// dedupe. Dropped when a reload rebuilds the session from zero.
     private var localTurnIds: [String: Set<String>] = [:]
+    /// Every turn id this app has read off a session, from the reload, the
+    /// follower and its own sends. A send reads only the end of the session
+    /// before it posts, and this is what still tells it which turns are old:
+    /// it covers the stretch the follower read past the recorded tail, which
+    /// no snapshot reaches. A session with an entry here is known to tag its
+    /// turns, so an untagged message can never be the one a send arms on.
+    private var seenTurnIds: [String: Set<String>] = [:]
+    /// Set once a snapshot comes back without a tail: reading from the cursor
+    /// first would only put a second, wasted read in front of the send.
+    private var tailUnreported = false
+
+    private func noteTurnId(_ event: EveEvent, sessionId: String) {
+        if let turnId = event.turnId, !turnId.isEmpty {
+            seenTurnIds[sessionId, default: []].insert(turnId)
+        }
+    }
     /// One handoff pump at a time; a slow server must not stack ticks.
     private var tickInFlight = false
     /// Consecutive unauthorized polls, surfaced after the second failure.
@@ -644,6 +660,7 @@ final class AppModel: ObservableObject {
                     // not be replaced by a replay that predates it.
                     if sendTasks[bot.id] != nil { return }
                     if let index = event.index { followCursor = (sessionId, index + 1) }
+                    noteTurnId(event, sessionId: sessionId)
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
@@ -831,6 +848,7 @@ final class AppModel: ObservableObject {
                         break
                     }
                     if let index = event.index { followCursor = (sessionId, index + 1) }
+                    noteTurnId(event, sessionId: sessionId)
                     // A local send painted its own turn. An answer to a
                     // question carries the asking turn's id but arrives after
                     // that turn completed, and skipping it with the rest left
@@ -1176,10 +1194,32 @@ final class AppModel: ObservableObject {
                 // fetched is not the same as an empty one: start a fresh
                 // session instead of risking a mis-armed stream.
                 var history = Set<String>()
+                // Where this send's stream starts reading. Taken with the
+                // snapshot, before the turn is posted, so the new turn cannot
+                // sit behind it; zero when the server did not report a tail.
+                var streamStart = 0
+                // Whether a message with no turn id may be taken for this
+                // send's turn. Only when the whole session was read and showed
+                // no turn ids at all, which is what an empty set used to mean.
+                var untaggedMayArm = true
                 var sendSessionId = bot.sessionId
                 if let sessionId = bot.sessionId, !sessionId.isEmpty {
                     do {
-                        history = try await self.client.historyTurnIds(sessionId: sessionId)
+                        // The follower has already read this session up to its
+                        // cursor, so the snapshot only needs what came after,
+                        // but only for a session this app has seen tag its
+                        // turns: those ids, not the short read, are what rule
+                        // out an old turn, and they let the untagged arm stay
+                        // shut. Anything else is read whole, as it always was.
+                        let known = self.seenTurnIds[sessionId] ?? []
+                        let held = known.isEmpty || self.tailUnreported
+                            ? 0
+                            : (self.followCursor.flatMap { $0.sessionId == sessionId ? $0.next : nil } ?? 0)
+                        let snapshot = try await self.client.historySnapshot(sessionId: sessionId, readFrom: held)
+                        if snapshot.nextIndex == nil { self.tailUnreported = true }
+                        history = snapshot.turnIds.union(known)
+                        untaggedMayArm = held == 0 && history.isEmpty
+                        streamStart = snapshot.nextIndex ?? 0
                     } catch {
                         sendSessionId = nil
                     }
@@ -1218,6 +1258,8 @@ final class AppModel: ObservableObject {
                         return
                     }
                     history = []
+                    streamStart = 0
+                    untaggedMayArm = true
                     createdSession = true
                     sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
                 }
@@ -1256,13 +1298,16 @@ final class AppModel: ObservableObject {
                 for try await event in self.client.stream(
                     sessionId: sessionId,
                     expectedSuffix: echo,
-                    historyTurnIds: history
+                    historyTurnIds: history,
+                    startIndex: streamStart,
+                    allowUntaggedTurn: untaggedMayArm
                 ) {
                     guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                         self.finishSend(botId: bot.id, generation: generation)
                         return
                     }
                     if event.type == "message.received" { sawUserTurn = true }
+                    self.noteTurnId(event, sessionId: sessionId)
                     // Only a turn this stream painted to its end is the
                     // follower's to pass over. One it lost part-way (Stop, a
                     // dropped connection) still has events to show, and the

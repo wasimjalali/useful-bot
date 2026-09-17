@@ -28,4 +28,20 @@ import Testing
         event.index = 41
         #expect(event.index == 41)
     }
+
+    /// A send reads its reply from the first index the session had not
+    /// recorded when the snapshot was taken. The turn is posted after that, so
+    /// its first event can only sit at or past the cursor.
+    @Test func theSendCursorIsOnePastTheRecordedTail() {
+        typealias Snapshot = BackendClient.HistorySnapshot
+        #expect(Snapshot.nextIndex(tail: 3503) == 3504)
+        #expect(Snapshot.nextIndex(tail: 0) == 1)
+        // An empty session reports -1.
+        #expect(Snapshot.nextIndex(tail: -1) == 0)
+        #expect(Snapshot.nextIndex(tail: -7) == 0)
+    }
+
+    @Test func noReportedTailMeansNoCursorSoTheSendReadsFromZero() {
+        #expect(BackendClient.HistorySnapshot.nextIndex(tail: nil) == nil)
+    }
 }

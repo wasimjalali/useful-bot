@@ -206,6 +206,22 @@ private final class FlagBox: @unchecked Sendable {
     }
 }
 
+/// The tail index a stream's response reported, for the caller that started it.
+private final class TailBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tail: Int?
+    var value: Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tail
+    }
+    func set(_ next: Int?) {
+        lock.lock()
+        tail = next
+        lock.unlock()
+    }
+}
+
 private final class TaskBox: @unchecked Sendable {
     private let lock = NSLock()
     private var task: Task<Void, Never>?
@@ -1083,20 +1099,57 @@ public actor BackendClient {
 
     // MARK: - Stream
 
-    /// Turn ids the session already has. The next turn is the first with an id
-    /// outside this set, which keeps a resend of identical text from arming the
-    /// stream on the earlier turn.
-    public func historyTurnIds(sessionId: String) async throws -> Set<String> {
+    /// What a session held just before a send: the turn ids on record, and
+    /// where the read for the new turn can begin.
+    public struct HistorySnapshot: Equatable, Sendable {
+        /// Turn ids already recorded. The next turn is the first with an id
+        /// outside this set, which keeps a resend of identical text from
+        /// arming the stream on the earlier turn.
+        public let turnIds: Set<String>
+        /// The first event index the session had not recorded yet, or nil when
+        /// the server did not say where its record ended. Taken before the
+        /// turn is posted, so the new turn's first event is at or after it.
+        public let nextIndex: Int?
+
+        public init(turnIds: Set<String>, nextIndex: Int?) {
+            self.turnIds = turnIds
+            self.nextIndex = nextIndex
+        }
+
+        /// `tail` is the zero-based index of the last recorded event, -1 for
+        /// an empty session, nil when unreported. The server's tail is the
+        /// authority, never the index the read began at: a cursor that had
+        /// somehow run ahead of the record would start the send's stream past
+        /// its own turn, and the reply would never arm.
+        public static func nextIndex(tail: Int?) -> Int? {
+            guard let tail else { return nil }
+            return max(0, tail + 1)
+        }
+    }
+
+    /// Snapshot the session before a send. `start` lets a caller that already
+    /// holds the session up to an index read only what came after it; the
+    /// send's own stream then begins at `nextIndex`, so neither read walks the
+    /// whole history. Both used to start at zero, which put two full replays
+    /// of the session in front of the first token of every reply.
+    public func historySnapshot(sessionId: String, readFrom start: Int = 0) async throws -> HistorySnapshot {
         var ids = Set<String>()
+        let tail = TailBox()
         // A snapshot of what is already recorded, so it stops at the durable
         // tail. Waiting for the stream to go quiet instead put more than three
         // seconds in front of every send into an existing chat.
-        for try await event in stream(sessionId: sessionId, expectedSuffix: nil, untilTail: true) {
+        for try await event in stream(sessionId: sessionId, expectedSuffix: nil, startIndex: start, untilTail: true, tailBox: tail) {
             if let turnId = event.turnId, !turnId.isEmpty {
                 ids.insert(turnId)
             }
         }
-        return ids
+        let next = HistorySnapshot.nextIndex(tail: tail.value)
+        if next == nil, start > 0 {
+            // No tail, so the send has to read from zero, and for that the
+            // turn ids have to cover the whole session, not just its end.
+            return try await historySnapshot(sessionId: sessionId, readFrom: 0)
+        }
+        return HistorySnapshot(turnIds: ids, nextIndex: next)
     }
 
     /// Replay the session and yield events live. With `expectedSuffix` set, the
@@ -1113,6 +1166,10 @@ public actor BackendClient {
     /// durably recorded index and the stream finishes on reaching it, without
     /// waiting out the quiet period. A server that does not report a tail
     /// leaves the quiet period as the only end, as before.
+    /// `allowUntaggedTurn` keeps the old tolerance for a server that tags no
+    /// turns: a matching message with no turn id arms the stream when
+    /// `historyTurnIds` is empty. A caller whose id set does not span the whole
+    /// session passes false, because there an empty set proves nothing.
     /// With `markHistory` the server is asked for the same tail but the read
     /// carries on past it: each event says how far it sat from the end of the
     /// history, and the caller tells a replay from a live turn by that.
@@ -1122,7 +1179,30 @@ public actor BackendClient {
         historyTurnIds: Set<String> = [],
         startIndex: Int = 0,
         untilTail: Bool = false,
-        markHistory: Bool = false
+        markHistory: Bool = false,
+        allowUntaggedTurn: Bool = true
+    ) -> AsyncThrowingStream<EveEvent, Error> {
+        stream(
+            sessionId: sessionId,
+            expectedSuffix: expectedSuffix,
+            historyTurnIds: historyTurnIds,
+            startIndex: startIndex,
+            untilTail: untilTail,
+            markHistory: markHistory,
+            allowUntaggedTurn: allowUntaggedTurn,
+            tailBox: nil
+        )
+    }
+
+    private nonisolated func stream(
+        sessionId: String,
+        expectedSuffix: String?,
+        historyTurnIds: Set<String> = [],
+        startIndex: Int,
+        untilTail: Bool,
+        markHistory: Bool = false,
+        allowUntaggedTurn: Bool = true,
+        tailBox: TailBox?
     ) -> AsyncThrowingStream<EveEvent, Error> {
         let base = self.base
         let session = self.session
@@ -1166,6 +1246,7 @@ public actor BackendClient {
                                 .value(forHTTPHeaderField: "x-eve-stream-tail-index")
                                 .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
                             : nil
+                        tailBox?.set(tail)
                         var nextIndex = max(0, startIndex)
                         if untilTail, let tail, tail < nextIndex {
                             // Nothing recorded past the cursor.
@@ -1220,6 +1301,7 @@ public actor BackendClient {
                                         continuation.yield(event)
                                     } else if matches,
                                               event.turnId == nil,
+                                              allowUntaggedTurn,
                                               historyTurnIds.isEmpty {
                                         armed = true
                                         armedBox.set()
