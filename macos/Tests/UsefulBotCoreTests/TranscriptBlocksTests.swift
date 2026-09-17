@@ -246,5 +246,20 @@ import Testing
         ]
         let blocks = TranscriptBlocks.build(rows: rows)
         #expect(TranscriptBlocks.continuationIds(blocks) == ["a2"])
+        #expect(TranscriptBlocks.latestReplyRunIds(blocks) == ["a4"])
+    }
+
+    @Test func theAddedCardStacksWithTheTurnAroundIt() {
+        let rows = [
+            TranscriptRow(id: "u1", kind: .user, text: "Connect Gmail"),
+            TranscriptRow(id: "a1", kind: .assistant, text: "Adding Gmail now."),
+            TranscriptRow(id: "n1", kind: .note, text: "Gmail connected", connectedName: "Gmail"),
+            TranscriptRow(id: "a2", kind: .assistant, text: "Gmail is ready."),
+            TranscriptRow(id: "n2", kind: .note, text: "Confirmed."),
+            TranscriptRow(id: "a3", kind: .assistant, text: "Done."),
+        ]
+        let blocks = TranscriptBlocks.build(rows: rows)
+        #expect(TranscriptBlocks.continuationIds(blocks) == ["n1", "a2"])
+        #expect(TranscriptBlocks.latestReplyRunIds(blocks) == ["a1", "a2", "a3"])
     }
 }

@@ -9,6 +9,9 @@ public enum DesignTokens {
         public static let rail = "#F8F8F8"
         public static let surface = "#FFFFFF"
         public static let sunken = "#F0F0F0"
+        /// A bot's chat bubble: an off-white, not a gray, so it reads as paper
+        /// on the white chat rather than as a second owner bubble.
+        public static let bubbleBot = "#FAF9F6"
 
         public static let ink = "#171717"
         public static let inkMuted = "#5C5C5C"

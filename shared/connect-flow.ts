@@ -226,7 +226,7 @@ async function pumpConnectsOnce(
     }, storePath);
     if (!didFlip) continue;
     try {
-      appendAgentEvent(card.threadId, { kind: "note", text: `${card.name} connected` }, storePath);
+      appendAgentEvent(card.threadId, { kind: "note", text: `${card.name} connected`, connectedName: card.name, connectedLogo: card.logo }, storePath);
     } catch {
       /* the resume still tells the owner */
     }

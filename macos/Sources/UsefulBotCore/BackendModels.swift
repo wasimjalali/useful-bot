@@ -239,9 +239,13 @@ public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
     public let proposalId: String?
     public let handoffId: String?
     public let widgetId: String?
+    /// On the host's "connected" note: what was added, and its logo.
+    public let connectedName: String?
+    public let connectedLogo: String?
 
     enum CodingKeys: String, CodingKey {
         case id, at, kind, text, authorBotId, authorName, targetBotIds, proposalId, handoffId, widgetId
+        case connectedName, connectedLogo
     }
 
     public init(from decoder: Decoder) throws {
@@ -256,6 +260,8 @@ public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
         proposalId = try? c.decodeIfPresent(String.self, forKey: .proposalId)
         handoffId = try? c.decodeIfPresent(String.self, forKey: .handoffId)
         widgetId = try? c.decodeIfPresent(String.self, forKey: .widgetId)
+        connectedName = try? c.decodeIfPresent(String.self, forKey: .connectedName)
+        connectedLogo = try? c.decodeIfPresent(String.self, forKey: .connectedLogo)
     }
 }
 

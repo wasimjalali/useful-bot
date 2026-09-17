@@ -15,6 +15,10 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     /// Parsed server write time. Live stream rows have none until the durable
     /// event lands, so the transcript renders timestamps only when dated.
     public var at: Date?
+    /// The app or server the host just added. A note that carries one is
+    /// drawn as a card, not as a line of text.
+    public var connectedName: String?
+    public var connectedLogo: String?
 
     public init(
         id: String,
@@ -24,7 +28,9 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         authorBotId: String? = nil,
         targetBotIds: [String] = [],
         handoffId: String? = nil,
-        at: Date? = nil
+        at: Date? = nil,
+        connectedName: String? = nil,
+        connectedLogo: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -34,6 +40,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         self.targetBotIds = targetBotIds
         self.handoffId = handoffId
         self.at = at
+        self.connectedName = connectedName
+        self.connectedLogo = connectedLogo
     }
 }
 
@@ -69,7 +77,9 @@ public enum Transcript {
                 authorBotId: event.authorBotId,
                 targetBotIds: event.targetBotIds,
                 handoffId: event.handoffId,
-                at: TranscriptBlocks.date(fromISO8601: event.at)
+                at: TranscriptBlocks.date(fromISO8601: event.at),
+                connectedName: kind == .note ? event.connectedName : nil,
+                connectedLogo: kind == .note ? event.connectedLogo : nil
             ))
             if kind == .user {
                 durableUserCounts[text, default: 0] += 1

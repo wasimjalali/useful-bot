@@ -23,11 +23,15 @@ final class AppModel: ObservableObject {
     /// keystroke in the composer re-evaluates it, and regrouping the whole
     /// transcript on each one is what made typing feel heavy.
     @Published private(set) var transcriptBlocks: [TranscriptBlock] = [] {
-        didSet { continuationIds = TranscriptBlocks.continuationIds(transcriptBlocks) }
+        didSet {
+            continuationIds = TranscriptBlocks.continuationIds(transcriptBlocks)
+            latestReplyRunIds = TranscriptBlocks.latestReplyRunIds(transcriptBlocks)
+        }
     }
     /// Derived with the blocks, not in the view: the chat body re-evaluates on
     /// every composer keystroke.
     private(set) var continuationIds = Set<String>()
+    private(set) var latestReplyRunIds = Set<String>()
     @Published private(set) var pending = false
     /// A turn is running in this bot's session that this app did not send (a
     /// handoff, a connect resume, a routine). Drives the working row the same

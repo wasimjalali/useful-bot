@@ -80,6 +80,16 @@ import Testing
         #expect(rows.first?.handoffId == "h1")
     }
 
+    @Test func aConnectedNoteCarriesItsAppIntoTheRow() throws {
+        let event = try JSONDecoder().decode(AgentEvent.self, from: Data(#"""
+        {"id":"n1","kind":"note","text":"Gmail connected","targetBotIds":[],"connectedName":"Gmail","connectedLogo":"https://logos.composio.dev/api/gmail"}
+        """#.utf8))
+        let rows = Transcript.merge(events: [event], messages: [])
+        #expect(rows.first?.connectedName == "Gmail")
+        #expect(rows.first?.connectedLogo == "https://logos.composio.dev/api/gmail")
+        #expect(rows.first?.text == "Gmail connected")
+    }
+
     @Test func mergeRendersHandoffsAndNotes() throws {
         let handoff = try JSONDecoder().decode(
             AgentEvent.self,

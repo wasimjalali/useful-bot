@@ -56,6 +56,14 @@ export type AgentEvent = {
   proposalId: string | null;
   handoffId: string | null;
   widgetId: string | null;
+  /**
+   * Set on the host's "connected" note: the app or server that was just
+   * added, so the chat can draw it as a card with its logo instead of a line
+   * of text. The note keeps its text, so a reader that ignores these still
+   * says the same thing.
+   */
+  connectedName: string | null;
+  connectedLogo: string | null;
 };
 
 export type BotProfileDraft = {
@@ -244,6 +252,8 @@ function parseEvent(raw: unknown): AgentEvent | null {
     proposalId: isId(rec.proposalId, 120) ? rec.proposalId : null,
     handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
     widgetId: isId(rec.widgetId, 120) ? rec.widgetId : null,
+    connectedName: clip(rec.connectedName, 80) || null,
+    connectedLogo: typeof rec.connectedLogo === "string" && rec.connectedLogo.length <= 500 ? rec.connectedLogo : null,
   };
 }
 
@@ -588,6 +598,8 @@ export function appendAgentEvent(
     proposalId?: string | null;
     handoffId?: string | null;
     widgetId?: string | null;
+    connectedName?: string | null;
+    connectedLogo?: string | null;
     id?: string;
   },
   path = agentStorePath(),
@@ -605,6 +617,8 @@ export function appendAgentEvent(
       proposalId: input.proposalId ?? null,
       handoffId: input.handoffId ?? null,
       widgetId: input.widgetId ?? null,
+      connectedName: input.connectedName ? clip(input.connectedName, 80) : null,
+      connectedLogo: input.connectedLogo ?? null,
     };
     const existing = thread.events.findIndex((item) => item.id === event.id);
     if (existing >= 0) return thread.events[existing];

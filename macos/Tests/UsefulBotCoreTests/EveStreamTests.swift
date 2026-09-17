@@ -123,15 +123,20 @@ import Testing
     @Test func activityNamesWhatTheToolWasPointedAt() {
         var projection = StreamProjection()
         projection.apply(EveEvent(type: "turn.started", id: "1"))
-        let requested = #"{"type":"actions.requested","meta":{"id":"2"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"bash","input":{"command":"npm  run\n test"}}]}}"#
+        let requested = #"{"type":"actions.requested","meta":{"id":"2"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"bash","input":{"command":"TOKEN=abc npm  run\n test --key=s3cret"}}]}}"#
         projection.apply(EveStream.parseLine(requested)!)
-        #expect(projection.activity == .tool("bash", detail: "npm run test"))
-        #expect(projection.activity.label == "Running a command: npm run test")
+        // Program and subcommand only: arguments can carry a secret.
+        #expect(projection.activity == .tool("bash", detail: "npm run"))
+        #expect(projection.activity.label == "Running a command: npm run")
 
         // A late input delta for the same call keeps the detail.
         let late = #"{"type":"action.input.appended","meta":{"id":"3"},"data":{"toolName":"bash","inputTextDelta":"x"}}"#
         projection.apply(EveStream.parseLine(late)!)
-        #expect(projection.activity == .tool("bash", detail: "npm run test"))
+        #expect(projection.activity == .tool("bash", detail: "npm run"))
+        // For another tool it is a new step.
+        let other = #"{"type":"action.input.appended","meta":{"id":"3b"},"data":{"toolName":"read_file","inputTextDelta":"x"}}"#
+        projection.apply(EveStream.parseLine(other)!)
+        #expect(projection.activity == .tool("read_file"))
 
         let long = String(repeating: "a", count: 80)
         let wide = #"{"type":"actions.requested","meta":{"id":"4"},"data":{"actions":[{"toolName":"web_search","input":{"query":"\#(long)"}}]}}"#

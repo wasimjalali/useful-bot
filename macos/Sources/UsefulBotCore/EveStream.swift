@@ -405,7 +405,9 @@ public enum EveStream {
     }
 
     /// What the first named call was pointed at, in one short line. Only the
-    /// fields that read as a sentence are used; ids and payloads are not.
+    /// fields that read as a sentence are used; ids and payloads are not. A
+    /// shell line is cut to its program and subcommand: its arguments are
+    /// where a token or a password would be, and this text is drawn on screen.
     static func requestedToolDetail(_ data: JSONValue?) -> String? {
         guard let actions = data?["actions"]?.arrayValue else { return nil }
         let named = actions.first { action in
@@ -416,11 +418,26 @@ public enum EveStream {
         guard let input = named?["input"] else { return nil }
         for key in ["command", "query", "path", "url", "use_case", "tool"] {
             guard let value = input[key]?.stringValue else { continue }
-            let line = value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            var words = value.split(whereSeparator: \.isWhitespace).map(String.init)
+            if key == "command" { words = commandHead(words) }
+            let line = words.joined(separator: " ")
             if line.isEmpty { continue }
             return line.count > 60 ? String(line.prefix(59)) + "…" : line
         }
         return nil
+    }
+
+    /// `git status`, `npm run`, `find`: the program, plus the word after it
+    /// only when that word is a bare subcommand and not a flag, a path or an
+    /// assignment.
+    private static func commandHead(_ words: [String]) -> [String] {
+        guard let program = words.first(where: { !$0.contains("=") }) else { return [] }
+        var head = [String(program.split(separator: "/").last ?? "")]
+        if let index = words.firstIndex(of: program), index + 1 < words.count {
+            let next = words[index + 1]
+            if next.allSatisfy({ $0.isLetter || $0 == "-" }), !next.hasPrefix("-") { head.append(next) }
+        }
+        return head
     }
 
     /// Mirror the web's `String(value)` for scalar fields: numbers and booleans

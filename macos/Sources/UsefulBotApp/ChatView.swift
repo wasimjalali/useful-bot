@@ -378,8 +378,10 @@ struct ChatView: View {
                                 // Only the newest reply measures itself, and
                                 // only so the scroll can tell an answer that
                                 // overflows the window from one that does not.
+                                // A reply is every bubble of the turn, so the
+                                // heights add up.
                                 .background {
-                                    if row.id == model.latestReplyAnchor {
+                                    if model.latestReplyRunIds.contains(row.id) {
                                         GeometryReader { geometry in
                                             Color.clear.preference(
                                                 key: ReplyHeightKey.self,
@@ -642,6 +644,8 @@ struct TranscriptRowView: View, Equatable {
                     replyRow(showsSpeaker: false)
                 }
             }
+        case .note where row.connectedName != nil:
+            connectedCard(name: row.connectedName ?? "")
         case .note:
             HStack(alignment: .top, spacing: 12) {
                 noteAvatar
@@ -715,16 +719,59 @@ struct TranscriptRowView: View, Equatable {
                 ChatMarkdownView(text: row.text, expandsWidth: false)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .background(Theme.C.canvas)
+                    .background(Theme.C.bubbleBot)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .strokeBorder(Theme.C.border, lineWidth: 1)
                     )
-                    .frame(maxWidth: max(160, maxBubbleWidth), alignment: .leading)
+                    .frame(maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth), alignment: .leading)
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// The host's word that an app was added, written by the app and not by
+    /// the bot: a bubble with the logo, the name and the outcome.
+    private func connectedCard(name: String) -> some View {
+        HStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                AppLogo(name: name, url: row.connectedLogo)
+                Text(name)
+                    .font(Theme.font(DesignTokens.FontSize.chatBody, .semibold))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 24)
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Added")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(Theme.C.success)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Theme.C.successSoft)
+                .clipShape(Capsule())
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 420)
+            .background(Theme.C.bubbleBot)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Theme.C.border, lineWidth: 1)
+            )
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name) added")
+    }
+
+    /// A table or a code block gets the whole column; prose keeps the cap.
+    private var holdsWideBlock: Bool {
+        row.text.contains("```") || row.text.contains("\n|")
     }
 
     /// A note's face: the speaker's, the chat owner's for its own note, and
@@ -914,7 +961,7 @@ private struct ReplyHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+        value += nextValue()
     }
 }
 
