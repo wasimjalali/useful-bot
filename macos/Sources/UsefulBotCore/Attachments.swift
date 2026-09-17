@@ -98,6 +98,16 @@ public enum Attachments {
         return lines.joined(separator: "\n")
     }
 
+    /// Whether a stored turn carries the `[file: ...]` lines `echoedMessage`
+    /// appends. The pictures themselves are long gone by then, so such a turn
+    /// cannot be sent again as it stands.
+    public static func namesEchoedFile(_ text: String) -> Bool {
+        text.split(separator: "\n").contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("[file: ") && trimmed.hasSuffix("]")
+        }
+    }
+
     private static func fence(for body: String) -> String {
         var length = 3
         while body.contains(String(repeating: "`", count: length)) {
