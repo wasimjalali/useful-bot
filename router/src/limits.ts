@@ -182,13 +182,14 @@ export class LimitStore {
     return { input: Number(row.input), output: Number(row.output) };
   }
 
-  private policyError(code: string): RouterError {
+  private policyError(code: string, retryAfterMs?: number): RouterError {
     return new RouterError({
       status: 429,
       type: "rate_limit_error",
       code,
       message: code,
       retryable: true,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     });
   }
 
@@ -215,12 +216,19 @@ export class LimitStore {
       minuteAgo,
     ) as { c: number };
     if (recent.c >= limits.rpm) {
+      // A slot frees when the oldest hit in the window ages out. Saying when
+      // lets the agent wait that long instead of failing the turn.
+      const oldest = this.db.prepare("SELECT MIN(ts) AS ts FROM hits WHERE caller_id = ? AND ts > ?").get(
+        caller.callerId,
+        minuteAgo,
+      ) as { ts: number | null };
       throw new RouterError({
         status: 429,
         type: "rate_limit_error",
         code: "caller_rate_limit",
         message: "caller_rate_limit",
         retryable: true,
+        ...(oldest.ts !== null ? { retryAfterMs: Math.max(0, oldest.ts + 60_000 - now) } : {}),
       });
     }
     const dayAgo = now - 24 * 60 * 60 * 1000;
@@ -369,7 +377,9 @@ export class LimitStore {
         caller.callerId,
       ) as { ts: number | null };
       if (last.ts !== null && now - last.ts < SEARCH_LIMITS.minIntervalMs) {
-        throw this.policyError("search_rate_limited");
+        // Unlike the daily caps above this one clears by itself, within a
+        // second. With several bots searching it is routine, so it says when.
+        throw this.policyError("search_rate_limited", Math.max(0, last.ts + SEARCH_LIMITS.minIntervalMs - now));
       }
       this.db.prepare("INSERT INTO search_hits (caller_id, ts) VALUES (?, ?)").run(caller.callerId, now);
       this.db.exec("COMMIT");

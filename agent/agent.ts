@@ -2,6 +2,9 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { defineAgent, defineDynamic } from "eve";
 import { POLICY_WINDOW_TOKENS } from "../shared/policy.ts";
 import { currentWindowTokens } from "./lib/model-window.ts";
+import { routerFetch } from "./lib/router-fetch.ts";
+import { turnIdOf } from "./lib/router-identity.ts";
+import { perSessionModel } from "./lib/session-model.ts";
 
 const PLANTED = "S2-TOOL-PLANT-001";
 
@@ -141,15 +144,8 @@ function s2FixtureModel() {
   return provider.chatModel("s2-fixture");
 }
 
-// One id per process when the env does not pin one, so every model request in
-// a process reports the same session/turn instead of a fresh random uuid.
-const PROCESS_SESSION_ID = process.env.UB_SESSION_ID ?? crypto.randomUUID();
-const PROCESS_TURN_ID = process.env.UB_TURN_ID ?? crypto.randomUUID();
-
-function requireModel() {
-  if (process.env.UB_S2_FIXTURE === "1") {
-    return s2FixtureModel();
-  }
+// One model handle per eve session: see agent/lib/session-model.ts.
+const routerModel = perSessionModel((ids) => {
   const token = process.env.UB_ROUTER_DESKTOP_TOKEN;
   if (!token) {
     throw new Error("UB_ROUTER_DESKTOP_TOKEN missing; S2 probe sets UB_S2_FIXTURE=1");
@@ -158,20 +154,17 @@ function requireModel() {
     name: "useful-bot-router",
     baseURL: process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1",
     apiKey: token,
-    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      headers.set("x-useful-session-id", PROCESS_SESSION_ID);
-      headers.set("x-useful-turn-id", PROCESS_TURN_ID);
-      headers.set("x-useful-request-id", crypto.randomUUID());
-      return fetch(input, { ...init, headers });
-    },
+    fetch: routerFetch({ ids }),
   });
   return provider.chatModel("workhorse");
-}
+});
 
-// One provider object for the process: the router picks the upstream model
-// per request, so the handle never changes, only the window it reports.
-const ROUTER_MODEL = requireModel();
+// Built once: the fixture never reaches the router, so it has no session.
+const FIXTURE_MODEL = process.env.UB_S2_FIXTURE === "1" ? s2FixtureModel() : null;
+if (!FIXTURE_MODEL && !process.env.UB_ROUTER_DESKTOP_TOKEN) {
+  // Fail at boot, as the process-wide model did, rather than on the first turn.
+  throw new Error("UB_ROUTER_DESKTOP_TOKEN missing; S2 probe sets UB_S2_FIXTURE=1");
+}
 
 export default defineAgent({
   // Selected per model step rather than once per session, because the window
@@ -180,9 +173,9 @@ export default defineAgent({
   // scope allowed to return a live LanguageModel rather than a gateway id.
   model: defineDynamic({
     events: {
-      "step.started": () => ({
-        model: ROUTER_MODEL,
-        modelContextWindowTokens: process.env.UB_S2_FIXTURE === "1" ? POLICY_WINDOW_TOKENS : currentWindowTokens(),
+      "step.started": (event, ctx) => ({
+        model: FIXTURE_MODEL ?? routerModel(ctx.session.id, turnIdOf(event)),
+        modelContextWindowTokens: FIXTURE_MODEL ? POLICY_WINDOW_TOKENS : currentWindowTokens(),
       }),
     },
   }),

@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startRouter } from "../src/index.ts";
 import { LimitStore, estimateInputUnits } from "../src/limits.ts";
-import { ConcurrencyGate } from "../src/concurrency.ts";
+import { CEILING_RETRY_AFTER_MS, ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs } from "../src/retry-after.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
-import { MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
+import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
 type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -726,18 +726,218 @@ test("observed usage above a reservation is an overrun", () => {
   assert.equal(reconciled.alias, "workhorse");
 });
 
-test("concurrency gate allows two upstream requests and one per caller", () => {
+test("concurrency gate: one per session, ten across sessions, the eleventh is a retryable 429", () => {
   const gate = new ConcurrencyGate();
-  gate.acquire("a");
-  assert.throws(() => gate.acquire("a"), /session_busy/);
-  gate.acquire("b");
-  assert.throws(() => gate.acquire("c"), /global_budget_exhausted/);
-  gate.release("a");
-  gate.acquire("c");
-  gate.release("b");
-  gate.release("c");
-  gate.acquire("d");
-  gate.release("d");
+  const releases: Array<() => void> = [];
+  for (let i = 0; i < MAX_ACTIVE_UPSTREAM; i += 1) {
+    releases.push(gate.acquire(ConcurrencyGate.key("desktop", `s${i}`)));
+  }
+  assert.equal(MAX_ACTIVE_UPSTREAM, 10);
+  assert.equal(gate.activeCount, 10);
+  // A busy session is told so even at the ceiling: 409, not the retryable 429.
+  assert.throws(() => gate.acquire(ConcurrencyGate.key("desktop", "s0")), (error: unknown) => {
+    const e = error as { status: number; code: string; retryable: boolean };
+    return e.status === 409 && e.code === "session_busy" && e.retryable === false;
+  });
+  assert.throws(() => gate.acquire(ConcurrencyGate.key("desktop", "s10")), (error: unknown) => {
+    const e = error as { status: number; code: string; retryable: boolean; retryAfterMs?: number };
+    return e.status === 429 && e.code === "global_concurrency_limit" && e.retryable === true
+      && e.retryAfterMs === CEILING_RETRY_AFTER_MS;
+  });
+  releases[0]();
+  // Releasing twice must not free a second slot.
+  releases[0]();
+  assert.equal(gate.activeCount, 9);
+  const eleventh = gate.acquire(ConcurrencyGate.key("desktop", "s10"));
+  assert.throws(() => gate.acquire(ConcurrencyGate.key("desktop", "s11")), /global_concurrency_limit/);
+  // A stale release from the first holder of s0 cannot free the new holder's slot.
+  const again = (() => { releases[1](); return gate.acquire(ConcurrencyGate.key("desktop", "s0")); })();
+  releases[0]();
+  assert.throws(() => gate.acquire(ConcurrencyGate.key("desktop", "s0")), /session_busy/);
+  eleventh();
+  again();
+  for (const release of releases) release();
+  assert.equal(gate.activeCount, 0);
+});
+
+test("concurrency gate: the same session id under two callers is two sessions", () => {
+  const gate = new ConcurrencyGate();
+  gate.acquire(ConcurrencyGate.key("desktop", "s"));
+  gate.acquire(ConcurrencyGate.key("reviewer", "s"));
+  // The key cannot be forged by a caller id or session that contains the separator.
+  assert.notEqual(ConcurrencyGate.key("a", "b\",\"c"), ConcurrencyGate.key("a\",\"b", "c"));
+});
+
+/** An upstream that holds every completion open until `open()` is called. */
+function heldUpstream() {
+  const waiting: Array<() => void> = [];
+  let opened = false;
+  let seen = 0;
+  const handler: UpstreamHandler = (req, res) => {
+    seen += 1;
+    const finish = () => jsonFixture(req, res);
+    if (opened) finish();
+    else waiting.push(finish);
+  };
+  return {
+    handler,
+    seen: () => seen,
+    open: () => {
+      opened = true;
+      for (const finish of waiting.splice(0)) finish();
+    },
+  };
+}
+
+function completion(base: string, bearer: string, sessionId: string, signal?: AbortSignal) {
+  return fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${bearer}`,
+      "content-type": "application/json",
+      ...ids(),
+      "x-useful-session-id": sessionId,
+    },
+    body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], max_tokens: 16 }),
+    signal,
+  });
+}
+
+async function until(check: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+test("ten sessions of one caller run together, a busy session is 409 and the eleventh is 429", async () => {
+  const upstream = heldUpstream();
+  await withRouter(async (base, tokens) => {
+    const sessions = Array.from({ length: MAX_ACTIVE_UPSTREAM }, () => randomUUID());
+    const running = sessions.map((session) => completion(base, tokens.desktop, session));
+    try {
+    await until(() => upstream.seen() === MAX_ACTIVE_UPSTREAM, "ten upstream calls in flight");
+
+    const busy = await completion(base, tokens.desktop, sessions[0]);
+    assert.equal(busy.status, 409);
+    assert.equal((await busy.json()).error.code, "session_busy");
+
+    const eleventh = await completion(base, tokens.desktop, randomUUID());
+    assert.equal(eleventh.status, 429);
+    assert.equal(eleventh.headers.get("retry-after"), "2");
+    const body = await eleventh.json();
+    assert.equal(body.error.code, "global_concurrency_limit");
+    assert.equal(body.error.retryable, true);
+    assert.equal(body.error.retry_after_ms, 2000);
+
+    // Neither refusal reached the upstream.
+    assert.equal(upstream.seen(), MAX_ACTIVE_UPSTREAM);
+    } finally {
+      // A failed assertion must not leave ten calls held: the router would
+      // never close and the suite would hang instead of reporting.
+      upstream.open();
+    }
+    for (const res of await Promise.all(running)) assert.equal(res.status, 200);
+    const after = await completion(base, tokens.desktop, sessions[0]);
+    assert.equal(after.status, 200);
+    // Usage counts the eleven calls that ran, and neither refusal.
+    const usage = await (await fetch(`${base}/v1/usage`, { headers: { authorization: `Bearer ${tokens.desktop}` } })).json();
+    assert.equal(usage.requests, MAX_ACTIVE_UPSTREAM + 1);
+  }, upstream.handler);
+});
+
+test("an upstream failure gives the session its slot back", async () => {
+  let calls = 0;
+  await withRouter(async (base, tokens) => {
+    const session = randomUUID();
+    const failed = await completion(base, tokens.desktop, session);
+    assert.equal(failed.status >= 500, true);
+    const next = await completion(base, tokens.desktop, session);
+    assert.equal(next.status, 200);
+  }, (req, res) => {
+    calls += 1;
+    if (calls === 1) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "boom" } }));
+      return;
+    }
+    jsonFixture(req, res);
+  });
+});
+
+test("a client that disconnects mid-call gives the session its slot back", async () => {
+  const upstream = heldUpstream();
+  await withRouter(async (base, tokens) => {
+    const session = randomUUID();
+    const controller = new AbortController();
+    const dropped = completion(base, tokens.desktop, session, controller.signal);
+    await until(() => upstream.seen() === 1, "the first call to reach the upstream");
+    controller.abort();
+    await assert.rejects(dropped);
+    upstream.open();
+    // The router sees the close asynchronously; the slot must come back without
+    // the held upstream call ever completing.
+    let status = 0;
+    for (let i = 0; i < 100 && status !== 200; i += 1) {
+      const res = await completion(base, tokens.desktop, session);
+      status = res.status;
+      if (status !== 200) {
+        assert.equal(status, 409);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    assert.equal(status, 200);
+  }, upstream.handler);
+});
+
+test("a search runs while the same session holds a completion, and the reverse", async () => {
+  const upstream = heldUpstream();
+  await withRouter(async (base, tokens) => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (...args: Parameters<typeof fetch>): Promise<Response> => {
+      const [input] = args;
+      if (typeof input === "string" && input.includes("api.firecrawl.dev")) {
+        return new Response(
+          JSON.stringify({ data: { web: [{ title: "t", url: "https://example.com/", description: "s" }] } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return originalFetch(...args);
+    };
+    try {
+      const session = randomUUID();
+      const thinking = completion(base, tokens.desktop, session);
+      await until(() => upstream.seen() === 1, "the completion to be in flight");
+      const search = await originalFetch(`${base}/v1/search`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${tokens.desktop}`,
+          "content-type": "application/json",
+          "x-useful-session-id": session,
+        },
+        body: JSON.stringify({ query: "hello" }),
+      });
+      assert.equal(search.status, 200);
+      upstream.open();
+      assert.equal((await thinking).status, 200);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }, upstream.handler);
+});
+
+test("the per-minute 429 says how long until a slot frees", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-"));
+  const store = new LimitStore(join(dir, "usage.sqlite"));
+  const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+  const now = Date.now();
+  for (let i = 0; i < CALLER_LIMITS.desktop.rpm; i += 1) store.hit(caller, now + i);
+  assert.throws(() => store.hit(caller, now + 10_000), (error: unknown) => {
+    const e = error as { code: string; retryAfterMs?: number };
+    return e.code === "caller_rate_limit" && e.retryAfterMs === 50_000;
+  });
+  store.hit(caller, now + 60_001);
 });
 
 test("multimodal message content is rejected", async () => {

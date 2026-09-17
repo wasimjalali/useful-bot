@@ -192,6 +192,30 @@ import Testing
         #expect(!projection.failed)
     }
 
+    /// A busy bot and a full house are not a spent day. The ceiling used to be
+    /// coded `global_budget_exhausted`, so the app told the owner to raise the
+    /// daily token limit when other bots were merely working.
+    @Test func aConcurrencyRefusalNeverReadsAsTheDailyLimit() {
+        let busy = TurnFailure(
+            code: "turn.failed",
+            detail: "AI_RetryError: Failed after 3 attempts. Last error: AI_APICallError: session_busy"
+        )
+        #expect(busy.reason == "This bot is still working on its last step.")
+
+        // The wrapped text can carry the router's 429 TYPE as well as the code.
+        let full = TurnFailure(
+            code: "turn.failed",
+            detail: "AI_APICallError: global_concurrency_limit (rate_limit_error)"
+        )
+        #expect(full.reason == "Ten bots are already working. Try again in a moment.")
+
+        // The real daily budgets keep their wording.
+        for code in ["caller_budget_exhausted", "global_budget_exhausted"] {
+            #expect(TurnFailure(code: code, detail: "").reason
+                == "The daily token limit is used up. Raise it in Settings, under Usage.")
+        }
+    }
+
     @Test func aFailedTurnSaysWhy() {
         var projection = StreamProjection()
         projection.apply(EveEvent(
