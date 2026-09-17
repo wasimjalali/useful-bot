@@ -39,6 +39,11 @@ public enum JSONValue: Decodable, Equatable, Sendable {
         return nil
     }
 
+    public var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
     public var arrayValue: [JSONValue]? {
         if case .array(let value) = self { return value }
         return nil
@@ -376,6 +381,10 @@ public struct StreamProjection: Equatable, Sendable {
     public private(set) var activity: TurnActivity = .thinking
     /// MCP App widgets the live turn produced, shown in the transcript.
     public private(set) var widgets: [LiveWidget] = []
+    /// Questions the bot asked with eve's `ask_question` that nobody has
+    /// answered yet. The turn is over while one is open: the bot is waiting on
+    /// the owner, not working.
+    public private(set) var questions: [OwnerQuestion] = []
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -528,12 +537,52 @@ public struct StreamProjection: Equatable, Sendable {
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
             if event.type == "action.result" { activity = .thinking }
+        case "input.requested":
+            for question in EveStream.parseQuestions(event.data) {
+                if let index = questions.firstIndex(where: { $0.id == question.id }) {
+                    questions[index] = question
+                } else {
+                    questions.append(question)
+                }
+            }
+        case "input.resolved":
+            let resolved = Set((event.data?["resolutions"]?.arrayValue ?? [])
+                .compactMap { $0["requestId"]?.stringValue })
+            questions.removeAll { resolved.contains($0.id) }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             pending = false
             currentAssistantId = nil
         default:
             break
         }
+    }
+}
+
+/// One `ask_question` request from an `input.requested` event.
+public struct OwnerQuestion: Identifiable, Equatable, Sendable {
+    public struct Option: Identifiable, Equatable, Sendable {
+        public var id: String
+        public var label: String
+        public var detail: String
+
+        public init(id: String, label: String, detail: String) {
+            self.id = id
+            self.label = label
+            self.detail = detail
+        }
+    }
+
+    /// eve's `requestId`.
+    public var id: String
+    public var prompt: String
+    public var options: [Option]
+    public var allowFreeform: Bool
+
+    public init(id: String, prompt: String, options: [Option], allowFreeform: Bool) {
+        self.id = id
+        self.prompt = prompt
+        self.options = options
+        self.allowFreeform = allowFreeform
     }
 }
 
@@ -554,6 +603,33 @@ public struct LiveWidget: Equatable, Sendable {
 }
 
 extension EveStream {
+    /// The questions in an `input.requested` event. Tool approvals ride the
+    /// same event with another `kind`; this app gates tools with its own
+    /// approval cards, so only questions are read here.
+    public static func parseQuestions(_ data: JSONValue?) -> [OwnerQuestion] {
+        guard let requests = data?["requests"]?.arrayValue else { return [] }
+        var found: [OwnerQuestion] = []
+        for request in requests where request["kind"]?.stringValue == "question" {
+            guard let id = request["requestId"]?.stringValue, !id.isEmpty,
+                  let prompt = request["prompt"]?.stringValue,
+                  !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let options = (request["options"]?.arrayValue ?? []).compactMap { option -> OwnerQuestion.Option? in
+                guard let optionId = option["id"]?.stringValue, !optionId.isEmpty,
+                      let label = option["label"]?.stringValue, !label.isEmpty else { return nil }
+                return OwnerQuestion.Option(
+                    id: optionId,
+                    label: label,
+                    detail: option["description"]?.stringValue ?? ""
+                )
+            }
+            // eve's own default when the model leaves it out: a question with
+            // no options can only be answered in words.
+            let freeform = request["allowFreeform"]?.boolValue ?? options.isEmpty
+            found.append(OwnerQuestion(id: id, prompt: prompt, options: options, allowFreeform: freeform))
+        }
+        return found
+    }
+
     /// The MCP App calls in an `actions.requested` event. The id is eve's
     /// tool call id, so a replay or a retry of the same call is one drawing.
     public static func parseLiveWidgets(_ data: JSONValue?) -> [LiveWidget] {
