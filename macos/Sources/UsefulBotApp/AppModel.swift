@@ -1176,10 +1176,19 @@ final class AppModel: ObservableObject {
                 // fetched is not the same as an empty one: start a fresh
                 // session instead of risking a mis-armed stream.
                 var history = Set<String>()
+                // Where this send's stream starts reading. Taken with the
+                // snapshot, before the turn is posted, so the new turn cannot
+                // sit behind it; zero when the server did not report a tail.
+                var streamStart = 0
                 var sendSessionId = bot.sessionId
                 if let sessionId = bot.sessionId, !sessionId.isEmpty {
                     do {
-                        history = try await self.client.historyTurnIds(sessionId: sessionId)
+                        // The follower has already read this session up to its
+                        // cursor, so the snapshot only needs what came after.
+                        let held = self.followCursor.flatMap { $0.sessionId == sessionId ? $0.next : nil } ?? 0
+                        let snapshot = try await self.client.historySnapshot(sessionId: sessionId, readFrom: held)
+                        history = snapshot.turnIds
+                        streamStart = snapshot.nextIndex ?? 0
                     } catch {
                         sendSessionId = nil
                     }
@@ -1218,6 +1227,7 @@ final class AppModel: ObservableObject {
                         return
                     }
                     history = []
+                    streamStart = 0
                     createdSession = true
                     sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
                 }
@@ -1256,7 +1266,8 @@ final class AppModel: ObservableObject {
                 for try await event in self.client.stream(
                     sessionId: sessionId,
                     expectedSuffix: echo,
-                    historyTurnIds: history
+                    historyTurnIds: history,
+                    startIndex: streamStart
                 ) {
                     guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                         self.finishSend(botId: bot.id, generation: generation)
