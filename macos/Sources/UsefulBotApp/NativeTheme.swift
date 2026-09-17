@@ -17,6 +17,7 @@ enum Theme {
         static let rail = color(DesignTokens.Hex.rail)
         static let surface = color(DesignTokens.Hex.surface)
         static let sunken = color(DesignTokens.Hex.sunken)
+        static let bubbleBot = color(DesignTokens.Hex.bubbleBot)
         static let ink = color(DesignTokens.Hex.ink)
         static let inkMuted = color(DesignTokens.Hex.inkMuted)
         static let inkFaint = color(DesignTokens.Hex.inkFaint)

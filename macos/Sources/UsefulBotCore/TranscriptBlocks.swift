@@ -141,6 +141,46 @@ public enum TranscriptBlocks {
         return blocks
     }
 
+    /// The bubbles that follow another bubble from the same bot with nothing
+    /// between them. A turn posts several messages; these stack close under
+    /// the first instead of standing a full turn's gap apart.
+    public static func continuationIds(_ blocks: [TranscriptBlock]) -> Set<String> {
+        var ids = Set<String>()
+        var previous: TranscriptRow?
+        for block in blocks {
+            // The host's "added" card is a bubble of the same turn: it stacks
+            // with the bot's messages on either side of it.
+            guard case .message(let row, _) = block,
+                  row.kind == .assistant || row.connectedName != nil else {
+                previous = nil
+                continue
+            }
+            if let previous,
+               previous.authorBotId == row.authorBotId
+                || previous.connectedName != nil || row.connectedName != nil {
+                ids.insert(row.id)
+            }
+            previous = row
+        }
+        return ids
+    }
+
+    /// Every bubble of the newest reply: the bot's messages since the last
+    /// thing said to it. The first is the reply anchor; together they are the
+    /// answer whose height decides whether it overflows the window.
+    public static func latestReplyRunIds(_ blocks: [TranscriptBlock]) -> Set<String> {
+        var run = Set<String>()
+        for block in blocks {
+            guard case .message(let row, _) = block else { continue }
+            switch row.kind {
+            case .user, .post: run = []
+            case .assistant: run.insert(row.id)
+            case .handoff, .note, .widget: continue
+            }
+        }
+        return run
+    }
+
     /// "Today" / "Yesterday" / "Wed, Aug 26".
     public static func dayLabel(
         _ date: Date,

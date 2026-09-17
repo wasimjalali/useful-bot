@@ -148,7 +148,7 @@ function markConnected(
   const flipped = readProposal(proposalId, storePath);
   if (!isServer(flipped) || flipped.phase !== "connected") return null;
   try {
-    appendAgentEvent(flipped.threadId, { kind: "note", text: `${entry.name} connected` }, storePath);
+    appendAgentEvent(flipped.threadId, { kind: "note", text: `${entry.name} connected`, connectedName: entry.name }, storePath);
   } catch {
     /* the resume still tells the owner */
   }

@@ -106,7 +106,7 @@ test("none-auth confirm writes the registry, counts tools and queues one resume"
   assert.equal(listHandoffs().length, 1);
   assert.equal(listHandoffs()[0].message.includes("example"), true);
   assert.equal(listHandoffs()[0].message.includes("mcp.example.com"), false);
-  assert.ok(listThreadEvents("b1", storePath).some((e) => e.kind === "note" && e.text === "Example connected"));
+  assert.ok(listThreadEvents("b1", storePath).some((e) => e.kind === "note" && e.text === "Example connected" && e.connectedName === "Example"));
   assert.equal(listHandoffs()[0].message.includes("BEGIN-UNTRUSTED(connect-purpose)"), true);
 });
 

@@ -9,6 +9,9 @@ public enum DesignTokens {
         public static let rail = "#F8F8F8"
         public static let surface = "#FFFFFF"
         public static let sunken = "#F0F0F0"
+        /// A bot's chat bubble: an off-white, not a gray, so it reads as paper
+        /// on the white chat rather than as a second owner bubble.
+        public static let bubbleBot = "#FAF9F6"
 
         public static let ink = "#171717"
         public static let inkMuted = "#5C5C5C"
@@ -63,6 +66,8 @@ public enum DesignTokens {
         public static let chatColumnPadding: CGFloat = 24
         public static let chatPaddingVertical: CGFloat = 32
         public static let transcriptGap: CGFloat = 24
+        /// Between two bubbles the same bot posted back to back.
+        public static let bubbleStackGap: CGFloat = 6
         public static let composerBottom: CGFloat = 20
         public static let composerTop: CGFloat = 8
         public static let botRow: CGFloat = 36

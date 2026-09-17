@@ -41,7 +41,7 @@ Web is `http://127.0.0.1:4320`. Chat needs eve as well (`service.mjs eve`) after
 
 ## Chat layout
 
-The two sides are asymmetric on purpose. What you say is a right-aligned bubble; what a bot says is set on the chat background at the full column width, so code blocks and tables get real room. Rows carry no clock: a centered rule marks Today, Yesterday or the date, and nothing else.
+What you say is a right-aligned bubble; what a bot says is a left-aligned bubble a shade off the chat background. Each message a bot posts in a turn is its own bubble, stacked close under the last, and the step row under them says what the bot is doing until the turn ends. Rows carry no clock: a centered rule marks Today, Yesterday or the date, and nothing else.
 
 Anything a bot needs an answer to (an approval, a proposed bot or group) docks above the composer with its options on the same block, rather than scrolling away up the transcript.
 

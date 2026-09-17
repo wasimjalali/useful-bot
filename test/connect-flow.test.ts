@@ -326,7 +326,7 @@ test("the pump connects a waiting card once, writes the note and queues one resu
   assert.match(handoffs[0].message, /connected the app gmail\./);
   assert.ok(!handoffs[0].message.includes("Gmail"));
   assert.match(handoffs[0].message, /Find the invoice/);
-  assert.ok(listThreadEvents("b1", storePath).some((event) => event.kind === "note" && event.text === "Gmail connected"));
+  assert.ok(listThreadEvents("b1", storePath).some((event) => event.kind === "note" && event.text === "Gmail connected" && event.connectedName === "Gmail"));
   // A second tick does nothing more.
   resetConnectMemo();
   assert.deepEqual(await pumpConnects({ now: Date.now() + 12_000 }), { connected: [], expired: [] });
