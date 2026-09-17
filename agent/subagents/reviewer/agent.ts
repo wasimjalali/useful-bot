@@ -1,13 +1,14 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { defineAgent } from "eve";
+import { defineAgent, defineDynamic } from "eve";
 import { POLICY_WINDOW_TOKENS } from "../../../shared/policy.ts";
+import { routerFetch } from "../../lib/router-fetch.ts";
+import { turnIdOf, type RouterIds } from "../../lib/router-identity.ts";
+import { perSessionModel } from "../../lib/session-model.ts";
 
-// One id per process when the env does not pin one, so every model request in
-// a process reports the same session/turn instead of a fresh random uuid.
-const PROCESS_SESSION_ID = process.env.UB_SESSION_ID ?? crypto.randomUUID();
-const PROCESS_TURN_ID = process.env.UB_TURN_ID ?? crypto.randomUUID();
-
-function reviewerModel() {
+// One model handle per child eve session the review runs in: the router gates
+// one model call per session, so a process-wide id made two bots' reviews one
+// session and the second 409'd. See agent/lib/session-model.ts.
+function reviewerModel(ids: () => RouterIds) {
   if (process.env.UB_S2_FIXTURE === "1") {
     const provider = createOpenAICompatible({
       name: "s2-fixture",
@@ -41,25 +42,31 @@ function reviewerModel() {
     baseURL: process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1",
     apiKey: "reviewer-unconfigured",
     // The router refuses /v1/chat/completions without the x-useful-* UUIDs,
-    // so every call carries the process session and turn plus a fresh id.
-    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-      const token = process.env.UB_ROUTER_REVIEWER_TOKEN;
-      if (!token) {
-        throw new Error("reviewer_unconfigured");
-      }
-      const headers = new Headers(init?.headers);
-      headers.set("authorization", `Bearer ${token}`);
-      headers.set("x-useful-session-id", PROCESS_SESSION_ID);
-      headers.set("x-useful-turn-id", PROCESS_TURN_ID);
-      headers.set("x-useful-request-id", crypto.randomUUID());
-      return fetch(input, { ...init, headers });
-    },
+    // so every call carries the session and turn plus a fresh request id.
+    fetch: routerFetch({
+      ids,
+      authorization: () => {
+        const token = process.env.UB_ROUTER_REVIEWER_TOKEN;
+        if (!token) {
+          throw new Error("reviewer_unconfigured");
+        }
+        return `Bearer ${token}`;
+      },
+    }),
   });
   return provider.chatModel("reviewer");
 }
 
+const reviewerFor = perSessionModel(reviewerModel);
+
 export default defineAgent({
-  model: reviewerModel(),
-  modelContextWindowTokens: POLICY_WINDOW_TOKENS,
+  model: defineDynamic({
+    events: {
+      "step.started": (event, ctx) => ({
+        model: reviewerFor(ctx.session.id, turnIdOf(event)),
+        modelContextWindowTokens: POLICY_WINDOW_TOKENS,
+      }),
+    },
+  }),
   description: "Read-only defect finder over supplied text. No tools, no delegation.",
 });

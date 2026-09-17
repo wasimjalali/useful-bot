@@ -24,6 +24,7 @@ import {
 import {
   appendRoutineRun,
   claimDueRoutine,
+  readRoutine,
   claimManualRun,
   claimRunNow,
   pendingRoutines,
@@ -95,7 +96,30 @@ function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
   }
 }
 
-const inflight = new Set<string>();
+/**
+ * Pump state, one copy per PROCESS rather than per module instance. The Next
+ * dev server gives each API route its own copy of this module, so plain
+ * module-level sets were not shared: a Test run (the run route) marked a
+ * routine in flight in a set the tick route never saw. The rail showed that bot
+ * as idle, and the in-memory mutex between a manual run and the scheduler did
+ * not hold across the two routes (the durable store claim was the only guard).
+ * Found live on 2026-09-17: five routines running, tick reported none.
+ */
+interface PumpState {
+  inflight: Set<string>;
+  routinesInflight: Set<string>;
+  pumpQueue: Promise<unknown>;
+  routineQueue: Promise<unknown>;
+}
+const PUMP_STATE_KEY = Symbol.for("useful-bot.agent-exec.pump-state");
+const pumpState: PumpState = ((globalThis as Record<symbol, unknown>)[PUMP_STATE_KEY] ??= {
+  inflight: new Set<string>(),
+  routinesInflight: new Set<string>(),
+  pumpQueue: Promise.resolve(),
+  routineQueue: Promise.resolve(),
+}) as PumpState;
+
+const inflight = pumpState.inflight;
 
 type EveEvent = { type?: string; data?: Record<string, unknown>; meta?: { id?: string; at?: string } };
 
@@ -484,21 +508,26 @@ export function handoffWorkingBotIds(): string[] {
 // Pumps are single-flight: the UI poll, wakePump and fan-out confirmations can
 // all call this within the same second, and overlapping pumps would hold many
 // eve deliveries open at once. Callers queue behind the pump in progress.
-let pumpQueue: Promise<unknown> = Promise.resolve();
+// Inside one pump the batch runs together, one delivery per receiving bot: the
+// router takes ten model calls at once now, and a two minute turn on one bot
+// must not hold up a handoff to another. The batch size is the bound on how
+// many eve deliveries this pump holds open (the tick caps it at four).
 
 export function pumpHandoffs(limit = 2): Promise<{
   delivered: Array<{ id: string; to: string }>;
   failed: Array<{ id: string; error: string }>;
   queued: number;
 }> {
-  const run = pumpQueue.then(() => pumpOnce(limit), () => pumpOnce(limit));
-  pumpQueue = run.then(() => undefined, () => undefined);
+  const run = pumpState.pumpQueue.then(() => pumpOnce(limit), () => pumpOnce(limit));
+  pumpState.pumpQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
 /**
- * Deliver queued handoffs, oldest first, one at a time. Concurrent calls are
- * deduped per handoff id and serialized by pumpHandoffs.
+ * Deliver queued handoffs, oldest first, at most one per receiving bot at a
+ * time: eve runs one turn per session, so a second handoff to a bot that is
+ * already receiving one waits for the next pump. Concurrent calls are deduped
+ * per handoff id and serialized by pumpHandoffs.
  */
 async function pumpOnce(limit: number): Promise<{
   delivered: Array<{ id: string; to: string }>;
@@ -508,19 +537,28 @@ async function pumpOnce(limit: number): Promise<{
   const delivered: Array<{ id: string; to: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
   const candidates = listDeliverable().filter((record) => !inflight.has(record.id));
-  const batch = candidates.slice(0, limit);
-  for (const record of batch) {
+  const bots = peekShell()?.bots ?? [];
+  const receivers = new Set<string>();
+  const batch: HandoffRecord[] = [];
+  for (const record of candidates) {
+    if (batch.length >= limit) break;
+    const receiver = receiverOf(record, bots)?.bot.id ?? record.targetBotId;
+    if (receivers.has(receiver)) continue;
+    receivers.add(receiver);
+    batch.push(record);
+  }
+  await Promise.all(batch.map(async (record) => {
     // Cross-process claim: without it two web servers can both deliver the
     // same record and append two replies to the receiver transcript.
     const claimToken = claimHandoff(record.id);
-    if (!claimToken) continue;
+    if (!claimToken) return;
     inflight.add(record.id);
     try {
       await deliverOne(record, claimToken);
       delivered.push({ id: record.id, to: record.targetName });
     } catch (err) {
       const message = err instanceof Error ? err.message : "handoff_failed";
-      if (message === "claim_lost") continue;
+      if (message === "claim_lost") return;
       const next = markFailed(record.id, message, undefined, claimToken);
       const terminal = next && next.status === "failed" && next.attempts >= HANDOFF_ATTEMPTS_MAX;
       if (terminal) {
@@ -553,7 +591,7 @@ async function pumpOnce(limit: number): Promise<{
       inflight.delete(record.id);
       releaseHandoffClaim(record.id, claimToken);
     }
-  }
+  }));
   return { delivered, failed, queued: Math.max(0, candidates.length - batch.length) };
 }
 
@@ -635,7 +673,7 @@ export function fanOut(input: {
  * uses the same eve path as a handoff.
  */
 
-const routinesInflight = new Set<string>();
+const routinesInflight = pumpState.routinesInflight;
 
 export type RoutineRunResult = { routineId: string; sessionId: string; reply: string };
 
@@ -808,9 +846,9 @@ function recordRun(
   }
 }
 
-// Like the handoff pump: overlapping runs would hold several eve turns open at
-// once, so callers queue behind the run in progress.
-let routineQueue: Promise<unknown> = Promise.resolve();
+// Like the handoff pump: single-flight across calls, and inside one pump the
+// batch runs together, one routine per bot, so two bots' routines due in the
+// same minute no longer run back to back.
 
 export type RoutinePumpResult = {
   ran: Array<{ id: string; name: string }>;
@@ -820,8 +858,8 @@ export type RoutinePumpResult = {
 };
 
 export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
-  const run = routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
-  routineQueue = run.then(() => undefined, () => undefined);
+  const run = pumpState.routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
+  pumpState.routineQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
@@ -831,10 +869,23 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
   const skipped: Array<{ id: string; reason: string }> = [];
   const now = new Date();
   const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
-  for (const candidate of candidates.slice(0, limit)) {
+  // One per bot: a routine is a turn in the bot's own chat, and eve runs one
+  // turn per session. A bot's second due routine waits for the next pump.
+  const owners = new Set<string>();
+  const batch: Routine[] = [];
+  for (const candidate of candidates) {
+    if (batch.length >= limit) break;
+    if (owners.has(candidate.botId)) continue;
+    owners.add(candidate.botId);
+    batch.push(candidate);
+  }
+  // Everything up to `routinesInflight.add` below runs without an await, so
+  // each callback reaches its claim before any of them yields: the mutex with
+  // startRoutineNow holds exactly as it did in the sequential loop.
+  await Promise.all(batch.map(async (candidate) => {
     // Re-checked here, not only when the list was built: a Test run can have
     // started on this routine since, and it marks the set before it yields.
-    if (routinesInflight.has(candidate.id)) continue;
+    if (routinesInflight.has(candidate.id)) return;
     // Both claims flip their marker inside the store lock, so a tick that raced
     // this one finds the request already taken or nothing due. A contended
     // lock is that race, not a fault in this routine: skip the candidate and
@@ -852,9 +903,9 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
       } else {
         failed.push({ id: candidate.id, error });
       }
-      continue;
+      return;
     }
-    if (!claim) continue;
+    if (!claim) return;
     routinesInflight.add(candidate.id);
     try {
       const result = await executeRoutine(claim.routine, manual ? "manual" : "schedule");
@@ -867,7 +918,7 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
     } finally {
       routinesInflight.delete(candidate.id);
     }
-  }
+  }));
   return { ran, failed, skipped };
 }
 
@@ -913,4 +964,22 @@ export function sweepOrphanState(): string[] {
 
 export function routinesInFlight(): string[] {
   return [...routinesInflight];
+}
+
+/**
+ * Every bot doing background work, for the rail's working row: the receivers
+ * of in-flight handoffs plus the bots whose routine is running. The routine
+ * half was missing, so a bot working through a routine looked idle in the rail
+ * until its reply landed. With several bots running at once that is the state
+ * the owner most needs to see.
+ */
+export function backgroundWorkingBotIds(): string[] {
+  const ids = new Set(handoffWorkingBotIds());
+  for (const routineId of routinesInflight) {
+    // A routine deleted mid-run has no row to read; its turn still ends on its
+    // own and the set clears then.
+    const routine = readRoutine(routineId);
+    if (routine) ids.add(routine.botId);
+  }
+  return [...ids];
 }

@@ -27,7 +27,14 @@ export const CALLER_LIMITS = {
   // Owner decision 2026-09-15: every bot shares the desktop caller, so its day
   // is sized for a whole team, not one chat. OpenCode Go's own fair-use limit
   // is the real ceiling above this.
-  desktop: { aliases: ["workhorse"], search: true, rpm: 12, requests24h: 2_000, input24h: 30_000_000, output24h: 3_000_000 },
+  //
+  // The request numbers are sized for ten bots working at once (2026-09-17). A
+  // working bot makes a model call about every ten seconds (a step is the model
+  // plus the tool it asked for), so 6 a minute; ten bots make 60. A day of
+  // 10 bots x 50 turns x 8 steps is 4,000. The daily TOKEN budgets beside them
+  // are unchanged: they are the spend guard, and the owner sets them in
+  // Settings.
+  desktop: { aliases: ["workhorse"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
   phone: { aliases: ["workhorse"], search: true, rpm: 4, requests24h: 40, input24h: 400_000, output24h: 40_000 },
   reviewer: { aliases: ["reviewer"], search: false, rpm: 4, requests24h: 20, input24h: 300_000, output24h: 80_000 },
   eval: { aliases: ["workhorse", "reviewer"], search: true, rpm: 12, requests24h: 80, input24h: 1_000_000, output24h: 160_000 },
@@ -35,8 +42,10 @@ export const CALLER_LIMITS = {
 } as const;
 
 // Aggregate ceiling shared by every model caller, not a subscription entitlement.
+// The request count keeps its old 500 of headroom over the desktop caller for
+// the reviewer, eval and phone callers.
 export const AGGREGATE_LIMITS = {
-  requests24h: 2_500,
+  requests24h: 4_500,
   input24h: 32_000_000,
   output24h: 3_500_000,
 } as const;
@@ -51,8 +60,13 @@ export const SEARCH_LIMITS = {
   minIntervalMs: 1000,
 } as const;
 
-export const MAX_ACTIVE_UPSTREAM = 2;
-export const MAX_ACTIVE_PER_CALLER = 1;
+// Model calls in flight across the router. One per session is the other half
+// of the rule and is not a number: see router/src/concurrency.ts. Ten is the
+// owner's rollout figure; the eleventh gets a retryable 429.
+export const MAX_ACTIVE_UPSTREAM = 10;
+// Searches in flight. Its own gate, so a search never holds a completion slot.
+// The provider allows about one search a second, so four is already generous.
+export const MAX_ACTIVE_SEARCH = 4;
 
 export const MAX_MESSAGE_COUNT = 256;
 /**

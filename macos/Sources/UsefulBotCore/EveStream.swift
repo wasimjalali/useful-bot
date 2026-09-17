@@ -164,6 +164,17 @@ public struct TurnFailure: Equatable, Sendable {
     /// explain, so the caller keeps its own wording rather than repeating it.
     public var reason: String? {
         let haystack = "\(code) \(detail)".lowercased()
+        // The two concurrency refusals come first. Neither is about spend, and
+        // both arrive wrapped in text that can also carry `rate_limit_error`,
+        // the router's TYPE for every 429, so a later branch would claim them.
+        // The ceiling used to be coded `global_budget_exhausted` and read as
+        // the daily token limit; it has its own code now.
+        if haystack.contains("session_busy") {
+            return "This bot is still working on its last step."
+        }
+        if haystack.contains("global_concurrency_limit") {
+            return "Ten bots are already working. Try again in a moment."
+        }
         if haystack.contains("budget_exhausted") {
             return "The daily token limit is used up. Raise it in Settings, under Usage."
         }

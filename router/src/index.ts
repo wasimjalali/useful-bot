@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
+import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_ACTIVE_SEARCH, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
 import { IMAGE_DATA_URL, MAX_IMAGE_DATA_URL_CHARS, MAX_IMAGE_PARTS } from "../../shared/attachments.ts";
 import { AuthTable } from "./auth.ts";
 import { AliasCircuit } from "./circuit.ts";
@@ -206,6 +206,10 @@ function assertHost(req: IncomingMessage, port: number): void {
       message: "origin_forbidden",
     });
   }
+}
+
+function optionalHeaderUuid(req: IncomingMessage, name: string): string | undefined {
+  return req.headers[name.toLowerCase()] === undefined ? undefined : headerUuid(req, name);
 }
 
 function headerUuid(req: IncomingMessage, name: string): string {
@@ -416,7 +420,10 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
   const registry = loadRegistry(lockPath);
   const limits = new LimitStore(dbPath);
   const circuit = new AliasCircuit();
+  // Two gates, so a bot that is searching never holds a completion slot and a
+  // bot that is thinking never blocks a search. Both key on caller + session.
   const concurrency = new ConcurrencyGate();
+  const searchGate = new ConcurrencyGate(MAX_ACTIVE_SEARCH);
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -474,13 +481,16 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         }
         const raw = await readBody(req);
         const body = parseJsonBody(raw);
-        concurrency.acquire(caller.callerId);
+        // The session header is optional here: probes and older callers send
+        // none and share one slot per caller, which is what they had before.
+        const searchSession = optionalHeaderUuid(req, "x-useful-session-id") ?? "none";
+        const releaseSearch = searchGate.acquire(ConcurrencyGate.key(caller.callerId, searchSession));
         try {
           limits.checkSearchLimit(caller, Date.now());
           const result = await search(caller, body);
           send(res, 200, result, { "x-useful-request-id": requestId });
         } finally {
-          concurrency.release(caller.callerId);
+          releaseSearch();
         }
         return;
       }
@@ -497,7 +507,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         const alias = auth.assertAlias(caller, parsed.model);
         const entry = entryFor(registry, alias);
         circuit.assertClosed(entry.alias);
-        concurrency.acquire(caller.callerId);
+        const release = concurrency.acquire(ConcurrencyGate.key(caller.callerId, sessionId));
         try {
           limits.rememberRequest(stepId, caller.callerId, Date.now());
           const reservationId = limits.reserve({
@@ -690,7 +700,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           if (upstream.response.status < 500) circuit.recordSuccess(entry.alias);
           return;
         } finally {
-          concurrency.release(caller.callerId);
+          release();
         }
       }
       if (req.method === "GET" && url.pathname === "/v1/usage") {
@@ -721,7 +731,13 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         }
         return;
       }
-      send(res, status, body, { "x-useful-request-id": requestId });
+      const errorHeaders: Record<string, string> = { "x-useful-request-id": requestId };
+      // SPEC section 5: a 429 carries a sanitized Retry-After when the wait is
+      // known. Whole seconds, rounded up, so a client never retries early.
+      if (error instanceof RouterError && error.retryAfterMs !== undefined && error.retryAfterMs >= 0) {
+        errorHeaders["retry-after"] = String(Math.max(1, Math.ceil(error.retryAfterMs / 1000)));
+      }
+      send(res, status, body, errorHeaders);
     }
   });
 

@@ -589,3 +589,65 @@ is `session_busy` or `global_budget_exhausted`.
   that chat is not followed until it is re-selected. Predates this round; rare.
 - `tsc -p web` (not the project's configured typecheck) reports one error in the frozen
   web UI, `web/app/page.tsx:550`, a `widget` event kind missing from `ThreadRow`.
+
+## Round 5: ten bots at once (O-R4-04)
+
+One finding, carried from round 4, fixed on `feat/ten-bots-in-parallel`.
+
+### What was wrong, and what changed
+
+| Where | Before | Now |
+|-------|--------|-----|
+| `agent/agent.ts` | one random session and turn id per PROCESS on every model call | ids derived from the eve session and turn by a stable hash, one model handle per session (`agent/lib/router-identity.ts`, `session-model.ts`); `UB_SESSION_ID` and `UB_TURN_ID` still pin them |
+| `router/src/concurrency.ts` | one active per caller (the credential), two globally | one active per caller plus session, ten globally |
+| the ceiling's code | `global_budget_exhausted`, which is also the DAILY aggregate budget, so the app said the day's tokens were gone | its own code, `global_concurrency_limit`, retryable, with `Retry-After` |
+| `/v1/search` | took the same per-caller gate as completions | its own gate of four; never holds or waits for a completion slot |
+| `Retry-After` | never sent; only `retry_after_ms` in the body | sent on every error that knows its wait; `caller_rate_limit` and the one-a-second search limit now say how long |
+| the agent on a full house | three attempts in six seconds, then `turn.failed` | the fetch waits out `global_concurrency_limit` and `caller_rate_limit` for up to 60s per attempt; never a budget code, never `session_busy` |
+| the app's wording | `session_busy` fell through to "The last turn failed." | "This bot is still working on its last step." and "Ten bots are already working. Try again in a moment." |
+| reviewer subagent, `review`, `web_search` | process-wide ids, or none | the calling bot's session |
+
+Decided and kept: the alias circuit breaker stays per alias, shared by every session.
+What it counts are faults of the one provider account, so one bot's provider 429 rightly
+backs every bot off. Duplicate detection keys on caller plus request id and every attempt
+carries a fresh id, so it needed no change. Reservation and settle run inside
+`BEGIN IMMEDIATE`, so ten parallel requests serialize there and cannot overspend a budget.
+
+### Hidden single-file points
+
+| Where | Verdict |
+|-------|---------|
+| handoff pump and routine scheduler (`web/lib/agent-exec.ts`) | **were single file**, by design for the old router: one delivery at a time, so a two minute turn on one bot held up a handoff to another. Each pump now runs its batch together, one delivery per receiving bot, still bounded by the tick's limit of four |
+| pump state across API routes | **broken, found live**: the Next dev server gives each route its own copy of the module, so a Test run marked its routine in a set the tick never saw. Five routines ran and the tick reported none. The in-memory mutex between a manual run and the scheduler did not hold across the two routes either; only the durable store claim guarded it. State now lives once per process |
+| rail working state for routines | **missing**: the tick reported working bots from handoffs only. It now includes bots whose routine is running |
+| web proxy in front of eve | stateless per request, no shared session or stream variable. No change |
+| `agents.json` and the six stores with the same lock | every critical section is synchronous, so bots inside one process never contend; only the eve and web processes do, for milliseconds. A 3s stale steal needs a 3s synchronous hold. No change |
+| the app's `sendTasks` and working set | per bot throughout; the rail holds a set. No change |
+
+Left open: a pump call still waits for the slowest delivery of the batch before it (up to
+120s) before the next batch starts. A manual Test run and a scheduled routine on the SAME
+bot can still overlap, and eve refuses the second turn; predates this round.
+
+### Reviewer scorecard
+
+| Model | Passes | Raised | Confirmed | Notes |
+|-------|-------:|-------:|----------:|-------|
+| Spark | 3 | 0 | 0 | Pass 1 returned an empty array after narrating "Tool context handling flagged" and "Spec language conflicts with the new retry behavior", with three ripgrep errors. **Not counted as clean.** Both items were chased by hand: the two tools read `ctx.session.id` unguarded where every other tool reads it defensively (fixed), and the spec said 409 has "no automatic replay" while the AI SDK does retry one (spec made precise). Pass 2, told to list what it dismissed, checked twenty items with reasons and raised none (274s). Pass 3, on the pump state commit alone, dismissed four with reasons, the hot reload strand among them (56s). Lesson: ask for a DISMISSED list, an empty array alone proves nothing |
+
+### Verified
+
+- 466 node tests, 254 Swift tests, `npm run typecheck` clean.
+- Gate tests in `router/test/contracts.test.ts`: a busy session is 409, ten sessions of one
+  caller run together, the eleventh is a retryable 429 with `Retry-After: 2`, the slot comes
+  back after an upstream 500 and after a client disconnect, a search runs while the same
+  session holds a completion.
+- **Live, after restarting the router and eve on this branch.** Five throwaway probe bots,
+  each a fresh eve session, none of the owner's chats touched: four turns fired together
+  and a fifth routine three seconds later, four rounds, twenty turns. All `ok`. Zero 4xx in
+  the router log since the restart, so no `session_busy`. Usage before 353 requests, after
+  373: one model call per turn. Probes and their routines deleted, selection restored.
+- The rail: all five probe avatars change from frame to frame across four screenshots while
+  the three idle bots are byte-identical in all four (`review-tenbots-rail.png`). The
+  working state is an animated avatar, so one still shows it weakly.
+- eve 0.54.3 boots with a dynamic model on the reviewer subagent. The reviewer credential is
+  still unprovisioned on this Mac, so that path is not exercised live.
