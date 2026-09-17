@@ -952,6 +952,19 @@ public actor BackendClient {
         _ = data
     }
 
+    /// The host page for a saved drawing. Fetched here, with the session this
+    /// client holds, so the web view that shows it never carries the cookie.
+    public func widgetPage(id: String) async throws -> String {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base
+                .appendingPathComponent("api/connections/widget")
+                .appendingPathComponent(id))
+        }
+        try Self.expectOK(response)
+        guard let html = String(data: data, encoding: .utf8) else { throw BackendError.decoding }
+        return html
+    }
+
     /// Resolve a proposal without a shell action (the dismiss path).
     @discardableResult
     public func resolveProposal(proposalId: String, status: String) async throws -> ShellStore {

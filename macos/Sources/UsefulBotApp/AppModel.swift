@@ -608,6 +608,12 @@ final class AppModel: ObservableObject {
             guard generation == loadGeneration else { return }
             transcriptReady = true
             threadError = (error as? LocalizedError)?.errorDescription ?? "Thread failed to load."
+            // No replay ran to confirm a restored turn is still going, so do
+            // not leave its working row and rail pulse up on a guess.
+            if sendTasks[bot.id] == nil {
+                backgroundWorking = false
+                markWorking(bot.id, false)
+            }
         }
     }
 

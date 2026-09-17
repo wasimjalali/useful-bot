@@ -467,16 +467,19 @@ public struct StreamProjection: Equatable, Sendable {
             if let name = EveStream.requestedToolName(event.data) {
                 activity = .tool(name)
             }
-        case "action.input.appended":
-            if let name = event.data?["toolName"]?.stringValue, !name.isEmpty {
-                activity = .tool(name)
-            }
-            if let widget = EveStream.parseLiveWidget(event.data, id: event.id) {
+            // The validated call is the one place a drawing is complete and
+            // carries its call id. Input deltas are partial JSON, one event
+            // per chunk, and a result carries no arguments.
+            for widget in EveStream.parseLiveWidgets(event.data) {
                 if let index = widgets.firstIndex(where: { $0.id == widget.id }) {
                     widgets[index] = widget
                 } else {
                     widgets.append(widget)
                 }
+            }
+        case "action.input.appended":
+            if let name = event.data?["toolName"]?.stringValue, !name.isEmpty {
+                activity = .tool(name)
             }
         case "message.appended":
             let delta = event.messageDelta ?? ""
@@ -524,13 +527,6 @@ public struct StreamProjection: Equatable, Sendable {
         case "action.result", "action.partial":
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
-            if let widget = EveStream.parseLiveWidget(event.data, id: event.id) {
-                if let index = widgets.firstIndex(where: { $0.id == widget.id }) {
-                    widgets[index] = widget
-                } else {
-                    widgets.append(widget)
-                }
-            }
             if event.type == "action.result" { activity = .thinking }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             pending = false
@@ -558,36 +554,34 @@ public struct LiveWidget: Equatable, Sendable {
 }
 
 extension EveStream {
-    public static func parseLiveWidget(_ data: JSONValue?, id: String?) -> LiveWidget? {
-        guard let data else { return nil }
-        let name = data["toolName"]?.stringValue
-            ?? data["name"]?.stringValue
-            ?? data["tool"]?.stringValue
-            ?? ""
-        guard let cut = name.range(of: "__") else { return nil }
-        let connectionId = String(name[..<cut.lowerBound])
-        guard connectionId.range(of: "^[a-z][a-z0-9-]{0,63}$", options: .regularExpression) != nil else {
-            return nil
+    /// The MCP App calls in an `actions.requested` event. The id is eve's
+    /// tool call id, so a replay or a retry of the same call is one drawing.
+    public static func parseLiveWidgets(_ data: JSONValue?) -> [LiveWidget] {
+        guard let actions = data?["actions"]?.arrayValue else { return [] }
+        var found: [LiveWidget] = []
+        for action in actions {
+            let name = action["toolName"]?.stringValue ?? ""
+            guard let cut = name.range(of: "__") else { continue }
+            let connectionId = String(name[..<cut.lowerBound])
+            guard connectionId.range(of: "^[a-z][a-z0-9-]{0,63}$", options: .regularExpression) != nil else {
+                continue
+            }
+            let args = action["input"]?.objectValue ?? [:]
+            guard name.hasSuffix("__create_view") || args["elements"] != nil else { continue }
+            let callId = (action["callId"]?.stringValue ?? "")
+                .replacingOccurrences(of: "[^a-zA-Z0-9_-]", with: "", options: .regularExpression)
+            // The server refuses a shorter id, and without one there is
+            // nothing stable to key the drawing on.
+            guard callId.count >= 8 else { continue }
+            let widgetId = String(callId.prefix(80))
+            found.append(LiveWidget(
+                id: widgetId,
+                connectionId: connectionId,
+                toolName: name,
+                arguments: args,
+                callId: widgetId
+            ))
         }
-        let argsValue = data["arguments"] ?? data["input"] ?? data["args"]
-        var args: [String: JSONValue] = [:]
-        if let object = argsValue?.objectValue {
-            args = object
-        } else if let text = argsValue?.stringValue, let raw = text.data(using: .utf8),
-                  let parsed = try? JSONDecoder().decode(JSONValue.self, from: raw),
-                  let object = parsed.objectValue {
-            args = object
-        }
-        let looksLikeApp = name.hasSuffix("__create_view") || args["elements"] != nil
-        guard looksLikeApp else { return nil }
-        let callId = id?.replacingOccurrences(of: "[^a-zA-Z0-9_-]", with: "", options: .regularExpression) ?? ""
-        let widgetId = callId.count >= 8 ? String(callId.prefix(80)) : "widget-\(connectionId)-\(abs(name.hashValue))"
-        return LiveWidget(
-            id: widgetId,
-            connectionId: connectionId,
-            toolName: name,
-            arguments: args,
-            callId: widgetId
-        )
+        return found
     }
 }
