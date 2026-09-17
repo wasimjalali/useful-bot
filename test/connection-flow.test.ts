@@ -14,10 +14,14 @@ import {
 } from "../shared/connection-flow.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
 import { EXCALIDRAW_CONNECTION, findConnectionById, readConnectionsStore, upsertConnection } from "../shared/connections-store.ts";
+
+function storePathOf(): string {
+  return process.env.UB_AGENT_STORE_PATH ?? "";
+}
 import { listHandoffs, queueHandoff } from "../shared/handoffs.ts";
-import { memoryKeychain, setKeychainDriver, connectionSecretService, keychainGet } from "../shared/keychain.ts";
+import { memoryKeychain, setKeychainDriver, connectionSecretService, keychainGet, keychainSet } from "../shared/keychain.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { setOauthFetch } from "../shared/mcp-oauth.ts";
+import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
 import { writeShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
 
@@ -227,6 +231,43 @@ test("seeded Excalidraw is not a secret-bearing row", () => {
   assert.equal(JSON.stringify(readConnectionsStore()).includes("token"), false);
 });
 
+test("a duplicate card never overwrites the live row's credential", async () => {
+  // keychainSet writes with `security add-generic-password -U`, so adopting
+  // the live row's id and then writing this card's secret under it would
+  // replace the credential that row is using. An API key landing on an OAuth
+  // row destroys its refresh token and nothing re-mints it.
+  setKeychainDriver(memoryKeychain());
+  paths();
+  stubTools(2);
+  upsertConnection({
+    id: "example",
+    kind: "mcp",
+    name: "Example",
+    url: "https://mcp.example.com/mcp",
+    description: "Connected first",
+    authKind: "oauth",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  });
+  const bundle = JSON.stringify({ accessToken: "at_live", refreshToken: "rt_live" });
+  keychainSet(connectionSecretService("example"), bundle);
+
+  const second = seedCard({ connectionId: "example-2", name: "Example Two", authKind: "apiKey", authHeader: "X-Api-Key" });
+  await startConnectionConfirm(second.id, { callbackUrl: CALLBACK, secret: "sk_test_secret_1" });
+
+  // The row the owner connected is untouched, credential and auth shape both.
+  assert.equal(keychainGet(connectionSecretService("example")), bundle);
+  const rows = readConnectionsStore().connections;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "example");
+  assert.equal(rows[0].authKind, "oauth");
+  assert.equal(rows[0].description, "Connected first");
+  // And the duplicate card is settled, not left pending on the owner.
+  const card = readProposal(second.id, storePathOf());
+  assert.equal(card && "phase" in card ? card.phase : null, "connected");
+});
+
 test("two cards for the same server end up as one row, not two", async () => {
   // propose_connection refuses a URL that is already connected, and allows one
   // pending card per thread. Two bots can still each hold a card for the same
@@ -245,10 +286,11 @@ test("two cards for the same server end up as one row, not two", async () => {
   const rows = readConnectionsStore().connections;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].id, "example");
-  // The card is pointed at the row it joined, so its confirm and any later
-  // OAuth completion read the same id.
+  // The card settles against the row that is there. Its own id is left alone,
+  // so the Keychain item it may already hold stays its own.
   const card = readProposal(second.id, storePath);
-  assert.equal(card && "connectionId" in card ? card.connectionId : null, "example");
+  assert.equal(card && "connectionId" in card ? card.connectionId : null, "example-2");
+  assert.equal(card && "phase" in card ? card.phase : null, "connected");
 });
 
 test("a second authorize on the same card keeps its own row", async () => {
@@ -266,4 +308,194 @@ test("a second authorize on the same card keeps its own row", async () => {
   const rows = readConnectionsStore().connections;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].id, "example");
+});
+
+test("an oauth sign-in that finishes after another card connected settles, it does not mint a second row", async () => {
+  // The browser holds the sign-in open. Another card for the same server can
+  // connect in the meantime, from a bearer card or a second oauth card. The
+  // completion must not add a row (the server would be mounted twice) and must
+  // not store its token (it would land on the live row's Keychain item).
+  setKeychainDriver(memoryKeychain());
+  const { storePath } = paths();
+  const proposal = seedCard({ authKind: "oauth", phase: "waiting" });
+  writeFileSync(process.env.UB_OAUTH_PENDING_PATH ?? "", JSON.stringify([{
+    state: "statevalue123456",
+    verifier: "verifier-value-123456",
+    proposalId: proposal.id,
+    connectionId: "example",
+    tokenEndpoint: "https://auth.example.com/token",
+    clientId: "cid",
+    clientSecret: null,
+    redirectUri: CALLBACK,
+    createdAt: new Date().toISOString(),
+  }]));
+  upsertConnection({
+    id: "example-first",
+    kind: "mcp",
+    name: "Example",
+    url: "https://mcp.example.com/mcp",
+    description: "Connected while the browser was open",
+    authKind: "bearer",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  });
+  keychainSet(connectionSecretService("example-first"), "tok_live");
+
+  let fetched = false;
+  setMcpFetch(async () => { fetched = true; return new Response("{}"); });
+  setOauthFetch(async () => { fetched = true; return new Response("{}"); });
+
+  const out = await completeConnectionOAuth("code-1", "statevalue123456", { storePath });
+  assert.equal(out.proposalId, proposal.id);
+  // The code was never exchanged, so no token was minted to strand.
+  assert.equal(fetched, false);
+  const rows = readConnectionsStore().connections;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "example-first");
+  assert.equal(rows[0].authKind, "bearer");
+  assert.equal(keychainGet(connectionSecretService("example-first")), "tok_live");
+  const card = readProposal(proposal.id, storePath);
+  assert.equal(card && "phase" in card ? card.phase : null, "connected");
+});
+
+test("a card that loses the row leaves no secret behind and names the row that won", async () => {
+  // The lookup and the insert cannot be atomic in the caller: probeToolCount
+  // awaits between them. The store's lock decides, and the card that loses
+  // must not have written a Keychain item, because nothing would point at it
+  // and nothing ever deletes it.
+  setKeychainDriver(memoryKeychain());
+  const { storePath } = paths();
+  stubTools(2);
+  upsertConnection({
+    id: "example-first",
+    kind: "mcp",
+    name: "Example",
+    url: "https://mcp.example.com/mcp",
+    description: "Won the row",
+    authKind: "bearer",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  });
+  keychainSet(connectionSecretService("example-first"), "tok_winner");
+  const card = seedCard({ connectionId: "example-late", authKind: "apiKey", authHeader: "X-Api-Key" });
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK, secret: "sk_test_secret_1" });
+
+  // Nothing under the loser's own id, and, the part that matters, nothing
+  // written over the winner's: keychainSet replaces in place.
+  assert.equal(keychainGet(connectionSecretService("example-late")), null);
+  assert.equal(keychainGet(connectionSecretService("example-first")), "tok_winner");
+  assert.equal(readConnectionsStore().connections.length, 1);
+  // The resume tells the bot the connection it can actually reach, not the id
+  // on its own settled card.
+  const resume = listHandoffs().find((item) => item.message.includes("connected the server"));
+  assert.ok(resume, "the bot is resumed");
+  assert.match(resume.message, /connected the server example-first\./);
+});
+
+test("an oauth completion that loses the row strands no token and no pending sign-in", async () => {
+  setKeychainDriver(memoryKeychain());
+  const { storePath } = paths();
+  const card = seedCard({ connectionId: "example-late", authKind: "oauth", phase: "waiting" });
+  writeFileSync(process.env.UB_OAUTH_PENDING_PATH ?? "", JSON.stringify([{
+    state: "statevalue123456",
+    verifier: "verifier-value-123456",
+    proposalId: card.id,
+    connectionId: "example-late",
+    tokenEndpoint: "https://auth.example.com/token",
+    clientId: "cid",
+    clientSecret: "shh",
+    redirectUri: CALLBACK,
+    createdAt: new Date().toISOString(),
+  }]));
+  upsertConnection({
+    id: "example-first",
+    kind: "mcp",
+    name: "Example",
+    url: "https://mcp.example.com/mcp",
+    description: "Won the row",
+    authKind: "bearer",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  });
+  keychainSet(connectionSecretService("example-first"), "tok_winner");
+  await completeConnectionOAuth("code-1", "statevalue123456", { storePath });
+
+  assert.equal(keychainGet(connectionSecretService("example-late")), null);
+  assert.equal(keychainGet(connectionSecretService("example-first")), "tok_winner");
+  // The verifier and the client secret do not stay on disk: nothing else would
+  // ever reap them, because a retry with this state is refused.
+  assert.equal(findOauthPending("statevalue123456"), null);
+  assert.equal(readConnectionsStore().connections.length, 1);
+});
+
+test("two servers that were handed the same id do not overwrite each other", async () => {
+  // allocateConnectionId only looks at rows that exist, so two cards proposed
+  // for servers with the same name, before either is connected, both get the
+  // same id. Replacing by id would repoint the live row at the other URL and
+  // leave its Keychain item under an id that now means a different server.
+  setKeychainDriver(memoryKeychain());
+  paths();
+  stubTools(2);
+  const first = seedCard({ authKind: "apiKey", authHeader: "X-Api-Key" });
+  await startConnectionConfirm(first.id, { callbackUrl: CALLBACK, secret: "sk_first_secret_1" });
+  assert.equal(keychainGet(connectionSecretService("example")), "sk_first_secret_1");
+
+  const second = seedCard({
+    connectionId: "example",
+    url: "https://mcp.other.example/mcp",
+    urlHost: "mcp.other.example",
+    authKind: "apiKey",
+    authHeader: "X-Api-Key",
+  });
+  await startConnectionConfirm(second.id, { callbackUrl: CALLBACK, secret: "sk_second_secret" });
+
+  const rows = readConnectionsStore().connections;
+  assert.equal(rows.length, 2);
+  const live = rows.find((row) => row.id === "example");
+  assert.equal(live?.url, "https://mcp.example.com/mcp");
+  // The first server keeps its own credential, and the second gets its own id.
+  assert.equal(keychainGet(connectionSecretService("example")), "sk_first_secret_1");
+  const other = rows.find((row) => row.url === "https://mcp.other.example/mcp");
+  assert.equal(other?.id, "example-2");
+  assert.equal(keychainGet(connectionSecretService("example-2")), "sk_second_secret");
+});
+
+test("a settled card does not leave its sign-in on disk", async () => {
+  // Reopen on a waiting card comes back through startConnectionConfirm. If
+  // another card connected the URL meanwhile, the settle returns without ever
+  // reaching the callback, and the first Authorize's pending row would sit
+  // there for good: the card is connected, so it can never start a fresh one.
+  setKeychainDriver(memoryKeychain());
+  paths();
+  stubTools(2);
+  const card = seedCard({ connectionId: "example-late", authKind: "oauth", phase: "waiting" });
+  writeFileSync(process.env.UB_OAUTH_PENDING_PATH ?? "", JSON.stringify([{
+    state: "statevalue123456",
+    verifier: "verifier-value-123456",
+    proposalId: card.id,
+    connectionId: "example-late",
+    tokenEndpoint: "https://auth.example.com/token",
+    clientId: "cid",
+    clientSecret: "shh",
+    redirectUri: CALLBACK,
+    createdAt: new Date().toISOString(),
+  }]));
+  upsertConnection({
+    id: "example-first",
+    kind: "mcp",
+    name: "Example",
+    url: "https://mcp.example.com/mcp",
+    description: "Connected by another card",
+    authKind: "none",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  });
+
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  assert.equal(findOauthPending("statevalue123456"), null);
+  assert.equal(readConnectionsStore().connections.length, 1);
 });

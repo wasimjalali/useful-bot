@@ -897,7 +897,12 @@ export function sweepOrphanState(): string[] {
     // After the threads, so what is left naming a widget is all of it. A
     // cleared chat used to take its events and leave the drawings behind, and
     // nothing else ever removed one: the directory only grew.
-    sweepOrphanWidgets(referencedWidgetIds());
+    //
+    // A null keep set means the store would not parse. Sweeping on that would
+    // read every drawing on the machine as an orphan, so this tick does not
+    // sweep at all.
+    const referenced = referencedWidgetIds();
+    if (referenced) sweepOrphanWidgets(referenced);
     return routines;
   } catch {
     // A locked or unreadable store is the next tick's problem, never this

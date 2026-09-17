@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { referencedWidgetIds } from "../shared/agent-store.ts";
 import {
   sweepOrphanWidgets,
   WIDGET_ORPHAN_GRACE_MS,
@@ -61,4 +62,45 @@ test("the sweep leaves files that are not widget records alone", () => {
 test("a missing widgets directory is not an error", () => {
   const dir = join(mkdtempSync(join(tmpdir(), "ub-widgets-")), "never-made");
   assert.deepEqual(sweepOrphanWidgets(["anything"], dir), []);
+});
+
+test("a store that will not parse stops the sweep instead of emptying it", () => {
+  // readAgentStore answers a corrupt file with an empty store, which reads as
+  // "nothing references any widget". Sweeping on that would delete every
+  // drawing on the machine.
+  const dir = mkdtempSync(join(tmpdir(), "ub-widgets-"));
+  const storePath = join(dir, "agents.json");
+  const previous = process.env.UB_AGENT_STORE_PATH;
+  process.env.UB_AGENT_STORE_PATH = storePath;
+  try {
+    writeFileSync(storePath, "{ this is not json");
+    assert.equal(referencedWidgetIds(), null);
+
+    writeFileSync(storePath, JSON.stringify({ schemaVersion: 1, threads: [], proposals: [], reserves: [] }));
+    assert.deepEqual([...(referencedWidgetIds() ?? [])], []);
+
+    writeFileSync(storePath, JSON.stringify({
+      schemaVersion: 1,
+      proposals: [],
+      reserves: [],
+      threads: [{
+        id: "b1",
+        kind: "bot",
+        botId: "b1",
+        sessionId: "",
+        updatedAt: new Date(0).toISOString(),
+        events: [{
+          id: "wgt_keptwidget1",
+          at: new Date(0).toISOString(),
+          kind: "widget",
+          text: "Drawing",
+          widgetId: "keptwidget1",
+        }],
+      }],
+    }));
+    assert.deepEqual([...(referencedWidgetIds() ?? [])], ["keptwidget1"]);
+  } finally {
+    if (previous === undefined) delete process.env.UB_AGENT_STORE_PATH;
+    else process.env.UB_AGENT_STORE_PATH = previous;
+  }
 });
