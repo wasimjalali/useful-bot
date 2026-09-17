@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { routerFetch, MAX_TOTAL_WAIT_MS } from "../agent/lib/router-fetch.ts";
-import { routerIds, stableUuid, turnIdOf } from "../agent/lib/router-identity.ts";
+import { routerIds, stableUuid, toolRouterIds, turnIdOf } from "../agent/lib/router-identity.ts";
 import { perSessionModel } from "../agent/lib/session-model.ts";
 
 // The router's own pattern (router/src/index.ts): a call that fails it is a 400.
@@ -42,6 +42,24 @@ test("the turn id is read off a step.started event and nothing else", () => {
   assert.equal(turnIdOf({ data: { turnId: 4 } }), undefined);
   assert.equal(turnIdOf({ data: null }), undefined);
   assert.equal(turnIdOf(undefined), undefined);
+});
+
+test("a tool with no session gets no ids, never a shared constant", () => {
+  assert.equal(toolRouterIds(undefined), null);
+  assert.equal(toolRouterIds({}), null);
+  assert.equal(toolRouterIds({ session: { id: "" } }), null);
+  const saved = { s: process.env.UB_SESSION_ID, t: process.env.UB_TURN_ID };
+  delete process.env.UB_SESSION_ID;
+  delete process.env.UB_TURN_ID;
+  try {
+    const a = toolRouterIds({ session: { id: "sess_a", turn: { id: "turn_1" } } });
+    // The tool and the model step of one bot are the same router session and turn.
+    assert.deepEqual(a, routerIds("sess_a", "turn_1", {}));
+    assert.notEqual(a?.sessionId, toolRouterIds({ session: { id: "sess_b" } })?.sessionId);
+  } finally {
+    if (saved.s !== undefined) process.env.UB_SESSION_ID = saved.s;
+    if (saved.t !== undefined) process.env.UB_TURN_ID = saved.t;
+  }
 });
 
 test("one handle per session, the turn follows, and sessions never stamp each other", () => {

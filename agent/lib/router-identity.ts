@@ -54,3 +54,22 @@ export function turnIdOf(event: unknown): string | undefined {
   const turnId = (data as { turnId?: unknown }).turnId;
   return typeof turnId === "string" && turnId.length > 0 ? turnId : undefined;
 }
+
+/** The subset of an eve ToolContext the router ids need. */
+export interface ToolIdContext {
+  session?: { id?: string; turn?: { id?: string } };
+}
+
+/**
+ * Router ids for a tool that calls the router itself. eve always supplies the
+ * session at runtime; a test or a direct call may pass no context at all, the
+ * way the other tools here allow. That case gets `null`, never a shared
+ * constant: one fixed id would make every context-less call one session again,
+ * which is the bug this file exists to remove. The caller decides what no
+ * session means for its route.
+ */
+export function toolRouterIds(ctx: ToolIdContext | undefined): RouterIds | null {
+  const sessionId = ctx?.session?.id;
+  if (!sessionId) return null;
+  return routerIds(sessionId, ctx?.session?.turn?.id);
+}

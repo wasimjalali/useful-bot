@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
-import { routerIds } from "../lib/router-identity.ts";
+import { toolRouterIds } from "../lib/router-identity.ts";
 
 /** The router allows one search a second per caller, and says how long is left. */
 const MAX_SEARCH_WAIT_MS = 2_500;
@@ -19,8 +19,9 @@ export default defineTool({
       throw new Error("router token missing");
     }
     // The session keys the router's search gate, so this bot's search and
-    // another bot's run side by side.
-    const { sessionId } = routerIds(ctx.session.id);
+    // another bot's run side by side. The header is optional at the router:
+    // with no session the call takes the per-caller slot, as it always did.
+    const ids = toolRouterIds(ctx);
     let res: Response;
     for (let attempt = 1; ; attempt += 1) {
       res = await fetch("http://127.0.0.1:4319/v1/search", {
@@ -28,7 +29,7 @@ export default defineTool({
         headers: {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
-          "x-useful-session-id": sessionId,
+          ...(ids ? { "x-useful-session-id": ids.sessionId } : {}),
         },
         body: JSON.stringify({ query: input.query, count: input.count ?? 5 }),
         signal: AbortSignal.timeout(12_000),
