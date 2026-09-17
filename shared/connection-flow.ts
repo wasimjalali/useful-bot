@@ -19,7 +19,13 @@ import { connectionSecretService, keychainSet } from "./keychain.ts";
 import { listHandoffs, queueHandoff } from "./handoffs.ts";
 import { wrapUntrusted } from "./untrusted.ts";
 import { countOpenApiOperations, listMcpTools, modelToolNames } from "./mcp-http.ts";
-import { completeMcpOAuth, findOauthPending, startMcpOAuth } from "./mcp-oauth.ts";
+import {
+  completeMcpOAuth,
+  dropOauthPending,
+  dropOauthPendingForProposal,
+  findOauthPending,
+  startMcpOAuth,
+} from "./mcp-oauth.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 
@@ -48,11 +54,17 @@ function oneLine(value: string, max: number): string {
   return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, max);
 }
 
-function resumeMessage(card: Stored): string {
-  return `The owner connected the server ${card.connectionId}. Continue the original task.\n${wrapUntrusted("connect-purpose", oneLine(card.purpose, 120))}`;
+function resumeMessage(card: Stored, connectionId: string): string {
+  return `The owner connected the server ${connectionId}. Continue the original task.\n${wrapUntrusted("connect-purpose", oneLine(card.purpose, 120))}`;
 }
 
-function queueResume(card: Stored, storePath: string): boolean {
+/**
+ * `connectionId` is the row the bot can actually reach, which is not always
+ * the card's own id: a card for a URL another card already connected settles
+ * against that row and keeps its own id, and naming that id would send the bot
+ * looking for a connection that does not exist.
+ */
+function queueResume(card: Stored, storePath: string, connectionId = card.connectionId): boolean {
   const targetId = card.sourceBotId ?? card.threadId;
   let targetName = "Useful Bot";
   try {
@@ -60,7 +72,7 @@ function queueResume(card: Stored, storePath: string): boolean {
   } catch {
     /* the name is cosmetic */
   }
-  const message = resumeMessage(card);
+  const message = resumeMessage(card, connectionId);
   let handoffId: string;
   try {
     const flippedAt = Date.parse(card.waitingSince ?? "");
@@ -140,7 +152,7 @@ function markConnected(
   } catch {
     /* the resume still tells the owner */
   }
-  if (queueResume(flipped, storePath)) {
+  if (queueResume(flipped, storePath, entry.id)) {
     updateProposal(proposalId, (item) => {
       if (item.status === "pending") item.status = "confirmed";
     }, storePath);
@@ -168,9 +180,30 @@ export async function startConnectionConfirm(
   authorizing.add(proposalId);
   try {
     const url = assertConnectionUrl(proposal.url);
-    if (findConnectionByUrl(url) && proposal.phase === "proposed") {
-      // An identical URL the owner already approved: still finish this card
-      // so the bot resumes, but do not insert a second row.
+    const existing = findConnectionByUrl(url);
+    if (existing && existing.id !== proposal.connectionId) {
+      // The owner already approved this exact URL under another id. Settle
+      // this card against the row that is there and let the bot resume.
+      //
+      // Not a second row: eve would mount the server twice, so the model would
+      // see every one of its tools twice and both copies would count against
+      // the tool cap. And not this card's id either: keychainSet writes with
+      // `security add-generic-password -U`, so writing this card's secret
+      // under the live row's id would overwrite the credential that row is
+      // using, and an API key landing on an OAuth row destroys its refresh
+      // token with nothing left to re-mint it.
+      //
+      // The tool count is left null, which is the same thing the card says
+      // when the count call fails: reading it would mean holding the other
+      // connection's credential, which is the thing this branch exists to
+      // avoid.
+      // Reopen on a waiting card reaches here, and its first Authorize wrote
+      // a pending sign-in. Nothing else would ever reap it: the card is
+      // connected now, so it can never start a fresh one, and a callback with
+      // that state is refused before the completion drops it.
+      dropOauthPendingForProposal(proposalId);
+      markConnected(proposalId, existing, null, opts.now ?? Date.now(), storePath);
+      return {};
     }
     if (proposal.authKind === "oauth") {
       const { authorizeUrl, redirectHost } = await startMcpOAuth({
@@ -189,11 +222,11 @@ export async function startConnectionConfirm(
       }, storePath);
       return { redirectUrl: authorizeUrl, redirectHost };
     }
-    if (proposal.authKind === "apiKey" || proposal.authKind === "bearer") {
-      const secret = (opts.secret ?? "").trim();
-      if (secret.length < 8 || secret.length > 4096) throw new Error("secret_invalid");
-      writeSecret(proposal.connectionId, secret);
-    }
+    // Checked here, stored after the row is won. A secret written for a card
+    // that lost the race has no row pointing at it and nothing ever deletes it.
+    const needsSecret = proposal.authKind === "apiKey" || proposal.authKind === "bearer";
+    const secret = needsSecret ? (opts.secret ?? "").trim() : "";
+    if (needsSecret && (secret.length < 8 || secret.length > 4096)) throw new Error("secret_invalid");
     const toolsAllow = proposal.connectionId === "excalidraw" ? ["read_me", "create_view"] : null;
     const entry: ConnectionEntry = {
       id: proposal.connectionId || allocateConnectionId(proposal.name),
@@ -206,14 +239,32 @@ export async function startConnectionConfirm(
       toolsAllow,
       createdAt: new Date(opts.now ?? Date.now()).toISOString(),
     };
-    upsertConnection(entry);
+    // The store has the last word on which row a URL gets: another confirm can
+    // land between the lookup above and this write, and only the lock can see
+    // that. `stored` is the row that is live, this one or the one that won.
+    // The store has the last word. It may hand back another card's row for
+    // this URL, or the same row under a free id when this card's id turned out
+    // to be a different server's. Everything below reads `stored`, never the
+    // entry that went in.
+    const outcome = upsertConnection(entry);
+    if (!outcome.won) {
+      // Another card holds this URL. Nothing of this card's is in the store,
+      // so nothing of its own may be written: its secret would land on the
+      // winner's Keychain item and replace the credential that row is using.
+      markConnected(proposalId, outcome.entry, null, opts.now ?? Date.now(), storePath);
+      return {};
+    }
+    const stored = outcome.entry;
+    // This card owns the row now. Both calls are synchronous, so nothing can
+    // read the row between the insert and its credential landing.
+    if (secret) writeSecret(stored.id, secret);
     const headers = authHeaders(
       proposal.authKind,
       proposal.authKind === "none" ? null : (opts.secret ?? "").trim() || null,
-      entry.authHeader,
+      stored.authHeader,
     );
-    const toolCount = await probeToolCount(entry, headers);
-    markConnected(proposalId, entry, toolCount, opts.now ?? Date.now(), storePath);
+    const toolCount = await probeToolCount(stored, headers);
+    markConnected(proposalId, stored, toolCount, opts.now ?? Date.now(), storePath);
     return {};
   } finally {
     authorizing.delete(proposalId);
@@ -234,11 +285,24 @@ export async function completeConnectionOAuth(
   if (proposal.connectionId !== pendingPeek.connectionId) throw new Error("proposal_mismatch");
   const expiresAt = Date.parse(proposal.expiresAt);
   if (!Number.isFinite(expiresAt) || expiresAt <= (opts.now ?? Date.now())) throw new Error("proposal_expired");
+  // Another card may have connected this same server while this sign-in was
+  // open in the browser, from a bearer or apiKey card or from a second OAuth
+  // card. Settle against the row that is there before the code is exchanged:
+  // a second row mounts the server twice, and storing this token under the
+  // live row's id would overwrite the credential it is already using.
+  const settled = findConnectionByUrl(assertConnectionUrl(proposal.url));
+  if (settled && settled.id !== proposal.connectionId) {
+    // completeMcpOAuth is the only other thing that drops the pending row, and
+    // it is not being called: the verifier and the client secret would sit on
+    // disk for good, because a retry with this state is refused above.
+    dropOauthPending(state);
+    markConnected(pendingPeek.proposalId, settled, null, opts.now ?? Date.now(), storePath);
+    return { proposalId: pendingPeek.proposalId };
+  }
   const { bundle, pending } = await completeMcpOAuth({ code, state });
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");
   }
-  keychainSet(connectionSecretService(pending.connectionId), JSON.stringify(bundle));
   const url = assertConnectionUrl(proposal.url);
   const entry: ConnectionEntry = {
     id: pending.connectionId,
@@ -251,9 +315,21 @@ export async function completeConnectionOAuth(
     toolsAllow: null,
     createdAt: new Date(opts.now ?? Date.now()).toISOString(),
   };
-  upsertConnection(entry);
-  const toolCount = await probeToolCount(entry, { authorization: `Bearer ${bundle.accessToken}` });
-  markConnected(pending.proposalId, entry, toolCount, opts.now ?? Date.now(), storePath);
+  // Same last word as the confirm path: only the store's lock can see a row
+  // that landed for this URL while the browser had the sign-in open.
+  const outcome = upsertConnection(entry);
+  if (!outcome.won) {
+    // Another card connected this server between the check above and this
+    // write. Storing the bundle would replace the credential that row is
+    // using, and leave this access and refresh token with nothing pointing
+    // at them.
+    markConnected(pending.proposalId, outcome.entry, null, opts.now ?? Date.now(), storePath);
+    return { proposalId: pending.proposalId };
+  }
+  const stored = outcome.entry;
+  keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
+  const toolCount = await probeToolCount(stored, { authorization: `Bearer ${bundle.accessToken}` });
+  markConnected(pending.proposalId, stored, toolCount, opts.now ?? Date.now(), storePath);
   return { proposalId: pending.proposalId };
 }
 
@@ -278,7 +354,11 @@ async function pumpOnce(
   for (const card of cards.filter((item) => item.phase === "connected")) {
     const since = Date.parse(card.waitingSince ?? "");
     const lingered = !Number.isFinite(since) || now - since > SERVER_LINGER_MS;
-    const queued = card.handoffId ? true : queueResume(card, storePath);
+    // A settled card keeps its own connectionId, which has no row. The live
+    // one is whatever holds its URL.
+    const queued = card.handoffId
+      ? true
+      : queueResume(card, storePath, findConnectionByUrl(card.url)?.id ?? card.connectionId);
     if (queued || lingered) {
       updateProposal(card.id, (item) => {
         if (item.status === "pending") item.status = "confirmed";

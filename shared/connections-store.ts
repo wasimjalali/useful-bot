@@ -23,6 +23,16 @@ export type ConnectionEntry = {
   createdAt: string;
 };
 
+/**
+ * What `upsertConnection` did. `won` is true when `entry` is this caller's own
+ * row, whatever id it ended up with, and false when another row already held
+ * the URL and this caller has nothing of its own in the store.
+ */
+export type UpsertOutcome = {
+  won: boolean;
+  entry: ConnectionEntry;
+};
+
 export type ConnectionsStore = {
   schemaVersion: 1;
   connections: ConnectionEntry[];
@@ -242,13 +252,66 @@ export function allocateConnectionId(name: string, path = connectionsPath()): st
   throw new Error("connections_id");
 }
 
-export function upsertConnection(entry: ConnectionEntry, path = connectionsPath()): ConnectionEntry {
-  return updateConnectionsStore((store) => {
+/**
+ * Insert or replace a connection, and return the row that is now live.
+ *
+ * A URL may hold one row. Two rows for the same server are both mounted by
+ * `agent/connections/registry.ts`, so the model sees every one of that
+ * server's tools twice and both copies count against the tool cap. Two cards
+ * for one server are reachable: `propose_connection` refuses a URL that is
+ * already connected and allows one pending card per thread, but that is per
+ * thread, and two bots can each hold a card the owner then authorizes.
+ *
+ * When another row already holds this URL, that row wins untouched and comes
+ * back with `won: false`. It is never merged with the incoming entry: its
+ * Keychain item belongs to whatever auth it was connected with, and folding
+ * another card's authKind, authHeader or toolsAllow into it would leave the
+ * row describing one credential and using another.
+ *
+ * `won` has to be said out loud rather than inferred. The URL cannot carry it,
+ * because a row found by URL has the entry's URL by definition; the id cannot
+ * either, because a winner's id is reassigned when the one it asked for turned
+ * out to be a different server's. A caller that guesses writes its secret over
+ * the winner's.
+ *
+ * The check is inside the lock because the callers cannot make it atomic:
+ * `startConnectionConfirm` awaits a tool-count probe between looking and
+ * writing, so two confirms would otherwise both find nothing and both insert.
+ */
+export function upsertConnection(entry: ConnectionEntry, path = connectionsPath()): UpsertOutcome {
+  return updateConnectionsStore((store): UpsertOutcome => {
+    const sameUrl = store.connections.find((item) => item.url === entry.url && item.id !== entry.id);
+    if (sameUrl) return { won: false, entry: sameUrl };
     const index = store.connections.findIndex((item) => item.id === entry.id);
-    if (index >= 0) store.connections[index] = entry;
-    else store.connections.push(entry);
-    return entry;
+    if (index < 0) {
+      store.connections.push(entry);
+      return { won: true, entry };
+    }
+    if (store.connections[index].url === entry.url) {
+      store.connections[index] = entry;
+      return { won: true, entry };
+    }
+    // The id is already a different server's. `allocateConnectionId` only
+    // looks at rows that exist, so two cards proposed for servers with the
+    // same name, before either is connected, are handed the same id. Replacing
+    // here would repoint a live connection at another URL and leave its
+    // Keychain item filed under an id that now means something else. The new
+    // server gets a free id instead, and the caller reads it off the return.
+    const fresh = { ...entry, id: freeConnectionId(store, entry.id) };
+    store.connections.push(fresh);
+    return { won: true, entry: fresh };
   }, path);
+}
+
+/** The first unused id at or after `base`, from a store already held. */
+function freeConnectionId(store: ConnectionsStore, base: string): string {
+  const taken = new Set(store.connections.map((item) => item.id));
+  if (!taken.has(base)) return base;
+  for (let n = 2; n < 100; n++) {
+    const id = `${base.slice(0, 60)}-${n}`;
+    if (isConnectionId(id) && !taken.has(id)) return id;
+  }
+  throw new Error("connections_id");
 }
 
 /**

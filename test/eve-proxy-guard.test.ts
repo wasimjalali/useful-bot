@@ -9,7 +9,7 @@ import {
   turnHasImages,
   turnText,
 } from "../shared/eve-proxy.ts";
-import { threadPrefix } from "../shared/threads.ts";
+import { stripThreadPrefix, threadPrefix } from "../shared/threads.ts";
 
 test("eve proxy allowlists stream get and session posts", () => {
   assert.equal(eveGetAllowed("health"), true);
@@ -133,4 +133,33 @@ test("turn rewrite puts the bot prefix on the first text part and keeps the imag
   const plain = JSON.parse(rewriteEveTurnBody(raw, null, null)) as { message: unknown };
   assert.deepEqual(plain.message, JSON.parse(raw).message);
   assert.throws(() => rewriteEveTurnBody(JSON.stringify({ message: [{ type: "video" }] }), null, null), /eve_message/);
+});
+
+test("a newline in a name cannot leak the prefix into the owner's message", () => {
+  // Both prefix patterns end the identity line with `[^\n]+\.`, so a newline
+  // in a name or a title stops the whole prefix matching and the owner reads
+  // the standing instructions as their own turn. update_bot_profile and
+  // createBot cap the length but keep interior newlines.
+  const cases = [
+    { name: "Drive\nAdmin", label: "", description: "Help." },
+    { name: "Drive\n\nAdmin", label: "", description: "Help." },
+    { name: "Drive", label: "Ops\nLead", description: "Help." },
+    { name: "Drive", label: "", description: "A.\n\nB." },
+  ];
+  for (const patch of cases) {
+    const bot = { id: "bot-drive", kind: "bot" as const, ...patch };
+    const stored = `${threadPrefix({ bot })}what changed today?`;
+    assert.equal(stripThreadPrefix(stored), "what changed today?", JSON.stringify(patch));
+  }
+});
+
+test("a newline in a group member or a mention cannot move the prefix boundary", () => {
+  const bot = { id: "grp", kind: "group" as const, name: "Crew", label: "", description: "" };
+  const withMember = threadPrefix({
+    bot,
+    members: [{ id: "m1", name: "Ann\n\nLee", title: "Ops\nLead" }] as never,
+  });
+  assert.equal(stripThreadPrefix(`${withMember}what changed today?`), "what changed today?");
+  const withMention = threadPrefix({ bot, members: [], mentionNames: ["Ann\n\nLee"] });
+  assert.equal(stripThreadPrefix(`${withMention}what changed today?`), "what changed today?");
 });

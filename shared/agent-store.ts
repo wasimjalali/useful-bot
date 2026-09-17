@@ -531,6 +531,50 @@ export function listThreadEvents(botId: string, path = agentStorePath()): AgentE
   return thread ? thread.events.slice() : [];
 }
 
+/**
+ * Every widget id a stored thread event still names, across every thread, or
+ * null when the store cannot be read.
+ *
+ * The sweep needs the whole set, not one bot's: a record is an orphan only
+ * when nothing anywhere points at it. It also needs to know the difference
+ * between "nothing references a widget" and "this file would not parse".
+ * `readAgentStore` answers both with an empty store, and a sweep run on that
+ * would delete every drawing on the machine. This is the same reason
+ * `sweepOrphanState` reads the roster with `peekShell` rather than
+ * `readShell`.
+ */
+export function referencedWidgetIds(path = agentStorePath()): Set<string> | null {
+  // A store that is not there yet references nothing, which is true rather
+  // than unknown: there are no threads, so there is nothing to keep.
+  if (!existsSync(path)) return new Set();
+  let store: AgentStore;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    // `parseAgentStore` answers a wrong shape or a schema it does not know
+    // with an empty store rather than throwing, on purpose: losing every
+    // transcript over a forward-compatible field would be worse. Here that
+    // same empty store would read as "nothing references a widget", so the
+    // shape is checked before it is parsed.
+    if (!raw || typeof raw !== "object") return null;
+    const rec = raw as Record<string, unknown>;
+    if (rec.schemaVersion !== AGENT_SCHEMA) return null;
+    // `threads: []` is a real empty store and every widget is then genuinely
+    // an orphan. A missing or non-array `threads` is a file this build cannot
+    // read, and `parseAgentStore` would answer it with the same empty list.
+    if (!Array.isArray(rec.threads)) return null;
+    store = parseAgentStore(raw);
+  } catch {
+    return null;
+  }
+  const ids = new Set<string>();
+  for (const thread of store.threads) {
+    for (const event of thread.events) {
+      if (event.widgetId) ids.add(event.widgetId);
+    }
+  }
+  return ids;
+}
+
 export function appendAgentEvent(
   botId: string,
   input: {
