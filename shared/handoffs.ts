@@ -341,3 +341,57 @@ export function dropHandoff(id: string, dir = handoffDir()): void {
   rmSync(handoffPath(id, dir), { force: true });
   releaseHandoffClaim(id, "", dir);
 }
+
+/**
+ * True if adding source→target would close a wait-cycle in the pending
+ * queue (A waits on B waits on C waits on A). Direct A↔B is the common case.
+ */
+export function pendingHandoffCycle(
+  sourceId: string,
+  targetId: string,
+  skipId = "",
+  dir = handoffDir(),
+): boolean {
+  const pending = listHandoffs(dir).filter((item) => item.status === "pending" && item.id !== skipId)
+  const outgoing = new Map<string, string[]>()
+  for (const item of pending) {
+    const list = outgoing.get(item.sourceBotId) ?? []
+    list.push(item.targetBotId)
+    outgoing.set(item.sourceBotId, list)
+  }
+  const seen = new Set<string>()
+  const stack = [targetId]
+  while (stack.length) {
+    const current = stack.pop() as string
+    if (current === sourceId) return true
+    if (seen.has(current)) continue
+    seen.add(current)
+    for (const next of outgoing.get(current) ?? []) stack.push(next)
+  }
+  return false
+}
+
+/**
+ * Wait until a queued handoff is delivered or fails, or until the timeout.
+ * The sending tool uses this so the teammate's reply comes back as tool
+ * output instead of dying in the receiver's chat. A timeout returns the
+ * last snapshot (still pending) rather than throwing: the pump keeps
+ * working and both transcripts still get the reply.
+ */
+export async function waitForHandoff(
+  id: string,
+  timeoutMs: number,
+  dir = handoffDir(),
+  intervalMs = 250,
+): Promise<HandoffRecord | null> {
+  const budget = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0;
+  const step = Number.isFinite(intervalMs) ? Math.max(10, intervalMs) : 250;
+  const start = Date.now();
+  let latest = readHandoff(id, dir);
+  while (Date.now() - start < budget) {
+    latest = readHandoff(id, dir);
+    if (!latest || latest.status === "delivered" || latest.status === "failed") return latest;
+    await new Promise((resolve) => setTimeout(resolve, step));
+  }
+  return readHandoff(id, dir);
+}

@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { appendAgentEvent, sweepOrphanThreads, type ThreadKind } from "../../shared/agent-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
-import { sendHandoff } from "../../shared/agents-send.ts";
+import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
 import {
   claimHandoff,
   listDeliverable,
@@ -283,7 +283,7 @@ function handoffEnvelope(handoff: HandoffRecord): string {
   const lines = [
     `Handoff from ${handoff.sourceName}.`,
     handoff.groupName ? `This belongs to the group chat ${handoff.groupName}.` : "This arrives in your own chat.",
-    "Do the work and answer here. The owner reads this transcript.",
+    "Do the work and answer here. Your reply is returned to the sender and the owner reads both transcripts.",
     ...(handoff.depth > 0 ? [`This is relay hop ${handoff.depth} of at most ${HANDOFF_DEPTH_MAX}.`] : []),
     "",
     handoff.message,
@@ -423,30 +423,34 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
   // Transcript and shell row first, delivery marker last: a crash in between
   // leaves the record claimed/pending so the next pump retries, and the event
   // dedupe keeps the retry from appending a second copy.
-  if (reply) {
-    appendAgentEvent(bot.id, {
-      kind: "assistant",
-      threadKind: kind,
-      sessionId,
-      text: reply,
-      authorBotId: handoff.targetBotId,
-      authorName: handoff.targetName,
-      handoffId: handoff.id,
-    });
-  }
+  const sender = shell.bots.find((item) => item.id === handoff.sourceBotId);
+  writeHandoffReply({
+    handoff,
+    reply,
+    sessionId,
+    receiverId: bot.id,
+    threadKind: kind,
+    sourceThreadKind: sender?.kind === "group" ? "group" : "bot",
+  });
+  const stamp = new Date().toISOString();
+  const preview = reply ? reply.slice(0, 160) : "";
   updateShell((current) => ({
     ...current,
-    bots: current.bots.map((item) => (
-      item.id === bot.id
-        ? {
+    bots: current.bots.map((item) => {
+      if (item.id === bot.id) {
+        return {
           ...item,
           sessionId,
-          lastPreview: reply ? reply.slice(0, 160) : item.lastPreview,
-          lastAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }
-        : item
-    )),
+          lastPreview: preview || item.lastPreview,
+          lastAt: stamp,
+          updatedAt: stamp,
+        };
+      }
+      if (preview && item.id === handoff.sourceBotId) {
+        return { ...item, lastPreview: preview, lastAt: stamp, updatedAt: stamp };
+      }
+      return item;
+    }),
   }));
   markDelivered(handoff.id, reply, undefined, claimToken);
   return reply;
@@ -454,6 +458,16 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
 
 export function handoffsInFlight(): string[] {
   return [...inflight];
+}
+
+/** Bot ids currently receiving a handoff, for the rail working pulse. */
+export function handoffWorkingBotIds(): string[] {
+  const ids = new Set<string>();
+  for (const id of inflight) {
+    const record = readHandoff(id);
+    if (record) ids.add(record.targetBotId);
+  }
+  return [...ids];
 }
 
 // Pumps are single-flight: the UI poll, wakePump and fan-out confirmations can

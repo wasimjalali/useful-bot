@@ -31,8 +31,10 @@ import {
   ownsHandoffClaim,
   queueHandoff,
   readHandoff,
+  pendingHandoffCycle,
+  waitForHandoff,
 } from "../shared/handoffs.ts";
-import { sendHandoff } from "../shared/agents-send.ts";
+import { sendHandoff, writeHandoffReply } from "../shared/agents-send.ts";
 
 function tempPaths() {
   const dir = mkdtempSync(join(tmpdir(), "ub-agents-"));
@@ -285,6 +287,120 @@ test("sendHandoff writes both sides of the transcript and one queue record", () 
     else process.env.UB_AGENT_STORE_PATH = previousStore;
     if (previousDir === undefined) delete process.env.UB_HANDOFF_DIR;
     else process.env.UB_HANDOFF_DIR = previousDir;
+  }
+});
+
+test("writeHandoffReply records the answer on both transcripts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-reply-"));
+  const storePath = join(dir, "agents.json");
+  const previousStore = process.env.UB_AGENT_STORE_PATH;
+  process.env.UB_AGENT_STORE_PATH = storePath;
+  try {
+    const record = sendHandoff({
+      source: { id: "bot-ceo", name: "CEO" },
+      target: { id: "bot-research", name: "Research" },
+      message: "What is the price?",
+    });
+    writeHandoffReply({
+      handoff: record,
+      reply: "Forty.",
+      sessionId: "sess_1",
+      receiverId: "bot-research",
+      threadKind: "bot",
+    });
+    const sender = listThreadEvents("bot-ceo", storePath);
+    const receiver = listThreadEvents("bot-research", storePath);
+    assert.equal(sender.map((event) => event.kind).join(","), "handoff,post");
+    assert.equal(sender[1].text, "Forty.");
+    assert.equal(sender[1].authorName, "Research");
+    assert.equal(receiver.map((event) => event.kind).join(","), "post,assistant");
+    assert.equal(receiver[1].text, "Forty.");
+    assert.equal(sender[1].kind, "post");
+  } finally {
+    if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
+    else process.env.UB_AGENT_STORE_PATH = previousStore;
+  }
+});
+
+test("waitForHandoff resolves when the record is delivered", async () => {
+  const { handoffDir } = tempPaths();
+  const record = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "wait for me",
+  }, handoffDir);
+  setTimeout(() => {
+    markDelivered(record.id, "here", handoffDir);
+  }, 40);
+  const done = await waitForHandoff(record.id, 1000, handoffDir, 10);
+  assert.equal(done?.status, "delivered");
+  assert.equal(done?.response, "here");
+});
+
+test("pendingHandoffCycle sees a three-hop wait loop", () => {
+  const { handoffDir } = tempPaths();
+  queueHandoff({
+    sourceBotId: "a",
+    sourceName: "A",
+    targetBotId: "b",
+    targetName: "B",
+    message: "one",
+  }, handoffDir);
+  queueHandoff({
+    sourceBotId: "b",
+    sourceName: "B",
+    targetBotId: "c",
+    targetName: "C",
+    message: "two",
+  }, handoffDir);
+  assert.equal(pendingHandoffCycle("c", "a", "", handoffDir), true);
+  assert.equal(pendingHandoffCycle("a", "b", "", handoffDir), false);
+});
+
+test("waitForHandoff returns the pending snapshot when the budget expires", async () => {
+  const { handoffDir } = tempPaths();
+  const record = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "still going",
+  }, handoffDir);
+  const done = await waitForHandoff(record.id, 40, handoffDir, 10);
+  assert.equal(done?.status, "pending");
+  assert.equal(done?.id, record.id);
+});
+
+test("writeHandoffReply records a note on both sides when the reply is empty", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-empty-"));
+  const storePath = join(dir, "agents.json");
+  const previousStore = process.env.UB_AGENT_STORE_PATH;
+  process.env.UB_AGENT_STORE_PATH = storePath;
+  try {
+    const record = sendHandoff({
+      source: { id: "bot-ceo", name: "CEO" },
+      target: { id: "bot-research", name: "Research" },
+      message: "Anything?",
+    });
+    writeHandoffReply({
+      handoff: record,
+      reply: "",
+      sessionId: "sess_1",
+      receiverId: "bot-research",
+      threadKind: "bot",
+      sourceThreadKind: "bot",
+    });
+    const sender = listThreadEvents("bot-ceo", storePath);
+    const receiver = listThreadEvents("bot-research", storePath);
+    assert.equal(sender.at(-1)?.kind, "note");
+    assert.match(sender.at(-1)?.text ?? "", /no reply/);
+    assert.equal(receiver.at(-1)?.kind, "note");
+    assert.match(receiver.at(-1)?.text ?? "", /no reply/);
+  } finally {
+    if (previousStore === undefined) delete process.env.UB_AGENT_STORE_PATH;
+    else process.env.UB_AGENT_STORE_PATH = previousStore;
   }
 });
 

@@ -69,6 +69,65 @@ export function sendHandoff(input: {
 }
 
 /**
+ * After the receiver answers, both transcripts get the reply: the receiver
+ * as an assistant turn, the sender as a message from that teammate. The
+ * sending tool also returns the same text, so the model can bring it back
+ * without the owner switching chats.
+ */
+export function writeHandoffReply(input: {
+  handoff: HandoffRecord;
+  reply: string;
+  sessionId: string;
+  receiverId: string;
+  threadKind: ThreadKind;
+  sourceThreadKind?: ThreadKind;
+}): void {
+  const sourceKind = input.sourceThreadKind ?? "bot";
+  if (!input.reply) {
+    const note = `${input.handoff.targetName} finished with no reply.`;
+    appendAgentEvent(input.receiverId, {
+      kind: "note",
+      threadKind: input.threadKind,
+      sessionId: input.sessionId,
+      text: note,
+      authorBotId: input.handoff.targetBotId,
+      authorName: input.handoff.targetName,
+      handoffId: input.handoff.id,
+    });
+    if (input.handoff.sourceBotId && input.handoff.sourceBotId !== input.receiverId) {
+      appendAgentEvent(input.handoff.sourceBotId, {
+        kind: "note",
+        threadKind: sourceKind,
+        text: note,
+        authorBotId: input.handoff.targetBotId,
+        authorName: input.handoff.targetName,
+        handoffId: input.handoff.id,
+      });
+    }
+    return;
+  }
+  appendAgentEvent(input.receiverId, {
+    kind: "assistant",
+    threadKind: input.threadKind,
+    sessionId: input.sessionId,
+    text: input.reply,
+    authorBotId: input.handoff.targetBotId,
+    authorName: input.handoff.targetName,
+    handoffId: input.handoff.id,
+  });
+  if (input.handoff.sourceBotId && input.handoff.sourceBotId !== input.receiverId) {
+    appendAgentEvent(input.handoff.sourceBotId, {
+      kind: "post",
+      threadKind: sourceKind,
+      text: input.reply,
+      authorBotId: input.handoff.targetBotId,
+      authorName: input.handoff.targetName,
+      handoffId: input.handoff.id,
+    });
+  }
+}
+
+/**
  * Ask the web server to start delivering queued handoffs now. Best effort by
  * design: the UI poll drains the same queue, so a failed wake-up costs latency
  * only, and the tool never needs the channel credential to be present.

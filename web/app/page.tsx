@@ -876,11 +876,18 @@ export default function Page() {
                           />
                         ) : null}
                         {threadRows.map((row) => {
-                          if (row.kind === "user") {
+                          if (row.kind === "user" || row.kind === "post") {
                             return (
                               <div className="msg-in flex justify-end" key={row.id}>
-                                <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
-                                  {row.text}
+                                <div className="flex max-w-[85%] flex-col items-end gap-1">
+                                  {row.kind === "post" && row.authorName ? (
+                                    <p className="text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-faint">
+                                      Message from {row.authorName}
+                                    </p>
+                                  ) : null}
+                                  <div className="whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
+                                    {row.text}
+                                  </div>
                                 </div>
                               </div>
                             );
@@ -888,7 +895,7 @@ export default function Page() {
                           const speaker = row.authorBotId
                             ? store.bots.find((item) => item.id === row.authorBotId) ?? bot
                             : bot;
-                          const handoff = row.kind === "handoff" || row.kind === "post";
+                          const handoff = row.kind === "handoff";
                           const targetNames = row.targetBotIds
                             .map((id) => store.bots.find((item) => item.id === id)?.name ?? "")
                             .filter((name) => name.length > 0);
@@ -900,9 +907,7 @@ export default function Page() {
                                   <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-faint">
                                     {row.kind === "handoff" && targetNames.length > 0
                                       ? `Handoff to ${targetNames.join(", ")}`
-                                      : row.kind === "post"
-                                        ? `${row.authorName ?? "A bot"} to this chat`
-                                        : row.authorName ?? speaker.name}
+                                      : row.authorName ?? speaker.name}
                                   </p>
                                 ) : null}
                                 {row.kind === "note" ? (
