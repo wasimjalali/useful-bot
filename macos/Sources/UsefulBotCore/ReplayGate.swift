@@ -46,6 +46,43 @@ public enum ReplayGate {
     /// store never holds, so they say nothing about where the replay is.
     private static let durableTypes: Set<String> = ["message.received", "message.completed"]
 
+    /// Whether a turn has actually begun since the replay caught up.
+    ///
+    /// `StreamProjection.pending` cannot answer this on its own. It is set by
+    /// every `message.received` and cleared only by the terminal event that
+    /// follows it, so while the replay walks the tail of a conversation that
+    /// finished long ago it reads as pending, between the last reply and the
+    /// `turn.completed` after it. Coming back to a settled chat flashed a
+    /// working row for exactly that stretch.
+    ///
+    /// A turn counts as live only if it began at or after the live tail. The
+    /// event that opens the gate is the tail itself, so a user turn already
+    /// durable when the replay started still counts: that is the turn a
+    /// handoff or a routine is running right now.
+    public struct LiveTurn: Equatable, Sendable {
+        /// True while a turn that began after the gate opened has not ended.
+        public private(set) var running = false
+
+        public init() {}
+
+        private static let starts: Set<String> = ["turn.started", "message.received"]
+        private static let ends: Set<String> = [
+            "turn.completed", "turn.cancelled", "turn.failed",
+            "session.completed", "session.failed", "session.waiting",
+        ]
+
+        public mutating func apply(_ event: EveEvent, atLiveTail: Bool) {
+            // An end counts wherever it lands: a turn the replay watched start
+            // is over the moment its terminal event arrives.
+            if Self.ends.contains(event.type) {
+                running = false
+                return
+            }
+            guard atLiveTail, Self.starts.contains(event.type) else { return }
+            running = true
+        }
+    }
+
     /// True once this event proves the replay reached the live tail.
     public static func reachedLiveTail(durable: Durable, event: EveEvent) -> Bool {
         guard let tailId = durable.tailId else { return true }

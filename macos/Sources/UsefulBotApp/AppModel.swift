@@ -543,6 +543,10 @@ final class AppModel: ObservableObject {
             // wipe it and replay underneath: the send task is painting, and
             // the owner just came back to watch it.
             let localSend = sendTasks[bot.id] != nil
+            // Whether a turn is actually running, which `pending` alone does
+            // not say while the replay walks a settled conversation. Declared
+            // out here because the working row below is decided on it too.
+            var liveTurn = ReplayGate.LiveTurn()
             if !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
@@ -585,6 +589,7 @@ final class AppModel: ObservableObject {
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
+                    liveTurn.apply(event, atLiveTail: atLiveTail)
                     if swapped {
                         projection.apply(event, live: atLiveTail)
                     } else {
@@ -603,9 +608,13 @@ final class AppModel: ObservableObject {
                             swapped = true
                         }
                     }
-                    if swapped, atLiveTail, projection.pending {
-                        if !backgroundWorking { backgroundWorking = true }
-                        markWorking(bot.id, true)
+                    // Publish either way, so a turn that is running paints its
+                    // tokens as they arrive. The working row is the part that
+                    // needs a turn to actually be in flight.
+                    if swapped, atLiveTail {
+                        let working = liveTurn.running && projection.pending
+                        if backgroundWorking != working { backgroundWorking = working }
+                        markWorking(bot.id, working)
                         publishTranscript()
                     }
                 }
@@ -625,8 +634,13 @@ final class AppModel: ObservableObject {
             if sendTasks[bot.id] != nil {
                 pending = true
             } else {
-                backgroundWorking = projection.pending
-                markWorking(bot.id, projection.pending)
+                // A replay that simply ran out of events is not a turn in
+                // flight. eve parks a session between turns, and its terminal
+                // event can be written after this read, which left `pending`
+                // true on a chat where nothing was happening.
+                let working = liveTurn.running && projection.pending
+                backgroundWorking = working
+                markWorking(bot.id, working)
             }
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot. A
