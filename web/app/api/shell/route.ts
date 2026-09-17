@@ -12,7 +12,7 @@ import {
   threadIdFor,
   type Proposal,
 } from "../../../../shared/agent-store.ts";
-import { fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
+import { deliverFirstBrief, fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
@@ -358,8 +358,15 @@ export async function PUT(request: Request) {
     }
 
     const action = body.action;
+    // The roster commit is what assigns a new bot its id, and the brief below
+    // has to reach that exact bot.
+    let createdBotId: string | undefined;
     const next = action
-      ? updateShell((shell) => applyShellAction(shell, action).store)
+      ? updateShell((shell) => {
+        const applied = applyShellAction(shell, action);
+        createdBotId = applied.createdId;
+        return applied.store;
+      })
       : current;
     // Revoking here, not only at the next turn stamp. `syncSessionWorkspace`
     // runs when a turn starts, so without this a detach leaves the capability
@@ -396,6 +403,21 @@ export async function PUT(request: Request) {
         queued = applyFollowUp(action, next);
       } catch {
         /* the shell action already landed; the handoff pump reports the rest */
+      }
+    }
+    // The card carried a first brief, so the owner approved that work too.
+    // Without this the brief was only ever shown on the card: the new bot was
+    // created idle and the brief stayed in the proposer's own chat.
+    if (claimed?.kind === "createBot" && claimed.status === "confirmed") {
+      try {
+        queued += deliverFirstBrief({
+          brief: claimed.brief,
+          createdBotId,
+          sourceBotId: claimed.sourceBotId,
+          bots: next.bots,
+        });
+      } catch {
+        /* the bot exists; the brief is the proposer's to resend */
       }
     }
     // `appendAgentEvent` upserts, so noting a confirmed delete on the deleted

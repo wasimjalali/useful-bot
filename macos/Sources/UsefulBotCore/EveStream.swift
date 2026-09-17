@@ -385,6 +385,10 @@ public struct StreamProjection: Equatable, Sendable {
     /// answered yet. The turn is over while one is open: the bot is waiting on
     /// the owner, not working.
     public private(set) var questions: [OwnerQuestion] = []
+    /// While a replay re-sends a message this projection already holds, its
+    /// remaining deltas are that same text arriving again and must not be
+    /// appended a second time.
+    private var replayingMessage = false
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -412,6 +416,7 @@ public struct StreamProjection: Equatable, Sendable {
         // this turn's user message, where the send's reader never looks, so
         // the card stayed up, greyed out, until the reply finished.
         questions = []
+        replayingMessage = false
     }
 
     /// Dedupe identity with a bounded FIFO: the oldest remembered id is
@@ -442,6 +447,7 @@ public struct StreamProjection: Equatable, Sendable {
         let stamp = TranscriptBlocks.date(fromISO8601: event.metaAt) ?? (live ? Date() : nil)
         switch event.type {
         case "turn.started":
+            replayingMessage = false
             pending = true
             failed = false
             failure = nil
@@ -467,6 +473,10 @@ public struct StreamProjection: Equatable, Sendable {
                 activity = .thinking
                 return
             }
+            // A message this projection already holds is a replay of it, not a
+            // second turn. The id cache above is bounded, so this is the check
+            // that survives a session longer than the cache.
+            if let id = event.id, messages.contains(where: { $0.id == id }) { return }
             messages.append(ChatMessage(
                 id: event.id ?? "u-\(messages.count)",
                 role: .user,
@@ -498,6 +508,16 @@ public struct StreamProjection: Equatable, Sendable {
         case "message.appended":
             let delta = event.messageDelta ?? ""
             guard !delta.isEmpty else { return }
+            // The first delta of a block this projection already holds names
+            // that block: the rest of its deltas follow, and the text is
+            // already here.
+            if let id = event.id, let index = messages.firstIndex(where: { $0.id == id }) {
+                currentAssistantId = messages[index].id
+                replayingMessage = true
+                activity = .working
+                return
+            }
+            if replayingMessage { return }
             // Text is arriving: the row is about to be replaced by the reply
             // itself, so it must not still claim a tool is running.
             activity = .working
@@ -511,7 +531,18 @@ public struct StreamProjection: Equatable, Sendable {
             }
         case "message.completed":
             let full = EveStream.stripThreadPrefix(event.message ?? "")
+            replayingMessage = false
             if !full.isEmpty {
+                // The completion is authoritative: a replay of a message
+                // already here rewrites it in place rather than appending a
+                // copy of the same reply.
+                if let id = event.id, let index = messages.firstIndex(where: { $0.id == id }) {
+                    messages[index].text = full
+                    if messages[index].at == nil { messages[index].at = stamp }
+                    currentAssistantId = nil
+                    activity = .thinking
+                    return
+                }
                 if let current = currentAssistantId,
                    let index = messages.firstIndex(where: { $0.id == current }) {
                     messages[index].text = full

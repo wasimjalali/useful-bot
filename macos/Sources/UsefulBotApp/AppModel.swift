@@ -533,18 +533,6 @@ final class AppModel: ObservableObject {
             // wipe it and replay underneath: the send task is painting, and
             // the owner just came back to watch it.
             let localSend = sendTasks[bot.id] != nil
-            if !localSend, projection.messages.isEmpty, !projection.pending {
-                // Only when nothing is on screen yet. A reload that follows Stop
-                // keeps the rows the turn already streamed until the replay below
-                // has them all; rebuilding on an empty projection here blanked the
-                // chat for the length of the replay. A restored background turn
-                // already has its rows: keep them, and let the replay dedupe.
-                // One that has only started has no rows yet but is pending:
-                // keep its working state too.
-                projection = StreamProjection()
-                rebuildTranscript()
-                backgroundWorking = false
-            }
             if !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
@@ -554,17 +542,50 @@ final class AppModel: ObservableObject {
                 // the working row and the tokens as they arrive.
                 let durable = ReplayGate.Durable(events: state.events)
                 var atLiveTail = durable.startsLive
+                // A replay is never applied over rows that are already on
+                // screen. The projection forgets the oldest event ids it has
+                // seen, so a session longer than that cache re-appended the
+                // messages it no longer recognised, and the owner saw their
+                // turn twice. It is rebuilt beside the old one instead and
+                // swapped in once it holds as much, which keeps the chat from
+                // blanking for the length of the replay.
+                let baseline = projection.messages.count
+                var replay = StreamProjection()
+                var swapped = false
+                if baseline == 0, !projection.pending {
+                    // Nothing to preserve: the reload owns the projection. A
+                    // turn that has only started has no rows yet but is
+                    // pending, and keeps its working state.
+                    projection = StreamProjection()
+                    rebuildTranscript()
+                    backgroundWorking = false
+                    swapped = true
+                }
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
-                    projection.apply(event, live: atLiveTail)
-                    if atLiveTail, projection.pending {
+                    if swapped {
+                        projection.apply(event, live: atLiveTail)
+                    } else {
+                        replay.apply(event, live: atLiveTail)
+                        if replay.messages.count >= baseline {
+                            projection = replay
+                            swapped = true
+                        }
+                    }
+                    if swapped, atLiveTail, projection.pending {
                         if !backgroundWorking { backgroundWorking = true }
                         markWorking(bot.id, true)
                         publishTranscript()
                     }
+                }
+                if !swapped {
+                    // The session holds fewer messages than the rows on screen
+                    // (it was cleared or replaced elsewhere). The replay is
+                    // still the authority on what this chat is.
+                    projection = replay
                 }
             }
             guard generation == loadGeneration else { return }
