@@ -203,7 +203,7 @@ final class AppModel: ObservableObject {
     /// and a turn that finished during that second read was taken for history
     /// and never shown.
     private var followCursor: (sessionId: String, next: Int)?
-    /// Turns a local send streamed itself, per session. The follower resumes
+    /// Turns a local send streamed to their end, per session. The follower resumes
     /// from a cursor that sits before them, so it meets their events again and
     /// must pass over them rather than lean on the projection's bounded id
     /// dedupe. Dropped when a reload rebuilds the session from zero.
@@ -1120,6 +1120,9 @@ final class AppModel: ObservableObject {
                     return
                 }
                 let sessionId: String
+                // True when this send makes the session rather than joining
+                // one, which is the only case where nothing older exists.
+                var createdSession = (sendSessionId ?? "").isEmpty
                 do {
                     sessionId = try await self.postSession(
                         botId: bot.id,
@@ -1146,12 +1149,15 @@ final class AppModel: ObservableObject {
                         return
                     }
                     history = []
+                    createdSession = true
                     sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
                 }
                 delivered = true
-                if sessionId != (bot.sessionId ?? ""), self.selectedBotId == bot.id {
+                if createdSession, self.selectedBotId == bot.id {
                     // A session this send created holds nothing older than the
-                    // send, so the follower can start at its first event.
+                    // send, so the follower can start at its first event. Asked
+                    // of the send itself, not of the stored pointer: that can
+                    // be re-stamped by a poll between the snapshot and here.
                     self.followCursor = (sessionId, 0)
                 }
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
@@ -1188,7 +1194,13 @@ final class AppModel: ObservableObject {
                         return
                     }
                     if event.type == "message.received" { sawUserTurn = true }
-                    if let turnId = event.turnId, !turnId.isEmpty {
+                    // Only a turn this stream painted to its end is the
+                    // follower's to pass over. One it lost part-way (Stop, a
+                    // dropped connection) still has events to show, and the
+                    // follower reads them from its cursor; the ones already
+                    // applied here fall to the projection's id dedupe.
+                    if let turnId = event.turnId, !turnId.isEmpty,
+                       ["turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
                         self.localTurnIds[sessionId, default: []].insert(turnId)
                     }
                     self.applyLiveEvent(event, botId: bot.id)
