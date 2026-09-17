@@ -595,7 +595,8 @@ private struct BotMetaRow: View {
 }
 
 /// One transcript row. What the owner said is a right-aligned bubble, and what
-/// a bot said is a left-aligned one a shade off the chat background. Each
+/// a bot said is a left-aligned white one, set apart by a border and a soft
+/// shadow. Each
 /// message a bot posts is its own bubble, so a turn reads as a run of them.
 /// Equatable so a streamed publish only rebuilds the row whose text changed.
 /// Nothing here reads the environment, so skipping the body is safe.
@@ -725,6 +726,7 @@ struct TranscriptRowView: View, Equatable {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .strokeBorder(Theme.C.border, lineWidth: 1)
                     )
+                    .shadow(color: Theme.C.ink.opacity(0.06), radius: 3, y: 1)
                     .frame(maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth), alignment: .leading)
             }
             Spacer(minLength: 0)
@@ -763,6 +765,7 @@ struct TranscriptRowView: View, Equatable {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(Theme.C.border, lineWidth: 1)
             )
+            .shadow(color: Theme.C.ink.opacity(0.06), radius: 3, y: 1)
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .ignore)
