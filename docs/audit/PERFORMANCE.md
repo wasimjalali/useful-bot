@@ -32,6 +32,39 @@ workspace credits once and was rerun).
   The stream closes 3 s after its last event, so 3 to 4 s is the floor.
 - Service cost: `ps -axo pid,rss,%cpu,command | grep -E 'next-server|eve'`.
 
+## Batch 3: a send stops replaying the session before its reply (PR: perf/send-cursor)
+
+Measured through the app's own `BackendClient` against the live server, on the 3,504 event
+Drive Admin session, three rounds, nothing posted:
+
+| Work in front of the first token of every reply | Before | After |
+|---|---|---|
+| Turn id snapshot | 1,032 to 1,178 ms, 3,504 events, 1.1 MB | 392 to 397 ms, 0 events |
+| Send stream walking history to reach its own turn | 1,030 to 1,059 ms, 3,504 events | none, it starts at the tail |
+| Total | 2.07 to 2.21 s | 0.39 to 0.40 s |
+
+- **Problem.** `send()` read the session from event zero to collect the turn ids on record,
+  posted the turn, then opened its reply stream from event zero again and skipped forward until
+  it met its own message. Two full replays, decoded line by line, before a single token, growing
+  with every message in the chat.
+- **Fix.** `BackendClient.historySnapshot` returns the turn ids and `nextIndex`, one past the
+  tail the server reported (`x-eve-stream-tail-index`). It reads only past the follower's cursor
+  when the follower holds this session. The send's stream starts at `nextIndex`.
+- **Why the reply cannot be missed.** The cursor is taken before the turn is posted, so the new
+  turn's first event sits at or after it. The server's tail is the only authority: an earlier
+  draft used `max(tail + 1, cursor)`, which would have started past the new turn had a cursor
+  ever run ahead of the record, and the reply would never have armed.
+- **Why it cannot arm on the wrong turn.** Old turns are behind the cursor and are never read,
+  and the turn id check stays in place. Proven live: four real turns with identical text on one
+  session each armed on their own new turn (`turn_0` at index 2, `turn_1` at 18, `turn_2` at 26,
+  `turn_3` at 34), including one through the old from-zero path for comparison.
+- **No tail header, no change.** `nextIndex` is nil, the stream reads from zero and the snapshot
+  is retaken from zero so its turn ids cover the whole session.
+- **What is left.** About 0.4 s of that is eve opening any stream at all, measured the same with
+  nothing to read and through the proxy, so it is eve's cost, not the app's.
+- **Caught by.** All five models. Astra (A-04) named the fix, a cursor returned with the
+  snapshot, and warned to capture it before the POST and to keep the turn matching.
+
 ## Batch 2: the web service runs a production build (PR: perf/production-services)
 
 | Measure | Before (`next dev`) | After (standalone build) |
@@ -205,7 +238,6 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
 | Transient markdown cache for the growing reply | every streamed prefix is parsed again and kept, up to 2,048 entries | medium | Astra, Spark, GLM |
-| Send reads the session from zero twice before the first token | time to first token grows with session length | high | all five |
 | Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
 | Windowed transcript (last N blocks, "Show earlier") before any `LazyVStack` | layout still scales with history on a real change. Spark and GLM both advise the window first: laziness breaks the reply-height sum and the tall-reply anchor | high | all five |
 | One `WKWebView` per widget row, mounted eagerly | memory in widget-heavy chats | medium | all five |
