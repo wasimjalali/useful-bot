@@ -59,7 +59,19 @@ Drive Admin session, three rounds, nothing posted:
   session each armed on their own new turn (`turn_0` at index 2, `turn_1` at 18, `turn_2` at 26,
   `turn_3` at 34), including one through the old from-zero path for comparison.
 - **No tail header, no change.** `nextIndex` is nil, the stream reads from zero and the snapshot
-  is retaken from zero so its turn ids cover the whole session.
+  is retaken from zero so its turn ids cover the whole session. The app remembers that and reads
+  from zero directly afterwards.
+- **Found in review (Muse Spark).** The follower reads live events past the recorded tail, so its
+  cursor can sit ahead of it; a short snapshot then returns no ids for the very stretch the send
+  reads. And the stream's tolerance for an untagged message fires when the id set is empty, which
+  used to mean "this session tags nothing" and had become true on nearly every send. The app now
+  keeps every turn id it has read per session (`seenTurnIds`), unions it into the snapshot, uses
+  the short read only for sessions known to tag their turns, and shuts the untagged arm for them.
+  Any other session gets the old full read.
+- **Accepted, not fixed.** A session truncated under the same id in the instant between the
+  snapshot and the POST would leave the stream waiting past the new turn until the 20 s unarmed
+  watchdog reports that the turn did not start. eve retires an id on reset rather than reusing
+  it, so this needs a storage fault inside a window of milliseconds.
 - **What is left.** About 0.4 s of that is eve opening any stream at all, measured the same with
   nothing to read and through the proxy, so it is eve's cost, not the app's.
 - **Caught by.** All five models. Astra (A-04) named the fix, a cursor returned with the

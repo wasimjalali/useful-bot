@@ -1166,6 +1166,10 @@ public actor BackendClient {
     /// durably recorded index and the stream finishes on reaching it, without
     /// waiting out the quiet period. A server that does not report a tail
     /// leaves the quiet period as the only end, as before.
+    /// `allowUntaggedTurn` keeps the old tolerance for a server that tags no
+    /// turns: a matching message with no turn id arms the stream when
+    /// `historyTurnIds` is empty. A caller whose id set does not span the whole
+    /// session passes false, because there an empty set proves nothing.
     /// With `markHistory` the server is asked for the same tail but the read
     /// carries on past it: each event says how far it sat from the end of the
     /// history, and the caller tells a replay from a live turn by that.
@@ -1175,7 +1179,8 @@ public actor BackendClient {
         historyTurnIds: Set<String> = [],
         startIndex: Int = 0,
         untilTail: Bool = false,
-        markHistory: Bool = false
+        markHistory: Bool = false,
+        allowUntaggedTurn: Bool = true
     ) -> AsyncThrowingStream<EveEvent, Error> {
         stream(
             sessionId: sessionId,
@@ -1184,6 +1189,7 @@ public actor BackendClient {
             startIndex: startIndex,
             untilTail: untilTail,
             markHistory: markHistory,
+            allowUntaggedTurn: allowUntaggedTurn,
             tailBox: nil
         )
     }
@@ -1195,6 +1201,7 @@ public actor BackendClient {
         startIndex: Int,
         untilTail: Bool,
         markHistory: Bool = false,
+        allowUntaggedTurn: Bool = true,
         tailBox: TailBox?
     ) -> AsyncThrowingStream<EveEvent, Error> {
         let base = self.base
@@ -1294,6 +1301,7 @@ public actor BackendClient {
                                         continuation.yield(event)
                                     } else if matches,
                                               event.turnId == nil,
+                                              allowUntaggedTurn,
                                               historyTurnIds.isEmpty {
                                         armed = true
                                         armedBox.set()
