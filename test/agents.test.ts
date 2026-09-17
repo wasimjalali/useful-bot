@@ -373,6 +373,42 @@ test("waitForHandoff returns the pending snapshot when the budget expires", asyn
   assert.equal(done?.id, record.id);
 });
 
+test("waitForHandoff gives up as soon as the turn is cancelled", async () => {
+  const { handoffDir } = tempPaths();
+  const record = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "stop me",
+  }, handoffDir);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 30);
+  const started = Date.now();
+  // A three minute budget the wait must not serve out once nobody is waiting.
+  const done = await waitForHandoff(record.id, 180_000, handoffDir, 10, controller.signal);
+  const waited = Date.now() - started;
+  assert.equal(done?.status, "pending");
+  assert.ok(waited < 5_000, `returned after ${waited}ms`);
+});
+
+test("waitForHandoff still answers a reply that lands before the cancel", async () => {
+  const { handoffDir } = tempPaths();
+  const record = queueHandoff({
+    sourceBotId: "b1",
+    sourceName: "CEO",
+    targetBotId: "b2",
+    targetName: "Research",
+    message: "beat the stop",
+  }, handoffDir);
+  const controller = new AbortController();
+  setTimeout(() => markDelivered(record.id, "done", handoffDir), 20);
+  setTimeout(() => controller.abort(), 400);
+  const done = await waitForHandoff(record.id, 5_000, handoffDir, 10, controller.signal);
+  assert.equal(done?.status, "delivered");
+  assert.equal(done?.response, "done");
+});
+
 test("writeHandoffReply records a note on both sides when the reply is empty", () => {
   const dir = mkdtempSync(join(tmpdir(), "ub-empty-"));
   const storePath = join(dir, "agents.json");
