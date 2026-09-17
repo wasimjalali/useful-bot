@@ -9,7 +9,8 @@ import UsefulBotCore
 struct ComposerView: View {
     @EnvironmentObject private var model: AppModel
 
-    /// `chat-composer.tsx` textarea cap, matching the server clip.
+    /// The same input cap `chat-composer.tsx` puts on its textarea. Nothing
+    /// clips a turn once it is sent.
     static let maxDraftLength = Attachments.messageMax
 
     /// A chip label, clipped to what fits beside its chevron. Nil in, nil out,

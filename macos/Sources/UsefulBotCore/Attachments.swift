@@ -8,7 +8,10 @@ public enum Attachments {
     public static let maxFiles = 5
     /// Per-file text the server keeps; the native upload clips to the same cap.
     public static let textMax = 64 * 1024
-    /// Composed message cap, matching `chat-composer.tsx` and the server clip.
+    /// What the composer accepts, on both surfaces: `ComposerView` here and
+    /// `maxLength` in `chat-composer.tsx`. It is an input cap, not a clip.
+    /// Nothing on the server or in eve truncates a stored turn, so the echo of
+    /// a sent message always comes back whole.
     public static let messageMax = 2000
 
     public enum NameError: Error, Equatable {
