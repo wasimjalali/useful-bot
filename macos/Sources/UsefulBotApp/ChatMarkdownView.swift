@@ -42,7 +42,11 @@ struct ChatMarkdownView: View, Equatable {
                     HStack(alignment: .top, spacing: 8) {
                         Text("•")
                             .foregroundStyle(Theme.C.inkMuted)
+                        // Wraps instead of truncating: inside a bubble that
+                        // hugs its content the row is offered one line's
+                        // height first, and took it.
                         Text(inline(item))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -54,7 +58,11 @@ struct ChatMarkdownView: View, Equatable {
                         Text("\(index + 1).")
                             .foregroundStyle(Theme.C.inkMuted)
                             .monospacedDigit()
+                        // Wraps instead of truncating: inside a bubble that
+                        // hugs its content the row is offered one line's
+                        // height first, and took it.
                         Text(inline(item))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

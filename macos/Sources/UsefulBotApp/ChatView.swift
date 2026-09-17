@@ -430,7 +430,12 @@ struct ChatView: View {
                     .padding(.top, DesignTokens.Space.chatPaddingVertical)
                     // The working row's slot is most of the bottom margin.
                     .padding(.bottom, DesignTokens.Space.chatPaddingVertical - WorkingRow.height)
-                    .frame(maxWidth: .infinity)
+                    // A chat shorter than the window reads from the top, like
+                    // a page. The bottom anchor below would otherwise sit a
+                    // first message against the composer with the window
+                    // empty above it. Once the chat outgrows the window this
+                    // floor does nothing and the anchor takes over.
+                    .frame(maxWidth: .infinity, minHeight: viewportHeight, alignment: .top)
                 }
                 .uvScroll()
                 .defaultScrollAnchor(.bottom)
