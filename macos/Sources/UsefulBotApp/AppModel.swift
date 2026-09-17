@@ -204,6 +204,9 @@ final class AppModel: ObservableObject {
     private var storeEpoch = 0
     /// A send's own failure banner, preserved across its trailing reload.
     private var stickyThreadError: String?
+    /// A quiet stretch this long inside a session replay means the history
+    /// burst is over. The loopback server sends it as fast as it can read it.
+    private static let replayBurstGap: TimeInterval = 0.35
     private var loadGeneration = 0
     /// Bumped once per owner-initiated send. The transcript watches it to jump
     /// to the newest turn: sending is an explicit request to watch the answer,
@@ -230,7 +233,11 @@ final class AppModel: ObservableObject {
     private var sendBotId: String?
     /// Per-bot send failure, so a turn that died in the background still
     /// explains itself when the owner comes back.
-    private var sendErrors: [String: String] = [:]
+    private var sendErrors: [String: SendFailure] = [:]
+    /// A send that never reached the server, on a bot the owner had already
+    /// left. The composer was cleared when the turn was committed, so the text
+    /// and its files wait here and go back when that chat is opened again.
+    private var unsentDrafts: [String: (text: String, attachments: [Attachment])] = [:]
     private var started = false
     /// Rebuilding the transcript on every streamed event re-parses markdown
     /// for every row; the replay of a long session contains thousands of
@@ -456,8 +463,14 @@ final class AppModel: ObservableObject {
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
         if let err = sendErrors[botId] {
-            stickyThreadError = err
-            threadError = err
+            stickyThreadError = err.message
+            threadError = err.message
+        }
+        // A send that died before it reached the server gives its text and its
+        // files back here, because the composer was cleared when the turn was
+        // committed and this chat was not on screen to take them.
+        if let unsent = unsentDrafts.removeValue(forKey: botId) {
+            restoreUnsentDraft(unsent.text, sentAttachments: unsent.attachments)
         }
         startReload()
         persistSelection(botId)
@@ -533,6 +546,13 @@ final class AppModel: ObservableObject {
             // wipe it and replay underneath: the send task is painting, and
             // the owner just came back to watch it.
             let localSend = sendTasks[bot.id] != nil
+            // Whether a turn is actually running, which `pending` alone does
+            // not say while the replay walks a settled conversation. Declared
+            // out here because the working row below is decided on it too.
+            var liveTurn = ReplayGate.LiveTurn()
+            // True once the history burst has gone quiet. Out here with
+            // `liveTurn` because the working row below is decided on both.
+            var drained = false
             if !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
@@ -542,6 +562,15 @@ final class AppModel: ObservableObject {
                 // the working row and the tokens as they arrive.
                 let durable = ReplayGate.Durable(events: state.events)
                 var atLiveTail = durable.startsLive
+                // History arrives in one burst from the loopback server, so a
+                // gap in it means the burst is over and whatever comes next is
+                // happening now. Until then every event is the past being read
+                // back, however recent: a card dismissed a second ago replays
+                // exactly like one dismissed an hour ago.
+                // Seeded on the first event, never before it: the wait for
+                // the stream to open is not a gap inside the burst, and a slow
+                // open would otherwise read as one.
+                var lastEventAt: Date?
                 // A replay is never applied over rows that are already on
                 // screen. The projection forgets the oldest event ids it has
                 // seen, so a session longer than that cache re-appended the
@@ -575,6 +604,17 @@ final class AppModel: ObservableObject {
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
+                    let now = Date()
+                    if let last = lastEventAt, now.timeIntervalSince(last) > Self.replayBurstGap {
+                        drained = true
+                    }
+                    lastEventAt = now
+                    // An id the durable store never wrote arrived after this
+                    // reload read the transcript, so the turn is now. The gap
+                    // is the other half: a turn already durable when the replay
+                    // started is proved live by the burst going quiet instead.
+                    let novel = event.id.map { !durable.ids.contains($0) } ?? false
+                    liveTurn.apply(event, atLiveTail: atLiveTail, novel: novel)
                     if swapped {
                         projection.apply(event, live: atLiveTail)
                     } else {
@@ -593,9 +633,18 @@ final class AppModel: ObservableObject {
                             swapped = true
                         }
                     }
-                    if swapped, atLiveTail, projection.pending {
-                        if !backgroundWorking { backgroundWorking = true }
-                        markWorking(bot.id, true)
+                    // Publish either way, so a turn that is running paints its
+                    // tokens as they arrive. The working row waits for a turn
+                    // that is in flight AND for the replay to have drained:
+                    // mid-burst, a finished turn reads as pending for the
+                    // stretch between its last reply and its terminal event,
+                    // and that is what flashed a working row on a settled chat.
+                    if swapped, atLiveTail {
+                        let working = (drained || liveTurn.novelStart)
+                            && liveTurn.running
+                            && projection.pending
+                        if backgroundWorking != working { backgroundWorking = working }
+                        markWorking(bot.id, working)
                         publishTranscript()
                     }
                 }
@@ -615,15 +664,27 @@ final class AppModel: ObservableObject {
             if sendTasks[bot.id] != nil {
                 pending = true
             } else {
-                backgroundWorking = projection.pending
-                markWorking(bot.id, projection.pending)
+                // A replay that simply ran out of events is not a turn in
+                // flight. eve parks a session between turns, and its terminal
+                // event can be written after this read, which left `pending`
+                // true on a chat where nothing was happening.
+                // Same two signals as inside the loop. A card turn leaves the
+                // durable tail on the owner's own message, so `running` alone
+                // is true at the end of a replay eve has parked without writing
+                // its terminal event yet, and the row would stay up on a chat
+                // where nothing is happening.
+                let working = (drained || liveTurn.novelStart)
+                    && liveTurn.running
+                    && projection.pending
+                backgroundWorking = working
+                markWorking(bot.id, working)
             }
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot. A
             // recorded background error wins over the replay's generic line.
             if let recorded = sendErrors[bot.id], projection.failed || sendTasks[bot.id] != nil {
-                stickyThreadError = recorded
-                threadError = recorded
+                stickyThreadError = recorded.message
+                threadError = recorded.message
             } else {
                 if sendErrors[bot.id] != nil, !projection.failed {
                     sendErrors[bot.id] = nil
@@ -733,7 +794,8 @@ final class AppModel: ObservableObject {
                             current.id,
                             ["The last turn failed.", projection.failure?.reason]
                                 .compactMap { $0 }
-                                .joined(separator: " ")
+                                .joined(separator: " "),
+                            resendable: true
                         )
                     } else if ["turn.started", "turn.completed", "turn.cancelled"].contains(event.type),
                               !projection.failed {
@@ -915,7 +977,15 @@ final class AppModel: ObservableObject {
     /// still the best this button can do.
     func retryLastTurn() {
         guard !pending else { return }
-        guard let text = resendableLastMessage() else {
+        // Only a turn that never ran may be sent again. "The reply could not be
+        // read" and "The session pointer could not be saved" both leave the
+        // turn with the server, and resending those files a second copy of a
+        // turn that already answered.
+        let neverRan = SendFailure.mayResend(
+            failure: selectedBotId.flatMap { sendErrors[$0] },
+            replayEndedFailed: projection.failed
+        )
+        guard neverRan, let text = resendableLastMessage() else {
             Task { await reloadThread() }
             return
         }
@@ -1111,9 +1181,9 @@ final class AppModel: ObservableObject {
                     ? self.projection
                     : self.backgroundProjections[bot.id]
                 if live?.failed == true {
-                    self.recordSendError(bot.id, live?.failure?.message ?? "The turn failed.")
+                    self.recordSendError(bot.id, live?.failure?.message ?? "The turn failed.", resendable: true)
                 } else if !sawUserTurn {
-                    self.recordSendError(bot.id, "The turn did not start.")
+                    self.recordSendError(bot.id, "The turn did not start.", resendable: false)
                 }
                 self.finishSend(botId: bot.id, generation: generation)
                 // Not a full reload. Rebuilding the thread here reset the
@@ -1142,7 +1212,8 @@ final class AppModel: ObservableObject {
                     // the reload resync with what eve stored.
                     self.recordSendError(
                         bot.id,
-                        (error as? LocalizedError)?.errorDescription ?? "The reply could not be read."
+                        (error as? LocalizedError)?.errorDescription ?? "The reply could not be read.",
+                        resendable: false
                     )
                 } else {
                     // The composer was cleared when the turn was committed, so
@@ -1151,10 +1222,15 @@ final class AppModel: ObservableObject {
                     // kept.
                     if self.selectedBotId == bot.id {
                         self.restoreUnsentDraft(draftSnapshot, sentAttachments: sentAttachments)
+                    } else if !draftSnapshot.isEmpty || !sentAttachments.isEmpty {
+                        // The owner is in another chat, so there is no composer
+                        // to put this back into yet. Hold it for their return.
+                        self.unsentDrafts[bot.id] = (draftSnapshot, sentAttachments)
                     }
                     self.recordSendError(
                         bot.id,
-                        (error as? LocalizedError)?.errorDescription ?? "Send failed."
+                        (error as? LocalizedError)?.errorDescription ?? "Send failed.",
+                        resendable: false
                     )
                 }
                 self.finishSend(botId: bot.id, generation: generation)
@@ -1219,11 +1295,18 @@ final class AppModel: ObservableObject {
             }
         }
         // The failed send owned these files: they go back in front of
-        // anything attached since, without duplicating ids.
+        // anything attached since, without duplicating ids. The composer's cap
+        // still holds, or a restore on top of a full picker would send more
+        // files than the server takes.
         let current = Set(attachments.map(\.id))
         let missing = sentAttachments.filter { !current.contains($0.id) }
-        if !missing.isEmpty {
-            attachments = missing + attachments
+        guard !missing.isEmpty else { return }
+        let room = max(Attachments.maxFiles - attachments.count, 0)
+        if missing.count > room {
+            attachError = "You can attach up to \(Attachments.maxFiles) files, so \(missing.count - room) from the failed send did not come back."
+        }
+        if room > 0 {
+            attachments = Array(missing.prefix(room)) + attachments
         }
     }
 
@@ -1273,8 +1356,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func recordSendError(_ botId: String, _ message: String) {
-        sendErrors[botId] = message
+    private func recordSendError(_ botId: String, _ message: String, resendable: Bool) {
+        sendErrors[botId] = SendFailure(message: message, resendable: resendable)
         if selectedBotId == botId {
             stickyThreadError = message
             threadError = message
@@ -1378,7 +1461,7 @@ final class AppModel: ObservableObject {
             unsavedSessionBots.remove(botId)
             guard generation == (sendGenerations[botId] ?? 0) else { return }
             // A later success supersedes the pointer-failure notice.
-            if sendErrors[botId] == "The session pointer could not be saved." {
+            if sendErrors[botId]?.message == "The session pointer could not be saved." {
                 sendErrors[botId] = nil
             }
             if selectedBotId == botId, stickyThreadError == "The session pointer could not be saved." {
@@ -1389,7 +1472,7 @@ final class AppModel: ObservableObject {
             guard generation == (sendGenerations[botId] ?? 0) else { return }
             // The turn still runs; only the stored pointer failed. Surface it
             // so the next poll's revert is not a mystery.
-            recordSendError(botId, "The session pointer could not be saved.")
+            recordSendError(botId, "The session pointer could not be saved.", resendable: false)
             unsavedSessionBots.insert(botId)
         }
     }
@@ -1968,8 +2051,11 @@ final class AppModel: ObservableObject {
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
         if let err = sendErrors[id] {
-            stickyThreadError = err
-            threadError = err
+            stickyThreadError = err.message
+            threadError = err.message
+        }
+        if let unsent = unsentDrafts.removeValue(forKey: id) {
+            restoreUnsentDraft(unsent.text, sentAttachments: unsent.attachments)
         }
         startReload()
     }
@@ -2037,6 +2123,7 @@ final class AppModel: ObservableObject {
     func delete(botId: String) {
         transcriptCache[botId] = nil
         sendErrors[botId] = nil
+        unsentDrafts[botId] = nil
         let running = inflightSessions[botId]
         cancelSend(for: botId)
         if let running, !running.isEmpty {
