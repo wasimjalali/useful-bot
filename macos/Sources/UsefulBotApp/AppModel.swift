@@ -1179,6 +1179,7 @@ final class AppModel: ObservableObject {
         var proj = backgroundProjections[botId] ?? StreamProjection()
         proj.apply(event, live: true)
         backgroundProjections[botId] = proj
+        persistNewWidgets(proj.widgets, botId: botId)
         markWorking(botId, proj.pending)
     }
 
@@ -1287,7 +1288,13 @@ final class AppModel: ObservableObject {
 
     private func persistNewWidgets() {
         guard let botId = selectedBotId else { return }
-        for widget in projection.widgets where !persistedWidgets.contains(widget.id) {
+        persistNewWidgets(projection.widgets, botId: botId)
+    }
+
+    /// Also called for a bot in the background, so a drawing that lands while
+    /// the owner is in another chat is saved then, not at the next replay.
+    private func persistNewWidgets(_ widgets: [LiveWidget], botId: String) {
+        for widget in widgets where !persistedWidgets.contains(widget.id) {
             persistedWidgets.insert(widget.id)
             let client = client
             Task {
