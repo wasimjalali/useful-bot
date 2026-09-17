@@ -30,7 +30,7 @@ public struct InlineSpan: Equatable, Sendable {
 
 public enum ChatInline {
     // Order matters: the first alternative wins at a tie, mirroring the JS
-    // regex. Single underscores are deliberately absent — snake_case names
+    // regex. Single underscores are deliberately absent: snake_case names
     // (my_var_name) must not turn into italics.
     private static let spans = try! NSRegularExpression(
         pattern: "`([^`]+)`|\\*\\*([^*]+)\\*\\*|__([^_]+)__|\\*([^*]+)\\*|\\[([^\\]]+)\\]\\((https?://[^)\\s]+)\\)"

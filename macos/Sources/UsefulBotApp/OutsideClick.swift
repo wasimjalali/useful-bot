@@ -45,7 +45,7 @@ private struct OutsideClickDismissal: ViewModifier {
     /// The popover's own window frame. Hover alone cannot prove a click is
     /// inside: a popover that opens under a resting pointer gets no enter
     /// event until the pointer moves, and a fast click on a menu row can land
-    /// before tracking catches up — that is the model chip's menu closing on
+    /// before tracking catches up. That is the model chip's menu closing on
     /// the very row that was clicked. The frame covers what hover misses.
     @State private var cardFrame = CGRect.zero
     @State private var monitors: [Any] = []

@@ -429,7 +429,7 @@ struct ChatView: View {
                 // There is exactly one automatic scroll in this transcript, and
                 // it is the one below. Everything else stays at the newest turn
                 // because `defaultScrollAnchor(.bottom)` already holds the
-                // bottom as the content grows — opening a chat, switching bots,
+                // bottom as the content grows: opening a chat, switching bots,
                 // sending, streaming and the durable reload all keep their place
                 // without being told to. The explicit scrolls that used to sit
                 // here were not keeping the view there; they were what moved it,
@@ -949,7 +949,7 @@ private struct ScrollPinnedTracker: ViewModifier {
                 // durable reload after a turn replaces a short transcript with
                 // a tall one. Both left the viewport a long way from the bottom
                 // for one frame, the pin dropped, and every auto-scroll below
-                // is gated on the pin — which is how sending a message stranded
+                // is gated on the pin, which is how sending a message stranded
                 // the reader in the middle of the history.
                 guard dragging else { return }
                 pinned = new.distance <= Self.tolerance

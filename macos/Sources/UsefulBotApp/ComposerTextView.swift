@@ -138,8 +138,8 @@ struct ComposerTextView: NSViewRepresentable {
         ///
         /// Comparing the incoming text against the field was not enough. A
         /// SwiftUI rebuild carries whatever `draft` held when it was scheduled,
-        /// so during a fast multi-chunk insert — which is exactly how a
-        /// dictation app delivers an utterance — a rebuild could arrive with
+        /// so during a fast multi-chunk insert (which is exactly how a
+        /// dictation app delivers an utterance) a rebuild could arrive with
         /// text older than what the field already had, match neither the field
         /// nor what it had just pushed, and be written back over the newer content. The
         /// dictation app then re-inserted its full utterance on top of the

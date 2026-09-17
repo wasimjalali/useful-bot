@@ -1086,17 +1086,13 @@ public actor BackendClient {
     /// Turn ids the session already has. The next turn is the first with an id
     /// outside this set, which keeps a resend of identical text from arming the
     /// stream on the earlier turn.
-    ///
-    /// With `terminalOnly`, only turns whose completion, cancellation or
-    /// failure is in the replay count: a turn still running when the ids are
-    /// read must stay unknown to a follower, or its events are never applied.
-    public func historyTurnIds(sessionId: String, terminalOnly: Bool = false) async throws -> Set<String> {
+    public func historyTurnIds(sessionId: String) async throws -> Set<String> {
         var ids = Set<String>()
-        for try await event in stream(sessionId: sessionId, expectedSuffix: nil) {
+        // A snapshot of what is already recorded, so it stops at the durable
+        // tail. Waiting for the stream to go quiet instead put more than three
+        // seconds in front of every send into an existing chat.
+        for try await event in stream(sessionId: sessionId, expectedSuffix: nil, untilTail: true) {
             if let turnId = event.turnId, !turnId.isEmpty {
-                if terminalOnly, !["turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
-                    continue
-                }
                 ids.insert(turnId)
             }
         }
@@ -1109,10 +1105,20 @@ public actor BackendClient {
     /// Without it, the stream finishes after a short quiet period: history is
     /// replayed instantly by the local server, and the connection otherwise
     /// stays open forever.
+    ///
+    /// `startIndex` is eve's absolute event count: the read begins there, and
+    /// every yielded event carries its own `index`, so a caller that keeps
+    /// `index + 1` can resume later without replaying what it already has.
+    /// With `untilTail` the read is a catch-up: the server reports the last
+    /// durably recorded index and the stream finishes on reaching it, without
+    /// waiting out the quiet period. A server that does not report a tail
+    /// leaves the quiet period as the only end, as before.
     public nonisolated func stream(
         sessionId: String,
         expectedSuffix: String? = nil,
-        historyTurnIds: Set<String> = []
+        historyTurnIds: Set<String> = [],
+        startIndex: Int = 0,
+        untilTail: Bool = false
     ) -> AsyncThrowingStream<EveEvent, Error> {
         let base = self.base
         let session = self.session
@@ -1127,7 +1133,10 @@ public actor BackendClient {
                             url: base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/stream"),
                             resolvingAgainstBaseURL: false
                         )
-                        components?.queryItems = [URLQueryItem(name: "startIndex", value: "0")]
+                        components?.queryItems = [URLQueryItem(name: "startIndex", value: String(max(0, startIndex)))]
+                        if untilTail {
+                            components?.queryItems?.append(URLQueryItem(name: "includeTailIndex", value: "1"))
+                        }
                         guard let url = components?.url else { throw BackendError.decoding }
                         var request = URLRequest(url: url)
                         request.timeoutInterval = 180
@@ -1146,6 +1155,19 @@ public actor BackendClient {
                                 ? BackendError.unauthorized
                                 : BackendError.http(status)
                         }
+                        // Zero-based index of the last recorded event, or -1
+                        // for an empty stream. Nil when the server did not say.
+                        let tail = untilTail
+                            ? (response as? HTTPURLResponse)?
+                                .value(forHTTPHeaderField: "x-eve-stream-tail-index")
+                                .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                            : nil
+                        var nextIndex = max(0, startIndex)
+                        if let tail, tail < nextIndex {
+                            // Nothing recorded past the cursor.
+                            continuation.finish()
+                            return
+                        }
                         var armed = expectedSuffix == nil
                         if armed { armedBox.set() }
                         // In history mode a waiting marker ends every replayed
@@ -1157,7 +1179,20 @@ public actor BackendClient {
                         var sawTerminal = false
                         for try await line in bytes.lines {
                             activity.touch()
-                            guard let event = EveStream.parseLine(line) else { continue }
+                            // Counted before it is decoded: a line this build
+                            // cannot read is still one event in eve's count.
+                            guard EveStream.payload(of: line) != nil else { continue }
+                            let index = nextIndex
+                            nextIndex += 1
+                            let reachedTail = tail.map { index >= $0 } ?? false
+                            guard var event = EveStream.parseLine(line) else {
+                                if reachedTail {
+                                    continuation.finish()
+                                    return
+                                }
+                                continue
+                            }
+                            event.index = index
                             if !armed {
                                 if event.type == "message.received",
                                    let message = event.message,
@@ -1196,6 +1231,10 @@ public actor BackendClient {
                                     continuation.finish()
                                     return
                                 }
+                            }
+                            if reachedTail {
+                                continuation.finish()
+                                return
                             }
                         }
                         if expectedSuffix != nil, armed, !sawTerminal {
