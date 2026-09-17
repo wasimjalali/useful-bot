@@ -226,3 +226,44 @@ test("seeded Excalidraw is not a secret-bearing row", () => {
   assert.deepEqual(row?.toolsAllow, ["read_me", "create_view"]);
   assert.equal(JSON.stringify(readConnectionsStore()).includes("token"), false);
 });
+
+test("two cards for the same server end up as one row, not two", async () => {
+  // propose_connection refuses a URL that is already connected, and allows one
+  // pending card per thread. Two bots can still each hold a card for the same
+  // server, and the owner can authorize both. Two rows would mount the server
+  // twice, so the model would see every one of its tools twice and both copies
+  // would count against the tool cap.
+  const { storePath } = paths();
+  stubTools(2);
+  const first = seedCard();
+  await startConnectionConfirm(first.id, { callbackUrl: CALLBACK });
+  assert.equal(readConnectionsStore().connections.length, 1);
+
+  const second = seedCard({ connectionId: "example-2", name: "Example Two", threadId: "b1" });
+  await startConnectionConfirm(second.id, { callbackUrl: CALLBACK });
+
+  const rows = readConnectionsStore().connections;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "example");
+  // The card is pointed at the row it joined, so its confirm and any later
+  // OAuth completion read the same id.
+  const card = readProposal(second.id, storePath);
+  assert.equal(card && "connectionId" in card ? card.connectionId : null, "example");
+});
+
+test("a second authorize on the same card keeps its own row", async () => {
+  paths();
+  stubTools(2);
+  const card = seedCard();
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  updateProposal(card.id, (item) => {
+    if (item.kind === "connectServer") {
+      item.status = "pending";
+      item.phase = "proposed";
+    }
+  });
+  await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
+  const rows = readConnectionsStore().connections;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "example");
+});

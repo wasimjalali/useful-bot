@@ -1,5 +1,11 @@
 import { createHmac } from "node:crypto";
-import { appendAgentEvent, sweepOrphanThreads, type ThreadKind } from "../../shared/agent-store.ts";
+import {
+  appendAgentEvent,
+  referencedWidgetIds,
+  sweepOrphanThreads,
+  type ThreadKind,
+} from "../../shared/agent-store.ts";
+import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
@@ -888,6 +894,10 @@ export function sweepOrphanState(): string[] {
     const live = shell.bots.map((bot) => bot.id);
     const routines = sweepOrphanRoutines(live);
     sweepOrphanThreads(live);
+    // After the threads, so what is left naming a widget is all of it. A
+    // cleared chat used to take its events and leave the drawings behind, and
+    // nothing else ever removed one: the directory only grew.
+    sweepOrphanWidgets(referencedWidgetIds());
     return routines;
   } catch {
     // A locked or unreadable store is the next tick's problem, never this

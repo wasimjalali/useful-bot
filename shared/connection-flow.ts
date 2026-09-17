@@ -168,9 +168,24 @@ export async function startConnectionConfirm(
   authorizing.add(proposalId);
   try {
     const url = assertConnectionUrl(proposal.url);
-    if (findConnectionByUrl(url) && proposal.phase === "proposed") {
-      // An identical URL the owner already approved: still finish this card
-      // so the bot resumes, but do not insert a second row.
+    const existing = findConnectionByUrl(url);
+    if (existing && existing.id !== proposal.connectionId) {
+      // An identical URL the owner already approved, under another id: point
+      // this card at that row instead of minting a second one. Two rows mount
+      // the same server twice, so the model sees every one of its tools twice
+      // and they both count against the tool cap. propose_connection refuses a
+      // URL that is already connected, and one pending card per thread, but
+      // two bots can each hold a card for the same server and the owner can
+      // authorize both.
+      //
+      // The id moves on the card, not just in this function: writeSecret, the
+      // OAuth start and the entry below all read it from there, and
+      // completeConnectionOAuth refuses a card whose id no longer matches the
+      // pending OAuth state.
+      updateProposal(proposalId, (item) => {
+        if (item.kind === "connectServer" && item.status === "pending") item.connectionId = existing.id;
+      }, storePath);
+      proposal.connectionId = existing.id;
     }
     if (proposal.authKind === "oauth") {
       const { authorizeUrl, redirectHost } = await startMcpOAuth({
@@ -196,7 +211,7 @@ export async function startConnectionConfirm(
     }
     const toolsAllow = proposal.connectionId === "excalidraw" ? ["read_me", "create_view"] : null;
     const entry: ConnectionEntry = {
-      id: proposal.connectionId || allocateConnectionId(proposal.name),
+      id: proposal.connectionId || existing?.id || allocateConnectionId(proposal.name),
       kind: proposal.connectionKind,
       name: proposal.name,
       url,
