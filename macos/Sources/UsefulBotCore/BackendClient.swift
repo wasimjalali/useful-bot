@@ -1117,11 +1117,13 @@ public actor BackendClient {
         }
 
         /// `tail` is the zero-based index of the last recorded event, -1 for
-        /// an empty session, nil when unreported. A tail behind where the
-        /// read began means nothing was recorded past that point.
-        public static func nextIndex(tail: Int?, readFrom start: Int) -> Int? {
+        /// an empty session, nil when unreported. The server's tail is the
+        /// authority, never the index the read began at: a cursor that had
+        /// somehow run ahead of the record would start the send's stream past
+        /// its own turn, and the reply would never arm.
+        public static func nextIndex(tail: Int?) -> Int? {
             guard let tail else { return nil }
-            return max(tail + 1, max(0, start))
+            return max(0, tail + 1)
         }
     }
 
@@ -1141,7 +1143,7 @@ public actor BackendClient {
                 ids.insert(turnId)
             }
         }
-        let next = HistorySnapshot.nextIndex(tail: tail.value, readFrom: start)
+        let next = HistorySnapshot.nextIndex(tail: tail.value)
         if next == nil, start > 0 {
             // No tail, so the send has to read from zero, and for that the
             // turn ids have to cover the whole session, not just its end.
