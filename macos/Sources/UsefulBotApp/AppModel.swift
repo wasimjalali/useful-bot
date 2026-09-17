@@ -984,6 +984,7 @@ final class AppModel: ObservableObject {
     /// calendar day the dividers are labelled against.
     private var polledOpenProposalIds: Set<String> = []
     private var polledTranscriptDay: Date?
+    private var polledRoutinesDay: Date?
 
     /// Bots whose last session pointer this app could not save.
     private var unsavedSessionBots: Set<String> = []
@@ -2568,7 +2569,11 @@ final class AppModel: ObservableObject {
             let next = try await client.routines(botId: botId)
             // A slow response from the previous bot must not land on this one.
             guard botId == selectedBotId else { return }
-            if routines != next { routines = next }
+            // The run labels say Today and Yesterday, so a new day republishes
+            // an unchanged list.
+            let day = Calendar.current.startOfDay(for: Date())
+            if routines != next || day != polledRoutinesDay { routines = next }
+            polledRoutinesDay = day
             if routinesError != nil { routinesError = nil }
             if let openRoutineId, !next.contains(where: { $0.id == openRoutineId }) {
                 // The routine was deleted elsewhere; fall back to the list
