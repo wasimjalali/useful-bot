@@ -31,6 +31,9 @@ export function systemOperator(): Operator {
 }
 
 export function appVersion(): string {
+  // The built web server runs from a traced copy with no package.json beside
+  // it, so its launcher passes the version in.
+  if (process.env.UB_APP_VERSION) return process.env.UB_APP_VERSION;
   try {
     const here = dirname(fileURLToPath(import.meta.url));
     const raw = JSON.parse(readFileSync(join(here, "../package.json"), "utf8")) as { version?: string };

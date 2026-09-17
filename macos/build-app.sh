@@ -2,6 +2,37 @@
 # Build the native app using the sole approved brand/ asset package.
 set -eu
 cd "$(dirname "$0")"
+
+# The web service the app talks to. scripts/service.mjs serves this build while
+# the sources still hash to what it was built from and falls back to `next dev`
+# otherwise, so a release always leaves a fresh one behind. The standalone
+# server does not carry its own static files or public folder; Next leaves that
+# copy to us.
+#
+# Next does not recognise TypeScript 7 as `typescript` and runs `npm install`
+# for it on every build. Nothing gets installed, but npm rewrote the lockfile,
+# and the router refuses to start on a lockfile whose hash changed. The two
+# npm_config settings keep that install from writing either manifest.
+NODE=""
+for candidate in /usr/local/bin/node /opt/homebrew/bin/node; do
+  if [ -x "$candidate" ]; then NODE="$candidate"; break; fi
+done
+[ -n "$NODE" ] || { echo "node not found in /usr/local/bin or /opt/homebrew/bin" >&2; exit 1; }
+(
+  set -eu
+  cd ..
+  npm_config_package_lock=false npm_config_save=false "$NODE" node_modules/next/dist/bin/next build web
+  rm -rf web/.next/standalone/web/.next/static web/.next/standalone/web/public
+  cp -R web/.next/static web/.next/standalone/web/.next/static
+  cp -R web/public web/.next/standalone/web/public
+  # The build repoints this generated, tracked file from the dev types to the
+  # build types. Put back so a release build leaves the tree clean.
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git checkout -- web/next-env.d.ts
+  fi
+  "$NODE" scripts/web-mode.mjs --stamp
+)
+
 swift build -c release
 APP="dist/Useful Bot.app"
 BIN=".build/release/UsefulBotApp"
