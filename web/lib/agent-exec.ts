@@ -9,6 +9,7 @@ import {
   markDelivered,
   markFailed,
   ownsHandoffClaim,
+  readHandoff,
   releaseHandoffClaim,
   HANDOFF_ATTEMPTS_MAX,
   HANDOFF_DEPTH_MAX,
