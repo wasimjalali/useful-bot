@@ -550,6 +550,11 @@ final class AppModel: ObservableObject {
                 // swapped in once it holds as much, which keeps the chat from
                 // blanking for the length of the replay.
                 let baseline = projection.messages.count
+                // Its trailing bubble too: during a live turn the replay
+                // reaches the same message count while that bubble still holds
+                // only its first delta, and swapping there would run the reply
+                // backwards on screen until the rest arrived.
+                let baselineTail = projection.messages.last?.text.count ?? 0
                 var replay = StreamProjection()
                 var swapped = false
                 if baseline == 0, !projection.pending {
@@ -570,7 +575,10 @@ final class AppModel: ObservableObject {
                         projection.apply(event, live: atLiveTail)
                     } else {
                         replay.apply(event, live: atLiveTail)
-                        if replay.messages.count >= baseline {
+                        let caughtUp = replay.messages.count > baseline
+                            || (replay.messages.count == baseline
+                                && (replay.messages.last?.text.count ?? 0) >= baselineTail)
+                        if caughtUp {
                             projection = replay
                             swapped = true
                         }

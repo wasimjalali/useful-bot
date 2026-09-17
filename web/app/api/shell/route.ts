@@ -183,7 +183,12 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
 }
 
 /** Note that the proposal was answered, on the thread that raised it. */
-function noteProposal(claimed: Proposal, action: ShellAction | undefined, queued: number): void {
+function noteProposal(
+  claimed: Proposal,
+  action: ShellAction | undefined,
+  queued: number,
+  briefFailed = false,
+): void {
   const fallback = action && "botId" in action && typeof action.botId === "string"
     ? threadIdFor(action.botId)
     : "";
@@ -191,9 +196,12 @@ function noteProposal(claimed: Proposal, action: ShellAction | undefined, queued
   if (!threadId) return;
   const label = claimed.status === "confirmed" ? "Confirmed" : "Dismissed";
   const extra = queued > 0 ? ` and queued ${queued} handoff${queued === 1 ? "" : "s"}` : "";
+  // The teammate exists but never got the brief the card promised it, and the
+  // card is spent, so the only way it reaches them now is a fresh message.
+  const tail = briefFailed ? " The first brief was not handed over; send it again." : "";
   appendAgentEvent(threadId, {
     kind: "note",
-    text: `${label} ${claimed.kind}${extra}.`,
+    text: `${label} ${claimed.kind}${extra}.${tail}`,
     threadKind: claimed.kind === "fanout" && claimed.groupId ? "group" : "bot",
   });
 }
@@ -408,6 +416,7 @@ export async function PUT(request: Request) {
     // The card carried a first brief, so the owner approved that work too.
     // Without this the brief was only ever shown on the card: the new bot was
     // created idle and the brief stayed in the proposer's own chat.
+    let briefFailed = false;
     if (claimed?.kind === "createBot" && claimed.status === "confirmed") {
       try {
         queued += deliverFirstBrief({
@@ -417,7 +426,10 @@ export async function PUT(request: Request) {
           bots: next.bots,
         });
       } catch {
-        /* the bot exists; the brief is the proposer's to resend */
+        // The bot exists and the card is spent, so this cannot be retried
+        // here. Say so on the thread rather than leaving a teammate that
+        // looks briefed and is not.
+        briefFailed = true;
       }
     }
     // `appendAgentEvent` upserts, so noting a confirmed delete on the deleted
@@ -428,7 +440,7 @@ export async function PUT(request: Request) {
       && (claimed?.threadId || threadIdFor(action.botId)) === threadIdFor(action.botId);
     if (claimed && !notesDeletedThread) {
       try {
-        noteProposal(claimed, body.action, queued);
+        noteProposal(claimed, body.action, queued, briefFailed);
       } catch {
         /* the transcript note is best effort */
       }
