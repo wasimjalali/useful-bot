@@ -472,9 +472,13 @@ final class AppModel: ObservableObject {
         if let stored = backgroundProjections[botId] {
             projection = stored
             pending = sendTasks[botId] != nil
-            backgroundWorking = stored.pending && sendTasks[botId] == nil
+            // The stash is a snapshot from when this chat was left, and a
+            // turn nobody here sent may have ended since. Only a send this
+            // app still holds is known to be running; for anything else the
+            // reload below reads the session and decides.
+            backgroundWorking = false
             activity = stored.activity
-            markWorking(botId, stored.pending)
+            markWorking(botId, sendTasks[botId] != nil)
             rebuildTranscript()
         } else if let cached = transcriptCache[botId] {
             // A chat already opened this session comes back with its rows on
@@ -575,6 +579,9 @@ final class AppModel: ObservableObject {
             // True once the history burst has gone quiet. Out here with
             // `liveTurn` because the working row below is decided on both.
             var drained = false
+            // Where the newest event sat against the end of the recorded
+            // history, when the server says.
+            var historyRemaining: Int?
             if !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
@@ -608,6 +615,7 @@ final class AppModel: ObservableObject {
                 let baselineTail = projection.messages.last?.text.count ?? 0
                 var replay = StreamProjection()
                 var swapped = false
+                historyRemaining = nil
                 // This replay starts at zero and ends holding the whole
                 // session, so the follower's cursor is rebuilt with it.
                 followCursor = (sessionId, 0)
@@ -621,8 +629,9 @@ final class AppModel: ObservableObject {
                     backgroundWorking = false
                     swapped = true
                 }
-                for try await event in client.stream(sessionId: sessionId) {
+                for try await event in client.stream(sessionId: sessionId, markHistory: true) {
                     guard generation == loadGeneration else { return }
+                    historyRemaining = event.historyRemaining
                     // A send started while this replay was running. It owns the
                     // projection from that moment, and the row it painted must
                     // not be replaced by a replay that predates it.
@@ -667,7 +676,11 @@ final class AppModel: ObservableObject {
                     // stretch between its last reply and its terminal event,
                     // and that is what flashed a working row on a settled chat.
                     if swapped, atLiveTail {
-                        let working = (drained || liveTurn.novelStart)
+                        let working = ReplayGate.mayShowWorking(
+                            historyRemaining: historyRemaining,
+                            drained: drained,
+                            novelStart: liveTurn.novelStart
+                        )
                             && liveTurn.running
                             && projection.pending
                         if backgroundWorking != working { backgroundWorking = working }
@@ -700,7 +713,11 @@ final class AppModel: ObservableObject {
                 // is true at the end of a replay eve has parked without writing
                 // its terminal event yet, and the row would stay up on a chat
                 // where nothing is happening.
-                let working = (drained || liveTurn.novelStart)
+                let working = ReplayGate.mayShowWorking(
+                    historyRemaining: historyRemaining,
+                    drained: drained,
+                    novelStart: liveTurn.novelStart
+                )
                     && liveTurn.running
                     && projection.pending
                 backgroundWorking = working
@@ -2075,9 +2092,13 @@ final class AppModel: ObservableObject {
         if let stored = backgroundProjections[id] {
             projection = stored
             pending = sendTasks[id] != nil
-            backgroundWorking = stored.pending && sendTasks[id] == nil
+            // The stash is a snapshot from when this chat was left, and a
+            // turn nobody here sent may have ended since. Only a send this
+            // app still holds is known to be running; for anything else the
+            // reload below reads the session and decides.
+            backgroundWorking = false
             activity = stored.activity
-            markWorking(id, stored.pending)
+            markWorking(id, sendTasks[id] != nil)
             rebuildTranscript()
         } else if let cached = transcriptCache[id] {
             transcript = cached.rows

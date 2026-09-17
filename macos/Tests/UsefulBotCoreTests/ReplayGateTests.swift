@@ -194,4 +194,17 @@ import Testing
         #expect(live.running)
         #expect(!live.novelStart)
     }
+
+    @Test func noWorkingRowWhileTheReadIsStillInsideTheHistory() {
+        // A chat whose rows live in the session: every id is novel, and that
+        // alone used to read as a turn happening now.
+        #expect(!ReplayGate.mayShowWorking(historyRemaining: 1200, drained: false, novelStart: true))
+        #expect(!ReplayGate.mayShowWorking(historyRemaining: 1, drained: true, novelStart: true))
+        // The last recorded event, and anything after it, is now.
+        #expect(ReplayGate.mayShowWorking(historyRemaining: 0, drained: false, novelStart: false))
+        #expect(ReplayGate.mayShowWorking(historyRemaining: -3, drained: false, novelStart: false))
+        // A server that does not say keeps the older signals.
+        #expect(ReplayGate.mayShowWorking(historyRemaining: nil, drained: true, novelStart: false))
+        #expect(!ReplayGate.mayShowWorking(historyRemaining: nil, drained: false, novelStart: false))
+    }
 }
