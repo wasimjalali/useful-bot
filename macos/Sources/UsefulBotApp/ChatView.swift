@@ -114,12 +114,16 @@ struct ChatView: View {
     @ViewBuilder
     private func askColumn(_ bot: ShellBot) -> some View {
         let hasAsk = !model.approvals.isEmpty
+            || !model.openQuestions.isEmpty
             || !model.openProposals.isEmpty
             || model.approvalError != nil
         if hasAsk {
             VStack(spacing: 8) {
                 ForEach(model.approvals) { item in
                     approvalAsk(item)
+                }
+                ForEach(model.openQuestions) { question in
+                    questionAsk(question, bot: bot)
                 }
                 if let store = model.store {
                     ForEach(model.openProposals) { proposal in
@@ -204,6 +208,90 @@ struct ChatView: View {
         .popShadow()
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .opacity(busy ? 0.7 : 1)
+    }
+
+    /// A question the bot asked with `ask_question`. The turn has ended and
+    /// the bot is waiting, so without this card the chat just goes quiet.
+    private func questionAsk(_ question: OwnerQuestion, bot: ShellBot) -> some View {
+        let canAnswer = !model.pending
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "questionmark.bubble")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("\(bot.name) asks")
+                    .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
+                    .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Theme.C.inkMuted)
+            Text(question.prompt)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.C.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if !question.options.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(question.options) { option in
+                        questionOption(option, enabled: canAnswer) {
+                            model.answerQuestion(question, option: option)
+                        }
+                    }
+                }
+            }
+            // A question with no options can only be answered in words, even
+            // if the bot forgot to say freeform is allowed.
+            if question.allowFreeform || question.options.isEmpty {
+                Text(question.options.isEmpty ? "Reply below to answer." : "Or reply below in your own words.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkFaint)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+                .strokeBorder(Theme.C.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        // Flatten first: a shadow on an open stack is drawn under every row
+        // inside it, which muddies the options.
+        .compositingGroup()
+        .popShadow()
+        .accessibilityIdentifier("question-card")
+    }
+
+    private func questionOption(
+        _ option: OwnerQuestion.Option,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.label)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.C.ink)
+                if !option.detail.isEmpty {
+                    Text(option.detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+            }
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Theme.C.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.6)
+        .accessibilityIdentifier("question-option")
     }
 
     // MARK: - Header

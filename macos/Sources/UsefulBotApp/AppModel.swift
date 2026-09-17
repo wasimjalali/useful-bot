@@ -53,6 +53,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var approvalError: String?
     /// Web results the live turn surfaced, shown as chips under the transcript.
     @Published private(set) var searchHits: [SearchChip] = []
+    /// Questions the open chat's bot is waiting on the owner to answer.
+    @Published private(set) var openQuestions: [OwnerQuestion] = []
     /// What the live turn is doing, shown in the working row until the reply
     /// takes its place.
     @Published private(set) var activity: TurnActivity = .thinking
@@ -672,7 +674,10 @@ final class AppModel: ObservableObject {
                         handedOff = true
                         break
                     }
-                    if let turnId = event.turnId, !turnId.isEmpty {
+                    // An answer to a question carries the asking turn's id but
+                    // arrives after that turn completed. Skipping it with the
+                    // rest of the turn left an answered question on screen.
+                    if let turnId = event.turnId, !turnId.isEmpty, event.type != "input.resolved" {
                         if knownTurnIds.contains(turnId) { continue }
                         if ["turn.completed", "turn.cancelled", "turn.failed"].contains(event.type) {
                             knownTurnIds.insert(turnId)
@@ -746,7 +751,22 @@ final class AppModel: ObservableObject {
                 fresh.bots[index].lastPreview = local.lastPreview
                 fresh.bots[index].lastAt = local.lastAt
             }
+            // A chat whose session was cleared or replaced somewhere else (the
+            // web UI, a bot, a routine) has nothing in common with what this
+            // app holds for it. Without this the old messages stayed up until
+            // the owner switched chats and back.
+            let moved = movedSessions(from: store, to: fresh)
+            for botId in moved {
+                backgroundProjections[botId] = nil
+                transcriptCache[botId] = nil
+            }
             store = fresh
+            if let current = polledBotId, moved.contains(current), !pending {
+                resetThread()
+                rebuildTranscript()
+                startReload()
+                return
+            }
             if !pending {
                 // A poll can be the first to see a server-side delete; repair
                 // the selection the same way an action echo does. A send on
@@ -780,6 +800,28 @@ final class AppModel: ObservableObject {
             pollAuthFailures = 0
             /* keep the last view; the next poll retries */
         }
+    }
+
+    /// Bots whose last session pointer this app could not save.
+    private var unsavedSessionBots: Set<String> = []
+
+    /// Bots whose session pointer differs between two copies of the store, not
+    /// counting any this app is sending on: a send writes its own pointer and
+    /// the poll must not mistake that for a change made elsewhere.
+    private func movedSessions(from old: ShellStore?, to fresh: ShellStore) -> Set<String> {
+        guard let old else { return [] }
+        var moved: Set<String> = []
+        for bot in fresh.bots {
+            guard let before = old.bots.first(where: { $0.id == bot.id }) else { continue }
+            if (before.sessionId ?? "") == (bot.sessionId ?? "") { continue }
+            if sendTasks[bot.id] != nil || inflightSessions[bot.id] != nil { continue }
+            // The pointer this app holds never reached the server, so the
+            // server's older one is a failed save, not a change made elsewhere.
+            // The reply on screen must survive that.
+            if unsavedSessionBots.remove(bot.id) != nil { continue }
+            moved.insert(bot.id)
+        }
+        return moved
     }
 
     private func pumpHandoffs() {
@@ -1257,6 +1299,7 @@ final class AppModel: ObservableObject {
         let generation = sendGenerations[botId] ?? 0
         do {
             try await client.touchChat(botId: botId, preview: preview, sessionId: sessionId)
+            unsavedSessionBots.remove(botId)
             guard generation == (sendGenerations[botId] ?? 0) else { return }
             // A later success supersedes the pointer-failure notice.
             if sendErrors[botId] == "The session pointer could not be saved." {
@@ -1271,6 +1314,7 @@ final class AppModel: ObservableObject {
             // The turn still runs; only the stored pointer failed. Surface it
             // so the next poll's revert is not a mystery.
             recordSendError(botId, "The session pointer could not be saved.")
+            unsavedSessionBots.insert(botId)
         }
     }
 
@@ -1354,6 +1398,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func publishQuestions() {
+        if openQuestions != projection.questions { openQuestions = projection.questions }
+    }
+
+    /// Answer a question by one of its options. It goes out as an ordinary
+    /// owner message, so the answer reads in the chat like anything else the
+    /// owner said; eve settles the open question with the follow-up.
+    func answerQuestion(_ question: OwnerQuestion, option: OwnerQuestion.Option) {
+        guard openQuestions.contains(where: { $0.id == question.id }) else { return }
+        send(option.label)
+    }
+
     private func publishTranscript(force: Bool = false) {
         let now = Date()
         let since = now.timeIntervalSince(lastTranscriptPublish)
@@ -1399,12 +1455,14 @@ final class AppModel: ObservableObject {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             searchHits = projection.searchHits
+            publishQuestions()
             publishActivity()
             return
         }
         transcript = rows
         transcriptBlocks = TranscriptBlocks.build(rows: rows, selectedBotId: selectedBotId)
         searchHits = projection.searchHits
+        publishQuestions()
         publishActivity()
         // An empty result only replaces the cache once the load has finished
         // and said so; before that it is the blank the switch just cleared.
@@ -2033,6 +2091,7 @@ final class AppModel: ObservableObject {
         transcript = []
         transcriptBlocks = []
         searchHits = []
+        openQuestions = []
         activity = .thinking
         memoryNotes = nil
         memoryError = nil
