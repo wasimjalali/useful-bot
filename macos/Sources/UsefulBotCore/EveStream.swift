@@ -407,6 +407,11 @@ public struct StreamProjection: Equatable, Sendable {
         searchHits = []
         activity = .thinking
         currentAssistantId = nil
+        // The owner's message is the answer to anything the bot had asked.
+        // eve confirms that with `input.resolved`, but it files it ahead of
+        // this turn's user message, where the send's reader never looks, so
+        // the card stayed up, greyed out, until the reply finished.
+        questions = []
     }
 
     /// Dedupe identity with a bounded FIFO: the oldest remembered id is

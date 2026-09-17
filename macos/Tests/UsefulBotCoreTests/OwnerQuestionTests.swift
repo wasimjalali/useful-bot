@@ -39,6 +39,13 @@ import Testing
         #expect(projection.questions.isEmpty)
     }
 
+    @Test func theOwnersNextTurnClosesItAtOnce() throws {
+        var projection = StreamProjection()
+        projection.apply(try line(asked))
+        projection.beginTurn()
+        #expect(projection.questions.isEmpty)
+    }
+
     @Test func approvalsAndBrokenRequestsAreNotQuestions() throws {
         let data = try JSONDecoder().decode(JSONValue.self, from: Data("""
         {"requests":[
