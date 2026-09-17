@@ -192,4 +192,24 @@ import Testing
         projection.apply(EveEvent(type: "message.received", id: "same", message: "hi"))
         #expect(projection.messages.filter { $0.role == .user }.count == 1)
     }
+
+    /// Round 2 read the composer cap as a server-side clip and suspected the
+    /// optimistic row folded only by luck. Nothing truncates a stored turn, so
+    /// a message at the cap comes back whole and folds on exact equality.
+    @Test func aTurnAtTheComposerCapFoldsIntoItsEcho() {
+        let typed = String(repeating: "a", count: Attachments.messageMax)
+        var projection = StreamProjection()
+        projection.beginTurn()
+        // `live: true` matches the send path, which stamps the optimistic row
+        // from the client clock.
+        projection.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: typed
+        ), live: true)
+        projection.apply(EveEvent(type: "message.received", id: "evt-user", message: typed), live: true)
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages[0].id == "evt-user")
+        #expect(projection.messages[0].text == typed)
+    }
 }

@@ -1163,9 +1163,13 @@ public actor BackendClient {
                                    let message = event.message,
                                    let suffix = expectedSuffix {
                                     let stripped = EveStream.stripThreadPrefix(message)
-                                    // The server clips the stored turn, so the
-                                    // echo can be a prefix of the composed
-                                    // message once attachments are embedded.
+                                    // Nothing truncates a stored turn today, so
+                                    // the equality above is what arms the
+                                    // stream. The prefix arm is tolerance only:
+                                    // a composed message carrying an attached
+                                    // file body runs far past the composer cap,
+                                    // and a server that started clipping there
+                                    // would otherwise leave the send unarmed.
                                     let expected = String(suffix.prefix(Attachments.messageMax))
                                     let matches = stripped == suffix || stripped.hasPrefix(expected)
                                     if matches,
