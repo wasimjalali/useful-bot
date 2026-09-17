@@ -126,7 +126,18 @@ export default defineTool({
           : "The teammate runs on its own. Their reply will land in both chats.",
       };
     }
-    const done = await waitForHandoff(record.id, budget);
+    // eve aborts this signal when the turn is cancelled. Without it a Stop
+    // left the poll running for the rest of the budget, three minutes by
+    // default, on a turn nobody is waiting for any more.
+    const done = await waitForHandoff(record.id, budget, undefined, undefined, ctx.abortSignal);
+    if (ctx.abortSignal?.aborted && done?.status !== "delivered" && done?.status !== "failed") {
+      return {
+        status: "queued",
+        handoffId: record.id,
+        to: { id: target.id, name: target.name },
+        note: "This turn was stopped. The teammate keeps working and their reply will land in both chats.",
+      };
+    }
     if (done?.status === "delivered") {
       if (!done.response) {
         return {

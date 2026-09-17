@@ -383,15 +383,35 @@ export async function waitForHandoff(
   timeoutMs: number,
   dir = handoffDir(),
   intervalMs = 250,
+  signal?: AbortSignal,
 ): Promise<HandoffRecord | null> {
   const budget = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0;
   const step = Number.isFinite(intervalMs) ? Math.max(10, intervalMs) : 250;
   const start = Date.now();
   let latest = readHandoff(id, dir);
   while (Date.now() - start < budget) {
+    // A cancelled turn has nobody left to hand the reply to. The pump still
+    // delivers it to both transcripts; only this poll stops.
+    if (signal?.aborted) return latest;
     latest = readHandoff(id, dir);
     if (!latest || latest.status === "delivered" || latest.status === "failed") return latest;
-    await new Promise((resolve) => setTimeout(resolve, step));
+    await sleep(step, signal);
   }
   return readHandoff(id, dir);
+}
+
+/** setTimeout that gives up early when the turn is cancelled. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
