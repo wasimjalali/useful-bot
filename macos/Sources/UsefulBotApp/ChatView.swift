@@ -240,7 +240,9 @@ struct ChatView: View {
                     }
                 }
             }
-            if question.allowFreeform {
+            // A question with no options can only be answered in words, even
+            // if the bot forgot to say freeform is allowed.
+            if question.allowFreeform || question.options.isEmpty {
                 Text(question.options.isEmpty ? "Reply below to answer." : "Or reply below in your own words.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkFaint)
