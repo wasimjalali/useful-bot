@@ -915,12 +915,24 @@ final class AppModel: ObservableObject {
     /// still the best this button can do.
     func retryLastTurn() {
         guard !pending else { return }
-        guard let last = projection.messages.last(where: { $0.role == .user }),
-              !last.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard let text = resendableLastMessage() else {
             Task { await reloadThread() }
             return
         }
-        send(last.text, retrying: true)
+        send(text, retrying: true)
+    }
+
+    /// The owner's last message, when sending it again is the right thing to
+    /// do. A turn the pump sent is not the owner's to repeat, and a turn that
+    /// carried pictures cannot be repeated at all: the composer gave those
+    /// files up with the send, and the row that is left names them in text
+    /// that would go out as literal `[file: ...]` lines.
+    private func resendableLastMessage() -> String? {
+        guard let last = projection.messages.last(where: { $0.role == .user }) else { return nil }
+        let text = last.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !EveStream.isHandoffEnvelope(last.text) else { return nil }
+        guard !Attachments.namesEchoedFile(last.text) else { return nil }
+        return text
     }
 
     /// `retrying` resends a message the composer does not hold, so it must not

@@ -169,7 +169,7 @@ public struct TurnFailure: Equatable, Sendable {
         // The turn never reached a model, or reached one that answered with
         // nothing. Neither is the app's to fix, and both left the owner with a
         // bare "the turn failed" and no idea where to look.
-        if haystack.contains("upstream_protocol_error") || haystack.contains("upstream") {
+        if haystack.contains("upstream_protocol_error") || haystack.contains("upstream_timeout") {
             return "The model provider did not answer. Check its status or your usage limit, then send again."
         }
         if haystack.contains("empty-model-response") || haystack.contains("did not return a response") {
