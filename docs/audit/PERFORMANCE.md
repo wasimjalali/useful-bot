@@ -44,17 +44,31 @@ workspace credits once and was rerun).
 - **Problem.** `scripts/service.mjs` started the installed app's web service with `next dev`:
   a compiler, file watchers and a postcss worker on the request path of every poll and stream,
   and the largest process in the stack.
-- **Fix.** `npm run build:app` now runs `next build web` and copies `static` and `public` into the
-  standalone output (Next leaves that to the caller). `scripts/web-mode.mjs` decides how the
-  service runs: the built server while `web/.next/BUILD_ID` is newer than every source a route
-  can import (`web/`, `shared/`, `agent/`, `router/src`), otherwise `next dev`. The launcher logs
-  one line saying which and why. `UB_WEB_MODE=dev` forces the dev server.
+- **Fix.** `npm run build:app` now runs `next build web`, copies `static` and `public` into the
+  standalone output (Next leaves that to the caller) and stamps the build with a SHA-256 of its
+  sources. `scripts/web-mode.mjs` decides how the service runs: the built server while the
+  sources (`web/`, `shared/`, `agent/`, `router/src`, `brand/source`, `package.json`) still hash
+  to that stamp, otherwise `next dev`. The launcher logs one line saying which and why.
+  `UB_WEB_MODE=dev` forces the dev server. The check costs 0.17 s at launch.
 - **Why a fallback and not a hard failure.** This checkout is both where the code is edited and
   what the installed app runs. A stale build would serve old routes against new shared code, and
   a launcher that refused to start would take chat down for an edit. The dev server is always
   correct, just heavier, so an edit costs memory until the next `build:app`, never correctness.
 - **The lockfile is not a freshness input.** eve restamps `package-lock.json` on its first boot,
   which would mark every build stale the moment the services came up.
+- **The trap we hit.** Next does not recognise TypeScript 7 as `typescript` and runs
+  `npm install typescript` on every build. It installs nothing, but npm rewrote
+  `package-lock.json`, and the router refuses a lockfile whose hash changed: 42 tests failed with
+  "package-lock hash mismatch" and the router would have refused to boot after the next
+  `build:app`. The build now runs with `npm_config_package_lock=false npm_config_save=false`.
+  `NEXT_IGNORE_INCORRECT_LOCKFILE` does not cover this path.
+- **Found in review (Muse Spark).** The first version compared modified times and missed
+  `brand/source` (the avatar palette `shared/bot-face.ts` imports) and `package.json`; a restored
+  backup with old times would have served a stale build. Hence contents, not times. Also from
+  that review: node is looked up in both supported install paths, a freshness check that throws
+  falls back to the dev server, and `/api/status` gets the app version from the launcher because
+  the traced copy has no `package.json` beside it. One finding was rejected: the supervisor does
+  recognise the renamed `next-server`, through its `service.mjs` parent, as it did for `next dev`.
 - **eve stays on `eve dev`, on purpose.** Measured at 20 MB and 0% CPU idle, so there is nothing
   to win, and `eve start` changes the auth policy, port defaults and build output the rest of the
   stack depends on.

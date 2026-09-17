@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
@@ -218,7 +218,14 @@ async function main() {
     process.stderr.write(`${JSON.stringify({ service: "web", mode: launch.mode, reason: launch.reason })}\n`);
     if (launch.mode === "production") {
       // The standalone server reads its address from the environment.
-      run([launch.server], { ...env, NODE_ENV: "production", HOSTNAME: "127.0.0.1", PORT: "4320" });
+      const { version } = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+      run([launch.server], {
+        ...env,
+        NODE_ENV: "production",
+        HOSTNAME: "127.0.0.1",
+        PORT: "4320",
+        UB_APP_VERSION: version,
+      });
       return;
     }
     run([
