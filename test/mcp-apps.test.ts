@@ -48,3 +48,33 @@ test("the host page pins esm.sh even when the app lists no CSP domains", () => {
   assert.equal(widgetPayloadTooLarge({ elements: "x" }, null), false);
   assert.equal(widgetPayloadTooLarge({ elements: "x".repeat(WIDGET_JSON_MAX + 1) }, null), true);
 });
+
+test("the host page carries the app allowlist, since a srcdoc frame inherits it", () => {
+  const record: WidgetRecord = {
+    id: "callid9012",
+    connectionId: "excalidraw",
+    toolName: "excalidraw__create_view",
+    resourceUri: "ui://excalidraw/mcp-app.html",
+    arguments: { elements: "[]" },
+    result: null,
+    createdAt: new Date().toISOString(),
+  };
+  const html = renderWidgetHost(record, "<html><head></head><body>app</body></html>", []);
+  const hostPolicy = html.slice(0, html.indexOf("<style>"));
+  assert.match(hostPolicy, /script-src 'unsafe-inline' 'unsafe-eval' https:\/\/esm\.sh/);
+  assert.equal(hostPolicy.includes("connect-src 'none'"), false);
+});
+
+test("the handshake names the tool with an input schema, which the app validates", () => {
+  const record: WidgetRecord = {
+    id: "callid3456",
+    connectionId: "excalidraw",
+    toolName: "excalidraw__create_view",
+    resourceUri: "ui://excalidraw/mcp-app.html",
+    arguments: { elements: "[]" },
+    result: null,
+    createdAt: new Date().toISOString(),
+  };
+  const html = renderWidgetHost(record, "<html><body>app</body></html>", []);
+  assert.match(html, /toolInfo: \{ tool: \{ name: payload\.toolName, inputSchema: \{ type: "object" \} \} \}/);
+});

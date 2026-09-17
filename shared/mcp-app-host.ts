@@ -38,6 +38,11 @@ function cspFor(domains: string[]): string {
 /**
  * Host page for an MCP App. The widget HTML is srcdoc'd into a sandboxed
  * iframe. The page answers ui/initialize and pushes the stored tool input.
+ *
+ * A srcdoc frame inherits this page's policy on top of its own, so the host
+ * carries the same allowlist as the app. With a stricter host policy every
+ * script the app loads is blocked and the card stays blank. The host itself
+ * loads nothing: its one script is inline.
  */
 function withCsp(html: string, domains: string[]): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${cspFor(domains)}">`;
@@ -57,9 +62,9 @@ export function renderWidgetHost(record: WidgetRecord, appHtml: string, cspDomai
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="${cspFor(cspDomains)}">
 <style>
-  html, body { margin: 0; background: #fff; }
+  html, body { margin: 0; background: #fff; overflow: hidden; }
   iframe { display: block; width: 100%; height: 480px; border: 0; background: #fff; }
 </style>
 </head>
@@ -89,7 +94,7 @@ window.addEventListener("message", (event) => {
           displayMode: "inline",
           platform: "desktop",
           containerDimensions: { width: 720, height: 480 },
-          toolInfo: { tool: { name: payload.toolName } }
+          toolInfo: { tool: { name: payload.toolName, inputSchema: { type: "object" } } }
         }
       }
     });
