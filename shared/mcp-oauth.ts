@@ -303,6 +303,31 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
   };
 }
 
+/**
+ * Forget one pending sign-in without exchanging its code.
+ *
+ * `completeMcpOAuth` is otherwise the only thing that drops a row, so a
+ * callback that settles without exchanging would leave the verifier, the
+ * token endpoint and the client secret on disk with nothing left to reap
+ * them: a retry with the same state is refused before it reaches here.
+ */
+export function dropOauthPending(state: string, path = oauthPendingPath()): void {
+  const rows = readPending(path);
+  if (!rows.some((row) => row.state === state)) return;
+  writePending(rows.filter((row) => row.state !== state), path);
+}
+
+/**
+ * Forget every pending sign-in for one card. `startMcpOAuth` filters the same
+ * way before it writes, so a card that settles without ever reaching the
+ * callback leaves nothing behind.
+ */
+export function dropOauthPendingForProposal(proposalId: string, path = oauthPendingPath()): void {
+  const rows = readPending(path);
+  if (!rows.some((row) => row.proposalId === proposalId)) return;
+  writePending(rows.filter((row) => row.proposalId !== proposalId), path);
+}
+
 export function clearOauthPending(path = oauthPendingPath()): void {
   try { unlinkSync(path); } catch { /* ignore */ }
 }

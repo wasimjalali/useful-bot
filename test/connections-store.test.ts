@@ -99,3 +99,47 @@ test("Keychain values round-trip and never land in the registry JSON", () => {
     setKeychainDriver(null);
   }
 });
+
+test("upsertConnection says whether the caller won the row", () => {
+  // The caller writes a Keychain item for the row it won, with
+  // `security add-generic-password -U`, so a caller that guesses wrong
+  // replaces the credential the winning row is already using. Neither the URL
+  // nor the id can carry the answer: a row found by URL has the caller's URL
+  // by definition, and a winner's id is reassigned when the one it asked for
+  // turns out to be a different server's.
+  const path = tmpPath();
+  const base = {
+    kind: "mcp" as const,
+    name: "Example",
+    description: "An example MCP server",
+    authKind: "none" as const,
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(0).toISOString(),
+  };
+
+  const first = upsertConnection({ ...base, id: "example", url: "https://mcp.example.com/mcp" }, path);
+  assert.equal(first.won, true);
+  assert.equal(first.entry.id, "example");
+
+  // Same row again: still this caller's.
+  const again = upsertConnection({ ...base, id: "example", url: "https://mcp.example.com/mcp", description: "Edited" }, path);
+  assert.equal(again.won, true);
+  assert.equal(again.entry.description, "Edited");
+
+  // Another id, same URL: the row that is there wins, untouched.
+  const loser = upsertConnection({ ...base, id: "example-late", url: "https://mcp.example.com/mcp", description: "Not mine" }, path);
+  assert.equal(loser.won, false);
+  assert.equal(loser.entry.id, "example");
+  assert.equal(loser.entry.description, "Edited");
+  assert.equal(readConnectionsStore(path).connections.length, 1);
+
+  // Same id, another URL: a second server, so a free id rather than a row
+  // repointed out from under the first one.
+  const other = upsertConnection({ ...base, id: "example", url: "https://mcp.other.example/mcp" }, path);
+  assert.equal(other.won, true);
+  assert.equal(other.entry.id, "example-2");
+  const rows = readConnectionsStore(path).connections;
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((row) => row.id === "example")?.url, "https://mcp.example.com/mcp");
+});

@@ -532,14 +532,29 @@ export function listThreadEvents(botId: string, path = agentStorePath()): AgentE
 }
 
 /**
- * Every widget id a stored thread event still names, across every thread.
+ * Every widget id a stored thread event still names, across every thread, or
+ * null when the store cannot be read.
  *
  * The sweep needs the whole set, not one bot's: a record is an orphan only
- * when nothing anywhere points at it.
+ * when nothing anywhere points at it. It also needs to know the difference
+ * between "nothing references a widget" and "this file would not parse".
+ * `readAgentStore` answers both with an empty store, and a sweep run on that
+ * would delete every drawing on the machine. This is the same reason
+ * `sweepOrphanState` reads the roster with `peekShell` rather than
+ * `readShell`.
  */
-export function referencedWidgetIds(path = agentStorePath()): Set<string> {
+export function referencedWidgetIds(path = agentStorePath()): Set<string> | null {
+  // A store that is not there yet references nothing, which is true rather
+  // than unknown: there are no threads, so there is nothing to keep.
+  if (!existsSync(path)) return new Set();
+  let store: AgentStore;
+  try {
+    store = parseAgentStore(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    return null;
+  }
   const ids = new Set<string>();
-  for (const thread of readAgentStore(path).threads) {
+  for (const thread of store.threads) {
     for (const event of thread.events) {
       if (event.widgetId) ids.add(event.widgetId);
     }
