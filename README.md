@@ -94,6 +94,17 @@ dialog and the catalogue too; connect whichever fits the job.
 Design and research: [docs/plan/CONNECTORS-COMPOSIO.md](docs/plan/CONNECTORS-COMPOSIO.md).
 Live check: `/usr/local/bin/node spikes/s4/probe.mjs` after the key is pasted.
 
+## MCP and OpenAPI connections
+
+Apps outside the Composio catalogue connect as eve MCP or OpenAPI servers.
+The owner-approved list lives in `~/.useful-bot/connections.json` (mode 0600).
+Secrets go in Keychain (`com.usefulbot.connection.{id}`), never in the JSON.
+`setup-local.mjs` seeds Excalidraw (`https://mcp.excalidraw.com/mcp`, no auth).
+A bot that needs a server not in the catalogue raises a Connect server card;
+Authorize or a pasted key adds the row and the bot resumes. Drawings from
+Excalidraw render in the macOS chat as an MCP App widget. The web UI does
+not port this card.
+
 ## Brand assets
 
 The approved mascot package, usage guidelines and visual comparison are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).

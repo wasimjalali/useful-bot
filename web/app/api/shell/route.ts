@@ -14,6 +14,7 @@ import {
 } from "../../../../shared/agent-store.ts";
 import { fanOut, syncSessionWorkspace } from "../../../lib/agent-exec";
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
+import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
@@ -131,6 +132,11 @@ function connectCallbackUrl(): string {
   return new URL("/api/connectors/callback", base).toString();
 }
 
+function serverCallbackUrl(): string {
+  const base = process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
+  return new URL("/api/connections/callback", base).toString();
+}
+
 /** The action a card sends must match every field the proposal carried. */
 function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefined): boolean {
   if (!action) return false;
@@ -170,6 +176,9 @@ function proposalMatchesAction(proposal: Proposal, action: ShellAction | undefin
     case "connectApp":
       return (action as { type?: string }).type === "connectApp"
         && (action as { slug?: string }).slug === proposal.slug;
+    case "connectServer":
+      return (action as { type?: string }).type === "connectServer"
+        && (action as { connectionId?: string }).connectionId === proposal.connectionId;
   }
 }
 
@@ -232,6 +241,38 @@ export async function PUT(request: Request) {
       // Re-read after the network call: the snapshot from before it could
       // rewind a roster edit the app applied meanwhile.
       return NextResponse.json({ ok: true, store: readShell(), queued: 0, redirectUrl });
+    }
+
+    const serverAction = body.action as { type?: string; connectionId?: string; secret?: string } | undefined;
+    if (body.proposalId && body.proposalStatus !== "dismissed" && serverAction?.type === "connectServer") {
+      const existing = readProposal(body.proposalId);
+      if (!existing) return NextResponse.json({ ok: false, error: "proposal_missing" }, { status: 410 });
+      if (existing.kind !== "connectServer" || !proposalMatchesAction(existing, body.action)) {
+        return NextResponse.json({ ok: false, error: "proposal_mismatch" }, { status: 400 });
+      }
+      if (existing.status !== "pending") {
+        return NextResponse.json({ ok: false, error: "proposal_conflict", status: existing.status }, { status: 409 });
+      }
+      if (rateLimited(`connections:${gate.session.callerId}`, 60)) {
+        return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+      }
+      const secret = typeof serverAction.secret === "string" ? serverAction.secret : undefined;
+      try {
+        const { redirectUrl, redirectHost } = await startConnectionConfirm(body.proposalId, {
+          secret,
+          callbackUrl: serverCallbackUrl(),
+        });
+        return NextResponse.json({ ok: true, store: readShell(), queued: 0, redirectUrl, redirectHost });
+      } catch (err) {
+        const code = err instanceof Error ? err.message : "connect_failed";
+        const known = new Set([
+          "proposal_missing", "proposal_settled", "already_connected", "proposal_expired",
+          "authorize_in_flight", "secret_invalid", "oauth_no_as", "oauth_no_dcr",
+          "oauth_register", "url_invalid", "url_http", "url_host", "url_protocol", "url_credentials",
+          "url_resolved", "url_resolve",
+        ]);
+        return NextResponse.json({ ok: false, error: known.has(code) ? code : "connect_failed" }, { status: 400 });
+      }
     }
 
     // Resolve fan-out recipients before anything is claimed or written, so an

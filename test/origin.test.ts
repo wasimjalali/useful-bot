@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { originHeaderAllowed } from "../shared/origin.ts";
+import { originHeaderAllowed, requestIsLoopback } from "../shared/origin.ts";
 
 test("loopback origins must match the request port", () => {
   const req = "http://127.0.0.1:4320/eve/v1/session";
@@ -21,6 +21,13 @@ test("a missing origin is trusted and non-loopback origins are not", () => {
   assert.equal(originHeaderAllowed("http://10.0.0.5:4320", req), false);
   assert.equal(originHeaderAllowed("http://evil.example:4320", req), false);
   assert.equal(originHeaderAllowed("http://127.0.0.1:4320", "http://evil.example:4320/x"), false);
+});
+
+test("oauth callback URLs must be loopback", () => {
+  assert.equal(requestIsLoopback("http://127.0.0.1:4320/api/connections/callback"), true);
+  assert.equal(requestIsLoopback("http://localhost:4320/api/connections/callback"), true);
+  assert.equal(requestIsLoopback("https://evil.example/api/connections/callback"), false);
+  assert.equal(requestIsLoopback("not a url"), false);
 });
 
 test("loopback port defaults are compared per scheme", () => {

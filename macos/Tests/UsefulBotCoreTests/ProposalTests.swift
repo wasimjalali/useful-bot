@@ -129,4 +129,58 @@ import Testing
             #expect(proposal.isOpen())
         }
     }
+
+    @Test func decodesAConnectServerProposal() throws {
+        let proposal = try decode("""
+        {"id":"p7","kind":"connectServer","status":"pending","expiresAt":"2099-01-01T00:00:00.000Z",
+         "connectionId":"excalidraw","name":"Excalidraw","urlHost":"mcp.excalidraw.com",
+         "purpose":"Draw a cat","authKind":"none","phase":"proposed","threadId":"b1"}
+        """)
+        #expect(proposal.kind == .connectServer)
+        #expect(proposal.connectionId == "excalidraw")
+        #expect(proposal.urlHost == "mcp.excalidraw.com")
+        #expect(proposal.authKind == .none)
+        #expect(proposal.phase == .proposed)
+        let action = try #require(ProposalActions.confirm(proposal))
+        #expect(action["type"] as? String == "connectServer")
+        #expect(action["connectionId"] as? String == "excalidraw")
+    }
+
+    @Test func serverRedirectsFailClosedWithoutAStoredHost() {
+        #expect(!Proposal.connectRedirectAllowed(
+            "https://auth.example.com/authorize",
+            kind: .connectServer,
+            expectedHost: nil
+        ))
+        #expect(!Proposal.connectRedirectAllowed(
+            "https://auth.example.com/authorize",
+            kind: .connectServer,
+            expectedHost: ""
+        ))
+        #expect(!Proposal.connectRedirectAllowed(
+            "https://evil.example.com/authorize",
+            kind: .connectServer,
+            expectedHost: "auth.example.com"
+        ))
+        #expect(Proposal.connectRedirectAllowed(
+            "https://auth.example.com/authorize?x=1",
+            kind: .connectServer,
+            expectedHost: "auth.example.com"
+        ))
+        #expect(!Proposal.connectRedirectAllowed(
+            "http://auth.example.com/authorize",
+            kind: .connectServer,
+            expectedHost: "auth.example.com"
+        ))
+        #expect(Proposal.connectRedirectAllowed(
+            "https://connect.composio.dev/gmail",
+            kind: .connectApp,
+            expectedHost: nil
+        ))
+        #expect(!Proposal.connectRedirectAllowed(
+            "https://evil.example/gmail",
+            kind: .connectApp,
+            expectedHost: nil
+        ))
+    }
 }

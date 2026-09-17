@@ -48,6 +48,17 @@ public enum JSONValue: Decodable, Equatable, Sendable {
         if case .object(let value) = self { return value }
         return nil
     }
+
+    public var jsonObject: Any {
+        switch self {
+        case .string(let value): return value
+        case .number(let value): return value
+        case .bool(let value): return value
+        case .array(let value): return value.map(\.jsonObject)
+        case .object(let value): return value.mapValues(\.jsonObject)
+        case .null: return NSNull()
+        }
+    }
 }
 
 /// One web result chip from an `action.result` event.
@@ -108,7 +119,10 @@ public enum TurnActivity: Equatable, Sendable {
         "memory_upsert": "Saving to memory",
         "post_to_group": "Posting to the group",
         "propose_bot": "Drafting a proposal",
+        "propose_connector": "Drafting a proposal",
+        "propose_connection": "Drafting a proposal",
         "propose_group": "Drafting a proposal",
+        "connection_search": "Looking through connections",
         "rail_action": "Rearranging the rail",
         "read_file": "Reading a file",
         "review": "Asking the reviewer",
@@ -360,6 +374,8 @@ public struct StreamProjection: Equatable, Sendable {
     /// What the turn is doing right now. Reasoning and tool calls both reach
     /// us on this stream, so the working row can say which one it is.
     public private(set) var activity: TurnActivity = .thinking
+    /// MCP App widgets the live turn produced, shown in the transcript.
+    public private(set) var widgets: [LiveWidget] = []
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -451,6 +467,16 @@ public struct StreamProjection: Equatable, Sendable {
             if let name = EveStream.requestedToolName(event.data) {
                 activity = .tool(name)
             }
+            // The validated call is the one place a drawing is complete and
+            // carries its call id. Input deltas are partial JSON, one event
+            // per chunk, and a result carries no arguments.
+            for widget in EveStream.parseLiveWidgets(event.data) {
+                if let index = widgets.firstIndex(where: { $0.id == widget.id }) {
+                    widgets[index] = widget
+                } else {
+                    widgets.append(widget)
+                }
+            }
         case "action.input.appended":
             if let name = event.data?["toolName"]?.stringValue, !name.isEmpty {
                 activity = .tool(name)
@@ -501,7 +527,6 @@ public struct StreamProjection: Equatable, Sendable {
         case "action.result", "action.partial":
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
-            // The tool has answered; the next step is the model's again.
             if event.type == "action.result" { activity = .thinking }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             pending = false
@@ -509,5 +534,54 @@ public struct StreamProjection: Equatable, Sendable {
         default:
             break
         }
+    }
+}
+
+public struct LiveWidget: Equatable, Sendable {
+    public var id: String
+    public var connectionId: String
+    public var toolName: String
+    public var arguments: [String: JSONValue]
+    public var callId: String
+
+    public init(id: String, connectionId: String, toolName: String, arguments: [String: JSONValue], callId: String) {
+        self.id = id
+        self.connectionId = connectionId
+        self.toolName = toolName
+        self.arguments = arguments
+        self.callId = callId
+    }
+}
+
+extension EveStream {
+    /// The MCP App calls in an `actions.requested` event. The id is eve's
+    /// tool call id, so a replay or a retry of the same call is one drawing.
+    public static func parseLiveWidgets(_ data: JSONValue?) -> [LiveWidget] {
+        guard let actions = data?["actions"]?.arrayValue else { return [] }
+        var found: [LiveWidget] = []
+        for action in actions {
+            let name = action["toolName"]?.stringValue ?? ""
+            guard let cut = name.range(of: "__") else { continue }
+            let connectionId = String(name[..<cut.lowerBound])
+            guard connectionId.range(of: "^[a-z][a-z0-9-]{0,63}$", options: .regularExpression) != nil else {
+                continue
+            }
+            let args = action["input"]?.objectValue ?? [:]
+            guard name.hasSuffix("__create_view") || args["elements"] != nil else { continue }
+            let callId = (action["callId"]?.stringValue ?? "")
+                .replacingOccurrences(of: "[^a-zA-Z0-9_-]", with: "", options: .regularExpression)
+            // The server refuses a shorter id, and without one there is
+            // nothing stable to key the drawing on.
+            guard callId.count >= 8 else { continue }
+            let widgetId = String(callId.prefix(80))
+            found.append(LiveWidget(
+                id: widgetId,
+                connectionId: connectionId,
+                toolName: name,
+                arguments: args,
+                callId: widgetId
+            ))
+        }
+        return found
     }
 }

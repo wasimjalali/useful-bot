@@ -122,13 +122,14 @@ export function ProposalCard({
     );
   }
 
-  if (proposal.kind === "connectApp") {
+  if (proposal.kind === "connectApp" || proposal.kind === "connectServer") {
     // Not ported: the macOS app owns the sign-in flow. This card can only be
     // put away here.
+    const title = proposal.kind === "connectServer" ? "Connect server" : "Connect app";
     return (
-      <Card title="Connect app" tone="plain">
+      <Card title={title} tone="plain">
         <p className="text-[15px] font-semibold">{proposal.name}</p>
-        <p className="mt-2 text-[13px] text-ink-muted">Authorize this app in the macOS app.</p>
+        <p className="mt-2 text-[13px] text-ink-muted">Authorize this in the macOS app.</p>
         <Actions
           confirmLabel="Authorize"
           dismissLabel="Not now"

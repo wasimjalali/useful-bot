@@ -9,6 +9,10 @@ struct ProposalCardView: View {
     let onDecision: (_ confirmed: Bool) -> Void
     /// Reopen the hosted sign-in for a connect card that is waiting or timed out.
     var onReopen: () -> Void = {}
+    /// Connect server with an API key typed on the card. Never used for OAuth.
+    var onConfirmSecret: (String) -> Void = { _ in }
+
+    @State private var secretDraft = ""
 
     private func nameOf(_ id: String) -> String {
         bots.first { $0.id == id }?.name ?? "a bot"
@@ -142,6 +146,85 @@ struct ProposalCardView: View {
                 case .connected:
                     // The pill stays until the bot resumes; Not now puts the
                     // card away early without touching the connection.
+                    HStack {
+                        Spacer(minLength: 0)
+                        NativeButton(kind: .secondary, small: true, enabled: !pending) {
+                            onDecision(false)
+                        } label: {
+                            Text("Not now")
+                        }
+                    }
+                    .padding(.top, 14)
+                }
+            }
+        case .connectServer:
+            let name = proposal.name ?? "this server"
+            card(title: "Connect server", tone: .accent) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(width: 28, height: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name)
+                            .font(Theme.font(15, .semibold))
+                        if let purpose = proposal.purpose, !purpose.isEmpty {
+                            Text(purpose)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                        if let host = proposal.urlHost, !host.isEmpty {
+                            Text(host)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.C.inkFaint)
+                        }
+                        if proposal.phase == .connected, let count = proposal.toolCount {
+                            Text(count == 1 ? "1 tool" : "\(count) tools")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.C.inkFaint)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if proposal.phase == .connected {
+                        connectedPill
+                    }
+                }
+                switch proposal.phase {
+                case .proposed:
+                    if proposal.authKind == .apiKey || proposal.authKind == .bearer {
+                        SecureField("Paste key", text: $secretDraft)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: DesignTokens.FontSize.fieldInput))
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: DesignTokens.Control.fieldMinHeight)
+                            .background(Theme.C.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
+                            .padding(.top, 12)
+                        HStack(spacing: 8) {
+                            NativeButton(
+                                "Connect",
+                                kind: .primary,
+                                small: true,
+                                enabled: !pending && !secretDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ) {
+                                onConfirmSecret(secretDraft)
+                            }
+                            NativeButton("Not now", kind: .secondary, small: true, enabled: !pending) {
+                                onDecision(false)
+                            }
+                        }
+                        .padding(.top, 14)
+                    } else {
+                        actions(
+                            confirm: proposal.authKind == .oauth ? "Authorize" : "Connect",
+                            dismiss: "Not now"
+                        )
+                    }
+                case .waiting:
+                    waitingRow(text: "Waiting for \(name) sign-in", tone: Theme.C.inkMuted)
+                case .expired:
+                    waitingRow(text: "Sign-in timed out", tone: Theme.C.warning)
+                case .connected:
                     HStack {
                         Spacer(minLength: 0)
                         NativeButton(kind: .secondary, small: true, enabled: !pending) {

@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 
 const [NODE_MAJOR, NODE_MINOR, NODE_PATCH] = process.versions.node.split(".").map(Number);
@@ -201,6 +201,40 @@ if ((rotate || addMissing) && existsSync(configPath)) {
 }
 renameSync(tmpConfigPath, configPath);
 chmodSync(configPath, 0o600);
+
+const connectionsPath = join(homedir(), ".useful-bot/connections.json");
+mkdirSync(dirname(connectionsPath), { recursive: true, mode: 0o700 });
+let connections = { schemaVersion: 1, connections: [], updatedAt: null };
+if (existsSync(connectionsPath)) {
+  try {
+    connections = JSON.parse(readFileSync(connectionsPath, "utf8"));
+    if (!connections || connections.schemaVersion !== 1 || !Array.isArray(connections.connections)) {
+      connections = { schemaVersion: 1, connections: [], updatedAt: null };
+    }
+  } catch {
+    connections = { schemaVersion: 1, connections: [], updatedAt: null };
+  }
+}
+const hasExcalidraw = connections.connections.some((row) => (
+  row && (row.id === "excalidraw" || row.url === "https://mcp.excalidraw.com/mcp")
+));
+if (!hasExcalidraw) {
+  connections.connections.push({
+    id: "excalidraw",
+    kind: "mcp",
+    name: "Excalidraw",
+    url: "https://mcp.excalidraw.com/mcp",
+    description: "Official Excalidraw MCP App. Draw hand-drawn diagrams in the chat. Call read_me once, then create_view with Excalidraw elements.",
+    authKind: "none",
+    authHeader: null,
+    toolsAllow: ["read_me", "create_view"],
+    createdAt: new Date().toISOString(),
+  });
+  connections.updatedAt = new Date().toISOString();
+  writeFileSync(connectionsPath, `${JSON.stringify(connections)}\n`, { mode: 0o600 });
+  chmodSync(connectionsPath, 0o600);
+}
+
 process.stdout.write(`${JSON.stringify({
   ok: true,
   rotated: rotate,

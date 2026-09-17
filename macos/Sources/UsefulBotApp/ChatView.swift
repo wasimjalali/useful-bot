@@ -130,7 +130,10 @@ struct ChatView: View {
                             onDecision: { confirmed in
                                 model.decideProposal(proposal, confirmed: confirmed)
                             },
-                            onReopen: { model.reopenConnect(proposal) }
+                            onReopen: { model.reopenConnect(proposal) },
+                            onConfirmSecret: { secret in
+                                model.decideProposal(proposal, confirmed: true, secret: secret)
+                            }
                         )
                     }
                 }
@@ -509,13 +512,15 @@ struct TranscriptRowView: View, Equatable {
         case .user:
             userRow
         case .handoff:
-            // The reference hides the dispatch text and marks the send itself.
-            BotMetaRow(
-                prefix: "Messaged",
-                botIds: recipients.isEmpty ? row.targetBotIds : recipients,
-                names: ["a teammate"],
-                roster: bots
-            )
+            VStack(alignment: .leading, spacing: 8) {
+                BotMetaRow(
+                    prefix: "Messaged",
+                    botIds: recipients.isEmpty ? row.targetBotIds : recipients,
+                    names: ["a teammate"],
+                    roster: bots
+                )
+                replyRow(showsSpeaker: false)
+            }
         case .post:
             let author = row.author ?? ""
             let attributed = row.authorBotId != nil || !author.isEmpty
@@ -530,8 +535,15 @@ struct TranscriptRowView: View, Equatable {
                         roster: bots
                     )
                 }
-                // The strip already names and faces the author.
-                replyRow(showsSpeaker: false)
+                // An incoming teammate question (it names this bot) sits in
+                // the same bubble as an owner message, so the receiving bot's
+                // chat reads as a turn. A teammate's answer is a reply, and
+                // keeps its markdown.
+                if row.targetBotIds.contains(bot.id) {
+                    userRow
+                } else {
+                    replyRow(showsSpeaker: false)
+                }
             }
         case .note:
             HStack(alignment: .top, spacing: 12) {
@@ -551,6 +563,15 @@ struct TranscriptRowView: View, Equatable {
             }
         case .assistant:
             replyRow(showsSpeaker: true)
+        case .widget:
+            WidgetWebView(widgetId: row.text)
+                .frame(height: 480)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
+                        .strokeBorder(Theme.C.border, lineWidth: 1)
+                )
         }
     }
 

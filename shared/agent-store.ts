@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { ConnectionAuthKind, ConnectionKind } from "./connections-store.ts";
 
 /**
  * Local multi-agent state: per-thread event transcripts and pending
@@ -41,7 +42,8 @@ export type AgentEventKind =
   | "handoff"
   | "post"
   | "note"
-  | "proposal";
+  | "proposal"
+  | "widget";
 
 export type AgentEvent = {
   id: string;
@@ -53,6 +55,7 @@ export type AgentEvent = {
   targetBotIds: string[];
   proposalId: string | null;
   handoffId: string | null;
+  widgetId: string | null;
 };
 
 export type BotProfileDraft = {
@@ -123,7 +126,30 @@ export type ConnectAppProposal = {
   handoffId: string | null;
 };
 
-export type ProposalPayload = BotProposal | GroupProposal | ProfileProposal | FanoutProposal | ConnectAppProposal;
+export type ConnectServerProposal = {
+  kind: "connectServer";
+  connectionKind: ConnectionKind;
+  connectionId: string;
+  name: string;
+  description: string;
+  /** Full URL, validated at propose. Never returned to the model. */
+  url: string;
+  /** Hostname only, for the card. */
+  urlHost: string;
+  purpose: string;
+  authKind: ConnectionAuthKind;
+  authHeader: string | null;
+  sourceBotId: string | null;
+  threadId: string;
+  phase: ConnectPhase;
+  /** OAuth authorize host, once waiting. The app opens only this host. */
+  redirectHost: string | null;
+  waitingSince: string | null;
+  toolCount: number | null;
+  handoffId: string | null;
+};
+
+export type ProposalPayload = BotProposal | GroupProposal | ProfileProposal | FanoutProposal | ConnectAppProposal | ConnectServerProposal;
 export type ProposalKind = ProposalPayload["kind"];
 
 export type Proposal = ProposalPayload & {
@@ -159,6 +185,7 @@ const EVENT_KINDS = new Set<AgentEventKind>([
   "post",
   "note",
   "proposal",
+  "widget",
 ]);
 
 export function agentStorePath(): string {
@@ -216,6 +243,7 @@ function parseEvent(raw: unknown): AgentEvent | null {
     targetBotIds: targets,
     proposalId: isId(rec.proposalId, 120) ? rec.proposalId : null,
     handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
+    widgetId: isId(rec.widgetId, 120) ? rec.widgetId : null,
   };
 }
 
@@ -247,7 +275,8 @@ function isProposalKind(value: unknown): value is ProposalKind {
     || value === "createGroup"
     || value === "updateBotProfile"
     || value === "fanout"
-    || value === "connectApp";
+    || value === "connectApp"
+    || value === "connectServer";
 }
 
 function parseProposal(raw: unknown): Proposal | null {
@@ -313,6 +342,35 @@ function parseProposal(raw: unknown): Proposal | null {
       purpose: clip(rec.purpose, 120),
       phase,
       accountId: isId(rec.accountId, 120) ? rec.accountId : null,
+      waitingSince: typeof rec.waitingSince === "string" ? rec.waitingSince : null,
+      toolCount: typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount)
+        ? Math.max(0, Math.trunc(rec.toolCount))
+        : null,
+      handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
+    };
+  }
+  if (rec.kind === "connectServer") {
+    const phase: ConnectPhase = rec.phase === "waiting" || rec.phase === "connected" || rec.phase === "expired"
+      ? rec.phase
+      : "proposed";
+    const authKind: ConnectionAuthKind = rec.authKind === "apiKey" || rec.authKind === "bearer" || rec.authKind === "oauth"
+      ? rec.authKind
+      : "none";
+    const connectionKind: ConnectionKind = rec.connectionKind === "openapi" ? "openapi" : "mcp";
+    return {
+      ...base,
+      kind: "connectServer",
+      connectionKind,
+      connectionId: clip(rec.connectionId, 80),
+      name: clip(rec.name, 80),
+      description: clip(rec.description, 400),
+      url: clip(rec.url, 2048),
+      urlHost: clip(rec.urlHost, 253),
+      purpose: clip(rec.purpose, 120),
+      authKind,
+      authHeader: typeof rec.authHeader === "string" && rec.authHeader ? rec.authHeader.slice(0, 64) : null,
+      phase,
+      redirectHost: typeof rec.redirectHost === "string" && rec.redirectHost ? rec.redirectHost.slice(0, 253) : null,
       waitingSince: typeof rec.waitingSince === "string" ? rec.waitingSince : null,
       toolCount: typeof rec.toolCount === "number" && Number.isFinite(rec.toolCount)
         ? Math.max(0, Math.trunc(rec.toolCount))
@@ -485,6 +543,7 @@ export function appendAgentEvent(
     targetBotIds?: string[];
     proposalId?: string | null;
     handoffId?: string | null;
+    widgetId?: string | null;
     id?: string;
   },
   path = agentStorePath(),
@@ -501,6 +560,7 @@ export function appendAgentEvent(
       targetBotIds: (input.targetBotIds ?? []).slice(0, 8),
       proposalId: input.proposalId ?? null,
       handoffId: input.handoffId ?? null,
+      widgetId: input.widgetId ?? null,
     };
     const existing = thread.events.findIndex((item) => item.id === event.id);
     if (existing >= 0) return thread.events[existing];

@@ -10,9 +10,14 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         case updateBotProfile
         case fanout
         case connectApp
+        case connectServer
         /// A kind this build does not know. It renders as unsupported and can
         /// never be confirmed; it must not collapse into a known action.
         case unknown
+    }
+
+    public enum ServerAuthKind: String, Sendable {
+        case none, apiKey, bearer, oauth
     }
 
     /// Where a connect card is, mirroring `ConnectPhase` in the store.
@@ -52,6 +57,10 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
     public let purpose: String?
     public let phase: ConnectPhase
     public let toolCount: Int?
+    public let connectionId: String?
+    public let urlHost: String?
+    public let authKind: ServerAuthKind
+    public let redirectHost: String?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -81,12 +90,17 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         purpose = try? c.decodeIfPresent(String.self, forKey: .purpose)
         phase = ConnectPhase(rawValue: (try? c.decodeIfPresent(String.self, forKey: .phase)) ?? "") ?? .proposed
         toolCount = try? c.decodeIfPresent(Int.self, forKey: .toolCount)
+        connectionId = try? c.decodeIfPresent(String.self, forKey: .connectionId)
+        urlHost = try? c.decodeIfPresent(String.self, forKey: .urlHost)
+        authKind = ServerAuthKind(rawValue: (try? c.decodeIfPresent(String.self, forKey: .authKind)) ?? "") ?? .none
+        redirectHost = try? c.decodeIfPresent(String.self, forKey: .redirectHost)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, kind, status, expiresAt, name, petname, title, description
         case sectionId, brief, memberIds, botId, patch, message, targetIds, groupId, sourceBotId
         case slug, logo, purpose, phase, toolCount
+        case connectionId, urlHost, authKind, redirectHost
     }
 
     /// Same filter as the web: pending and not past its TTL. A date that does
@@ -103,4 +117,28 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         if let groupId { return groupId }
         return targetIds.first
     }
+
+    /// Composio cards only open composio.dev. Server cards only open the
+    /// authorize host stored on the card. A missing host is a refusal.
+    public static func connectRedirectAllowed(_ raw: String, kind: Kind, expectedHost: String?) -> Bool {
+        guard let url = URL(string: raw), url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if url.user != nil || url.password != nil { return false }
+        if kind == .connectApp {
+            return host == "composio.dev" || host.hasSuffix(".composio.dev")
+        }
+        if kind == .connectServer {
+            guard let expected = expectedHost?.lowercased(), !expected.isEmpty else { return false }
+            guard isPublicAuthorizeHost(host) else { return false }
+            return host == expected
+        }
+        return false
+    }
+}
+
+private func isPublicAuthorizeHost(_ host: String) -> Bool {
+    if LocalHost.isLocal(host) { return false }
+    if host.contains(":") { return false }
+    if !host.contains(".") { return false }
+    return host.contains(where: \.isLetter)
 }
