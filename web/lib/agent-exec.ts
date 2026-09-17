@@ -24,6 +24,7 @@ import {
 import {
   appendRoutineRun,
   claimDueRoutine,
+  readRoutine,
   claimManualRun,
   claimRunNow,
   pendingRoutines,
@@ -95,7 +96,30 @@ function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
   }
 }
 
-const inflight = new Set<string>();
+/**
+ * Pump state, one copy per PROCESS rather than per module instance. The Next
+ * dev server gives each API route its own copy of this module, so plain
+ * module-level sets were not shared: a Test run (the run route) marked a
+ * routine in flight in a set the tick route never saw. The rail showed that bot
+ * as idle, and the in-memory mutex between a manual run and the scheduler did
+ * not hold across the two routes (the durable store claim was the only guard).
+ * Found live on 2026-09-17: five routines running, tick reported none.
+ */
+interface PumpState {
+  inflight: Set<string>;
+  routinesInflight: Set<string>;
+  pumpQueue: Promise<unknown>;
+  routineQueue: Promise<unknown>;
+}
+const PUMP_STATE_KEY = Symbol.for("useful-bot.agent-exec.pump-state");
+const pumpState: PumpState = ((globalThis as Record<symbol, unknown>)[PUMP_STATE_KEY] ??= {
+  inflight: new Set<string>(),
+  routinesInflight: new Set<string>(),
+  pumpQueue: Promise.resolve(),
+  routineQueue: Promise.resolve(),
+}) as PumpState;
+
+const inflight = pumpState.inflight;
 
 type EveEvent = { type?: string; data?: Record<string, unknown>; meta?: { id?: string; at?: string } };
 
@@ -488,15 +512,14 @@ export function handoffWorkingBotIds(): string[] {
 // router takes ten model calls at once now, and a two minute turn on one bot
 // must not hold up a handoff to another. The batch size is the bound on how
 // many eve deliveries this pump holds open (the tick caps it at four).
-let pumpQueue: Promise<unknown> = Promise.resolve();
 
 export function pumpHandoffs(limit = 2): Promise<{
   delivered: Array<{ id: string; to: string }>;
   failed: Array<{ id: string; error: string }>;
   queued: number;
 }> {
-  const run = pumpQueue.then(() => pumpOnce(limit), () => pumpOnce(limit));
-  pumpQueue = run.then(() => undefined, () => undefined);
+  const run = pumpState.pumpQueue.then(() => pumpOnce(limit), () => pumpOnce(limit));
+  pumpState.pumpQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
@@ -650,7 +673,7 @@ export function fanOut(input: {
  * uses the same eve path as a handoff.
  */
 
-const routinesInflight = new Set<string>();
+const routinesInflight = pumpState.routinesInflight;
 
 export type RoutineRunResult = { routineId: string; sessionId: string; reply: string };
 
@@ -826,7 +849,6 @@ function recordRun(
 // Like the handoff pump: single-flight across calls, and inside one pump the
 // batch runs together, one routine per bot, so two bots' routines due in the
 // same minute no longer run back to back.
-let routineQueue: Promise<unknown> = Promise.resolve();
 
 export type RoutinePumpResult = {
   ran: Array<{ id: string; name: string }>;
@@ -836,8 +858,8 @@ export type RoutinePumpResult = {
 };
 
 export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
-  const run = routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
-  routineQueue = run.then(() => undefined, () => undefined);
+  const run = pumpState.routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
+  pumpState.routineQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
@@ -942,4 +964,22 @@ export function sweepOrphanState(): string[] {
 
 export function routinesInFlight(): string[] {
   return [...routinesInflight];
+}
+
+/**
+ * Every bot doing background work, for the rail's working row: the receivers
+ * of in-flight handoffs plus the bots whose routine is running. The routine
+ * half was missing, so a bot working through a routine looked idle in the rail
+ * until its reply landed. With several bots running at once that is the state
+ * the owner most needs to see.
+ */
+export function backgroundWorkingBotIds(): string[] {
+  const ids = new Set(handoffWorkingBotIds());
+  for (const routineId of routinesInflight) {
+    // A routine deleted mid-run has no row to read; its turn still ends on its
+    // own and the set clears then.
+    const routine = readRoutine(routineId);
+    if (routine) ids.add(routine.botId);
+  }
+  return [...ids];
 }
