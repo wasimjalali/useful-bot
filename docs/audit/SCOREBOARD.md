@@ -321,3 +321,136 @@ router, #60 macOS (plus the plant_read revert and this section), all squash-merg
 - Owner decision 2026-09-16: the macOS app is the priority, then the mobile app. No further
   web audits; the web surface stays as it is until the desktop and mobile apps are done.
   The CLI is out of scope.
+
+## Round 3
+
+Started 2026-09-17. **The roles invert this round.** Rounds 1 and 2 had Spark and GLM find
+the defects and write the patches while the orchestrator verified. In round 3 the
+orchestrator audits and patches, and the two models only re-review what it wrote. The
+model columns below therefore mean something different from the tables above: they score
+review, not discovery.
+
+Slices: `mac-core`, `mac-app`, `agent-router`, `shared-scripts`. The web surface stays
+frozen (owner decision, 2026-09-16) and the CLI is out of scope, so `web` is not a slice.
+Reading was weighted toward PRs 65 to 70.
+
+### Reviewer scorecard
+
+| Model | Raised | Confirmed | False | Dup of the other | Precision, non-dup |
+|-------|-------:|----------:|------:|-----------------:|-------------------:|
+| Spark | 18 | 16 | 2 | 0 | 89% (16 of 18) |
+| GLM   | 6  | 5  | 0 | 1                | 100% (5 of 5)     |
+
+Spark ran 12 passes across the four slices, GLM 7. Two of GLM's runs and one of Spark's
+hit the wall-clock cap with no output and are not counted either way.
+
+Spark's two rejected findings are R-01 and R-02 on the mac-app pass: `unsentDrafts`
+surviving New Chat and Open Recent. Rejected because the stash is deferred composer
+content, and neither New Chat nor Open Recent clears the live composer (`resetThread` and
+`clearPerThreadState` touch neither `draft` nor `attachments`). Dropping the stash would
+be a silent loss of text the owner typed; keeping it is a visible surprise they can delete
+in one keystroke. The reasoning was put back to Spark for a third pass, which timed out at
+the 1500s cap with no output, so the rejection stands unchallenged rather than agreed.
+
+The one duplicate is the widget sweep reading its keep set through `readAgentStore`: both
+models found it independently on the same pass, Spark rating it critical and GLM high.
+
+Reading the numbers: both models were most valuable on the code the orchestrator got
+wrong, not on the code it got right. Every finding on the connection dedupe was real, and
+two of them described defects the patch itself introduced. Neither model raised anything
+on the widget sweep's own logic or on the `oneLine` prefix fix across three passes.
+
+### The orchestrator's own audit
+
+| Slice | Found | Patched | Deferred |
+|-------|------:|--------:|---------:|
+| mac-core | 3 | 1 | 2 |
+| mac-app | 3 | 3 | 0 |
+| agent-router | 2 | 2 | 0 |
+| shared-scripts | 4 | 4 | 0 |
+
+Plus one defect the owner reported mid-round and the orchestrator traced and fixed: the
+working row flashing on a settled chat.
+
+### Findings
+
+| ID | Sev | File:line | Title | Verdict | PR |
+|----|-----|-----------|-------|---------|----|
+| O-MACCORE-01 | low | macos/Sources/UsefulBotCore/Attachments.swift:11 | Three comments assert a server-side clip that does not exist | patched, plus a test pinning the fold | #71 |
+| O-MACCORE-02 | medium | shared/threads.ts:180 | A bot description with a blank line was read as breaking the stripper | **false as first stated**: PR 58 already normalizes the description. The defect is real through the NAME, title, group member and mention, which are not normalized | patched in shared-scripts |
+| O-MACCORE-03 | low | macos/Sources/UsefulBotCore/EveStream.swift:573 | `turn.failed` leaves an open ask_question card up beside the failure banner | deferred: the card's buttons send the option label as a fresh message, which is a working recovery. Removing them takes an affordance away | |
+| O-MACAPP-01 | high | macos/Sources/UsefulBotApp/AppModel.swift:938 | Retry resends a turn the server already accepted | patched: `SendFailure.mayResend` in core, so the rule is testable | |
+| O-MACAPP-02 | high | macos/Sources/UsefulBotApp/AppModel.swift:1173 | A send that fails before delivery on a chat the owner left loses the text and then the banner | patched: `unsentDrafts` holds it for the return | |
+| O-MACAPP-03 | medium | macos/Sources/UsefulBotApp/AppModel.swift:1461 | A widget save that keeps failing transiently is retried only when something else publishes, so it can stop below its cap without ever setting `widgetSaveErrors` | deferred: a real fix needs a retry schedule, and the server is loopback | |
+| O-AGENT-01 | low | agent/tools/plant_read.ts:6 | G-AGENT-09, the S2 fixture tool is in the live tool set | patched as a dynamic tool returning null; **verified against a running eve**, 34 static tools with plant_read moved to `dynamicTools` | |
+| O-AGENT-02 | low | agent/tools/send_to_bot.ts:129 | `sendToBot` ignores `ctx.abortSignal`, so Stop leaves a 3 minute poll running | patched | |
+| O-SHARED-01 | medium | shared/widgets-store.ts:54 | `deleteWidget` has zero callers and `sweepOrphanState` never sweeps widgets | patched; **46 orphan records on this machine, zero referenced** | |
+| O-SHARED-02 | medium | shared/threads.ts:205 | A newline in a name, title, group member or mention leaks the turn prefix into the transcript | patched | |
+| O-SHARED-03 | medium | shared/connection-flow.ts:171 | The duplicate-URL guard is an empty if block | patched, then reworked twice under review | |
+| O-SHARED-04 | high | shared/connections-store.ts:270 | `allocateConnectionId` ignores pending cards, so two cards can share an id and replacing by id repoints a live row at another URL | patched | |
+| O-OWNER-01 | medium | macos/Sources/UsefulBotApp/AppModel.swift:556 | The working row flashes on a settled chat after a switch away and back | owner-reported mid-round; traced, patched in two passes, owner verified live | |
+
+### Reviewer findings on the orchestrator's patches
+
+| ID | Model | Sev | What | Verdict |
+|----|-------|-----|------|---------|
+| mac-core | GLM | low | A third copy of the false clip comment in ComposerView.swift:12 | confirmed, fixed |
+| mac-core | GLM | low | The new test applies its optimistic row with `live: false` while the send path uses `live: true` | fair, applied, though GLM excluded it from its own findings array |
+| mac-app | Spark | high | Retry could still duplicate: a pre-delivery failure returns its text to the composer, so the newest user row belongs to the PREVIOUS turn | confirmed, fixed |
+| mac-app | Spark | medium | The kept resendable banner loops Retry forever when `resendableLastMessage` is nil | confirmed, fixed |
+| mac-app | GLM | low | `restoreUnsentDraft` prepends past `Attachments.maxFiles` | confirmed, fixed |
+| mac-app | Spark | medium ×2 | `unsentDrafts` survives New Chat and Open Recent | **rejected**, see the scorecard note |
+| shared | GLM | high | Adopting the live row's id then writing this card's secret destroys that row's credential: `keychainSet` uses `add-generic-password -U`, so an apiKey card on an oauth row takes out its refresh token | confirmed, **the patch caused it**, reworked |
+| shared | Spark + GLM | high | `completeConnectionOAuth` was never covered by the dedupe | confirmed, fixed |
+| shared | Spark | high ×2 | Secrets written before the store's verdict, stranded on a race loss | confirmed, fixed |
+| shared | Spark | medium | The settle path leaves the PKCE verifier and client secret on disk | confirmed, fixed, `dropOauthPending` added |
+| shared | Spark | medium | The resume handoff names a connection id with no row | confirmed, fixed |
+| shared | Spark | critical | The race-loss verdict was dead: `upsertConnection` returns a row found BY URL, so `stored.url != entry.url` was never true and the loser wrote over the winner | confirmed, **the patch caused it**, fixed by making the store say `won` out loud |
+| shared | Spark, GLM | critical/high | The widget sweep reads its keep set through `readAgentStore`, which answers a corrupt file with an empty store, so one bad agents.json deletes every drawing | confirmed, fixed |
+| shared | GLM | medium | The confirm-path settle strands a pending sign-in, reachable through Reopen | confirmed, fixed |
+
+### Verified live
+
+- eve boots clean with `plant_read` as a dynamic tool, and its compiled manifest lists 34
+  static tools with `plant_read` beside `connection_search` under `dynamicTools`. This is
+  the check that failed in round 2 and took eve down at boot.
+- The widget sweep ran through the real tick: the web service picked the change up and
+  removed all 46 orphan records from `~/.useful-bot/widgets`.
+- `Proposal.connectRedirectAllowed` probed against 15 adversarial redirect shapes
+  (userinfo smuggling, case, trailing dot, punycode, loopback, `javascript:`,
+  suffix-confusion hosts). Every dangerous shape blocked.
+- The working row fix, by the owner on the rebuilt app.
+
+### Round 2 carry-overs, settled
+
+- **G-AGENT-09**: closed. eve refuses `disableTool()` on a slot the repo owns, because
+  that call removes an extension or built-in default and there is none underneath. A
+  dynamic tool may resolve to `null`, which is the shape that works, and the one
+  `agent/connections/registry.ts` already used.
+- **S-MACCORE-01**: **false**. Nothing clips a stored turn. `Attachments.messageMax` is a
+  composer input cap used only by `ComposerView.maxDraftLength` and mirrored by
+  `maxLength={2000}` in `chat-composer.tsx`; there is no send route under
+  `web/app/api/agent/`; the eve proxy relays untouched; the only 2000-clip in shared is on
+  a proposal message field. Three comments asserted the clip as fact and are what sent
+  round 2 down the trail. Pinned by a test.
+- **G-MACCORE-03**: still not exercised live. Running a routine through the web API while
+  its chat is open was not reached this round.
+
+### PRs
+
+| PR | Slice |
+|----|-------|
+| #71 | mac-core |
+| #72 | agent-router |
+| #74 | mac-app, plus the owner-reported working row |
+| #75 | shared-scripts (reopened from #73 after a rebase, rather than force-pushing) |
+
+### Open for round 4
+
+- G-MACCORE-03, third round of asking: open a bot's chat, run one of its routines from the
+  web API, confirm the reply renders without re-selecting the bot.
+- O-MACAPP-03: give the widget save a real retry schedule rather than riding on whatever
+  publishes next.
+- O-MACCORE-03: decide whether a failed turn should drop an open question card.
+- Em dashes sit in ten code comments under `macos/Sources`. Comments, not copy, and
+  pre-existing, but the house rule bans them everywhere.
