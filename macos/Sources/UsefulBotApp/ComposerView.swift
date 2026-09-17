@@ -88,8 +88,13 @@ struct ComposerView: View {
         bot.isGroup ? "Message this group. @name to direct one bot" : "Message \(bot.name)"
     }
 
+    /// Whether `Attachments.formatMessage` would come back non-empty, without
+    /// building it: every attachment adds a named part, so only an empty
+    /// draft with no files formats to nothing. This runs on every body pass,
+    /// and formatting scanned each attached file's text for fences.
     private var canSend: Bool {
-        !Attachments.formatMessage(model.draft, files: model.attachments).isEmpty
+        !model.attachments.isEmpty
+            || !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var workspace: BotWorkspace? { bot.workspace }

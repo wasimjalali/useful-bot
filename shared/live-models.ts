@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { mergeLiveModels, modelsFor, type ModelMeta, type ModelOption } from "./models.ts";
 
@@ -30,11 +30,30 @@ function emptyCache(): CacheFile {
   return { schemaVersion: CACHE_SCHEMA, providers: {} };
 }
 
+/**
+ * The last parse, kept while the file on disk is the one it came from. The
+ * file is several hundred KB and was parsed on every composer poll (each 2.5 s
+ * per open app) and twice per model call in the router. Writers replace the
+ * file by rename, so a new inode, size or mtime means a new file; any process
+ * may be the writer, which is why this asks the disk instead of trusting
+ * itself.
+ */
+let parsed: { path: string; ino: number; size: number; mtimeMs: number; cache: CacheFile } | undefined;
+
 export function readModelsCache(path = modelsCachePath()): CacheFile {
-  if (!existsSync(path)) return emptyCache();
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    return emptyCache();
+  }
+  if (parsed && parsed.path === path && parsed.ino === stat.ino && parsed.size === stat.size && parsed.mtimeMs === stat.mtimeMs) {
+    return parsed.cache;
+  }
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as CacheFile;
     if (raw?.schemaVersion !== CACHE_SCHEMA || !raw.providers || typeof raw.providers !== "object") return emptyCache();
+    parsed = { path, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, cache: raw };
     return raw;
   } catch {
     return emptyCache();
@@ -42,6 +61,9 @@ export function readModelsCache(path = modelsCachePath()): CacheFile {
 }
 
 export function writeModelsCache(cache: CacheFile, path = modelsCachePath()): void {
+  // Callers edit the object they read and hand it back. Dropped first, so a
+  // write that fails cannot leave an edited copy standing in for the file.
+  parsed = undefined;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   // Atomic like the catalogue cache: readers see the old file or the new one.
   const tmp = `${path}.${process.pid}.tmp`;

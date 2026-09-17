@@ -508,8 +508,18 @@ public struct StreamProjection: Equatable, Sendable {
     private var seenCursor = 0
     private static let seenCap = 2000
     private var currentAssistantId: String?
+    /// Where each message id sits in `messages`, first holder wins, the way
+    /// `firstIndex(where:)` answered it. Every streamed delta looks its bubble
+    /// up, and a scan of the whole history per delta is what ten bots
+    /// streaming into long chats were paying on the main actor.
+    private var indexById: [String: Int] = [:]
 
     public init() {}
+
+    private mutating func appendMessage(_ message: ChatMessage) {
+        if indexById[message.id] == nil { indexById[message.id] = messages.count }
+        messages.append(message)
+    }
 
     /// A turn is starting from this app.
     ///
@@ -576,6 +586,9 @@ public struct StreamProjection: Equatable, Sendable {
             if let last = messages.last, last.role == .user, last.text == text,
                last.id.hasPrefix(EveStream.optimisticUserPrefix) {
                 if let id = event.id {
+                    // The optimistic id leaves with the row it named.
+                    if indexById[last.id] == messages.count - 1 { indexById[last.id] = nil }
+                    if indexById[id] == nil { indexById[id] = messages.count - 1 }
                     messages[messages.count - 1] = ChatMessage(
                         id: id,
                         role: .user,
@@ -590,8 +603,8 @@ public struct StreamProjection: Equatable, Sendable {
             // A message this projection already holds is a replay of it, not a
             // second turn. The id cache above is bounded, so this is the check
             // that survives a session longer than the cache.
-            if let id = event.id, messages.contains(where: { $0.id == id }) { return }
-            messages.append(ChatMessage(
+            if let id = event.id, indexById[id] != nil { return }
+            appendMessage(ChatMessage(
                 id: event.id ?? "u-\(messages.count)",
                 role: .user,
                 text: text,
@@ -628,7 +641,7 @@ public struct StreamProjection: Equatable, Sendable {
             // The first delta of a block this projection already holds names
             // that block: the rest of its deltas follow, and the text is
             // already here.
-            if let id = event.id, let index = messages.firstIndex(where: { $0.id == id }) {
+            if let id = event.id, let index = indexById[id] {
                 currentAssistantId = messages[index].id
                 replayingMessage = true
                 activity = .working
@@ -639,12 +652,12 @@ public struct StreamProjection: Equatable, Sendable {
             // itself, so it must not still claim a tool is running.
             activity = .working
             if let current = currentAssistantId,
-               let index = messages.firstIndex(where: { $0.id == current }) {
+               let index = indexById[current] {
                 messages[index].text += delta
             } else {
                 let id = event.id ?? "a-\(messages.count)"
                 currentAssistantId = id
-                messages.append(ChatMessage(id: id, role: .assistant, text: delta, at: stamp))
+                appendMessage(ChatMessage(id: id, role: .assistant, text: delta, at: stamp))
             }
         case "message.completed":
             let full = EveStream.stripThreadPrefix(event.message ?? "")
@@ -653,7 +666,7 @@ public struct StreamProjection: Equatable, Sendable {
                 // The completion is authoritative: a replay of a message
                 // already here rewrites it in place rather than appending a
                 // copy of the same reply.
-                if let id = event.id, let index = messages.firstIndex(where: { $0.id == id }) {
+                if let id = event.id, let index = indexById[id] {
                     messages[index].text = full
                     if messages[index].at == nil { messages[index].at = stamp }
                     currentAssistantId = nil
@@ -661,13 +674,13 @@ public struct StreamProjection: Equatable, Sendable {
                     return
                 }
                 if let current = currentAssistantId,
-                   let index = messages.firstIndex(where: { $0.id == current }) {
+                   let index = indexById[current] {
                     messages[index].text = full
                     // The deltas may have been undated (a replay without
                     // `meta.at`); the completion's stamp still lands.
                     if messages[index].at == nil { messages[index].at = stamp }
                 } else {
-                    messages.append(ChatMessage(
+                    appendMessage(ChatMessage(
                         id: event.id ?? "a-\(messages.count)",
                         role: .assistant,
                         text: full,

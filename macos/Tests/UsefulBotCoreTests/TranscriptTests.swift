@@ -59,6 +59,33 @@ import Testing
         #expect(rows[1].author == "Writer")
     }
 
+    @Test func attributionFollowsTheNewestUserTurnAcrossARunOfReplies() {
+        let roster = [
+            Speaker(id: "b1", kind: "bot", name: "Writer", title: ""),
+            Speaker(id: "b2", kind: "bot", name: "Research", title: ""),
+        ]
+        var tagged = TranscriptRow(id: "a3", kind: .assistant, text: "mine")
+        tagged.authorBotId = "b2"
+        tagged.author = "Research"
+        let rows = Transcript.attributeGroupReplies(
+            [
+                TranscriptRow(id: "a0", kind: .assistant, text: "before any user turn"),
+                TranscriptRow(id: "u1", kind: .user, text: "@Writer tighten this"),
+                TranscriptRow(id: "a1", kind: .assistant, text: "one"),
+                TranscriptRow(id: "n1", kind: .note, text: "a note in between"),
+                TranscriptRow(id: "a2", kind: .assistant, text: "two"),
+                tagged,
+                TranscriptRow(id: "u2", kind: .user, text: "@Writer and @Research both"),
+                TranscriptRow(id: "a4", kind: .assistant, text: "two mentions"),
+                TranscriptRow(id: "u3", kind: .user, text: "@Research check it"),
+                TranscriptRow(id: "a5", kind: .assistant, text: "checked"),
+            ],
+            roster: roster
+        )
+        #expect(rows.map(\.authorBotId) == [nil, nil, "b1", nil, "b1", "b2", nil, nil, nil, "b2"])
+        #expect(rows[5].author == "Research")
+    }
+
     @Test func untargetedGroupRepliesStayUnattributed() {
         let user = TranscriptRow(id: "u1", kind: .user, text: "kick off")
         let reply = TranscriptRow(id: "a1", kind: .assistant, text: "on it")
