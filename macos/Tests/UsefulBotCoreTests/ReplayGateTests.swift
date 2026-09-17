@@ -105,3 +105,93 @@ import Testing
         #expect(ReplayGate.reachedLiveTail(durable: durable, event: streamed("message.completed", id: "a1")))
     }
 }
+
+/// Coming back to a chat that had finished flashed a working row for a beat.
+/// `StreamProjection.pending` is true for the tail of every replayed turn,
+/// between its last reply and the `turn.completed` after it, so the reload read
+/// settled history as a turn in flight.
+@Suite struct LiveTurnTests {
+    private func event(_ type: String, id: String = "e") -> EveEvent {
+        EveEvent(type: type, id: id)
+    }
+
+    @Test func replayingAFinishedTurnIsNotWork() {
+        var live = ReplayGate.LiveTurn()
+        // History, before the replay catches up: none of it is running.
+        live.apply(event("message.received", id: "u1"), atLiveTail: false)
+        #expect(!live.running)
+        live.apply(event("message.appended", id: "d1"), atLiveTail: false)
+        #expect(!live.running)
+        // The tail itself opens the gate, and what follows is the same
+        // finished turn ending. That stretch is the flash.
+        live.apply(event("message.completed", id: "a1"), atLiveTail: true)
+        #expect(!live.running)
+        live.apply(event("turn.completed", id: "t1"), atLiveTail: true)
+        #expect(!live.running)
+    }
+
+    @Test func aTurnThatBeginsAfterTheTailIsWork() {
+        var live = ReplayGate.LiveTurn()
+        live.apply(event("message.completed", id: "a1"), atLiveTail: true)
+        #expect(!live.running)
+        // A handoff or a routine started while the owner was in another chat.
+        live.apply(event("turn.started", id: "t2"), atLiveTail: true)
+        #expect(live.running)
+        live.apply(event("message.appended", id: "d2"), atLiveTail: true)
+        #expect(live.running)
+        live.apply(event("turn.completed", id: "t2-end"), atLiveTail: true)
+        #expect(!live.running)
+    }
+
+    @Test func aFreshChatsFirstTurnIsWork() {
+        // No durable rows at all, so the gate is open from the first event.
+        var live = ReplayGate.LiveTurn()
+        live.apply(event("message.received", id: "u1"), atLiveTail: true)
+        #expect(live.running)
+    }
+
+    @Test func everyWayATurnEndsStopsTheRow() {
+        for ending in ["turn.completed", "turn.cancelled", "turn.failed",
+                       "session.completed", "session.failed", "session.waiting"] {
+            var live = ReplayGate.LiveTurn()
+            live.apply(event("message.received", id: "u1"), atLiveTail: true)
+            #expect(live.running, "\(ending) setup")
+            live.apply(event(ending, id: "end"), atLiveTail: true)
+            #expect(!live.running, "\(ending) should stop the working row")
+        }
+    }
+
+    @Test func aParkedSessionDoesNotReadAsWork() {
+        // eve writes a session's terminal event after this read sometimes, so
+        // the replay can simply run out. That is not a turn in flight.
+        var live = ReplayGate.LiveTurn()
+        live.apply(event("message.received", id: "u1"), atLiveTail: false)
+        live.apply(event("message.completed", id: "a1"), atLiveTail: true)
+        #expect(!live.running)
+    }
+
+    @Test func aNovelStartProvesTheTurnIsNowWithoutWaitingForAPause() {
+        // The durable store holds a row for every user and assistant message,
+        // so an id it does not know arrived after the reload read the
+        // transcript. A turn that streams straight out of the history burst
+        // with no gap is still proved live by that.
+        var live = ReplayGate.LiveTurn()
+        live.apply(event("message.received", id: "u-new"), atLiveTail: true, novel: true)
+        #expect(live.running)
+        #expect(live.novelStart)
+        live.apply(event("turn.completed", id: "t-end"), atLiveTail: true)
+        #expect(!live.running)
+        #expect(!live.novelStart)
+    }
+
+    @Test func aCardTurnsOwnUserRowIsNotNovel() {
+        // A turn ending in a card leaves the durable tail on the owner's own
+        // message, so the gate opens there and `running` goes true. That row is
+        // already durable, so it is not novel, and the working row waits for
+        // the burst to go quiet rather than flashing.
+        var live = ReplayGate.LiveTurn()
+        live.apply(event("message.received", id: "u-durable"), atLiveTail: true, novel: false)
+        #expect(live.running)
+        #expect(!live.novelStart)
+    }
+}

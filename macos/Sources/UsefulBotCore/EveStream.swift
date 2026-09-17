@@ -182,6 +182,35 @@ public struct TurnFailure: Equatable, Sendable {
     public var message: String { reason ?? "The turn failed." }
 }
 
+/// How a send ended, and whether the banner it put up may be retried by
+/// sending the turn again.
+public struct SendFailure: Equatable, Sendable {
+    public let message: String
+    /// True only for a turn that ran and failed. Everything else leaves the
+    /// owner's last transcript row belonging to some other turn, and resending
+    /// from there files a second copy of a turn the server already answered:
+    /// "The reply could not be read" and "The session pointer could not be
+    /// saved" both leave the turn running, "The turn did not start" means the
+    /// POST was taken but its echo never arrived, and a send that failed
+    /// before delivery hands its text back to the composer instead.
+    public let resendable: Bool
+
+    public init(message: String, resendable: Bool) {
+        self.message = message
+        self.resendable = resendable
+    }
+
+    /// Whether the failure banner on screen may be answered by resending the
+    /// owner's last message. A replay that ends on a failed turn is reason
+    /// enough on its own; otherwise only a failure that says the turn never
+    /// ran qualifies. Everything else reloads, which is what the button did
+    /// before it learned to resend, and never duplicates a turn.
+    public static func mayResend(failure: SendFailure?, replayEndedFailed: Bool) -> Bool {
+        if replayEndedFailed { return true }
+        return failure?.resendable == true
+    }
+}
+
 /// One NDJSON event from an eve session stream.
 public struct EveEvent: Decodable, Equatable, Sendable {
     public let type: String
