@@ -204,6 +204,9 @@ final class AppModel: ObservableObject {
     private var storeEpoch = 0
     /// A send's own failure banner, preserved across its trailing reload.
     private var stickyThreadError: String?
+    /// A quiet stretch this long inside a session replay means the history
+    /// burst is over. The loopback server sends it as fast as it can read it.
+    private static let replayBurstGap: TimeInterval = 0.35
     private var loadGeneration = 0
     /// Bumped once per owner-initiated send. The transcript watches it to jump
     /// to the newest turn: sending is an explicit request to watch the answer,
@@ -556,6 +559,13 @@ final class AppModel: ObservableObject {
                 // the working row and the tokens as they arrive.
                 let durable = ReplayGate.Durable(events: state.events)
                 var atLiveTail = durable.startsLive
+                // History arrives in one burst from the loopback server, so a
+                // gap in it means the burst is over and whatever comes next is
+                // happening now. Until then every event is the past being read
+                // back, however recent: a card dismissed a second ago replays
+                // exactly like one dismissed an hour ago.
+                var lastEventAt = Date()
+                var drained = false
                 // A replay is never applied over rows that are already on
                 // screen. The projection forgets the oldest event ids it has
                 // seen, so a session longer than that cache re-appended the
@@ -589,6 +599,9 @@ final class AppModel: ObservableObject {
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
+                    let now = Date()
+                    if now.timeIntervalSince(lastEventAt) > Self.replayBurstGap { drained = true }
+                    lastEventAt = now
                     liveTurn.apply(event, atLiveTail: atLiveTail)
                     if swapped {
                         projection.apply(event, live: atLiveTail)
@@ -609,10 +622,13 @@ final class AppModel: ObservableObject {
                         }
                     }
                     // Publish either way, so a turn that is running paints its
-                    // tokens as they arrive. The working row is the part that
-                    // needs a turn to actually be in flight.
+                    // tokens as they arrive. The working row waits for a turn
+                    // that is in flight AND for the replay to have drained:
+                    // mid-burst, a finished turn reads as pending for the
+                    // stretch between its last reply and its terminal event,
+                    // and that is what flashed a working row on a settled chat.
                     if swapped, atLiveTail {
-                        let working = liveTurn.running && projection.pending
+                        let working = drained && liveTurn.running && projection.pending
                         if backgroundWorking != working { backgroundWorking = working }
                         markWorking(bot.id, working)
                         publishTranscript()
