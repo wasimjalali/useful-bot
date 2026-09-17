@@ -568,6 +568,10 @@ final class AppModel: ObservableObject {
                 }
                 for try await event in client.stream(sessionId: sessionId) {
                     guard generation == loadGeneration else { return }
+                    // A send started while this replay was running. It owns the
+                    // projection from that moment, and the row it painted must
+                    // not be replaced by a replay that predates it.
+                    if sendTasks[bot.id] != nil { return }
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
                     }
@@ -575,8 +579,14 @@ final class AppModel: ObservableObject {
                         projection.apply(event, live: atLiveTail)
                     } else {
                         replay.apply(event, live: atLiveTail)
+                        // Equal counts only settle it once there is a row to
+                        // compare: with none on screen, the swap waits for the
+                        // replay's first message rather than firing on the
+                        // session's first event and dropping a kept turn's
+                        // working state.
                         let caughtUp = replay.messages.count > baseline
-                            || (replay.messages.count == baseline
+                            || (baseline > 0
+                                && replay.messages.count == baseline
                                 && (replay.messages.last?.text.count ?? 0) >= baselineTail)
                         if caughtUp {
                             projection = replay
@@ -589,7 +599,7 @@ final class AppModel: ObservableObject {
                         publishTranscript()
                     }
                 }
-                if !swapped {
+                if !swapped, sendTasks[bot.id] == nil {
                     // The session holds fewer messages than the rows on screen
                     // (it was cleared or replaced elsewhere). The replay is
                     // still the authority on what this chat is.
