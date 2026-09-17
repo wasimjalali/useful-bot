@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -87,6 +87,8 @@ export function webLaunch(root, env = process.env) {
   return { mode: "production", reason: "web_build_fresh", server };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "--stamp") {
+// Real paths on both sides: a checkout reached through a symlink would
+// otherwise never match, and the build would go unstamped without a word.
+if (process.argv[2] === "--stamp" && process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   stampBuild(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 }

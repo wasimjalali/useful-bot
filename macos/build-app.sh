@@ -25,8 +25,11 @@ done
   rm -rf web/.next/standalone/web/.next/static web/.next/standalone/web/public
   cp -R web/.next/static web/.next/standalone/web/.next/static
   cp -R web/public web/.next/standalone/web/public
-  # The build repoints this tracked file from the dev types to the build types.
-  git checkout -- web/next-env.d.ts
+  # The build repoints this generated, tracked file from the dev types to the
+  # build types. Put back so a release build leaves the tree clean.
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git checkout -- web/next-env.d.ts
+  fi
   "$NODE" scripts/web-mode.mjs --stamp
 )
 

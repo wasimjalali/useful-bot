@@ -224,7 +224,8 @@ async function main() {
         NODE_ENV: "production",
         HOSTNAME: "127.0.0.1",
         PORT: "4320",
-        UB_APP_VERSION: version,
+        // Unset rather than "undefined" when package.json names no version.
+        ...(typeof version === "string" && version ? { UB_APP_VERSION: version } : {}),
       });
       return;
     }
