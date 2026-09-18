@@ -198,6 +198,11 @@ export function outsideFolderRisk(command: string, root: string): string | null 
   return null;
 }
 
+/** find predicates that pick files by name, age or size rather than sweep. */
+const FIND_NARROWING = new Set([
+  "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
+  "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-newermt", "-size", "-empty",
+]);
 /** Removers whose targets say how much a line deletes. */
 const REMOVERS = new Set(["rm", "rimraf", "trash", "srm", "shred"]);
 /** Escalators peeled the way wrappers are, so `sudo rm -rf /` still sees `rm`. */
@@ -311,6 +316,12 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     }
     return null;
   }
+  // `su root -c 'rm -rf ~'` runs its argument as another user.
+  if (name === "su") {
+    const at = rest.findIndex((token) => token.text === "-c" || token.text === "--command");
+    const payload = at >= 0 ? rest[at + 1]?.text : undefined;
+    return payload ? wipeRisk(payload, root, home, depth) : null;
+  }
   // `sh -c "rm -rf ~/Documents"` runs its argument, `bash tidy.sh` runs a
   // script from disk: either is judged as lines of its own.
   if (SHELLS.has(name)) {
@@ -361,12 +372,14 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     if (broad) return `wipes ${broad} (rsync --delete)`;
     return null;
   }
-  // `ls ~ | xargs rm -rf` removes whatever the pipe named.
+  // `ls ~ | xargs rm -rf` removes whatever the pipe named; a find that
+  // picked files by name feeds only those.
   if (name === "xargs") {
     let i = 0;
     while (i < rest.length && rest[i].text.startsWith("-")) i += XARGS_VALUED.has(rest[i].text) ? 2 : 1;
     const inner = rest.slice(i);
     if (inner.length > 0 && REMOVERS.has(basename(inner[0].text))) {
+      if (pipeSource.some((token) => FIND_NARROWING.has(token.text))) return null;
       for (const token of pipeSource) {
         if (token.text.startsWith("-") && !token.quoted) continue;
         const broad = broadPath(token.text, root, home);
@@ -381,6 +394,9 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     const deletes = flags.includes("-delete")
       || flags.some((flag, at) => (flag === "-exec" || flag === "-execdir" || flag === "-ok" || flag === "-okdir") && REMOVERS.has(basename(flags[at + 1] ?? "")));
     if (!deletes) return null;
+    // `find ~ -name '*.log' -delete` removes the matching files, not the
+    // area: an everyday delete. Only an unfiltered sweep is a wipe.
+    if (flags.some((flag) => FIND_NARROWING.has(flag))) return null;
     // The starting points come before the first expression flag, after
     // find's own leading options (`find -H / -delete`); none means the
     // current directory.
