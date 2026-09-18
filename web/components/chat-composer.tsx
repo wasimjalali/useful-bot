@@ -487,7 +487,7 @@ export function ChatComposer({
       ].join(" ")}
       disabled={disabled}
       id="chat-question"
-      maxLength={2000}
+      maxLength={40000}
       name="message"
       onChange={(event) => onChange(event.target.value)}
       onKeyDown={handleKeyDown}
