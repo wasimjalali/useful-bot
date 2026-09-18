@@ -684,6 +684,11 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
   // Quoted wipe text fed to a shell is the line itself.
   assert.notEqual(wipeRisk("echo 'rm -rf ~/Documents' | sh", home, home), null);
   assert.notEqual(wipeRisk("printf 'rm -rf ~' | bash", home, home), null);
+  assert.notEqual(wipeRisk("echo rm -rf ~ | bash", home, home), null);
+  assert.notEqual(wipeRisk("echo 'rm -rf ~/Documents' | (sh)", home, home), null);
+  assert.notEqual(wipeRisk("find ~ \\( -type f -o -type d \\) -delete", home, home), null);
+  assert.equal(wipeRisk("find ~ \\( -name '*.a' -o -name '*.b' \\) -delete", home, home), null);
+  assert.equal(wipeRisk("echo rm -rf build | sh", deep, deep, home), null);
   assert.equal(wipeRisk("echo 'rm -rf build' | sh", deep, deep, home), null);
   // A cd inside a subshell ends with it.
   assert.notEqual(wipeRisk("(cd /Users/owner/Desktop/project && rm -rf .) ; rm -rf .", home, home), null);

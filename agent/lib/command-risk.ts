@@ -366,10 +366,16 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
     }
     const script = rest.find((token) => !token.text.startsWith("-") && !token.text.startsWith("<") || token.quoted)?.text;
     if (script) return scriptWipe(script, root, home, ownerHome, depth);
-    // `echo 'rm -rf ~' | sh` feeds the line itself.
+    // `echo 'rm -rf ~' | sh` and `echo rm -rf ~ | sh` feed the line itself.
     for (const token of pipeSource) {
       const piped = token.quoted ? wipeRisk(token.text, root, home, ownerHome, depth + 1) : null;
       if (piped) return piped;
+    }
+    const feeder = peelWrappers(pipeSource);
+    if (feeder.length > 1 && /^(echo|printf)$/.test(basename(feeder[0].text))) {
+      const line = feeder.slice(1).filter((token) => !token.text.startsWith("-") || token.quoted).map((token) => token.text).join(" ");
+      const echoed = wipeRisk(line, root, home, ownerHome, depth + 1);
+      if (echoed) return echoed;
     }
     // `bash < tidy.sh` and `cat tidy.sh | bash` feed the same script.
     const fed = [
@@ -1151,10 +1157,16 @@ function split(tokens: (Token | { separator: string })[]): Segment[] {
   let opens = 0;
   for (const item of tokens) {
     if ("separator" in item) {
-      if (current.length > 0) segments.push({ tokens: current, pipedInto, opens, closes: 0 });
-      if (current.length > 0) opens = 0;
+      const pushed = current.length > 0;
+      if (pushed) segments.push({ tokens: current, pipedInto, opens, closes: 0 });
+      if (pushed) opens = 0;
       current = [];
-      pipedInto = item.separator === "|";
+      // A paren is not a pipe boundary: `echo x | (sh)` still pipes into sh.
+      if (item.separator === "(" || item.separator === ")") {
+        if (pushed) pipedInto = false;
+      } else {
+        pipedInto = item.separator === "|";
+      }
       if (item.separator === "(") opens += 1;
       // A close belongs to the segment it ends; one with nothing before it
       // (`()`) closes the open that never held a segment.
