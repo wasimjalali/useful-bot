@@ -23,6 +23,16 @@ public enum TranscriptBlock: Equatable, Sendable, Identifiable {
         case .summary(let id, _, _): return id
         }
     }
+
+    var isDayDivider: Bool {
+        if case .dayDivider = self { return true }
+        return false
+    }
+
+    var isMessage: Bool {
+        if case .message = self { return true }
+        return false
+    }
 }
 
 public enum TranscriptBlocks {
@@ -139,6 +149,65 @@ public enum TranscriptBlocks {
 
         flushRun()
         return blocks
+    }
+
+    /// What the transcript mounts of a long chat: the newest blocks, behind a
+    /// "Show earlier messages" row for the rest.
+    public struct Window: Equatable, Sendable {
+        public var blocks: [TranscriptBlock]
+        /// How many blocks sit above the window.
+        public var hidden: Int
+        /// The first block on screen, so the window can be held there while
+        /// the chat grows underneath.
+        public var startId: String? { blocks.first(where: { !$0.isDayDivider })?.id }
+
+        public init(blocks: [TranscriptBlock], hidden: Int) {
+            self.blocks = blocks
+            self.hidden = hidden
+        }
+    }
+
+    /// How many blocks a chat shows before the rest go behind the row.
+    public static let windowMinimum = 60
+
+    /// The last `minimum` blocks, or everything from `startId` on once the
+    /// reader has asked for more, extended so the newest turn is always whole
+    /// (the reply's height is summed from every one of its bubbles, and the
+    /// completion scroll targets its first) and so the window opens under the
+    /// day divider its first row belongs to. The window never slides: a chat
+    /// that grows keeps its first block, so a row the reader is looking at is
+    /// not pulled out from under them, and a `startId` that has left the list
+    /// (a cleared chat) falls back to the newest blocks.
+    public static func window(
+        _ blocks: [TranscriptBlock],
+        startId: String?,
+        minimum: Int = windowMinimum
+    ) -> Window {
+        guard blocks.count > minimum else { return Window(blocks: blocks, hidden: 0) }
+        var start = blocks.count - minimum
+        if let startId, let held = blocks.firstIndex(where: { $0.id == startId }) {
+            start = min(start, held)
+        }
+        // The newest turn: from the last thing said to the bot to the end.
+        if let turn = blocks.lastIndex(where: { block in
+            if case .message(let row, _) = block { return row.kind == .user || row.kind == .post }
+            return false
+        }) {
+            start = min(start, turn)
+        }
+        // A strip that summarises a run cut off above it says "2 messages
+        // with" over nothing; a divider is put back below instead.
+        while start < blocks.count - 1, !blocks[start].isMessage { start += 1 }
+        // Nothing but dividers above the cut means nothing to show: the
+        // row would otherwise stay up over a chat that is already whole.
+        guard blocks[..<start].contains(where: \.isMessage) else {
+            return Window(blocks: blocks, hidden: 0)
+        }
+        var window = Array(blocks[start...])
+        if let divider = blocks[..<start].last(where: { $0.isDayDivider }) {
+            window.insert(divider, at: 0)
+        }
+        return Window(blocks: window, hidden: start)
     }
 
     /// The bubbles that follow another bubble from the same bot with nothing

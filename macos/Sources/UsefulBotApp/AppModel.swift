@@ -26,8 +26,19 @@ final class AppModel: ObservableObject {
         didSet {
             continuationIds = TranscriptBlocks.continuationIds(transcriptBlocks)
             latestReplyRunIds = TranscriptBlocks.latestReplyRunIds(transcriptBlocks)
+            republishWindow()
         }
     }
+    /// What the transcript mounts: the newest blocks, and everything back to
+    /// where the reader last asked for more. The rest sits behind the "Show
+    /// earlier messages" row. Layout used to scale with the whole history on
+    /// every real change, tables included, because the transcript is an eager
+    /// stack and has to stay one: the reply-height sum and the tall-reply
+    /// anchor both need the newest reply mounted whole.
+    @Published private(set) var transcriptWindow = TranscriptBlocks.Window(blocks: [], hidden: 0)
+    /// Per bot, the first block the reader expanded the window back to. Held
+    /// for the session so a chat comes back the way it was left.
+    private var windowStarts: [String: String] = [:]
     /// Derived with the blocks, not in the view: the chat body re-evaluates on
     /// every composer keystroke.
     private(set) var continuationIds = Set<String>()
@@ -1709,6 +1720,35 @@ final class AppModel: ObservableObject {
         send(option.label)
     }
 
+    /// Mount another `TranscriptBlocks.windowMinimum` blocks above the window.
+    /// `windowExpandedFrom` is the block that was first before this, so the
+    /// transcript can hold it where the reader had it: a prepend leaves the
+    /// scroll offset where it was, which is the top of the new rows.
+    func showEarlierMessages() {
+        guard let selectedBotId, transcriptWindow.hidden > 0 else { return }
+        let start = max(0, transcriptWindow.hidden - TranscriptBlocks.windowMinimum)
+        windowExpandedFrom = transcriptWindow.startId
+        windowStarts[selectedBotId] = transcriptBlocks[start].id
+        republishWindow()
+    }
+
+    private var windowExpandedFrom: String?
+
+    /// The block to hold after an expansion, once. A later shrink of the
+    /// hidden count (a cleared or replaced session) must not chase it.
+    func takeWindowExpandedFrom() -> String? {
+        defer { windowExpandedFrom = nil }
+        return windowExpandedFrom
+    }
+
+    private func republishWindow() {
+        let window = TranscriptBlocks.window(
+            transcriptBlocks,
+            startId: selectedBotId.flatMap { windowStarts[$0] }
+        )
+        if window != transcriptWindow { transcriptWindow = window }
+    }
+
     private func publishTranscript(force: Bool = false) {
         let now = Date()
         let since = now.timeIntervalSince(lastTranscriptPublish)
@@ -1753,14 +1793,22 @@ final class AppModel: ObservableObject {
         if rows.isEmpty, !transcriptReady, let selectedBotId, let cached = transcriptCache[selectedBotId] {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
-            searchHits = projection.searchHits
+            if searchHits != projection.searchHits { searchHits = projection.searchHits }
             publishQuestions()
             publishActivity()
             return
         }
-        transcript = rows
-        transcriptBlocks = TranscriptBlocks.build(rows: rows, selectedBotId: selectedBotId)
-        searchHits = projection.searchHits
+        // A reload that confirmed the rows already on screen (a chat switch
+        // back, a durable echo of what the stream painted) publishes nothing:
+        // each of these two writes invalidates the whole window and lays the
+        // transcript out again. The blocks are compared too, not only the
+        // rows, because a day label moves at midnight with no row changing.
+        let blocks = TranscriptBlocks.build(rows: rows, selectedBotId: selectedBotId)
+        if rows != transcript || blocks != transcriptBlocks {
+            transcript = rows
+            transcriptBlocks = blocks
+        }
+        if searchHits != projection.searchHits { searchHits = projection.searchHits }
         publishQuestions()
         publishActivity()
         // An empty result only replaces the cache once the load has finished
@@ -2393,6 +2441,9 @@ final class AppModel: ObservableObject {
         pendingPublish?.cancel()
         pendingPublish = nil
         transcriptReady = false
+        // A switch to a shorter chat also shrinks the hidden count, and the
+        // re-anchor must not chase a block of the chat just left.
+        windowExpandedFrom = nil
         durableEvents = []
         proposals = []
         projection = StreamProjection()

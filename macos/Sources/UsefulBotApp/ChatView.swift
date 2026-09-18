@@ -349,7 +349,10 @@ struct ChatView: View {
         // Built once per transcript change in the model, not once per body.
         // This view re-evaluates on every keystroke in the composer, and
         // regrouping several hundred rows there is what made typing stutter.
-        let blocks = model.transcriptBlocks
+        // Only the window is mounted: the newest blocks, always the whole
+        // newest turn, and older ones as the reader asks for them. The stack
+        // stays eager on purpose (see `AppModel.transcriptWindow`).
+        let window = model.transcriptWindow
         return ScrollViewReader { proxy in
             ScrollView {
                     VStack(alignment: .leading, spacing: DesignTokens.Space.transcriptGap) {
@@ -363,7 +366,10 @@ struct ChatView: View {
                                 onDismiss: { model.dismissOnboarding(botId: bot.id) }
                             )
                         }
-                        ForEach(blocks) { block in
+                        if window.hidden > 0 {
+                            ShowEarlierRow { model.showEarlierMessages() }
+                        }
+                        ForEach(window.blocks) { block in
                             switch block {
                             case .dayDivider(_, let label):
                                 DayDividerRow(label: label)
@@ -378,7 +384,9 @@ struct ChatView: View {
                                 .equatable()
                                 // One turn can post several bubbles; they
                                 // stack close so the turn still reads as one.
-                                .padding(.top, model.continuationIds.contains(row.id)
+                                // Not the first mounted bubble: the one it
+                                // would stack under is behind the row.
+                                .padding(.top, model.continuationIds.contains(row.id) && row.id != window.startId
                                     ? DesignTokens.Space.bubbleStackGap - DesignTokens.Space.transcriptGap
                                     : 0)
                                 // Only the newest reply measures itself, and
@@ -461,6 +469,15 @@ struct ChatView: View {
                 // is shorter than the window and SwiftUI had already placed.
                 .onChange(of: model.sendTick) { holdingReplyAnchor = false }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
+                // The reader asked for earlier messages. Those mount above
+                // the row they were reading, and the scroll offset stays
+                // where it was, which would now be the top of the new rows;
+                // the row they had is put back at the top instead. Theirs
+                // to ask for, so it is not the transcript moving on its own.
+                .onChange(of: model.transcriptWindow.hidden) { before, after in
+                    guard after < before, let held = model.takeWindowExpandedFrom() else { return }
+                    scrollWithoutAnimation(proxy, to: held)
+                }
                 // The single exception: an answer taller than the window is
                 // read from its first line, so the view moves there once, when
                 // the turn finishes. A reply that already fits is left alone.
@@ -553,6 +570,33 @@ private struct ChatColumnWidthKey: PreferenceKey {
 }
 
 /// The centered date rule from the Grok Bot reference: "Today 5:10 PM".
+/// The row above a windowed transcript. Mounts the next stretch of history;
+/// `defaultScrollAnchor(.bottom)` keeps what was on screen in place while
+/// the rows above it appear.
+private struct ShowEarlierRow: View {
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Button(action: action) {
+                Text("Show earlier messages")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Theme.C.bubbleBot)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 private struct DayDividerRow: View {
     let label: String
 

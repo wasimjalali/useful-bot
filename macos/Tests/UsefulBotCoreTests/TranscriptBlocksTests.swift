@@ -262,4 +262,89 @@ import Testing
         #expect(TranscriptBlocks.continuationIds(blocks) == ["n1", "a2"])
         #expect(TranscriptBlocks.latestReplyRunIds(blocks) == ["a1", "a2", "a3"])
     }
+
+    // MARK: - Window
+
+    /// `turns` user and reply pairs, one a minute, across two days.
+    private func longChat(turns: Int) -> [TranscriptBlock] {
+        var rows: [TranscriptRow] = []
+        for turn in 0..<turns {
+            let day = turn < turns / 2 ? "12" : "13"
+            let minute = String(format: "%02d", turn % 60)
+            let hour = String(format: "%02d", turn / 60)
+            rows.append(TranscriptRow(id: "u\(turn)", kind: .user, text: "q", at: date("2026-09-\(day)T\(hour):\(minute):00Z")))
+            rows.append(TranscriptRow(id: "a\(turn)", kind: .assistant, text: "a", at: date("2026-09-\(day)T\(hour):\(minute):30Z")))
+        }
+        return build(rows)
+    }
+
+    @Test func aShortChatIsMountedWhole() {
+        let blocks = longChat(turns: 10)
+        let window = TranscriptBlocks.window(blocks, startId: nil, minimum: 60)
+        #expect(window.blocks == blocks)
+        #expect(window.hidden == 0)
+    }
+
+    @Test func aLongChatMountsItsNewestBlocksUnderTheirDayDivider() {
+        let blocks = longChat(turns: 100)
+        let window = TranscriptBlocks.window(blocks, startId: nil, minimum: 20)
+        #expect(window.hidden == blocks.count - 20)
+        // The cut lands inside the second day, so its divider is put back.
+        #expect(window.blocks.first == .dayDivider(id: dayID("2026-09-13T00:00:00Z"), label: "Yesterday"))
+        #expect(window.blocks.dropFirst().map(\.id) == blocks.suffix(20).map(\.id))
+        // The newest reply is in, so its height and its anchor are measurable.
+        #expect(window.blocks.map(\.id).contains("a99"))
+    }
+
+    @Test func theNewestTurnIsAlwaysWhole() {
+        var rows: [TranscriptRow] = [TranscriptRow(id: "u0", kind: .user, text: "q")]
+        rows.append(TranscriptRow(id: "u1", kind: .user, text: "long one"))
+        for reply in 0..<30 {
+            rows.append(TranscriptRow(id: "a\(reply)", kind: .assistant, text: "part"))
+        }
+        let blocks = build(rows)
+        let window = TranscriptBlocks.window(blocks, startId: nil, minimum: 5)
+        #expect(window.blocks.first?.id == "u1")
+        #expect(window.hidden == 1)
+    }
+
+    @Test func theWindowHoldsItsFirstBlockWhileTheChatGrows() {
+        let blocks = longChat(turns: 100)
+        let held = TranscriptBlocks.window(blocks, startId: "u70", minimum: 20)
+        #expect(held.blocks.dropFirst().first?.id == "u70")
+        #expect(held.hidden == blocks.firstIndex(where: { $0.id == "u70" }))
+        // Twenty more turns land: the same first block, nothing slides away.
+        let grown = longChat(turns: 120)
+        let after = TranscriptBlocks.window(grown, startId: "u70", minimum: 20)
+        #expect(after.blocks.dropFirst().first?.id == "u70")
+        #expect(after.blocks.count == held.blocks.count + 40)
+    }
+
+    @Test func expandingToTheFirstMessageMountsTheChatWhole() {
+        let blocks = longChat(turns: 20)
+        // The chat opens with a day divider; holding it is holding the top.
+        let window = TranscriptBlocks.window(blocks, startId: blocks[0].id, minimum: 10)
+        #expect(window.hidden == 0)
+        #expect(window.blocks == blocks)
+    }
+
+    @Test func aHeldBlockThatLeftTheListFallsBackToTheNewest() {
+        let blocks = longChat(turns: 100)
+        let window = TranscriptBlocks.window(blocks, startId: "gone", minimum: 20)
+        #expect(window.hidden == blocks.count - 20)
+    }
+
+    @Test func aRunSummaryNeverOpensTheWindow() {
+        var rows: [TranscriptRow] = []
+        for turn in 0..<10 {
+            rows.append(TranscriptRow(id: "u\(turn)", kind: .user, text: "q"))
+            rows.append(TranscriptRow(id: "a\(turn)", kind: .assistant, text: "a", authorBotId: "growth"))
+            rows.append(TranscriptRow(id: "b\(turn)", kind: .assistant, text: "b", authorBotId: "growth"))
+        }
+        let blocks = build(rows)
+        // Each turn is u, a, b, summary: a cut of 9 lands on a summary strip.
+        let window = TranscriptBlocks.window(blocks, startId: nil, minimum: 9)
+        #expect(window.blocks.first?.id == "u8")
+        #expect(window.hidden == blocks.count - 8)
+    }
 }

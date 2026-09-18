@@ -37,6 +37,47 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
+## Batch 5: a chat switch publishes nothing it already shows, and long chats mount a window (PR: perf/windowed-transcript)
+
+Measured as CPU seconds the app spent in the six seconds after a rail click (`ps -o cputime`
+before and after), installed build before, debug build after, both chats already opened once in
+the session so the switch comes back through the transcript cache:
+
+| Switch to | Before (main @ 5059b1a) | After |
+|---|---|---|
+| Generalist | 1.03 to 1.08 s | 0.03 to 0.04 s |
+| Drive Admin (3,504 events) | 1.92 to 1.96 s | 0.03 to 0.04 s |
+| Footprint | 98 MB | 98 MB |
+
+- **Problem.** A switch back to a chat put its cached rows on screen, then the reload replayed the
+  session and published the same rows again: two assignments to `@Published` values that every
+  view observes, and a second full layout of the transcript, tables included. The same happened on
+  every durable echo of what the stream had already painted.
+- **Fix.** `rebuildTranscript` builds the blocks, and assigns `transcript` and `transcriptBlocks`
+  only when either differs from what is published. Both are compared, not the rows alone, because a
+  day label moves at midnight with no row changing. `searchHits` is assigned on change too.
+- **Windowed transcript.** `TranscriptBlocks.window` mounts the newest 60 blocks and a "Show earlier
+  messages" row above them. The newest turn is always whole (the reply's height is summed from
+  every bubble and the completion scroll targets its first), the window opens under the day
+  divider its first row belongs to, never on a summary strip, and it never slides: the first block
+  is held per bot as the chat grows, so a row being read is not pulled away. The stack stays an
+  eager `VStack`, as Spark and GLM advised. Expanding re-anchors the block that was first, without
+  animation, because a prepend leaves the scroll offset at the top of the new rows (seen live).
+- **What it bought today: nothing measurable.** Neither chat on this machine has 60 blocks. Drive
+  Admin's 3,504 events are almost all tool activity; its transcript is a few dozen rows. The whole
+  switch gain above is the publish skip. The row, the expansion and the held place were verified
+  live on a build with the minimum set to 10, then restored. The window is insurance for the chat
+  that does grow, and it is bounded work either way.
+- **Found in review (Muse Spark).** Expanding to the top held the chat's leading day divider, which
+  the window then stepped past, so one block stayed "hidden" and the row never left (high): a window
+  with no message above its cut is now the whole chat. The re-anchor id was kept after use, so a
+  later shrink of the hidden count (a cleared session) would have scrolled to it (medium): it is
+  taken once. The first mounted bubble kept the tight gap it has under a bubble that was now behind
+  the row (low). All three fixed; the first is pinned by a test and was checked live.
+- **Caught by.** All five models filed the history-scaled layout; Spark and GLM set the window over
+  `LazyVStack`, GLM named the prepend jump and the seam identity, Astra (T-17) the cut-off reply. The
+  no-change publish skip was agreed as the cheap piece of Astra's P-1.
+
 ## Batch 4: the app icon was a 278 MB bitmap (PR: perf/brand-rasters)
 
 Measured with `footprint <pid>` on the installed app, settled 25 s after launch, Generalist open:
@@ -295,10 +336,9 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 |---|---|---|---|
 | Transient markdown cache for the growing reply | every streamed prefix is parsed again and kept, up to 2,048 entries | medium | Astra, Spark, GLM |
 | Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
-| Windowed transcript (last N blocks, "Show earlier") before any `LazyVStack` | layout still scales with history on a real change. Spark and GLM both advise the window first: laziness breaks the reply-height sum and the tall-reply anchor | high | all five |
 | One `WKWebView` per widget row, mounted eagerly | memory in widget-heavy chats | medium | all five |
 | Per-bot transcript caches have no eviction | memory grows with chats visited | medium | Astra, Spark, DeepSeek |
 | Server reads and parses whole JSON stores per poll; tick sweeps orphans every 2.5 s | event-loop stalls shared by all bots | medium | GLM, DeepSeek, HY4, Spark |
 
-Closed: the avatar timelines and 1024 px layers (batch 4). Deferred by decision: the cached chat
-switch resuming from its cursor.
+Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5).
+Deferred by decision: the cached chat switch resuming from its cursor.
