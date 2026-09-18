@@ -962,6 +962,27 @@ export function sweepOrphanState(): string[] {
   }
 }
 
+/**
+ * The sweep the tick runs, at most once a minute. It is maintenance, not the
+ * work, and at 6 ms of file reads per call it cost the event loop 145 ms a
+ * minute at the tick's 2.5 s cadence. Direct deletion still cleans up at its
+ * own call sites; this only decides how long a leftover can linger, which is
+ * now a minute rather than a tick. The first tick after a start sweeps.
+ */
+export const SWEEP_INTERVAL_MS = 60_000;
+let lastSweepAt: number | null = null;
+
+export function sweepOrphanStateIfDue(now = Date.now()): string[] {
+  if (lastSweepAt !== null && now - lastSweepAt < SWEEP_INTERVAL_MS) return [];
+  lastSweepAt = now;
+  return sweepOrphanState();
+}
+
+/** Test hook: the next tick sweeps again. */
+export function resetSweepClock(): void {
+  lastSweepAt = null;
+}
+
 export function routinesInFlight(): string[] {
   return [...routinesInflight];
 }

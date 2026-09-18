@@ -9,7 +9,7 @@ import {
   pumpRoutines,
   routinesInFlight,
   backgroundWorkingBotIds,
-  sweepOrphanState,
+  sweepOrphanStateIfDue,
 } from "../../../../lib/agent-exec";
 import { pumpConnects } from "../../../../../shared/connect-flow.ts";
 import { pumpConnections } from "../../../../../shared/connection-flow.ts";
@@ -81,7 +81,7 @@ export async function POST(request: Request) {
   // visible through the routines route, which needs no credential, and a
   // teardown that failed before a key was revoked would otherwise wait for one
   // to come back before it healed.
-  const swept = sweepOrphanState();
+  const swept = sweepOrphanStateIfDue();
   if (!agentsEnabled()) {
     return NextResponse.json({ ok: false, error: "agent_credential_missing", swept: swept.length }, { status: 503 });
   }
