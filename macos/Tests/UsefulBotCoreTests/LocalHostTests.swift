@@ -98,6 +98,8 @@ import Testing
         #expect(!LongMessage.mayFold(String(repeating: "x", count: 150)))
         #expect(LongMessage.mayFold(String(repeating: "x", count: 151)))
         #expect(LongMessage.mayFold((1...9).map(String.init).joined(separator: "\n")))
+        #expect(LongMessage.mayFold((1...9).map(String.init).joined(separator: "\r")))
+        #expect(LongMessage.mayFold((1...9).map(String.init).joined(separator: "\r\n")))
     }
 
     @Test func aFoldHasToHideAboutTwoLines() {

@@ -687,7 +687,7 @@ private struct UserBubbleView: View {
     /// document and jolted the scroll anchor.
     private var folds: Bool {
         guard mayFold else { return false }
-        if fullHeight == 0 && previewHeight == 0 { return true }
+        if fullHeight == 0 || previewHeight == 0 { return true }
         return LongMessage.hidesEnough(full: fullHeight, preview: previewHeight)
     }
 
