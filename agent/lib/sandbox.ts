@@ -19,7 +19,8 @@ export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 /** Names that never take a write inside the folder, whatever the mode. */
 const PROTECTED_NAMES = [
   ".env", ".ssh", ".aws", ".gnupg", ".netrc", "netrc", ".npmrc", ".pypirc",
-  ".docker", ".kube", "id_rsa", "id_ecdsa", "id_ed25519", "keychains", "auth.json",
+  ".docker", ".kube", ".kubeconfig", "id_rsa", "id_ecdsa", "id_ed25519", "keychain", "keychains", "auth.json",
+  "secrets", ".authinfo",
   // The user-domain stores, spelled as the disk spells them: the text
   // tripwire lowercases, the kernel does not.
   "Library/Keychains", "Library/Cookies",

@@ -90,6 +90,10 @@ test("the Full access profile writes anywhere but into credential files and the 
   assert.ok(full.includes('(deny file-write* (regex #"/config\\.fish($|[/.])"))'));
   assert.ok(full.includes('(deny file-write* (regex #"/\\.config/fish($|[/.])"))'));
   assert.ok(full.includes('(deny file-write* (regex #"/Library/Keychains($|[/.])"))'));
+  for (const name of ["secrets", "\\.authinfo", "\\.kubeconfig", "keychain"]) {
+    assert.ok(full.includes(`(deny file-write* (regex #"/${name}($|[/.])"))`), name);
+    assert.ok(full.includes(`(deny file-read* (regex #"/${name}($|[/.])"))`), name);
+  }
   assert.ok(full.includes('(deny file-read* (regex #"/Library/Cookies($|[/.])"))'));
   // Unbounded in a project folder: .env stays unreadable everywhere but
   // under the folder itself.
