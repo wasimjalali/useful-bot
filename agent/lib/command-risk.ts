@@ -17,7 +17,7 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 type Token = { text: string; quoted: boolean };
 
@@ -141,6 +141,8 @@ const WRAPPER_VALUED: Record<string, Set<string>> = {
   chroot: new Set(["-u", "-g", "--userspec", "--groups"]),
   arch: new Set(["-e", "-d"]),
   cpulimit: new Set(["-l", "-p"]),
+  sudo: new Set(["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U"]),
+  doas: new Set(["-u", "-C"]),
 };
 /** xargs options that take a value in the next token. */
 const XARGS_VALUED = new Set([
@@ -333,6 +335,14 @@ function broadPath(text: string, root: string, home: string): string | null {
   if (target === "*") target = ".";
   target = target.replace(/(\/\*{1,2}|\/\.)+\/?$/, "").replace(/\/+$/, "") || (text.startsWith("/") ? "/" : ".");
   const abs = resolve(root, target);
+  // A single file directly under the home (`rm ~/notes.txt`) is an
+  // everyday delete, not a wipe; only a folder or a name that is not there
+  // to look at is judged by its place.
+  try {
+    if (statSync(abs).isFile()) return null;
+  } catch {
+    // Missing or unreadable: judged by shape below.
+  }
   const parts = abs.split("/").filter(Boolean);
   if (parts.length === 0) return "the whole disk (/)";
   if (parts.length === 1) return `a top-level folder (${abs})`;
@@ -353,7 +363,7 @@ function broadPath(text: string, root: string, home: string): string | null {
 function expandHome(text: string, home: string): string {
   if (text === "~" || text.startsWith("~/")) return home + text.slice(1);
   if (/^\$\{?HOME\}?(\/|$)/.test(text)) return home + text.replace(/^\$\{?HOME\}?/, "");
-  if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) return `/${text}`;
+  if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) return join(dirname(home), text.slice(1));
   return text;
 }
 

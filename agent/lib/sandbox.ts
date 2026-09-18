@@ -61,6 +61,13 @@ export type SandboxScope = "folder" | "computer";
  * access: writes land anywhere on the Mac, and only the credential files,
  * the app's own stores and the shell startup files stay refused.
  */
+/**
+ * System paths the text tripwire in `bash` refuses by substring. The scoped
+ * profiles never allowed a write there; the unbounded one says so itself,
+ * so a spelling the substring misses still cannot land.
+ */
+const SYSTEM_WRITE_DENIED = ["/etc", "/private/etc", "/var/db", "/private/var/db", "/Library/Keychains", "/Library/Cookies"];
+
 export function sandboxProfile(root: string | null, scope: SandboxScope = "computer", unbounded = false): string {
   const real = root === null ? null : realpathSync(root);
   // Tools that ignore TMPDIR fall back to the darwin per-user dirs; those
@@ -79,7 +86,7 @@ export function sandboxProfile(root: string | null, scope: SandboxScope = "compu
   return [
     "(version 1)",
     "(allow default)",
-    ...(unbounded ? [] : [
+    ...(unbounded ? SYSTEM_WRITE_DENIED.map((path) => `(deny file-write* (subpath ${sbplString(path)}))`) : [
       "(deny file-write*)",
       ...(real === null ? [] : [`(allow file-write* (subpath ${sbplString(real)}))`]),
       `(allow file-write* (subpath ${sbplString(temp)}))`,

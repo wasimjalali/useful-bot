@@ -88,6 +88,9 @@ test("the Full access profile writes anywhere but into credential files and the 
   assert.ok(full.includes('(deny file-write* (regex #"/\\.useful-bot($|[/.])"))'));
   assert.ok(full.includes('(deny file-write* (regex #"/\\.zshrc($|[/.])"))'));
   assert.ok(full.includes('(deny file-read* (regex #"/\\.ssh($|[/.])"))'));
+  for (const path of ["/etc", "/private/etc", "/var/db", "/private/var/db", "/Library/Keychains", "/Library/Cookies"]) {
+    assert.ok(full.includes(`(deny file-write* (subpath "${path}"))`), path);
+  }
   const args = confinedCommand(root, "true", "computer", true);
   assert.equal(args[2], full);
 });
@@ -103,6 +106,11 @@ test("a Full access line writes outside the folder and still not into a credenti
     const key = confinedCommand(root, "echo x > .ssh/id_rsa", "computer", true);
     await assert.rejects(() => execFileAsync(key[0], key.slice(1), { cwd: root, env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root } }), /not permitted/i);
     assert.equal(existsSync(join(root, ".ssh", "id_rsa")), false);
+    // A system path the tripwire names by substring is refused by the
+    // kernel too, however it is spelled.
+    const hosts = confinedCommand(root, `echo x > /et"c"/ub-sandbox-test-${process.pid}`, "computer", true);
+    await assert.rejects(() => execFileAsync(hosts[0], hosts.slice(1), { cwd: root, env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root } }), /not permitted|permission denied/i);
+    assert.equal(existsSync(`/etc/ub-sandbox-test-${process.pid}`), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { force: true });

@@ -518,6 +518,10 @@ test("Full access stops only for a wipe: a remover aimed at a whole area of the 
     "rm -rf /",
     "rm -rf /*",
     "sudo rm -rf /Users",
+    "sudo -u root rm -rf /",
+    "doas -u root rm -rf /Users",
+    "rm -rf ~other/Documents",
+    "rm -rf ~other",
     "rm -rf /Applications/",
     "rm -rf /Volumes/Backup",
     "rm -rf ~",
@@ -608,4 +612,17 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
   // A folder directly under the home is a wipe wherever the bot stands.
   assert.notEqual(wipeRisk("rm -rf /Users/owner/project", home, home), null);
   assert.notEqual(wipeRisk("rm -rf /Users/owner/project", root, home), null);
+  // A single file directly under a real home is an everyday delete; a
+  // folder in the same place is a wipe.
+  const realHome = realpathSync(mkdtempSync(join(tmpdir(), "ub-wipe-home-")));
+  try {
+    writeFileSync(join(realHome, "notes.txt"), "x", "utf8");
+    mkdirSync(join(realHome, "Documents"));
+    assert.equal(wipeRisk("rm ~/notes.txt", realHome, realHome), null);
+    assert.equal(wipeRisk("rm -rf notes.txt", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/Documents", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/Missing", realHome, realHome), null);
+  } finally {
+    rmSync(realHome, { recursive: true, force: true });
+  }
 });
