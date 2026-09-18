@@ -507,6 +507,12 @@ public struct StreamProjection: Equatable, Sendable {
     private var seenOrder: [String] = []
     private var seenCursor = 0
     private static let seenCap = 2000
+
+    /// What this projection holds, roughly: the message text and the ids it
+    /// remembers for dedupe. For the per-bot cache budget, not accounting.
+    public var estimatedBytes: Int {
+        messages.reduce(0) { $0 + $1.text.utf8.count + 96 } + seenOrder.count * 48
+    }
     private var currentAssistantId: String?
     /// Where each message id sits in `messages`, first holder wins, the way
     /// `firstIndex(where:)` answered it. Every streamed delta looks its bubble
