@@ -422,3 +422,20 @@ test("legacy rows keep one row per vendor and leave sign-ins out", () => {
   const rows = legacyProviders(store, {} as NodeJS.ProcessEnv);
   assert.deepEqual(rows.map((row) => row.id), ["openai"]);
 });
+
+test("a local server's collected URL is the base URL the router calls", () => {
+  const env = {} as NodeJS.ProcessEnv;
+  let store = setProviderKey(emptyProviderStore(), "lmstudio", "local", null, { baseUrl: "http://10.0.0.7:1234/v1" });
+  store = setActiveConnection(store, "lmstudio:local", env);
+  const resolved = resolveUpstream(store, "workhorse", env);
+  assert.equal(resolved.baseUrl, "http://10.0.0.7:1234/v1");
+  assert.equal(resolved.connection.id, "lmstudio:local");
+});
+
+test("legacy rows keep one row per vendor, the active one", () => {
+  let store = setProviderKey(emptyProviderStore(), "zai", "plan", "plan-key-abcdef1234");
+  store = setProviderKey(store, "zai", "api", "api-key-abcdef5678");
+  store = setActiveConnection(store, "zai:api", {} as NodeJS.ProcessEnv);
+  const rows = legacyProviders(store, {} as NodeJS.ProcessEnv);
+  assert.deepEqual(rows.map((row) => [row.id, row.kind, row.last4]), [["zai", "api", "5678"]]);
+});

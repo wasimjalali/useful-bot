@@ -853,7 +853,9 @@ export function publicProviders(
     const conn = listed.find((row) => row.id === reviewerSel.connectionId) ?? null;
     const label = conn ? connectionLabel(conn) : reviewerSel.connectionId;
     const rows = conn ? modelRows(conn.id) : [];
-    const picked = rows.find((row) => row.id === reviewerSel.modelId) ?? rows[0] ?? null;
+    // The router sends the saved id whatever the live list says, so the chip
+    // names that id too rather than the first row of the list.
+    const picked = rows.find((row) => row.id === reviewerSel.modelId) ?? null;
     const modelLabel = picked?.label ?? humanizeModelId(reviewerSel.modelId);
     const efforts = picked
       ? (catalogFor(conn?.id ?? reviewerSel.connectionId).find((row) => row.id === picked.id)?.efforts ?? [])
@@ -879,16 +881,18 @@ export function publicProviders(
       const rows = modelRows(fallbackConn.id);
       const picked = rows.find((row) => row.id === mode.defaults.reviewer) ?? rows[0] ?? null;
       if (picked) {
-        const full = catalogFor(fallbackConn.id).find((row) => row.id === picked.id);
+        // The same snap resolveUpstream applies, so the chip and the router
+        // agree on the effort the fallback reviewer runs with.
+        const snapped = snapComposer(fallbackConn.id, mode.label, picked.id, store.effort, store.speed, catalogFor(fallbackConn.id));
         reviewer = {
           connectionId: fallbackConn.id,
-          connectionLabel: mode.label,
+          connectionLabel: connectionLabel(fallbackConn),
           connectionIcon: providerDef(fallbackConn.providerId).icon,
-          modelId: picked.id,
-          modelLabel: picked.label,
-          effort: full?.defaultEffort ?? null,
-          effortLabel: full?.defaultEffort ? effortLabel(full.defaultEffort) : null,
-          efforts: (full?.efforts ?? []).map((id) => ({ id, label: effortLabel(id) })),
+          modelId: snapped.modelId || picked.id,
+          modelLabel: snapped.modelLabel || picked.label,
+          effort: snapped.effort,
+          effortLabel: snapped.effortLabel,
+          efforts: snapped.efforts,
           models: pickerModels,
         };
       }
@@ -907,7 +911,14 @@ export function legacyProviders(store: ProviderStore, env: NodeJS.ProcessEnv = p
   // The old shape keys rows by bare provider id, so a sign-in row next to an
   // API row of the same vendor would collide; the old web UI cannot connect a
   // sign-in anyway.
-  return pub.connections.filter((conn) => conn.mode !== "oauth").map((conn) => {
+  const seen = new Set<string>();
+  const rows = pub.connections.filter((conn) => conn.mode !== "oauth");
+  const ordered = [...rows.filter((conn) => conn.active), ...rows.filter((conn) => !conn.active)];
+  return ordered.filter((conn) => {
+    if (seen.has(conn.providerId)) return false;
+    seen.add(conn.providerId);
+    return true;
+  }).map((conn) => {
     const mode = providerMode(conn.providerId, conn.mode);
     return {
       id: conn.providerId as ProviderId,

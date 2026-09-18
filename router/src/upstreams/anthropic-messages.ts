@@ -127,7 +127,8 @@ export function buildMessagesBody(
   for (const item of chatBody.messages) {
     if (!isRecord(item) || typeof item.role !== "string") throw protocolError();
     if (item.role === "system") {
-      if (typeof item.content === "string" && item.content) systemParts.push(item.content);
+      const text = contentString(item.content);
+      if (text) systemParts.push(text);
       continue;
     }
     if (item.role === "tool") {

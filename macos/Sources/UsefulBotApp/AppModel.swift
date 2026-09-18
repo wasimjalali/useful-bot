@@ -116,6 +116,9 @@ final class AppModel: ObservableObject {
     /// stays so the sheet stays up with the error; the spinner and the
     /// sign-in button hide, and Close clears everything.
     @Published private(set) var oauthDone = false
+    /// Consecutive poll errors; the flow ends at the limit rather than waiting out the code.
+    private var oauthErrorStreak = 0
+    private static let oauthErrorLimit = 6
     private var oauthPoll: Task<Void, Never>?
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
@@ -2006,6 +2009,7 @@ final class AppModel: ObservableObject {
         providerBusy = "\(providerId):oauth"
         oauthError = nil
         oauthDone = false
+        oauthErrorStreak = 0
         providersError = nil
         do {
             let flow = try await client.startOAuth(providerId: providerId)
@@ -2067,14 +2071,25 @@ final class AppModel: ObservableObject {
                 oauthPoll?.cancel()
                 oauth = nil
                 oauthError = nil
-            case "pending", "slow_down", "error":
-                // A transient "error" keeps polling like "pending". Past the
-                // entry's expiry the flow is over and shows the expired copy.
-                // Only complete, expired and denied end it on their own.
+            case "pending", "slow_down":
+                oauthErrorStreak = 0
+                oauthError = nil
                 if oauthExpired {
                     oauthPoll?.cancel()
                     oauthDone = true
                     oauthError = "That sign-in expired. Try again."
+                }
+            case "error":
+                // One vendor or transport hiccup keeps polling like "pending",
+                // with a note so the wait is not silent. A run of them ends the
+                // flow: the code is still valid, so Try again just restarts it.
+                oauthErrorStreak += 1
+                if oauthErrorStreak >= Self.oauthErrorLimit || oauthExpired {
+                    oauthPoll?.cancel()
+                    oauthDone = true
+                    oauthError = oauthExpired ? "That sign-in expired. Try again." : "The sign-in server is not answering. Try again."
+                } else {
+                    oauthError = "The sign-in server did not answer. Still waiting."
                 }
             case "expired":
                 oauthPoll?.cancel()
@@ -2102,6 +2117,7 @@ final class AppModel: ObservableObject {
         oauth = nil
         oauthError = nil
         oauthDone = false
+        oauthErrorStreak = 0
     }
 
     func connectProvider(id: String, key: String) async {

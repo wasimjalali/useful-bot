@@ -85,15 +85,17 @@ function persistOAuthCredential(providerId: string, credential: Credential): voi
 }
 
 function noteConnectionError(connectionId: string, code: string): void {
-  if (!readProviderStore().connections[connectionId]) return;
   updateProviderStore((store) => (
     store.connections[connectionId] ? recordConnectionError(store, connectionId, code) : store
   ));
 }
 
-/** A success clears the last failure the router recorded on the connection. */
+/**
+ * A success clears the last failure the router recorded on the connection.
+ * The check runs inside the lock, so a failure recorded a moment ago by
+ * another call is not wiped by this stale success.
+ */
 function clearConnectionError(connectionId: string): void {
-  if (!readProviderStore().connections[connectionId]?.lastError) return;
   updateProviderStore((store) => {
     const conn = store.connections[connectionId];
     if (!conn || !conn.lastError) return store;
