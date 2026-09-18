@@ -37,6 +37,36 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
+## Batch 7: a drawing's web view is created when its box comes near the window (PR: perf/widget-views)
+
+Measured on the Storyboard Artist chat, which holds one Excalidraw drawing above its newest turn,
+counting the WebKit helper processes (`WebContent`, `GPU`, `Networking`) and their resident size:
+
+| State | Before (main @ d9c5421) | After |
+|---|---|---|
+| Chat opened at its newest turn, drawing off screen | 7 WebKit processes, 135 MB, one `WebContent` at 79 MB | 4 processes, 6 MB (the ones every app with WebKit linked already has) |
+| Scrolled up to the drawing | the same 7 | 7 processes, 151 MB, drawing rendered |
+| App footprint | 76 MB | 74 MB (the processes are separate) |
+
+- **Problem.** `TranscriptRowView` mounted a `WKWebView` for every widget row as soon as the chat
+  opened, and a chat opens at its newest turn, so every drawing in the history started its content,
+  GPU and networking processes for nothing on screen. The fetch task of a row that left (a chat
+  switch) was cancelled by the coordinator's `deinit` only when SwiftUI released it.
+- **Fix.** `WidgetSlot` keeps the row's 480 pt box and creates the web view once the box comes
+  within 800 pt of the scroll view's visible bounds (`onGeometryChange` against
+  `bounds(of: .scrollView)`, macOS 15; on macOS 14 it mounts eagerly as before). Once created it
+  stays until the row leaves, so scrolling past a drawing twice does not load it twice, and there is
+  no reuse cache to grow. `dismantleNSView` cancels the fetch, stops the load and drops the delegate.
+- **The trap we hit.** The first lazy build showed the page's header and a blank drawing. The host
+  page's iframe is `width: 100%`, and a web view created mid-scroll loaded its page before SwiftUI
+  had given it a width; the drawing laid itself out at zero and stayed there. The fetch now starts on
+  the view's first non-zero `setFrameSize`. The mid-scroll sequence was re-run twice after, and a
+  drawing already in range when a chat opens was checked by setting the margin to 100,000 pt for one
+  run: the initial geometry value is delivered.
+- **Found in review (Muse Spark).** Nothing on the first pass.
+- **Caught by.** All five models filed the eager `WKWebView`; Astra's P-2 set the order (fixed
+  height, cancel on dismantle, test a revisit before any reuse cache, never an unbounded one).
+
 ## Batch 6: a streaming reply parses into one slot (PR: perf/streaming-markdown-cache)
 
 Measured with a throwaway harness linking `UsefulBotCore` (scratchpad `mdprobe`), streaming a 1.1 KB
@@ -383,10 +413,9 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
 | Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
-| One `WKWebView` per widget row, mounted eagerly | memory in widget-heavy chats | medium | all five |
 | Per-bot transcript caches have no eviction | memory grows with chats visited | medium | Astra, Spark, DeepSeek |
 | Server reads and parses whole JSON stores per poll; tick sweeps orphans every 2.5 s | event-loop stalls shared by all bots | medium | GLM, DeepSeek, HY4, Spark |
 
 Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5), the
-streaming markdown cache (batch 6).
+streaming markdown cache (batch 6), the eager widget web views (batch 7).
 Deferred by decision: the cached chat switch resuming from its cursor.
