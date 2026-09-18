@@ -273,8 +273,63 @@ public enum TranscriptBlocks {
     /// fractional seconds older writers omit.
     public static func date(fromISO8601 value: String?) -> Date? {
         guard let value, !value.isEmpty else { return nil }
+        // Every event carries a stamp and a replay parses thousands of them:
+        // `ISO8601DateFormatter` goes through ICU and cost a quarter of a
+        // second per chat switch. The server's exact shape is read by hand;
+        // anything else still goes through the formatters.
+        if let date = utcStamp(value) { return date }
         if let date = isoFractional.date(from: value) { return date }
         return isoPlain.date(from: value)
+    }
+
+    /// `YYYY-MM-DDTHH:MM:SS[.fff]Z`, the shape of `Date.toISOString()`.
+    /// Days from the civil date by Howard Hinnant's algorithm, so no calendar
+    /// is touched. Anything out of range is left to the formatters to reject.
+    static func utcStamp(_ value: String) -> Date? {
+        let bytes = Array(value.utf8)
+        guard bytes.count >= 20, bytes.last == UInt8(ascii: "Z"),
+              bytes[4] == UInt8(ascii: "-"), bytes[7] == UInt8(ascii: "-"),
+              bytes[10] == UInt8(ascii: "T"), bytes[13] == UInt8(ascii: ":"), bytes[16] == UInt8(ascii: ":")
+        else { return nil }
+        func digits(_ range: Range<Int>) -> Int? {
+            var number = 0
+            for index in range {
+                let digit = Int(bytes[index]) - 48
+                guard (0...9).contains(digit) else { return nil }
+                number = number * 10 + digit
+            }
+            return number
+        }
+        guard let year = digits(0..<4), let month = digits(5..<7), let day = digits(8..<10),
+              let hour = digits(11..<13), let minute = digits(14..<16), let second = digits(17..<19),
+              (1...12).contains(month), (1...31).contains(day), hour < 24, minute < 60, second < 60
+        else { return nil }
+        // Days from civil rolls an impossible day into the next month; the
+        // formatters reject it, so it has to be theirs.
+        let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+        let monthLength = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+        guard day <= monthLength else { return nil }
+        var fraction = 0.0
+        if bytes.count > 20 {
+            guard bytes[19] == UInt8(ascii: "."), bytes.count > 21 else { return nil }
+            var scale = 0.1
+            for index in 20..<(bytes.count - 1) {
+                let digit = Int(bytes[index]) - 48
+                guard (0...9).contains(digit) else { return nil }
+                fraction += Double(digit) * scale
+                scale /= 10
+            }
+        } else if bytes.count != 20 {
+            return nil
+        }
+        let shiftedYear = month <= 2 ? year - 1 : year
+        let era = (shiftedYear >= 0 ? shiftedYear : shiftedYear - 399) / 400
+        let yearOfEra = shiftedYear - era * 400
+        let dayOfYear = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let days = era * 146_097 + dayOfEra - 719_468
+        let seconds = Double(days) * 86_400 + Double(hour * 3_600 + minute * 60 + second)
+        return Date(timeIntervalSince1970: seconds + fraction)
     }
 
     private static let isoFractional: ISO8601DateFormatter = {

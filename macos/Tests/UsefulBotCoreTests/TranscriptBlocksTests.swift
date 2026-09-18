@@ -263,6 +263,30 @@ import Testing
         #expect(TranscriptBlocks.latestReplyRunIds(blocks) == ["a1", "a2", "a3"])
     }
 
+    // MARK: - Stamps
+
+    @Test func theHandParserAgreesWithTheFormatter() {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        let stamps = [
+            "2026-09-17T16:22:05.123Z", "2026-09-17T16:22:05Z", "2024-02-29T23:59:59.999Z",
+            "2000-01-01T00:00:00Z", "1999-12-31T23:59:59.5Z", "2100-03-01T00:00:00.000Z",
+            "1970-01-01T00:00:00Z", "1969-12-31T23:59:59Z", "2026-01-31T12:00:00.000001Z",
+        ]
+        for stamp in stamps {
+            let expected = formatter.date(from: stamp) ?? plain.date(from: stamp)!
+            let parsed = TranscriptBlocks.utcStamp(stamp)!
+            #expect(abs(parsed.timeIntervalSince(expected)) < 0.000_01, Comment(rawValue: stamp))
+        }
+        // Not the server's shape: the formatters decide, and reject.
+        for other in ["2026-09-17T16:22:05+02:00", "2026-09-17 16:22:05Z", "2026-13-01T00:00:00Z", "2026-09-17T16:22:05.Z", "", "Z", "2026-02-30T00:00:00Z", "2025-02-29T00:00:00Z", "2026-04-31T00:00:00Z", "2026-09-17T16:22:05z", "2026-09-17T24:00:00Z"] {
+            #expect(TranscriptBlocks.utcStamp(other) == nil, Comment(rawValue: other))
+        }
+        #expect(TranscriptBlocks.date(fromISO8601: "2026-09-17T16:22:05+02:00") == plain.date(from: "2026-09-17T16:22:05+02:00"))
+    }
+
     // MARK: - Window
 
     /// `turns` user and reply pairs, one a minute, across two days.

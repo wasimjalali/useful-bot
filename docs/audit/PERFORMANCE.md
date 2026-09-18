@@ -37,25 +37,41 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
-## Batch 5: a chat switch publishes nothing it already shows, and long chats mount a window (PR: perf/windowed-transcript)
+## Batch 5: a cached chat switch builds once, and long chats mount a window (PR: perf/windowed-transcript)
 
 Measured as CPU seconds the app spent in the six seconds after a rail click (`ps -o cputime`
-before and after), installed build before, debug build after, both chats already opened once in
-the session so the switch comes back through the transcript cache:
+before and after, all threads), both chats already opened once in the session so the switch comes
+back through the transcript cache. Before on the installed build, after on the debug build; the
+installed numbers are under "Verified".
 
 | Switch to | Before (main @ 5059b1a) | After |
 |---|---|---|
-| Generalist | 1.03 to 1.08 s | 0.03 to 0.04 s |
-| Drive Admin (3,504 events) | 1.92 to 1.96 s | 0.03 to 0.04 s |
+| Generalist (34 rows) | 1.03 to 1.08 s | 0.87 to 0.95 s |
+| Drive Admin (36 rows, 3,504 events) | 1.92 to 1.96 s | 1.52 to 1.53 s |
+| Publishes per cached switch | 2 with different rows, then 2 equal | 1, then 3 skipped |
 | Footprint | 98 MB | 98 MB |
 
-- **Problem.** A switch back to a chat put its cached rows on screen, then the reload replayed the
-  session and published the same rows again: two assignments to `@Published` values that every
-  view observes, and a second full layout of the transcript, tables included. The same happened on
-  every durable echo of what the stream had already painted.
-- **Fix.** `rebuildTranscript` builds the blocks, and assigns `transcript` and `transcriptBlocks`
-  only when either differs from what is published. Both are compared, not the rows alone, because a
-  day label moves at midnight with no row changing. `searchHits` is assigned on change too.
+- **A false number, caught.** The first "after" read 0.04 s per switch. The debug build's window
+  opens at its own saved frame, and the rail clicks aimed at the installed app's frame landed in the
+  transcript, so nothing switched. The rule from batch 1 applies to inputs as much as fixes: read the
+  window frame before every measurement.
+- **Problem.** A switch back restored the stashed projection and rebuilt at once, but `resetThread`
+  had already cleared the durable events, so that first build was the projection alone (30 rows),
+  published and laid out; the reload then published the full merge (34 rows) and laid it out again;
+  two more rebuilds followed and published the same rows a third and fourth time. Separately, every
+  replayed event's stamp went through `ISO8601DateFormatter`, which is ICU: 250 ms of the 3,504
+  event replay in `sample`.
+- **Fix.** `transcriptCache` carries the durable events, and a cached switch restores them before
+  its first rebuild, so that build is the full merge. `rebuildTranscript` assigns `transcript` and
+  `transcriptBlocks` only when either differs from what is published (both compared: a day label
+  moves at midnight with no row changing), and `searchHits` on change. The reload's publish and the
+  poll's now compare equal and assign nothing. `TranscriptBlocks.date(fromISO8601:)` reads the
+  server's exact `toISOString()` shape by hand (days from the civil date, no calendar) and leaves
+  anything else to the formatters; pinned against the formatter across leap days, fractions and the
+  epoch.
+- **What is left, per `sample`.** About 0.5 s of SwiftUI creating and laying out 34 rows (view graph
+  and `_FlexFrameLayout`, text measurement is under 70 ms of it), and for Drive Admin the replay's
+  JSON decode on the stream's thread, which is the deferred cursor-resume item.
 - **Windowed transcript.** `TranscriptBlocks.window` mounts the newest 60 blocks and a "Show earlier
   messages" row above them. The newest turn is always whole (the reply's height is summed from
   every bubble and the completion scroll targets its first), the window opens under the day
@@ -63,20 +79,24 @@ the session so the switch comes back through the transcript cache:
   is held per bot as the chat grows, so a row being read is not pulled away. The stack stays an
   eager `VStack`, as Spark and GLM advised. Expanding re-anchors the block that was first, without
   animation, because a prepend leaves the scroll offset at the top of the new rows (seen live).
-- **What it bought today: nothing measurable.** Neither chat on this machine has 60 blocks. Drive
-  Admin's 3,504 events are almost all tool activity; its transcript is a few dozen rows. The whole
-  switch gain above is the publish skip. The row, the expansion and the held place were verified
-  live on a build with the minimum set to 10, then restored. The window is insurance for the chat
-  that does grow, and it is bounded work either way.
+- **What the window bought today: nothing measurable.** Neither chat on this machine has 60
+  blocks; Drive Admin's 3,504 events are almost all tool activity. The row, the expansion, the held
+  place and the row leaving at the top were verified live on a build with the minimum set to 10,
+  then restored. The window is insurance for the chat that does grow, bounded work either way.
 - **Found in review (Muse Spark).** Expanding to the top held the chat's leading day divider, which
   the window then stepped past, so one block stayed "hidden" and the row never left (high): a window
   with no message above its cut is now the whole chat. The re-anchor id was kept after use, so a
   later shrink of the hidden count (a cleared session) would have scrolled to it (medium): it is
   taken once. The first mounted bubble kept the tight gap it has under a bubble that was now behind
-  the row (low). All three fixed; the first is pinned by a test and was checked live.
+  the row (low). All three fixed; the first is pinned by a test and was checked live. On the
+  second slice: a cached-only switch left the events empty, so a second quick switch would have
+  stashed the rows with no events (medium), and the hand parser rolled an impossible day such as
+  February 30 into March instead of leaving it to the formatters (medium). Both fixed, the parser
+  pinned against a list of impossible stamps.
 - **Caught by.** All five models filed the history-scaled layout; Spark and GLM set the window over
   `LazyVStack`, GLM named the prepend jump and the seam identity, Astra (T-17) the cut-off reply. The
-  no-change publish skip was agreed as the cheap piece of Astra's P-1.
+  no-change publish skip was agreed as the cheap piece of Astra's P-1. The double publish on a
+  cached switch and the ICU stamp parse came out of `sample` while measuring, not from the audit.
 
 ## Batch 4: the app icon was a 278 MB bitmap (PR: perf/brand-rasters)
 

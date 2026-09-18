@@ -278,7 +278,12 @@ final class AppModel: ObservableObject {
     /// them at once: the fresh load replaces the old empty state a beat later,
     /// and that beat read as the chat opening blank, or on its start page,
     /// before the conversation snapped in.
-    private var transcriptCache: [String: (rows: [TranscriptRow], blocks: [TranscriptBlock])] = [:]
+    /// The durable events ride along: a switch back restores the stashed
+    /// projection and rebuilds at once, and without them that first build is
+    /// the projection alone, published, then replaced by the reload's full
+    /// merge a second later. With them it is the full merge already, and the
+    /// reload confirms it without publishing.
+    private var transcriptCache: [String: (rows: [TranscriptRow], blocks: [TranscriptBlock], events: [AgentEvent])] = [:]
     private var sendBotId: String?
     /// Per-bot send failure, so a turn that died in the background still
     /// explains itself when the owner comes back.
@@ -513,12 +518,16 @@ final class AppModel: ObservableObject {
             backgroundWorking = false
             activity = stored.activity
             markWorking(botId, sendTasks[botId] != nil)
+            durableEvents = transcriptCache[botId]?.events ?? []
             rebuildTranscript()
         } else if let cached = transcriptCache[botId] {
             // A chat already opened this session comes back with its rows on
-            // screen while the reload confirms them.
+            // screen while the reload confirms them. The events come too: a
+            // second switch before the reload lands stashes this chat again,
+            // and rows paired with no events would lose them.
             transcript = cached.rows
             transcriptBlocks = cached.blocks
+            durableEvents = cached.events
         }
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
@@ -1814,7 +1823,7 @@ final class AppModel: ObservableObject {
         // An empty result only replaces the cache once the load has finished
         // and said so; before that it is the blank the switch just cleared.
         if let selectedBotId, transcriptReady || !rows.isEmpty {
-            transcriptCache[selectedBotId] = (rows, transcriptBlocks)
+            transcriptCache[selectedBotId] = (rows, transcriptBlocks, durableEvents)
         }
     }
 
@@ -2235,10 +2244,12 @@ final class AppModel: ObservableObject {
             backgroundWorking = false
             activity = stored.activity
             markWorking(id, sendTasks[id] != nil)
+            durableEvents = transcriptCache[id]?.events ?? []
             rebuildTranscript()
         } else if let cached = transcriptCache[id] {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
+            durableEvents = cached.events
         }
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
@@ -2424,7 +2435,7 @@ final class AppModel: ObservableObject {
             backgroundProjections[old] = projection
         }
         if transcriptReady || !transcript.isEmpty {
-            transcriptCache[old] = (transcript, transcriptBlocks)
+            transcriptCache[old] = (transcript, transcriptBlocks, durableEvents)
         }
         if sendTasks[old] == nil { markWorking(old, false) }
     }
