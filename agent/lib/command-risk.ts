@@ -209,10 +209,13 @@ const FIND_NARROWING = new Set([
  * match everything and narrow nothing.
  */
 function narrowsFind(flags: string[]): boolean {
-  // `-name x -o -delete` deletes what does NOT match: no filter at all.
-  if (flags.includes("-o") || flags.includes("-or") || flags.includes("!") || flags.includes("-not")) return false;
-  return flags.some((flag, at) => {
+  // A predicate right after `!` or `-not` picks the complement: not a
+  // filter. Each `-o` branch needs a filter of its own, or the branch
+  // without one is a sweep (`-name x -o -delete`).
+  const ors = flags.filter((flag) => flag === "-o" || flag === "-or").length;
+  const narrowing = flags.filter((flag, at) => {
     if (!FIND_NARROWING.has(flag)) return false;
+    if (flags[at - 1] === "!" || flags[at - 1] === "-not") return false;
     if (flag === "-empty") return true;
     const arg = flags[at + 1];
     if (arg === undefined) return false;
@@ -220,7 +223,8 @@ function narrowsFind(flags: string[]): boolean {
     if (/^-(mtime|mmin|atime|amin|ctime|cmin)$/.test(flag) && /^[+-]?0$/.test(arg)) return false;
     if (flag === "-size" && /^[+-]?0[ckMGTP]?$/.test(arg)) return false;
     return true;
-  });
+  }).length;
+  return narrowing >= ors + 1;
 }
 /** Removers whose targets say how much a line deletes. */
 const REMOVERS = new Set(["rm", "rimraf", "trash", "srm", "shred", "rmdir"]);
@@ -254,15 +258,23 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
   // later segments resolve their relative targets. A pipe source is kept
   // so `ls ~ | xargs rm -rf` is judged by what it feeds the remover.
   let cwd = root;
-  const stack: string[] = [];
+  let stack: string[] = [];
+  // A cd inside `( ... )` ends with the subshell: the cwd and the pushd
+  // stack come back when it closes.
+  const subshells: Array<{ cwd: string; stack: string[] }> = [];
   // Every segment of one pipe chain feeds the last: `ls ~ | head | xargs
   // rm -rf` is judged by the `~` two segments back.
   let chain: Token[] = [];
   for (const segment of split(tokenize(command))) {
+    for (let i = 0; i < segment.opens; i += 1) subshells.push({ cwd, stack: [...stack] });
     const reason = wipeReason(segment.tokens, cwd, home, ownerHome, segment.pipedInto ? chain : [], depth);
     if (reason) return reason;
     cwd = changedDirectory(segment.tokens, cwd, home, ownerHome, stack);
     chain = segment.pipedInto ? [...chain, ...segment.tokens] : segment.tokens;
+    for (let i = 0; i < segment.closes; i += 1) {
+      const outer = subshells.pop();
+      if (outer) ({ cwd, stack } = outer);
+    }
   }
   return null;
 }
@@ -354,6 +366,11 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
     }
     const script = rest.find((token) => !token.text.startsWith("-") && !token.text.startsWith("<") || token.quoted)?.text;
     if (script) return scriptWipe(script, root, home, ownerHome, depth);
+    // `echo 'rm -rf ~' | sh` feeds the line itself.
+    for (const token of pipeSource) {
+      const piped = token.quoted ? wipeRisk(token.text, root, home, ownerHome, depth + 1) : null;
+      if (piped) return piped;
+    }
     // `bash < tidy.sh` and `cat tidy.sh | bash` feed the same script.
     const fed = [
       ...rest.filter((token) => token.text.startsWith("<")).map((token) => token.text.replace(/^<+/, "")),
@@ -549,7 +566,8 @@ function expandHome(text: string, home: string, ownerHome: string = home): strin
   return text;
 }
 
-type Segment = { tokens: Token[]; pipedInto: boolean };
+/** `opens` subshells begin before this segment, `closes` end after it. */
+type Segment = { tokens: Token[]; pipedInto: boolean; opens: number; closes: number };
 
 const isAssignment = (token: Token) => !token.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text);
 
@@ -1129,16 +1147,25 @@ function split(tokens: (Token | { separator: string })[]): Segment[] {
   const segments: Segment[] = [];
   let current: Token[] = [];
   let pipedInto = false;
+  let opens = 0;
   for (const item of tokens) {
     if ("separator" in item) {
-      if (current.length > 0) segments.push({ tokens: current, pipedInto });
+      if (current.length > 0) segments.push({ tokens: current, pipedInto, opens, closes: 0 });
+      if (current.length > 0) opens = 0;
       current = [];
       pipedInto = item.separator === "|";
+      if (item.separator === "(") opens += 1;
+      // A close belongs to the segment it ends; one with nothing before it
+      // (`()`) closes the open that never held a segment.
+      if (item.separator === ")") {
+        if (segments.length > 0 && opens === 0) segments[segments.length - 1].closes += 1;
+        else if (opens > 0) opens -= 1;
+      }
       continue;
     }
     current.push(item);
   }
-  if (current.length > 0) segments.push({ tokens: current, pipedInto });
+  if (current.length > 0) segments.push({ tokens: current, pipedInto, opens, closes: 0 });
   return segments;
 }
 
@@ -1179,7 +1206,8 @@ function tokenize(command: string): (Token | { separator: string })[] {
     if (ch === "'") { inSingle = true; quoted = true; continue; }
     if (ch === '"') { inDouble = true; quoted = true; continue; }
     if (ch === "\\" && i + 1 < command.length) { buffer += command[i + 1]; i += 1; continue; }
-    if (ch === "(" || ch === "`" || ch === ")") { flush(); out.push({ separator: ";" }); continue; }
+    if (ch === "`") { flush(); out.push({ separator: ";" }); continue; }
+    if (ch === "(" || ch === ")") { flush(); out.push({ separator: ch }); continue; }
     if (ch === "&" && command[i + 1] === "&") { flush(); out.push({ separator: "&&" }); i += 1; continue; }
     if (ch === "|" && command[i + 1] === "|") { flush(); out.push({ separator: "||" }); i += 1; continue; }
     if (SEPARATORS.has(ch)) { flush(); out.push({ separator: ch }); continue; }
