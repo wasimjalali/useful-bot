@@ -406,8 +406,17 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
   // picked files by name feeds only those.
   if (name === "xargs") {
     let i = 0;
-    while (i < rest.length && rest[i].text.startsWith("-")) i += XARGS_VALUED.has(rest[i].text) ? 2 : 1;
-    const inner = rest.slice(i);
+    // `-I{}` names the placeholder the piped lines replace; a remover whose
+    // only operand is the placeholder has named nothing itself.
+    const placeholders = new Set(["{}", "%"]);
+    while (i < rest.length && rest[i].text.startsWith("-")) {
+      const flag = rest[i].text;
+      if ((flag === "-I" || flag === "-i" || flag === "--replace") && rest[i + 1]) placeholders.add(rest[i + 1].text);
+      const attached = /^(?:-I|-i|--replace=)(.+)$/.exec(flag);
+      if (attached) placeholders.add(attached[1]);
+      i += XARGS_VALUED.has(flag) ? 2 : 1;
+    }
+    const inner = rest.slice(i).filter((token) => !placeholders.has(token.text));
     if (inner.length > 0 && REMOVERS.has(basename(inner[0].text))) {
       const source = peelWrappers(pipeSource);
       if (basename(source[0]?.text ?? "") === "find" && narrowsFind(source.slice(1).map((token) => token.text))) return null;

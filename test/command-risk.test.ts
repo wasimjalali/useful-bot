@@ -672,6 +672,9 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
   assert.ok(/\/Users\/owner\)/.test(wipeRisk("ls | xargs rm -rf", home, home) ?? ""));
   assert.equal(wipeRisk("ls | xargs rm -rf", deep, deep, home), null);
   assert.equal(wipeRisk("ls | xargs rm -rf build", deep, deep, home), null);
+  assert.notEqual(wipeRisk("ls | xargs -I{} rm -rf {}", home, home), null);
+  assert.notEqual(wipeRisk("ls | xargs -I % rm -rf %", home, home), null);
+  assert.equal(wipeRisk("ls | xargs -I{} rm -rf {}", deep, deep, home), null);
   assert.notEqual(wipeRisk("ls ~ | xargs sh -c 'rm -rf ~'", home, home), null);
   assert.notEqual(wipeRisk("echo x | xargs -I{} sh -c 'rm -rf ~/Documents'", home, home), null);
   // A single file directly under a real home is an everyday delete; a
