@@ -64,7 +64,8 @@ export default defineTool({
     try {
       workspace = effectiveRoot(ctx?.session?.id);
     } catch (error) {
-      const blocked = blockedReason(input.command, true);
+      // The posture is unknown here, so only the list every posture shares.
+      const blocked = blockedReason(input.command, false);
       if (blocked) return { status: "blocked", error: blocked };
       throw error;
     }
