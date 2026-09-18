@@ -545,6 +545,12 @@ test("Full access stops only for a wipe: a remover aimed at a whole area of the 
     "sh -c 'rm -rf ~/Documents'",
     "bash -lc \"cd ~/Documents && rm -rf .\"",
     "ls ~ | xargs rm -rf",
+    "ls ~ | head | xargs rm -rf",
+    "pushd ~/Desktop/project && popd && rm -rf *",
+    "pnpm dlx rimraf ~",
+    "yarn dlx rimraf ~/Documents",
+    "npm exec rimraf -- ~",
+    "npm x rimraf ~/Pictures",
     "find ~/Documents -name '*.bak' | xargs rm",
     "echo ~/Music | xargs -n1 rm -rf",
     "echo $(rm -rf ~/Documents)",
@@ -613,6 +619,9 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     "find ~ -name '*.log'",
     "diskutil list",
     "dd if=/dev/zero of=./blank.img bs=1m count=1",
+    "dd if=/dev/zero of=/dev/null bs=1m count=1024",
+    "pushd ~/Desktop/project && rm -rf build && popd",
+    "pnpm dlx rimraf dist",
     "npm i -g typescript",
     "echo a..b",
     "cd build && rm -rf .",
@@ -655,6 +664,9 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     assert.notEqual(wipeRisk("bash bin/wipe.sh", realHome, realHome), null);
     assert.notEqual(wipeRisk("sh ~/bin/wipe.sh", realHome, realHome), null);
     assert.notEqual(wipeRisk("./bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("source bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk(". ~/bin/wipe.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("source bin/tidy.sh", realHome, realHome), null);
     assert.equal(wipeRisk("bash bin/loop.sh", realHome, realHome), null);
     assert.equal(wipeRisk("python3 bin/tidy.py", realHome, realHome), null);
     assert.equal(wipeRisk("bash bin/missing.sh", realHome, realHome), null);

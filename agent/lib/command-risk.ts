@@ -227,27 +227,34 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
   // later segments resolve their relative targets. A pipe source is kept
   // so `ls ~ | xargs rm -rf` is judged by what it feeds the remover.
   let cwd = root;
-  let previous: Token[] = [];
+  const stack: string[] = [];
+  // Every segment of one pipe chain feeds the last: `ls ~ | head | xargs
+  // rm -rf` is judged by the `~` two segments back.
+  let chain: Token[] = [];
   for (const segment of split(tokenize(command))) {
-    const reason = wipeReason(segment.tokens, cwd, home, segment.pipedInto ? previous : [], depth);
+    const reason = wipeReason(segment.tokens, cwd, home, segment.pipedInto ? chain : [], depth);
     if (reason) return reason;
-    const moved = changedDirectory(segment.tokens, cwd, home);
-    if (moved) cwd = moved;
-    previous = segment.tokens;
+    cwd = changedDirectory(segment.tokens, cwd, home, stack);
+    chain = segment.pipedInto ? [...chain, ...segment.tokens] : segment.tokens;
   }
   return null;
 }
 
-/** Where a `cd` or `pushd` segment leaves the shell, or null when it is not one. */
-function changedDirectory(tokens: Token[], cwd: string, home: string): string | null {
+/**
+ * Where a `cd`, `pushd` or `popd` segment leaves the shell; any other
+ * segment leaves it where it was. `stack` is the pushd stack.
+ */
+function changedDirectory(tokens: Token[], cwd: string, home: string, stack: string[]): string {
   const args = peelWrappers(tokens);
-  const head = args[0];
-  if (!head || (head.text !== "cd" && head.text !== "pushd")) return null;
+  const head = args[0]?.text;
+  if (head === "popd") return stack.pop() ?? cwd;
+  if (head !== "cd" && head !== "pushd") return cwd;
   const target = args.slice(1).find((token) => !token.text.startsWith("-") || token.quoted)?.text ?? "~";
   const expanded = expandHome(target, home);
   // A directory read from a variable is unknown; the rest of the line is
   // judged where it stood.
-  if (/[$`]/.test(expanded)) return null;
+  if (/[$`]/.test(expanded)) return cwd;
+  if (head === "pushd") stack.push(cwd);
   return resolve(cwd, expanded);
 }
 
@@ -281,9 +288,14 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     }
   }
   let args = peelWrappers(tokens);
-  // `npx rimraf ~` runs rimraf; the runner and its own flags go.
-  while (args.length > 0 && PACKAGE_RUNNERS.has(basename(args[0].text))) {
-    let i = 1;
+  // `npx rimraf ~` and `pnpm dlx rimraf ~` run rimraf; the runner, its
+  // verb and its own flags go.
+  while (args.length > 0) {
+    const runner = basename(args[0].text);
+    let i = 0;
+    if (PACKAGE_RUNNERS.has(runner)) i = 1;
+    else if (["npm", "pnpm", "yarn", "bun"].includes(runner) && ["exec", "x", "dlx"].includes(args[1]?.text ?? "")) i = 2;
+    else break;
     while (i < args.length && args[i].text.startsWith("-")) i += 1;
     args = args.slice(i);
   }
@@ -307,6 +319,11 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
       const payload = rest[at + 1]?.text;
       return payload ? wipeRisk(payload, root, home, depth) : null;
     }
+    const script = rest.find((token) => !token.text.startsWith("-") || token.quoted)?.text;
+    return script ? scriptWipe(script, root, home, depth) : null;
+  }
+  // `source tidy.sh` and `. tidy.sh` run the script in this shell.
+  if (name === "source" || name === ".") {
     const script = rest.find((token) => !token.text.startsWith("-") || token.quoted)?.text;
     return script ? scriptWipe(script, root, home, depth) : null;
   }
@@ -386,7 +403,9 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
   if (name === "diskutil" && rest.some((token) => /^(erase|reformat|partition|zero|random|secureErase|deleteContainer|deleteVolume)/i.test(token.text))) {
     return "erases a disk (diskutil)";
   }
-  if (name === "dd" && rest.some((token) => /^of=\/dev\//.test(token.text))) return "writes raw data to a disk (dd)";
+  if (name === "dd" && rest.some((token) => /^of=\/dev\//.test(token.text) && !DEVICE_PATHS.includes(token.text.slice(3)) && token.text !== "of=/dev/zero")) {
+    return "writes raw data to a disk (dd)";
+  }
   return null;
 }
 

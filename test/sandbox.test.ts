@@ -87,6 +87,7 @@ test("the Full access profile writes anywhere but into credential files and the 
   assert.ok(full.includes('(deny file-write* (regex #"/\\.ssh($|[/.])"))'));
   assert.ok(full.includes('(deny file-write* (regex #"/\\.useful-bot($|[/.])"))'));
   assert.ok(full.includes('(deny file-write* (regex #"/\\.zshrc($|[/.])"))'));
+  assert.ok(full.includes('(deny file-write* (regex #"/config\\.fish($|[/.])"))'));
   assert.ok(full.includes('(deny file-read* (regex #"/\\.ssh($|[/.])"))'));
   for (const path of ["/etc", "/private/etc", "/var/db", "/private/var/db", "/Library/Keychains", "/Library/Cookies"]) {
     assert.ok(full.includes(`(deny file-write* (subpath "${path}"))`), path);

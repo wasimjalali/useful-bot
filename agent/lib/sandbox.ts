@@ -25,6 +25,7 @@ const PROTECTED_NAMES = [
   // Shell startup files: a planted line runs in the owner's own shell.
   ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
   ".bash_profile", ".bashrc", ".bash_login", ".bash_logout", ".profile", ".inputrc",
+  "config.fish",
 ];
 
 export function sandboxAvailable(): boolean {
