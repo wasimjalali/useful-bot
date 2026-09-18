@@ -682,8 +682,13 @@ private struct UserBubbleView: View {
     @State private var fullHeight: CGFloat = 0
 
     private var mayFold: Bool { LongMessage.mayFold(text) }
+    /// Unmeasured counts as folded: the twins report a frame after the first
+    /// pass, and a bubble that opened whole and then snapped shut flashed a
+    /// document and jolted the scroll anchor.
     private var folds: Bool {
-        mayFold && LongMessage.hidesEnough(full: fullHeight, preview: previewHeight)
+        guard mayFold else { return false }
+        if fullHeight == 0 && previewHeight == 0 { return true }
+        return LongMessage.hidesEnough(full: fullHeight, preview: previewHeight)
     }
 
     var body: some View {

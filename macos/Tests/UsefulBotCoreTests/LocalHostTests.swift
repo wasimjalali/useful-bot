@@ -95,8 +95,8 @@ import Testing
 @Suite struct LongMessageTests {
     @Test func shortMessagesNeverMeasure() {
         #expect(!LongMessage.mayFold("one\n\ntwo\n\nthree"))
-        #expect(!LongMessage.mayFold(String(repeating: "x", count: 400)))
-        #expect(LongMessage.mayFold(String(repeating: "x", count: 401)))
+        #expect(!LongMessage.mayFold(String(repeating: "x", count: 150)))
+        #expect(LongMessage.mayFold(String(repeating: "x", count: 151)))
         #expect(LongMessage.mayFold((1...9).map(String.init).joined(separator: "\n")))
     }
 

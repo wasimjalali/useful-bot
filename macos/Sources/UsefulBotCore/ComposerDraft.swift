@@ -40,10 +40,11 @@ public enum LongMessage {
     public static let minHiddenHeight: CGFloat = 40
 
     /// A cheap gate before any measuring: a message this short cannot fill
-    /// `previewLines` lines in a chat bubble, so its row never measures.
+    /// `previewLines` lines even in the narrowest bubble (160 points, about
+    /// 18 characters a line), so its row never measures.
     public static func mayFold(_ text: String) -> Bool {
         let newlines = text.filter { $0 == "\n" }.count
-        return newlines >= previewLines || text.count > 400
+        return newlines >= previewLines || text.count > 150
     }
 
     /// Whether the measured full height hides enough behind the preview.
