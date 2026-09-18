@@ -164,6 +164,7 @@ export interface ConnectionPublic {
   label: string;
   kindLabel: string;
   monogram: string;
+  icon: string;
   connected: boolean;
   last4: string | null;
   source: "settings" | "env" | null;
@@ -181,6 +182,7 @@ export interface CatalogPublic {
   label: string;
   kindLabel: string;
   monogram: string;
+  icon: string;
   hint: string;
   keyUrl: string | null;
   fields: ProviderMode["fields"] | null;
@@ -191,12 +193,13 @@ export interface CatalogPublic {
 export interface RolePublic {
   connectionId: string | null;
   connectionLabel: string;
+  connectionIcon: string;
   modelId: string;
   modelLabel: string;
   effort: EffortId | null;
   effortLabel: string | null;
   efforts: Array<{ id: EffortId; label: string }>;
-  models: Array<{ connectionId: string; connectionLabel: string; id: string; label: string }>;
+  models: Array<{ connectionId: string; connectionLabel: string; icon: string; id: string; label: string }>;
 }
 
 export function providersPath(root = process.env.UB_PROVIDERS_PATH): string {
@@ -666,6 +669,7 @@ function publicConnection(conn: Connection, activeId: string | null): Connection
     label: mode.label,
     kindLabel: mode.kindLabel,
     monogram: def.monogram,
+    icon: def.icon,
     connected: true,
     last4: conn.credential.kind === "key" ? last4(conn.credential.key) : null,
     source: "settings",
@@ -709,6 +713,7 @@ export function publicProviders(
         label: row.label,
         kindLabel: row.kindLabel,
         monogram: def.monogram,
+        icon: def.icon,
         hint: row.hint,
         keyUrl: row.keyUrl,
         fields: row.fields ?? null,
@@ -728,6 +733,7 @@ export function publicProviders(
         label: providerMode("opencode-go", "plan").label,
         kindLabel: providerMode("opencode-go", "plan").kindLabel,
         monogram: providerDef("opencode-go").monogram,
+        icon: providerDef("opencode-go").icon,
         connected: true,
         last4: null,
         source: "env" as const,
@@ -743,15 +749,18 @@ export function publicProviders(
   const pickerModels: RolePublic["models"] = [];
   for (const conn of listed.filter((row) => connectedIds.has(row.id))) {
     const label = providerMode(conn.providerId, conn.mode).label;
+    const icon = providerDef(conn.providerId).icon;
     for (const row of modelRows(conn.id)) {
-      pickerModels.push({ connectionId: conn.id, connectionLabel: label, id: row.id, label: row.label });
+      pickerModels.push({ connectionId: conn.id, connectionLabel: label, icon, id: row.id, label: row.label });
     }
   }
 
   const composer = composerState(store, env);
+  const composerConn = listed.find((row) => row.id === composer.connectionId) ?? null;
   const defaultRole: RolePublic = {
     connectionId: composer.connectionId || null,
     connectionLabel: composer.providerName,
+    connectionIcon: composerConn ? providerDef(composerConn.providerId).icon : "",
     modelId: composer.modelId,
     modelLabel: composer.modelLabel,
     effort: composer.effort,
@@ -776,6 +785,7 @@ export function publicProviders(
     reviewer = {
       connectionId: reviewerSel.connectionId,
       connectionLabel: label,
+      connectionIcon: conn ? providerDef(conn.providerId).icon : "",
       modelId: reviewerSel.modelId,
       modelLabel,
       effort: reviewerSel.effort && (efforts as EffortId[]).includes(reviewerSel.effort) ? reviewerSel.effort : null,
@@ -797,6 +807,7 @@ export function publicProviders(
         reviewer = {
           connectionId: fallbackConn.id,
           connectionLabel: mode.label,
+          connectionIcon: providerDef(fallbackConn.providerId).icon,
           modelId: picked.id,
           modelLabel: picked.label,
           effort: full?.defaultEffort ?? null,

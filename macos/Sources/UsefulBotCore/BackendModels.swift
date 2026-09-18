@@ -438,6 +438,7 @@ public struct CatalogPublic: Codable, Identifiable, Equatable, Sendable {
     public let label: String
     public let kindLabel: String
     public let monogram: String
+    public let icon: String
     public let hint: String
     public let keyUrl: String?
     public var fields: [CatalogField]?
@@ -453,6 +454,7 @@ public struct CatalogPublic: Codable, Identifiable, Equatable, Sendable {
         label = (try? c.decode(String.self, forKey: .label)) ?? providerId
         kindLabel = (try? c.decode(String.self, forKey: .kindLabel)) ?? "API"
         monogram = (try? c.decode(String.self, forKey: .monogram)) ?? "?"
+        icon = (try? c.decode(String.self, forKey: .icon)) ?? ""
         hint = (try? c.decode(String.self, forKey: .hint)) ?? ""
         keyUrl = try? c.decodeIfPresent(String.self, forKey: .keyUrl)
         fields = try? c.decodeIfPresent([CatalogField].self, forKey: .fields)
@@ -461,7 +463,7 @@ public struct CatalogPublic: Codable, Identifiable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case providerId, mode, label, kindLabel, monogram, hint, keyUrl, fields, oauth, connected
+        case providerId, mode, label, kindLabel, monogram, icon, hint, keyUrl, fields, oauth, connected
     }
 }
 
@@ -488,6 +490,7 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
     public let label: String
     public let kindLabel: String
     public let monogram: String
+    public let icon: String
     public var connected: Bool
     public let last4: String?
     public let source: String?
@@ -506,6 +509,7 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
         label = (try? c.decode(String.self, forKey: .label)) ?? providerId
         kindLabel = (try? c.decode(String.self, forKey: .kindLabel)) ?? "API"
         monogram = (try? c.decode(String.self, forKey: .monogram)) ?? "?"
+        icon = (try? c.decode(String.self, forKey: .icon)) ?? ""
         connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
         last4 = try? c.decodeIfPresent(String.self, forKey: .last4)
         source = try? c.decodeIfPresent(String.self, forKey: .source)
@@ -518,7 +522,7 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, providerId, mode, label, kindLabel, monogram, connected, last4
+        case id, providerId, mode, label, kindLabel, monogram, icon, connected, last4
         case source, active, status, lastError, accountId, fields, models
     }
 }
@@ -541,6 +545,7 @@ public struct RoleEffortOption: Codable, Equatable, Sendable {
 public struct RoleModelOption: Codable, Equatable, Sendable {
     public let connectionId: String
     public let connectionLabel: String
+    public let icon: String
     public let id: String
     public let label: String
 
@@ -548,17 +553,19 @@ public struct RoleModelOption: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         connectionId = (try? c.decode(String.self, forKey: .connectionId)) ?? ""
         connectionLabel = (try? c.decode(String.self, forKey: .connectionLabel)) ?? ""
+        icon = (try? c.decode(String.self, forKey: .icon)) ?? ""
         id = try c.decode(String.self, forKey: .id)
         label = (try? c.decode(String.self, forKey: .label)) ?? id
     }
 
-    enum CodingKeys: String, CodingKey { case connectionId, connectionLabel, id, label }
+    enum CodingKeys: String, CodingKey { case connectionId, connectionLabel, icon, id, label }
 }
 
 /// One task-model role from `GET /api/providers`, mirrored from `RolePublic`.
 public struct RolePublic: Codable, Equatable, Sendable {
     public var connectionId: String?
     public var connectionLabel: String
+    public var connectionIcon: String
     public var modelId: String
     public var modelLabel: String
     public var effort: String?
@@ -570,6 +577,7 @@ public struct RolePublic: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         connectionId = try? c.decodeIfPresent(String.self, forKey: .connectionId)
         connectionLabel = (try? c.decode(String.self, forKey: .connectionLabel)) ?? ""
+        connectionIcon = (try? c.decode(String.self, forKey: .connectionIcon)) ?? ""
         modelId = (try? c.decode(String.self, forKey: .modelId)) ?? ""
         modelLabel = (try? c.decode(String.self, forKey: .modelLabel)) ?? ""
         effort = try? c.decodeIfPresent(String.self, forKey: .effort)
@@ -579,7 +587,7 @@ public struct RolePublic: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case connectionId, connectionLabel, modelId, modelLabel
+        case connectionId, connectionLabel, connectionIcon, modelId, modelLabel
         case effort, effortLabel, efforts, models
     }
 }

@@ -3,6 +3,7 @@ import test from "node:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROVIDER_CATALOG, providerMode } from "../shared/provider-catalog.ts";
 import { applyReasoning, modelsFor, snapComposer } from "../shared/models.ts";
 import {
   catalogItem,
@@ -213,11 +214,26 @@ test("publicProviders groups the catalogue and mirrors the composer in roles", (
   assert.ok(kinds.indexOf("api") < kinds.indexOf("local"));
   assert.equal(pub.catalog.length, pub.catalog.filter((item) => item.providerId).length);
   assert.equal(pub.connections.length, 1);
+  assert.equal(pub.connections[0]?.icon, "openai");
+  assert.equal(pub.catalog.find((item) => item.providerId === "openai" && item.mode === "api")?.icon, "openai");
+  assert.equal(pub.roles.default.connectionIcon, "openai");
+  assert.equal(pub.roles.reviewer.connectionIcon, "openai");
+  assert.ok(pub.roles.default.models.every((item) => item.icon === "openai"));
   assert.equal(pub.roles.default.connectionId, "openai:api");
   assert.equal(pub.roles.default.modelId, "gpt-4.1-mini");
   assert.equal(pub.roles.reviewer.connectionId, "openai:api");
   assert.equal(pub.roles.reviewer.modelId, "gpt-4.1");
   assert.ok(pub.roles.default.models.length >= 2);
+});
+
+test("catalogue icons match provider ids and key URLs point at key pages", () => {
+  for (const def of PROVIDER_CATALOG) {
+    assert.equal(def.icon, def.id);
+  }
+  assert.equal(providerMode("anthropic", "api").keyUrl, "https://platform.claude.com/settings/keys");
+  assert.equal(providerMode("alibaba", "plan").keyUrl, "https://modelstudio.console.alibabacloud.com/?tab=model#/api-key");
+  assert.equal(providerMode("alibaba", "api").keyUrl, "https://modelstudio.console.alibabacloud.com/?tab=model#/api-key");
+  assert.equal(providerMode("moonshot", "api").keyUrl, "https://platform.kimi.ai");
 });
 
 test("legacy shims keep old call shapes working", () => {

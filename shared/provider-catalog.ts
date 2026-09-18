@@ -52,6 +52,8 @@ export interface ProviderDef {
   id: string;
   /** Vendor name for grouping: "OpenAI". */
   name: string;
+  /** SVG mark slug: brand/providers/<icon>.svg. Missing file falls back to the monogram. */
+  icon: string;
   /** Monogram for the icon until real marks ship: 1 or 2 characters. */
   monogram: string;
   modes: ProviderMode[];
@@ -65,6 +67,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   {
     id: "openai",
     name: "OpenAI",
+    icon: "openai",
     monogram: "O",
     modes: [
       {
@@ -125,6 +128,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "github-copilot",
+    icon: "github-copilot",
     name: "GitHub",
     monogram: "GH",
     modes: [
@@ -172,6 +176,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "opencode-go",
+    icon: "opencode-go",
     name: "OpenCode",
     monogram: "Go",
     modes: [
@@ -194,6 +199,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "zai",
+    icon: "zai",
     name: "Z.ai",
     monogram: "Z",
     modes: [
@@ -231,6 +237,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "moonshot",
+    icon: "moonshot",
     name: "Moonshot",
     monogram: "K",
     modes: [
@@ -257,7 +264,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         protocol: "openai-chat",
         keyHeader: "bearer",
         listsModels: true,
-        keyUrl: "https://platform.moonshot.ai",
+        keyUrl: "https://platform.kimi.ai",
         hint: "API key from platform.moonshot.ai.",
         // UNVERIFIED: not checked against the models.dev moonshotai entry here.
         defaults: { workhorse: "kimi-k2.6", reviewer: "kimi-k3" },
@@ -268,6 +275,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "alibaba",
+    icon: "alibaba",
     name: "Alibaba",
     monogram: "Q",
     modes: [
@@ -282,7 +290,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         protocol: "openai-chat",
         keyHeader: "bearer",
         listsModels: true,
-        keyUrl: "https://bailian.console.aliyun.com/",
+        keyUrl: "https://modelstudio.console.alibabacloud.com/?tab=model#/api-key",
         hint: "Coding Plan key from Alibaba ModelStudio.",
         // UNVERIFIED: exact plan model ids are not confirmed against the
         // models.dev alibaba-coding-plan entry here.
@@ -297,7 +305,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         protocol: "openai-chat",
         keyHeader: "bearer",
         listsModels: true,
-        keyUrl: "https://bailian.console.aliyun.com/",
+        keyUrl: "https://modelstudio.console.alibabacloud.com/?tab=model#/api-key",
         hint: "API key from Alibaba ModelStudio.",
         // UNVERIFIED: not checked against the models.dev alibaba entry here.
         defaults: { workhorse: "qwen-plus", reviewer: "qwen-max" },
@@ -310,6 +318,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "minimax",
+    icon: "minimax",
     name: "MiniMax",
     monogram: "MM",
     modes: [
@@ -349,6 +358,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "xiaomi",
+    icon: "xiaomi",
     name: "Xiaomi",
     monogram: "Mi",
     modes: [
@@ -390,6 +400,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "command-code",
+    icon: "command-code",
     name: "Command Code",
     monogram: "CC",
     modes: [
@@ -416,6 +427,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "anthropic",
+    icon: "anthropic",
     name: "Anthropic",
     monogram: "A",
     modes: [
@@ -427,7 +439,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         protocol: "anthropic-messages",
         keyHeader: "x-api-key",
         listsModels: true,
-        keyUrl: "https://console.anthropic.com/settings/keys",
+        keyUrl: "https://platform.claude.com/settings/keys",
         hint: "API key from console.anthropic.com.",
         // UNVERIFIED: not checked against the models.dev anthropic entry here.
         defaults: { workhorse: "claude-sonnet-4-5", reviewer: "claude-opus-4-8" },
@@ -438,6 +450,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "google",
+    icon: "google",
     name: "Google",
     monogram: "G",
     modes: [
@@ -459,6 +472,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "xai",
+    icon: "xai",
     name: "xAI",
     monogram: "X",
     modes: [
@@ -481,6 +495,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "deepseek",
+    icon: "deepseek",
     name: "DeepSeek",
     monogram: "DS",
     modes: [
@@ -504,6 +519,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "openrouter",
+    icon: "openrouter",
     name: "OpenRouter",
     monogram: "OR",
     modes: [
@@ -529,6 +545,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "vercel",
+    icon: "vercel",
     name: "Vercel",
     monogram: "V",
     modes: [
@@ -553,6 +570,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "cloudflare",
+    icon: "cloudflare",
     name: "Cloudflare",
     monogram: "CF",
     modes: [
@@ -580,6 +598,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "opencode",
+    icon: "opencode",
     name: "OpenCode",
     monogram: "Z",
     modes: [
@@ -605,6 +624,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "ollama",
+    icon: "ollama",
     name: "Ollama",
     monogram: "Ol",
     modes: [
@@ -645,6 +665,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "lmstudio",
+    icon: "lmstudio",
     name: "LM Studio",
     monogram: "LM",
     modes: [
@@ -669,6 +690,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
   },
   {
     id: "custom",
+    icon: "custom",
     name: "Custom",
     monogram: "+",
     modes: [

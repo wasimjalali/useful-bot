@@ -8,14 +8,13 @@ import UsefulBotCore
 /// from `GET /api/providers`.
 struct ProvidersPaneView: View {
     @EnvironmentObject private var model: AppModel
-
-    @State private var connectOpen = false
-    @State private var menuFor: String?
-    @State private var keySheet: KeySheetTarget?
-    @State private var modelPickerRole: String?
-    @State private var effortRole: String?
+    /// Which brand card the dialog renders at its root. Owned by
+    /// AppSettingsView so the card floats above the scrolling body.
+    @Binding var openCard: ProvidersCard?
+    @Binding var keySheet: KeySheetTarget?
 
     private static let connectSections = ["Subscription", "API", "Local"]
+    private static let connectCard = ProvidersCard(kind: .connect, key: "")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -62,9 +61,6 @@ struct ProvidersPaneView: View {
                 }
             }
         }
-        .sheet(item: $keySheet) { target in
-            KeySheetView(target: target, onClose: { keySheet = nil })
-        }
         .sheet(isPresented: oauthPresented) {
             OAuthSheetView(onClose: { Task { await model.cancelOAuth() } })
         }
@@ -84,8 +80,9 @@ struct ProvidersPaneView: View {
     // MARK: - Connections
 
     private func connectionRow(_ connection: ConnectionPublic) -> some View {
-        settingsRow {
-            MonogramTile(text: connection.monogram)
+        let card = ProvidersCard(kind: .menu, key: connection.id)
+        return settingsRow {
+            ProviderMark(icon: connection.icon, monogram: connection.monogram, size: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(connection.label)
                     .font(.system(size: 14, weight: .medium))
@@ -99,7 +96,7 @@ struct ProvidersPaneView: View {
             Spacer(minLength: 0)
             statusDot(connection.status)
             Button {
-                menuFor = connection.id
+                toggle(card)
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 13, weight: .medium))
@@ -109,8 +106,8 @@ struct ProvidersPaneView: View {
             }
             .buttonStyle(.plain)
             .pointerOnHover()
-            .popover(isPresented: openFlag(menuFor, connection.id, { menuFor = $0 }), arrowEdge: .bottom) {
-                rowMenuPopover.frame(width: 220)
+            .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
+                [ProvidersCardAnchor(card: card, bounds: $0)]
             }
             .accessibilityLabel("Actions for \(connection.label)")
             .accessibilityIdentifier("provider-menu-\(connection.id)")
@@ -130,7 +127,7 @@ struct ProvidersPaneView: View {
     private func connectRow(last: Bool, hasRows: Bool) -> some View {
         settingsRow(last: last || !hasRows) {
             Button {
-                connectOpen.toggle()
+                toggle(Self.connectCard)
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "plus.circle")
@@ -148,52 +145,49 @@ struct ProvidersPaneView: View {
             }
             .buttonStyle(.plain)
             .pointerOnHover()
-            .popover(isPresented: $connectOpen, arrowEdge: .bottom) {
-                connectPopover.frame(width: 280)
+            .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
+                [ProvidersCardAnchor(card: Self.connectCard, bounds: $0)]
             }
             .accessibilityIdentifier("providers-connect")
         }
     }
 
-    // MARK: - Connect popover
+    // MARK: - Connect card
 
-    private var connectPopover: some View {
+    /// Rows for the Connect card. The dialog host wraps this in the brand
+    /// card and a scrolling body capped to the space around the anchor.
+    var connectCardContent: some View {
         let groups = Self.connectSections.compactMap { section -> (String, [CatalogPublic])? in
             let rows = model.providerCatalog.filter { $0.kindLabel == section && !$0.connected && $0.providerId != "custom" }
             return rows.isEmpty ? nil : (section, rows)
         }
         let custom = model.providerCatalog.first { $0.providerId == "custom" && !$0.connected }
         return VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(groups.enumerated()), id: \.element.0) { index, group in
-                        if index > 0 { Hairline() }
-                        Text(group.0)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.C.inkFaint)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 10)
-                            .padding(.bottom, 4)
-                        ForEach(group.1) { entry in
-                            connectEntryRow(entry)
-                        }
-                        Spacer(minLength: 6)
-                    }
-                    if let custom {
-                        Hairline()
-                        connectCustomRow(custom)
-                    }
+            ForEach(Array(groups.enumerated()), id: \.element.0) { index, group in
+                if index > 0 { Hairline() }
+                Text(group.0)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkFaint)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
+                ForEach(group.1) { entry in
+                    connectEntryRow(entry)
                 }
-                .padding(.vertical, 6)
+                Spacer(minLength: 6)
             }
-            .frame(maxHeight: 420)
+            if let custom {
+                Hairline()
+                connectCustomRow(custom)
+            }
         }
+        .padding(.vertical, 6)
     }
 
     private func connectEntryRow(_ entry: CatalogPublic) -> some View {
         MenuRowButton(action: { pickCatalogEntry(entry) }) {
             HStack(spacing: 10) {
-                MonogramTile(text: entry.monogram)
+                ProviderMark(icon: entry.icon, monogram: entry.monogram, size: 28)
                 Text(entry.label)
                     .font(.system(size: 14))
                     .foregroundStyle(Theme.C.ink)
@@ -230,7 +224,7 @@ struct ProvidersPaneView: View {
     }
 
     private func pickCatalogEntry(_ entry: CatalogPublic) {
-        connectOpen = false
+        openCard = nil
         if entry.oauth {
             Task { await model.startOAuth(providerId: entry.providerId, label: entry.label) }
         } else {
@@ -239,10 +233,10 @@ struct ProvidersPaneView: View {
         }
     }
 
-    // MARK: - Row menu
+    // MARK: - Row menu card
 
     private var menuConnection: ConnectionPublic? {
-        guard let id = menuFor else { return nil }
+        guard openCard?.kind == .menu, let id = openCard?.key else { return nil }
         return model.providerConnections.first { $0.id == id }
     }
 
@@ -253,11 +247,11 @@ struct ProvidersPaneView: View {
         }
     }
 
-    private var rowMenuPopover: some View {
+    var rowMenuCardContent: some View {
         VStack(alignment: .leading, spacing: 2) {
             if menuEntry != nil, let connection = menuConnection {
                 MenuRowButton(action: {
-                    menuFor = nil
+                    openCard = nil
                     editConnection(connection)
                 }) {
                     HStack(spacing: 8) {
@@ -278,7 +272,7 @@ struct ProvidersPaneView: View {
             if let connection = menuConnection {
                 MenuRowButton(action: {
                     let id = connection.id
-                    menuFor = nil
+                    openCard = nil
                     Task { await model.disconnectConnection(id) }
                 }) {
                     HStack(spacing: 8) {
@@ -328,8 +322,9 @@ struct ProvidersPaneView: View {
             if let detail {
                 modelChipButton(role: role, detail: detail)
                 if !detail.efforts.isEmpty {
+                    let card = ProvidersCard(kind: .effort, key: role)
                     Button {
-                        effortRole = role
+                        toggle(card)
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 13, weight: .medium))
@@ -339,8 +334,8 @@ struct ProvidersPaneView: View {
                     }
                     .buttonStyle(.plain)
                     .pointerOnHover()
-                    .popover(isPresented: openFlag(effortRole, role, { effortRole = $0 }), arrowEdge: .bottom) {
-                        effortPopover.frame(width: 220)
+                    .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
+                        [ProvidersCardAnchor(card: card, bounds: $0)]
                     }
                     .accessibilityLabel("Reasoning for \(title)")
                     .accessibilityIdentifier("role-\(role)-reasoning")
@@ -354,16 +349,12 @@ struct ProvidersPaneView: View {
     }
 
     private func modelChipButton(role: String, detail: RolePublic) -> some View {
-        Button {
-            modelPickerRole = role
+        let card = ProvidersCard(kind: .picker, key: role)
+        return Button {
+            toggle(card)
         } label: {
             HStack(spacing: 6) {
-                Text(chipMonogram(role: role, detail: detail))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .frame(width: 22, height: 22)
-                    .background(Theme.C.sunken)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                ProviderMark(icon: detail.connectionIcon, monogram: chipMonogram(detail: detail), size: 22)
                 Text(detail.modelLabel.isEmpty ? "Model" : detail.modelLabel)
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.ink)
@@ -378,8 +369,8 @@ struct ProvidersPaneView: View {
         }
         .buttonStyle(.plain)
         .pointerOnHover()
-        .popover(isPresented: openFlag(modelPickerRole, role, { modelPickerRole = $0 }), arrowEdge: .bottom) {
-            modelPickerPopover.frame(width: 280)
+        .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
+            [ProvidersCardAnchor(card: card, bounds: $0)]
         }
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
@@ -389,7 +380,7 @@ struct ProvidersPaneView: View {
         .accessibilityIdentifier("role-\(role)-model")
     }
 
-    private func chipMonogram(role: String, detail: RolePublic) -> String {
+    private func chipMonogram(detail: RolePublic) -> String {
         if let id = detail.connectionId,
            let connection = model.providerConnections.first(where: { $0.id == id }) {
             return connection.monogram
@@ -397,18 +388,18 @@ struct ProvidersPaneView: View {
         return "?"
     }
 
-    // MARK: - Model picker
+    // MARK: - Model picker card
 
-    private var modelPickerPopover: some View {
-        let role = modelPickerRole ?? "default"
+    func modelPickerCardContent(role: String, maxHeight: CGFloat = 320) -> some View {
         let detail = role == "reviewer" ? model.reviewerRole : model.defaultRole
         return RoleModelPicker(
             models: detail?.models ?? [],
             currentModelId: detail?.modelId ?? "",
             onPick: { option in
-                modelPickerRole = nil
+                openCard = nil
                 saveModelPick(role: role, option: option)
-            }
+            },
+            maxHeight: maxHeight
         )
     }
 
@@ -423,10 +414,9 @@ struct ProvidersPaneView: View {
         }
     }
 
-    // MARK: - Reasoning menu
+    // MARK: - Reasoning card
 
-    private var effortPopover: some View {
-        let role = effortRole ?? "default"
+    func effortCardContent(role: String) -> some View {
         let detail = role == "reviewer" ? model.reviewerRole : model.defaultRole
         return VStack(alignment: .leading, spacing: 0) {
             Text("Reasoning")
@@ -438,7 +428,7 @@ struct ProvidersPaneView: View {
             ForEach(detail?.efforts ?? [], id: \.id) { item in
                 let selected = detail?.effort == item.id
                 MenuRowButton(action: {
-                    effortRole = nil
+                    openCard = nil
                     saveEffortPick(role: role, effort: item.id)
                 }) {
                     HStack(spacing: 8) {
@@ -484,9 +474,9 @@ struct ProvidersPaneView: View {
 
     // MARK: - Helpers
 
-    /// A popover binding for one of several rows sharing one selection.
-    private func openFlag(_ current: String?, _ id: String, _ set: @escaping (String?) -> Void) -> Binding<Bool> {
-        Binding(get: { current == id }, set: { open in if !open, current == id { set(nil) } })
+    /// One open card at a time: tapping the open card's trigger closes it.
+    private func toggle(_ card: ProvidersCard) {
+        openCard = (openCard == card) ? nil : card
     }
 
     private func section<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
@@ -525,20 +515,6 @@ struct ProvidersPaneView: View {
     }
 }
 
-/// The 28 pt monogram tile beside a provider name.
-private struct MonogramTile: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Theme.C.ink)
-            .frame(width: 28, height: 28)
-            .background(Theme.C.sunken)
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
-    }
-}
-
 /// What the key sheet edits: a catalogue entry, plus the connection when the
 /// row menu opened it for editing.
 struct KeySheetTarget: Identifiable {
@@ -552,7 +528,7 @@ struct KeySheetTarget: Identifiable {
 }
 
 /// The connect sheet: heading, key and extra fields, hint, key link, errors.
-private struct KeySheetView: View {
+struct KeySheetView: View {
     @EnvironmentObject private var model: AppModel
     let target: KeySheetTarget
     let onClose: () -> Void
@@ -723,10 +699,11 @@ private struct OAuthSheetView: View {
 }
 
 /// The searchable model list behind a role chip, grouped by connection.
-private struct RoleModelPicker: View {
+struct RoleModelPicker: View {
     let models: [RoleModelOption]
     let currentModelId: String
     let onPick: (RoleModelOption) -> Void
+    var maxHeight: CGFloat = 320
 
     @State private var query = ""
 
@@ -738,17 +715,29 @@ private struct RoleModelPicker: View {
         }
     }
 
-    private var groups: [(String, [RoleModelOption])] {
+    private struct ModelGroup {
+        let connectionId: String
+        let label: String
+        let icon: String
+        var options: [RoleModelOption]
+    }
+
+    private var groups: [ModelGroup] {
         var order: [String] = []
-        var map: [String: [RoleModelOption]] = [:]
+        var map: [String: ModelGroup] = [:]
         for option in filtered {
-            if map[option.connectionLabel] == nil {
-                order.append(option.connectionLabel)
-                map[option.connectionLabel] = []
+            if map[option.connectionId] == nil {
+                order.append(option.connectionId)
+                map[option.connectionId] = ModelGroup(
+                    connectionId: option.connectionId,
+                    label: option.connectionLabel,
+                    icon: option.icon,
+                    options: []
+                )
             }
-            map[option.connectionLabel]?.append(option)
+            map[option.connectionId]?.options.append(option)
         }
-        return order.map { ($0, map[$0] ?? []) }
+        return order.compactMap { map[$0] }
     }
 
     var body: some View {
@@ -771,16 +760,24 @@ private struct RoleModelPicker: View {
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        ForEach(groups, id: \.0) { group in
-                            if !group.0.isEmpty {
-                                Text(group.0)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Theme.C.inkFaint)
-                                    .padding(.horizontal, 12)
-                                    .padding(.top, 8)
-                                    .padding(.bottom, 2)
+                        ForEach(groups, id: \.connectionId) { group in
+                            if !group.label.isEmpty {
+                                HStack(spacing: 6) {
+                                    ProviderMark(
+                                        icon: group.icon,
+                                        monogram: String(group.label.prefix(1)),
+                                        size: 16
+                                    )
+                                    Text(group.label)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.C.inkFaint)
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.top, 8)
+                                .padding(.bottom, 2)
                             }
-                            ForEach(group.1, id: \.id) { option in
+                            ForEach(group.options, id: \.id) { option in
                                 let selected = currentModelId == option.id
                                 MenuRowButton(action: { onPick(option) }) {
                                     HStack {
@@ -806,7 +803,80 @@ private struct RoleModelPicker: View {
                 }
                 .padding(.vertical, 6)
             }
-            .frame(maxHeight: 320)
+            .frame(maxHeight: maxHeight)
         }
     }
 }
+
+/// The open Providers brand card, rendered by the settings dialog at its root
+/// so the scrolling body cannot clip it. Placement follows the anchor the pane
+/// published: below the trigger when it fits, else above it.
+struct ProvidersCardHost: View {
+    let pane: ProvidersPaneView
+    let card: ProvidersCard
+    @Binding var openCard: ProvidersCard?
+    let anchor: CGRect
+    let dialogSize: CGSize
+
+    private var width: CGFloat {
+        switch card.kind {
+        case .connect, .picker: return 280
+        case .menu, .effort: return 220
+        }
+    }
+
+    /// Room below the anchor, then room above it. Under 200 pt below, the card
+    /// opens above the anchor instead, capped the same way.
+    private var openAbove: Bool {
+        let below = dialogSize.height - anchor.maxY - 16
+        let above = anchor.minY - 16
+        return below < 200 && above > below
+    }
+
+    private var cap: CGFloat {
+        let room = openAbove ? anchor.minY - 16 : dialogSize.height - anchor.maxY - 16
+        return max(room, 120)
+    }
+
+    private var leading: CGFloat {
+        let rightAligned = anchor.maxX - width
+        return min(max(rightAligned, 8), max(dialogSize.width - width - 8, 8))
+    }
+
+    /// The overlay alignment and offset that sit the card against the anchor.
+    /// Below the trigger in the top-leading container, or 4 pt above it in
+    /// the bottom-leading one so the height can stay content driven.
+    var alignment: Alignment { openAbove ? .bottomLeading : .topLeading }
+
+    var xOffset: CGFloat { leading }
+
+    var yOffset: CGFloat {
+        openAbove ? -(dialogSize.height - anchor.minY + 4) : anchor.maxY + 4
+    }
+
+    var body: some View {
+        ProvidersBrandCard(width: width, content: bodyContent)
+            .dismissOnOutsideClick { openCard = nil }
+    }
+
+    @ViewBuilder
+    private func bodyContent() -> some View {
+        switch card.kind {
+        case .connect:
+            ScrollView { pane.connectCardContent }
+                .uvScroll()
+                .frame(maxHeight: cap)
+        case .menu:
+            ScrollView { pane.rowMenuCardContent }
+                .uvScroll()
+                .frame(maxHeight: cap)
+        case .picker:
+            pane.modelPickerCardContent(role: card.key, maxHeight: cap)
+        case .effort:
+            ScrollView { pane.effortCardContent(role: card.key) }
+                .uvScroll()
+                .frame(maxHeight: cap)
+        }
+    }
+}
+

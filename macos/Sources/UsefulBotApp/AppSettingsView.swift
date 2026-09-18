@@ -44,6 +44,10 @@ struct AppSettingsView: View {
     /// Tracks the daily-limit field so clicking away commits the typed value
     /// the way Return does.
     @FocusState private var budgetFieldFocused: Bool
+    /// The open Providers brand card, rendered at the dialog root so the
+    /// scrolling body cannot clip it. Anchors come from the pane.
+    @State private var providersCard: ProvidersCard?
+    @State private var providersKeySheet: KeySheetTarget?
 
     init(initialTab: AppSettingsTab, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -67,10 +71,41 @@ struct AppSettingsView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
             .popShadow()
+            .overlayPreferenceValue(ProvidersCardAnchorsKey.self) { anchors in
+                GeometryReader { proxy in
+                    if tab == .providers, let card = providersCard,
+                       let match = anchors.first(where: { $0.card == card }) {
+                        let host = ProvidersCardHost(
+                            pane: providersPaneView,
+                            card: card,
+                            openCard: $providersCard,
+                            anchor: proxy[match.bounds],
+                            dialogSize: proxy.size
+                        )
+                        Color.clear
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .overlay(alignment: host.alignment) {
+                                host.offset(x: host.xOffset, y: host.yOffset)
+                            }
+                    }
+                }
+            }
+            .sheet(item: $providersKeySheet) { target in
+                KeySheetView(target: target, onClose: { providersKeySheet = nil })
+            }
         }
-        .onExitCommand(perform: onClose)
+        .onExitCommand {
+            if providersCard != nil {
+                providersCard = nil
+            } else {
+                onClose()
+            }
+        }
         .onChange(of: model.appSettingsTab) { _, next in
             tab = next
+        }
+        .onChange(of: tab) { _, _ in
+            providersCard = nil
         }
         .task(id: tab) {
             switch tab {
@@ -230,8 +265,12 @@ struct AppSettingsView: View {
 
     // MARK: - Providers
 
+    private var providersPaneView: ProvidersPaneView {
+        ProvidersPaneView(openCard: $providersCard, keySheet: $providersKeySheet)
+    }
+
     private var providersPane: some View {
-        ProvidersPaneView()
+        providersPaneView
     }
 
     // MARK: - Computer

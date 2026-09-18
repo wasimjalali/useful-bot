@@ -12,31 +12,32 @@ import Testing
         {"ok":true,
          "catalog":[
            {"providerId":"openai","mode":"oauth","label":"ChatGPT","kindLabel":"Subscription",
-            "monogram":"Cg","hint":"Sign in with ChatGPT","keyUrl":null,"fields":null,
+            "monogram":"Cg","icon":"openai","hint":"Sign in with ChatGPT","keyUrl":null,"fields":null,
             "oauth":true,"connected":true},
            {"providerId":"anthropic","mode":"api","label":"Anthropic","kindLabel":"API",
-            "monogram":"An","hint":"Paste a key from console.anthropic.com",
+            "monogram":"An","icon":"anthropic","hint":"Paste a key from console.anthropic.com",
             "keyUrl":"https://console.anthropic.com/","fields":null,
             "oauth":false,"connected":false},
            {"providerId":"cloudflare","mode":"api","label":"Cloudflare Workers AI","kindLabel":"API",
-            "monogram":"Cf","hint":"Needs the account id too.",
+            "monogram":"Cf","icon":"cloudflare","hint":"Needs the account id too.",
             "keyUrl":null,"fields":[{"id":"accountId","label":"Account ID","placeholder":"abc123"}],
             "oauth":false,"connected":false}
          ],
          "connections":[
            {"id":"openai:oauth","providerId":"openai","mode":"oauth","label":"ChatGPT",
-            "kindLabel":"Subscription","monogram":"Cg","connected":true,"last4":null,
+            "kindLabel":"Subscription","monogram":"Cg","icon":"openai","connected":true,"last4":null,
             "source":"settings","active":true,"status":"ok","lastError":null,
             "accountId":"acct_1","fields":{},"models":[{"id":"gpt-5.2-codex","label":"GPT 5.2 Codex"}]}
          ],
          "roles":{
            "default":{"connectionId":"openai:oauth","connectionLabel":"ChatGPT",
+             "connectionIcon":"openai",
              "modelId":"gpt-5.2-codex","modelLabel":"GPT 5.2 Codex",
              "effort":"high","effortLabel":"High",
              "efforts":[{"id":"low","label":"Low"},{"id":"high","label":"High"}],
-             "models":[{"connectionId":"openai:oauth","connectionLabel":"ChatGPT",
+             "models":[{"connectionId":"openai:oauth","connectionLabel":"ChatGPT","icon":"openai",
                "id":"gpt-5.2-codex","label":"GPT 5.2 Codex"}]},
-           "reviewer":{"connectionId":null,"connectionLabel":"","modelId":"","modelLabel":"",
+           "reviewer":{"connectionId":null,"connectionLabel":"","connectionIcon":"","modelId":"","modelLabel":"",
              "effort":null,"effortLabel":null,"efforts":[],"models":[]}
          },
          "composer":{"modelId":"gpt-5.2-codex","modelLabel":"GPT 5.2 Codex","effort":"high",
@@ -48,12 +49,17 @@ import Testing
         #expect(payload.catalog.count == 3)
         #expect(payload.catalog[0].oauth)
         #expect(payload.catalog[0].fields == nil)
+        #expect(payload.catalog[0].icon == "openai")
         #expect(payload.catalog[2].fields?.first?.id == "accountId")
+        #expect(payload.catalog[2].icon == "cloudflare")
         #expect(payload.connections.count == 1)
         #expect(payload.connections[0].accountId == "acct_1")
+        #expect(payload.connections[0].icon == "openai")
         #expect(payload.connections[0].models.first?.id == "gpt-5.2-codex")
         #expect(payload.defaultRole?.effort == "high")
+        #expect(payload.defaultRole?.connectionIcon == "openai")
         #expect(payload.defaultRole?.models.count == 1)
+        #expect(payload.defaultRole?.models.first?.icon == "openai")
         #expect(payload.reviewerRole?.efforts.isEmpty == true)
         #expect(payload.composer?.modelId == "gpt-5.2-codex")
         #expect(payload.legacyProviders.count == 1)
@@ -70,13 +76,16 @@ import Testing
         let entry = try #require(payload.catalog.first)
         #expect(entry.mode == "api")
         #expect(entry.label == "zai")
+        #expect(entry.icon == "")
         #expect(!entry.oauth)
         #expect(!entry.connected)
         let connection = try #require(payload.connections.first)
         #expect(connection.status == "ok")
+        #expect(connection.icon == "")
         #expect(connection.fields.isEmpty)
         #expect(connection.models.isEmpty)
         #expect(payload.defaultRole?.modelId == "glm-5")
+        #expect(payload.defaultRole?.connectionIcon == "")
         #expect(payload.defaultRole?.efforts.isEmpty == true)
         #expect(payload.reviewerRole == nil)
         #expect(payload.composer == nil)
