@@ -20,6 +20,9 @@ export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 const PROTECTED_NAMES = [
   ".env", ".ssh", ".aws", ".gnupg", ".netrc", "netrc", ".npmrc", ".pypirc",
   ".docker", ".kube", "id_rsa", "id_ecdsa", "id_ed25519", "keychains", "auth.json",
+  // The user-domain stores, spelled as the disk spells them: the text
+  // tripwire lowercases, the kernel does not.
+  "Library/Keychains", "Library/Cookies",
   // The app's own stores and the launch agents that start it.
   ".useful-bot", "LaunchAgents",
   // Shell startup files: a planted line runs in the owner's own shell.
@@ -78,12 +81,20 @@ export function sandboxProfile(root: string | null, scope: SandboxScope = "compu
   const protectedRules = PROTECTED_NAMES.map(
     (name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`,
   );
-  const readDenied = root !== null && scope === "folder"
+  // Inside a project folder the build tooling reads its own .env and the
+  // like. Scoped, that is the whole of what the line can reach anyway;
+  // unbounded, the deny stays on for the rest of the disk and only the
+  // folder's own copies are allowed back (a later rule wins).
+  const tooling = root !== null && scope === "folder";
+  const readDenied = tooling && !unbounded
     ? READ_DENIED_NAMES.filter((name) => !TOOLING_READS.has(name))
     : READ_DENIED_NAMES;
-  const readRules = readDenied.map(
-    (name) => `(deny file-read* (regex #"/${regexEscape(name)}($|[/.])"))`,
-  );
+  const readRules = [
+    ...readDenied.map((name) => `(deny file-read* (regex #"/${regexEscape(name)}($|[/.])"))`),
+    ...(tooling && unbounded && real !== null
+      ? [...TOOLING_READS].map((name) => `(allow file-read* (regex #"^${regexEscape(real)}(/.*)?/${regexEscape(name)}($|[/.])"))`)
+      : []),
+  ];
   return [
     "(version 1)",
     "(allow default)",

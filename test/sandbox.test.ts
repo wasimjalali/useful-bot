@@ -89,6 +89,15 @@ test("the Full access profile writes anywhere but into credential files and the 
   assert.ok(full.includes('(deny file-write* (regex #"/\\.zshrc($|[/.])"))'));
   assert.ok(full.includes('(deny file-write* (regex #"/config\\.fish($|[/.])"))'));
   assert.ok(full.includes('(deny file-write* (regex #"/\\.config/fish($|[/.])"))'));
+  assert.ok(full.includes('(deny file-write* (regex #"/Library/Keychains($|[/.])"))'));
+  assert.ok(full.includes('(deny file-read* (regex #"/Library/Cookies($|[/.])"))'));
+  // Unbounded in a project folder: .env stays unreadable everywhere but
+  // under the folder itself.
+  const fullFolder = sandboxProfile(root, "folder", true);
+  assert.ok(fullFolder.includes('(deny file-read* (regex #"/\\.env($|[/.])"))'));
+  assert.ok(fullFolder.includes(`(allow file-read* (regex #"^${realpathSync(root).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(/.*)?/\\.env($|[/.])"))`));
+  const scopedFolder = sandboxProfile(root, "folder");
+  assert.equal(scopedFolder.includes('(deny file-read* (regex #"/\\.env($|[/.])"))'), false);
   assert.ok(full.includes('(deny file-read* (regex #"/\\.ssh($|[/.])"))'));
   for (const path of ["/etc", "/private/etc", "/var/db", "/private/var/db", "/Library/Keychains", "/Library/Cookies"]) {
     assert.ok(full.includes(`(deny file-write* (subpath "${path}"))`), path);

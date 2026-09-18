@@ -240,6 +240,8 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
   // Deeper than this is a chain of scripts nobody has read; Full access
   // runs it rather than card what it cannot see.
   if (depth > MAX_DEPTH) return null;
+  // A backslash-newline continues the line; judged as the one line it is.
+  command = command.replace(/\\\n/g, " ");
   for (const match of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
     const inner = (match[1] ?? match[2] ?? "").trim();
     if (!inner) continue;
@@ -257,7 +259,7 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
   for (const segment of split(tokenize(command))) {
     const reason = wipeReason(segment.tokens, cwd, home, ownerHome, segment.pipedInto ? chain : [], depth);
     if (reason) return reason;
-    cwd = changedDirectory(segment.tokens, cwd, home, stack);
+    cwd = changedDirectory(segment.tokens, cwd, home, ownerHome, stack);
     chain = segment.pipedInto ? [...chain, ...segment.tokens] : segment.tokens;
   }
   return null;
@@ -267,13 +269,13 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
  * Where a `cd`, `pushd` or `popd` segment leaves the shell; any other
  * segment leaves it where it was. `stack` is the pushd stack.
  */
-function changedDirectory(tokens: Token[], cwd: string, home: string, stack: string[]): string {
+function changedDirectory(tokens: Token[], cwd: string, home: string, ownerHome: string, stack: string[]): string {
   const args = peelWrappers(tokens);
   const head = args[0]?.text;
   if (head === "popd") return stack.pop() ?? cwd;
   if (head !== "cd" && head !== "pushd") return cwd;
   const target = args.slice(1).find((token) => !token.text.startsWith("-") || token.quoted)?.text ?? "~";
-  const expanded = expandHome(target, home);
+  const expanded = expandHome(target, home, ownerHome);
   // A directory read from a variable is unknown; the rest of the line is
   // judged where it stood.
   if (/[$`]/.test(expanded)) return cwd;
@@ -409,14 +411,24 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
     if (inner.length > 0 && REMOVERS.has(basename(inner[0].text))) {
       const source = peelWrappers(pipeSource);
       if (basename(source[0]?.text ?? "") === "find" && narrowsFind(source.slice(1).map((token) => token.text))) return null;
+      // Only what looks like a path in the source counts: `ls` is the
+      // command, not a folder called ls.
       for (const token of pipeSource) {
         if (token.text.startsWith("-") && !token.quoted) continue;
+        if (!/[/~$]|^\.{1,2}$|^\*$/.test(token.text)) continue;
         const broad = broadPath(token.text, root, home, ownerHome);
         if (broad) return `wipes ${broad} (xargs ${basename(inner[0].text)})`;
       }
-      return wipeReason(inner, root, home, ownerHome, [], depth);
+      const own = wipeReason(inner, root, home, ownerHome, [], depth);
+      if (own) return own;
+      // `ls | xargs rm -rf` with nothing named sweeps the directory it
+      // stands in.
+      const named = inner.slice(1).some((token) => !token.text.startsWith("-") || token.quoted);
+      const here = named ? null : broadPath(".", root, home, ownerHome);
+      return here ? `wipes ${here} (xargs ${basename(inner[0].text)})` : null;
     }
-    return null;
+    // `xargs sh -c '...'` runs whatever it wraps.
+    return inner.length > 0 ? wipeReason(inner, root, home, ownerHome, pipeSource, depth) : null;
   }
   if (name === "find") {
     const flags = rest.map((token) => token.text);
@@ -460,12 +472,12 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
  * card what it cannot see.
  */
 function scriptWipe(path: string, root: string, home: string, ownerHome: string, depth: number): string | null {
-  const abs = resolve(root, expandHome(path, home));
+  const abs = resolve(root, expandHome(path, home, ownerHome));
   if (/[$`*]/.test(abs)) return null;
   const text = readScript(abs);
   if (!text) return null;
   const firstLine = text.slice(0, text.indexOf("\n") < 0 ? text.length : text.indexOf("\n"));
-  const isShell = /^#!.*\b(sh|bash|zsh|dash|ksh)\b/.test(firstLine) || /\.(sh|bash|zsh|command)$/.test(abs) || !firstLine.startsWith("#!");
+  const isShell = /^#!.*\b(sh|bash|zsh|dash|ksh|fish|csh|tcsh|pwsh)\b/.test(firstLine) || /\.(sh|bash|zsh|command|fish|csh|ps1)$/.test(abs) || !firstLine.startsWith("#!");
   if (!isShell) return null;
   const lines = text.split("\n").filter((line) => !/^\s*#/.test(line));
   return wipeRisk(lines.join("\n"), root, home, ownerHome, depth + 1);
@@ -477,7 +489,7 @@ function scriptWipe(path: string, root: string, home: string, ownerHome: string,
  * same area as the folder itself; `*` and `.` name the current root.
  */
 function broadPath(text: string, root: string, home: string, ownerHome: string): string | null {
-  let target = expandHome(text, home);
+  let target = expandHome(text, home, ownerHome);
   // A target read from a variable is unknown; Full access runs it.
   if (/[$`]/.test(target)) return null;
   if (target === "*") target = ".";
@@ -513,10 +525,12 @@ function broadPath(text: string, root: string, home: string, ownerHome: string):
  * `~user/x` is another home altogether. Quoted or not: double quotes still
  * expand `$HOME`, and the tokenizer does not say which quotes it saw.
  */
-function expandHome(text: string, home: string): string {
+function expandHome(text: string, home: string, ownerHome: string = home): string {
   if (text === "~" || text.startsWith("~/")) return home + text.slice(1);
   if (/^\$\{?HOME\}?(\/|$)/.test(text)) return home + text.replace(/^\$\{?HOME\}?/, "");
-  if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) return join(dirname(home), text.slice(1));
+  // `~user` comes from the passwd database, not from HOME: it sits beside
+  // the owner's real home whatever HOME the line runs with.
+  if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) return join(dirname(ownerHome), text.slice(1));
   return text;
 }
 

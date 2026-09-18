@@ -642,7 +642,6 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     "cd ~/Desktop/project && rm -rf dist",
     "sh -c 'rm -rf build'",
     "find src -name '*.bak' | xargs rm",
-    "ls | xargs rm -rf",
     "eval 'rm -rf build'",
     "npx rimraf dist",
     "python3 -c \"print('hi')\"",
@@ -663,6 +662,18 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
   assert.equal(wipeRisk("rm -rf ~/build", deep, deep, home), null);
   assert.notEqual(wipeRisk("rm -rf /Users/owner/Documents", deep, deep, home), null);
   assert.notEqual(wipeRisk("rm -rf ~/../..", deep, deep, home), null);
+  // `~user` is another home whatever HOME the line runs with.
+  assert.notEqual(wipeRisk("rm -rf ~other", deep, deep, home), null);
+  assert.notEqual(wipeRisk("cd ~other && rm -rf *", deep, deep, home), null);
+  assert.notEqual(wipeRisk("rm -rf \\\n~/Documents", home, home), null);
+  assert.notEqual(wipeRisk("cd /Users/owner/Documents && ls | xargs rm -rf", deep, deep, home), null);
+  assert.equal(wipeRisk("cd ~/Documents && ls | xargs rm -rf", deep, deep, home), null);
+  assert.notEqual(wipeRisk("ls | xargs rm -rf", home, home), null);
+  assert.ok(/\/Users\/owner\)/.test(wipeRisk("ls | xargs rm -rf", home, home) ?? ""));
+  assert.equal(wipeRisk("ls | xargs rm -rf", deep, deep, home), null);
+  assert.equal(wipeRisk("ls | xargs rm -rf build", deep, deep, home), null);
+  assert.notEqual(wipeRisk("ls ~ | xargs sh -c 'rm -rf ~'", home, home), null);
+  assert.notEqual(wipeRisk("echo x | xargs -I{} sh -c 'rm -rf ~/Documents'", home, home), null);
   // A single file directly under a real home is an everyday delete; a
   // folder in the same place is a wipe.
   const realHome = realpathSync(mkdtempSync(join(tmpdir(), "ub-wipe-home-")));
@@ -681,6 +692,10 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     writeFileSync(join(realHome, "bin", "wipe.sh"), "#!/bin/bash\nset -e\ncd ~/Documents && rm -rf .\n", "utf8");
     writeFileSync(join(realHome, "bin", "loop.sh"), "#!/bin/sh\nbash ~/bin/loop.sh\n", "utf8");
     writeFileSync(join(realHome, "bin", "tidy.py"), "import shutil\nshutil.rmtree('/Users/owner/Documents')\n", "utf8");
+    writeFileSync(join(realHome, "bin", "wipe.fish"), "#!/usr/bin/env fish\nrm -rf ~/Documents\n", "utf8");
+    writeFileSync(join(realHome, "bin", "cont.sh"), "#!/bin/sh\nrm -rf \\\n  ~/Documents\n", "utf8");
+    assert.notEqual(wipeRisk("fish bin/wipe.fish", realHome, realHome), null);
+    assert.notEqual(wipeRisk("bash bin/cont.sh", realHome, realHome), null);
     assert.equal(wipeRisk("bash bin/tidy.sh", realHome, realHome), null);
     assert.equal(wipeRisk("./bin/tidy.sh", realHome, realHome), null);
     assert.notEqual(wipeRisk("bash bin/wipe.sh", realHome, realHome), null);
