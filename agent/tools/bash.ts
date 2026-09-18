@@ -69,6 +69,8 @@ export default defineTool({
       throw error;
     }
     const { root, permission, scope } = workspace;
+    // The HOME the line runs with, so `~` in it is the root in both scopes.
+    const shellHome = root;
     const blocked = blockedReason(input.command, permission !== "full_access");
     if (blocked) {
       return { status: "blocked", error: blocked };
@@ -103,10 +105,9 @@ export default defineTool({
     if (readOnly) {
       askOwner = false;
     } else if (permission === "full_access") {
-      // The line runs with HOME set to the root, so `~` is the root in
-      // both scopes; the owner's real home is where the top-level folders
-      // are.
-      risk = wipeRisk(input.command, root, root, scope === "computer" ? root : homedir());
+      // `~` is what the line runs with (`shellHome` below); the owner's
+      // real home is where the top-level folders are.
+      risk = wipeRisk(input.command, root, shellHome, scope === "computer" ? root : homedir());
       askOwner = risk !== null;
     } else if (scope === "folder") {
       risk = commandRisk(input.command, root);
@@ -171,7 +172,7 @@ export default defineTool({
           maxBuffer: INPUT_MAX_BYTES,
           env: {
             PATH: "/usr/bin:/bin",
-            HOME: root,
+            HOME: shellHome,
             // A read-only line runs with no writable root at all, so its
             // temp dir is the system one the sandbox profile allows.
             TMPDIR: readOnly ? tmpdir() : root,

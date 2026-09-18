@@ -221,7 +221,7 @@ function narrowsFind(flags: string[]): boolean {
   });
 }
 /** Removers whose targets say how much a line deletes. */
-const REMOVERS = new Set(["rm", "rimraf", "trash", "srm", "shred"]);
+const REMOVERS = new Set(["rm", "rimraf", "trash", "srm", "shred", "rmdir"]);
 /** Escalators peeled the way wrappers are, so `sudo rm -rf /` still sees `rm`. */
 const ESCALATORS = new Set(["sudo", "doas"]);
 
@@ -486,22 +486,25 @@ function broadPath(text: string, root: string, home: string, ownerHome: string):
   // A single file directly under the home (`rm ~/notes.txt`) is an
   // everyday delete, not a wipe; only a folder or a name that is not there
   // to look at is judged by its place.
+  // A missing name with an extension (`rm ~/notes.txt` after the file is
+  // gone) is a file the same way it would be if it were there. That only
+  // spares the home-level folder rule: the disk, a volume, a top-level
+  // folder and a home are judged whatever the name looks like.
+  let fileByName = false;
   try {
     if (statSync(abs).isFile()) return null;
   } catch {
-    // Missing or unreadable: a name with an extension is a file the same
-    // way it would be if it were there; anything else is judged by shape.
-    if (/\.[A-Za-z0-9]{1,8}$/.test(basename(abs))) return null;
+    fileByName = /\.[A-Za-z0-9]{1,8}$/.test(basename(abs));
   }
   const parts = abs.split("/").filter(Boolean);
   if (parts.length === 0) return "the whole disk (/)";
   if (parts.length === 1) return `a top-level folder (${abs})`;
   if (parts[0] === "Volumes" && parts.length === 2) return `a whole volume (${abs})`;
   if (parts[0] === "Users" && parts.length === 2) return `a whole home folder (${abs})`;
-  if (parts[0] === "Users" && parts.length === 3) return `a top-level home folder (${abs})`;
+  if (parts[0] === "Users" && parts.length === 3) return fileByName ? null : `a top-level home folder (${abs})`;
   const underHome = relative(resolve(ownerHome), abs);
   if (underHome === "") return `a whole home folder (${abs})`;
-  if (!underHome.startsWith("..") && !underHome.includes("/")) return `a top-level home folder (${abs})`;
+  if (!underHome.startsWith("..") && !underHome.includes("/")) return fileByName ? null : `a top-level home folder (${abs})`;
   return null;
 }
 
