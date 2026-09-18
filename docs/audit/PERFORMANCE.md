@@ -41,15 +41,14 @@ workspace credits once and was rerun).
 
 Measured as CPU seconds the app spent in the six seconds after a rail click (`ps -o cputime`
 before and after, all threads), both chats already opened once in the session so the switch comes
-back through the transcript cache. Before on the installed build, after on the debug build; the
-installed numbers are under "Verified".
+back through the transcript cache, both on the installed build:
 
 | Switch to | Before (main @ 5059b1a) | After |
 |---|---|---|
-| Generalist (34 rows) | 1.03 to 1.08 s | 0.87 to 0.95 s |
-| Drive Admin (36 rows, 3,504 events) | 1.92 to 1.96 s | 1.52 to 1.53 s |
+| Generalist (34 rows) | 1.03 to 1.08 s | 0.87 to 0.93 s |
+| Drive Admin (36 rows, 3,504 events) | 1.92 to 1.96 s | 1.51 to 1.53 s |
 | Publishes per cached switch | 2 with different rows, then 2 equal | 1, then 3 skipped |
-| Footprint | 98 MB | 98 MB |
+| Footprint | 124 MB | 104 MB |
 
 - **A false number, caught.** The first "after" read 0.04 s per switch. The debug build's window
   opens at its own saved frame, and the rail clicks aimed at the installed app's frame landed in the
