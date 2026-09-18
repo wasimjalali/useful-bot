@@ -44,9 +44,10 @@ counting the WebKit helper processes (`WebContent`, `GPU`, `Networking`) and the
 
 | State | Before (main @ d9c5421) | After |
 |---|---|---|
-| Chat opened at its newest turn, drawing off screen | 7 WebKit processes, 135 MB, one `WebContent` at 79 MB | 4 processes, 6 MB (the ones every app with WebKit linked already has) |
-| Scrolled up to the drawing | the same 7 | 7 processes, 151 MB, drawing rendered |
-| App footprint | 76 MB | 74 MB (the processes are separate) |
+| Chat opened at its newest turn, drawing off screen, 780 pt window (debug build) | 7 WebKit processes, 135 MB, one `WebContent` at 79 MB | 4 processes, 6 MB (the ones every app with WebKit linked already has) |
+| Same, 1,011 pt window (installed): the box is inside the 800 pt margin, so it is created at open | 135 MB | 7 processes, 36 MB until scrolled to, 60 MB once painted |
+| Scrolled up to the drawing | the same 7 | 7 processes, 60 to 151 MB, drawing rendered |
+| App footprint | 76 MB | 63 to 74 MB (the processes are separate) |
 
 - **Problem.** `TranscriptRowView` mounted a `WKWebView` for every widget row as soon as the chat
   opened, and a chat opens at its newest turn, so every drawing in the history started its content,
