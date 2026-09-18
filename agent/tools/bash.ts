@@ -161,6 +161,7 @@ export default defineTool({
         : confinedCommand(readOnly ? null : root, input.command, scope, permission === "full_access" && !readOnly);
       let stdout: string;
       let stderr: string;
+      let exitCode = 0;
       try {
         ({ stdout, stderr } = await execFileAsync(args[0], args.slice(1), {
           cwd: root,
@@ -180,18 +181,25 @@ export default defineTool({
           },
         }));
       } catch (err) {
-        // Output past the input cap rejects the whole execFile call with the
-        // partial output attached; clip what came through instead of failing
-        // the turn with a raw maxBuffer error. Any other error is real.
-        if ((err as NodeJS.ErrnoException).code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw err;
-        const partial = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string };
-        stdout = partial.stdout ?? "";
-        stderr = partial.stderr ?? "";
+        // A line that exits non-zero (`grep` with no match, a failing test)
+        // is a result, not a tool failure: the exit code and the output go
+        // back as they are. Rejecting instead would hand the model an error
+        // whose text is the whole sandbox command line, which reads like a
+        // permission refusal. Output past the input cap rejects the whole
+        // execFile call with the partial output attached; clip what came
+        // through. Anything else (a spawn failure, an abort) is real.
+        const failed = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; signal?: string | null };
+        const exited = typeof failed.code === "number" && !failed.signal;
+        if (!exited && failed.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw err;
+        exitCode = typeof failed.code === "number" ? failed.code : 0;
+        stdout = failed.stdout ?? "";
+        stderr = failed.stderr ?? "";
       }
       const truncated = stdout.length > OUTPUT_MAX_BYTES || stderr.length > OUTPUT_MAX_BYTES;
       return {
         stdout: wrapUntrusted("bash stdout", stdout.slice(0, OUTPUT_MAX_BYTES)),
         stderr: wrapUntrusted("bash stderr", stderr.slice(0, OUTPUT_MAX_BYTES)),
+        exitCode,
         truncated,
       };
     });

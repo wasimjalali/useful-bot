@@ -896,10 +896,9 @@ test("what runs without a card cannot write outside the folder", { skip: process
     // No card: through a symlink the line names nothing outside the folder
     // as far as the text goes, so confinement is what stops the write.
     symlinkSync(dirname(outside), join(box.project, "escape"));
-    await assert.rejects(
-      () => run(bash, { command: `echo out > escape/${basename(outside)}` }, { session: { id: "sess-1" } }),
-      /not permitted/i,
-    );
+    const denied = await run<{ exitCode: number; stderr: string }>(bash, { command: `echo out > escape/${basename(outside)}` }, { session: { id: "sess-1" } });
+    assert.notEqual(denied.exitCode, 0);
+    assert.match(denied.stderr, /not permitted/i);
     assert.equal(existsSync(outside), false);
     assert.equal(box.approvals.listPending().length, 0);
     const inside = await run<{ stdout: string }>(bash, { command: "echo in > made.txt && cat made.txt" }, { session: { id: "sess-1" } });
@@ -953,6 +952,23 @@ test("full access runs deletes and reaches outside without a card, asks before a
   } finally {
     rmSync(outside, { force: true });
     box.restore();
+  }
+});
+
+test("a line that exits non-zero is a result with its exit code, not a tool error", { skip: process.platform !== "darwin" }, async () => {
+  const home = homeFixture("full_access");
+  try {
+    const miss = await run<{ stdout: string; stderr: string; exitCode: number }>(bash, { command: "ls Desktop | grep -c nothing-here" }, home.ctx);
+    assert.equal(miss.exitCode, 1);
+    assert.equal(miss.stdout.includes("0"), true);
+    const failed = await run<{ exitCode: number; stderr: string }>(bash, { command: "cat Desktop/missing.txt" }, home.ctx);
+    assert.equal(failed.exitCode, 1);
+    assert.equal(failed.stderr.includes("No such file"), true);
+    assert.equal(failed.stderr.includes("sandbox-exec"), false);
+    const ok = await run<{ exitCode: number }>(bash, { command: "ls Desktop" }, home.ctx);
+    assert.equal(ok.exitCode, 0);
+  } finally {
+    home.restore();
   }
 });
 
