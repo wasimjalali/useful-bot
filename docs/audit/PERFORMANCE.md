@@ -37,6 +37,35 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
+## Batch 6: a streaming reply parses into one slot (PR: perf/streaming-markdown-cache)
+
+Measured with a throwaway harness linking `UsefulBotCore` (scratchpad `mdprobe`), streaming a 1.1 KB
+reply with headings, two lists, a table and a quote, then rendering the final text once, the way the
+transcript does when the turn ends:
+
+| Delta size | Shared cache entries left after one reply, before | After |
+|---|---|---|
+| 24 characters (46 deltas) | 111 | 27 (the final text's own blocks and spans) |
+| 4 characters (272 deltas, closer to tokens) | 529 | 27 |
+| Parse time for the whole stream | 15 to 39 ms | 14 to 23 ms |
+
+- **Problem.** `ChatMarkdownCache` keys on the text, so every delta of a growing reply was a new
+  entry in both the block cache and the inline cache, and stayed there: at 529 per reply, four
+  replies pushed every stable row of the transcript out of a 2,048-entry FIFO, and each of those rows
+  then parsed again on its next render.
+- **Fix.** A `Transient` store, one replaceable entry per streaming row (keyed by row id, eight rows
+  at most), holds the current text's blocks and the inline spans of the current and previous delta,
+  so a paragraph that did not change is carried over while the one after it grows. `ChatView` marks
+  a row streaming while a turn runs and the row is in the newest reply run; the flag is part of the
+  row's equality, so the turn ending re-renders the row once through the shared cache even when no
+  delta follows (Astra's T-16). Nothing else changes: a row that is not streaming reads the shared
+  cache as before.
+- **Not measured live.** A real stream would mean sending a turn into one of the owner's chats;
+  the harness runs the same `ChatMarkdownCache` code the view calls.
+- **Found in review (Muse Spark).** Nothing on the first pass.
+- **Caught by.** Astra (P-8, and T-16 on the lifecycle), Spark, GLM. Spark's round 3 named both
+  layers: fixing only the block cache would have left the inline prefixes accumulating.
+
 ## Batch 5: a cached chat switch builds once, and long chats mount a window (PR: perf/windowed-transcript)
 
 Measured as CPU seconds the app spent in the six seconds after a rail click (`ps -o cputime`
@@ -353,11 +382,11 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
-| Transient markdown cache for the growing reply | every streamed prefix is parsed again and kept, up to 2,048 entries | medium | Astra, Spark, GLM |
 | Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
 | One `WKWebView` per widget row, mounted eagerly | memory in widget-heavy chats | medium | all five |
 | Per-bot transcript caches have no eviction | memory grows with chats visited | medium | Astra, Spark, DeepSeek |
 | Server reads and parses whole JSON stores per poll; tick sweeps orphans every 2.5 s | event-loop stalls shared by all bots | medium | GLM, DeepSeek, HY4, Spark |
 
-Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5).
+Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5), the
+streaming markdown cache (batch 6).
 Deferred by decision: the cached chat switch resuming from its cursor.
