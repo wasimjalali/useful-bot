@@ -667,22 +667,36 @@ private extension ShellBot {
     }
 }
 
-/// What the owner said. A long message (`LongMessage.folds`) opens on its
-/// first paragraph with a Show more under it, so a pasted document does not
-/// push the reply off the screen; the fold is the row's own state, and a row
-/// that leaves the window comes back folded.
+/// What the owner said. A long message folds to its first rendered lines
+/// with a Show more under it, the way Claude.ai and Slack fold one, so a
+/// pasted document does not push the reply off the screen. The bubble
+/// measures itself against an unclipped twin and only offers the button when
+/// enough is hidden to be worth it. The fold is the row's own state, and a
+/// row that leaves the window comes back folded.
 private struct UserBubbleView: View {
     let text: String
     @State private var expanded = false
+    @State private var previewHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    private var mayFold: Bool { LongMessage.mayFold(text) }
+    private var folds: Bool {
+        mayFold && LongMessage.hidesEnough(full: fullHeight, preview: previewHeight)
+    }
 
     var body: some View {
-        let folds = LongMessage.folds(text)
         VStack(alignment: .leading, spacing: 8) {
-            Text(folds && !expanded ? LongMessage.preview(text) : text)
-                .font(.system(size: DesignTokens.FontSize.chatBody))
-                .lineSpacing(7)
-                .foregroundStyle(Theme.C.ink)
-                .textSelection(.enabled)
+            body(text)
+                .lineLimit(mayFold && !expanded ? LongMessage.previewLines : nil)
+                .background(heightReader($previewHeight))
+                .background(alignment: .topLeading) {
+                    if mayFold && !expanded {
+                        body(text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .background(heightReader($fullHeight))
+                    }
+                }
             if folds {
                 Button(expanded ? "Show less" : "Show more") {
                     expanded.toggle()
@@ -704,6 +718,22 @@ private struct UserBubbleView: View {
                 style: .continuous
             )
         )
+    }
+
+    private func body(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: DesignTokens.FontSize.chatBody))
+            .lineSpacing(7)
+            .foregroundStyle(Theme.C.ink)
+            .textSelection(.enabled)
+    }
+
+    private func heightReader(_ height: Binding<CGFloat>) -> some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { height.wrappedValue = proxy.size.height }
+                .onChange(of: proxy.size.height) { _, next in height.wrappedValue = next }
+        }
     }
 }
 

@@ -30,8 +30,10 @@ review: fix what it finds, then merge, rebuild the app and install it from local
 ## Verification
 
 A UI change is verified with a real screenshot of the running macOS app, not with tests
-alone. `/Applications/Useful Bot.app` is the installed copy people use; rebuilding means
-`npm run build:app` then `ditto` into `/Applications`.
+alone. Any live check that sends a message goes to the bot named "Test Bot": pick it in
+the rail, or create it first if it is missing. Never send a test turn to any other bot;
+those hold real conversations. `/Applications/Useful Bot.app` is the installed copy people
+use; rebuilding means `npm run build:app` then `ditto` into `/Applications`.
 
 `build:app` also builds the web service. The installed app serves that build only while the
 sources under `web/`, `shared/`, `agent/`, `router/src` and `brand/source` still hash to what it
