@@ -598,8 +598,11 @@ public actor BackendClient {
     /// Poll one device flow. On `complete` the route also returns the full GET
     /// payload, decoded here when present.
     public func pollOAuth(pollId: String) async throws -> (status: String, payload: ProvidersPayload?) {
-        let (data, response) = try await perform { client, _ in
-            URLRequest(url: client.base.appendingPathComponent("api/providers/oauth/\(Self.pathComponent(pollId))"))
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/providers/oauth/\(Self.pathComponent(pollId))"))
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
         }
         try Self.expectOK(response)
         struct Poll: Decodable { let status: String? }

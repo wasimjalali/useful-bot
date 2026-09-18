@@ -433,14 +433,29 @@ function checkKey(key: string): string {
   return trimmed;
 }
 
+/**
+ * Plain fields are required and kept on the connection. A secret field (the
+ * custom sheet's key) is the credential: optional here, never stored in
+ * `fields`, so the public view cannot echo it.
+ */
 function checkFields(mode: ProviderMode, fields: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const field of mode.fields ?? []) {
+    if (field.secret) continue;
     const value = fields[field.id];
     if (typeof value !== "string" || !value.trim()) throw new Error("provider_field");
     out[field.id] = value.trim();
   }
   return out;
+}
+
+function secretField(mode: ProviderMode, fields: Record<string, string>): string | null {
+  for (const field of mode.fields ?? []) {
+    if (!field.secret) continue;
+    const value = fields[field.id];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
 }
 
 /** Connect or replace a key, plan or local connection. Local mode with no key is valid. */
@@ -477,6 +492,7 @@ export function setProviderKey(
   const row = providerMode(providerId, mode);
   if (mode === "oauth") throw new Error("provider_oauth");
   const cleanFields = checkFields(row, fields ?? {});
+  if (!(typeof key === "string" && key.trim())) key = secretField(row, fields ?? {});
   let credential: Credential;
   if (typeof key === "string" && key.trim()) {
     credential = { kind: "key", key: checkKey(key) };

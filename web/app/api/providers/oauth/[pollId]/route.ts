@@ -149,9 +149,14 @@ function pendingProviderId(pollId: string): string | null {
   return entry && typeof entry.providerId === "string" && entry.providerId ? entry.providerId : null;
 }
 
-export async function GET(request: Request, context: { params: Promise<{ pollId: string }> }) {
+/** Completing the flow writes the credential, so the poll is a POST with the CSRF header like every other write. */
+export async function POST(request: Request, context: { params: Promise<{ pollId: string }> }) {
   const gate = await requireDesktop(request);
   if (isGateError(gate)) return gate.error;
+  const csrf = request.headers.get("x-ub-csrf");
+  if (!csrf || csrf !== gate.session.csrf) {
+    return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
+  }
   if (rateLimited(`providers-oauth:${gate.session.callerId}`, 60)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }

@@ -310,3 +310,20 @@ test("usage parser reads completion and sse payloads", () => {
   assert.equal(usageFromPayload({ usage: { prompt_tokens: 1.5, completion_tokens: 2 } }), null);
   assert.equal(usageFromPayload({ usage: { prompt_tokens: 1e12, completion_tokens: 2 } }), null);
 });
+
+test("a custom provider's secret field becomes the credential and never a public field", () => {
+  const store = setProviderKey(emptyProviderStore(), "custom", "local", null, {
+    name: "Lab box",
+    baseUrl: "http://10.0.0.5:8000/v1",
+    key: "sk-lab-secret-123456",
+  });
+  const conn = store.connections["custom:local"];
+  assert.equal(conn?.credential.kind, "key");
+  assert.equal(conn?.fields.key, undefined);
+  const pub = publicProviders(store);
+  assert.equal(JSON.stringify(pub).includes("sk-lab-secret"), false);
+  assert.equal(pub.connections[0]?.last4, "3456");
+  // No key at all is still a valid local connection.
+  const bare = setProviderKey(emptyProviderStore(), "custom", "local", null, { name: "Box", baseUrl: "http://localhost:8000/v1" });
+  assert.equal(bare.connections["custom:local"]?.credential.kind, "none");
+});
