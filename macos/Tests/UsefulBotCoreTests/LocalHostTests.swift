@@ -107,7 +107,17 @@ import Testing
         #expect(!LongMessage.folds(String(repeating: "x", count: 5000)))
     }
 
-    @Test func previewIsTheFirstParagraph() {
+    @Test func previewIsTheFirstParagraphOrItsFirstLines() {
         #expect(LongMessage.preview("\n first \n\nsecond") == "first")
+        let log = (1...12).map { "line \($0)" }.joined(separator: "\n")
+        #expect(LongMessage.folds(log))
+        #expect(LongMessage.preview(log) == "line 1\nline 2\nline 3")
+    }
+
+    @Test func crlfCountsLikeLf() {
+        let lf = (1...10).map(String.init).joined(separator: "\n")
+        let crlf = (1...10).map(String.init).joined(separator: "\r\n")
+        #expect(LongMessage.folds(lf) == LongMessage.folds(crlf))
+        #expect(!LongMessage.folds("one\r\n\r\ntwo"))
     }
 }
