@@ -409,7 +409,13 @@ export async function postResponses(input: {
   });
   if (!res.ok) return res;
   if (outgoing.stream === true) return translateResponsesStream(res, input.model);
-  const translated = translateResponsesJson(await res.json(), input.model);
+  let raw: unknown;
+  try {
+    raw = await res.json();
+  } catch {
+    throw new RouterError({ status: 502, type: "upstream_error", code: "upstream_protocol_error", message: "upstream_protocol_error" });
+  }
+  const translated = translateResponsesJson(raw, input.model);
   return new Response(JSON.stringify(translated), {
     status: res.status,
     headers: { "content-type": "application/json" },

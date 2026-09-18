@@ -12,6 +12,7 @@ import {
   composerState,
   emptyProviderStore,
   last4,
+  legacyProviders,
   parseProviderStore,
   publicProviders,
   readProviderStore,
@@ -401,4 +402,23 @@ test("updateProviderStore applies the change under the lock and releases it", ()
   utimesSync(`${path}.lock`, old, old);
   updateProviderStore((store) => store, path);
   assert.equal(existsSync(`${path}.lock`), false);
+});
+
+test("the env Go connection can be activated and assigned a role", () => {
+  const env = { UB_OPENCODE_GO_KEY: "go-env-key-12345678" } as NodeJS.ProcessEnv;
+  let store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
+  store = setActiveConnection(store, "openai:api");
+  store = setActiveConnection(store, "opencode-go:plan", env);
+  assert.equal(store.activeConnectionId, "opencode-go:plan");
+  assert.equal(store.connections["opencode-go:plan"]?.credential.kind, "key");
+  store = setRole(store, "reviewer", { connectionId: "opencode-go:plan", modelId: "glm-5.3", effort: "high" }, env);
+  assert.equal(store.roles.reviewer?.connectionId, "opencode-go:plan");
+  assert.throws(() => setActiveConnection(emptyProviderStore(), "opencode-go:plan", {} as NodeJS.ProcessEnv), /connection_unknown/);
+});
+
+test("legacy rows keep one row per vendor and leave sign-ins out", () => {
+  let store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
+  store = setOAuthCredential(store, "openai", { kind: "oauth", accessToken: "acc", refreshToken: null, expiresAt: null, accountId: null });
+  const rows = legacyProviders(store, {} as NodeJS.ProcessEnv);
+  assert.deepEqual(rows.map((row) => row.id), ["openai"]);
 });

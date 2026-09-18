@@ -607,7 +607,20 @@ export function clearProviderKey(store: ProviderStore, id: ProviderId): Provider
 }
 
 /** Make a connected connection the chat connection. */
-export function setActiveConnection(store: ProviderStore, id: string): ProviderStore {
+/**
+ * The env Go key is listed as an implicit connection but has no stored row,
+ * so a pick of it stores the row first (source stays the env key: the row
+ * carries that key and the same id).
+ */
+function withImplicit(store: ProviderStore, id: string, env: NodeJS.ProcessEnv): ProviderStore {
+  if (store.connections[id] || id !== "opencode-go:plan") return store;
+  const implicit = envConnection(env);
+  if (!implicit) return store;
+  return { ...store, connections: { ...store.connections, [id]: implicit } };
+}
+
+export function setActiveConnection(store: ProviderStore, id: string, env: NodeJS.ProcessEnv = process.env): ProviderStore {
+  store = withImplicit(store, id, env);
   const conn = store.connections[id];
   if (!conn) throw new Error("connection_unknown");
   if (!isConnected(conn)) throw new Error("provider_disconnected");
@@ -647,8 +660,9 @@ export function setOAuthCredential(store: ProviderStore, providerId: string, cre
   };
 }
 
-export function setRole(store: ProviderStore, role: "reviewer", selection: RoleSelection | null): ProviderStore {
+export function setRole(store: ProviderStore, role: "reviewer", selection: RoleSelection | null, env: NodeJS.ProcessEnv = process.env): ProviderStore {
   if (!selection) return { ...store, roles: {} };
+  store = withImplicit(store, selection.connectionId, env);
   if (!store.connections[selection.connectionId]) throw new Error("connection_unknown");
   return { ...store, roles: { ...store.roles, [role]: selection } };
 }
@@ -851,7 +865,7 @@ export function publicProviders(
       modelId: reviewerSel.modelId,
       modelLabel,
       effort: reviewerSel.effort && (efforts as EffortId[]).includes(reviewerSel.effort) ? reviewerSel.effort : null,
-      effortLabel: reviewerSel.effort ? effortLabel(reviewerSel.effort) : null,
+      effortLabel: reviewerSel.effort && (efforts as EffortId[]).includes(reviewerSel.effort) ? effortLabel(reviewerSel.effort) : null,
       efforts: (efforts as EffortId[]).map((id) => ({ id, label: effortLabel(id) })),
       models: pickerModels,
     };
@@ -890,7 +904,10 @@ export function publicProviders(
  */
 export function legacyProviders(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ProviderPublic[] {
   const pub = publicProviders(store, env);
-  return pub.connections.map((conn) => {
+  // The old shape keys rows by bare provider id, so a sign-in row next to an
+  // API row of the same vendor would collide; the old web UI cannot connect a
+  // sign-in anyway.
+  return pub.connections.filter((conn) => conn.mode !== "oauth").map((conn) => {
     const mode = providerMode(conn.providerId, conn.mode);
     return {
       id: conn.providerId as ProviderId,

@@ -261,18 +261,17 @@ test("messages request maps system, tools, images and thinking", () => {
     input_schema: { type: "object", properties: { location: { type: "string" } } },
   });
   const messages = out.messages as Array<Record<string, unknown>>;
-  assert.equal(messages.length, 4);
+  // Messages rejects two user turns in a row, so the tool result and the
+  // user text that follows it travel as one user message.
+  assert.equal(messages.length, 3);
   assert.deepEqual(messages[1], {
     role: "assistant",
     content: [{ type: "tool_use", id: "call_1", name: "get_weather", input: { location: "Berlin" } }],
   });
   assert.deepEqual(messages[2], {
     role: "user",
-    content: [{ type: "tool_result", tool_use_id: "call_1", content: "{\"temp\":21}" }],
-  });
-  assert.deepEqual(messages[3], {
-    role: "user",
     content: [
+      { type: "tool_result", tool_use_id: "call_1", content: "{\"temp\":21}" },
       { type: "text", text: "And a picture" },
       { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } },
     ],

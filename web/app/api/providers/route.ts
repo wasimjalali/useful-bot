@@ -133,6 +133,9 @@ function payload(store: ProviderStore) {
 export async function GET(request: Request) {
   const gate = await requireDesktop(request);
   if (isGateError(gate)) return gate.error;
+  if (rateLimited(`providers:${gate.session.callerId}`, 60)) {
+    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
+  }
   const store = readProviderStore();
   await syncActiveModels(store);
   return NextResponse.json(payload(store));

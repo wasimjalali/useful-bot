@@ -94,6 +94,21 @@ function toAnthropicToolChoice(choice: unknown): Record<string, unknown> {
 }
 
 /** The router's chat body (post applyReasoning) to a Messages request. */
+
+/**
+ * Messages rejects two user turns in a row. Tool results are user content,
+ * so a tool result followed by user text (a turn that ended mid tool loop)
+ * merges into one user message instead.
+ */
+function pushUser(messages: Array<Record<string, unknown>>, content: Array<Record<string, unknown>>): void {
+  const last = messages[messages.length - 1];
+  if (last && last.role === "user" && Array.isArray(last.content)) {
+    last.content = [...(last.content as Array<Record<string, unknown>>), ...content];
+    return;
+  }
+  messages.push({ role: "user", content });
+}
+
 export function buildMessagesBody(
   chatBody: Record<string, unknown>,
   opts: { model: string },
@@ -105,7 +120,7 @@ export function buildMessagesBody(
   let toolResults: Array<Record<string, unknown>> = [];
   const flushTools = () => {
     if (toolResults.length > 0) {
-      messages.push({ role: "user", content: toolResults });
+      pushUser(messages, toolResults);
       toolResults = [];
     }
   };
@@ -136,9 +151,11 @@ export function buildMessagesBody(
     }
     if (Array.isArray(item.content)) {
       if (item.role !== "user") throw protocolError();
-      messages.push({ role: "user", content: toAnthropicContent(item.content) });
-    } else if (item.role === "user" || item.role === "assistant") {
-      messages.push({ role: item.role, content: contentString(item.content) });
+      pushUser(messages, toAnthropicContent(item.content));
+    } else if (item.role === "user") {
+      pushUser(messages, [{ type: "text", text: contentString(item.content) }]);
+    } else if (item.role === "assistant") {
+      messages.push({ role: "assistant", content: contentString(item.content) });
     } else {
       throw protocolError();
     }
@@ -424,7 +441,13 @@ export async function postMessages(input: {
   });
   if (!res.ok) return res;
   if (outgoing.stream === true) return translateMessagesStream(res, input.model);
-  const translated = translateMessagesJson(await res.json(), input.model);
+  let raw: unknown;
+  try {
+    raw = await res.json();
+  } catch {
+    throw protocolError();
+  }
+  const translated = translateMessagesJson(raw, input.model);
   return new Response(JSON.stringify(translated), {
     status: res.status,
     headers: { "content-type": "application/json" },

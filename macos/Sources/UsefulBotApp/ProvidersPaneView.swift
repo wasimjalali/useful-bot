@@ -399,6 +399,7 @@ struct ProvidersPaneView: View {
         let detail = role == "reviewer" ? model.reviewerRole : model.defaultRole
         return RoleModelPicker(
             models: detail?.models ?? [],
+            currentConnectionId: detail?.connectionId ?? "",
             currentModelId: detail?.modelId ?? "",
             onPick: { option in
                 openCard = nil
@@ -714,6 +715,7 @@ private struct OAuthSheetView: View {
 /// The searchable model list behind a role chip, grouped by connection.
 struct RoleModelPicker: View {
     let models: [RoleModelOption]
+    let currentConnectionId: String
     let currentModelId: String
     let onPick: (RoleModelOption) -> Void
     var maxHeight: CGFloat = 320
@@ -791,7 +793,7 @@ struct RoleModelPicker: View {
                                 .padding(.bottom, 2)
                             }
                             ForEach(group.options, id: \.id) { option in
-                                let selected = currentModelId == option.id
+                                let selected = currentModelId == option.id && (currentConnectionId.isEmpty || currentConnectionId == option.connectionId)
                                 MenuRowButton(action: { onPick(option) }) {
                                     HStack {
                                         Text(option.label)

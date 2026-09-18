@@ -15,6 +15,7 @@ import {
   resetBudgetCache,
   writeLimitsStore,
 } from "../../../../shared/limits-store.ts";
+import { parseConnectionId } from "../../../../shared/provider-catalog.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -74,7 +75,7 @@ function payload() {
       window_start: week.window_start,
     },
     by_model: week.by_model,
-    activeProviderId: providers.activeConnectionId,
+    activeProviderId: providers.activeConnectionId ? parseConnectionId(providers.activeConnectionId).providerId : null,
     caps: {
       requests24h: limits.caller.requests24h,
       input24h: limits.caller.input24h,
