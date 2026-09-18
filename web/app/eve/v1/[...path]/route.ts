@@ -26,7 +26,8 @@ const EVE = "http://127.0.0.1:4321";
 /** True only when the catalog says the active model is text-only. */
 function rejectsImages(): boolean {
   const composer = composerState(readProviderStore());
-  const model = modelOption(composer.providerId, composer.modelId, catalogFor(composer.providerId));
+  const catalog = catalogFor(composer.connectionId || composer.providerId);
+  const model = modelOption(composer.providerId, composer.modelId, catalog);
   return modelSeesImages(model) === false;
 }
 

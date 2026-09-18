@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   MODELS_DEV_URL,
   catalogFor,
+  fetchProviderModelIds,
   parseModelList,
   parseModelsDev,
   readModelsCache,
@@ -22,12 +23,12 @@ test("parseModelList reads OpenAI list envelopes", () => {
 });
 
 test("live OpenCode IDs hydrate efforts instead of staying on the two-model fallback", () => {
-  const models = mergeLiveModels("opencode-go", ["kimi-k3", "glm-5.3-flash", "grok-4.6"]);
+  const models = mergeLiveModels("opencode-go:plan", ["kimi-k3", "glm-5.3-flash", "grok-4.6"]);
   assert.equal(models[0]?.id, "glm-5.3-flash");
   assert.equal(models.some((item) => item.id === "kimi-k3"), true);
-  assert.deepEqual(hydrateModel("opencode-go", "kimi-k3").efforts, ["low", "high", "max"]);
+  assert.deepEqual(hydrateModel("opencode-go:plan", "kimi-k3").efforts, ["low", "high", "max"]);
   assert.deepEqual(inferCapabilities("grok-4.6").efforts, ["low", "medium", "high", "xhigh"]);
-  const composer = snapComposer("opencode-go", "OpenCode Go", "kimi-k3", "max", "standard", models);
+  const composer = snapComposer("opencode-go:plan", "OpenCode", "kimi-k3", "max", "standard", models);
   assert.equal(composer.modelId, "kimi-k3");
   assert.equal(composer.models.length, 3);
   assert.equal(composer.effort, "max");
@@ -36,7 +37,7 @@ test("live OpenCode IDs hydrate efforts instead of staying on the two-model fall
 test("refreshProviderModels writes the fetched catalog to cache", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-models-")), "models-cache.json");
   const models = await refreshProviderModels({
-    providerId: "opencode-go",
+    providerId: "opencode-go:plan",
     baseUrl: "https://opencode.ai/zen/go/v1",
     force: true,
     path,
@@ -45,7 +46,7 @@ test("refreshProviderModels writes the fetched catalog to cache", async () => {
     })),
   });
   assert.equal(models.length, 3);
-  assert.equal(catalogFor("opencode-go", path).some((item) => item.id === "minimax-m3"), true);
+  assert.equal(catalogFor("opencode-go:plan", path).some((item) => item.id === "minimax-m3"), true);
 });
 
 test("models.dev facts land on the live rows: context window and image input", async () => {
@@ -65,7 +66,7 @@ test("models.dev facts land on the live rows: context window and image input", a
 
   const path = join(mkdtempSync(join(tmpdir(), "ub-models-")), "models-cache.json");
   const models = await refreshProviderModels({
-    providerId: "opencode-go",
+    providerId: "opencode-go:plan",
     baseUrl: "https://opencode.ai/zen/go/v1",
     force: true,
     path,
@@ -93,19 +94,92 @@ test("models.dev facts land on the live rows: context window and image input", a
   // A model the catalog does not know says nothing, and callers treat that as unknown, not "no".
   assert.equal(mystery?.contextTokens, undefined);
   assert.equal(modelSeesImages(mystery), null);
-  assert.equal(catalogFor("opencode-go", path).find((item) => item.id === "glm-5.3")?.inputs?.includes("image"), false);
+  assert.equal(catalogFor("opencode-go:plan", path).find((item) => item.id === "glm-5.3")?.inputs?.includes("image"), false);
+});
+
+test("models.dev meta lookup uses the catalogue modelsDevId", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-models-")), "models-cache.json");
+  const seen: string[] = [];
+  const models = await refreshProviderModels({
+    providerId: "zai:plan",
+    baseUrl: "https://api.z.ai/api/coding/paas/v4",
+    key: "plan-key-12345678",
+    force: true,
+    path,
+    fetchImpl: async (input) => {
+      const url = String(input);
+      seen.push(url);
+      if (url === MODELS_DEV_URL) {
+        return new Response(JSON.stringify({
+          "zai-coding-plan": {
+            models: {
+              "glm-5.3-flash": { limit: { context: 2_000_000 }, modalities: { input: ["text"] } },
+            },
+          },
+          // The pay as you go entry must not leak into the plan list.
+          "zai": {
+            models: {
+              "glm-5.3-flash": { limit: { context: 1 }, modalities: { input: ["text"] } },
+            },
+          },
+        }));
+      }
+      return new Response(JSON.stringify({ data: [{ id: "glm-5.3-flash" }] }));
+    },
+  });
+  assert.ok(seen.includes(MODELS_DEV_URL));
+  assert.equal(models.find((item) => item.id === "glm-5.3-flash")?.contextTokens, 2_000_000);
+});
+
+test("plan and api lists do not collide on the same provider", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-models-")), "models-cache.json");
+  await refreshProviderModels({
+    providerId: "zai:plan",
+    baseUrl: "https://api.z.ai/api/coding/paas/v4",
+    force: true,
+    path,
+    fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: "glm-5.3-flash" }] })),
+  });
+  // No live api list yet, so the api connection falls back to catalogue defaults.
+  assert.deepEqual(catalogFor("zai:api", path).map((item) => item.id), ["glm-4.5-air", "glm-4.5"]);
+  assert.deepEqual(catalogFor("zai:plan", path).map((item) => item.id), ["glm-5.3-flash"]);
+});
+
+test("model listing sends the catalogue key header and extra headers", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), headers: { ...init?.headers as Record<string, string> } });
+    return new Response(JSON.stringify({ data: [{ id: "mimo-v2.5-flash" }] }));
+  };
+  // MiMo plan keys ride an api-key header, not a bearer token.
+  await fetchProviderModelIds("https://token-plan-sgp.xiaomimimo.com/v1", "tp-key-12345678", fetchImpl, "api-key");
+  assert.equal(calls[0]?.headers["api-key"], "tp-key-12345678");
+  assert.equal(calls[0]?.headers.authorization, undefined);
+  // Copilot lists with its editor headers next to the bearer token.
+  await fetchProviderModelIds(
+    "https://api.githubcopilot.com",
+    "ghu-token-12345678",
+    fetchImpl,
+    "bearer",
+    { "X-GitHub-Api-Version": "2026-06-01", "Openai-Intent": "conversation-edits" },
+  );
+  assert.equal(calls[1]?.headers.authorization, "Bearer ghu-token-12345678");
+  assert.equal(calls[1]?.headers["X-GitHub-Api-Version"], "2026-06-01");
+  // x-api-key vendors keep their header shape.
+  await fetchProviderModelIds("https://api.anthropic.com/v1", "sk-ant-12345678", fetchImpl, "x-api-key");
+  assert.equal(calls[2]?.headers["x-api-key"], "sk-ant-12345678");
 });
 
 test("the parsed models cache is reused until another process replaces the file", () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-models-memo-")), "models-cache.json");
-  const row = (id: string) => mergeLiveModels("opencode-go", [id]);
-  writeModelsCache({ schemaVersion: 2, providers: { "opencode-go": { fetchedAt: 1, models: row("kimi-k3") } } }, path);
+  const row = (id: string) => mergeLiveModels("opencode-go:plan", [id]);
+  writeModelsCache({ schemaVersion: 2, providers: { "opencode-go:plan": { fetchedAt: 1, models: row("kimi-k3") } } }, path);
   const first = readModelsCache(path);
   assert.equal(readModelsCache(path), first, "an unchanged file is not parsed again");
   // What another process does: a whole new file renamed over this one, same
   // byte length, inside the same clock tick.
-  const next = JSON.stringify({ schemaVersion: 2, providers: { "opencode-go": { fetchedAt: 1, models: row("kimi-k4") } } });
+  const next = JSON.stringify({ schemaVersion: 2, providers: { "opencode-go:plan": { fetchedAt: 1, models: row("kimi-k4") } } });
   writeFileSync(`${path}.other`, `${next}\n`);
   renameSync(`${path}.other`, path);
-  assert.equal(catalogFor("opencode-go", path)[0]?.id, "kimi-k4");
+  assert.equal(catalogFor("opencode-go:plan", path)[0]?.id, "kimi-k4");
 });

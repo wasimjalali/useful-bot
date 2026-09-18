@@ -1,7 +1,20 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  connectionId,
+  parseConnectionId,
+  providerDef,
+  providerMode,
+  PROVIDER_CATALOG as CATALOG_DEFS,
+  type AuthMode,
+  type KeyHeader,
+  type Protocol,
+  type ProviderMode,
+} from "./provider-catalog.ts";
 import { catalogFor } from "./live-models.ts";
 import {
+  effortLabel,
+  humanizeModelId,
   isEffortId,
   isSpeedId,
   snapComposer,
@@ -10,8 +23,18 @@ import {
   type SpeedId,
 } from "./models.ts";
 
+/** @deprecated Slice 2 owns provider ids now. Use the catalogue connection id instead. */
 export type ProviderId = "opencode-go" | "openai" | "anthropic" | "openrouter" | "google";
 
+const LEGACY_API_CONNECTION: Record<string, string> = {
+  "opencode-go": "opencode-go:plan",
+  openai: "openai:api",
+  anthropic: "anthropic:api",
+  openrouter: "openrouter:api",
+  google: "google:api",
+};
+
+/** @deprecated Use providerMode(id, mode) from ./provider-catalog.ts instead. */
 export interface ProviderCatalogItem {
   id: ProviderId;
   name: string;
@@ -22,6 +45,7 @@ export interface ProviderCatalogItem {
   models: { workhorse: string; reviewer: string };
 }
 
+/** @deprecated The catalogue moved to ./provider-catalog.ts. */
 export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   {
     id: "opencode-go",
@@ -70,20 +94,56 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
   },
 ];
 
+/** @deprecated Use Credential instead. */
 export interface ProviderKeyRec {
   key: string;
   updatedAt: string;
 }
 
+export type Credential =
+  | { kind: "key"; key: string }
+  | {
+    kind: "oauth";
+    accessToken: string;
+    refreshToken: string | null;
+    expiresAt: number | null;
+    accountId: string | null;
+    /** github-copilot: exchanged inference token */
+    exchanged?: { token: string; expiresAt: number };
+  }
+  | { kind: "none" };
+
+export interface Connection {
+  id: string;
+  providerId: string;
+  mode: AuthMode;
+  credential: Credential;
+  /** Values for ProviderMode.fields (accountId, baseUrl, name). */
+  fields: Record<string, string>;
+  updatedAt: string;
+  /** Last failure the router saw on this connection, cleared on success. */
+  lastError: { code: string; at: string } | null;
+}
+
+export interface RoleSelection {
+  connectionId: string;
+  modelId: string;
+  effort: EffortId | null;
+}
+
 export interface ProviderStore {
-  schemaVersion: 1;
-  activeProviderId: ProviderId;
-  keys: Partial<Record<ProviderId, ProviderKeyRec>>;
+  schemaVersion: 2;
+  connections: Record<string, Connection>;
+  /** Connection the chat (workhorse) uses. */
+  activeConnectionId: string | null;
   selectedModel: string | null;
   effort: EffortId | null;
   speed: SpeedId;
+  /** Explicit per-role choice; absent role falls back to the active connection and the mode's default. */
+  roles: { reviewer?: RoleSelection };
 }
 
+/** @deprecated Slice 2 renders ConnectionPublic now. Kept so the old settings dialog compiles. */
 export interface ProviderPublic {
   id: ProviderId;
   name: string;
@@ -97,7 +157,47 @@ export interface ProviderPublic {
   models: { workhorse: string; reviewer: string };
 }
 
-const ALLOWED = new Set(PROVIDER_CATALOG.map((item) => item.id));
+export interface ConnectionPublic {
+  id: string;
+  providerId: string;
+  mode: AuthMode;
+  label: string;
+  kindLabel: string;
+  monogram: string;
+  connected: boolean;
+  last4: string | null;
+  source: "settings" | "env" | null;
+  active: boolean;
+  status: "ok" | "expired" | "error";
+  lastError: string | null;
+  accountId: string | null;
+  fields: Record<string, string>;
+  models: Array<{ id: string; label: string }>;
+}
+
+export interface CatalogPublic {
+  providerId: string;
+  mode: AuthMode;
+  label: string;
+  kindLabel: string;
+  monogram: string;
+  hint: string;
+  keyUrl: string | null;
+  fields: ProviderMode["fields"] | null;
+  oauth: boolean;
+  connected: boolean;
+}
+
+export interface RolePublic {
+  connectionId: string | null;
+  connectionLabel: string;
+  modelId: string;
+  modelLabel: string;
+  effort: EffortId | null;
+  effortLabel: string | null;
+  efforts: Array<{ id: EffortId; label: string }>;
+  models: Array<{ connectionId: string; connectionLabel: string; id: string; label: string }>;
+}
 
 export function providersPath(root = process.env.UB_PROVIDERS_PATH): string {
   if (root) return root;
@@ -106,19 +206,38 @@ export function providersPath(root = process.env.UB_PROVIDERS_PATH): string {
 
 export function emptyProviderStore(): ProviderStore {
   return {
-    schemaVersion: 1,
-    activeProviderId: "opencode-go",
-    keys: {},
+    schemaVersion: 2,
+    connections: {},
+    activeConnectionId: null,
     selectedModel: null,
     effort: null,
     speed: "standard",
+    roles: {},
   };
 }
 
-export function catalogItem(id: ProviderId): ProviderCatalogItem {
-  const item = PROVIDER_CATALOG.find((entry) => entry.id === id);
-  if (!item) throw new Error("provider_unknown");
-  return item;
+/**
+ * @deprecated Slice 2 resolves modes through the catalogue.
+ * Thin shim over providerMode so old callers keep compiling.
+ */
+export function catalogItem(id: string): ProviderCatalogItem {
+  try {
+    const { providerId, mode } = parseConnectionId(id);
+    const row = providerMode(providerId, mode);
+    return {
+      id: providerId as ProviderId,
+      name: row.label,
+      kind: mode === "plan" ? "coding-plan" : "api",
+      hint: row.hint,
+      baseUrl: row.baseUrl,
+      compatible: row.protocol === "openai-chat" && mode !== "oauth",
+      models: { ...row.defaults },
+    };
+  } catch {
+    const conn = LEGACY_API_CONNECTION[id];
+    if (conn) return catalogItem(conn);
+    throw new Error("provider_unknown");
+  }
 }
 
 export function last4(key: string): string {
@@ -126,31 +245,148 @@ export function last4(key: string): string {
   return trimmed.length <= 4 ? trimmed : trimmed.slice(-4);
 }
 
-export function parseProviderStore(raw: unknown): ProviderStore {
-  if (!raw || typeof raw !== "object") throw new Error("providers_format");
-  const rec = raw as Record<string, unknown>;
-  if (rec.schemaVersion !== 1) throw new Error("providers_schema");
-  const active = rec.activeProviderId;
-  if (typeof active !== "string" || !ALLOWED.has(active as ProviderId)) {
-    throw new Error("providers_active");
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseCredential(raw: unknown): Credential | null {
+  if (!isRecord(raw) || typeof raw.kind !== "string") return null;
+  if (raw.kind === "key") {
+    if (typeof raw.key !== "string" || !raw.key) return null;
+    return { kind: "key", key: raw.key };
   }
-  const keys: ProviderStore["keys"] = {};
-  if (rec.keys && typeof rec.keys === "object" && rec.keys !== null) {
-    for (const [id, value] of Object.entries(rec.keys as Record<string, unknown>)) {
-      if (!ALLOWED.has(id as ProviderId) || !value || typeof value !== "object") continue;
-      const row = value as Record<string, unknown>;
-      if (typeof row.key !== "string" || typeof row.updatedAt !== "string") continue;
-      keys[id as ProviderId] = { key: row.key, updatedAt: row.updatedAt };
+  if (raw.kind === "oauth") {
+    if (typeof raw.accessToken !== "string" || !raw.accessToken) return null;
+    const cred: Credential = {
+      kind: "oauth",
+      accessToken: raw.accessToken,
+      refreshToken: typeof raw.refreshToken === "string" && raw.refreshToken ? raw.refreshToken : null,
+      expiresAt: typeof raw.expiresAt === "number" ? raw.expiresAt : null,
+      accountId: typeof raw.accountId === "string" && raw.accountId ? raw.accountId : null,
+    };
+    if (isRecord(raw.exchanged) && typeof raw.exchanged.token === "string" && typeof raw.exchanged.expiresAt === "number") {
+      cred.exchanged = { token: raw.exchanged.token, expiresAt: raw.exchanged.expiresAt };
+    }
+    return cred;
+  }
+  if (raw.kind === "none") return { kind: "none" };
+  return null;
+}
+
+function parseConnection(raw: unknown): Connection | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.id !== "string" || typeof raw.providerId !== "string" || typeof raw.mode !== "string") return null;
+  let mode: AuthMode;
+  let id: string;
+  try {
+    const parsed = parseConnectionId(raw.id);
+    if (parsed.providerId !== raw.providerId || parsed.mode !== raw.mode) return null;
+    ({ mode } = parsed);
+    id = raw.id;
+  } catch {
+    return null;
+  }
+  const credential = parseCredential(raw.credential);
+  if (!credential) return null;
+  const fields: Record<string, string> = {};
+  if (isRecord(raw.fields)) {
+    for (const [key, value] of Object.entries(raw.fields)) {
+      if (typeof value === "string") fields[key] = value;
     }
   }
+  if (typeof raw.updatedAt !== "string") return null;
+  let lastError: Connection["lastError"] = null;
+  if (isRecord(raw.lastError) && typeof raw.lastError.code === "string" && typeof raw.lastError.at === "string") {
+    lastError = { code: raw.lastError.code, at: raw.lastError.at };
+  }
+  return { id, providerId: raw.providerId, mode, credential, fields, updatedAt: raw.updatedAt, lastError };
+}
+
+function parseRoleSelection(raw: unknown): RoleSelection | null {
+  if (!isRecord(raw) || typeof raw.connectionId !== "string" || typeof raw.modelId !== "string") return null;
+  try {
+    parseConnectionId(raw.connectionId);
+  } catch {
+    return null;
+  }
   return {
-    schemaVersion: 1,
-    activeProviderId: active as ProviderId,
-    keys,
-    selectedModel: typeof rec.selectedModel === "string" && rec.selectedModel ? rec.selectedModel : null,
-    effort: isEffortId(rec.effort) ? rec.effort : null,
-    speed: isSpeedId(rec.speed) ? rec.speed : "standard",
+    connectionId: raw.connectionId,
+    modelId: raw.modelId,
+    effort: isEffortId(raw.effort) ? raw.effort : null,
   };
+}
+
+function migrateV1(raw: Record<string, unknown>, env: NodeJS.ProcessEnv): ProviderStore {
+  const next = emptyProviderStore();
+  const keys = isRecord(raw.keys) ? raw.keys : {};
+  for (const [id, value] of Object.entries(keys)) {
+    if (!isRecord(value) || typeof value.key !== "string" || typeof value.updatedAt !== "string") continue;
+    // Every v1 key was an api style key, except the OpenCode Go plan key.
+    const mode: AuthMode = id === "opencode-go" ? "plan" : "api";
+    try {
+      providerMode(id, mode);
+    } catch {
+      continue;
+    }
+    const connId = connectionId(id, mode);
+    next.connections[connId] = {
+      id: connId,
+      providerId: id,
+      mode,
+      credential: { kind: "key", key: value.key },
+      fields: {},
+      updatedAt: value.updatedAt,
+      lastError: null,
+    };
+  }
+  const active = typeof raw.activeProviderId === "string" ? raw.activeProviderId : null;
+  if (active) {
+    // The v1 active provider keeps its connection when it has a stored key.
+    // OpenCode Go stays active without one, the env key connects it implicitly.
+    const mode: AuthMode = active === "opencode-go" ? "plan" : "api";
+    let connId: string | null = null;
+    try {
+      connId = connectionId(active, mode);
+    } catch {
+      connId = null;
+    }
+    if (connId && next.connections[connId]) {
+      next.activeConnectionId = connId;
+    } else if (active === "opencode-go" && env.UB_OPENCODE_GO_KEY) {
+      next.activeConnectionId = connId;
+    } else {
+      next.activeConnectionId = null;
+    }
+  }
+  next.selectedModel = typeof raw.selectedModel === "string" && raw.selectedModel ? raw.selectedModel : null;
+  next.effort = isEffortId(raw.effort) ? raw.effort : null;
+  next.speed = isSpeedId(raw.speed) ? raw.speed : "standard";
+  return next;
+}
+
+export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = process.env): ProviderStore {
+  if (!raw || typeof raw !== "object") throw new Error("providers_format");
+  const rec = raw as Record<string, unknown>;
+  if (rec.schemaVersion === 1) return migrateV1(rec, env);
+  if (rec.schemaVersion !== 2) throw new Error("providers_schema");
+  const next = emptyProviderStore();
+  if (isRecord(rec.connections)) {
+    for (const [id, value] of Object.entries(rec.connections)) {
+      const conn = parseConnection(value);
+      if (conn && conn.id === id) next.connections[id] = conn;
+    }
+  }
+  next.activeConnectionId = typeof rec.activeConnectionId === "string" && next.connections[rec.activeConnectionId]
+    ? rec.activeConnectionId
+    : null;
+  next.selectedModel = typeof rec.selectedModel === "string" && rec.selectedModel ? rec.selectedModel : null;
+  next.effort = isEffortId(rec.effort) ? rec.effort : null;
+  next.speed = isSpeedId(rec.speed) ? rec.speed : "standard";
+  if (isRecord(rec.roles)) {
+    const reviewer = parseRoleSelection(rec.roles.reviewer);
+    if (reviewer && next.connections[reviewer.connectionId]) next.roles.reviewer = reviewer;
+  }
+  return next;
 }
 
 export function readProviderStore(path = providersPath()): ProviderStore {
@@ -167,10 +403,19 @@ export function readProviderStore(path = providersPath()): ProviderStore {
 }
 
 export function writeProviderStore(store: ProviderStore, path = providersPath()): void {
+  const out: ProviderStore = {
+    schemaVersion: 2,
+    connections: store.connections,
+    activeConnectionId: store.activeConnectionId,
+    selectedModel: store.selectedModel,
+    effort: store.effort,
+    speed: store.speed,
+    roles: store.roles,
+  };
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
-    writeFileSync(tmp, `${JSON.stringify(store)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    writeFileSync(tmp, `${JSON.stringify(out)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     const fd = openSync(tmp, "r");
     fsyncSync(fd);
     closeSync(fd);
@@ -181,67 +426,425 @@ export function writeProviderStore(store: ProviderStore, path = providersPath())
   }
 }
 
-export function setProviderKey(store: ProviderStore, id: ProviderId, key: string, now = new Date()): ProviderStore {
-  if (!ALLOWED.has(id)) throw new Error("provider_unknown");
+function checkKey(key: string): string {
   const trimmed = key.trim();
   if (trimmed.length < 8 || trimmed.length > 8192) throw new Error("provider_key");
   if (/\s/.test(trimmed)) throw new Error("provider_key");
+  return trimmed;
+}
+
+function checkFields(mode: ProviderMode, fields: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const field of mode.fields ?? []) {
+    const value = fields[field.id];
+    if (typeof value !== "string" || !value.trim()) throw new Error("provider_field");
+    out[field.id] = value.trim();
+  }
+  return out;
+}
+
+/** Connect or replace a key, plan or local connection. Local mode with no key is valid. */
+export function setProviderKey(
+  store: ProviderStore,
+  providerId: string,
+  mode: AuthMode,
+  key?: string | null,
+  fields?: Record<string, string>,
+  now?: Date,
+): ProviderStore;
+/**
+ * @deprecated Pass an explicit mode instead: setProviderKey(store, id, "api", key).
+ * Maps the old provider id to its api connection (opencode-go to its plan).
+ */
+export function setProviderKey(store: ProviderStore, id: ProviderId, key: string): ProviderStore;
+export function setProviderKey(
+  store: ProviderStore,
+  providerId: string,
+  modeOrKey: AuthMode | string,
+  keyOrUndefined?: string | null,
+  fields?: Record<string, string>,
+  now: Date = new Date(),
+): ProviderStore {
+  let mode: AuthMode;
+  let key: string | null | undefined;
+  if (keyOrUndefined === undefined && typeof modeOrKey === "string" && !["oauth", "plan", "api", "local"].includes(modeOrKey)) {
+    mode = (LEGACY_API_CONNECTION[providerId] ?? "openai:api").split(":")[1] as AuthMode;
+    key = modeOrKey;
+  } else {
+    mode = modeOrKey as AuthMode;
+    key = keyOrUndefined;
+  }
+  const row = providerMode(providerId, mode);
+  if (mode === "oauth") throw new Error("provider_oauth");
+  const cleanFields = checkFields(row, fields ?? {});
+  let credential: Credential;
+  if (typeof key === "string" && key.trim()) {
+    credential = { kind: "key", key: checkKey(key) };
+  } else if (mode === "local") {
+    // Local servers need no key. The custom sheet may still paste one.
+    credential = { kind: "none" };
+  } else {
+    throw new Error("provider_key");
+  }
+  const id = connectionId(providerId, mode);
   return {
     ...store,
-    keys: {
-      ...store.keys,
-      [id]: { key: trimmed, updatedAt: now.toISOString() },
+    connections: {
+      ...store.connections,
+      [id]: {
+        id,
+        providerId,
+        mode,
+        credential,
+        fields: cleanFields,
+        updatedAt: now.toISOString(),
+        lastError: null,
+      },
     },
   };
 }
 
-export function clearProviderKey(store: ProviderStore, id: ProviderId): ProviderStore {
-  const keys = { ...store.keys };
-  delete keys[id];
-  const activeProviderId = store.activeProviderId === id ? "opencode-go" : store.activeProviderId;
-  return { ...store, keys, activeProviderId };
+/** Drop a connection. Clears roles pointing at it and moves active to another connected connection or null. */
+export function clearConnection(store: ProviderStore, id: string): ProviderStore {
+  if (!store.connections[id]) throw new Error("connection_unknown");
+  const connections = { ...store.connections };
+  delete connections[id];
+  const roles = { ...store.roles };
+  if (roles.reviewer?.connectionId === id) delete roles.reviewer;
+  let activeConnectionId = store.activeConnectionId === id ? null : store.activeConnectionId;
+  if (activeConnectionId && !isConnected(connections[activeConnectionId])) activeConnectionId = null;
+  if (!activeConnectionId) {
+    activeConnectionId = Object.values(connections).find((conn) => isConnected(conn))?.id ?? null;
+  }
+  return { ...store, connections, roles, activeConnectionId };
 }
 
-export function setActiveProvider(store: ProviderStore, id: ProviderId): ProviderStore {
-  if (!ALLOWED.has(id)) throw new Error("provider_unknown");
-  const item = catalogItem(id);
-  if (!item.compatible) throw new Error("provider_incompatible");
-  if (!store.keys[id] && id !== "opencode-go") throw new Error("provider_disconnected");
-  return setComposer({ ...store, activeProviderId: id }, { modelId: item.models.workhorse });
+/**
+ * @deprecated Use clearConnection(store, connectionId) instead.
+ * Clears every connection under the old provider id.
+ */
+export function clearProviderKey(store: ProviderStore, id: ProviderId): ProviderStore {
+  let next = store;
+  for (const conn of Object.values(store.connections)) {
+    if (conn.providerId === id) next = clearConnection(next, conn.id);
+  }
+  return next;
 }
+
+/** Make a connected connection the chat connection. */
+export function setActiveConnection(store: ProviderStore, id: string): ProviderStore {
+  const conn = store.connections[id];
+  if (!conn) throw new Error("connection_unknown");
+  if (!isConnected(conn)) throw new Error("provider_disconnected");
+  const mode = providerMode(conn.providerId, conn.mode);
+  return setComposer({ ...store, activeConnectionId: id }, { modelId: mode.defaults.workhorse });
+}
+
+/**
+ * @deprecated Use setActiveConnection(store, connectionId) instead.
+ * Maps the old provider id to its api connection (opencode-go to its plan).
+ */
+export function setActiveProvider(store: ProviderStore, id: ProviderId): ProviderStore {
+  const conn = LEGACY_API_CONNECTION[id] ?? `${id}:api`;
+  return setActiveConnection(store, conn);
+}
+
+/** Store an OAuth credential as the provider's oauth connection. */
+export function setOAuthCredential(store: ProviderStore, providerId: string, credential: Credential, now = new Date()): ProviderStore {
+  if (credential.kind !== "oauth") throw new Error("provider_oauth");
+  providerMode(providerId, "oauth");
+  const id = connectionId(providerId, "oauth");
+  const prev = store.connections[id];
+  return {
+    ...store,
+    connections: {
+      ...store.connections,
+      [id]: {
+        id,
+        providerId,
+        mode: "oauth",
+        credential,
+        fields: prev?.fields ?? {},
+        updatedAt: now.toISOString(),
+        lastError: null,
+      },
+    },
+  };
+}
+
+export function setRole(store: ProviderStore, role: "reviewer", selection: RoleSelection | null): ProviderStore {
+  if (!selection) return { ...store, roles: {} };
+  if (!store.connections[selection.connectionId]) throw new Error("connection_unknown");
+  return { ...store, roles: { ...store.roles, [role]: selection } };
+}
+
+export function recordConnectionError(store: ProviderStore, id: string, code: string, now = new Date()): ProviderStore {
+  const conn = store.connections[id];
+  if (!conn) throw new Error("connection_unknown");
+  return {
+    ...store,
+    connections: {
+      ...store.connections,
+      [id]: { ...conn, lastError: { code, at: now.toISOString() } },
+    },
+  };
+}
+
+function isConnected(conn: Connection | undefined): boolean {
+  if (!conn) return false;
+  if (conn.credential.kind !== "none") return true;
+  // Local servers need no key. A custom row with a pasted key connects too.
+  try {
+    return providerMode(conn.providerId, conn.mode).mode === "local";
+  } catch {
+    return false;
+  }
+}
+
+function isExpired(conn: Connection): boolean {
+  if (conn.credential.kind !== "oauth") return false;
+  const direct = conn.credential.expiresAt;
+  if (typeof direct === "number" && direct <= Date.now()) return true;
+  const swapped = conn.credential.exchanged;
+  if (swapped && swapped.expiresAt <= Date.now() && (!direct || direct <= Date.now())) return true;
+  return false;
+}
+
+/** Implicit env connection for OpenCode Go when nothing is stored. */
+function envConnection(env: NodeJS.ProcessEnv): Connection | null {
+  if (!env.UB_OPENCODE_GO_KEY) return null;
+  return {
+    id: "opencode-go:plan",
+    providerId: "opencode-go",
+    mode: "plan",
+    credential: { kind: "key", key: env.UB_OPENCODE_GO_KEY },
+    fields: {},
+    updatedAt: new Date(0).toISOString(),
+    lastError: null,
+  };
+}
+
+function activeConnection(store: ProviderStore, env: NodeJS.ProcessEnv): Connection | null {
+  const conn = store.activeConnectionId ? store.connections[store.activeConnectionId] : undefined;
+  if (conn && isConnected(conn)) return conn;
+  return null;
+}
+
+function modelRows(id: string): Array<{ id: string; label: string }> {
+  return catalogFor(id).map((item) => ({ id: item.id, label: item.label }));
+}
+
+function connectionStatus(conn: Connection): ConnectionPublic["status"] {
+  if (conn.lastError) return "error";
+  if (isExpired(conn)) return "expired";
+  return "ok";
+}
+
+function publicConnection(conn: Connection, activeId: string | null): ConnectionPublic {
+  const def = providerDef(conn.providerId);
+  const mode = providerMode(conn.providerId, conn.mode);
+  return {
+    id: conn.id,
+    providerId: conn.providerId,
+    mode: conn.mode,
+    label: mode.label,
+    kindLabel: mode.kindLabel,
+    monogram: def.monogram,
+    connected: true,
+    last4: conn.credential.kind === "key" ? last4(conn.credential.key) : null,
+    source: "settings",
+    active: activeId === conn.id,
+    status: connectionStatus(conn),
+    lastError: conn.lastError?.code ?? null,
+    accountId: conn.credential.kind === "oauth" ? conn.credential.accountId : null,
+    fields: { ...conn.fields },
+    models: modelRows(conn.id),
+  };
+}
+
+const MODE_ORDER: AuthMode[] = ["oauth", "plan", "api", "local"];
 
 export function publicProviders(
   store: ProviderStore,
-  envConnected: Partial<Record<ProviderId, boolean>> = {},
-): ProviderPublic[] {
-  return PROVIDER_CATALOG.map((item) => {
-    const rec = store.keys[item.id];
-    const fromEnv = Boolean(envConnected[item.id]);
-    const connected = Boolean(rec) || fromEnv;
+  env: NodeJS.ProcessEnv = process.env,
+): { catalog: CatalogPublic[]; connections: ConnectionPublic[]; roles: { default: RolePublic; reviewer: RolePublic } } {
+  const implicit = !store.connections["opencode-go:plan"] ? envConnection(env) : null;
+  const listed = [...Object.values(store.connections)];
+  if (implicit) listed.push(implicit);
+  const connectedIds = new Set(
+    listed.filter((conn) => isConnected(conn) || conn.id === implicit?.id).map((conn) => conn.id),
+  );
+  const storedActive = activeConnection(store, env);
+  const activeId = storedActive?.id
+    // A migrated store can name opencode-go:plan without storing it. The env
+    // key still connects it implicitly, so the env row shows as active.
+    ?? ((store.activeConnectionId === null || store.activeConnectionId === "opencode-go:plan") && implicit
+      ? implicit.id
+      : null);
+
+  const catalog: CatalogPublic[] = [];
+  for (const order of MODE_ORDER) {
+    for (const def of CATALOG_DEFS) {
+      const row = def.modes.find((entry) => entry.mode === order);
+      if (!row) continue;
+      catalog.push({
+        providerId: def.id,
+        mode: order,
+        label: row.label,
+        kindLabel: row.kindLabel,
+        monogram: def.monogram,
+        hint: row.hint,
+        keyUrl: row.keyUrl,
+        fields: row.fields ?? null,
+        oauth: order === "oauth",
+        connected: connectedIds.has(connectionId(def.id, order)),
+      });
+    }
+  }
+
+  const connections = listed
+    .filter((conn) => connectedIds.has(conn.id))
+    .map((conn) => conn.id === implicit?.id && conn === implicit
+      ? {
+        id: implicit.id,
+        providerId: implicit.providerId,
+        mode: implicit.mode,
+        label: providerMode("opencode-go", "plan").label,
+        kindLabel: providerMode("opencode-go", "plan").kindLabel,
+        monogram: providerDef("opencode-go").monogram,
+        connected: true,
+        last4: null,
+        source: "env" as const,
+        active: activeId === implicit.id,
+        status: "ok" as const,
+        lastError: null,
+        accountId: null,
+        fields: {},
+        models: modelRows(implicit.id),
+      }
+      : publicConnection(conn, activeId));
+
+  const pickerModels: RolePublic["models"] = [];
+  for (const conn of listed.filter((row) => connectedIds.has(row.id))) {
+    const label = providerMode(conn.providerId, conn.mode).label;
+    for (const row of modelRows(conn.id)) {
+      pickerModels.push({ connectionId: conn.id, connectionLabel: label, id: row.id, label: row.label });
+    }
+  }
+
+  const composer = composerState(store, env);
+  const defaultRole: RolePublic = {
+    connectionId: composer.connectionId || null,
+    connectionLabel: composer.providerName,
+    modelId: composer.modelId,
+    modelLabel: composer.modelLabel,
+    effort: composer.effort,
+    effortLabel: composer.effortLabel,
+    efforts: composer.efforts,
+    models: pickerModels,
+  };
+
+  const reviewerSel = store.roles.reviewer && connectedIds.has(store.roles.reviewer.connectionId)
+    ? store.roles.reviewer
+    : null;
+  let reviewer: RolePublic;
+  if (reviewerSel) {
+    const conn = listed.find((row) => row.id === reviewerSel.connectionId) ?? null;
+    const label = conn ? providerMode(conn.providerId, conn.mode).label : reviewerSel.connectionId;
+    const rows = conn ? modelRows(conn.id) : [];
+    const picked = rows.find((row) => row.id === reviewerSel.modelId) ?? rows[0] ?? null;
+    const modelLabel = picked?.label ?? humanizeModelId(reviewerSel.modelId);
+    const efforts = picked
+      ? (catalogFor(conn?.id ?? reviewerSel.connectionId).find((row) => row.id === picked.id)?.efforts ?? [])
+      : [];
+    reviewer = {
+      connectionId: reviewerSel.connectionId,
+      connectionLabel: label,
+      modelId: reviewerSel.modelId,
+      modelLabel,
+      effort: reviewerSel.effort && (efforts as EffortId[]).includes(reviewerSel.effort) ? reviewerSel.effort : null,
+      effortLabel: reviewerSel.effort ? effortLabel(reviewerSel.effort) : null,
+      efforts: (efforts as EffortId[]).map((id) => ({ id, label: effortLabel(id) })),
+      models: pickerModels,
+    };
+  } else {
+    reviewer = { ...defaultRole, models: pickerModels };
+    const fallbackConn = listed.find((row) => row.id === activeId)
+      ?? listed.find((row) => connectedIds.has(row.id))
+      ?? null;
+    if (fallbackConn) {
+      const mode = providerMode(fallbackConn.providerId, fallbackConn.mode);
+      const rows = modelRows(fallbackConn.id);
+      const picked = rows.find((row) => row.id === mode.defaults.reviewer) ?? rows[0] ?? null;
+      if (picked) {
+        const full = catalogFor(fallbackConn.id).find((row) => row.id === picked.id);
+        reviewer = {
+          connectionId: fallbackConn.id,
+          connectionLabel: mode.label,
+          modelId: picked.id,
+          modelLabel: picked.label,
+          effort: full?.defaultEffort ?? null,
+          effortLabel: full?.defaultEffort ? effortLabel(full.defaultEffort) : null,
+          efforts: (full?.efforts ?? []).map((id) => ({ id, label: effortLabel(id) })),
+          models: pickerModels,
+        };
+      }
+    }
+  }
+
+  return { catalog, connections, roles: { default: defaultRole, reviewer } };
+}
+
+/**
+ * @deprecated Slice 2 builds the settings payload from publicProviders.
+ * One row per connection in the old shape.
+ */
+export function legacyProviders(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ProviderPublic[] {
+  const pub = publicProviders(store, env);
+  return pub.connections.map((conn) => {
+    const mode = providerMode(conn.providerId, conn.mode);
     return {
-      id: item.id,
-      name: item.name,
-      kind: item.kind,
-      hint: item.hint,
-      compatible: item.compatible,
-      connected,
-      last4: rec ? last4(rec.key) : null,
-      source: rec ? "settings" : fromEnv ? "env" : null,
-      active: store.activeProviderId === item.id,
-      models: item.models,
+      id: conn.providerId as ProviderId,
+      name: conn.label,
+      kind: conn.mode === "plan" ? "coding-plan" as const : "api" as const,
+      hint: mode.hint,
+      compatible: mode.protocol === "openai-chat" && conn.mode !== "oauth",
+      connected: conn.connected,
+      last4: conn.last4,
+      source: conn.source,
+      active: conn.active,
+      models: { ...mode.defaults },
     };
   });
 }
 
-export function composerState(store: ProviderStore): ComposerPublic {
-  const active = catalogItem(store.activeProviderId);
+export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ComposerPublic {
+  const conn = activeConnection(store, env)
+    ?? ((!store.activeConnectionId && env.UB_OPENCODE_GO_KEY) ? envConnection(env) : null);
+  if (!conn) {
+    return {
+      providerId: "",
+      connectionId: "",
+      providerName: "",
+      modelId: "",
+      modelLabel: "",
+      effort: null,
+      effortLabel: null,
+      speed: "standard",
+      efforts: [],
+      speeds: [],
+      models: [],
+    };
+  }
+  const mode = providerMode(conn.providerId, conn.mode);
+  const def = providerDef(conn.providerId);
   return snapComposer(
-    active.id,
-    active.name,
-    store.selectedModel ?? active.models.workhorse,
+    conn.id,
+    conn.providerId === "custom" && conn.fields.name ? conn.fields.name : def.name,
+    store.selectedModel ?? mode.defaults.workhorse,
     store.effort,
     store.speed,
-    catalogFor(active.id),
+    catalogFor(conn.id),
   );
 }
 
@@ -262,61 +865,121 @@ export function setComposer(
   };
 }
 
+function substituteBaseUrl(mode: ProviderMode, fields: Record<string, string>): string {
+  return mode.baseUrl.replace(/\{(\w+)\}/g, (_, name: string) => fields[name] ?? "");
+}
+
+function credentialKey(credential: Credential): string {
+  if (credential.kind === "key") return credential.key;
+  // Slice 3 refreshes and rotates these. Until then the router sends the best
+  // token it has, the same way the old code sent its single key.
+  if (credential.kind === "oauth") return credential.exchanged?.token ?? credential.accessToken;
+  return "";
+}
+
 export function resolveUpstream(
   store: ProviderStore,
   alias: "workhorse" | "reviewer",
   env: NodeJS.ProcessEnv = process.env,
 ): {
-  providerId: ProviderId;
-  key: string;
-  baseUrl: string;
-  model: string;
-  opencodeSession: boolean;
+  connection: Connection;
+  mode: ProviderMode;
+  providerId: string;
+  modelId: string;
   effort: EffortId | null;
   speed: SpeedId;
+  baseUrl: string;
+  protocol: Protocol;
+  keyHeader: KeyHeader;
+  credential: Credential;
+  opencodeSession: boolean;
   fallback: boolean;
+  /** @deprecated Use modelId instead. Kept so the router compiles until slice 4. */
+  model: string;
+  /** @deprecated Use credential instead. Kept so the router compiles until slice 4. */
+  key: string;
 } {
-  const active = catalogItem(store.activeProviderId);
-  const stored = store.keys[active.id]?.key;
-  const envKey = active.id === "opencode-go" ? env.UB_OPENCODE_GO_KEY : undefined;
-  // A key saved through settings wins over the env key, so rotating there
-  // takes effect without clearing the Keychain entry.
-  const key = stored || envKey;
-  const composer = composerState(store);
-  if (key && active.compatible) {
-    const baseUrl = active.id === "opencode-go"
-      ? (env.UB_OPENCODE_GO_BASE || active.baseUrl)
-      : active.baseUrl;
+  const live = activeConnection(store, env);
+  const reviewerSel = alias === "reviewer" && store.roles.reviewer
+    ? store.roles.reviewer
+    : null;
+  const picked = reviewerSel && store.connections[reviewerSel.connectionId]
+    && isConnected(store.connections[reviewerSel.connectionId])
+    ? store.connections[reviewerSel.connectionId]
+    : live;
+
+  if (picked) {
+    const mode = providerMode(picked.providerId, picked.mode);
+    const name = picked.providerId === "custom" && picked.fields.name
+      ? picked.fields.name
+      : providerDef(picked.providerId).name;
+    const composer = composerState({ ...store, activeConnectionId: picked.id }, env);
+    // An explicit reviewer choice wins. Otherwise the reviewer follows the
+    // active connection with the mode's reviewer default, not the workhorse.
+    const snapped = alias === "reviewer" && !reviewerSel
+      ? snapComposer(picked.id, name, mode.defaults.reviewer, store.effort, store.speed, catalogFor(picked.id))
+      : composer;
+    const modelId = reviewerSel ? reviewerSel.modelId : (snapped.modelId || mode.defaults.workhorse);
+    const effort = reviewerSel ? reviewerSel.effort : snapped.effort;
+    // Local dev and tests point the Go plan at a fixture upstream.
+    const baseUrl = picked.providerId === "opencode-go" && env.UB_OPENCODE_GO_BASE
+      ? env.UB_OPENCODE_GO_BASE
+      : substituteBaseUrl(mode, picked.fields);
     return {
-      providerId: active.id,
-      key,
+      connection: picked,
+      mode,
+      providerId: picked.providerId,
+      modelId,
+      effort,
+      speed: snapped.speed,
       baseUrl,
-      model: alias === "reviewer" ? active.models.reviewer : (composer.modelId || active.models.workhorse),
-      opencodeSession: active.id === "opencode-go",
-      effort: composer.effort,
-      speed: composer.speed,
+      protocol: mode.protocol,
+      keyHeader: mode.keyHeader,
+      credential: picked.credential,
+      opencodeSession: mode.opencodeSession ?? false,
       fallback: false,
+      model: modelId,
+      key: credentialKey(picked.credential),
     };
   }
-  const go = catalogItem("opencode-go");
-  const goKey = store.keys["opencode-go"]?.key || env.UB_OPENCODE_GO_KEY;
-  if (!goKey) throw new Error("upstream_credential_missing");
+  const goKey = store.connections["opencode-go:plan"]?.credential
+    ?? (env.UB_OPENCODE_GO_KEY ? { kind: "key", key: env.UB_OPENCODE_GO_KEY } as Credential : null);
+  const usable = goKey && goKey.kind === "key" ? goKey.key : null;
+  if (!usable) throw new Error("upstream_credential_missing");
+  const mode = providerMode("opencode-go", "plan");
   const goComposer = snapComposer(
-    "opencode-go",
-    go.name,
-    alias === "reviewer" ? go.models.reviewer : go.models.workhorse,
+    "opencode-go:plan",
+    providerDef("opencode-go").name,
+    alias === "reviewer" ? mode.defaults.reviewer : mode.defaults.workhorse,
     store.effort,
     store.speed,
-    catalogFor("opencode-go"),
+    catalogFor("opencode-go:plan"),
   );
+  const modelId = alias === "reviewer" ? mode.defaults.reviewer : (goComposer.modelId || mode.defaults.workhorse);
+  const baseUrl = (env.UB_OPENCODE_GO_BASE || mode.baseUrl).replace(/\{(\w+)\}/g, "");
+  const credential: Credential = { kind: "key", key: usable };
   return {
+    connection: {
+      id: "opencode-go:plan",
+      providerId: "opencode-go",
+      mode: "plan",
+      credential,
+      fields: {},
+      updatedAt: new Date(0).toISOString(),
+      lastError: null,
+    },
+    mode,
     providerId: "opencode-go",
-    key: goKey,
-    baseUrl: env.UB_OPENCODE_GO_BASE || go.baseUrl,
-    model: alias === "reviewer" ? go.models.reviewer : go.models.workhorse,
-    opencodeSession: true,
+    modelId,
     effort: goComposer.effort,
     speed: goComposer.speed,
-    fallback: store.activeProviderId !== "opencode-go",
+    baseUrl,
+    protocol: mode.protocol,
+    keyHeader: mode.keyHeader,
+    credential,
+    opencodeSession: true,
+    fallback: store.activeConnectionId !== "opencode-go:plan",
+    model: modelId,
+    key: usable,
   };
 }

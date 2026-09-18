@@ -74,7 +74,7 @@ function payload() {
       window_start: week.window_start,
     },
     by_model: week.by_model,
-    activeProviderId: providers.activeProviderId,
+    activeProviderId: providers.activeConnectionId,
     caps: {
       requests24h: limits.caller.requests24h,
       input24h: limits.caller.input24h,
