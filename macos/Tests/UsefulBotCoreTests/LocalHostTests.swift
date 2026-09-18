@@ -93,31 +93,17 @@ import Testing
 }
 
 @Suite struct LongMessageTests {
-    @Test func paragraphsSplitOnBlankLinesOnly() {
-        #expect(LongMessage.paragraphs("a\nb\n\nc\r\n\r\n  \nd") == ["a\nb", "c", "d"])
-        #expect(LongMessage.paragraphs("\n\n") == [])
+    @Test func shortMessagesNeverMeasure() {
+        #expect(!LongMessage.mayFold("one\n\ntwo\n\nthree"))
+        #expect(!LongMessage.mayFold(String(repeating: "x", count: 150)))
+        #expect(LongMessage.mayFold(String(repeating: "x", count: 151)))
+        #expect(LongMessage.mayFold((1...9).map(String.init).joined(separator: "\n")))
+        #expect(LongMessage.mayFold((1...9).map(String.init).joined(separator: "\r")))
+        #expect(LongMessage.mayFold((1...9).map(String.init).joined(separator: "\r\n")))
     }
 
-    @Test func aMessageOverTwoParagraphsOrTenLinesFolds() {
-        #expect(!LongMessage.folds("one\n\ntwo"))
-        #expect(LongMessage.folds("one\n\ntwo\n\nthree"))
-        let tenLines = (1...10).map(String.init).joined(separator: "\n")
-        #expect(!LongMessage.folds(tenLines))
-        #expect(LongMessage.folds(tenLines + "\n11"))
-        #expect(!LongMessage.folds(String(repeating: "x", count: 5000)))
-    }
-
-    @Test func previewIsTheFirstParagraphOrItsFirstLines() {
-        #expect(LongMessage.preview("\n first \n\nsecond") == "first")
-        let log = (1...12).map { "line \($0)" }.joined(separator: "\n")
-        #expect(LongMessage.folds(log))
-        #expect(LongMessage.preview(log) == "line 1\nline 2\nline 3")
-    }
-
-    @Test func crlfCountsLikeLf() {
-        let lf = (1...10).map(String.init).joined(separator: "\n")
-        let crlf = (1...10).map(String.init).joined(separator: "\r\n")
-        #expect(LongMessage.folds(lf) == LongMessage.folds(crlf))
-        #expect(!LongMessage.folds("one\r\n\r\ntwo"))
+    @Test func aFoldHasToHideAboutTwoLines() {
+        #expect(!LongMessage.hidesEnough(full: 220, preview: 200))
+        #expect(LongMessage.hidesEnough(full: 240, preview: 200))
     }
 }
