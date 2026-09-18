@@ -345,6 +345,8 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
   if (REMOVERS.has(name)) {
     for (const token of rest) {
       if (token.text.startsWith("-") && !token.quoted) continue;
+      // `2>err.txt` is where the errors go, not a target.
+      if (/^[0-9]*[<>]/.test(token.text)) continue;
       const broad = broadPath(token.text, root, home, ownerHome);
       if (broad) return `wipes ${broad} (${name})`;
     }
@@ -469,9 +471,17 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
   if (name === "find") {
     const flags = rest.map((token) => token.text);
     // `-exec sudo rm {} \;` is rm behind a wrapper: peeled the same way.
+    // `-exec sh -c 'rm -rf ~' \;` carries a whole line: judged as one.
+    const execAt = flags.reduce<number[]>((out, flag, at) => ((flag === "-exec" || flag === "-execdir" || flag === "-ok" || flag === "-okdir") ? [...out, at] : out), []);
+    for (const at of execAt) {
+      const end = rest.findIndex((token, i) => i > at && !token.quoted && (token.text === ";" || token.text === "+"));
+      const payload = rest.slice(at + 1, end === -1 ? rest.length : end).filter((token) => token.text !== "{}");
+      if (REMOVERS.has(basename(peelWrappers(payload)[0]?.text ?? ""))) continue;
+      const carried = payload.length > 0 ? wipeReason(payload, root, home, ownerHome, [], depth + 1) : null;
+      if (carried) return carried;
+    }
     const execRemoves = (at: number) => REMOVERS.has(basename(peelWrappers(rest.slice(at + 1))[0]?.text ?? ""));
-    const deletes = flags.includes("-delete")
-      || flags.some((flag, at) => (flag === "-exec" || flag === "-execdir" || flag === "-ok" || flag === "-okdir") && execRemoves(at));
+    const deletes = flags.includes("-delete") || execAt.some(execRemoves);
     if (!deletes) return null;
     // `find ~ -name '*.log' -delete` removes the matching files, not the
     // area: an everyday delete. Only an unfiltered sweep is a wipe.
@@ -487,7 +497,7 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
       from += 2;
     }
     const firstFlag = rest.findIndex((token, at) => at >= from && token.text.startsWith("-") && !token.quoted);
-    starts.push(...rest.slice(from, firstFlag === -1 ? rest.length : firstFlag).map((token) => token.text));
+    starts.push(...rest.slice(from, firstFlag === -1 ? rest.length : firstFlag).map((token) => token.text).filter((text) => !/^[0-9]*[<>]/.test(text)));
     for (const start of starts.length > 0 ? starts : ["."]) {
       const broad = broadPath(start, root, home, ownerHome);
       if (broad) return `wipes ${broad} (find -delete)`;
