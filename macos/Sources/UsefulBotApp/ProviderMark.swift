@@ -65,8 +65,8 @@ enum ProviderMarkImage {
 /// Which Providers brand card is open. The dialog owns the selection; the pane
 /// publishes each trigger's anchor through `ProvidersCardAnchorsKey` and the
 /// dialog renders the card above the sidebar and the scrolling body.
-struct ProvidersCard: Equatable {
-    enum Kind: String {
+struct ProvidersCard: Equatable, Hashable {
+    enum Kind: String, Hashable {
         case connect
         case menu
         case picker
@@ -87,6 +87,45 @@ struct ProvidersCardAnchorsKey: PreferenceKey {
     static var defaultValue: [ProvidersCardAnchor] = []
     static func reduce(value: inout [ProvidersCardAnchor], nextValue: () -> [ProvidersCardAnchor]) {
         value.append(contentsOf: nextValue())
+    }
+}
+
+/// Window frames of the Providers card triggers, keyed by the card each one
+/// opens. `ProvidersCardHost` passes them as the outside-click triggers, so a
+/// click on any trigger reaches its toggle instead of dismissing the open
+/// card first (see OutsideClick.swift). Reads happen on event monitors, so a
+/// lock guards the writes from layout.
+final class ProvidersTriggerFrames: @unchecked Sendable {
+    static let shared = ProvidersTriggerFrames()
+
+    private let lock = NSLock()
+    private var frames: [ProvidersCard: CGRect] = [:]
+
+    func frame(for card: ProvidersCard) -> CGRect {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames[card] ?? .zero
+    }
+
+    /// Every trigger frame reported so far. The host passes these so clicking
+    /// a second trigger while a card is open swaps straight to it.
+    func allFrames() -> [CGRect] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(frames.values)
+    }
+
+    func binding(for card: ProvidersCard) -> Binding<CGRect> {
+        Binding(
+            get: { Self.shared.frame(for: card) },
+            set: { Self.shared.store($0, for: card) }
+        )
+    }
+
+    private func store(_ rect: CGRect, for card: ProvidersCard) {
+        lock.lock()
+        defer { lock.unlock() }
+        frames[card] = rect
     }
 }
 

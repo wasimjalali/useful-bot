@@ -5,6 +5,8 @@ import UsefulBotCore
 
 /// A device flow the Providers pane is waiting on. The key itself never
 /// appears here, only the code the owner types on the sign-in page.
+/// `expiresAt` and `intervalMs` come from the start response: the app keeps
+/// polling transient answers until the entry's expiry.
 struct OAuthPending: Equatable {
     let pollId: String
     let providerId: String
@@ -12,6 +14,8 @@ struct OAuthPending: Equatable {
     let userCode: String
     let verificationUrl: String
     let verificationUrlComplete: String?
+    let expiresAt: Double
+    var intervalMs: Int
 }
 
 @MainActor
@@ -105,9 +109,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var reviewerRole: RolePublic?
     /// A connect-sheet failure, shown under the field it belongs to.
     @Published private(set) var connectError: String?
-    /// A device flow the Providers pane is waiting on, with its 2 s poll.
+    /// A device flow the Providers pane is waiting on, with its poll.
     @Published private(set) var oauth: OAuthPending?
     @Published private(set) var oauthError: String?
+    /// True once the flow ended in an error the sheet shows. The pending entry
+    /// stays so the sheet stays up with the error; the spinner and the
+    /// sign-in button hide, and Close clears everything.
+    @Published private(set) var oauthDone = false
     private var oauthPoll: Task<Void, Never>?
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
@@ -1997,6 +2005,7 @@ final class AppModel: ObservableObject {
         oauthPoll?.cancel()
         providerBusy = "\(providerId):oauth"
         oauthError = nil
+        oauthDone = false
         providersError = nil
         do {
             let flow = try await client.startOAuth(providerId: providerId)
@@ -2006,7 +2015,9 @@ final class AppModel: ObservableObject {
                 label: label,
                 userCode: flow.userCode,
                 verificationUrl: flow.verificationUrl,
-                verificationUrlComplete: flow.verificationUrlComplete
+                verificationUrlComplete: flow.verificationUrlComplete,
+                expiresAt: flow.expiresAt,
+                intervalMs: flow.intervalMs
             )
             startOAuthPoll()
         } catch {
@@ -2019,41 +2030,63 @@ final class AppModel: ObservableObject {
         oauthPoll?.cancel()
         oauthPoll = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                // The server sets the pace, at least a second between polls.
+                let interval = max(self?.oauth?.intervalMs ?? 2000, 1000)
+                try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000)
                 guard !Task.isCancelled else { return }
                 await self?.pollOAuthOnce()
-                guard self?.oauth != nil else { return }
+                guard self?.oauth != nil, self?.oauthDone == false else { return }
             }
         }
     }
 
+    /// True once the pending entry's expiry (epoch milliseconds, like the
+    /// server counts them) has passed. A zero expiry means the start response
+    /// carried none, so the server's own terminal answer ends the flow.
+    private var oauthExpired: Bool {
+        guard let pending = oauth, pending.expiresAt > 0 else { return false }
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        return nowMs >= pending.expiresAt
+    }
+
     private func pollOAuthOnce() async {
-        guard let pending = oauth else { return }
+        guard let pending = oauth, !oauthDone else { return }
         do {
-            let (status, payload) = try await client.pollOAuth(pollId: pending.pollId)
+            let (status, intervalMs, payload) = try await client.pollOAuth(pollId: pending.pollId)
+            if let intervalMs, intervalMs > 0 {
+                oauth?.intervalMs = intervalMs
+            }
             switch status {
             case "complete":
                 if let payload {
                     applyProviders(payload)
+                    providersError = nil
                 } else {
                     await loadProviders()
                 }
                 oauthPoll?.cancel()
                 oauth = nil
                 oauthError = nil
-            case "pending", "slow_down":
-                break
+            case "pending", "slow_down", "error":
+                // A transient "error" keeps polling like "pending". Past the
+                // entry's expiry the flow is over and shows the expired copy.
+                // Only complete, expired and denied end it on their own.
+                if oauthExpired {
+                    oauthPoll?.cancel()
+                    oauthDone = true
+                    oauthError = "That sign-in expired. Try again."
+                }
             case "expired":
                 oauthPoll?.cancel()
-                oauth = nil
+                oauthDone = true
                 oauthError = "That sign-in expired. Try again."
             case "denied":
                 oauthPoll?.cancel()
-                oauth = nil
+                oauthDone = true
                 oauthError = "That sign-in was denied."
             default:
                 oauthPoll?.cancel()
-                oauth = nil
+                oauthDone = true
                 oauthError = "Could not finish sign-in."
             }
         } catch {
@@ -2067,6 +2100,8 @@ final class AppModel: ObservableObject {
             try? await client.cancelOAuth(pollId: pending.pollId)
         }
         oauth = nil
+        oauthError = nil
+        oauthDone = false
     }
 
     func connectProvider(id: String, key: String) async {

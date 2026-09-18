@@ -19,16 +19,17 @@ struct ProvidersPaneView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             section("Providers") {
-                if let error = model.providersError, model.providerCatalog.isEmpty {
+                if let error = model.providersError {
                     Text(error)
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.C.danger)
+                        .padding(.bottom, 8)
                 }
                 if model.providerCatalog.isEmpty && model.providersError == nil {
                     Text("Loading providers.")
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.C.inkMuted)
-                } else {
+                } else if !model.providerCatalog.isEmpty {
                     settingsGroup {
                         ForEach(model.providerConnections) { connection in
                             connectionRow(connection)
@@ -109,6 +110,7 @@ struct ProvidersPaneView: View {
             .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
                 [ProvidersCardAnchor(card: card, bounds: $0)]
             }
+            .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: card))
             .accessibilityLabel("Actions for \(connection.label)")
             .accessibilityIdentifier("provider-menu-\(connection.id)")
         }
@@ -148,6 +150,7 @@ struct ProvidersPaneView: View {
             .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
                 [ProvidersCardAnchor(card: Self.connectCard, bounds: $0)]
             }
+            .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: Self.connectCard))
             .accessibilityIdentifier("providers-connect")
         }
     }
@@ -337,6 +340,7 @@ struct ProvidersPaneView: View {
                     .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
                         [ProvidersCardAnchor(card: card, bounds: $0)]
                     }
+                    .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: card))
                     .accessibilityLabel("Reasoning for \(title)")
                     .accessibilityIdentifier("role-\(role)-reasoning")
                 }
@@ -372,6 +376,7 @@ struct ProvidersPaneView: View {
         .anchorPreference(key: ProvidersCardAnchorsKey.self, value: .bounds) {
             [ProvidersCardAnchor(card: card, bounds: $0)]
         }
+        .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: card))
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
                 .strokeBorder(Theme.C.border, lineWidth: 1)
@@ -671,23 +676,31 @@ private struct OAuthSheetView: View {
                 }
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
-                    NativeButton("Cancel", kind: .secondary) {
-                        Task { await model.cancelOAuth() }
-                    }
-                    NativeButton("Open sign-in page", kind: .primary) {
-                        let link = pending.verificationUrlComplete ?? pending.verificationUrl
-                        if let url = URL(string: link), !link.isEmpty {
-                            NSWorkspace.shared.open(url)
+                    if model.oauthDone {
+                        NativeButton("Close", kind: .secondary) {
+                            Task { await model.cancelOAuth() }
+                        }
+                    } else {
+                        NativeButton("Cancel", kind: .secondary) {
+                            Task { await model.cancelOAuth() }
+                        }
+                        NativeButton("Open sign-in page", kind: .primary) {
+                            let link = pending.verificationUrlComplete ?? pending.verificationUrl
+                            if let url = URL(string: link), !link.isEmpty {
+                                NSWorkspace.shared.open(url)
+                            }
                         }
                     }
                 }
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Waiting for approval")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.C.inkMuted)
-                    Spacer(minLength: 0)
+                if !model.oauthDone {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Waiting for approval")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
+                        Spacer(minLength: 0)
+                    }
                 }
             }
         }
@@ -856,7 +869,9 @@ struct ProvidersCardHost: View {
 
     var body: some View {
         ProvidersBrandCard(width: width, content: bodyContent)
-            .dismissOnOutsideClick { openCard = nil }
+            .dismissOnOutsideClick(triggers: { ProvidersTriggerFrames.shared.allFrames() }) {
+                openCard = nil
+            }
     }
 
     @ViewBuilder
