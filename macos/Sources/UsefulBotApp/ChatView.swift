@@ -743,7 +743,7 @@ struct TranscriptRowView: View, Equatable {
         case .assistant:
             replyRow(showsSpeaker: true)
         case .widget:
-            WidgetWebView(widgetId: row.text)
+            WidgetSlot(widgetId: row.text)
                 .frame(height: 480)
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
