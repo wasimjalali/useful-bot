@@ -43,10 +43,11 @@ Measured with `footprint <pid>` on the installed app, settled 25 s after launch,
 
 | Measure | Before (main @ a1c7709) | After |
 |---|---|---|
-| Footprint, fresh launch | 352 MB, of which "CG image" 266 MB in one region | 98 MB, "CG image" 14 MB |
-| Footprint after 10 h 44 min | 661 MB, "CG image" 532 MB (two of the same region), peak 1.1 GB | see "Verified" |
+| Footprint, fresh launch | 352 MB, of which "CG image" 266 MB in one region | 124 MB installed (98 MB as a debug build), "CG image" 14 MB |
+| Footprint with the 3,504 event Drive Admin chat open | 379 MB | 124 MB |
+| Footprint after 10 h 44 min | 661 MB, "CG image" 532 MB (two of the same region), peak 1.1 GB | not yet measured over a day; the second copy came from the same icon refresh, so it is gone with it |
 | ImageIO (decoded PNGs) | 29 MB, the eight 1024 px motion layers | 1.3 MB |
-| Idle CPU | 0.6% | 0.6% |
+| Idle CPU | 0.6% | 0.7% average, 2.9% peak over 30 s |
 
 - **Problem.** Every PNG under `brand/` carries 25 dpi metadata, the iconset inside
   `UsefulBot.icns` included, so `NSImage` reported a 1024 px bitmap as 2,949 pt.
