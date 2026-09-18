@@ -37,6 +37,36 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
+## Batch 9: the tick sweeps orphans once a minute (PR: perf/server-stores)
+
+Measured in-process with a node harness importing the same functions the routes call (scratchpad
+`storebench.mts`), against the real files: `shell.json` 12 KB, `agents.json` 42 KB, one widget:
+
+| Call | Cost | Cadence before | Cadence after |
+|---|---|---|---|
+| `sweepOrphanState()` | 6,069 us | every tick, 2.5 s (145 ms of event loop a minute) | once a minute (6 ms) |
+| `readShell()` | 47 us | every shell poll | unchanged |
+| `readAgentStore()` | 123 us | every state poll, twice per tick | unchanged |
+| `listThreadEvents()` | 152 us | every state poll | unchanged |
+
+- **Problem.** Every tick swept routines, threads, widgets and the handoffs directory for bots the
+  roster no longer has. The sweep is maintenance: it only shortens how long a leftover from a
+  failed delete can linger, and it cost more than everything else the tick reads put together.
+- **Fix.** `sweepOrphanStateIfDue` runs it at most once per minute, the first tick after a start
+  included. The route calls it where it did (after authorisation and the rate limit, before the
+  credential gate). Direct deletion still cleans up at its own call sites; a leftover can now
+  linger a minute instead of a tick, which is the trade Astra (T-14) and GLM (T-10) both priced.
+- **Looked at and not done: the parsed-store memo.** The audit proposed caching the parsed shell
+  and agent stores by file identity. On this machine's files a read is 47 to 123 microseconds, so
+  the memo would save under a millisecond a poll, and it changes who owns the returned object
+  (Astra's T-13): `withAgentStore` clones what it reads, other callers do not. Not worth the risk
+  for the number; revisit if `agents.json` ever reaches megabytes.
+- **The trap we hit.** The throttle's "never swept" state was 0, and the test's fake clock of
+  1,000 ms sat inside the first minute of it: the first call did not sweep. A null sentinel.
+- **Found in review (Muse Spark).** Nothing on the first pass.
+- **Caught by.** GLM, DeepSeek, HY4, Spark filed the per-tick sweep; GLM and DeepSeek the store
+  parses (measured, declined).
+
 ## Batch 8: the per-bot caches have a byte budget (PR: perf/cache-budget)
 
 Measured on the debug build with four chats visited, logging the estimate the budget works from:
@@ -437,8 +467,8 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
 | Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
-| Server reads and parses whole JSON stores per poll; tick sweeps orphans every 2.5 s | event-loop stalls shared by all bots | medium | GLM, DeepSeek, HY4, Spark |
 
 Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5), the
-streaming markdown cache (batch 6), the eager widget web views (batch 7), the cache budget (batch 8).
+streaming markdown cache (batch 6), the eager widget web views (batch 7), the cache budget (batch 8), the per-tick sweep (batch 9); the store parse memo was measured and
+declined.
 Deferred by decision: the cached chat switch resuming from its cursor.

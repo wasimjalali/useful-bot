@@ -30,7 +30,7 @@ import {
   type Routine,
 } from "../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, writeShell } from "../shared/shell-io.ts";
-import { sweepOrphanState } from "../web/lib/agent-exec.ts";
+import { SWEEP_INTERVAL_MS, resetSweepClock, sweepOrphanState, sweepOrphanStateIfDue } from "../web/lib/agent-exec.ts";
 
 function sandbox(): { path: string; restore: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "ub-routines-"));
@@ -624,7 +624,15 @@ test("the sweep stands down while the roster is a recovery stub", () => {
     createRoutine({ botId: "bot-gone", name: "Orphan", instruction: "x", schedules: [] });
 
     // The roster is the owner's, so the orphan goes and the live one stays.
-    assert.equal(sweepOrphanState().length, 1);
+    // Through the tick's throttle: the first call sweeps, a second one a
+    // tick later does not, and one a minute later does.
+    resetSweepClock();
+    assert.equal(sweepOrphanStateIfDue(1_000).length, 1);
+    assert.deepEqual(readRoutinesStore().routines.map((item) => item.name), ["Live"]);
+    createRoutine({ botId: "bot-gone", name: "Orphan-later", instruction: "x", schedules: [] });
+    assert.deepEqual(sweepOrphanStateIfDue(1_000 + 2_500), []);
+    assert.equal(readRoutinesStore().routines.length, 2);
+    assert.equal(sweepOrphanStateIfDue(1_000 + SWEEP_INTERVAL_MS).length, 1);
     assert.deepEqual(readRoutinesStore().routines.map((item) => item.name), ["Live"]);
 
     // Now lose the roster. Both routines are orphans against the stub, and
