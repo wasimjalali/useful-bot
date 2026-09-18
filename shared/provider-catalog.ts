@@ -12,6 +12,12 @@ export interface OAuthDeviceConfig {
   scopes: string;
   /** github-copilot: the OAuth token is exchanged for a short-lived Copilot token before use. */
   exchangeUrl?: string;
+  /** openai: POST here to poll for the authorization code. */
+  pollUrl?: string;
+  /** openai: page the user opens to approve the code. */
+  verificationUrl?: string;
+  /** openai: redirect_uri sent with the code exchange. */
+  redirectUri?: string;
   /** Extra headers the vendor requires on every inference call (Copilot editor headers, ChatGPT account id is added by the adapter). */
   headers?: Record<string, string>;
 }
@@ -71,14 +77,18 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         listsModels: true,
         keyUrl: null,
         hint: "ChatGPT Plus or Pro through Codex sign in.",
-        // Verified against the Codex CLI primary source, github.com/openai/codex
-        // path codex-rs/login/src (server.rs build_authorize_url, device_code_auth.rs,
-        // and the PRODUCTION_LENGTH_AUTH_URL test): issuer https://auth.openai.com,
-        // client id app_EMoamEEZ73f0CkXaXp7hrann, scope string below, device flow
-        // POST {issuer}/api/accounts/deviceauth/usercode, poll
-        // POST {issuer}/api/accounts/deviceauth/token, verify at
-        // {issuer}/codex/device, token and refresh POST {issuer}/oauth/token.
-        // The id token carries the ChatGPT account id claim
+        // Codex device flow per github.com/openai/codex
+        // codex-rs/login/src/device_code_auth.rs and exchange_code_for_tokens
+        // in server.rs. Start POST {issuer}/api/accounts/deviceauth/usercode
+        // with {client_id}. Poll POST {issuer}/api/accounts/deviceauth/token
+        // with {device_auth_id, user_code}: 403 or 404 means pending, other
+        // non-2xx means error, 2xx returns {authorization_code,
+        // code_challenge, code_verifier}. Then exchange at
+        // POST {issuer}/oauth/token as a form with grant_type
+        // authorization_code plus code, redirect_uri
+        // {issuer}/deviceauth/callback, client_id and code_verifier. Verify
+        // at {issuer}/codex/device. The id token carries the ChatGPT
+        // account id claim
         // https://api.openai.com/auth.chatgpt_account_id, sent back as the
         // ChatGPT-Account-Id header on inference calls.
         oauth: {
@@ -86,6 +96,9 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
           clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
           deviceUrl: "https://auth.openai.com/api/accounts/deviceauth/usercode",
           tokenUrl: "https://auth.openai.com/oauth/token",
+          pollUrl: "https://auth.openai.com/api/accounts/deviceauth/token",
+          verificationUrl: "https://auth.openai.com/codex/device",
+          redirectUri: "https://auth.openai.com/deviceauth/callback",
           scopes: "openid profile email offline_access api.connectors.read api.connectors.invoke",
         },
         // Current Codex CLI lineup per developers.openai.com/codex/models (Sep 2026):
