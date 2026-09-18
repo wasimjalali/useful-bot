@@ -209,6 +209,8 @@ const FIND_NARROWING = new Set([
  * match everything and narrow nothing.
  */
 function narrowsFind(flags: string[]): boolean {
+  // `-name x -o -delete` deletes what does NOT match: no filter at all.
+  if (flags.includes("-o") || flags.includes("-or") || flags.includes("!") || flags.includes("-not")) return false;
   return flags.some((flag, at) => {
     if (!FIND_NARROWING.has(flag)) return false;
     if (flag === "-empty") return true;
@@ -419,10 +421,11 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
     const inner = rest.slice(i).filter((token) => !placeholders.has(token.text));
     if (inner.length > 0 && REMOVERS.has(basename(inner[0].text))) {
       const source = peelWrappers(pipeSource);
-      if (basename(source[0]?.text ?? "") === "find" && narrowsFind(source.slice(1).map((token) => token.text))) return null;
+      const picked = basename(source[0]?.text ?? "") === "find" && narrowsFind(source.slice(1).map((token) => token.text));
       // Only what looks like a path in the source counts: `ls` is the
-      // command, not a folder called ls.
-      for (const token of pipeSource) {
+      // command, not a folder called ls. A find that picked files by name
+      // feeds only those, so its start is not what the remover sweeps.
+      for (const token of picked ? [] : pipeSource) {
         if (token.text.startsWith("-") && !token.quoted) continue;
         if (!/[/~$]|^\.{1,2}$|^\*$/.test(token.text)) continue;
         const broad = broadPath(token.text, root, home, ownerHome);
@@ -430,6 +433,7 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
       }
       const own = wipeReason(inner, root, home, ownerHome, [], depth);
       if (own) return own;
+      if (picked) return null;
       // `ls | xargs rm -rf` with nothing named sweeps the directory it
       // stands in.
       const named = inner.slice(1).some((token) => !token.text.startsWith("-") || token.quoted);

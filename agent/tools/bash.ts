@@ -191,7 +191,8 @@ export default defineTool({
         const failed = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; signal?: string | null };
         const exited = typeof failed.code === "number" && !failed.signal;
         if (!exited && failed.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw err;
-        exitCode = typeof failed.code === "number" ? failed.code : 0;
+        // A line killed at the output cap did not finish: not exit 0.
+        exitCode = typeof failed.code === "number" ? failed.code : 1;
         stdout = failed.stdout ?? "";
         stderr = failed.stderr ?? "";
       }

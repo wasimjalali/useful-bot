@@ -673,6 +673,10 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
   assert.equal(wipeRisk("ls | xargs rm -rf", deep, deep, home), null);
   assert.equal(wipeRisk("ls | xargs rm -rf build", deep, deep, home), null);
   assert.notEqual(wipeRisk("ls | xargs -I{} rm -rf {}", home, home), null);
+  assert.notEqual(wipeRisk("find ~ -name '*.log' | xargs rm -rf ~/Documents", home, home), null);
+  assert.equal(wipeRisk("find ~ -name '*.log' | xargs rm -rf", home, home), null);
+  assert.notEqual(wipeRisk("find ~ -name '*.log' -o -delete", home, home), null);
+  assert.notEqual(wipeRisk("find ~ ! -name '*.log' -delete", home, home), null);
   assert.notEqual(wipeRisk("ls | xargs -I % rm -rf %", home, home), null);
   assert.equal(wipeRisk("ls | xargs -I{} rm -rf {}", deep, deep, home), null);
   assert.notEqual(wipeRisk("ls ~ | xargs sh -c 'rm -rf ~'", home, home), null);
