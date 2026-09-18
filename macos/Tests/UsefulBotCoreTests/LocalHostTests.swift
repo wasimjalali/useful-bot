@@ -90,4 +90,25 @@ import Testing
         #expect(ComposerDraft.clip("a😀b", toUTF16: 2) == "a")
         #expect(ComposerDraft.clip("abc", toUTF16: 10) == "abc")
     }
+
+    @Test func paragraphsSplitOnBlankLinesOnly() {
+        #expect(ComposerDraft.paragraphs("a\nb\n\nc\r\n\r\n  \nd") == ["a\nb", "c", "d"])
+        #expect(ComposerDraft.paragraphs("\n\n") == [])
+    }
+
+    @Test func aPasteOverTwoParagraphsOrTenLinesIsLong() {
+        #expect(!ComposerDraft.isLongPaste("one\n\ntwo"))
+        #expect(ComposerDraft.isLongPaste("one\n\ntwo\n\nthree"))
+        let tenLines = (1...10).map(String.init).joined(separator: "\n")
+        #expect(!ComposerDraft.isLongPaste(tenLines))
+        #expect(ComposerDraft.isLongPaste(tenLines + "\n11"))
+        #expect(!ComposerDraft.isLongPaste(String(repeating: "x", count: 5000)))
+    }
+
+    @Test func previewIsTheFirstParagraphAndComposeOrdersPastesFirst() {
+        #expect(ComposerDraft.pastePreview("\n first \n\nsecond") == "first")
+        #expect(ComposerDraft.compose(pastes: ["p1", " p2 "], draft: " typed ") == "p1\n\np2\n\ntyped")
+        #expect(ComposerDraft.compose(pastes: [], draft: "") == "")
+        #expect(ComposerDraft.compose(pastes: ["p1"], draft: "") == "p1")
+    }
 }

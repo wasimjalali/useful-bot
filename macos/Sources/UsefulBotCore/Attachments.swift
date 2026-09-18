@@ -11,8 +11,11 @@ public enum Attachments {
     /// What the composer accepts, on both surfaces: `ComposerView` here and
     /// `maxLength` in `chat-composer.tsx`. It is an input cap, not a clip.
     /// Nothing on the server or in eve truncates a stored turn, so the echo of
-    /// a sent message always comes back whole.
-    public static let messageMax = 2000
+    /// a sent message always comes back whole. Slack's per-message cap, which
+    /// is where most long pastes come from; a paste over two paragraphs folds
+    /// into a collapsed block (`ComposerDraft.isLongPaste`) so the field stays
+    /// readable at this size.
+    public static let messageMax = 40_000
 
     public enum NameError: Error, Equatable {
         case forbidden

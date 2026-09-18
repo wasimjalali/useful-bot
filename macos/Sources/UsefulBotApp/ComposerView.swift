@@ -35,6 +35,7 @@ struct ComposerView: View {
     @State private var projectChipFrame = CGRect.zero
     @State private var permissionChipFrame = CGRect.zero
     @State private var focused = false
+    @State private var expandedPastes: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -94,6 +95,7 @@ struct ComposerView: View {
     /// and formatting scanned each attached file's text for fences.
     private var canSend: Bool {
         !model.attachments.isEmpty
+            || !model.pastes.isEmpty
             || !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -102,12 +104,13 @@ struct ComposerView: View {
     /// Only per-message files stack above the field. The working folder is a
     /// setting of the conversation, and the project chip under the field is
     /// where it shows; a second chip inside the field said the same thing.
-    private var stacked: Bool { !model.attachments.isEmpty }
+    private var stacked: Bool { !model.attachments.isEmpty || !model.pastes.isEmpty }
 
     private var field: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
-                if stacked { attachmentsRow }
+                if !model.pastes.isEmpty { pastesStack }
+                if !model.attachments.isEmpty { attachmentsRow }
                 HStack(alignment: .bottom, spacing: 8) {
                     plusButton
                     input
@@ -307,6 +310,8 @@ struct ComposerView: View {
                 pending: { model.pending },
                 onSend: { send() },
                 onFocusChange: { focused = $0 },
+                maxLength: model.draftCap,
+                onLongPaste: { model.addPaste($0) },
                 onDropFiles: { model.addAttachments($0) }
             )
             .accessibilityLabel(placeholder)
@@ -486,6 +491,68 @@ struct ComposerView: View {
         .padding(.top, 2)
     }
 
+    /// Long pastes, one block each: the first paragraph until expanded, the
+    /// whole text (scrolling past a screenful) once it is. Text wraps either
+    /// way. Sending folds the blocks into the message in front of the field.
+    private var pastesStack: some View {
+        VStack(spacing: 6) {
+            ForEach(model.pastes) { paste in
+                let expanded = expandedPastes.contains(paste.id)
+                VStack(alignment: .leading, spacing: 6) {
+                    Group {
+                        if expanded {
+                            ScrollView(.vertical) {
+                                Text(paste.text)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxHeight: DesignTokens.Control.composerExpandedMax)
+                        } else {
+                            Text(ComposerDraft.pastePreview(paste.text))
+                                .lineLimit(4)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.ink)
+                    HStack(spacing: 8) {
+                        Button(expanded ? "Show less" : "Show more") {
+                            if expanded {
+                                expandedPastes.remove(paste.id)
+                            } else {
+                                expandedPastes.insert(paste.id)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.C.accentStrong)
+                        Spacer(minLength: 0)
+                        Button {
+                            expandedPastes.remove(paste.id)
+                            model.removePaste(id: paste.id)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Remove pasted text")
+                    }
+                }
+                .padding(10)
+                .background(Theme.C.sunken)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Theme.C.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 2)
+    }
+
     /// The native open panel, for files. Not `fileImporter`: see `body`.
     private func pickFiles() {
         let panel = NSOpenPanel()
@@ -512,7 +579,8 @@ struct ComposerView: View {
         // Restating it here put a long absolute path in every bubble the owner
         // sends, to tell the agent something it already knew. The chip under
         // the composer is where the owner sees which folder is attached.
-        let message = Attachments.formatMessage(model.draft, files: model.attachments)
+        let body = ComposerDraft.compose(pastes: model.pastes.map(\.text), draft: model.draft)
+        let message = Attachments.formatMessage(body, files: model.attachments)
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.
