@@ -669,10 +669,12 @@ private extension ShellBot {
 
 /// What the owner said. A long message folds to its first rendered lines
 /// with a Show more under it, the way Claude.ai and Slack fold one, so a
-/// pasted document does not push the reply off the screen. The bubble
-/// measures itself against an unclipped twin and only offers the button when
-/// enough is hidden to be worth it. The fold is the row's own state, and a
-/// row that leaves the window comes back folded.
+/// pasted document does not push the reply off the screen. Two hidden twins
+/// of the text, one clipped to the preview and one not, measure how much a
+/// fold would hide; the clip and the button both follow that one answer, so
+/// a message never loses a line without a button to get it back, and Show
+/// less stays once the bubble is open. The fold is the row's own state, and
+/// a row that leaves the window comes back folded.
 private struct UserBubbleView: View {
     let text: String
     @State private var expanded = false
@@ -687,10 +689,13 @@ private struct UserBubbleView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             body(text)
-                .lineLimit(mayFold && !expanded ? LongMessage.previewLines : nil)
-                .background(heightReader($previewHeight))
+                .lineLimit(folds && !expanded ? LongMessage.previewLines : nil)
                 .background(alignment: .topLeading) {
-                    if mayFold && !expanded {
+                    if mayFold {
+                        body(text)
+                            .lineLimit(LongMessage.previewLines)
+                            .hidden()
+                            .background(heightReader($previewHeight))
                         body(text)
                             .fixedSize(horizontal: false, vertical: true)
                             .hidden()
