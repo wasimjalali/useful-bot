@@ -31,6 +31,50 @@ workspace credits once and was rerun).
   `~/Library/Logs/UsefulBot/service-web.log` to the first `stream?startIndex=<n>` follow read.
   The stream closes 3 s after its last event, so 3 to 4 s is the floor.
 - Service cost: `ps -axo pid,rss,%cpu,command | grep -E 'next-server|eve'`.
+- Memory: `footprint <pid>` for the total and the per-category table (a big "CG image" line is a
+  bitmap someone drew too large; `vmmap -v <pid> | grep '^CG image'` lists the regions). To find who
+  allocated a region, launch the debug binary with `MallocStackLogging=1` and run
+  `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
+  chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
+
+## Batch 4: the app icon was a 278 MB bitmap (PR: perf/brand-rasters)
+
+Measured with `footprint <pid>` on the installed app, settled 25 s after launch, Generalist open:
+
+| Measure | Before (main @ a1c7709) | After |
+|---|---|---|
+| Footprint, fresh launch | 352 MB, of which "CG image" 266 MB in one region | 124 MB installed (98 MB as a debug build), "CG image" 14 MB |
+| Footprint with the 3,504 event Drive Admin chat open | 379 MB | 124 MB |
+| Footprint after 10 h 44 min | 661 MB, "CG image" 532 MB (two of the same region), peak 1.1 GB | not yet measured over a day; the second copy came from the same icon refresh, so it is gone with it |
+| ImageIO (decoded PNGs) | 29 MB, the eight 1024 px motion layers | 1.3 MB |
+| Idle CPU | 0.6% | 0.7% average, 2.9% peak over 30 s |
+
+- **Problem.** Every PNG under `brand/` carries 25 dpi metadata, the iconset inside
+  `UsefulBot.icns` included, so `NSImage` reported a 1024 px bitmap as 2,949 pt.
+  `NSApp.applicationIconImage = BrandAssets.image("app/macos/UsefulBot.icns")` in `RootView` made
+  AppKit snapshot the icon at its point size times the 2x backing scale: a 5,898 px RGBA half-float
+  bitmap, 278 MB, allocated under `-[NSApplication _updateIconImageFromOriginal]`, and again on the
+  next icon refresh, which is where the second copy came from. The audit had this filed as "30 fps
+  avatar timelines with 1024 px layers" because the layers share the metadata; the splash decoded all
+  eight at 1024 px for a 168 pt view, but that was the 29 MB of ImageIO, not the 532 MB.
+- **How it was found.** `footprint` put 532 of 661 MB under "CG image" in four 128 MB regions plus
+  two of 9.5 MB. `lldb` dumped one region; the pixel values were half floats, the row autocorrelation
+  gave a width of 5,900 px, and the rendered dump was the mascot's body. `MallocStackLogging=1` plus
+  `malloc_history <pid> <address>` on the debug build gave the allocating frame.
+- **Fix.** `BrandAssets.image` sets the point size of any all-bitmap brand image to its largest
+  representation's pixels divided by two: a brand bitmap is a 2x asset. SVGs keep their own size.
+  Motion layers are rasterised once per drawn size (`BrandAssets.motionLayer`, a `size x 2` px
+  bitmap, scaled up by the avatar crop and the working row's breath so it stays 1:1 on screen)
+  instead of handing the 1024 px source to eight `Image` views 30 times a second. The working row
+  draws `BrandMotionFrameView` from its own timeline; it used to nest a `BrandMotionView` with a
+  second 30 fps timeline inside the first.
+- **Not done.** The PNGs keep their metadata. Rewriting `brand/` touches tracked assets, the manifest
+  and the web build for no gain the loader does not already give.
+- **Found in review (Muse Spark).** The avatar path scales the layer stack by 1024/768 after layout,
+  so a 28 pt raster was drawn at 37 pt and went soft. The raster now takes that scale, and the 1.04
+  breath, into its pixel count.
+- **Caught by.** All five models filed the 1024 px layers and the nested timeline (open item 7). None
+  found the icon; the footprint did.
 
 ## Batch 3: a send stops replaying the session before its reply (PR: perf/send-cursor)
 
@@ -255,4 +299,6 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 | One `WKWebView` per widget row, mounted eagerly | memory in widget-heavy chats | medium | all five |
 | Per-bot transcript caches have no eviction | memory grows with chats visited | medium | Astra, Spark, DeepSeek |
 | Server reads and parses whole JSON stores per poll; tick sweeps orphans every 2.5 s | event-loop stalls shared by all bots | medium | GLM, DeepSeek, HY4, Spark |
-| 30 fps avatar timelines with 1024 px layers, nested in the working row | sustained cost with several bots working | medium | all five |
+
+Closed: the avatar timelines and 1024 px layers (batch 4). Deferred by decision: the cached chat
+switch resuming from its cursor.
