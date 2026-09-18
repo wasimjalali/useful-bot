@@ -534,6 +534,15 @@ test("Full access stops only for a wipe: a remover aimed at a whole area of the 
     "env rm -rf ~/Music",
     "timeout 5 rm -rf ~/Music",
     "cd ~ && rm -rf Documents",
+    "cd ~/Documents && rm -rf .",
+    "cd ~/Documents; rm -rf *",
+    "cd /Users/owner/Desktop/project && cd .. && rm -rf .",
+    "pushd ~/Pictures && rm -rf ./",
+    "sh -c 'rm -rf ~/Documents'",
+    "bash -lc \"cd ~/Documents && rm -rf .\"",
+    "ls ~ | xargs rm -rf",
+    "find ~/Documents -name '*.bak' | xargs rm",
+    "echo ~/Music | xargs -n1 rm -rf",
     "echo $(rm -rf ~/Documents)",
     "find ~ -name '*.log' -delete",
     "find /Users/owner/Documents -type f -exec rm {} \\;",
@@ -588,6 +597,11 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     "dd if=/dev/zero of=./blank.img bs=1m count=1",
     "npm i -g typescript",
     "echo a..b",
+    "cd build && rm -rf .",
+    "cd ~/Desktop/project && rm -rf dist",
+    "sh -c 'rm -rf build'",
+    "find src -name '*.bak' | xargs rm",
+    "ls | xargs rm -rf",
   ]) {
     assert.equal(wipeRisk(command, root, home), null, command);
   }

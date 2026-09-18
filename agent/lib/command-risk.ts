@@ -218,18 +218,40 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
     const reason = wipeRisk(inner, root, home);
     if (reason) return reason;
   }
+  // `cd ~/Documents && rm -rf .` deletes Documents: a cd moves where the
+  // later segments resolve their relative targets. A pipe source is kept
+  // so `ls ~ | xargs rm -rf` is judged by what it feeds the remover.
+  let cwd = root;
+  let previous: Token[] = [];
   for (const segment of split(tokenize(command))) {
-    const reason = wipeReason(segment.tokens, root, home);
+    const reason = wipeReason(segment.tokens, cwd, home, segment.pipedInto ? previous : []);
     if (reason) return reason;
+    const moved = changedDirectory(segment.tokens, cwd, home);
+    if (moved) cwd = moved;
+    previous = segment.tokens;
   }
   return null;
 }
 
-function wipeReason(tokens: Token[], root: string, home: string): string | null {
+/** Where a `cd` or `pushd` segment leaves the shell, or null when it is not one. */
+function changedDirectory(tokens: Token[], cwd: string, home: string): string | null {
+  const args = peelWrappers(tokens);
+  const head = args[0];
+  if (!head || (head.text !== "cd" && head.text !== "pushd")) return null;
+  const target = args.slice(1).find((token) => !token.text.startsWith("-") || token.quoted)?.text ?? "~";
+  const expanded = expandHome(target, home);
+  // A directory read from a variable is unknown; the rest of the line is
+  // judged where it stood.
+  if (/[$`]/.test(expanded)) return null;
+  return resolve(cwd, expanded);
+}
+
+/** The command after the leading assignments, wrappers and escalators. */
+function peelWrappers(tokens: Token[]): Token[] {
   // Only the leading assignments go: `of=/dev/disk3` after `dd` is an
   // argument, not a variable.
   let args = tokens.slice(tokens.findIndex((token) => !isAssignment(token)));
-  if (args.length === 0 || isAssignment(args[0])) return null;
+  if (args.length === 0 || isAssignment(args[0])) return [];
   while (args.length > 0 && (WRAPPERS.has(basename(args[0].text)) || ESCALATORS.has(basename(args[0].text)))) {
     const valued = WRAPPER_VALUED[basename(args[0].text)] ?? new Set<string>();
     let i = 1;
@@ -238,6 +260,11 @@ function wipeReason(tokens: Token[], root: string, home: string): string | null 
     }
     args = args.slice(i);
   }
+  return args;
+}
+
+function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Token[]): string | null {
+  const args = peelWrappers(tokens);
   const head = args[0];
   if (!head) return null;
   const name = basename(head.text);
@@ -247,6 +274,27 @@ function wipeReason(tokens: Token[], root: string, home: string): string | null 
       if (token.text.startsWith("-") && !token.quoted) continue;
       const broad = broadPath(token.text, root, home);
       if (broad) return `wipes ${broad} (${name})`;
+    }
+    return null;
+  }
+  // `sh -c "rm -rf ~/Documents"` runs its argument: judged as a line of its own.
+  if (SHELLS.has(name)) {
+    const at = rest.findIndex((token) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token.text));
+    const payload = at >= 0 ? rest[at + 1]?.text : undefined;
+    return payload ? wipeRisk(payload, root, home) : null;
+  }
+  // `ls ~ | xargs rm -rf` removes whatever the pipe named.
+  if (name === "xargs") {
+    let i = 0;
+    while (i < rest.length && rest[i].text.startsWith("-")) i += XARGS_VALUED.has(rest[i].text) ? 2 : 1;
+    const inner = rest.slice(i);
+    if (inner.length > 0 && REMOVERS.has(basename(inner[0].text))) {
+      for (const token of pipeSource) {
+        if (token.text.startsWith("-") && !token.quoted) continue;
+        const broad = broadPath(token.text, root, home);
+        if (broad) return `wipes ${broad} (xargs ${basename(inner[0].text)})`;
+      }
+      return wipeReason(inner, root, home, []);
     }
     return null;
   }
