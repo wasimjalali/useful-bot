@@ -929,9 +929,13 @@ test("full access runs deletes and reaches outside without a card, asks before a
     assert.equal(typeof up.stdout, "string");
     assert.equal(box.approvals.listPending().length, 0);
 
-    // A wipe waits for the owner.
+    // `~` is the root here, the way the line runs (HOME is the root), so
+    // a folder under it is the project's own; a top-level folder of the
+    // Mac is the wipe that waits for the owner.
+    await run<{ stdout: string }>(bash, { command: "mkdir -p ~/Documents && rm -rf ~/Documents" }, { session: { id: "sess-1" } });
+    assert.equal(box.approvals.listPending().length, 0);
     let settled = false;
-    const wipe = run<{ stdout: string }>(bash, { command: "rm -rf ~/Documents" }, { session: { id: "sess-1" } })
+    const wipe = run<{ stdout: string }>(bash, { command: "rm -rf /Applications" }, { session: { id: "sess-1" } })
       .then((value) => {
         settled = true;
         return value;
@@ -940,7 +944,7 @@ test("full access runs deletes and reaches outside without a card, asks before a
     assert.equal(settled, false, "a wipe must wait for the owner");
     const cards = box.approvals.listPending();
     assert.equal(cards.length, 1);
-    assert.equal(cards[0].preview.includes("wipes a top-level home folder"), true, cards[0].preview);
+    assert.equal(cards[0].preview.includes("wipes a top-level folder"), true, cards[0].preview);
     box.approvals.decide(cards[0].id, "deny", cards[0].actionSha256);
     await assert.rejects(wipe);
 

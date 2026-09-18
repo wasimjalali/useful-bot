@@ -232,17 +232,18 @@ const ESCALATORS = new Set(["sudo", "doas"]);
  * Mac at once: a remover aimed at the disk, a top-level folder, a volume,
  * a home or a folder directly under one (Desktop, Documents...), a `find
  * -delete` over the same, and disk formatting. `root` resolves relative
- * targets; `home` is the owner's home, which is also the root when no
- * folder is attached.
+ * targets; `home` is what `~` expands to, the HOME the line runs with;
+ * `ownerHome` is the owner's real home, whose direct children are the
+ * top-level folders. With no folder attached all three are the home.
  */
-export function wipeRisk(command: string, root: string, home: string = homedir(), depth = 0): string | null {
+export function wipeRisk(command: string, root: string, home: string = homedir(), ownerHome: string = home, depth = 0): string | null {
   // Deeper than this is a chain of scripts nobody has read; Full access
   // runs it rather than card what it cannot see.
   if (depth > MAX_DEPTH) return null;
   for (const match of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
     const inner = (match[1] ?? match[2] ?? "").trim();
     if (!inner) continue;
-    const reason = wipeRisk(inner, root, home, depth);
+    const reason = wipeRisk(inner, root, home, ownerHome, depth);
     if (reason) return reason;
   }
   // `cd ~/Documents && rm -rf .` deletes Documents: a cd moves where the
@@ -254,7 +255,7 @@ export function wipeRisk(command: string, root: string, home: string = homedir()
   // rm -rf` is judged by the `~` two segments back.
   let chain: Token[] = [];
   for (const segment of split(tokenize(command))) {
-    const reason = wipeReason(segment.tokens, cwd, home, segment.pipedInto ? chain : [], depth);
+    const reason = wipeReason(segment.tokens, cwd, home, ownerHome, segment.pipedInto ? chain : [], depth);
     if (reason) return reason;
     cwd = changedDirectory(segment.tokens, cwd, home, stack);
     chain = segment.pipedInto ? [...chain, ...segment.tokens] : segment.tokens;
@@ -297,7 +298,7 @@ function peelWrappers(tokens: Token[]): Token[] {
   return args;
 }
 
-function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Token[], depth: number): string | null {
+function wipeReason(tokens: Token[], root: string, home: string, ownerHome: string, pipeSource: Token[], depth: number): string | null {
   // `env -S 'rm -rf ~'` carries a whole line as an option value.
   const envAt = tokens.findIndex((token) => !isAssignment(token));
   if (envAt >= 0 && basename(tokens[envAt].text) === "env") {
@@ -305,7 +306,7 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     if (carriedAt > 0) {
       const option = tokens[carriedAt].text;
       const line = option.includes("=") ? option.slice(option.indexOf("=") + 1) : tokens[carriedAt + 1]?.text;
-      const carried = line ? wipeRisk(line, root, home, depth) : null;
+      const carried = line ? wipeRisk(line, root, home, ownerHome, depth) : null;
       if (carried) return carried;
     }
   }
@@ -328,7 +329,7 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
   if (REMOVERS.has(name)) {
     for (const token of rest) {
       if (token.text.startsWith("-") && !token.quoted) continue;
-      const broad = broadPath(token.text, root, home);
+      const broad = broadPath(token.text, root, home, ownerHome);
       if (broad) return `wipes ${broad} (${name})`;
     }
     return null;
@@ -337,7 +338,7 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
   if (name === "su") {
     const at = rest.findIndex((token) => token.text === "-c" || token.text === "--command");
     const payload = at >= 0 ? rest[at + 1]?.text : undefined;
-    return payload ? wipeRisk(payload, root, home, depth) : null;
+    return payload ? wipeRisk(payload, root, home, ownerHome, depth) : null;
   }
   // `sh -c "rm -rf ~/Documents"` runs its argument, `bash tidy.sh` runs a
   // script from disk: either is judged as lines of its own.
@@ -345,22 +346,32 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     const at = rest.findIndex((token) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token.text));
     if (at >= 0) {
       const payload = rest[at + 1]?.text;
-      return payload ? wipeRisk(payload, root, home, depth) : null;
+      return payload ? wipeRisk(payload, root, home, ownerHome, depth) : null;
     }
-    const script = rest.find((token) => !token.text.startsWith("-") || token.quoted)?.text;
-    return script ? scriptWipe(script, root, home, depth) : null;
+    const script = rest.find((token) => !token.text.startsWith("-") && !token.text.startsWith("<") || token.quoted)?.text;
+    if (script) return scriptWipe(script, root, home, ownerHome, depth);
+    // `bash < tidy.sh` and `cat tidy.sh | bash` feed the same script.
+    const fed = [
+      ...rest.filter((token) => token.text.startsWith("<")).map((token) => token.text.replace(/^<+/, "")),
+      ...pipeSource.filter((token) => !token.text.startsWith("-") || token.quoted).map((token) => token.text),
+    ];
+    for (const candidate of fed) {
+      const reason = candidate ? scriptWipe(candidate, root, home, ownerHome, depth) : null;
+      if (reason) return reason;
+    }
+    return null;
   }
   // `source tidy.sh` and `. tidy.sh` run the script in this shell.
   if (name === "source" || name === ".") {
     const script = rest.find((token) => !token.text.startsWith("-") || token.quoted)?.text;
-    return script ? scriptWipe(script, root, home, depth) : null;
+    return script ? scriptWipe(script, root, home, ownerHome, depth) : null;
   }
   // `./tidy.sh` is the same script run directly.
   if (head.text.includes("/") && !SHELLS.has(name) && !INTERPRETERS.has(name)) {
-    const direct = scriptWipe(head.text, root, home, depth);
+    const direct = scriptWipe(head.text, root, home, ownerHome, depth);
     if (direct) return direct;
   }
-  if (name === "eval") return wipeRisk(rest.map((token) => token.text).join(" "), root, home, depth);
+  if (name === "eval") return wipeRisk(rest.map((token) => token.text).join(" "), root, home, ownerHome, depth);
   // Inline code is read as shell text: `python -c` cannot be parsed here,
   // but a shell line inside it, or an AppleScript `do shell script`, can.
   if (INTERPRETERS.has(name.replace(/^(python|pypy|node|ruby|perl|php)[0-9.]+$/, "$1"))) {
@@ -369,13 +380,13 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
       if (!(/^-[a-zA-Z]*[ceEpr]$/.test(flag) || flag === "--eval" || flag === "--print")) continue;
       const payload = rest[i + 1]?.text;
       if (!payload) continue;
-      const inner = wipeRisk(payload, root, home, depth + 1);
+      const inner = wipeRisk(payload, root, home, ownerHome, depth + 1);
       if (inner) return inner;
       // `os.system('rm -rf ~')`, `execSync("rm -rf ~")` and `do shell
       // script "rm -rf ~"` all carry the line in a string.
       for (const match of payload.matchAll(/'([^']*)'|"((?:[^"\\]|\\.)*)"/g)) {
         const quoted = (match[1] ?? match[2] ?? "").replace(/\\"/g, '"');
-        const shell = quoted ? wipeRisk(quoted, root, home, depth + 1) : null;
+        const shell = quoted ? wipeRisk(quoted, root, home, ownerHome, depth + 1) : null;
         if (shell) return shell;
       }
     }
@@ -385,7 +396,7 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
   if (name === "rsync" && rest.some((token) => token.text.startsWith("--delete"))) {
     const paths = rest.filter((token) => !token.text.startsWith("-") || token.quoted);
     const destination = paths[paths.length - 1]?.text;
-    const broad = destination && !destination.includes(":") ? broadPath(destination, root, home) : null;
+    const broad = destination && !destination.includes(":") ? broadPath(destination, root, home, ownerHome) : null;
     if (broad) return `wipes ${broad} (rsync --delete)`;
     return null;
   }
@@ -400,10 +411,10 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
       if (basename(source[0]?.text ?? "") === "find" && narrowsFind(source.slice(1).map((token) => token.text))) return null;
       for (const token of pipeSource) {
         if (token.text.startsWith("-") && !token.quoted) continue;
-        const broad = broadPath(token.text, root, home);
+        const broad = broadPath(token.text, root, home, ownerHome);
         if (broad) return `wipes ${broad} (xargs ${basename(inner[0].text)})`;
       }
-      return wipeReason(inner, root, home, [], depth);
+      return wipeReason(inner, root, home, ownerHome, [], depth);
     }
     return null;
   }
@@ -428,7 +439,7 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     const firstFlag = rest.findIndex((token, at) => at >= from && token.text.startsWith("-") && !token.quoted);
     starts.push(...rest.slice(from, firstFlag === -1 ? rest.length : firstFlag).map((token) => token.text));
     for (const start of starts.length > 0 ? starts : ["."]) {
-      const broad = broadPath(start, root, home);
+      const broad = broadPath(start, root, home, ownerHome);
       if (broad) return `wipes ${broad} (find -delete)`;
     }
     return null;
@@ -448,7 +459,7 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
  * unreadable, too large or not a shell script runs: Full access does not
  * card what it cannot see.
  */
-function scriptWipe(path: string, root: string, home: string, depth: number): string | null {
+function scriptWipe(path: string, root: string, home: string, ownerHome: string, depth: number): string | null {
   const abs = resolve(root, expandHome(path, home));
   if (/[$`*]/.test(abs)) return null;
   const text = readScript(abs);
@@ -457,7 +468,7 @@ function scriptWipe(path: string, root: string, home: string, depth: number): st
   const isShell = /^#!.*\b(sh|bash|zsh|dash|ksh)\b/.test(firstLine) || /\.(sh|bash|zsh|command)$/.test(abs) || !firstLine.startsWith("#!");
   if (!isShell) return null;
   const lines = text.split("\n").filter((line) => !/^\s*#/.test(line));
-  return wipeRisk(lines.join("\n"), root, home, depth + 1);
+  return wipeRisk(lines.join("\n"), root, home, ownerHome, depth + 1);
 }
 
 /**
@@ -465,7 +476,7 @@ function scriptWipe(path: string, root: string, home: string, depth: number): st
  * when it is something smaller. A trailing `/`, `/*` or `/**` names the
  * same area as the folder itself; `*` and `.` name the current root.
  */
-function broadPath(text: string, root: string, home: string): string | null {
+function broadPath(text: string, root: string, home: string, ownerHome: string): string | null {
   let target = expandHome(text, home);
   // A target read from a variable is unknown; Full access runs it.
   if (/[$`]/.test(target)) return null;
@@ -478,7 +489,9 @@ function broadPath(text: string, root: string, home: string): string | null {
   try {
     if (statSync(abs).isFile()) return null;
   } catch {
-    // Missing or unreadable: judged by shape below.
+    // Missing or unreadable: a name with an extension is a file the same
+    // way it would be if it were there; anything else is judged by shape.
+    if (/\.[A-Za-z0-9]{1,8}$/.test(basename(abs))) return null;
   }
   const parts = abs.split("/").filter(Boolean);
   if (parts.length === 0) return "the whole disk (/)";
@@ -486,7 +499,7 @@ function broadPath(text: string, root: string, home: string): string | null {
   if (parts[0] === "Volumes" && parts.length === 2) return `a whole volume (${abs})`;
   if (parts[0] === "Users" && parts.length === 2) return `a whole home folder (${abs})`;
   if (parts[0] === "Users" && parts.length === 3) return `a top-level home folder (${abs})`;
-  const underHome = relative(resolve(home), abs);
+  const underHome = relative(resolve(ownerHome), abs);
   if (underHome === "") return `a whole home folder (${abs})`;
   if (!underHome.startsWith("..") && !underHome.includes("/")) return `a top-level home folder (${abs})`;
   return null;

@@ -653,6 +653,13 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
   // A folder directly under the home is a wipe wherever the bot stands.
   assert.notEqual(wipeRisk("rm -rf /Users/owner/project", home, home), null);
   assert.notEqual(wipeRisk("rm -rf /Users/owner/project", root, home), null);
+  // With a folder attached the line runs with HOME set to the folder, so
+  // `~/x` is the folder's own child, judged against the owner's real home.
+  const deep = "/Users/owner/Desktop/project";
+  assert.equal(wipeRisk("rm -rf ~/Documents", deep, deep, home), null);
+  assert.equal(wipeRisk("rm -rf ~/build", deep, deep, home), null);
+  assert.notEqual(wipeRisk("rm -rf /Users/owner/Documents", deep, deep, home), null);
+  assert.notEqual(wipeRisk("rm -rf ~/../..", deep, deep, home), null);
   // A single file directly under a real home is an everyday delete; a
   // folder in the same place is a wipe.
   const realHome = realpathSync(mkdtempSync(join(tmpdir(), "ub-wipe-home-")));
@@ -663,6 +670,7 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     assert.equal(wipeRisk("rm -rf notes.txt", realHome, realHome), null);
     assert.notEqual(wipeRisk("rm -rf ~/Documents", realHome, realHome), null);
     assert.notEqual(wipeRisk("rm -rf ~/Missing", realHome, realHome), null);
+    assert.equal(wipeRisk("rm ~/missing.txt", realHome, realHome), null);
     // A shell script run by name is judged by its lines; one that only
     // tidies runs, one that wipes asks, and a chain that loops ends.
     mkdirSync(join(realHome, "bin"));
@@ -678,6 +686,9 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     assert.notEqual(wipeRisk("source bin/wipe.sh", realHome, realHome), null);
     assert.notEqual(wipeRisk(". ~/bin/wipe.sh", realHome, realHome), null);
     assert.equal(wipeRisk("source bin/tidy.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("bash < bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("cat ~/bin/wipe.sh | bash", realHome, realHome), null);
+    assert.equal(wipeRisk("cat bin/tidy.sh | sh", realHome, realHome), null);
     assert.equal(wipeRisk("bash bin/loop.sh", realHome, realHome), null);
     assert.equal(wipeRisk("python3 bin/tidy.py", realHome, realHome), null);
     assert.equal(wipeRisk("bash bin/missing.sh", realHome, realHome), null);

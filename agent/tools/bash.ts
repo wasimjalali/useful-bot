@@ -103,7 +103,10 @@ export default defineTool({
     if (readOnly) {
       askOwner = false;
     } else if (permission === "full_access") {
-      risk = wipeRisk(input.command, root, scope === "computer" ? root : homedir());
+      // The line runs with HOME set to the root, so `~` is the root in
+      // both scopes; the owner's real home is where the top-level folders
+      // are.
+      risk = wipeRisk(input.command, root, root, scope === "computer" ? root : homedir());
       askOwner = risk !== null;
     } else if (scope === "folder") {
       risk = commandRisk(input.command, root);
