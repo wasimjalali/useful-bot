@@ -705,6 +705,8 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     assert.notEqual(wipeRisk("rm -rf ~/Documents", realHome, realHome), null);
     assert.notEqual(wipeRisk("rm -rf ~/Missing", realHome, realHome), null);
     assert.equal(wipeRisk("rm ~/missing.txt", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/.config", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/.ssh", realHome, realHome), null);
     // A shell script run by name is judged by its lines; one that only
     // tidies runs, one that wipes asks, and a chain that loops ends.
     mkdirSync(join(realHome, "bin"));

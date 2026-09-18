@@ -538,7 +538,8 @@ function broadPath(text: string, root: string, home: string, ownerHome: string):
   try {
     if (statSync(abs).isFile()) return null;
   } catch {
-    fileByName = /\.[A-Za-z0-9]{1,8}$/.test(basename(abs));
+    // `.config` is a dotfolder, not a file called config with no name.
+    fileByName = !basename(abs).startsWith(".") && /\.[A-Za-z0-9]{1,8}$/.test(basename(abs));
   }
   const parts = abs.split("/").filter(Boolean);
   if (parts.length === 0) return "the whole disk (/)";
