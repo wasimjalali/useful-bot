@@ -667,6 +667,46 @@ private extension ShellBot {
     }
 }
 
+/// What the owner said. A long message (`LongMessage.folds`) opens on its
+/// first paragraph with a Show more under it, so a pasted document does not
+/// push the reply off the screen; the fold is the row's own state, and a row
+/// that leaves the window comes back folded.
+private struct UserBubbleView: View {
+    let text: String
+    @State private var expanded = false
+
+    var body: some View {
+        let folds = LongMessage.folds(text)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(folds && !expanded ? LongMessage.preview(text) : text)
+                .font(.system(size: DesignTokens.FontSize.chatBody))
+                .lineSpacing(7)
+                .foregroundStyle(Theme.C.ink)
+                .textSelection(.enabled)
+            if folds {
+                Button(expanded ? "Show less" : "Show more") {
+                    expanded.toggle()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.C.inkMuted)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Theme.C.sunken)
+        .clipShape(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 16,
+                bottomLeadingRadius: 16,
+                bottomTrailingRadius: 6,
+                topTrailingRadius: 16,
+                style: .continuous
+            )
+        )
+    }
+}
+
 /// One transcript row. What the owner said is a right-aligned bubble, and what
 /// a bot said is a left-aligned white one, set apart by a border and a soft
 /// shadow. Each
@@ -756,24 +796,8 @@ struct TranscriptRowView: View, Equatable {
     private var userRow: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 60)
-            Text(row.text)
-                .font(.system(size: DesignTokens.FontSize.chatBody))
-                .lineSpacing(7)
-                .foregroundStyle(Theme.C.ink)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Theme.C.sunken)
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: 16,
-                        bottomLeadingRadius: 16,
-                        bottomTrailingRadius: 6,
-                        topTrailingRadius: 16,
-                        style: .continuous
-                    )
-                )
+            UserBubbleView(text: row.text)
                 .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
-                .textSelection(.enabled)
         }
     }
 

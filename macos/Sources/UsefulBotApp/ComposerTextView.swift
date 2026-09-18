@@ -32,12 +32,6 @@ struct ComposerTextView: NSViewRepresentable {
     /// tell the owner. Defaults to nothing: the field and the model stay in
     /// sync without it.
     var onClip: () -> Void = {}
-    /// The field's cap in UTF-16 units. `ComposerView` passes the message cap
-    /// less what its pasted blocks hold.
-    var maxLength: Int = ComposerView.maxDraftLength
-    /// A paste of more than two paragraphs. It never lands in the field:
-    /// the owner keeps it as a collapsed block beside it instead.
-    var onLongPaste: (String) -> Void = { _ in }
     /// Files dropped on the field. `NSTextView` takes a file drop itself and
     /// pastes the path as text, which is not an attachment; this hands the
     /// URLs to the composer instead.
@@ -64,9 +58,6 @@ struct ComposerTextView: NSViewRepresentable {
         }
         textView.onDropFiles = { [weak coordinator = context.coordinator] urls in
             coordinator?.onDropFiles(urls)
-        }
-        textView.onLongPaste = { [weak coordinator = context.coordinator] text in
-            coordinator?.onLongPaste(text)
         }
         textView.delegate = context.coordinator
         textView.isRichText = false
@@ -106,8 +97,6 @@ struct ComposerTextView: NSViewRepresentable {
         context.coordinator.onFocusChange = onFocusChange
         context.coordinator.onClip = onClip
         context.coordinator.onDropFiles = onDropFiles
-        context.coordinator.onLongPaste = onLongPaste
-        context.coordinator.maxLength = maxLength
         context.coordinator.returnSends = returnSends
         context.coordinator.syncFromModel(into: textView, text: text, writeToken: writeToken)
     }
@@ -137,8 +126,6 @@ struct ComposerTextView: NSViewRepresentable {
         var onFocusChange: (Bool) -> Void = { _ in }
         var onClip: () -> Void = {}
         var onDropFiles: ([URL]) -> Void = { _ in }
-        var onLongPaste: (String) -> Void = { _ in }
-        var maxLength = ComposerView.maxDraftLength
         init(text: Binding<String>) {
             self._text = text
         }
@@ -198,7 +185,7 @@ struct ComposerTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             let current = textView.string
-            guard current.utf16.count > maxLength else {
+            guard current.utf16.count > ComposerView.maxDraftLength else {
                 text = current
                 return
             }
@@ -208,7 +195,7 @@ struct ComposerTextView: NSViewRepresentable {
             // this method, and publishing after it raced the re-entrant pass,
             // which left the draft empty or stale while the field showed
             // text, with Send disabled and Return doing nothing.
-            let clipped = ComposerDraft.clip(current, toUTF16: maxLength)
+            let clipped = ComposerDraft.clip(current, toUTF16: ComposerView.maxDraftLength)
             text = clipped
             if textView.string != clipped {
                 textView.string = clipped
@@ -241,17 +228,6 @@ struct ComposerTextView: NSViewRepresentable {
 private final class FocusReportingTextView: NSTextView {
     var onFocusChange: (Bool) -> Void = { _ in }
     var onDropFiles: ([URL]) -> Void = { _ in }
-    var onLongPaste: (String) -> Void = { _ in }
-
-    /// A long text paste becomes a block beside the field. Anything shorter,
-    /// and anything that is not text, pastes as it always did.
-    override func paste(_ sender: Any?) {
-        if let text = NSPasteboard.general.string(forType: .string), ComposerDraft.isLongPaste(text) {
-            onLongPaste(text)
-            return
-        }
-        super.paste(sender)
-    }
 
     /// File URLs on the drag, or nil when the drag carries none, in which
     /// case the text view handles it as it always did (dropped text).

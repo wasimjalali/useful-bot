@@ -170,9 +170,6 @@ final class AppModel: ObservableObject {
     /// this token changes.
     @Published private(set) var draftWriteToken: UInt64 = 0
     @Published var attachments: [Attachment] = []
-    /// Long pastes held beside the field as collapsed blocks. They go out in
-    /// front of the typed text (`ComposerDraft.compose`) and share its cap.
-    @Published var pastes: [ComposerPaste] = []
     @Published var attachError: String?
     @Published private(set) var onboardingDismissedFor: Set<String> = []
 
@@ -301,7 +298,7 @@ final class AppModel: ObservableObject {
     /// A send that never reached the server, on a bot the owner had already
     /// left. The composer was cleared when the turn was committed, so the text
     /// and its files wait here and go back when that chat is opened again.
-    private var unsentDrafts: [String: (text: String, pastes: [ComposerPaste], attachments: [Attachment])] = [:]
+    private var unsentDrafts: [String: (text: String, attachments: [Attachment])] = [:]
     private var started = false
     /// Rebuilding the transcript on every streamed event re-parses markdown
     /// for every row; the replay of a long session contains thousands of
@@ -549,7 +546,7 @@ final class AppModel: ObservableObject {
         // files back here, because the composer was cleared when the turn was
         // committed and this chat was not on screen to take them.
         if let unsent = unsentDrafts.removeValue(forKey: botId) {
-            restoreUnsentDraft(unsent.text, sentPastes: unsent.pastes, sentAttachments: unsent.attachments)
+            restoreUnsentDraft(unsent.text, sentAttachments: unsent.attachments)
         }
         startReload()
         persistSelection(botId)
@@ -1178,7 +1175,6 @@ final class AppModel: ObservableObject {
         sendBotId = bot.id
         markWorking(bot.id, true)
         let draftSnapshot = retrying ? "" : draft
-        let sentPastes = retrying ? [] : pastes
         let sentAttachments = retrying ? [] : attachments
         let sentAttachmentIds = Set(sentAttachments.map(\.id))
         // Pictures ride beside the text as file parts; the composed string
@@ -1209,7 +1205,7 @@ final class AppModel: ObservableObject {
         // that did not happen. `draftSnapshot` is what puts it back if the
         // send fails below.
         if !retrying {
-            clearSentComposer(draft: draftSnapshot, pasteIds: Set(sentPastes.map(\.id)), attachmentIds: sentAttachmentIds)
+            clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
         }
         // An explicit send is an explicit request to watch the answer, so the
         // transcript follows it whatever the reader was doing before.
@@ -1401,11 +1397,11 @@ final class AppModel: ObservableObject {
                     // and its files back. Anything typed or attached since is
                     // kept.
                     if self.selectedBotId == bot.id {
-                        self.restoreUnsentDraft(draftSnapshot, sentPastes: sentPastes, sentAttachments: sentAttachments)
-                    } else if !draftSnapshot.isEmpty || !sentPastes.isEmpty || !sentAttachments.isEmpty {
+                        self.restoreUnsentDraft(draftSnapshot, sentAttachments: sentAttachments)
+                    } else if !draftSnapshot.isEmpty || !sentAttachments.isEmpty {
                         // The owner is in another chat, so there is no composer
                         // to put this back into yet. Hold it for their return.
-                        self.unsentDrafts[bot.id] = (draftSnapshot, sentPastes, sentAttachments)
+                        self.unsentDrafts[bot.id] = (draftSnapshot, sentAttachments)
                     }
                     self.recordSendError(
                         bot.id,
@@ -1453,12 +1449,9 @@ final class AppModel: ObservableObject {
 
     /// Clear the composer only for the text and files this send owned, so
     /// anything typed or attached while the turn was starting survives.
-    private func clearSentComposer(draft draftSnapshot: String, pasteIds: Set<String>, attachmentIds: Set<String>) {
+    private func clearSentComposer(draft draftSnapshot: String, attachmentIds: Set<String>) {
         draft = ComposerDraft.remainder(draft, afterSending: draftSnapshot)
         draftWriteToken &+= 1
-        if !pasteIds.isEmpty {
-            pastes.removeAll { pasteIds.contains($0.id) }
-        }
         if !attachmentIds.isEmpty {
             attachments.removeAll { attachmentIds.contains($0.id) }
         }
@@ -1467,13 +1460,7 @@ final class AppModel: ObservableObject {
     /// Put an unsent draft back after a send that never reached the server.
     /// Whatever was typed in the meantime stays, and goes after the returned
     /// text, so the field reads in the order it was written.
-    private func restoreUnsentDraft(_ draftSnapshot: String, sentPastes: [ComposerPaste] = [], sentAttachments: [Attachment] = []) {
-        // The blocks go back in front of anything pasted since, as they were.
-        let held = Set(pastes.map(\.id))
-        let returning = sentPastes.filter { !held.contains($0.id) }
-        if !returning.isEmpty {
-            pastes = returning + pastes
-        }
+    private func restoreUnsentDraft(_ draftSnapshot: String, sentAttachments: [Attachment] = []) {
         if !draftSnapshot.isEmpty {
             if draft.isEmpty {
                 draft = draftSnapshot
@@ -2279,7 +2266,7 @@ final class AppModel: ObservableObject {
             threadError = err.message
         }
         if let unsent = unsentDrafts.removeValue(forKey: id) {
-            restoreUnsentDraft(unsent.text, sentPastes: unsent.pastes, sentAttachments: unsent.attachments)
+            restoreUnsentDraft(unsent.text, sentAttachments: unsent.attachments)
         }
         startReload()
     }
@@ -2888,27 +2875,6 @@ final class AppModel: ObservableObject {
     func clearAttachments() {
         attachments = []
         attachError = nil
-    }
-
-    /// Hold a long paste as a block beside the field. The blocks and the
-    /// typed text share one cap, so a paste is cut to whatever room is left
-    /// and one that finds no room at all is dropped.
-    func addPaste(_ text: String) {
-        let used = draft.utf16.count + pastes.reduce(0) { $0 + $1.text.utf16.count }
-        let room = Attachments.messageMax - used
-        guard room > 0 else { return }
-        let kept = ComposerDraft.clip(text, toUTF16: room).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !kept.isEmpty else { return }
-        pastes.append(ComposerPaste(text: kept))
-    }
-
-    func removePaste(id: String) {
-        pastes.removeAll { $0.id == id }
-    }
-
-    /// The field's own cap: the message cap less what the blocks already hold.
-    var draftCap: Int {
-        max(Attachments.messageMax - pastes.reduce(0) { $0 + $1.text.utf16.count }, 0)
     }
 
     // MARK: - Working folder
