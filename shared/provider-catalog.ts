@@ -147,7 +147,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         },
         // Both ids appear in that same source (UTILITY_MODELS list).
         // UNVERIFIED: not checked against the models.dev github-copilot entry here.
-        defaults: { workhorse: "gpt-4.1", reviewer: "gpt-4o" },
+        defaults: { workhorse: "gpt-5.4-mini", reviewer: "gpt-5.4" },
         modelsDevId: "github-copilot",
         headers: {
           "X-GitHub-Api-Version": "2026-06-01",
@@ -233,7 +233,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         hint: "Kimi Code key from kimi.com/code/console.",
         // UNVERIFIED: exact plan model ids are not confirmed against the
         // models.dev kimi-code-plan-global entry here.
-        defaults: { workhorse: "kimi-k3", reviewer: "kimi-k2.5" },
+        defaults: { workhorse: "kimi-for-coding-highspeed", reviewer: "kimi-for-coding" },
         modelsDevId: "kimi-code-plan-global",
       },
       {
@@ -247,7 +247,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         keyUrl: "https://platform.moonshot.ai",
         hint: "API key from platform.moonshot.ai.",
         // UNVERIFIED: not checked against the models.dev moonshotai entry here.
-        defaults: { workhorse: "kimi-k2.5", reviewer: "kimi-k3" },
+        defaults: { workhorse: "kimi-k2.6", reviewer: "kimi-k3" },
         modelsDevId: "moonshotai",
       },
     ],
@@ -273,7 +273,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         hint: "Coding Plan key from Alibaba ModelStudio.",
         // UNVERIFIED: exact plan model ids are not confirmed against the
         // models.dev alibaba-coding-plan entry here.
-        defaults: { workhorse: "qwen3.8-flash", reviewer: "qwen3.8-max" },
+        defaults: { workhorse: "qwen3.6-flash", reviewer: "qwen3.7-max" },
         modelsDevId: "alibaba-coding-plan",
       },
       {
@@ -312,7 +312,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         hint: "Token Plan key from the MiniMax console.",
         // UNVERIFIED: exact plan model ids are not confirmed against the
         // models.dev minimax-coding-plan entry here.
-        defaults: { workhorse: "minimax-m3", reviewer: "minimax-m3" },
+        defaults: { workhorse: "MiniMax-M2.7-highspeed", reviewer: "MiniMax-M3" },
         modelsDevId: "minimax-coding-plan",
       },
       {
@@ -326,7 +326,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         keyUrl: "https://platform.minimax.io",
         hint: "API key from the MiniMax console.",
         // UNVERIFIED: not checked against the models.dev minimax entry here.
-        defaults: { workhorse: "minimax-m2", reviewer: "minimax-m3" },
+        defaults: { workhorse: "MiniMax-M2.7-highspeed", reviewer: "MiniMax-M3" },
         modelsDevId: "minimax",
       },
     ],
@@ -353,7 +353,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         hint: "Token Plan key from the MiMo console.",
         // UNVERIFIED: exact plan model ids are not confirmed against the
         // models.dev xiaomi-token-plan-sgp entry here.
-        defaults: { workhorse: "mimo-v2.5-flash", reviewer: "mimo-v2.5-pro" },
+        defaults: { workhorse: "mimo-v2.5", reviewer: "mimo-v2.5-pro" },
         modelsDevId: "xiaomi-token-plan-sgp",
       },
       {
@@ -417,7 +417,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         keyUrl: "https://console.anthropic.com/settings/keys",
         hint: "API key from console.anthropic.com.",
         // UNVERIFIED: not checked against the models.dev anthropic entry here.
-        defaults: { workhorse: "claude-sonnet-4-5", reviewer: "claude-opus-4-1" },
+        defaults: { workhorse: "claude-sonnet-4-5", reviewer: "claude-opus-4-8" },
         modelsDevId: "anthropic",
       },
     ],
@@ -460,7 +460,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         keyUrl: "https://console.x.ai",
         hint: "API key from console.x.ai.",
         // UNVERIFIED: not checked against the models.dev xai entry here.
-        defaults: { workhorse: "grok-code-fast-1", reviewer: "grok-4-1" },
+        defaults: { workhorse: "grok-4.6", reviewer: "grok-4.5" },
         modelsDevId: "xai",
       },
     ],
@@ -483,7 +483,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         listsModels: true,
         keyUrl: "https://platform.deepseek.com/api_keys",
         hint: "API key from platform.deepseek.com.",
-        defaults: { workhorse: "deepseek-chat", reviewer: "deepseek-reasoner" },
+        defaults: { workhorse: "deepseek-v4-flash", reviewer: "deepseek-v4-pro" },
         modelsDevId: "deepseek",
       },
     ],
@@ -582,7 +582,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         hint: "API key from opencode.ai/auth.",
         // UNVERIFIED: Zen model id shape is not confirmed. The live list
         // overrides these on first refresh.
-        defaults: { workhorse: "opencode/glm-5.3-flash", reviewer: "opencode/glm-5.3" },
+        defaults: { workhorse: "glm-5.3-flash", reviewer: "glm-5.3" },
         modelsDevId: "opencode",
       },
     ],
@@ -648,7 +648,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         fields: [{ id: "baseUrl", label: "Server URL", placeholder: "http://localhost:1234/v1" }],
         // UNVERIFIED: local ids depend on what is loaded. The live list
         // overrides these when the server runs.
-        defaults: { workhorse: "qwen3-8b", reviewer: "qwen3-30b-a3b" },
+        defaults: { workhorse: "openai/gpt-oss-20b", reviewer: "qwen/qwen3-coder-30b" },
         modelsDevId: "lmstudio",
       },
     ],

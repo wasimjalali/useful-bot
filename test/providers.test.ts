@@ -238,7 +238,7 @@ test("modelsFor falls back to catalogue defaults per connection", () => {
   // Bare provider ids still resolve to their old static rows.
   assert.deepEqual(modelsFor("openai").map((item) => item.id), ["gpt-4.1-mini", "gpt-4.1"]);
   const deepseek = modelsFor("deepseek:api");
-  assert.deepEqual(deepseek.map((item) => item.id), ["deepseek-chat", "deepseek-reasoner"]);
+  assert.deepEqual(deepseek.map((item) => item.id), ["deepseek-v4-flash", "deepseek-v4-pro"]);
   assert.equal(modelsFor("nope:api").length, 0);
 });
 
