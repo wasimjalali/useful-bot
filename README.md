@@ -39,6 +39,8 @@ open "macos/dist/Useful Bot.app"
 
 Web is `http://127.0.0.1:4320`. Chat needs eve as well (`service.mjs eve`) after the Go key is in Keychain. Sleeping the Mac is downtime.
 
+Model providers are connected from the app: account popover, Providers. The list comes from the server catalogue in `shared/provider-catalog.ts`, one row per provider and mode. Subscription rows sign in with a device code (ChatGPT through Codex, GitHub Copilot) or take a coding-plan key (OpenCode Go, GLM Coding Plan, Kimi Code, Qwen Coding Plan, MiniMax and MiMo token plans, Command Code). API rows take a key, Local rows take a server URL. Claude and Google subscriptions are not offered because their terms forbid third-party use; both work with an API key. Connections live in `~/.useful-bot/providers.json`, the router picks the protocol per connection (OpenAI chat completions, Responses, Anthropic Messages), and Task models sets the chat model and the reviewer model with their reasoning level.
+
 ## Chat layout
 
 What you say is a right-aligned bubble; what a bot says is a left-aligned white bubble, set apart from the white chat by its border and a soft shadow. Each message a bot posts in a turn is its own bubble, stacked close under the last, and the step row under them says what the bot is doing until the turn ends. Rows carry no clock: a centered rule marks Today, Yesterday or the date, and nothing else.
