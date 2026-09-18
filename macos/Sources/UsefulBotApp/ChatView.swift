@@ -346,6 +346,7 @@ struct ChatView: View {
         // unequal, and rebuilt its markdown, for a reply in another one.
         let rowBot = bot.transcriptFace
         let rowRoster = roster.map(\.transcriptFace)
+        let streaming = model.pending || model.backgroundWorking
         // Built once per transcript change in the model, not once per body.
         // This view re-evaluates on every keystroke in the composer, and
         // regrouping several hundred rows there is what made typing stutter.
@@ -379,7 +380,13 @@ struct ChatView: View {
                                     bot: rowBot,
                                     bots: rowRoster,
                                     recipients: recipients,
-                                    maxBubbleWidth: columnWidth * 0.85
+                                    maxBubbleWidth: columnWidth * 0.85,
+                                    // The reply still being written parses
+                                    // into one replaceable slot. Part of the
+                                    // row's equality, so the turn finishing
+                                    // moves its final text into the shared
+                                    // cache even when no delta follows.
+                                    streaming: streaming && model.latestReplyRunIds.contains(row.id)
                                 )
                                 .equatable()
                                 // One turn can post several bubbles; they
@@ -673,6 +680,9 @@ struct TranscriptRowView: View, Equatable {
     var bots: [ShellBot] = []
     var recipients: [String] = []
     var maxBubbleWidth: CGFloat = 612
+    /// The bubble of a turn still running: its markdown is parsed into a
+    /// transient slot instead of the shared cache, one entry per delta.
+    var streaming = false
 
     var body: some View {
         switch row.kind {
@@ -784,7 +794,7 @@ struct TranscriptRowView: View, Equatable {
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                ChatMarkdownView(text: row.text, expandsWidth: false)
+                ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(Theme.C.bubbleBot)

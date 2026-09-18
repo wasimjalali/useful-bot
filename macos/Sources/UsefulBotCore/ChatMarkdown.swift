@@ -307,23 +307,117 @@ public enum ChatMarkdownCache {
     private static let blockCache = Cache<[MarkdownBlock]>(capacity: capacity)
     private static let inlineCache = Cache<[InlineSpan]>(capacity: capacity)
 
-    public static func blocks(from source: String) -> [MarkdownBlock] {
-        blockCache.value(for: source, build: ChatMarkdownParser.blocks(from:))
+    /// The parse of a reply that is still growing. Every delta is a new
+    /// text, and each one used to take a slot in the caches above: a long
+    /// answer pushed the whole transcript's stable rows out behind its own
+    /// prefixes. A streaming row keeps one slot per row instead, replaced on
+    /// each delta. Its inline spans are kept for the current text and the
+    /// one before it, so a paragraph that did not change is not re-parsed
+    /// while the paragraph after it grows.
+    private final class Transient: @unchecked Sendable {
+        struct Entry {
+            var source: String
+            var blocks: [MarkdownBlock]
+            var inline: [String: [InlineSpan]] = [:]
+            var previousInline: [String: [InlineSpan]] = [:]
+        }
+
+        private let lock = NSLock()
+        private let capacity: Int
+        private var entries: [String: Entry] = [:]
+        private var order: [String] = []
+
+        init(capacity: Int) {
+            self.capacity = capacity
+        }
+
+        func blocks(for key: String, source: String) -> [MarkdownBlock] {
+            lock.lock()
+            if let entry = entries[key], entry.source == source {
+                lock.unlock()
+                return entry.blocks
+            }
+            lock.unlock()
+            let built = ChatMarkdownParser.blocks(from: source)
+            lock.lock()
+            defer { lock.unlock() }
+            if var entry = entries[key] {
+                entry.source = source
+                entry.blocks = built
+                entry.previousInline = entry.inline
+                entry.inline = [:]
+                entries[key] = entry
+            } else {
+                entries[key] = Entry(source: source, blocks: built)
+                order.append(key)
+                while order.count > capacity {
+                    entries[order.removeFirst()] = nil
+                }
+            }
+            return built
+        }
+
+        func inline(for key: String, source: String) -> [InlineSpan] {
+            lock.lock()
+            if let hit = entries[key]?.inline[source] {
+                lock.unlock()
+                return hit
+            }
+            if let carried = entries[key]?.previousInline[source] {
+                entries[key]?.inline[source] = carried
+                lock.unlock()
+                return carried
+            }
+            lock.unlock()
+            let built = ChatInline.parse(source)
+            lock.lock()
+            defer { lock.unlock() }
+            // A row that was never given blocks under this key has no entry
+            // to hold the spans; the parse is simply returned.
+            entries[key]?.inline[source] = built
+            return built
+        }
+
+        func reset() {
+            lock.lock()
+            defer { lock.unlock() }
+            entries.removeAll()
+            order.removeAll()
+        }
+
+        func count() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return order.count
+        }
+    }
+
+    /// A few replies can stream at once (a group, a handoff), never many.
+    private static let transient = Transient(capacity: 8)
+
+    /// `streamingKey` names a row whose text is still growing: its parse
+    /// lives in the transient slot for that key, not in the shared cache.
+    public static func blocks(from source: String, streamingKey: String? = nil) -> [MarkdownBlock] {
+        if let streamingKey { return transient.blocks(for: streamingKey, source: source) }
+        return blockCache.value(for: source, build: ChatMarkdownParser.blocks(from:))
     }
 
     /// The inline spans from `shared/chat-markdown.ts`. The renderer turns
     /// these into styled `AttributedString` runs; parsing must match the web
     /// exactly, so Apple's own markdown parser is not used (it italicizes
     /// `_snake_case_` and accepts emphasis forms the web never draws).
-    public static func inline(from source: String) -> [InlineSpan] {
-        inlineCache.value(for: source, build: ChatInline.parse)
+    public static func inline(from source: String, streamingKey: String? = nil) -> [InlineSpan] {
+        if let streamingKey { return transient.inline(for: streamingKey, source: source) }
+        return inlineCache.value(for: source, build: ChatInline.parse)
     }
 
     /// Test hooks.
     public static func reset() {
         blockCache.reset()
         inlineCache.reset()
+        transient.reset()
     }
 
     public static func entryCount() -> Int { blockCache.count() + inlineCache.count() }
+    public static func streamingRowCount() -> Int { transient.count() }
 }

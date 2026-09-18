@@ -11,9 +11,12 @@ struct ChatMarkdownView: View, Equatable {
     /// Chat bubbles hug their content up to a cap; full-width surfaces such as
     /// proposal cards keep the expand-to-fill behavior.
     var expandsWidth = true
+    /// Set while the text is still growing: the parse then lives in one slot
+    /// for this key rather than filling the shared cache with every prefix.
+    var streamingKey: String?
 
     var body: some View {
-        let blocks = ChatMarkdownCache.blocks(from: text)
+        let blocks = ChatMarkdownCache.blocks(from: text, streamingKey: streamingKey)
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
@@ -120,7 +123,7 @@ struct ChatMarkdownView: View, Equatable {
     /// other emphasis form renders.
     private func inline(_ source: String) -> AttributedString {
         var attributed = AttributedString()
-        for span in ChatMarkdownCache.inline(from: source) {
+        for span in ChatMarkdownCache.inline(from: source, streamingKey: streamingKey) {
             switch span.kind {
             case .text:
                 attributed.append(AttributedString(span.text))
