@@ -196,6 +196,119 @@ export function outsideFolderRisk(command: string, root: string): string | null 
   return null;
 }
 
+/** Removers whose targets say how much a line deletes. */
+const REMOVERS = new Set(["rm", "rimraf", "trash", "srm", "shred"]);
+/** Escalators peeled the way wrappers are, so `sudo rm -rf /` still sees `rm`. */
+const ESCALATORS = new Set(["sudo", "doas"]);
+
+/**
+ * What Full access still stops for: a wipe. Full access runs every other
+ * line without a card, wherever it reaches, so this is not a safety net for
+ * the everyday delete. It catches the line that empties a whole area of the
+ * Mac at once: a remover aimed at the disk, a top-level folder, a volume,
+ * a home or a folder directly under one (Desktop, Documents...), a `find
+ * -delete` over the same, and disk formatting. `root` resolves relative
+ * targets; `home` is the owner's home, which is also the root when no
+ * folder is attached.
+ */
+export function wipeRisk(command: string, root: string, home: string = homedir()): string | null {
+  for (const match of command.matchAll(/\$\(([^()]*)\)|`([^`]*)`/g)) {
+    const inner = (match[1] ?? match[2] ?? "").trim();
+    if (!inner) continue;
+    const reason = wipeRisk(inner, root, home);
+    if (reason) return reason;
+  }
+  for (const segment of split(tokenize(command))) {
+    const reason = wipeReason(segment.tokens, root, home);
+    if (reason) return reason;
+  }
+  return null;
+}
+
+function wipeReason(tokens: Token[], root: string, home: string): string | null {
+  // Only the leading assignments go: `of=/dev/disk3` after `dd` is an
+  // argument, not a variable.
+  let args = tokens.slice(tokens.findIndex((token) => !isAssignment(token)));
+  if (args.length === 0 || isAssignment(args[0])) return null;
+  while (args.length > 0 && (WRAPPERS.has(basename(args[0].text)) || ESCALATORS.has(basename(args[0].text)))) {
+    const valued = WRAPPER_VALUED[basename(args[0].text)] ?? new Set<string>();
+    let i = 1;
+    while (i < args.length && (isAssignment(args[i]) || args[i].text.startsWith("-") || /^\d+[smhd]?$/.test(args[i].text))) {
+      i += valued.has(args[i].text) ? 2 : 1;
+    }
+    args = args.slice(i);
+  }
+  const head = args[0];
+  if (!head) return null;
+  const name = basename(head.text);
+  const rest = args.slice(1);
+  if (REMOVERS.has(name)) {
+    for (const token of rest) {
+      if (token.text.startsWith("-") && !token.quoted) continue;
+      const broad = broadPath(token.text, root, home);
+      if (broad) return `wipes ${broad} (${name})`;
+    }
+    return null;
+  }
+  if (name === "find") {
+    const flags = rest.map((token) => token.text);
+    const deletes = flags.includes("-delete")
+      || flags.some((flag, at) => (flag === "-exec" || flag === "-execdir" || flag === "-ok" || flag === "-okdir") && REMOVERS.has(basename(flags[at + 1] ?? "")));
+    if (!deletes) return null;
+    // The starting points come before the first expression flag; none
+    // means the current directory.
+    const firstFlag = rest.findIndex((token) => token.text.startsWith("-") && !token.quoted);
+    const starts = rest.slice(0, firstFlag === -1 ? rest.length : firstFlag).map((token) => token.text);
+    for (const start of starts.length > 0 ? starts : ["."]) {
+      const broad = broadPath(start, root, home);
+      if (broad) return `wipes ${broad} (find -delete)`;
+    }
+    return null;
+  }
+  if (/^(mkfs|newfs)([._]|$)/.test(name)) return `formats a disk (${name})`;
+  if (name === "diskutil" && rest.some((token) => /^(erase|reformat|partition|zero|random|secureErase|deleteContainer|deleteVolume)/i.test(token.text))) {
+    return "erases a disk (diskutil)";
+  }
+  if (name === "dd" && rest.some((token) => /^of=\/dev\//.test(token.text))) return "writes raw data to a disk (dd)";
+  return null;
+}
+
+/**
+ * What a remover target covers when it is a whole area of the Mac, or null
+ * when it is something smaller. A trailing `/`, `/*` or `/**` names the
+ * same area as the folder itself; `*` and `.` name the current root.
+ */
+function broadPath(text: string, root: string, home: string): string | null {
+  let target = expandHome(text, home);
+  // A target read from a variable is unknown; Full access runs it.
+  if (/[$`]/.test(target)) return null;
+  if (target === "*") target = ".";
+  target = target.replace(/(\/\*{1,2}|\/\.)+\/?$/, "").replace(/\/+$/, "") || (text.startsWith("/") ? "/" : ".");
+  const abs = resolve(root, target);
+  const parts = abs.split("/").filter(Boolean);
+  if (parts.length === 0) return "the whole disk (/)";
+  if (parts.length === 1) return `a top-level folder (${abs})`;
+  if (parts[0] === "Volumes" && parts.length === 2) return `a whole volume (${abs})`;
+  if (parts[0] === "Users" && parts.length === 2) return `a whole home folder (${abs})`;
+  if (parts[0] === "Users" && parts.length === 3) return `a top-level home folder (${abs})`;
+  const underHome = relative(resolve(home), abs);
+  if (underHome === "") return `a whole home folder (${abs})`;
+  if (!underHome.startsWith("..") && !underHome.includes("/")) return `a top-level home folder (${abs})`;
+  return null;
+}
+
+/**
+ * `~/x` and `$HOME/x` are the home, spelled the way the shell expands them;
+ * `~user/x` is another home altogether. Quoted or not: double quotes still
+ * expand `$HOME`, and the tokenizer does not say which quotes it saw.
+ */
+function expandHome(text: string, home: string): string {
+  if (text === "~" || text.startsWith("~/")) return home + text.slice(1);
+  if (/^\$\{?HOME\}?(\/|$)/.test(text)) return home + text.replace(/^\$\{?HOME\}?/, "");
+  if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) return `/${text}`;
+  return text;
+}
+
 type Segment = { tokens: Token[]; pipedInto: boolean };
 
 const isAssignment = (token: Token) => !token.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text);
@@ -756,13 +869,7 @@ function outsideFolder(tokens: Token[], root: string): string | null {
     // `>/tmp/x` and `2>/var/log/y` carry the path behind the redirection.
     // `~/x` and `$HOME/x` are the home, spelled the way the shell expands
     // them, so a project folder does not mistake them for a relative path.
-    let text = token.text.replace(/^[0-9]*[<>|&]+/, "");
-    // Quoted or not: double quotes still expand `$HOME`, and the tokenizer
-    // does not say which quotes it saw, so both spellings count as the home.
-    // `~user/x` is another home altogether, outside every folder.
-    if (text === "~" || text.startsWith("~/")) text = home + text.slice(1);
-    else if (/^\$\{?HOME\}?(\/|$)/.test(text)) text = home + text.replace(/^\$\{?HOME\}?/, "");
-    else if (/^~[A-Za-z0-9_.-]+(\/|$)/.test(text)) text = `/${text}`;
+    const text = expandHome(token.text.replace(/^[0-9]*[<>|&]+/, ""), home);
     if (!text.startsWith("/")) continue;
     if (text === root || text.startsWith(inside)) continue;
     if (DEVICE_PATHS.some((device) => text === device || text.startsWith(device.endsWith("/") ? device : `${device}/`))) continue;

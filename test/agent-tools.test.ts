@@ -910,35 +910,44 @@ test("what runs without a card cannot write outside the folder", { skip: process
   }
 });
 
-test("full access runs commands without a card, asks before a reach outside, and the tripwire still holds", async () => {
+test("full access runs deletes and reaches outside without a card, asks before a wipe, and the tripwire still holds", { skip: process.platform !== "darwin" }, async () => {
   const box = grantFixture("full_access");
+  const outside = join(dirname(realpathSync(tmpdir())), `ub-full-${process.pid}-${Date.now()}`);
   try {
     const result = await run<{ stdout: string }>(bash, { command: "rm note.txt && pwd" }, { session: { id: "sess-1" } });
     assert.equal(result.stdout.includes(basename(box.project)), true);
     assert.equal(box.approvals.listPending().length, 0);
 
-    // Looking outside the folder is a read and runs; changing something
-    // outside it waits for the owner.
-    const look = await run<{ stdout: string }>(bash, { command: "ls /Users" }, { session: { id: "sess-1" } });
-    assert.equal(typeof look.stdout, "string");
-    assert.equal(box.approvals.listPending().length, 0, "a read outside the folder needs no card");
+    // A write outside the folder runs at once, and lands: the sandbox no
+    // longer confines Full access to the folder.
+    await run<{ stdout: string }>(bash, { command: `echo out > "${outside}"` }, { session: { id: "sess-1" } });
+    assert.equal(box.approvals.listPending().length, 0, "a write outside the folder needs no card in Full access");
+    assert.equal(existsSync(outside), true);
+
+    // `..` is not a tripwire here: there is no boundary to traverse.
+    const up = await run<{ stdout: string }>(bash, { command: "ls .. | head -1" }, { session: { id: "sess-1" } });
+    assert.equal(typeof up.stdout, "string");
+    assert.equal(box.approvals.listPending().length, 0);
+
+    // A wipe waits for the owner.
     let settled = false;
-    const outside = run<{ stdout: string }>(bash, { command: "touch /Users/Shared/ub-test-file" }, { session: { id: "sess-1" } })
+    const wipe = run<{ stdout: string }>(bash, { command: "rm -rf ~/Documents" }, { session: { id: "sess-1" } })
       .then((value) => {
         settled = true;
         return value;
       });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(settled, false, "a write outside the folder must wait for the owner");
+    assert.equal(settled, false, "a wipe must wait for the owner");
     const cards = box.approvals.listPending();
     assert.equal(cards.length, 1);
-    assert.equal(cards[0].preview.includes("outside the folder"), true);
+    assert.equal(cards[0].preview.includes("wipes a top-level home folder"), true, cards[0].preview);
     box.approvals.decide(cards[0].id, "deny", cards[0].actionSha256);
-    await assert.rejects(outside);
+    await assert.rejects(wipe);
 
     const blocked = await run<{ status: string }>(bash, { command: "cat ~/.ssh/id_rsa" }, { session: { id: "sess-1" } });
     assert.equal(blocked.status, "blocked");
   } finally {
+    rmSync(outside, { force: true });
     box.restore();
   }
 });

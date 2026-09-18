@@ -56,7 +56,7 @@ test("gate follows the permission table", () => {
   assert.equal(connectorGate("write", "full_access"), "run");
   assert.equal(connectorGate("write", "read_only"), "refuse");
   assert.equal(connectorGate("destructive", "auto"), "ask");
-  assert.equal(connectorGate("destructive", "full_access"), "ask");
+  assert.equal(connectorGate("destructive", "full_access"), "run");
   assert.equal(connectorGate("destructive", "read_only"), "refuse");
 });
 
@@ -310,7 +310,7 @@ test("a denied card runs nothing", async () => {
   }
 });
 
-test("full access runs a write without a card but still cards a delete", async () => {
+test("full access runs a write and a delete without a card", async () => {
   const box = sandbox(["gmail"]);
   try {
     grant(box.dir, "full_access");
@@ -321,17 +321,13 @@ test("full access runs a write without a card but still cards a delete", async (
     );
     assert.equal(out.status, "ok");
     assert.equal(box.executed.length, 1);
-    const pending = run<{ status: string }>(
+    const deleted = await run<{ status: string }>(
       connectorExecute,
       { tool: "GMAIL_DELETE_MESSAGE", arguments: { id: "m1" } },
       { session: { id: "sess-conn" } },
     );
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const card = [...box.approvals.records.values()].find((rec) => rec.status === "pending");
-    assert.ok(card);
-    assert.equal(card.preview.startsWith("gmail · GMAIL_DELETE_MESSAGE (destructive)"), true);
-    box.approvals.decide(card.id, "approve", card.actionSha256);
-    assert.equal((await pending).status, "ok");
+    assert.equal(deleted.status, "ok");
+    assert.equal([...box.approvals.records.values()].some((rec) => rec.status === "pending"), false);
     assert.equal(box.executed.length, 2);
   } finally {
     box.restore();

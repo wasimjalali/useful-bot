@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -72,6 +72,37 @@ test("a confined line writes inside the folder and nowhere else", { skip: !darwi
     writeFileSync(join(root, "gone.txt"), "x", "utf8");
     assert.equal((await confined(root, "ls /Users > /dev/null && rm gone.txt")).ok, true);
     assert.equal(existsSync(join(root, "gone.txt")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { force: true });
+  }
+});
+
+test("the Full access profile writes anywhere but into credential files and the app's stores", () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-sb-"));
+  const full = sandboxProfile(root, "computer", true);
+  assert.equal(full.includes("(deny file-write*)"), false);
+  assert.equal(full.includes("(allow file-write* (subpath"), false);
+  assert.ok(full.startsWith("(version 1)\n(allow default)"));
+  assert.ok(full.includes('(deny file-write* (regex #"/\\.ssh($|[/.])"))'));
+  assert.ok(full.includes('(deny file-write* (regex #"/\\.useful-bot($|[/.])"))'));
+  assert.ok(full.includes('(deny file-write* (regex #"/\\.zshrc($|[/.])"))'));
+  assert.ok(full.includes('(deny file-read* (regex #"/\\.ssh($|[/.])"))'));
+  const args = confinedCommand(root, "true", "computer", true);
+  assert.equal(args[2], full);
+});
+
+test("a Full access line writes outside the folder and still not into a credential file", { skip: !darwin || !sandboxAvailable() }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "ub-sb-"));
+  const outside = join(dirname(realpathSync(tmpdir())), `ub-full-${process.pid}-${Date.now()}`);
+  try {
+    const args = confinedCommand(root, `echo out > "${outside}"`, "computer", true);
+    await execFileAsync(args[0], args.slice(1), { cwd: root, env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root } });
+    assert.equal(existsSync(outside), true);
+    mkdirSync(join(root, ".ssh"), { recursive: true });
+    const key = confinedCommand(root, "echo x > .ssh/id_rsa", "computer", true);
+    await assert.rejects(() => execFileAsync(key[0], key.slice(1), { cwd: root, env: { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root } }), /not permitted/i);
+    assert.equal(existsSync(join(root, ".ssh", "id_rsa")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { force: true });

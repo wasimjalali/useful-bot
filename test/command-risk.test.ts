@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandRisk, outsideFolderRisk, readOnlyRisk } from "../agent/lib/command-risk.ts";
+import { commandRisk, outsideFolderRisk, readOnlyRisk, wipeRisk } from "../agent/lib/command-risk.ts";
 
 const root = "/Users/owner/project";
 
@@ -510,4 +510,88 @@ test("a tilde or $HOME path is outside a project folder", () => {
   assert.notEqual(outsideFolderRisk("cat ${HOME}/x", root), null);
   assert.notEqual(outsideFolderRisk("cat ~root/x", root), null);
   assert.equal(outsideFolderRisk("ls src", root), null);
+});
+
+test("Full access stops only for a wipe: a remover aimed at a whole area of the Mac", () => {
+  const home = "/Users/owner";
+  for (const command of [
+    "rm -rf /",
+    "rm -rf /*",
+    "sudo rm -rf /Users",
+    "rm -rf /Applications/",
+    "rm -rf /Volumes/Backup",
+    "rm -rf ~",
+    "rm -rf ~/",
+    "rm -rf $HOME",
+    "rm -rf \"$HOME\"/Documents",
+    "rm -rf ~/Documents",
+    "rm -rf ~/Desktop/*",
+    "rm -rf ~/Desktop/**",
+    "rm ~/Downloads/*",
+    "trash ~/Pictures",
+    "rimraf /Users/owner/Movies",
+    "srm -rf /Users/other",
+    "env rm -rf ~/Music",
+    "timeout 5 rm -rf ~/Music",
+    "cd ~ && rm -rf Documents",
+    "echo $(rm -rf ~/Documents)",
+    "find ~ -name '*.log' -delete",
+    "find /Users/owner/Documents -type f -exec rm {} \\;",
+    "find ~/Desktop -delete",
+    "mkfs.apfs /dev/disk3",
+    "newfs_hfs /dev/disk3",
+    "diskutil eraseDisk APFS Data disk3",
+    "diskutil apfs deleteVolume disk3s2",
+    "dd if=/dev/zero of=/dev/disk3",
+  ]) {
+    const risk = wipeRisk(command, home, home);
+    assert.ok(risk !== null && /wipes|formats|erases|raw data/.test(risk), `${command} -> ${risk}`);
+  }
+  // Under the home with no folder attached, a bare name is a top-level
+  // home folder; from inside a project it is a subfolder of the project.
+  assert.notEqual(wipeRisk("rm -rf Documents", home, home), null);
+  assert.notEqual(wipeRisk("rm -rf .", home, home), null);
+  assert.notEqual(wipeRisk("rm -rf *", home, home), null);
+  assert.equal(wipeRisk("rm -rf Documents", root, home), null);
+  // The attached folder sits directly under the home, so emptying it whole
+  // is a wipe too; a project one level deeper is not.
+  assert.notEqual(wipeRisk("rm -rf .", root, home), null);
+  assert.notEqual(wipeRisk("rm -rf *", root, home), null);
+  const deeper = "/Users/owner/Desktop/project";
+  assert.equal(wipeRisk("rm -rf .", deeper, home), null);
+  assert.equal(wipeRisk("rm -rf *", deeper, home), null);
+  assert.equal(wipeRisk("find . -name '*.log' -delete", deeper, home), null);
+});
+
+test("Full access runs the everyday delete, the reach outside and the destructive git line without a card", () => {
+  const home = "/Users/owner";
+  for (const command of [
+    "rm -rf build",
+    "rm -rf node_modules dist",
+    "rm note.txt",
+    "rm -rf ~/Desktop/old-report.pdf",
+    "rm -rf ~/Documents/2024/drafts",
+    "rm -rf /Users/owner/Desktop/project",
+    "rm -rf /Users/owner/Desktop/project/",
+    "rm -rf /tmp/ub-scratch",
+    "rm -rf /Volumes/Backup/old",
+    "trash ~/Desktop/*.png",
+    "rm -rf $DIR",
+    "mv report.pdf /tmp/",
+    "cp a.txt /Users/owner/Desktop/",
+    "git push --force",
+    "sudo killall Finder",
+    "find src -name '*.log' -delete",
+    "find ~/Desktop/project -name '*.log' -delete",
+    "find ~ -name '*.log'",
+    "diskutil list",
+    "dd if=/dev/zero of=./blank.img bs=1m count=1",
+    "npm i -g typescript",
+    "echo a..b",
+  ]) {
+    assert.equal(wipeRisk(command, root, home), null, command);
+  }
+  // A folder directly under the home is a wipe wherever the bot stands.
+  assert.notEqual(wipeRisk("rm -rf /Users/owner/project", home, home), null);
+  assert.notEqual(wipeRisk("rm -rf /Users/owner/project", root, home), null);
 });

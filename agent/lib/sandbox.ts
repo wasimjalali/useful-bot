@@ -57,9 +57,11 @@ export type SandboxScope = "folder" | "computer";
  * line judged read-only runs with every write refused except the temp and
  * cache dirs, so a misjudged line still cannot change a file. `scope` says
  * whether that root is a project folder the owner handed over or their
- * home, which decides how strict the read denies are.
+ * home, which decides how strict the read denies are. `unbounded` is Full
+ * access: writes land anywhere on the Mac, and only the credential files,
+ * the app's own stores and the shell startup files stay refused.
  */
-export function sandboxProfile(root: string | null, scope: SandboxScope = "computer"): string {
+export function sandboxProfile(root: string | null, scope: SandboxScope = "computer", unbounded = false): string {
   const real = root === null ? null : realpathSync(root);
   // Tools that ignore TMPDIR fall back to the darwin per-user dirs; those
   // sit beside each other under one parent (.../T for temp, .../C for cache).
@@ -77,17 +79,19 @@ export function sandboxProfile(root: string | null, scope: SandboxScope = "compu
   return [
     "(version 1)",
     "(allow default)",
-    "(deny file-write*)",
-    ...(real === null ? [] : [`(allow file-write* (subpath ${sbplString(real)}))`]),
-    `(allow file-write* (subpath ${sbplString(temp)}))`,
-    `(allow file-write* (subpath ${sbplString(cache)}))`,
-    '(allow file-write* (subpath "/dev"))',
+    ...(unbounded ? [] : [
+      "(deny file-write*)",
+      ...(real === null ? [] : [`(allow file-write* (subpath ${sbplString(real)}))`]),
+      `(allow file-write* (subpath ${sbplString(temp)}))`,
+      `(allow file-write* (subpath ${sbplString(cache)}))`,
+      '(allow file-write* (subpath "/dev"))',
+    ]),
     ...protectedRules,
     ...readRules,
   ].join("\n");
 }
 
 /** The argv that runs `command` confined to `root` (null: no writes at all). */
-export function confinedCommand(root: string | null, command: string, scope: SandboxScope = "computer"): string[] {
-  return [SANDBOX_EXEC, "-p", sandboxProfile(root, scope), "/bin/sh", "-c", command];
+export function confinedCommand(root: string | null, command: string, scope: SandboxScope = "computer", unbounded = false): string[] {
+  return [SANDBOX_EXEC, "-p", sandboxProfile(root, scope, unbounded), "/bin/sh", "-c", command];
 }
