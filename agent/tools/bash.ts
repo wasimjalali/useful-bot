@@ -57,8 +57,18 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     // One grant read for root AND permission: two reads could pair a root
-    // from before a permission change with the permission after it.
-    const { root, permission, scope } = effectiveRoot(ctx?.session?.id);
+    // from before a permission change with the permission after it. A
+    // grant whose folder is gone still answers a tripwired line with the
+    // block, not a workspace error.
+    let workspace;
+    try {
+      workspace = effectiveRoot(ctx?.session?.id);
+    } catch (error) {
+      const blocked = blockedReason(input.command, true);
+      if (blocked) return { status: "blocked", error: blocked };
+      throw error;
+    }
+    const { root, permission, scope } = workspace;
     const blocked = blockedReason(input.command, permission !== "full_access");
     if (blocked) {
       return { status: "blocked", error: blocked };

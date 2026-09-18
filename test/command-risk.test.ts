@@ -548,6 +548,20 @@ test("Full access stops only for a wipe: a remover aimed at a whole area of the 
     "find ~/Documents -name '*.bak' | xargs rm",
     "echo ~/Music | xargs -n1 rm -rf",
     "echo $(rm -rf ~/Documents)",
+    "eval 'rm -rf ~'",
+    "eval rm -rf ~/Documents",
+    "env -S 'rm -rf ~/Documents'",
+    "env --split-string='rm -rf ~/Documents'",
+    "npx rimraf ~",
+    "bunx rimraf ~/Documents",
+    "python3 -c \"import os; os.system('rm -rf ~/Documents')\"",
+    "node -e \"require('child_process').execSync('rm -rf ~/Documents')\"",
+    "osascript -e 'do shell script \"rm -rf ~/Documents\"'",
+    "rsync -a --delete empty/ ~/Documents/",
+    "rsync -av --delete-after src/ /Users/owner/Pictures",
+    "find -H / -delete",
+    "find -L ~ -name '*.bak' -delete",
+    "find -f ~ -name '*.bak' -delete",
     "find ~ -name '*.log' -delete",
     "find /Users/owner/Documents -type f -exec rm {} \\;",
     "find ~/Desktop -delete",
@@ -606,6 +620,13 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     "sh -c 'rm -rf build'",
     "find src -name '*.bak' | xargs rm",
     "ls | xargs rm -rf",
+    "eval 'rm -rf build'",
+    "npx rimraf dist",
+    "python3 -c \"print('hi')\"",
+    "node -e \"console.log(1)\"",
+    "rsync -a --delete src/ /Users/owner/Desktop/backup/project/",
+    "rsync -a --delete src/ host:/Users/owner/Documents/",
+    "find -H src -delete",
   ]) {
     assert.equal(wipeRisk(command, root, home), null, command);
   }
@@ -622,6 +643,21 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     assert.equal(wipeRisk("rm -rf notes.txt", realHome, realHome), null);
     assert.notEqual(wipeRisk("rm -rf ~/Documents", realHome, realHome), null);
     assert.notEqual(wipeRisk("rm -rf ~/Missing", realHome, realHome), null);
+    // A shell script run by name is judged by its lines; one that only
+    // tidies runs, one that wipes asks, and a chain that loops ends.
+    mkdirSync(join(realHome, "bin"));
+    writeFileSync(join(realHome, "bin", "tidy.sh"), "#!/bin/sh\n# tidy\nrm -rf ~/Desktop/project/build\n", "utf8");
+    writeFileSync(join(realHome, "bin", "wipe.sh"), "#!/bin/bash\nset -e\ncd ~/Documents && rm -rf .\n", "utf8");
+    writeFileSync(join(realHome, "bin", "loop.sh"), "#!/bin/sh\nbash ~/bin/loop.sh\n", "utf8");
+    writeFileSync(join(realHome, "bin", "tidy.py"), "import shutil\nshutil.rmtree('/Users/owner/Documents')\n", "utf8");
+    assert.equal(wipeRisk("bash bin/tidy.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("./bin/tidy.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("bash bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("sh ~/bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("./bin/wipe.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("bash bin/loop.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("python3 bin/tidy.py", realHome, realHome), null);
+    assert.equal(wipeRisk("bash bin/missing.sh", realHome, realHome), null);
   } finally {
     rmSync(realHome, { recursive: true, force: true });
   }

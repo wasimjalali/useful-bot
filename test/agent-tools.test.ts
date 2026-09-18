@@ -952,6 +952,19 @@ test("full access runs deletes and reaches outside without a card, asks before a
   }
 });
 
+test("a tripwired line is blocked even when the granted folder is gone", async () => {
+  const box = grantFixture("full_access");
+  try {
+    rmSync(box.project, { recursive: true, force: true });
+    const blocked = await run<{ status: string; error: string }>(bash, { command: "cat ~/.ssh/id_rsa" }, { session: { id: "sess-1" } });
+    assert.equal(blocked.status, "blocked");
+    assert.equal(blocked.error.includes(".ssh"), true);
+    await assert.rejects(() => run(bash, { command: "ls" }, { session: { id: "sess-1" } }), /workspace_root_missing/);
+  } finally {
+    box.restore();
+  }
+});
+
 test("list_dir refuses escapes and non-directories", async () => {
   const box = grantFixture("read_only");
   try {
