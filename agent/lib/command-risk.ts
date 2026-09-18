@@ -203,6 +203,23 @@ const FIND_NARROWING = new Set([
   "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex",
   "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-newer", "-newermt", "-size", "-empty",
 ]);
+/**
+ * Whether a find picks files rather than sweeps: a narrowing predicate
+ * with an argument that actually narrows. `-name '*'` and `-mtime +0`
+ * match everything and narrow nothing.
+ */
+function narrowsFind(flags: string[]): boolean {
+  return flags.some((flag, at) => {
+    if (!FIND_NARROWING.has(flag)) return false;
+    if (flag === "-empty") return true;
+    const arg = flags[at + 1];
+    if (arg === undefined) return false;
+    if (/^[*.?]*$/.test(arg) || arg === ".*" || arg === "*/*") return false;
+    if (/^-(mtime|mmin|atime|amin|ctime|cmin)$/.test(flag) && /^[+-]?0$/.test(arg)) return false;
+    if (flag === "-size" && /^[+-]?0[ckMGTP]?$/.test(arg)) return false;
+    return true;
+  });
+}
 /** Removers whose targets say how much a line deletes. */
 const REMOVERS = new Set(["rm", "rimraf", "trash", "srm", "shred"]);
 /** Escalators peeled the way wrappers are, so `sudo rm -rf /` still sees `rm`. */
@@ -379,7 +396,8 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     while (i < rest.length && rest[i].text.startsWith("-")) i += XARGS_VALUED.has(rest[i].text) ? 2 : 1;
     const inner = rest.slice(i);
     if (inner.length > 0 && REMOVERS.has(basename(inner[0].text))) {
-      if (pipeSource.some((token) => FIND_NARROWING.has(token.text))) return null;
+      const source = peelWrappers(pipeSource);
+      if (basename(source[0]?.text ?? "") === "find" && narrowsFind(source.slice(1).map((token) => token.text))) return null;
       for (const token of pipeSource) {
         if (token.text.startsWith("-") && !token.quoted) continue;
         const broad = broadPath(token.text, root, home);
@@ -396,7 +414,7 @@ function wipeReason(tokens: Token[], root: string, home: string, pipeSource: Tok
     if (!deletes) return null;
     // `find ~ -name '*.log' -delete` removes the matching files, not the
     // area: an everyday delete. Only an unfiltered sweep is a wipe.
-    if (flags.some((flag) => FIND_NARROWING.has(flag))) return null;
+    if (narrowsFind(flags)) return null;
     // The starting points come before the first expression flag, after
     // find's own leading options (`find -H / -delete`); none means the
     // current directory.
