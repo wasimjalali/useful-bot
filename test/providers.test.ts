@@ -258,6 +258,24 @@ test("modelsFor falls back to catalogue defaults per connection", () => {
   assert.equal(modelsFor("nope:api").length, 0);
 });
 
+test("composer groups list every connected connection, active first", () => {
+  let store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
+  store = setProviderKey(store, "deepseek", "api", "ds-key-12345678");
+  store = setActiveConnection(store, "deepseek:api");
+  const state = composerState(store, {});
+  assert.equal(state.models.length > 0, true);
+  assert.deepEqual(state.groups.map((group) => group.connectionId), ["deepseek:api", "openai:api"]);
+  const openai = state.groups.find((group) => group.connectionId === "openai:api");
+  assert.equal(openai?.label, "OpenAI");
+  assert.equal(openai?.icon, "openai");
+  assert.ok(openai && openai.models.length >= 2);
+  assert.ok(openai?.models.some((model) => model.id === "gpt-4.1-mini" && model.label));
+  // The flat list still mirrors the active connection for the web.
+  assert.deepEqual(state.models, state.groups[0]?.models);
+  // Nothing connected, so no groups either.
+  assert.deepEqual(composerState(emptyProviderStore(), {}).groups, []);
+});
+
 test("composer snaps effort to what the selected model supports", () => {
   const flash = snapComposer("opencode-go:plan", "OpenCode", "glm-5.3-flash", "max", "fast");
   assert.equal(flash.providerId, "opencode-go");

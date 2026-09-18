@@ -32,6 +32,13 @@ export function modelSeesImages(model: Pick<ModelOption, "inputs"> | null | unde
   return model.inputs.includes("image");
 }
 
+export type ComposerGroup = {
+  connectionId: string;
+  label: string;
+  icon: string;
+  models: Array<{ id: string; label: string }>;
+};
+
 export type ComposerPublic = {
   providerId: string;
   /** Connection the composer reads, e.g. "openai:api". Empty for legacy bare provider calls. */
@@ -45,6 +52,8 @@ export type ComposerPublic = {
   efforts: Array<{ id: EffortId; label: string }>;
   speeds: Array<{ id: SpeedId; label: string }>;
   models: Array<{ id: string; label: string }>;
+  /** One entry per connected connection, the active one first. The macOS model flyout groups by this. */
+  groups: ComposerGroup[];
 };
 
 const EFFORT_LABELS: Record<EffortId, string> = {
@@ -304,6 +313,7 @@ export function snapComposer(
   preferredEffort: EffortId | null | undefined,
   preferredSpeed: SpeedId | null | undefined,
   catalog?: ModelOption[],
+  groups: ComposerGroup[] = [],
 ): ComposerPublic {
   let providerId = id;
   let connectionId = "";
@@ -328,6 +338,7 @@ export function snapComposer(
       efforts: [],
       speeds: [],
       models: [],
+      groups,
     };
   }
   const effort = model.efforts.length === 0
@@ -346,6 +357,7 @@ export function snapComposer(
     efforts: model.efforts.map((item) => ({ id: item, label: effortLabel(item) })),
     speeds: model.speeds.map((item) => ({ id: item, label: speedLabel(item) })),
     models: list.map((item) => ({ id: item.id, label: item.label })),
+    groups,
   };
 }
 

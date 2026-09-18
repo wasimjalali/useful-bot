@@ -292,6 +292,26 @@ public struct ComposerState: Codable, Equatable, Sendable {
         public let label: String
     }
 
+    /// One connected connection's models, mirrored from `ComposerGroup`.
+    /// The server orders these with the active connection first.
+    public struct Group: Codable, Equatable, Sendable {
+        public let connectionId: String
+        public let label: String
+        public let icon: String
+        public var models: [Option]
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            connectionId = (try? c.decode(String.self, forKey: .connectionId)) ?? ""
+            label = (try? c.decode(String.self, forKey: .label)) ?? ""
+            icon = (try? c.decode(String.self, forKey: .icon)) ?? ""
+            models = (try? c.decode([Option].self, forKey: .models)) ?? []
+        }
+
+        enum CodingKeys: String, CodingKey { case connectionId, label, icon, models }
+    }
+
+    public var connectionId: String
     public var modelId: String
     public var modelLabel: String
     public var effort: String?
@@ -300,6 +320,7 @@ public struct ComposerState: Codable, Equatable, Sendable {
     public var efforts: [Option]
     public var speeds: [Option]
     public var models: [Option]
+    public var groups: [Group]
 
     /// The chip label: effort plus fast when either exists, else the model.
     public var chipLabel: String {
@@ -309,11 +330,12 @@ public struct ComposerState: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case modelId, modelLabel, effort, effortLabel, speed, efforts, speeds, models
+        case connectionId, modelId, modelLabel, effort, effortLabel, speed, efforts, speeds, models, groups
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        connectionId = (try? c.decode(String.self, forKey: .connectionId)) ?? ""
         modelId = (try? c.decode(String.self, forKey: .modelId)) ?? ""
         modelLabel = (try? c.decode(String.self, forKey: .modelLabel)) ?? ""
         effort = try? c.decodeIfPresent(String.self, forKey: .effort)
@@ -322,6 +344,7 @@ public struct ComposerState: Codable, Equatable, Sendable {
         efforts = (try? c.decode([Option].self, forKey: .efforts)) ?? []
         speeds = (try? c.decode([Option].self, forKey: .speeds)) ?? []
         models = (try? c.decode([Option].self, forKey: .models)) ?? []
+        groups = (try? c.decode([Group].self, forKey: .groups)) ?? []
     }
 }
 

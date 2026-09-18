@@ -18,6 +18,7 @@ import {
   isEffortId,
   isSpeedId,
   snapComposer,
+  type ComposerGroup,
   type ComposerPublic,
   type EffortId,
   type SpeedId,
@@ -846,8 +847,25 @@ export function legacyProviders(store: ProviderStore, env: NodeJS.ProcessEnv = p
 }
 
 export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ComposerPublic {
+  const implicit = !store.connections["opencode-go:plan"] ? envConnection(env) : null;
+  const listed = [...Object.values(store.connections)];
+  if (implicit) listed.push(implicit);
+  const connected = listed.filter((conn) => conn.id === implicit?.id || isConnected(conn));
   const conn = activeConnection(store, env)
     ?? ((!store.activeConnectionId && env.UB_OPENCODE_GO_KEY) ? envConnection(env) : null);
+  // One group per connected connection, the active one first. Same per
+  // connection lists the roles picker reads, so the flyout never disagrees.
+  const ordered = [...connected].sort((a, b) => {
+    if (a.id === conn?.id) return -1;
+    if (b.id === conn?.id) return 1;
+    return 0;
+  });
+  const groups: ComposerGroup[] = ordered.map((row) => ({
+    connectionId: row.id,
+    label: providerMode(row.providerId, row.mode).label,
+    icon: providerDef(row.providerId).icon,
+    models: modelRows(row.id),
+  }));
   if (!conn) {
     return {
       providerId: "",
@@ -861,6 +879,7 @@ export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = pro
       efforts: [],
       speeds: [],
       models: [],
+      groups,
     };
   }
   const mode = providerMode(conn.providerId, conn.mode);
@@ -872,6 +891,7 @@ export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = pro
     store.effort,
     store.speed,
     catalogFor(conn.id),
+    groups,
   );
 }
 
