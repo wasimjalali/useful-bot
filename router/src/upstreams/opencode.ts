@@ -84,10 +84,17 @@ function persistOAuthCredential(providerId: string, credential: Credential): voi
   updateProviderStore((store) => setOAuthCredential(store, providerId, credential));
 }
 
+/**
+ * Status notes are bookkeeping: a lock that cannot be taken in time must
+ * not turn the model call itself into a failure, so both writers swallow
+ * their own errors.
+ */
 function noteConnectionError(connectionId: string, code: string): void {
-  updateProviderStore((store) => (
-    store.connections[connectionId] ? recordConnectionError(store, connectionId, code) : store
-  ));
+  try {
+    updateProviderStore((store) => (
+      store.connections[connectionId] ? recordConnectionError(store, connectionId, code) : store
+    ));
+  } catch { /* best effort */ }
 }
 
 /**
@@ -96,11 +103,13 @@ function noteConnectionError(connectionId: string, code: string): void {
  * another call is not wiped by this stale success.
  */
 function clearConnectionError(connectionId: string): void {
-  updateProviderStore((store) => {
-    const conn = store.connections[connectionId];
-    if (!conn || !conn.lastError) return store;
-    return { ...store, connections: { ...store.connections, [connectionId]: { ...conn, lastError: null } } };
-  });
+  try {
+    updateProviderStore((store) => {
+      const conn = store.connections[connectionId];
+      if (!conn || !conn.lastError) return store;
+      return { ...store, connections: { ...store.connections, [connectionId]: { ...conn, lastError: null } } };
+    });
+  } catch { /* best effort */ }
 }
 
 export async function completeUpstream(input: {

@@ -419,7 +419,7 @@ test("the env Go connection can be activated and assigned a role", () => {
 test("legacy rows keep one row per vendor and leave sign-ins out", () => {
   let store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
   store = setOAuthCredential(store, "openai", { kind: "oauth", accessToken: "acc", refreshToken: null, expiresAt: null, accountId: null });
-  const rows = legacyProviders(store, {} as NodeJS.ProcessEnv);
+  const rows = legacyProviders(store, {} as NodeJS.ProcessEnv).filter((row) => row.connected);
   assert.deepEqual(rows.map((row) => row.id), ["openai"]);
 });
 
@@ -436,6 +436,17 @@ test("legacy rows keep one row per vendor, the active one", () => {
   let store = setProviderKey(emptyProviderStore(), "zai", "plan", "plan-key-abcdef1234");
   store = setProviderKey(store, "zai", "api", "api-key-abcdef5678");
   store = setActiveConnection(store, "zai:api", {} as NodeJS.ProcessEnv);
-  const rows = legacyProviders(store, {} as NodeJS.ProcessEnv);
+  const rows = legacyProviders(store, {} as NodeJS.ProcessEnv).filter((row) => row.connected);
   assert.deepEqual(rows.map((row) => [row.id, row.kind, row.last4]), [["zai", "api", "5678"]]);
+});
+
+test("legacy rows list every keyable vendor so the old web pane can still connect", () => {
+  const rows = legacyProviders(emptyProviderStore(), {} as NodeJS.ProcessEnv);
+  const ids = rows.map((row) => row.id as string);
+  assert.ok(ids.includes("openai") && ids.includes("anthropic") && ids.includes("opencode-go") && ids.includes("deepseek"));
+  assert.equal(ids.includes("github-copilot"), false);
+  assert.equal(ids.includes("custom"), false);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(rows.find((row) => row.id === "opencode-go")?.kind, "coding-plan");
+  assert.equal(rows.find((row) => row.id === "openai")?.connected, false);
 });

@@ -908,31 +908,35 @@ export function publicProviders(
  */
 export function legacyProviders(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ProviderPublic[] {
   const pub = publicProviders(store, env);
-  // The old shape keys rows by bare provider id, so a sign-in row next to an
-  // API row of the same vendor would collide; the old web UI cannot connect a
-  // sign-in anyway.
-  const seen = new Set<string>();
-  const rows = pub.connections.filter((conn) => conn.mode !== "oauth");
-  const ordered = [...rows.filter((conn) => conn.active), ...rows.filter((conn) => !conn.active)];
-  return ordered.filter((conn) => {
-    if (seen.has(conn.providerId)) return false;
-    seen.add(conn.providerId);
-    return true;
-  }).map((conn) => {
-    const mode = providerMode(conn.providerId, conn.mode);
-    return {
-      id: conn.providerId as ProviderId,
-      name: conn.label,
-      kind: conn.mode === "plan" ? "coding-plan" as const : "api" as const,
+  // The old web pane connects from these rows, so every vendor the old
+  // shape can key (one row per bare provider id) is listed, connected or
+  // not. Sign-in and field-driven modes are out: the old pane cannot
+  // collect them. A vendor with a connected row shows that row.
+  const rows: ProviderPublic[] = [];
+  for (const def of CATALOG_DEFS) {
+    const legacyModes = def.modes.filter((mode) => mode.mode !== "oauth" && !(mode.fields && mode.fields.length > 0));
+    if (legacyModes.length === 0) continue;
+    const connected = pub.connections
+      .filter((conn) => conn.providerId === def.id && conn.mode !== "oauth")
+      .sort((x, y) => Number(y.active) - Number(x.active))[0];
+    const legacyDefault = LEGACY_API_CONNECTION[def.id]?.split(":")[1] as AuthMode | undefined;
+    const mode = connected
+      ? providerMode(def.id, connected.mode)
+      : (legacyModes.find((row) => row.mode === (legacyDefault ?? "api")) ?? legacyModes[0]);
+    rows.push({
+      id: def.id as ProviderId,
+      name: connected?.label ?? mode.label,
+      kind: mode.mode === "plan" ? "coding-plan" as const : "api" as const,
       hint: mode.hint,
-      compatible: mode.protocol === "openai-chat" && conn.mode !== "oauth",
-      connected: conn.connected,
-      last4: conn.last4,
-      source: conn.source,
-      active: conn.active,
+      compatible: mode.protocol === "openai-chat",
+      connected: Boolean(connected),
+      last4: connected?.last4 ?? null,
+      source: connected?.source ?? null,
+      active: connected?.active ?? false,
       models: { ...mode.defaults },
-    };
-  });
+    });
+  }
+  return rows;
 }
 
 export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ComposerPublic {

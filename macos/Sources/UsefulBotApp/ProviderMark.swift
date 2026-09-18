@@ -115,6 +115,14 @@ final class ProvidersTriggerFrames: @unchecked Sendable {
         return Array(frames.values)
     }
 
+    /// A trigger that left the screen (a disconnected row) must not veto an
+    /// outside click any more.
+    func forget(_ card: ProvidersCard) {
+        lock.lock()
+        defer { lock.unlock() }
+        frames.removeValue(forKey: card)
+    }
+
     func binding(for card: ProvidersCard) -> Binding<CGRect> {
         Binding(
             get: { Self.shared.frame(for: card) },

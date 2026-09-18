@@ -111,6 +111,7 @@ struct ProvidersPaneView: View {
                 [ProvidersCardAnchor(card: card, bounds: $0)]
             }
             .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: card))
+            .onDisappear { ProvidersTriggerFrames.shared.forget(card) }
             .accessibilityLabel("Actions for \(connection.label)")
             .accessibilityIdentifier("provider-menu-\(connection.id)")
         }
@@ -151,6 +152,7 @@ struct ProvidersPaneView: View {
                 [ProvidersCardAnchor(card: Self.connectCard, bounds: $0)]
             }
             .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: Self.connectCard))
+            .onDisappear { ProvidersTriggerFrames.shared.forget(Self.connectCard) }
             .accessibilityIdentifier("providers-connect")
         }
     }
@@ -341,6 +343,7 @@ struct ProvidersPaneView: View {
                         [ProvidersCardAnchor(card: card, bounds: $0)]
                     }
                     .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: card))
+            .onDisappear { ProvidersTriggerFrames.shared.forget(card) }
                     .accessibilityLabel("Reasoning for \(title)")
                     .accessibilityIdentifier("role-\(role)-reasoning")
                 }
@@ -377,6 +380,7 @@ struct ProvidersPaneView: View {
             [ProvidersCardAnchor(card: card, bounds: $0)]
         }
         .trackWindowFrame(ProvidersTriggerFrames.shared.binding(for: card))
+            .onDisappear { ProvidersTriggerFrames.shared.forget(card) }
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
                 .strokeBorder(Theme.C.border, lineWidth: 1)
