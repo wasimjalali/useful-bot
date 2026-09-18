@@ -206,6 +206,13 @@ final class AppModel: ObservableObject {
     private var inflightSessions: [String: String] = [:]
     /// Live projections for bots whose send is still running in the background.
     private var backgroundProjections: [String: StreamProjection] = [:]
+    /// When each bot's caches were last on screen, for the budget below.
+    private var cacheUse: [String: Date] = [:]
+    /// What the per-bot transcript caches and stashed projections may hold
+    /// together. Chats visited used to stay cached for the life of the app.
+    /// A chat here is a few hundred KB, so this is room for dozens; the
+    /// oldest go first, and never a bot with a send or a turn in flight.
+    private static let cacheBudgetBytes = 16 * 1024 * 1024
     /// Bots with a turn still running, selected or not. Drives the rail pulse.
     @Published private(set) var workingBotIds: Set<String> = []
     /// Handoff deliveries in flight on bots the owner is not looking at.
@@ -1558,6 +1565,7 @@ final class AppModel: ObservableObject {
         var proj = backgroundProjections[botId] ?? StreamProjection()
         proj.apply(event, live: true)
         backgroundProjections[botId] = proj
+        cacheUse[botId] = Date()
         persistNewWidgets(proj.widgets, botId: botId)
         markWorking(botId, proj.pending)
     }
@@ -2438,6 +2446,30 @@ final class AppModel: ObservableObject {
             transcriptCache[old] = (transcript, transcriptBlocks, durableEvents)
         }
         if sendTasks[old] == nil { markWorking(old, false) }
+        cacheUse[old] = Date()
+        trimCaches()
+    }
+
+    private func trimCaches() {
+        let ids = Set(transcriptCache.keys).union(backgroundProjections.keys)
+        let entries = ids.map { id in
+            let cached = transcriptCache[id]
+            let rows = cached?.rows.reduce(0) { $0 + $1.text.utf8.count + 96 } ?? 0
+            let events = cached?.events.reduce(0) { $0 + $1.text.utf8.count + 128 } ?? 0
+            return CacheBudget.Entry(
+                id: id,
+                bytes: rows + events + (backgroundProjections[id]?.estimatedBytes ?? 0),
+                lastUsed: cacheUse[id] ?? .distantPast,
+                // The open chat, a send this app holds, or a turn the follower
+                // is painting into the stash: all still in use.
+                pinned: id == selectedBotId || sendTasks[id] != nil || isWorking(id)
+            )
+        }
+        for id in CacheBudget.evictions(entries, budget: Self.cacheBudgetBytes) {
+            transcriptCache[id] = nil
+            backgroundProjections[id] = nil
+            cacheUse[id] = nil
+        }
     }
 
     private func resetThread() {

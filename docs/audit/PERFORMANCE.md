@@ -37,6 +37,29 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
+## Batch 8: the per-bot caches have a byte budget (PR: perf/cache-budget)
+
+Measured on the debug build with four chats visited, logging the estimate the budget works from:
+
+| Measure | Before (main @ 62a7a95) | After |
+|---|---|---|
+| Bytes held by `transcriptCache` and `backgroundProjections` for four chats | 453 KB, kept for the life of the app | 453 KB, under a 16 MB budget that never triggers here |
+| App footprint after visiting every chat | 101 MB | 101 MB |
+
+- **Problem.** Every chat visited stayed cached (rows, blocks, durable events and the stashed stream
+  projection with its 2,000-id dedupe ring) until the app quit. Bounded by the roster, but the
+  roster is not bounded.
+- **Fix.** `CacheBudget.evictions` (Core, tested) names the least recently used bots to drop until
+  the estimate fits 16 MB. `trimCaches()` runs after every stash. A bot is never evicted while it is
+  the open chat, holds a send this app started, or is working in the background (a handoff, a
+  routine, a turn the follower is painting into its stash), and a background bot's last use is
+  touched by every live event it receives, so a fresh unread reply is not the first to go.
+- **What it bought today: nothing.** A chat here is about 100 KB, so the budget is room for well
+  over a hundred of them. It is the bound Astra, Spark and DeepSeek asked for, and the estimate is
+  logged nowhere, so the number above came from a temporary line that was removed again.
+- **Found in review (Muse Spark).** Nothing on the first pass.
+- **Caught by.** Astra, Spark, DeepSeek.
+
 ## Batch 7: a drawing's web view is created when its box comes near the window (PR: perf/widget-views)
 
 Measured on the Storyboard Artist chat, which holds one Excalidraw drawing above its newest turn,
@@ -414,9 +437,8 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
 | Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
-| Per-bot transcript caches have no eviction | memory grows with chats visited | medium | Astra, Spark, DeepSeek |
 | Server reads and parses whole JSON stores per poll; tick sweeps orphans every 2.5 s | event-loop stalls shared by all bots | medium | GLM, DeepSeek, HY4, Spark |
 
 Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5), the
-streaming markdown cache (batch 6), the eager widget web views (batch 7).
+streaming markdown cache (batch 6), the eager widget web views (batch 7), the cache budget (batch 8).
 Deferred by decision: the cached chat switch resuming from its cursor.
