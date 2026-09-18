@@ -8,7 +8,7 @@ import {
   recordConnectionError,
   resolveUpstream,
   setOAuthCredential,
-  writeProviderStore,
+  updateProviderStore,
   type Credential,
 } from "../../../shared/providers.ts";
 import { accessTokenFor, refreshCredential } from "../../../shared/provider-oauth.ts";
@@ -81,23 +81,23 @@ function tokenFor(providerId: string, credential: Credential): { token: string; 
 }
 
 function persistOAuthCredential(providerId: string, credential: Credential): void {
-  writeProviderStore(setOAuthCredential(readProviderStore(), providerId, credential));
+  updateProviderStore((store) => setOAuthCredential(store, providerId, credential));
 }
 
 function noteConnectionError(connectionId: string, code: string): void {
-  const store = readProviderStore();
-  if (!store.connections[connectionId]) return;
-  writeProviderStore(recordConnectionError(store, connectionId, code));
+  if (!readProviderStore().connections[connectionId]) return;
+  updateProviderStore((store) => (
+    store.connections[connectionId] ? recordConnectionError(store, connectionId, code) : store
+  ));
 }
 
 /** A success clears the last failure the router recorded on the connection. */
 function clearConnectionError(connectionId: string): void {
-  const store = readProviderStore();
-  const conn = store.connections[connectionId];
-  if (!conn || !conn.lastError) return;
-  writeProviderStore({
-    ...store,
-    connections: { ...store.connections, [connectionId]: { ...conn, lastError: null } },
+  if (!readProviderStore().connections[connectionId]?.lastError) return;
+  updateProviderStore((store) => {
+    const conn = store.connections[connectionId];
+    if (!conn || !conn.lastError) return store;
+    return { ...store, connections: { ...store.connections, [connectionId]: { ...conn, lastError: null } } };
   });
 }
 
@@ -137,7 +137,7 @@ export async function completeUpstream(input: {
   // to glm-5.3-flash whatever the chip said. The registry still names the
   // alias, its window policy and the fallback; the selection names the model.
   const model = resolved.model;
-  const sees = modelSeesImages(modelOption(resolved.providerId, model, catalogFor(resolved.providerId)));
+  const sees = modelSeesImages(modelOption(resolved.connection.id, model, catalogFor(resolved.connection.id)));
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
     messages: withoutImagesForTextModel(forwardedBody.messages, sees),
@@ -203,7 +203,7 @@ export async function completeUpstream(input: {
     });
   }
   if (response.status === 401 || response.status === 403) {
-    if (credential.kind === "oauth") noteConnectionError(resolved.connection.id, "upstream_auth_failed");
+    noteConnectionError(resolved.connection.id, "upstream_auth_failed");
     throw authFailed();
   }
   if (response.status === 429) {

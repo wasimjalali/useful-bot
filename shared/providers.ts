@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   connectionId,
@@ -380,8 +380,11 @@ export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = proces
       if (conn && conn.id === id) next.connections[id] = conn;
     }
   }
-  next.activeConnectionId = typeof rec.activeConnectionId === "string" && next.connections[rec.activeConnectionId]
-    ? rec.activeConnectionId
+  // The implicit env Go connection has no stored row, so its active id must
+  // survive a write and read back the same way the v1 migration set it.
+  const active = typeof rec.activeConnectionId === "string" ? rec.activeConnectionId : null;
+  next.activeConnectionId = active && (next.connections[active] || (active === "opencode-go:plan" && env.UB_OPENCODE_GO_KEY))
+    ? active
     : null;
   next.selectedModel = typeof rec.selectedModel === "string" && rec.selectedModel ? rec.selectedModel : null;
   next.effort = isEffortId(rec.effort) ? rec.effort : null;
@@ -393,10 +396,10 @@ export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = proces
   return next;
 }
 
-export function readProviderStore(path = providersPath()): ProviderStore {
+export function readProviderStore(path = providersPath(), env: NodeJS.ProcessEnv = process.env): ProviderStore {
   if (!existsSync(path)) return emptyProviderStore();
   try {
-    return parseProviderStore(JSON.parse(readFileSync(path, "utf8")));
+    return parseProviderStore(JSON.parse(readFileSync(path, "utf8")), env);
   } catch {
     // A torn write must not wedge every model call: keep the evidence aside
     // and start empty, the way the shell store reseeds a bad file.
@@ -427,6 +430,54 @@ export function writeProviderStore(store: ProviderStore, path = providersPath())
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
     throw err;
+  }
+}
+
+const LOCK_WAIT_MS = 2000;
+const LOCK_STALE_MS = 10_000;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Read, change and write the store under an advisory lock. The router and the
+ * web service both write this file, so a plain read then write in one process
+ * could drop what the other wrote in between (a connection just added, a token
+ * just refreshed). The lock is a directory next to the file: mkdir is atomic
+ * on every filesystem this runs on. A lock older than ten seconds is a crash
+ * leftover and is taken over.
+ */
+export function updateProviderStore(
+  change: (store: ProviderStore) => ProviderStore,
+  path = providersPath(),
+  env: NodeJS.ProcessEnv = process.env,
+): ProviderStore {
+  const lock = `${path}.lock`;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      let age = 0;
+      try { age = Date.now() - statSync(lock).mtimeMs; } catch { /* vanished: retry at once */ }
+      if (age > LOCK_STALE_MS) {
+        try { rmSync(lock, { recursive: true, force: true }); } catch { /* the other side may have just removed it */ }
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error("providers_locked");
+      sleepSync(25);
+    }
+  }
+  try {
+    const next = change(readProviderStore(path, env));
+    writeProviderStore(next, path);
+    return next;
+  } finally {
+    try { rmSync(lock, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
@@ -497,9 +548,13 @@ export function setProviderKey(
   if (mode === "oauth") throw new Error("provider_oauth");
   const cleanFields = checkFields(row, fields ?? {});
   if (!(typeof key === "string" && key.trim())) key = secretField(row, fields ?? {});
+  const previous = store.connections[connectionId(providerId, mode)]?.credential;
   let credential: Credential;
   if (typeof key === "string" && key.trim()) {
     credential = { kind: "key", key: checkKey(key) };
+  } else if (previous && previous.kind !== "none") {
+    // An edit that only changes a field never retypes the key: keep it.
+    credential = previous;
   } else if (mode === "local") {
     // Local servers need no key. The custom sheet may still paste one.
     credential = { kind: "none" };
@@ -857,8 +912,9 @@ export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = pro
   const listed = [...Object.values(store.connections)];
   if (implicit) listed.push(implicit);
   const connected = listed.filter((conn) => conn.id === implicit?.id || isConnected(conn));
+  const envActive = !store.activeConnectionId || store.activeConnectionId === "opencode-go:plan";
   const conn = activeConnection(store, env)
-    ?? ((!store.activeConnectionId && env.UB_OPENCODE_GO_KEY) ? envConnection(env) : null);
+    ?? ((envActive && env.UB_OPENCODE_GO_KEY) ? envConnection(env) : null);
   // One group per connected connection, the active one first. Same per
   // connection lists the roles picker reads, so the flyout never disagrees.
   const ordered = [...connected].sort((a, b) => {

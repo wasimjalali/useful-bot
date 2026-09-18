@@ -22,7 +22,7 @@ import {
   setComposer,
   setProviderKey,
   setRole,
-  writeProviderStore,
+  updateProviderStore,
   type ProviderId,
   type ProviderStore,
 } from "../../../../shared/providers.ts";
@@ -166,7 +166,8 @@ export async function PUT(request: Request) {
     return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
   }
   try {
-    let store = readProviderStore();
+    const store = updateProviderStore((current) => {
+    let store = current;
     if (body.providerId !== undefined) {
       if (typeof body.providerId !== "string" || !body.providerId) throw new Error("provider_unknown");
       providerDef(body.providerId);
@@ -220,7 +221,8 @@ export async function PUT(request: Request) {
         });
       }
     }
-    writeProviderStore(store);
+    return store;
+    });
     await syncActiveModels(store, true);
     return NextResponse.json(payload(store));
   } catch (err) {
@@ -245,16 +247,16 @@ export async function DELETE(request: Request) {
     return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
   }
   try {
-    let store = readProviderStore();
-    if (typeof body.connectionId === "string" && body.connectionId) {
-      store = clearConnection(store, body.connectionId);
-    } else if (typeof body.providerId === "string" && body.providerId) {
-      providerDef(body.providerId);
-      store = clearProviderKey(store, body.providerId as ProviderId);
-    } else {
+    const store = updateProviderStore((current) => {
+      if (typeof body.connectionId === "string" && body.connectionId) {
+        return clearConnection(current, body.connectionId);
+      }
+      if (typeof body.providerId === "string" && body.providerId) {
+        providerDef(body.providerId);
+        return clearProviderKey(current, body.providerId as ProviderId);
+      }
       throw new Error("invalid");
-    }
-    writeProviderStore(store);
+    });
     await syncActiveModels(store, true);
     return NextResponse.json(payload(store));
   } catch (err) {

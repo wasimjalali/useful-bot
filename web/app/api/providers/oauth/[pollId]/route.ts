@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../../../lib/desktop-gate";
 import { errorCode, rateLimited } from "../../../../../lib/api-guard";
@@ -18,7 +16,7 @@ import {
   readProviderStore,
   setActiveConnection,
   setOAuthCredential,
-  writeProviderStore,
+  updateProviderStore,
   type ProviderStore,
 } from "../../../../../../shared/providers.ts";
 
@@ -120,34 +118,6 @@ function payload(store: ProviderStore) {
  * ~/.useful-bot/provider-oauth.json (written by startDeviceFlow), so read the
  * matching entry out of that file without assuming one exact layout.
  */
-function findPollEntry(value: unknown, pollId: string): Record<string, unknown> | null {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const hit = findPollEntry(item, pollId);
-      if (hit) return hit;
-    }
-    return null;
-  }
-  if (!isRecord(value)) return null;
-  if (value.pollId === pollId) return value;
-  for (const child of Object.values(value)) {
-    const hit = findPollEntry(child, pollId);
-    if (hit) return hit;
-  }
-  return null;
-}
-
-function pendingProviderId(pollId: string): string | null {
-  const path = join(process.env.HOME ?? "/tmp", ".useful-bot/provider-oauth.json");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
-  }
-  const entry = findPollEntry(parsed, pollId);
-  return entry && typeof entry.providerId === "string" && entry.providerId ? entry.providerId : null;
-}
 
 /** Completing the flow writes the credential, so the poll is a POST with the CSRF header like every other write. */
 export async function POST(request: Request, context: { params: Promise<{ pollId: string }> }) {
@@ -164,16 +134,17 @@ export async function POST(request: Request, context: { params: Promise<{ pollId
   try {
     const result = await pollDeviceFlow(pollId);
     if (result.status === "complete" && result.credential) {
-      const providerId = pendingProviderId(pollId);
-      if (!providerId) return NextResponse.json({ ok: true, status: "error" });
-      let store = readProviderStore();
-      store = setOAuthCredential(store, providerId, result.credential);
-      if (!activeUsable(store)) store = setActiveConnection(store, connectionId(providerId, "oauth"));
-      writeProviderStore(store);
+      const { providerId, credential } = result;
+      if (!providerId) throw new Error("oauth_poll_unknown");
+      const store = updateProviderStore((current) => {
+        let next = setOAuthCredential(current, providerId, credential);
+        if (!activeUsable(next)) next = setActiveConnection(next, connectionId(providerId, "oauth"));
+        return next;
+      });
       await syncActiveModels(store, true);
       return NextResponse.json({ ...payload(store), status: "complete" });
     }
-    return NextResponse.json({ ok: true, status: result.status });
+    return NextResponse.json({ ok: true, status: result.status, intervalMs: result.intervalMs ?? null });
   } catch (err) {
     return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
   }

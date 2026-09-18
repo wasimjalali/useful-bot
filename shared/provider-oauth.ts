@@ -31,6 +31,10 @@ export interface PollResult {
   status: PollStatus;
   credential?: Credential;
   error?: string;
+  /** The provider the flow belongs to; the pending row is gone once it settles, so callers read it here. */
+  providerId?: string;
+  /** How long to wait before the next poll, after any slow_down back-off. */
+  intervalMs?: number;
 }
 
 type FetchFn = typeof fetch;
@@ -331,6 +335,15 @@ function errorOf(raw: unknown): string | null {
 
 /** Poll once. Deletes the pending entry when the flow settles. */
 export async function pollDeviceFlow(pollId: string, fetchImpl: FetchFn = fetch): Promise<PollResult> {
+  const before = readPending()[pollId];
+  const result = await pollDeviceFlowStep(pollId, fetchImpl);
+  const after = readPending()[pollId];
+  const source = after ?? before;
+  if (!source) return result;
+  return { ...result, providerId: source.providerId, intervalMs: source.intervalMs };
+}
+
+async function pollDeviceFlowStep(pollId: string, fetchImpl: FetchFn): Promise<PollResult> {
   const rows = readPending();
   const pending = rows[pollId];
   if (!pending) {

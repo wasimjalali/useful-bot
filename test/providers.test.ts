@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROVIDER_CATALOG, providerMode } from "../shared/provider-catalog.ts";
@@ -23,6 +23,7 @@ import {
   setOAuthCredential,
   setProviderKey,
   setRole,
+  updateProviderStore,
   writeProviderStore,
 } from "../shared/providers.ts";
 import { usageFromPayload, usageFromSseBlock } from "../shared/usage-parse.ts";
@@ -360,4 +361,44 @@ test("a custom provider's secret field becomes the credential and never a public
   // No key at all is still a valid local connection.
   const bare = setProviderKey(emptyProviderStore(), "custom", "local", null, { name: "Box", baseUrl: "http://localhost:8000/v1" });
   assert.equal(bare.connections["custom:local"]?.credential.kind, "none");
+});
+
+test("an edit without a key keeps the stored credential", () => {
+  let store = setProviderKey(emptyProviderStore(), "custom", "local", null, {
+    name: "Lab box",
+    baseUrl: "http://10.0.0.5:8000/v1",
+    key: "sk-lab-secret-123456",
+  });
+  store = setProviderKey(store, "custom", "local", null, { name: "Lab box 2", baseUrl: "http://10.0.0.5:8000/v1" });
+  const conn = store.connections["custom:local"];
+  assert.equal(conn?.fields.name, "Lab box 2");
+  assert.equal(conn?.credential.kind, "key");
+});
+
+test("the env Go connection stays active across a write and read", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-prov-")), "providers.json");
+  const env = { UB_OPENCODE_GO_KEY: "go-env-key-12345678" } as NodeJS.ProcessEnv;
+  const store = { ...emptyProviderStore(), activeConnectionId: "opencode-go:plan" };
+  writeProviderStore(store, path);
+  const loaded = readProviderStore(path, env);
+  assert.equal(loaded.activeConnectionId, "opencode-go:plan");
+  const composer = composerState(loaded, env);
+  assert.equal(composer.connectionId, "opencode-go:plan");
+  assert.notEqual(composer.modelId, "");
+  assert.equal(readProviderStore(path, {} as NodeJS.ProcessEnv).activeConnectionId, null);
+});
+
+test("updateProviderStore applies the change under the lock and releases it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-prov-"));
+  const path = join(dir, "providers.json");
+  const next = updateProviderStore((store) => setProviderKey(store, "openai", "api", "sk-test-abcdef1234"), path);
+  assert.equal(next.connections["openai:api"]?.credential.kind, "key");
+  assert.equal(readProviderStore(path).connections["openai:api"]?.credential.kind, "key");
+  assert.equal(existsSync(`${path}.lock`), false);
+  // A stale lock from a crashed writer is taken over.
+  mkdirSync(`${path}.lock`);
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(`${path}.lock`, old, old);
+  updateProviderStore((store) => store, path);
+  assert.equal(existsSync(`${path}.lock`), false);
 });

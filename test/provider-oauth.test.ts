@@ -111,15 +111,19 @@ test("openai poll stays pending on 403 then 404", async () => {
     seen.push({ url: String(input), body: JSON.parse(bodyText(init)) });
     return new Response(JSON.stringify({ error: "waiting" }), { status });
   };
-  assert.deepEqual(await pollDeviceFlow(pending.pollId, waiting(403)), { status: "pending" });
-  assert.deepEqual(await pollDeviceFlow(pending.pollId, waiting(404)), { status: "pending" });
+  const first403 = await pollDeviceFlow(pending.pollId, waiting(403));
+  assert.equal(first403.status, "pending");
+  assert.equal(first403.providerId, "openai");
+  assert.equal(first403.intervalMs, 5000);
+  assert.equal((await pollDeviceFlow(pending.pollId, waiting(404))).status, "pending");
   assert.equal(seen.length, 2);
   for (const call of seen) {
     assert.equal(call.url, oauth.pollUrl);
     assert.deepEqual(call.body, { device_auth_id: "dev-openai-2", user_code: "WXYZ-1234" });
   }
   // Other failures are errors, and the entry stays for the next poll.
-  assert.deepEqual(await pollDeviceFlow(pending.pollId, async () => new Response("bad", { status: 500 })), {
+  const errored = await pollDeviceFlow(pending.pollId, async () => new Response("bad", { status: 500 }));
+  assert.deepEqual({ status: errored.status, error: errored.error }, {
     status: "error",
     error: "oauth_poll",
   });
@@ -183,12 +187,12 @@ test("github poll maps pending, slow_down, expired and denied", async () => {
     interval: 5,
   });
   const first = await startDeviceFlow("github-copilot", start);
-  assert.deepEqual(await pollDeviceFlow(first.pollId, async () => json({ error: "authorization_pending" })), { status: "pending" });
-  assert.deepEqual(await pollDeviceFlow(first.pollId, async () => json({ error: "slow_down" })), { status: "slow_down" });
+  assert.equal((await pollDeviceFlow(first.pollId, async () => json({ error: "authorization_pending" }))).status, "pending");
+  assert.equal((await pollDeviceFlow(first.pollId, async () => json({ error: "slow_down" }))).status, "slow_down");
   const second = await startDeviceFlow("github-copilot", start);
-  assert.deepEqual(await pollDeviceFlow(second.pollId, async () => json({ error: "expired_token" })), { status: "expired" });
+  assert.equal((await pollDeviceFlow(second.pollId, async () => json({ error: "expired_token" }))).status, "expired");
   const third = await startDeviceFlow("github-copilot", start);
-  assert.deepEqual(await pollDeviceFlow(third.pollId, async () => json({ error: "access_denied" })), { status: "denied" });
+  assert.equal((await pollDeviceFlow(third.pollId, async () => json({ error: "access_denied" }))).status, "denied");
   await assert.rejects(() => pollDeviceFlow("nope", async () => json({})), /oauth_poll_unknown/);
 });
 
@@ -200,7 +204,8 @@ test("openai poll keeps the entry on transport errors", async () => {
   const down: typeof fetch = async () => {
     throw new Error("down");
   };
-  assert.deepEqual(await pollDeviceFlow(pending.pollId, down), { status: "error", error: "oauth_poll" });
+  const downed = await pollDeviceFlow(pending.pollId, down);
+  assert.deepEqual({ status: downed.status, error: downed.error }, { status: "error", error: "oauth_poll" });
   const done: typeof fetch = async (input) => {
     if (String(input) === oauth.tokenUrl) return json({ access_token: "acc-2", expires_in: 60 });
     return json({ authorization_code: "auth-code-5", code_challenge: "chal-5", code_verifier: "ver-5" });
@@ -215,7 +220,7 @@ test("openai poll reports expired once the code lifetime passes", async () => {
   const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, Record<string, unknown>>;
   raw[pending.pollId] = { ...raw[pending.pollId], expiresAt: Date.now() - 1000 };
   writeFileSync(path, JSON.stringify(raw));
-  assert.deepEqual(await pollDeviceFlow(pending.pollId, start), { status: "expired" });
+  assert.equal((await pollDeviceFlow(pending.pollId, start)).status, "expired");
   // Settled: polling again is unknown.
   await assert.rejects(() => pollDeviceFlow(pending.pollId, start), /oauth_poll_unknown/);
 });
