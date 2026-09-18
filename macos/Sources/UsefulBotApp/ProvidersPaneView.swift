@@ -10,18 +10,10 @@ struct ProvidersPaneView: View {
     @EnvironmentObject private var model: AppModel
 
     @State private var connectOpen = false
-    @State private var connectAnchor = CGRect.zero
-    @State private var connectTrigger = CGRect.zero
     @State private var menuFor: String?
-    @State private var menuAnchor = CGRect.zero
-    @State private var menuTrigger = CGRect.zero
     @State private var keySheet: KeySheetTarget?
     @State private var modelPickerRole: String?
-    @State private var modelPickerAnchor = CGRect.zero
-    @State private var modelPickerTrigger = CGRect.zero
     @State private var effortRole: String?
-    @State private var effortAnchor = CGRect.zero
-    @State private var effortTrigger = CGRect.zero
 
     private static let connectSections = ["Subscription", "API", "Local"]
 
@@ -68,39 +60,6 @@ struct ProvidersPaneView: View {
                         )
                     }
                 }
-            }
-        }
-        .coordinateSpace(name: "providersPane")
-        .overlay(alignment: .topLeading) {
-            if connectOpen {
-                connectPopover
-                    .frame(width: 280)
-                    .offset(x: max(8, connectAnchor.maxX - 280), y: connectAnchor.maxY + 4)
-                    .dismissOnOutsideClick(triggers: { [connectTrigger] }) { connectOpen = false }
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            if menuFor != nil {
-                rowMenuPopover
-                    .frame(width: 220)
-                    .offset(x: max(8, menuAnchor.maxX - 220), y: menuAnchor.maxY + 4)
-                    .dismissOnOutsideClick(triggers: { [menuTrigger] }) { menuFor = nil }
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            if modelPickerRole != nil {
-                modelPickerPopover
-                    .frame(width: 280)
-                    .offset(x: max(8, modelPickerAnchor.maxX - 280), y: modelPickerAnchor.maxY + 4)
-                    .dismissOnOutsideClick(triggers: { [modelPickerTrigger] }) { modelPickerRole = nil }
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            if effortRole != nil {
-                effortPopover
-                    .frame(width: 220)
-                    .offset(x: max(8, effortAnchor.maxX - 220), y: effortAnchor.maxY + 4)
-                    .dismissOnOutsideClick(triggers: { [effortTrigger] }) { effortRole = nil }
             }
         }
         .sheet(item: $keySheet) { target in
@@ -150,8 +109,9 @@ struct ProvidersPaneView: View {
             }
             .buttonStyle(.plain)
             .pointerOnHover()
-            .trackWindowFrame($menuTrigger)
-            .background(anchorReader { menuAnchor = $0 })
+            .popover(isPresented: openFlag(menuFor, connection.id, { menuFor = $0 }), arrowEdge: .bottom) {
+                rowMenuPopover.frame(width: 220)
+            }
             .accessibilityLabel("Actions for \(connection.label)")
             .accessibilityIdentifier("provider-menu-\(connection.id)")
         }
@@ -188,8 +148,9 @@ struct ProvidersPaneView: View {
             }
             .buttonStyle(.plain)
             .pointerOnHover()
-            .trackWindowFrame($connectTrigger)
-            .background(anchorReader { connectAnchor = $0 })
+            .popover(isPresented: $connectOpen, arrowEdge: .bottom) {
+                connectPopover.frame(width: 280)
+            }
             .accessibilityIdentifier("providers-connect")
         }
     }
@@ -227,13 +188,6 @@ struct ProvidersPaneView: View {
             }
             .frame(maxHeight: 420)
         }
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-        .popShadow()
     }
 
     private func connectEntryRow(_ entry: CatalogPublic) -> some View {
@@ -344,13 +298,6 @@ struct ProvidersPaneView: View {
             }
         }
         .padding(6)
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-        .popShadow()
     }
 
     private func editConnection(_ connection: ConnectionPublic) {
@@ -392,8 +339,9 @@ struct ProvidersPaneView: View {
                     }
                     .buttonStyle(.plain)
                     .pointerOnHover()
-                    .trackWindowFrame($effortTrigger)
-                    .background(anchorReader { effortAnchor = $0 })
+                    .popover(isPresented: openFlag(effortRole, role, { effortRole = $0 }), arrowEdge: .bottom) {
+                        effortPopover.frame(width: 220)
+                    }
                     .accessibilityLabel("Reasoning for \(title)")
                     .accessibilityIdentifier("role-\(role)-reasoning")
                 }
@@ -430,8 +378,9 @@ struct ProvidersPaneView: View {
         }
         .buttonStyle(.plain)
         .pointerOnHover()
-        .trackWindowFrame($modelPickerTrigger)
-        .background(anchorReader { modelPickerAnchor = $0 })
+        .popover(isPresented: openFlag(modelPickerRole, role, { modelPickerRole = $0 }), arrowEdge: .bottom) {
+            modelPickerPopover.frame(width: 280)
+        }
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
                 .strokeBorder(Theme.C.border, lineWidth: 1)
@@ -509,16 +458,8 @@ struct ProvidersPaneView: View {
                     .background(selected ? Theme.C.sunken : .clear)
                 }
             }
-            Spacer(minLength: 6)
         }
         .padding(.vertical, 6)
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-        .popShadow()
     }
 
     private func saveEffortPick(role: String, effort: String) {
@@ -543,12 +484,9 @@ struct ProvidersPaneView: View {
 
     // MARK: - Helpers
 
-    private func anchorReader(onChange: @escaping (CGRect) -> Void) -> some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onAppear { onChange(proxy.frame(in: .named("providersPane"))) }
-                .onChange(of: proxy.frame(in: .named("providersPane"))) { _, next in onChange(next) }
-        }
+    /// A popover binding for one of several rows sharing one selection.
+    private func openFlag(_ current: String?, _ id: String, _ set: @escaping (String?) -> Void) -> Binding<Bool> {
+        Binding(get: { current == id }, set: { open in if !open, current == id { set(nil) } })
     }
 
     private func section<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
@@ -870,12 +808,5 @@ private struct RoleModelPicker: View {
             }
             .frame(maxHeight: 320)
         }
-        .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-        .popShadow()
     }
 }
