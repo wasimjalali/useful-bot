@@ -581,6 +581,8 @@ test("Full access stops only for a wipe: a remover aimed at a whole area of the 
     "su - root -c 'rm -rf /Users'",
     "find /Users/owner/Documents -type f -exec rm {} \\;",
     "find ~/Desktop -delete",
+    "find ~ -exec sudo rm -rf {} \\;",
+    "find ~ -type f -execdir env rm {} +",
     "mkfs.apfs /dev/disk3",
     "newfs_hfs /dev/disk3",
     "diskutil eraseDisk APFS Data disk3",

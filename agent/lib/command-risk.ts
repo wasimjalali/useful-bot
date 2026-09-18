@@ -445,8 +445,10 @@ function wipeReason(tokens: Token[], root: string, home: string, ownerHome: stri
   }
   if (name === "find") {
     const flags = rest.map((token) => token.text);
+    // `-exec sudo rm {} \;` is rm behind a wrapper: peeled the same way.
+    const execRemoves = (at: number) => REMOVERS.has(basename(peelWrappers(rest.slice(at + 1))[0]?.text ?? ""));
     const deletes = flags.includes("-delete")
-      || flags.some((flag, at) => (flag === "-exec" || flag === "-execdir" || flag === "-ok" || flag === "-okdir") && REMOVERS.has(basename(flags[at + 1] ?? "")));
+      || flags.some((flag, at) => (flag === "-exec" || flag === "-execdir" || flag === "-ok" || flag === "-okdir") && execRemoves(at));
     if (!deletes) return null;
     // `find ~ -name '*.log' -delete` removes the matching files, not the
     // area: an everyday delete. Only an unfiltered sweep is a wipe.
