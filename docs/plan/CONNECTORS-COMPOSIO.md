@@ -90,9 +90,9 @@ Per conversation permission mode, matching what `bash` does today:
 |---|---|---|---|
 | read | run | run | run |
 | write | blocked, tool returns `read_only_mode` | card | run |
-| destructive | blocked | card | card |
+| destructive | blocked | card | run |
 
-Full access still cards destructive actions. Deleting mail or a repo is not something a folder grant should authorize by accident. Open to changing this row.
+Full access runs destructive actions too (changed 2026-09-18): the owner chose the posture that asks nothing, and the wipe check in the shell is the only card left anywhere.
 
 ### 4.3 Connectors dialog
 

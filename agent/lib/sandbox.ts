@@ -19,12 +19,17 @@ export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 /** Names that never take a write inside the folder, whatever the mode. */
 const PROTECTED_NAMES = [
   ".env", ".ssh", ".aws", ".gnupg", ".netrc", "netrc", ".npmrc", ".pypirc",
-  ".docker", ".kube", "id_rsa", "id_ecdsa", "id_ed25519", "keychains", "auth.json",
+  ".docker", ".kube", ".kubeconfig", "id_rsa", "id_ecdsa", "id_ed25519", "keychain", "keychains", "auth.json",
+  "secrets", ".authinfo",
+  // The user-domain stores, spelled as the disk spells them: the text
+  // tripwire lowercases, the kernel does not.
+  "Library/Keychains", "Library/Cookies",
   // The app's own stores and the launch agents that start it.
   ".useful-bot", "LaunchAgents",
   // Shell startup files: a planted line runs in the owner's own shell.
   ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
   ".bash_profile", ".bashrc", ".bash_login", ".bash_logout", ".profile", ".inputrc",
+  "config.fish", ".config/fish",
 ];
 
 export function sandboxAvailable(): boolean {
@@ -57,9 +62,18 @@ export type SandboxScope = "folder" | "computer";
  * line judged read-only runs with every write refused except the temp and
  * cache dirs, so a misjudged line still cannot change a file. `scope` says
  * whether that root is a project folder the owner handed over or their
- * home, which decides how strict the read denies are.
+ * home, which decides how strict the read denies are. `unbounded` is Full
+ * access: writes land anywhere on the Mac, and only the credential files,
+ * the app's own stores and the shell startup files stay refused.
  */
-export function sandboxProfile(root: string | null, scope: SandboxScope = "computer"): string {
+/**
+ * System paths the text tripwire in `bash` refuses by substring. The scoped
+ * profiles never allowed a write there; the unbounded one says so itself,
+ * so a spelling the substring misses still cannot land.
+ */
+const SYSTEM_WRITE_DENIED = ["/etc", "/private/etc", "/var/db", "/private/var/db", "/Library/Keychains", "/Library/Cookies"];
+
+export function sandboxProfile(root: string | null, scope: SandboxScope = "computer", unbounded = false): string {
   const real = root === null ? null : realpathSync(root);
   // Tools that ignore TMPDIR fall back to the darwin per-user dirs; those
   // sit beside each other under one parent (.../T for temp, .../C for cache).
@@ -68,26 +82,36 @@ export function sandboxProfile(root: string | null, scope: SandboxScope = "compu
   const protectedRules = PROTECTED_NAMES.map(
     (name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`,
   );
-  const readDenied = root !== null && scope === "folder"
+  // Inside a project folder the build tooling reads its own .env and the
+  // like. Scoped, that is the whole of what the line can reach anyway;
+  // unbounded, the deny stays on for the rest of the disk and only the
+  // folder's own copies are allowed back (a later rule wins).
+  const tooling = root !== null && scope === "folder";
+  const readDenied = tooling && !unbounded
     ? READ_DENIED_NAMES.filter((name) => !TOOLING_READS.has(name))
     : READ_DENIED_NAMES;
-  const readRules = readDenied.map(
-    (name) => `(deny file-read* (regex #"/${regexEscape(name)}($|[/.])"))`,
-  );
+  const readRules = [
+    ...readDenied.map((name) => `(deny file-read* (regex #"/${regexEscape(name)}($|[/.])"))`),
+    ...(tooling && unbounded && real !== null
+      ? [...TOOLING_READS].map((name) => `(allow file-read* (regex #"^${regexEscape(real)}(/.*)?/${regexEscape(name)}($|[/.])"))`)
+      : []),
+  ];
   return [
     "(version 1)",
     "(allow default)",
-    "(deny file-write*)",
-    ...(real === null ? [] : [`(allow file-write* (subpath ${sbplString(real)}))`]),
-    `(allow file-write* (subpath ${sbplString(temp)}))`,
-    `(allow file-write* (subpath ${sbplString(cache)}))`,
-    '(allow file-write* (subpath "/dev"))',
+    ...(unbounded ? SYSTEM_WRITE_DENIED.map((path) => `(deny file-write* (subpath ${sbplString(path)}))`) : [
+      "(deny file-write*)",
+      ...(real === null ? [] : [`(allow file-write* (subpath ${sbplString(real)}))`]),
+      `(allow file-write* (subpath ${sbplString(temp)}))`,
+      `(allow file-write* (subpath ${sbplString(cache)}))`,
+      '(allow file-write* (subpath "/dev"))',
+    ]),
     ...protectedRules,
     ...readRules,
   ].join("\n");
 }
 
 /** The argv that runs `command` confined to `root` (null: no writes at all). */
-export function confinedCommand(root: string | null, command: string, scope: SandboxScope = "computer"): string[] {
-  return [SANDBOX_EXEC, "-p", sandboxProfile(root, scope), "/bin/sh", "-c", command];
+export function confinedCommand(root: string | null, command: string, scope: SandboxScope = "computer", unbounded = false): string[] {
+  return [SANDBOX_EXEC, "-p", sandboxProfile(root, scope, unbounded), "/bin/sh", "-c", command];
 }

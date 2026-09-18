@@ -76,11 +76,12 @@ export type ConnectorPermission = "read_only" | "auto" | "full_access" | null;
 
 /**
  * Whether a call runs, asks, or is refused under the conversation's permission.
- * No grant (no folder attached) behaves as auto, the default posture.
+ * No grant (no folder attached) behaves as auto, the default posture. Full
+ * access runs a destructive action the same as a write: the owner chose
+ * the posture that asks nothing.
  */
 export function connectorGate(risk: ConnectorRisk, permission: ConnectorPermission): "run" | "ask" | "refuse" {
   if (risk === "read") return "run";
   if (permission === "read_only") return "refuse";
-  if (risk === "destructive") return "ask";
   return permission === "full_access" ? "run" : "ask";
 }

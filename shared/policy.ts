@@ -109,6 +109,12 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   // this one wants the substring. `.docker` is the exception that forced the
   // segment screen: `.dockerignore` is not a credential store.
   ".kube",
+  // `.docker/` with the slash names the store and not `.dockerignore`, so a
+  // shell line spelling the path in full is refused everywhere.
+  ".docker/",
+  // Fish reads every file under here at startup; a planted one runs in the
+  // owner's own shell, the way a planted `.zshrc` line would.
+  ".config/fish",
   "library/cookies",
   "id_rsa",
   "id_ecdsa",

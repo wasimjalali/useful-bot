@@ -18,9 +18,9 @@ const CARD_ARGS_MAX = 4000;
 const SLUG = /^[A-Z0-9]+(?:_[A-Z0-9]+)+$/;
 
 /**
- * Runs one tool in a connected app. A read runs at once. A write shows a card
- * in auto and runs in full access; a destructive action always shows a card;
- * read only refuses both. The card carries the app, the tool and the
+ * Runs one tool in a connected app. A read runs at once. A write or a
+ * destructive action shows a card in auto and runs in full access; read
+ * only refuses both. The card carries the app, the tool and the
  * arguments, hashed the same way a shell line is, so what the owner approved
  * is exactly what runs.
  */

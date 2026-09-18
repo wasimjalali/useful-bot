@@ -390,7 +390,7 @@ export const FORBIDDEN_CHILD_SEGMENTS = new Set([
   // shell next time they open a terminal, outside every gate here.
   ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
   ".bash_profile", ".bashrc", ".bash_login", ".bash_logout", ".profile",
-  ".inputrc", ".hushlogin",
+  ".inputrc", ".hushlogin", "config.fish",
   ".docker",
   ".kube",
   ".pypirc",

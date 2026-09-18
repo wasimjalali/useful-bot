@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commandRisk, outsideFolderRisk, readOnlyRisk } from "../agent/lib/command-risk.ts";
+import { commandRisk, outsideFolderRisk, readOnlyRisk, wipeRisk } from "../agent/lib/command-risk.ts";
 
 const root = "/Users/owner/project";
 
@@ -510,4 +510,240 @@ test("a tilde or $HOME path is outside a project folder", () => {
   assert.notEqual(outsideFolderRisk("cat ${HOME}/x", root), null);
   assert.notEqual(outsideFolderRisk("cat ~root/x", root), null);
   assert.equal(outsideFolderRisk("ls src", root), null);
+});
+
+test("Full access stops only for a wipe: a remover aimed at a whole area of the Mac", () => {
+  const home = "/Users/owner";
+  for (const command of [
+    "rm -rf /",
+    "rm -rf /*",
+    "sudo rm -rf /Users",
+    "sudo -u root rm -rf /",
+    "doas -u root rm -rf /Users",
+    "rm -rf ~other/Documents",
+    "rm -rf ~other",
+    "rm -rf /Applications/",
+    "rm -rf /Volumes/Backup",
+    "rm -rf ~",
+    "rm -rf ~/",
+    "rm -rf $HOME",
+    "rm -rf \"$HOME\"/Documents",
+    "rm -rf ~/Documents",
+    "rm -rf ~/Desktop/*",
+    "rm -rf ~/Desktop/**",
+    "rm ~/Downloads/*",
+    "rmdir ~/Documents",
+    "rm -rf /Volumes/Backup.old",
+    "rm -rf ~other.name",
+    "trash ~/Pictures",
+    "rimraf /Users/owner/Movies",
+    "srm -rf /Users/other",
+    "env rm -rf ~/Music",
+    "timeout 5 rm -rf ~/Music",
+    "cd ~ && rm -rf Documents",
+    "cd ~/Documents && rm -rf .",
+    "cd ~/Documents; rm -rf *",
+    "cd /Users/owner/Desktop/project && cd .. && rm -rf .",
+    "pushd ~/Pictures && rm -rf ./",
+    "sh -c 'rm -rf ~/Documents'",
+    "bash -lc \"cd ~/Documents && rm -rf .\"",
+    "ls ~ | xargs rm -rf",
+    "ls ~ | head | xargs rm -rf",
+    "pushd ~/Desktop/project && popd && rm -rf *",
+    "pnpm dlx rimraf ~",
+    "yarn dlx rimraf ~/Documents",
+    "npm exec rimraf -- ~",
+    "npm x rimraf ~/Pictures",
+    "find ~/Documents | xargs rm",
+    "find ~/Documents -type f | xargs rm",
+    "echo ~/Music | xargs -n1 rm -rf",
+    "echo $(rm -rf ~/Documents)",
+    "eval 'rm -rf ~'",
+    "eval rm -rf ~/Documents",
+    "env -S 'rm -rf ~/Documents'",
+    "env --split-string='rm -rf ~/Documents'",
+    "npx rimraf ~",
+    "bunx rimraf ~/Documents",
+    "python3 -c \"import os; os.system('rm -rf ~/Documents')\"",
+    "node -e \"require('child_process').execSync('rm -rf ~/Documents')\"",
+    "osascript -e 'do shell script \"rm -rf ~/Documents\"'",
+    "rsync -a --delete empty/ ~/Documents/",
+    "rsync -av --delete-after src/ /Users/owner/Pictures",
+    "find -H / -delete",
+    "find -L ~ -delete",
+    "find -f ~ -type d -delete",
+    "find ~ -type f -delete",
+    "find ~ -name '*' -delete",
+    "find ~ -name '*' | xargs rm",
+    "find ~ -mtime +0 -delete",
+    "ls ~ -name | xargs rm -rf",
+    "su root -c 'rm -rf ~'",
+    "su - root -c 'rm -rf /Users'",
+    "find /Users/owner/Documents -type f -exec rm {} \\;",
+    "find ~/Desktop -delete",
+    "find ~ -exec sudo rm -rf {} \\;",
+    "find ~/Desktop/project -exec sh -c 'rm -rf ~/Documents' \\;",
+    "find . -name '*.tmp' -exec sh -c 'rm -rf ~' \\;",
+    "find ~ -type f -execdir env rm {} +",
+    "mkfs.apfs /dev/disk3",
+    "newfs_hfs /dev/disk3",
+    "diskutil eraseDisk APFS Data disk3",
+    "diskutil apfs deleteVolume disk3s2",
+    "dd if=/dev/zero of=/dev/disk3",
+  ]) {
+    const risk = wipeRisk(command, home, home);
+    assert.ok(risk !== null && /wipes|formats|erases|raw data/.test(risk), `${command} -> ${risk}`);
+  }
+  // Under the home with no folder attached, a bare name is a top-level
+  // home folder; from inside a project it is a subfolder of the project.
+  assert.notEqual(wipeRisk("rm -rf Documents", home, home), null);
+  assert.notEqual(wipeRisk("rm -rf .", home, home), null);
+  assert.notEqual(wipeRisk("rm -rf *", home, home), null);
+  assert.equal(wipeRisk("rm -rf Documents", root, home), null);
+  // The attached folder sits directly under the home, so emptying it whole
+  // is a wipe too; a project one level deeper is not.
+  assert.notEqual(wipeRisk("rm -rf .", root, home), null);
+  assert.notEqual(wipeRisk("rm -rf *", root, home), null);
+  const deeper = "/Users/owner/Desktop/project";
+  assert.equal(wipeRisk("rm -rf .", deeper, home), null);
+  assert.equal(wipeRisk("rm -rf *", deeper, home), null);
+  assert.equal(wipeRisk("find . -name '*.log' -delete", deeper, home), null);
+});
+
+test("Full access runs the everyday delete, the reach outside and the destructive git line without a card", () => {
+  const home = "/Users/owner";
+  for (const command of [
+    "rm -rf build",
+    "rm -rf node_modules dist",
+    "rm note.txt",
+    "rm -rf ~/Desktop/old-report.pdf",
+    "rm -rf ~/Documents/2024/drafts",
+    "rm -rf /Users/owner/Desktop/project",
+    "rm -rf /Users/owner/Desktop/project/",
+    "rm -rf /tmp/ub-scratch",
+    "rm -rf /tmp/build 2>err.txt",
+    "rm -rf /tmp/build >/dev/null 2>&1",
+    "rm -rf ~/Desktop/project/build 2> ~/Desktop/project/err.txt",
+    "find /tmp/build -delete 2>err.txt",
+    "rm -rf /Volumes/Backup/old",
+    "trash ~/Desktop/*.png",
+    "rm -rf $DIR",
+    "mv report.pdf /tmp/",
+    "cp a.txt /Users/owner/Desktop/",
+    "git push --force",
+    "sudo killall Finder",
+    "find src -name '*.log' -delete",
+    "find ~/Desktop/project -name '*.log' -delete",
+    "find ~ -name '*.log'",
+    "find ~ -name '*.log' -delete",
+    "find ~/Documents -name '*.bak' | xargs rm",
+    "find ~ -mtime +30 -delete",
+    "su root -c 'ls ~'",
+    "diskutil list",
+    "dd if=/dev/zero of=./blank.img bs=1m count=1",
+    "dd if=/dev/zero of=/dev/null bs=1m count=1024",
+    "pushd ~/Desktop/project && rm -rf build && popd",
+    "pnpm dlx rimraf dist",
+    "npm i -g typescript",
+    "echo a..b",
+    "cd build && rm -rf .",
+    "cd ~/Desktop/project && rm -rf dist",
+    "sh -c 'rm -rf build'",
+    "find src -name '*.bak' | xargs rm",
+    "eval 'rm -rf build'",
+    "npx rimraf dist",
+    "python3 -c \"print('hi')\"",
+    "node -e \"console.log(1)\"",
+    "rsync -a --delete src/ /Users/owner/Desktop/backup/project/",
+    "rsync -a --delete src/ host:/Users/owner/Documents/",
+    "find -H src -delete",
+  ]) {
+    assert.equal(wipeRisk(command, root, home), null, command);
+  }
+  // A folder directly under the home is a wipe wherever the bot stands.
+  assert.notEqual(wipeRisk("rm -rf /Users/owner/project", home, home), null);
+  assert.notEqual(wipeRisk("rm -rf /Users/owner/project", root, home), null);
+  // With a folder attached the line runs with HOME set to the folder, so
+  // `~/x` is the folder's own child, judged against the owner's real home.
+  const deep = "/Users/owner/Desktop/project";
+  assert.equal(wipeRisk("rm -rf ~/Documents", deep, deep, home), null);
+  assert.equal(wipeRisk("rm -rf ~/build", deep, deep, home), null);
+  assert.notEqual(wipeRisk("rm -rf /Users/owner/Documents", deep, deep, home), null);
+  assert.notEqual(wipeRisk("rm -rf ~/../..", deep, deep, home), null);
+  // `~user` is another home whatever HOME the line runs with.
+  assert.notEqual(wipeRisk("rm -rf ~other", deep, deep, home), null);
+  assert.notEqual(wipeRisk("cd ~other && rm -rf *", deep, deep, home), null);
+  assert.notEqual(wipeRisk("rm -rf \\\n~/Documents", home, home), null);
+  assert.notEqual(wipeRisk("cd /Users/owner/Documents && ls | xargs rm -rf", deep, deep, home), null);
+  assert.equal(wipeRisk("cd ~/Documents && ls | xargs rm -rf", deep, deep, home), null);
+  assert.notEqual(wipeRisk("ls | xargs rm -rf", home, home), null);
+  assert.ok(/\/Users\/owner\)/.test(wipeRisk("ls | xargs rm -rf", home, home) ?? ""));
+  assert.equal(wipeRisk("ls | xargs rm -rf", deep, deep, home), null);
+  assert.equal(wipeRisk("ls | xargs rm -rf build", deep, deep, home), null);
+  assert.notEqual(wipeRisk("ls | xargs -I{} rm -rf {}", home, home), null);
+  assert.notEqual(wipeRisk("find ~ -name '*.log' | xargs rm -rf ~/Documents", home, home), null);
+  assert.equal(wipeRisk("find ~ -name '*.log' | xargs rm -rf", home, home), null);
+  assert.notEqual(wipeRisk("find ~ -name '*.log' -o -delete", home, home), null);
+  assert.notEqual(wipeRisk("find ~ ! -name '*.log' -delete", home, home), null);
+  assert.equal(wipeRisk("find ~/Documents -name '*.bak' -o -name '*.tmp' -delete", home, home), null);
+  assert.equal(wipeRisk("find ~/Documents -name '*.tmp' ! -empty -delete", home, home), null);
+  // Quoted wipe text fed to a shell is the line itself.
+  assert.notEqual(wipeRisk("echo 'rm -rf ~/Documents' | sh", home, home), null);
+  assert.notEqual(wipeRisk("printf 'rm -rf ~' | bash", home, home), null);
+  assert.notEqual(wipeRisk("echo rm -rf ~ | bash", home, home), null);
+  assert.notEqual(wipeRisk("echo 'rm -rf ~/Documents' | (sh)", home, home), null);
+  assert.notEqual(wipeRisk("find ~ \\( -type f -o -type d \\) -delete", home, home), null);
+  assert.equal(wipeRisk("find ~ \\( -name '*.a' -o -name '*.b' \\) -delete", home, home), null);
+  assert.equal(wipeRisk("echo rm -rf build | sh", deep, deep, home), null);
+  assert.equal(wipeRisk("echo 'rm -rf build' | sh", deep, deep, home), null);
+  // A cd inside a subshell ends with it.
+  assert.notEqual(wipeRisk("(cd /Users/owner/Desktop/project && rm -rf .) ; rm -rf .", home, home), null);
+  assert.equal(wipeRisk("(cd /Users/owner/Desktop/project && rm -rf .); ls", home, home), null);
+  assert.equal(wipeRisk("(cd ~/Documents && ls) && rm -rf build", deep, deep, home), null);
+  assert.notEqual(wipeRisk("(cd ~/Documents && rm -rf *)", home, home), null);
+  assert.notEqual(wipeRisk("ls | xargs -I % rm -rf %", home, home), null);
+  assert.equal(wipeRisk("ls | xargs -I{} rm -rf {}", deep, deep, home), null);
+  assert.notEqual(wipeRisk("ls ~ | xargs sh -c 'rm -rf ~'", home, home), null);
+  assert.notEqual(wipeRisk("echo x | xargs -I{} sh -c 'rm -rf ~/Documents'", home, home), null);
+  // A single file directly under a real home is an everyday delete; a
+  // folder in the same place is a wipe.
+  const realHome = realpathSync(mkdtempSync(join(tmpdir(), "ub-wipe-home-")));
+  try {
+    writeFileSync(join(realHome, "notes.txt"), "x", "utf8");
+    mkdirSync(join(realHome, "Documents"));
+    assert.equal(wipeRisk("rm ~/notes.txt", realHome, realHome), null);
+    assert.equal(wipeRisk("rm -rf notes.txt", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/Documents", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/Missing", realHome, realHome), null);
+    assert.equal(wipeRisk("rm ~/missing.txt", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/.config", realHome, realHome), null);
+    assert.notEqual(wipeRisk("rm -rf ~/.ssh", realHome, realHome), null);
+    // A shell script run by name is judged by its lines; one that only
+    // tidies runs, one that wipes asks, and a chain that loops ends.
+    mkdirSync(join(realHome, "bin"));
+    writeFileSync(join(realHome, "bin", "tidy.sh"), "#!/bin/sh\n# tidy\nrm -rf ~/Desktop/project/build\n", "utf8");
+    writeFileSync(join(realHome, "bin", "wipe.sh"), "#!/bin/bash\nset -e\ncd ~/Documents && rm -rf .\n", "utf8");
+    writeFileSync(join(realHome, "bin", "loop.sh"), "#!/bin/sh\nbash ~/bin/loop.sh\n", "utf8");
+    writeFileSync(join(realHome, "bin", "tidy.py"), "import shutil\nshutil.rmtree('/Users/owner/Documents')\n", "utf8");
+    writeFileSync(join(realHome, "bin", "wipe.fish"), "#!/usr/bin/env fish\nrm -rf ~/Documents\n", "utf8");
+    writeFileSync(join(realHome, "bin", "cont.sh"), "#!/bin/sh\nrm -rf \\\n  ~/Documents\n", "utf8");
+    assert.notEqual(wipeRisk("fish bin/wipe.fish", realHome, realHome), null);
+    assert.notEqual(wipeRisk("bash bin/cont.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("bash bin/tidy.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("./bin/tidy.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("bash bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("sh ~/bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("./bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("source bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk(". ~/bin/wipe.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("source bin/tidy.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("bash < bin/wipe.sh", realHome, realHome), null);
+    assert.notEqual(wipeRisk("cat ~/bin/wipe.sh | bash", realHome, realHome), null);
+    assert.equal(wipeRisk("cat bin/tidy.sh | sh", realHome, realHome), null);
+    assert.equal(wipeRisk("bash bin/loop.sh", realHome, realHome), null);
+    assert.equal(wipeRisk("python3 bin/tidy.py", realHome, realHome), null);
+    assert.equal(wipeRisk("bash bin/missing.sh", realHome, realHome), null);
+  } finally {
+    rmSync(realHome, { recursive: true, force: true });
+  }
 });
