@@ -850,15 +850,24 @@ private struct WorkingRow: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || scenePhase != .active)) { context in
-            let wave = reduceMotion ? 0 : Self.wave(context.date.timeIntervalSince(started))
+            let elapsed = context.date.timeIntervalSince(started)
+            let wave = reduceMotion ? 0 : Self.wave(elapsed)
             // Sits where the reply will, so the text does not jump sideways
             // when the first token lands.
             HStack(alignment: .center, spacing: 10) {
                 // The face is drawn a shade larger than a reply avatar, but
                 // its box is not, so the label keeps the reply's left edge.
-                BrandMotionView(size: 28, color: BrandAssets.colorID(for: bot), avatar: true)
-                    .scaleEffect(1 + 0.04 * wave)
-                    .frame(width: Self.height, height: Self.height)
+                // One timeline drives the face and the breath: a
+                // `BrandMotionView` here would run a second one inside it.
+                BrandMotionFrameView(
+                    frame: BrandAssets.motion.frame(at: elapsed, reducedMotion: reduceMotion),
+                    size: 28,
+                    color: BrandAssets.colorID(for: bot),
+                    avatar: true
+                )
+                .frame(width: 28, height: 28)
+                .scaleEffect(1 + 0.04 * wave)
+                .frame(width: Self.height, height: Self.height)
                 Text(activity.label)
                     .lineLimit(1)
                     .truncationMode(.tail)
