@@ -373,7 +373,8 @@ public struct ApprovalItem: Codable, Identifiable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case id, actionSha256, preview, tool }
 }
 
-/// `/api/providers` row, mirrored from `ProviderPublic`.
+/// `/api/providers` row, mirrored from `ProviderPublic`. Legacy shape, kept so
+/// the old settings dialog path and existing tests keep decoding.
 public struct ProviderPublic: Codable, Identifiable, Equatable, Sendable {
     public let id: String
     public let name: String
@@ -400,6 +401,252 @@ public struct ProviderPublic: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, hint, compatible, connected, last4, source, active
+    }
+}
+
+/// One extra text field the connect sheet collects, from `ProviderMode.fields`.
+public struct CatalogField: Codable, Equatable, Sendable {
+    public let id: String
+    public let label: String
+    public let placeholder: String
+    public var secret: Bool
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = (try? c.decode(String.self, forKey: .label)) ?? id
+        placeholder = (try? c.decode(String.self, forKey: .placeholder)) ?? ""
+        secret = (try? c.decode(Bool.self, forKey: .secret)) ?? false
+    }
+
+    public init(id: String, label: String, placeholder: String, secret: Bool = false) {
+        self.id = id
+        self.label = label
+        self.placeholder = placeholder
+        self.secret = secret
+    }
+
+    enum CodingKeys: String, CodingKey { case id, label, placeholder, secret }
+}
+
+/// One connectable (provider, mode) row from `GET /api/providers`, mirrored
+/// from `CatalogPublic`. Decode is tolerant like `ProviderPublic`: unknown keys
+/// are ignored and missing optionals fall back instead of failing the payload.
+public struct CatalogPublic: Codable, Identifiable, Equatable, Sendable {
+    public let providerId: String
+    public let mode: String
+    public let label: String
+    public let kindLabel: String
+    public let monogram: String
+    public let hint: String
+    public let keyUrl: String?
+    public var fields: [CatalogField]?
+    public var oauth: Bool
+    public var connected: Bool
+
+    public var id: String { "\(providerId):\(mode)" }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        providerId = try c.decode(String.self, forKey: .providerId)
+        mode = (try? c.decode(String.self, forKey: .mode)) ?? "api"
+        label = (try? c.decode(String.self, forKey: .label)) ?? providerId
+        kindLabel = (try? c.decode(String.self, forKey: .kindLabel)) ?? "API"
+        monogram = (try? c.decode(String.self, forKey: .monogram)) ?? "?"
+        hint = (try? c.decode(String.self, forKey: .hint)) ?? ""
+        keyUrl = try? c.decodeIfPresent(String.self, forKey: .keyUrl)
+        fields = try? c.decodeIfPresent([CatalogField].self, forKey: .fields)
+        oauth = (try? c.decode(Bool.self, forKey: .oauth)) ?? false
+        connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case providerId, mode, label, kindLabel, monogram, hint, keyUrl, fields, oauth, connected
+    }
+}
+
+/// One model listed for a connection.
+public struct ConnectionModelOption: Codable, Equatable, Sendable {
+    public let id: String
+    public let label: String
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = (try? c.decode(String.self, forKey: .label)) ?? id
+    }
+
+    enum CodingKeys: String, CodingKey { case id, label }
+}
+
+/// One connected connection from `GET /api/providers`, mirrored from
+/// `ConnectionPublic`. Never carries a key, only `last4`.
+public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
+    public let id: String
+    public let providerId: String
+    public let mode: String
+    public let label: String
+    public let kindLabel: String
+    public let monogram: String
+    public var connected: Bool
+    public let last4: String?
+    public let source: String?
+    public var active: Bool
+    public var status: String
+    public let lastError: String?
+    public let accountId: String?
+    public var fields: [String: String]
+    public var models: [ConnectionModelOption]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        providerId = (try? c.decode(String.self, forKey: .providerId)) ?? id
+        mode = (try? c.decode(String.self, forKey: .mode)) ?? "api"
+        label = (try? c.decode(String.self, forKey: .label)) ?? providerId
+        kindLabel = (try? c.decode(String.self, forKey: .kindLabel)) ?? "API"
+        monogram = (try? c.decode(String.self, forKey: .monogram)) ?? "?"
+        connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
+        last4 = try? c.decodeIfPresent(String.self, forKey: .last4)
+        source = try? c.decodeIfPresent(String.self, forKey: .source)
+        active = (try? c.decode(Bool.self, forKey: .active)) ?? false
+        status = (try? c.decode(String.self, forKey: .status)) ?? "ok"
+        lastError = try? c.decodeIfPresent(String.self, forKey: .lastError)
+        accountId = try? c.decodeIfPresent(String.self, forKey: .accountId)
+        fields = (try? c.decode([String: String].self, forKey: .fields)) ?? [:]
+        models = (try? c.decode([ConnectionModelOption].self, forKey: .models)) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, providerId, mode, label, kindLabel, monogram, connected, last4
+        case source, active, status, lastError, accountId, fields, models
+    }
+}
+
+/// One reasoning effort choice on a role.
+public struct RoleEffortOption: Codable, Equatable, Sendable {
+    public let id: String
+    public let label: String
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = (try? c.decode(String.self, forKey: .label)) ?? id
+    }
+
+    enum CodingKeys: String, CodingKey { case id, label }
+}
+
+/// One model choice on a role, grouped by its connection.
+public struct RoleModelOption: Codable, Equatable, Sendable {
+    public let connectionId: String
+    public let connectionLabel: String
+    public let id: String
+    public let label: String
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        connectionId = (try? c.decode(String.self, forKey: .connectionId)) ?? ""
+        connectionLabel = (try? c.decode(String.self, forKey: .connectionLabel)) ?? ""
+        id = try c.decode(String.self, forKey: .id)
+        label = (try? c.decode(String.self, forKey: .label)) ?? id
+    }
+
+    enum CodingKeys: String, CodingKey { case connectionId, connectionLabel, id, label }
+}
+
+/// One task-model role from `GET /api/providers`, mirrored from `RolePublic`.
+public struct RolePublic: Codable, Equatable, Sendable {
+    public var connectionId: String?
+    public var connectionLabel: String
+    public var modelId: String
+    public var modelLabel: String
+    public var effort: String?
+    public var effortLabel: String?
+    public var efforts: [RoleEffortOption]
+    public var models: [RoleModelOption]
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        connectionId = try? c.decodeIfPresent(String.self, forKey: .connectionId)
+        connectionLabel = (try? c.decode(String.self, forKey: .connectionLabel)) ?? ""
+        modelId = (try? c.decode(String.self, forKey: .modelId)) ?? ""
+        modelLabel = (try? c.decode(String.self, forKey: .modelLabel)) ?? ""
+        effort = try? c.decodeIfPresent(String.self, forKey: .effort)
+        effortLabel = try? c.decodeIfPresent(String.self, forKey: .effortLabel)
+        efforts = (try? c.decode([RoleEffortOption].self, forKey: .efforts)) ?? []
+        models = (try? c.decode([RoleModelOption].self, forKey: .models)) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case connectionId, connectionLabel, modelId, modelLabel
+        case effort, effortLabel, efforts, models
+    }
+}
+
+/// `GET /api/providers` payload: the catalogue, the connected connections, the
+/// task-model roles, the composer state and the legacy rows the old web dialog
+/// still reads. Every section defaults, so a newer or older server cannot fail
+/// the whole pane.
+public struct ProvidersPayload: Decodable, Equatable, Sendable {
+    public var catalog: [CatalogPublic]
+    public var connections: [ConnectionPublic]
+    public var defaultRole: RolePublic?
+    public var reviewerRole: RolePublic?
+    public var composer: ComposerState?
+    public var legacyProviders: [ProviderPublic]
+    public var legacyActiveProviderId: String?
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        catalog = (try? c.decode([CatalogPublic].self, forKey: .catalog)) ?? []
+        connections = (try? c.decode([ConnectionPublic].self, forKey: .connections)) ?? []
+        if let roles = try? c.nestedContainer(keyedBy: RoleKeys.self, forKey: .roles) {
+            defaultRole = try? roles.decodeIfPresent(RolePublic.self, forKey: .default)
+            reviewerRole = try? roles.decodeIfPresent(RolePublic.self, forKey: .reviewer)
+        } else {
+            defaultRole = nil
+            reviewerRole = nil
+        }
+        composer = try? c.decodeIfPresent(ComposerState.self, forKey: .composer)
+        legacyProviders = (try? c.decode([ProviderPublic].self, forKey: .providers)) ?? []
+        legacyActiveProviderId = try? c.decodeIfPresent(String.self, forKey: .activeProviderId)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case catalog, connections, roles, composer, providers, activeProviderId
+    }
+
+    enum RoleKeys: String, CodingKey { case `default`, reviewer }
+}
+
+/// `POST /api/providers/oauth` answer: what the device sheet shows.
+public struct DeviceFlowStart: Codable, Equatable, Sendable {
+    public let pollId: String
+    public let userCode: String
+    public let verificationUrl: String
+    public let verificationUrlComplete: String?
+    public let expiresAt: Double
+    public let intervalMs: Int
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pollId = try c.decode(String.self, forKey: .pollId)
+        userCode = (try? c.decode(String.self, forKey: .userCode)) ?? ""
+        verificationUrl = (try? c.decode(String.self, forKey: .verificationUrl)) ?? ""
+        verificationUrlComplete = try? c.decodeIfPresent(String.self, forKey: .verificationUrlComplete)
+        if let expires = try? c.decode(Double.self, forKey: .expiresAt) {
+            expiresAt = expires
+        } else if let millis = try? c.decode(Int.self, forKey: .expiresAt) {
+            expiresAt = Double(millis)
+        } else {
+            expiresAt = 0
+        }
+        intervalMs = (try? c.decode(Int.self, forKey: .intervalMs)) ?? 2000
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case pollId, userCode, verificationUrl, verificationUrlComplete, expiresAt, intervalMs
     }
 }
 

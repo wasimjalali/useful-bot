@@ -38,7 +38,6 @@ struct AppSettingsView: View {
 
     let onClose: () -> Void
     @State private var tab: AppSettingsTab
-    @State private var drafts: [String: String] = [:]
     /// The daily limit while it is being typed. The usage tab polls every few
     /// seconds, and the poll must not overwrite a half-typed number.
     @State private var editedBudget: String?
@@ -232,126 +231,7 @@ struct AppSettingsView: View {
     // MARK: - Providers
 
     private var providersPane: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Paste an API key or coding-plan key. Keys stay on this Mac. Chat uses the active provider.")
-                .font(.system(size: 14))
-                .foregroundStyle(Theme.C.inkMuted)
-            if let error = model.providersError {
-                Text(error)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.danger)
-            }
-            if model.providers == nil && model.providersError == nil {
-                Text("Loading providers.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.inkMuted)
-            }
-            if let providers = model.providers, providers.isEmpty {
-                Text("No providers are configured for this build.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.C.inkMuted)
-            }
-            ForEach(model.providers ?? []) { item in
-                providerSection(item)
-            }
-        }
-    }
-
-    private func providerSection(_ item: ProviderPublic) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.name)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Theme.C.ink)
-                    Text(item.hint)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkMuted)
-                }
-                Spacer(minLength: 0)
-                if item.active {
-                    settingsValue("Active")
-                }
-            }
-            settingsGroup {
-                settingsRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Status")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.C.ink)
-                        Text(statusCopy(item))
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.C.inkMuted)
-                    }
-                    Spacer(minLength: 0)
-                    if item.connected && item.compatible && !item.active {
-                        NativeButton("Use", kind: .secondary, small: true, enabled: model.providerBusy != item.id) {
-                            Task { await model.activateProvider(id: item.id) }
-                        }
-                    }
-                }
-                settingsRow(last: true) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        SecureField(item.connected ? "Replace key" : "Paste key", text: draftBinding(item.id))
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.C.ink)
-                            .padding(.horizontal, 12)
-                            .frame(minHeight: 40)
-                            .background(Theme.C.surface)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                                    .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
-                            .accessibilityLabel("API key")
-                            .onSubmit { connect(item) }
-                        HStack(spacing: 8) {
-                            NativeButton("Connect", kind: .primary, enabled: canConnect(item)) {
-                                connect(item)
-                            }
-                            if item.connected && item.source == "settings" {
-                                NativeButton("Remove", kind: .secondary, enabled: model.providerBusy != item.id) {
-                                    Task { await model.disconnectProvider(id: item.id) }
-                                }
-                            }
-                            Spacer(minLength: 0)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func statusCopy(_ item: ProviderPublic) -> String {
-        guard item.connected else { return "Not connected" }
-        if let last4 = item.last4, !last4.isEmpty { return "Connected · …\(last4)" }
-        return "Connected on this Mac"
-    }
-
-    private func canConnect(_ item: ProviderPublic) -> Bool {
-        model.providerBusy != item.id
-            && !(drafts[item.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func connect(_ item: ProviderPublic) {
-        guard canConnect(item) else { return }
-        let key = (drafts[item.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        Task {
-            await model.connectProvider(id: item.id, key: key)
-            // Keep the key on screen when the connect failed so it can be
-            // corrected and retried.
-            if model.providersError == nil {
-                drafts[item.id] = ""
-            }
-        }
-    }
-
-    private func draftBinding(_ id: String) -> Binding<String> {
-        Binding(
-            get: { drafts[id] ?? "" },
-            set: { drafts[id] = $0 }
-        )
+        ProvidersPaneView()
     }
 
     // MARK: - Computer

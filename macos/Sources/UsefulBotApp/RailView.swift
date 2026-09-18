@@ -389,6 +389,11 @@ struct RailView: View {
                 onOpenAppSettings(.usage)
             }
             .accessibilityIdentifier("account-usage")
+            popItem(icon: "server.rack", title: "Providers") {
+                accountOpen = false
+                onOpenAppSettings(.providers)
+            }
+            .accessibilityIdentifier("account-providers")
             popItem(icon: "gearshape", title: "Settings") {
                 accountOpen = false
                 onOpenAppSettings(.general)
