@@ -650,6 +650,12 @@ function activeConnection(store: ProviderStore, env: NodeJS.ProcessEnv): Connect
   return null;
 }
 
+/** The name a connection shows: a custom server's own name, else the mode label. */
+function connectionLabel(conn: Pick<Connection, "providerId" | "mode" | "fields">): string {
+  if (conn.providerId === "custom" && conn.fields.name) return conn.fields.name;
+  return providerMode(conn.providerId, conn.mode).label;
+}
+
 function modelRows(id: string): Array<{ id: string; label: string }> {
   return catalogFor(id).map((item) => ({ id: item.id, label: item.label }));
 }
@@ -667,7 +673,7 @@ function publicConnection(conn: Connection, activeId: string | null): Connection
     id: conn.id,
     providerId: conn.providerId,
     mode: conn.mode,
-    label: mode.label,
+    label: connectionLabel(conn),
     kindLabel: mode.kindLabel,
     monogram: def.monogram,
     icon: def.icon,
@@ -749,7 +755,7 @@ export function publicProviders(
 
   const pickerModels: RolePublic["models"] = [];
   for (const conn of listed.filter((row) => connectedIds.has(row.id))) {
-    const label = providerMode(conn.providerId, conn.mode).label;
+    const label = connectionLabel(conn);
     const icon = providerDef(conn.providerId).icon;
     for (const row of modelRows(conn.id)) {
       pickerModels.push({ connectionId: conn.id, connectionLabel: label, icon, id: row.id, label: row.label });
@@ -776,7 +782,7 @@ export function publicProviders(
   let reviewer: RolePublic;
   if (reviewerSel) {
     const conn = listed.find((row) => row.id === reviewerSel.connectionId) ?? null;
-    const label = conn ? providerMode(conn.providerId, conn.mode).label : reviewerSel.connectionId;
+    const label = conn ? connectionLabel(conn) : reviewerSel.connectionId;
     const rows = conn ? modelRows(conn.id) : [];
     const picked = rows.find((row) => row.id === reviewerSel.modelId) ?? rows[0] ?? null;
     const modelLabel = picked?.label ?? humanizeModelId(reviewerSel.modelId);
@@ -862,7 +868,7 @@ export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = pro
   });
   const groups: ComposerGroup[] = ordered.map((row) => ({
     connectionId: row.id,
-    label: providerMode(row.providerId, row.mode).label,
+    label: connectionLabel(row),
     icon: providerDef(row.providerId).icon,
     models: modelRows(row.id),
   }));
