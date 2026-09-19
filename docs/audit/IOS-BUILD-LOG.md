@@ -255,8 +255,28 @@ appearances).
 
 Round 3: fresh sessions (correctness `devin-509147df56864b52be718ba549590570`,
 security `devin-9429754199cf4776a6091a957b91f7c0`, design-a11y
-`devin-612facd0d2ff4ec790175358a77ec97b`). Correctness and security both
-returned findings; design-a11y still running at commit time.
+`devin-612facd0d2ff4ec790175358a77ec97b`). All three returned findings.
+
+Design-a11y (5, landed in `21331d6`):
+1. [medium] `PressedScale`'s ink overlay is invisible over `brand`/`accent`
+   fills (`ink == accent` in both palettes), so the mandated press step was
+   scale-only and Reduce Motion produced zero feedback -> `PressedScale`
+   gains `fill`/`pressedFill`/`shadowed`; the Connect button's fill moved
+   into the style and presses step `brand -> accentStrong` (the macOS
+   `accent -> accentStrong` precedent). `sunken` fills keep the ink overlay.
+2. [low] `ManualPairingView`'s focus-ring animation used `.easeOut`, not the
+   mandated curve -> `.timingCurve(0.22, 1, 0.36, 1, Motion.fast)`.
+3. [low] "Enter manually" floated ~57 pt high off a magic
+   `minHeight: proxy.size.height - 40` -> `minHeight: proxy.size.height`,
+   matching the manual screen's `sheetInset` + safe-area anchor.
+4. [low] deprecated `.navigationBarHidden(true)` -> `.toolbar(.hidden, for:
+   .navigationBar)`.
+5. [low] the visual gate never shot focused/ready/keyboard-up states ->
+   UITest now captures `pairing-manual-focused` and `pairing-manual-ready`
+   on every device/appearance/size combo; `pairing-manual-keyboard`
+   (light + dark, 390 pt) captured via `simctl io screenshot` in Simulator.app
+   because XCUITest runs with the hardware keyboard connected and never shows
+   the software keyboard.
 
 Correctness (2):
 1. [high] seven non-2xx write paths (`providersWrite`, `startOAuth`,
@@ -283,4 +303,9 @@ Security (3):
 
 Round-3 verification after fixes: `make -C macos test` 285/285 (five new);
 `UsefulBotCoreTests` 264/264 on the simulator; `xcodegen generate` run after
-the new test file was added so the iOS target picks it up.
+the new test file was added so the iOS target picks it up. After the
+design-a11y fixes (`21331d6`): UITests 4/4 at 390 pt and 4/4 at 375 pt with
+the new states, macOS 285/285, verify-release PASS, `npm test` 538/538,
+xcodegen no-diff, 34 screenshots in `docs/audit/ios-shots/PR-1/`. One
+flake was hit and re-run green: `aPortThatIsStillComingUpIsNotKilledAsWedged`
+(macOS, timing-sensitive port test, unrelated to this branch).
