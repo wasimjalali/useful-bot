@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseConnectionId, providerMode, type KeyHeader } from "./provider-catalog.ts";
-import { isEffortId, mergeLiveModels, modelsFor, type EffortId, type ModelMeta, type ModelOption } from "./models.ts";
+import { EFFORTS, isEffortId, mergeLiveModels, modelsFor, type EffortId, type ModelMeta, type ModelOption } from "./models.ts";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 /** Context windows and modalities change with releases, not by the hour. */
@@ -135,7 +135,10 @@ export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
     if (Array.isArray(rec.supported_reasoning_levels)) {
       const efforts = rec.supported_reasoning_levels
         .map((level) => (level as { effort?: unknown } | null)?.effort)
-        .filter((effort): effort is EffortId => isEffortId(effort));
+        .filter((effort): effort is EffortId => isEffortId(effort))
+        // Vendor order is not level order ("minimal" can come last), so sort
+        // onto this app's ladder: the menu reads low to max and [0] is lowest.
+        .sort((a, b) => EFFORTS.indexOf(a) - EFFORTS.indexOf(b));
       if (efforts.length > 0) {
         meta.efforts = efforts;
         // A default this app cannot express ("minimal") snaps to the lowest

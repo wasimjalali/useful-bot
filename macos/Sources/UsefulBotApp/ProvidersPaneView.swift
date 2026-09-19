@@ -876,6 +876,9 @@ struct ProvidersCardHost: View {
             .dismissOnOutsideClick(triggers: { ProvidersTriggerFrames.shared.allFrames() }) {
                 openCard = nil
             }
+            // The host outlives a switch from one card to another; the new
+            // card must not open at the last card's height.
+            .onChange(of: card) { rowsHeight = 0 }
     }
 
     @ViewBuilder
@@ -899,7 +902,8 @@ struct ProvidersCardHost: View {
     /// menu hanging down to the bottom of the dialog. So the rows are measured
     /// at their natural height (from a hidden copy, since the one inside the
     /// scroll view is laid out by AppKit) and the card takes exactly that, up
-    /// to the cap. Before the first measure the card is zero tall for a frame.
+    /// to the cap. Before the first measure (a fresh card, or a switch from
+    /// another one) the card is zero tall for a frame.
     private func fitOrScroll<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         let rows = content()
         return ScrollView { rows }

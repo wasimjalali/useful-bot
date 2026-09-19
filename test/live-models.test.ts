@@ -181,7 +181,7 @@ test("the ChatGPT Codex list is read by slug with hidden models left out", async
         visibility: "list",
         input_modalities: [],
         default_reasoning_level: "minimal",
-        supported_reasoning_levels: [{ effort: "minimal" }, { effort: "high" }, { effort: "max" }],
+        supported_reasoning_levels: [{ effort: "max" }, { effort: "minimal" }, { effort: "high" }],
       },
       {
         slug: "gpt-6-astra",
