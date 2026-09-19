@@ -1006,6 +1006,22 @@ export function setComposer(
   };
 }
 
+/**
+ * What the composer sends when the owner picks a model: "<connectionId>::<modelId>"
+ * switches the chat connection and the model in one write, so the next turn
+ * goes to that connection with its own credential, whichever connection was
+ * active before. A bare model id keeps the connection and changes the model.
+ */
+export function pickComposerModel(store: ProviderStore, pick: string, env: NodeJS.ProcessEnv = process.env): ProviderStore {
+  const sep = pick.lastIndexOf("::");
+  if (sep < 0) return setComposer(store, { modelId: pick });
+  const connId = pick.slice(0, sep);
+  const modelId = pick.slice(sep + 2);
+  parseConnectionId(connId);
+  const next = setActiveConnection(store, connId, env);
+  return modelId ? setComposer(next, { modelId }) : next;
+}
+
 function substituteBaseUrl(mode: ProviderMode, fields: Record<string, string>): string {
   return mode.baseUrl.replace(/\{(\w+)\}/g, (_, name: string) => fields[name] ?? "");
 }

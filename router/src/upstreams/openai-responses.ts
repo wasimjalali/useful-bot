@@ -96,21 +96,76 @@ function toResponsesToolChoice(choice: unknown): unknown {
   throw new RouterError({ status: 502, type: "upstream_error", code: "upstream_protocol_error", message: "upstream_protocol_error" });
 }
 
-/** The router's chat body (post applyReasoning) to a Responses request. */
+/**
+ * The ChatGPT Codex backend answers 400 to a request with no `instructions`
+ * ("Instructions are required"), so a turn with no system message still
+ * carries one.
+ */
+export const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
+
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * The ChatGPT Codex backend takes the system prompt as `instructions`, the way
+ * the Codex CLI sends it, not as a system row in `input`. The leading run of
+ * system messages becomes `instructions`; a system message later in the
+ * history keeps its place as a `developer` row, which is the role the Codex
+ * CLI uses for mid-conversation guidance on this backend.
+ */
+export function splitChatGptInstructions(messages: unknown): { instructions: string; messages: unknown[] } {
+  if (!Array.isArray(messages)) return { instructions: DEFAULT_INSTRUCTIONS, messages: [] };
+  const lead: string[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    const item = messages[index];
+    if (!isRecord(item) || item.role !== "system") break;
+    const text = textOf(item.content);
+    if (text) lead.push(text);
+    index += 1;
+  }
+  const rest = messages.slice(index).map((item) => (
+    isRecord(item) && item.role === "system" ? { ...item, role: "developer" } : item
+  ));
+  return { instructions: lead.join("\n\n") || DEFAULT_INSTRUCTIONS, messages: rest };
+}
+
+/**
+ * The router's chat body (post applyReasoning) to a Responses request.
+ *
+ * `chatgpt` is the Codex backend behind a ChatGPT sign-in. It is stricter
+ * than the Responses API on api.openai.com: `store` must be false, the call
+ * must stream, `instructions` must be present and non-empty, and
+ * `max_output_tokens` is refused (the Codex CLI never sends it). Every
+ * ChatGPT turn used to fail on the last two before a model ran, and the
+ * router reported the 400 as a bare upstream_protocol_error.
+ */
 export function buildResponsesBody(
   chatBody: Record<string, unknown>,
   opts: { model: string; chatgpt: boolean },
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {
     model: opts.model,
-    stream: chatBody.stream === true,
+    stream: opts.chatgpt || chatBody.stream === true,
     store: false,
   };
-  if (opts.chatgpt) out.include = ["reasoning.encrypted_content"];
-  out.input = toResponsesInput(chatBody.messages);
+  if (opts.chatgpt) {
+    out.include = ["reasoning.encrypted_content"];
+    const split = splitChatGptInstructions(chatBody.messages);
+    out.instructions = split.instructions;
+    out.input = toResponsesInput(split.messages);
+  } else {
+    out.input = toResponsesInput(chatBody.messages);
+  }
   if (chatBody.tools !== undefined) out.tools = toResponsesTools(chatBody.tools);
   if (chatBody.tool_choice !== undefined) out.tool_choice = toResponsesToolChoice(chatBody.tool_choice);
-  if (typeof chatBody.max_tokens === "number") out.max_output_tokens = chatBody.max_tokens;
+  if (!opts.chatgpt && typeof chatBody.max_tokens === "number") out.max_output_tokens = chatBody.max_tokens;
   if (typeof chatBody.reasoning_effort === "string") out.reasoning = { effort: chatBody.reasoning_effort };
   if (typeof chatBody.service_tier === "string") out.service_tier = chatBody.service_tier;
   return out;
@@ -389,6 +444,86 @@ export async function translateResponsesStream(upstream: Response, model: string
   });
 }
 
+/**
+ * A caller that did not ask to stream (the reviewer) still has to stream on
+ * the ChatGPT backend. The translated chunks fold back into the one
+ * chat.completion the caller expects; an error event becomes the 502 the
+ * non-stream path already raises for a malformed answer.
+ */
+export async function collectChatCompletion(translated: Response, model: string): Promise<Response> {
+  const text = await translated.text();
+  const texts: string[] = [];
+  const reasoning: string[] = [];
+  const tools = new Map<number, { id: string; name: string; arguments: string }>();
+  let finish: string | null = null;
+  let usage: unknown = undefined;
+  let id = "chatcmpl-resp";
+  let errored: Record<string, unknown> | null = null;
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    for (const line of block.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let event: unknown = null;
+      try {
+        event = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (!isRecord(event)) continue;
+      if (isRecord(event.error)) {
+        errored = event.error;
+        continue;
+      }
+      if (typeof event.id === "string") id = event.id;
+      if (event.usage !== undefined) usage = event.usage;
+      const choices = Array.isArray(event.choices) ? event.choices : [];
+      for (const choice of choices) {
+        if (!isRecord(choice)) continue;
+        if (typeof choice.finish_reason === "string") finish = choice.finish_reason;
+        const delta = isRecord(choice.delta) ? choice.delta : {};
+        if (typeof delta.content === "string") texts.push(delta.content);
+        if (typeof delta.reasoning_content === "string") reasoning.push(delta.reasoning_content);
+        if (Array.isArray(delta.tool_calls)) {
+          for (const call of delta.tool_calls) {
+            if (!isRecord(call) || typeof call.index !== "number") continue;
+            const fn = isRecord(call.function) ? call.function : {};
+            const entry = tools.get(call.index) ?? { id: "", name: "", arguments: "" };
+            if (typeof call.id === "string") entry.id = call.id;
+            if (typeof fn.name === "string") entry.name = fn.name;
+            if (typeof fn.arguments === "string") entry.arguments += fn.arguments;
+            tools.set(call.index, entry);
+          }
+        }
+      }
+    }
+  }
+  if (errored) {
+    throw new RouterError({
+      status: 502,
+      type: "upstream_error",
+      code: "upstream_protocol_error",
+      message: typeof errored.message === "string" && errored.message ? errored.message : "upstream_protocol_error",
+    });
+  }
+  const message: Record<string, unknown> = { role: "assistant", content: texts.join("") || null };
+  if (reasoning.length > 0) message.reasoning_content = reasoning.join("");
+  const toolCalls = [...tools.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, call]) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments || "{}" } }));
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
+  const out: Record<string, unknown> = {
+    id,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [{ index: 0, message, finish_reason: finish ?? (toolCalls.length > 0 ? "tool_calls" : "stop") }],
+  };
+  if (usage !== undefined) out.usage = usage;
+  return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
+}
+
 export async function postResponses(input: {
   baseUrl: string;
   model: string;
@@ -408,7 +543,11 @@ export async function postResponses(input: {
     signal: input.signal,
   });
   if (!res.ok) return res;
-  if (outgoing.stream === true) return translateResponsesStream(res, input.model);
+  if (outgoing.stream === true) {
+    const translated = await translateResponsesStream(res, input.model);
+    // The caller did not stream; the ChatGPT backend made this call stream anyway.
+    return input.body.stream === true ? translated : collectChatCompletion(translated, input.model);
+  }
   let raw: unknown;
   try {
     raw = await res.json();

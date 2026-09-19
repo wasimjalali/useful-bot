@@ -13,6 +13,7 @@ import {
   clearProviderKey,
   composerState,
   legacyProviders,
+  pickComposerModel,
   publicProviders,
   readProviderStore,
   setActiveConnection,
@@ -137,21 +138,12 @@ export async function PUT(request: Request) {
         : (typeof body.activeProviderId === "string" ? legacyConnectionId(body.activeProviderId) : "");
       store = setActiveConnection(store, target);
     }
-    let modelPatch = typeof body.modelId === "string" ? body.modelId : undefined;
-    if (modelPatch !== undefined) {
+    if (typeof body.modelId === "string") {
       // "<connectionId>::<modelId>" switches connection and model in one write.
-      const sep = modelPatch.lastIndexOf("::");
-      if (sep >= 0) {
-        const connId = modelPatch.slice(0, sep);
-        const modelId = modelPatch.slice(sep + 2);
-        parseConnectionId(connId);
-        store = setActiveConnection(store, connId);
-        modelPatch = modelId || undefined;
-      }
+      store = pickComposerModel(store, body.modelId);
     }
-    if (modelPatch !== undefined || body.effort !== undefined || body.speed !== undefined) {
+    if (body.effort !== undefined || body.speed !== undefined) {
       store = setComposer(store, {
-        modelId: modelPatch,
         effort: body.effort === null || isEffortId(body.effort) ? body.effort : undefined,
         speed: isSpeedId(body.speed) ? body.speed : undefined,
       });
