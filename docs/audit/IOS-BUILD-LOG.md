@@ -205,8 +205,9 @@ green; UITests 4/4 at 390 pt and 4/4 at 375 pt; screenshots re-exported.
 Round 2: fresh reviewer sessions (correctness
 `devin-5bf97325aa154436a1cdda9974cd0eff`, security
 `devin-9c750729a2fe49b79940f8bd29ef9d8e`, design-a11y
-`devin-992e758f1cfa406eaba9c54b4f43ee4c`). Design-a11y and security both
-returned findings; correctness still running at commit time for this fix set.
+`devin-992e758f1cfa406eaba9c54b4f43ee4c`). All three requested changes;
+correctness overlapped security on the 403 stream/retry and single-flight
+findings (both fixed in the same commit) plus one new one.
 
 Security (4):
 1. [medium] the round-1 403 fix stopped at `expectOK`: the stream path still
@@ -237,6 +238,14 @@ Design-a11y (7):
 6. [low] the title lacked the header trait -> `.isHeader` added.
 7. [low] `TARGETED_DEVICE_FAMILY=1` excluded iPad though spec F5 supports it
    -> `1,2`, with all-orientation Info.plist keys scoped to iPad.
+
+Correctness (4):
+1. [medium] same stream/perform 403 gap as security #1 -> same fix.
+2. [low] `ScaledTokenFont.style(for:)` rounded up instead of nearest
+   (15 -> callout, 16 -> subheadline, 22 -> title3) -> boundaries are now
+   the midpoints between the ten real style sizes (11..34).
+3. [low] same missing single-flight as security #3 -> same fix.
+4. [low] same unbounded `readBody` drain as security #4 -> same fix.
 
 Round-2 verification after fixes: `make -C macos test` 280/280; iOS build
 green; `UsefulBotCoreTests` 259/259 on the simulator; UITests 4/4 at 390 pt

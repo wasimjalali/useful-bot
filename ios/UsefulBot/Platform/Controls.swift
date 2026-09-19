@@ -40,17 +40,19 @@ private struct ScaledTokenFont: ViewModifier {
         self.weight = weight
     }
 
+    // Style sizes are 11/12/13/15/16/17/20/22/28/34; the nearest style for a
+    // token size is decided at the midpoint between neighbors.
     private static func style(for size: CGFloat) -> Font.TextStyle {
         switch size {
-        case ..<12: return .caption2
-        case ..<13: return .caption
-        case ..<15: return .footnote
-        case ..<16: return .callout
-        case ..<17: return .subheadline
-        case ..<20: return .body
-        case ..<24: return .title3
-        case ..<28: return .title2
-        case ..<34: return .title
+        case ..<11.5: return .caption2
+        case ..<12.5: return .caption
+        case ..<14: return .footnote
+        case ..<15.5: return .subheadline
+        case ..<16.5: return .callout
+        case ..<18.5: return .body
+        case ..<21: return .title3
+        case ..<25: return .title2
+        case ..<31: return .title
         default: return .largeTitle
         }
     }
