@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Why `ensure` finished the way it did. The caller needs the node-missing
@@ -519,3 +520,5 @@ public struct FoundationProcessRunner: ProcessRunner {
         try? handle.write(contentsOf: Data("[\(stamp)] \(line)\n".utf8))
     }
 }
+
+#endif

@@ -173,6 +173,13 @@ struct WidgetWebView: NSViewRepresentable {
         /// export's link follows that round trip, well after the click.
         private var clickedCallDone = Date.distantPast
 
+        /// One client for every widget fetch. Each `BackendClient` owns a
+        /// private cookie jar, so a fresh client pays a full sign-in
+        /// (`security` CLI plus `POST /api/auth/session`); a per-load client
+        /// would let widget scrolling burn through the auth rate limit.
+        /// `DesktopEndpointPolicy` never rejects, so construction cannot fail.
+        private static let client = try! BackendClient(base: ServerConfig.resolved().baseURL)
+
         deinit { loading?.cancel() }
 
         func cancel() {
@@ -192,7 +199,7 @@ struct WidgetWebView: NSViewRepresentable {
             (view as? SizedWebView)?.forgetClick()
             loading?.cancel()
             loading = Task { @MainActor [weak view] in
-                let client = BackendClient(base: ServerConfig.resolved().baseURL)
+                let client = Self.client
                 // A live drawing renders before its save lands: a 404 in the
                 // first seconds means "not yet", not "gone".
                 for attempt in 0..<6 {
@@ -238,7 +245,9 @@ struct WidgetWebView: NSViewRepresentable {
                 let clicked = Self.justClicked(view)
                 Task { @MainActor in
                     do {
-                        let client = BackendClient(base: ServerConfig.resolved().baseURL)
+                        // Same per-load rationale as `Self.client`: a fresh
+                        // client per call pays a full sign-in each time.
+                        let client = Self.client
                         let result = try await client.widgetToolCall(id: widgetId, name: name, arguments: arguments)
                         // Credit only the page that asked: a slow call from a
                         // page since replaced must not open links for the next.

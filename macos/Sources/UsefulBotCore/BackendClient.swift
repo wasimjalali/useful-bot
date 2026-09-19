@@ -10,6 +10,13 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// The owner dismissed the Keychain prompt.
     case keychainCancelled
     case unauthorized
+    /// The credential itself was rejected (401 `credential_invalid` or a
+    /// terminal 401 on iOS): the app moves to `credentialInvalid` (§4.8),
+    /// never a re-auth.
+    case credentialInvalid
+    /// A 403 keeps its server code (`forbidden`, `origin`, `csrf`,
+    /// `ingress`, `phone_forbidden_action`): §8.4 surfaces it by code.
+    case forbidden(String)
     case http(Int)
     case decoding
     /// `/api/providers` answered with its own error code.
@@ -39,6 +46,10 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The Keychain prompt was dismissed. Retry and approve it to continue."
         case .unauthorized:
             return "The local server rejected the device token."
+        case .credentialInvalid:
+            return "This device's credential was revoked or expired. Pair again to reconnect."
+        case .forbidden(let code):
+            return "The server refused the request (\(code))."
         case .http(let status):
             // A status code is not an answer. The ones a send can actually
             // meet get said in words; the rest keep the number, which is at
@@ -241,37 +252,91 @@ private final class TaskBox: @unchecked Sendable {
 
 /// Talks to the local web server on behalf of the native app: device-token
 /// sign-in, the shell store, durable thread events, turn sending and the
-/// session event stream. Cookies live in the shared storage, so the proxy
-/// routes accept the same session the browser would use.
+/// session event stream. Cookies live in a jar private to this client, so the
+/// session never leaks into the shared storage other code might read.
 public actor BackendClient {
     public let base: URL
     private let session: URLSession
-    private let tokenService: String
+    private let tokenStore: any DeviceTokenStore
     private var csrf = ""
+    /// The one in-flight re-authentication; concurrent 401s share it.
+    private var reauthTask: Task<Void, Error>?
 
     public init(
         base: URL = URL(string: "http://127.0.0.1:4320")!,
+        tokenStore: any DeviceTokenStore,
+        endpointPolicy: any EndpointPolicy
+    ) throws {
+        try self.init(base: base, tokenStore: tokenStore, endpointPolicy: endpointPolicy, session: nil)
+    }
+
+    /// Test seam: a session built on a stubbed `URLProtocol` configuration
+    /// answers canned responses without a server.
+    init(
+        base: URL,
+        tokenStore: any DeviceTokenStore,
+        endpointPolicy: any EndpointPolicy,
+        session: URLSession?
+    ) throws {
+        // The device token and cookies ride on every request: the platform's
+        // policy decides which base is allowed to carry them.
+        self.base = try endpointPolicy.endpoint(for: base).baseURL
+        self.tokenStore = tokenStore
+        self.session = session ?? Self.makeSession()
+    }
+
+#if os(macOS)
+    /// The desktop construction the app has always used: the device token comes
+    /// from the login Keychain through `security`, and a non-loopback base
+    /// resolves to the supervised local service.
+    public init(
+        base: URL = URL(string: "http://127.0.0.1:4320")!,
         tokenService: String = "com.usefulbot.device.desktop"
-    ) {
-        // The device token and cookies ride on every request: the base must be
-        // loopback, never a LAN or remote host.
-        self.base = LocalHost.isLoopback(base.host) ? base : ServerConfig.resolved().baseURL
-        self.tokenService = tokenService
+    ) throws {
+        try self.init(
+            base: base,
+            tokenStore: ProcessDeviceTokenStore(service: tokenService),
+            endpointPolicy: DesktopEndpointPolicy()
+        )
+    }
+#endif
+
+    /// Internal (not private) so tests can pin the isolation controls.
+    static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.default
-        config.httpCookieStorage = .shared
+        config.httpCookieStorage = HTTPCookieStorage()
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 30
         config.waitsForConnectivity = false
-        self.session = URLSession(configuration: config)
+        // Authenticated GET bodies are the app's own cached state, not the
+        // shared URLCache's: §13 sanctions one cache and §4.8's unpair purge
+        // cannot reach Cache.db. No disk caching here.
+        config.urlCache = nil
+        return URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
+    }
+
+    /// Spec 4.7/8.1: follow no redirects. A 3xx from the server is an error
+    /// surfaced through `expectOK`, never silently followed with credentials.
+    /// Internal so tests can pin the delegate on the default session.
+    final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping @Sendable (URLRequest?) -> Void
+        ) {
+            completionHandler(nil)
+        }
     }
 
     // MARK: - Auth
 
     public func signIn() async throws {
-        // Read the Keychain off the actor executor: the security CLI can take
-        // seconds behind a prompt and must not block other requests.
-        let token = try await Task.detached { [tokenService] in
-            try Self.deviceToken(service: tokenService)
+        // Read the credential off the actor executor: a token store can block
+        // behind a Keychain prompt and must not stall other requests.
+        let token = try await Task.detached { [tokenStore] in
+            try tokenStore.token()
         }.value
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "POST"
@@ -279,7 +344,17 @@ public actor BackendClient {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
         guard (200...299).contains(http.statusCode) else {
+#if os(iOS)
+            // The device token is rejected: revoked, expired or disabled.
+            // That is terminal for the pairing, not a retryable 401 (§4.8).
+            if http.statusCode == 401 { throw BackendError.credentialInvalid }
+            if http.statusCode == 403 {
+                throw BackendError.forbidden(Self.errorCode(data) ?? "forbidden")
+            }
+            throw BackendError.http(http.statusCode)
+#else
             throw http.statusCode == 401 ? BackendError.unauthorized : BackendError.http(http.statusCode)
+#endif
         }
         if let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            let token = body["csrfToken"] as? String, !token.isEmpty {
@@ -294,7 +369,18 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         guard (200...299).contains(sessionHttp.statusCode) else {
+#if os(iOS)
+            // Same taxonomy as the POST above: a rejected credential is
+            // terminal, a 403 carries its code (§8.4).
+            throw Self.failure(
+                status: sessionHttp.statusCode,
+                code: Self.errorCode(sessionData),
+                fallback: "session_failed",
+                typed: { _ in .http(sessionHttp.statusCode) }
+            )
+#else
             throw BackendError.http(sessionHttp.statusCode)
+#endif
         }
         let body = (try? JSONSerialization.jsonObject(with: sessionData)) as? [String: Any]
         // A missing CSRF token would make every write 403 and loop through
@@ -303,50 +389,6 @@ public actor BackendClient {
             throw BackendError.unauthorized
         }
         csrf = csrfToken
-    }
-
-    private static func deviceToken(service: String) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", service, "-w"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            throw BackendError.deviceTokenMissing
-        }
-        // A locked Keychain can block the CLI behind a prompt; never stall the
-        // launch on it.
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning, Date() < deadline {
-            usleep(50_000)
-        }
-        if process.isRunning {
-            process.terminate()
-            // A Keychain unlock prompt ignores SIGTERM; give it a short grace
-            // then make sure the CLI cannot leak into the next launch.
-            let killDeadline = Date().addingTimeInterval(1)
-            while process.isRunning, Date() < killDeadline {
-                usleep(50_000)
-            }
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
-            // Still running past the deadline means it was waiting on an
-            // interaction prompt, not that the item is absent.
-            throw BackendError.keychainLocked
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw Self.keychainFailure(for: process.terminationStatus)
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let token = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !token.isEmpty else { throw BackendError.deviceTokenMissing }
-        return token
     }
 
     /// Maps the `security` CLI exit status to a specific Keychain failure.
@@ -364,15 +406,72 @@ public actor BackendClient {
         }
     }
 
+    /// §4.3.3/§8.5: re-auth is single-flight across requests and streams —
+    /// a burst of 401s shares one sign-in instead of stampeding the
+    /// rate-limited endpoint.
+    private func reauth() async throws {
+        if let task = reauthTask { return try await task.value }
+        let task = Task { try await signIn() }
+        reauthTask = task
+        defer { reauthTask = nil }
+        try await task.value
+    }
+
+    /// Pull the `{ok:false,error:"code"}` code out of a small error body.
+    private static func errorCode(_ data: Data) -> String? {
+        (try? JSONDecoder().decode(ShellErrorResponse.self, from: data))?.error
+    }
+
+    /// §6.2/§8.4 applied to the endpoints that decode `{error: code}` bodies:
+    /// on iOS a 401 is the terminal `credentialInvalid` (§4.8) and a 403 is
+    /// `forbidden(code)` — never the endpoint's own error shape; on macOS the
+    /// typed code (or its per-route fallback) stands, exactly as before.
+    private static func failure(
+        status: Int, code: String?, fallback: String, typed: (String) -> BackendError
+    ) -> BackendError {
+#if os(iOS)
+        if status == 401 { return .credentialInvalid }
+        if status == 403 { return .forbidden(code?.isEmpty == false ? code! : "forbidden") }
+        if let code, !code.isEmpty { return typed(code) }
+        return .http(status)
+#else
+        return typed(code?.isEmpty == false ? code! : fallback)
+#endif
+    }
+
+    /// The same code read off a failed stream's body: bounded to a prefix so
+    /// a malformed endpoint cannot pin the reader.
+    private static func errorCode(_ bytes: URLSession.AsyncBytes) async throws -> String? {
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+            if data.count >= 4096 { break }
+        }
+        return errorCode(data)
+    }
+
     /// Run a request and, on an expired or rotated session, sign in once more
     /// and retry it. Without this a server restart leaves the app broken until
     /// relaunch.
     private func perform(_ build: (BackendClient, String) throws -> URLRequest) async throws -> (Data, URLResponse) {
         var result = try await session.data(for: try build(self, csrf))
-        if let http = result.1 as? HTTPURLResponse, http.statusCode == 401 || http.statusCode == 403 {
-            try await signIn()
-            // Rebuild with the fresh token, not the one from the failed try.
-            result = try await session.data(for: try build(self, csrf))
+        if let http = result.1 as? HTTPURLResponse {
+#if os(iOS)
+            // §6.2/§8.4: 401 re-auths through the single flight once (an
+            // immediate `credential_invalid` does not even retry); a 403 is
+            // never a re-auth trigger and keeps its code.
+            if http.statusCode == 401, Self.errorCode(result.0) != "credential_invalid" {
+                try await reauth()
+                // Rebuild with the fresh token, not the one from the failed try.
+                result = try await session.data(for: try build(self, csrf))
+            }
+#else
+            if http.statusCode == 401 || http.statusCode == 403 {
+                try await reauth()
+                // Rebuild with the fresh token, not the one from the failed try.
+                result = try await session.data(for: try build(self, csrf))
+            }
+#endif
         }
         return result
     }
@@ -404,7 +503,7 @@ public actor BackendClient {
             guard let url = components?.url else { throw BackendError.decoding }
             return URLRequest(url: url)
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(StateResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -420,7 +519,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/status"))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(AppStatus.self, from: data) else {
             throw BackendError.decoding
         }
@@ -432,7 +531,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/approvals"))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ApprovalsResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -441,7 +540,7 @@ public actor BackendClient {
 
     /// Approve or deny one pending action; the hash must match the row.
     public func decideApproval(id: String, decision: ApprovalDecision, hash: String) async throws {
-        let (_, response) = try await perform { client, token in
+        let (data, response) = try await perform { client, token in
             var request = URLRequest(url: client.base.appendingPathComponent("api/approvals/\(Self.pathComponent(id))"))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -452,7 +551,7 @@ public actor BackendClient {
             ])
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
     }
 
     /// Provider rows for the settings dialog.
@@ -460,7 +559,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/providers"))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -490,7 +589,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/providers"))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ProvidersPayload.self, from: data) else {
             throw BackendError.decoding
         }
@@ -566,7 +665,7 @@ public actor BackendClient {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a connect was refused.
             let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "provider_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersPayload.self, from: data) else {
             throw BackendError.decoding
@@ -587,7 +686,7 @@ public actor BackendClient {
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "provider_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(DeviceFlowStart.self, from: data) else {
             throw BackendError.decoding
@@ -605,7 +704,7 @@ public actor BackendClient {
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         struct Poll: Decodable { let status: String?; let intervalMs: Int? }
         guard let poll = try? JSONDecoder().decode(Poll.self, from: data),
               let status = poll.status, !status.isEmpty else {
@@ -617,7 +716,7 @@ public actor BackendClient {
     }
 
     public func cancelOAuth(pollId: String) async throws {
-        let (_, response) = try await perform { client, token in
+        let (data, response) = try await perform { client, token in
             var request = URLRequest(
                 url: client.base.appendingPathComponent("api/providers/oauth/\(Self.pathComponent(pollId))")
             )
@@ -625,7 +724,7 @@ public actor BackendClient {
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
     }
 
     private func providerWrite(method: String, body: [String: Any]) async throws -> [ProviderPublic] {
@@ -641,7 +740,7 @@ public actor BackendClient {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a key was refused.
             let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "provider_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
             throw BackendError.decoding
@@ -669,7 +768,7 @@ public actor BackendClient {
             return URLRequest(url: url)
         }
         if let http = response as? HTTPURLResponse, http.statusCode != 502 {
-            try Self.expectOK(response)
+            try Self.expectOK(data, response)
         }
         guard let decoded = try? JSONDecoder().decode(ConnectorsPayload.self, from: data) else {
             throw BackendError.decoding
@@ -709,7 +808,7 @@ public actor BackendClient {
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let decoded = try? JSONDecoder().decode(ConnectorsErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "connectors_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "connectors_failed", typed: BackendError.provider)
         }
         return data
     }
@@ -719,7 +818,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/usage"))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(UsagePayload.self, from: data) else {
             throw BackendError.decoding
         }
@@ -741,7 +840,7 @@ public actor BackendClient {
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let decoded = try? JSONDecoder().decode(ConnectorsErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "budget_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "budget_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(UsagePayload.self, from: data) else {
             throw BackendError.decoding
@@ -751,7 +850,7 @@ public actor BackendClient {
 
     /// Ask the proxy to cancel the active turn on a session.
     public func cancel(sessionId: String) async throws {
-        let (_, response) = try await perform { client, token in
+        let (data, response) = try await perform { client, token in
             var request = URLRequest(
                 url: client.base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/cancel")
             )
@@ -759,7 +858,7 @@ public actor BackendClient {
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
     }
 
     // MARK: - Routines
@@ -881,7 +980,7 @@ public actor BackendClient {
             guard let url = components?.url else { throw BackendError.decoding }
             return URLRequest(url: url)
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(MemoryResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -892,7 +991,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/providers"))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -929,7 +1028,7 @@ public actor BackendClient {
         let (data, response) = try await perform { client, _ in
             URLRequest(url: client.base.appendingPathComponent("api/workspace"))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(WorkspaceProjectsResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -955,7 +1054,7 @@ public actor BackendClient {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(WorkspaceProjectsResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -996,7 +1095,7 @@ public actor BackendClient {
            failure.error == "model_no_vision" {
             throw BackendError.modelNoVision
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -1111,7 +1210,7 @@ public actor BackendClient {
             ])
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         _ = data
     }
 
@@ -1123,7 +1222,7 @@ public actor BackendClient {
                 .appendingPathComponent("api/connections/widget")
                 .appendingPathComponent(id))
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let html = String(data: data, encoding: .utf8) else { throw BackendError.decoding }
         return html
     }
@@ -1146,7 +1245,7 @@ public actor BackendClient {
             ])
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = body["result"] as? [String: Any] else {
             throw BackendError.decoding
@@ -1194,7 +1293,7 @@ public actor BackendClient {
             request.httpBody = try JSONSerialization.data(withJSONObject: patch)
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
             throw BackendError.decoding
         }
@@ -1243,7 +1342,7 @@ public actor BackendClient {
         }
         let decoded = try? JSONDecoder().decode(AttachmentResponse.self, from: responseData)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw BackendError.attachment(decoded?.error ?? "attachment_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "attachment_failed", typed: BackendError.attachment)
         }
         guard let decoded, let resolvedName = decoded.name, let bytes = decoded.bytes else {
             throw BackendError.decoding
@@ -1386,6 +1485,11 @@ public actor BackendClient {
             let reader = Task {
                 do {
                     for attempt in 0..<2 {
+                        // The idle watchdog covers the whole handshake, not
+                        // just the line loop: the header wait, an error-body
+                        // drain and a re-auth round trip each reset it so a
+                        // slow link cannot finish() the stream mid-handling.
+                        activity.touch()
                         var components = URLComponents(
                             url: base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/stream"),
                             resolvingAgainstBaseURL: false
@@ -1398,11 +1502,39 @@ public actor BackendClient {
                         var request = URLRequest(url: url)
                         request.timeoutInterval = 180
                         let (bytes, response) = try await session.bytes(for: request)
+                        activity.touch()
                         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+#if os(iOS)
+                        // §6.2/§8.4: a 401 re-auths through the shared single
+                        // flight once; `credential_invalid` and every 403 are
+                        // terminal and never re-auth.
+                        if status == 401, attempt == 0 {
+                            let code = try await Self.errorCode(bytes)
+                            activity.touch()
+                            if code != "credential_invalid" {
+                                try await client.reauth()
+                                activity.touch()
+                                continue
+                            }
+                            throw BackendError.credentialInvalid
+                        }
+                        guard (200...299).contains(status) else {
+                            switch status {
+                            case 401:
+                                throw BackendError.credentialInvalid
+                            case 403:
+                                throw BackendError.forbidden(
+                                    (try await Self.errorCode(bytes)) ?? "forbidden")
+                            default:
+                                throw BackendError.http(status)
+                            }
+                        }
+#else
                         if (status == 401 || status == 403), attempt == 0 {
                             // The session rotated (server restart); sign in and
                             // rebuild the stream once.
-                            try await client.signIn()
+                            try await client.reauth()
+                            activity.touch()
                             continue
                         }
                         guard (200...299).contains(status) else {
@@ -1412,6 +1544,7 @@ public actor BackendClient {
                                 ? BackendError.unauthorized
                                 : BackendError.http(status)
                         }
+#endif
                         // Zero-based index of the last recorded event, or -1
                         // for an empty stream. Nil when the server did not say.
                         let tail = untilTail || markHistory
@@ -1517,7 +1650,10 @@ public actor BackendClient {
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         if activity.idle > 3 {
-                            continuation.finish()
+                            // §8.3: a watchdog stop is an early stop - the
+                            // read is incomplete and reported as such, never
+                            // presented as a complete replay.
+                            continuation.finish(throwing: BackendError.streamInterrupted)
                             return
                         }
                     }
@@ -1530,7 +1666,7 @@ public actor BackendClient {
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         if !armedBox.value, activity.idle > 20 {
-                            continuation.finish()
+                            continuation.finish(throwing: BackendError.streamInterrupted)
                             return
                         }
                     }
@@ -1543,16 +1679,30 @@ public actor BackendClient {
         }
     }
 
-    private static func expectOK(_ response: URLResponse) throws {
+    private static func expectOK(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
         // eve answers 202 Accepted for a session turn, so any 2xx is success.
         guard (200...299).contains(http.statusCode) else {
-            // A final 401/403 after the sign-in retry is an auth failure, not
-            // a generic HTTP error.
-            if http.statusCode == 401 || http.statusCode == 403 {
+#if os(iOS)
+            // §6.2/§8.4: a 401 this far down already burned its one re-auth —
+            // `credential_invalid` or not, it is terminal (§4.8). A 403
+            // surfaces with its code and was never a re-auth trigger.
+            switch http.statusCode {
+            case 401:
+                throw BackendError.credentialInvalid
+            case 403:
+                throw BackendError.forbidden(Self.errorCode(data) ?? "forbidden")
+            default:
+                throw BackendError.http(http.statusCode)
+            }
+#else
+            // A final 401 after the sign-in retry is an auth failure; a 403
+            // keeps its code so callers can tell refusal from a bad token.
+            if http.statusCode == 401 {
                 throw BackendError.unauthorized
             }
             throw BackendError.http(http.statusCode)
+#endif
         }
     }
 
@@ -1561,12 +1711,23 @@ public actor BackendClient {
     private static func expectShellOK(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
         guard (200...299).contains(http.statusCode) else {
+#if os(iOS)
+            // §6.2: a post-retry 401 is terminal `credentialInvalid`, a 403 is
+            // `forbidden(code)` — never `.shell("unauthorized")`.
+            throw Self.failure(
+                status: http.statusCode,
+                code: Self.errorCode(data),
+                fallback: "shell_failed",
+                typed: BackendError.shell
+            )
+#else
             if let decoded = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
                let code = decoded.error, !code.isEmpty {
                 throw BackendError.shell(code)
             }
-            try expectOK(response)
+            try expectOK(data, response)
             return
+#endif
         }
     }
 

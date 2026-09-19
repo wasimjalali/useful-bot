@@ -16,6 +16,9 @@ public enum DesignTokens {
         public static let ink = "#171717"
         public static let inkMuted = "#5C5C5C"
         public static let inkFaint = "#A3A3A3"
+        /// Placeholders and tertiary readable text: `inkFaint` fails contrast
+        /// everywhere, this one passes on every surface (design spec 4.2).
+        public static let inkFaintText = "#6B6B6B"
 
         public static let brand = "#171717"
         public static let brandInk = "#FAFAFA"
@@ -57,6 +60,7 @@ public enum DesignTokens {
         public static let ink = "#EDEDED"
         public static let inkMuted = "#A3A3A3"
         public static let inkFaint = "#6E6E6E"
+        public static let inkFaintText = "#949494"
 
         public static let brand = "#EDEDED"
         public static let brandInk = "#141414"
@@ -78,6 +82,10 @@ public enum DesignTokens {
         public static let warningSoft = "#33260F"
         public static let danger = "#F0795C"
         public static let dangerSoft = "#3A1B14"
+
+        /// Sheet scrim in dark, at 48% opacity. Replaces `dialogOverlay`
+        /// (which stays the light-appearance scrim) per design spec 4.1.
+        public static let overlayDark = "#000000"
     }
 
     /// One radius scale, by role, shared with `web/app/globals.css`
@@ -127,6 +135,13 @@ public enum DesignTokens {
         public static let sectionHead: CGFloat = 24
         public static let pinnedCardPadding: CGFloat = 10
         public static let scrollbarWidth: CGFloat = 5
+
+        // Phone metrics (iOS design spec 4.3); the Mac values above stay put.
+        public static let phoneGutter: CGFloat = 16
+        public static let phoneTranscriptGap: CGFloat = 16
+        public static let phoneRowMinHeight: CGFloat = 60
+        public static let phoneHitTarget: CGFloat = 44
+        public static let sheetInset: CGFloat = 8
     }
 
     public enum FontSize {
@@ -158,6 +173,14 @@ public enum DesignTokens {
         public static let modeChip: CGFloat = 13
         public static let attachError: CGFloat = 12
         public static let tabLabel: CGFloat = 12
+
+        // Phone type scale (iOS design spec 4.3). Where the phone's approved
+        // size differs from the desktop's the phone gets its own token.
+        public static let phoneNavTitle: CGFloat = 17
+        public static let phoneLargeTitle: CGFloat = 22
+        public static let phoneChatMeta: CGFloat = 12
+        public static let phoneRailLabel: CGFloat = 11
+        public static let phoneFieldInput: CGFloat = 15
     }
 
     public enum Tracking {
@@ -190,6 +213,13 @@ public enum DesignTokens {
         public static let dialogConfirmWidth: CGFloat = 384
         public static let dialogFormWidth: CGFloat = 448
         public static let railHairline: CGFloat = 1
+
+        // The phone's drawn toggle (design spec 4.3); the Mac's switch metrics
+        // above stay untouched.
+        public static let phoneToggleWidth: CGFloat = 51
+        public static let phoneToggleHeight: CGFloat = 31
+        /// `fieldMinHeight` raised for touch (design spec 1.1).
+        public static let phoneFieldMinHeight: CGFloat = 48
     }
 
     /// `box-shadow` tokens. Blur and spread are the CSS authoring values.

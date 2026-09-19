@@ -60,7 +60,21 @@ export async function readBody(request: Request, maxBytes: number): Promise<Uint
     if (!value) continue;
     total += value.byteLength;
     if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
+      // The stream is consumed rather than cancelled: this runtime's body
+      // pump keeps enqueueing after a cancel and the throw inside it escapes
+      // as an unhandled rejection. The drain is time-bounded, so a stalled
+      // peer cannot pin the route; past the budget we stop reading and the
+      // socket's own backpressure holds whatever remains.
+      const deadline = Date.now() + 5_000;
+      for (;;) {
+        const left = deadline - Date.now();
+        if (left <= 0) break;
+        const next = await Promise.race([
+          reader.read(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), left)),
+        ]);
+        if (next === null || next.done) break;
+      }
       throw new ApiError(413, "payload_too_large");
     }
     chunks.push(value);

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 public struct ServerConfig: Equatable {
@@ -38,3 +39,4 @@ public struct ServerConfig: Equatable {
 
     public var healthURL: URL { baseURL.appendingPathComponent("api/health") }
 }
+#endif
