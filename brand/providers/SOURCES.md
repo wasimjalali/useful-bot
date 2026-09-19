@@ -12,7 +12,7 @@ Base URL: `https://unpkg.com/@lobehub/icons-static-svg@1.95.0/icons/<name>.svg`
 | ----------------- | -------------- |
 | openai.svg        | openai         |
 | github-copilot.svg | githubcopilot |
-| zai.svg           | zhipu          |
+| zai.svg           | zai            |
 | moonshot.svg      | moonshot       |
 | alibaba.svg       | qwen           |
 | minimax.svg       | minimax        |
@@ -38,7 +38,13 @@ standalone SVG with its own viewBox.
 | opencode-go.svg | opencode-go |
 | xiaomi.svg     | xiaomi      |
 
+## Command Code
+
+`command-code.svg` is the site's own mask icon,
+`https://commandcode.ai/favicon/2024/safari-pinned-tab.svg` (fetched Sep 2026),
+with the potrace metadata and fixed size removed.
+
 ## No mark
 
-`command-code` and `custom` have no vendored mark. The app falls back to the
+`custom` has no vendored mark. The app falls back to the
 monogram tile when `brand/providers/<icon>.svg` is missing.

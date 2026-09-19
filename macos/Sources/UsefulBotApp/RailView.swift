@@ -20,7 +20,10 @@ struct RailView: View {
 
     @State private var searchHovering = false
     @State private var accountOpen = false
-    @State private var accountAnchor: CGRect = .zero
+    /// The hairline above Connectors, in rail space. The account menu sits
+    /// on it so it never covers the Connectors row.
+    @State private var accountDivider: CGRect = .zero
+    @State private var accountMenuHeight: CGFloat = 0
     @State private var accountButtonFrame = CGRect.zero
     @State private var rowMenuBot: ShellBot?
     @State private var rowMenuAnchor: CGRect = .zero
@@ -117,7 +120,10 @@ struct RailView: View {
             if accountOpen {
                 accountPopover
                     .frame(width: 220)
-                    .offset(x: 12, y: max(8, accountAnchor.minY - 84))
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { accountMenuHeight = $0 }
+                    .offset(x: 12, y: accountDivider.minY - accountMenuHeight - 6)
+                    // Hidden for the one frame before its height is known.
+                    .opacity(accountMenuHeight == 0 ? 0 : 1)
                     .dismissOnOutsideClick(triggers: { [accountButtonFrame] }) { accountOpen = false }
             }
         }
@@ -341,6 +347,15 @@ struct RailView: View {
     private var operatorRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             Hairline()
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { accountDivider = proxy.frame(in: .named("rail")) }
+                            .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
+                                accountDivider = next
+                            }
+                    }
+                )
                 .padding(.bottom, 8)
             connectorsRow
             Button {
@@ -370,15 +385,6 @@ struct RailView: View {
             .trackWindowFrame($accountButtonFrame)
             .accessibilityLabel("Account")
             .accessibilityIdentifier("account-row")
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { accountAnchor = proxy.frame(in: .named("rail")) }
-                        .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
-                            accountAnchor = next
-                        }
-                }
-            )
         }
     }
 
