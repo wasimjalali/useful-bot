@@ -130,7 +130,7 @@ struct NewChatPickerView: View {
             .background(Theme.C.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .raiseShadow()
@@ -167,7 +167,7 @@ struct NewChatPickerView: View {
             .background(Theme.C.sunken)
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
@@ -316,7 +316,7 @@ struct SearchPaletteView: View {
             .background(Theme.C.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .popShadow()

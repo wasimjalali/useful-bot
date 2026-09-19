@@ -162,7 +162,7 @@ struct ChatView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 11, weight: .regular))
                 Text("Needs approval")
                     .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
                     .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
@@ -203,7 +203,7 @@ struct ChatView: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .popShadow()
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
@@ -217,7 +217,7 @@ struct ChatView: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: "questionmark.bubble")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 11, weight: .regular))
                 Text("\(bot.name) asks")
                     .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
                     .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
@@ -253,7 +253,7 @@ struct ChatView: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         // Flatten first: a shadow on an open stack is drawn under every row
@@ -593,7 +593,7 @@ private struct ShowEarlierRow: View {
                     .padding(.vertical, 6)
                     .background(Theme.C.bubbleBot)
                     .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
+                    .overlay(Capsule().strokeBorder(Theme.C.edge, lineWidth: 1))
             }
             .buttonStyle(.plain)
             .pointerOnHover()
@@ -721,10 +721,10 @@ private struct UserBubbleView: View {
         .background(Theme.C.sunken)
         .clipShape(
             UnevenRoundedRectangle(
-                topLeadingRadius: 16,
-                bottomLeadingRadius: 16,
-                bottomTrailingRadius: 6,
-                topTrailingRadius: 16,
+                topLeadingRadius: 12,
+                bottomLeadingRadius: 12,
+                bottomTrailingRadius: 4,
+                topTrailingRadius: 12,
                 style: .continuous
             )
         )
@@ -825,11 +825,8 @@ struct TranscriptRowView: View, Equatable {
             WidgetSlot(widgetId: row.text)
                 .frame(height: 480)
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
-                        .strokeBorder(Theme.C.border, lineWidth: 1)
-                )
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .cardLift(cornerRadius: 12)
         }
     }
 
@@ -861,12 +858,8 @@ struct TranscriptRowView: View, Equatable {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(Theme.C.bubbleBot)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(Theme.C.border, lineWidth: 1)
-                    )
-                    .shadow(color: Theme.C.ink.opacity(0.06), radius: 3, y: 1)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .cardLift(cornerRadius: 12)
                     .frame(maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth), alignment: .leading)
             }
             Spacer(minLength: 0)
@@ -896,16 +889,12 @@ struct TranscriptRowView: View, Equatable {
                 .background(Theme.C.successSoft)
                 .clipShape(Capsule())
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .frame(maxWidth: 420)
             .background(Theme.C.bubbleBot)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
-            )
-            .shadow(color: Theme.C.ink.opacity(0.06), radius: 3, y: 1)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .cardLift(cornerRadius: 12)
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .ignore)

@@ -4,41 +4,68 @@ import SwiftUI
 import UsefulBotCore
 
 /// The Useful Brain token set from `web/app/globals.css`, mapped to SwiftUI.
-/// Light appearance only: every color here is explicit, so nothing can inherit
-/// a dark system variant.
+/// Every color resolves per appearance: the light hex from `DesignTokens.Hex`
+/// and the dark one from `DesignTokens.DarkHex`. `AppAppearance` picks which
+/// one the app draws in.
 enum Theme {
     static func color(_ hex: String) -> Color {
         guard let rgb = RGBColor(hex: hex) else { return .black }
         return Color(.sRGB, red: rgb.red, green: rgb.green, blue: rgb.blue, opacity: 1)
     }
 
+    static func nsColor(_ hex: String) -> NSColor {
+        guard let rgb = RGBColor(hex: hex) else { return .black }
+        return NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
+    }
+
+    /// One token, resolved against the drawing view's appearance.
+    static func adaptive(_ light: String, _ dark: String) -> Color {
+        let lightColor = nsColor(light)
+        let darkColor = nsColor(dark)
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
+        })
+    }
+
+    private typealias L = DesignTokens.Hex
+    private typealias D = DesignTokens.DarkHex
+
     enum C {
-        static let canvas = color(DesignTokens.Hex.canvas)
-        static let rail = color(DesignTokens.Hex.rail)
-        static let surface = color(DesignTokens.Hex.surface)
-        static let sunken = color(DesignTokens.Hex.sunken)
-        static let bubbleBot = color(DesignTokens.Hex.bubbleBot)
-        static let ink = color(DesignTokens.Hex.ink)
-        static let inkMuted = color(DesignTokens.Hex.inkMuted)
-        static let inkFaint = color(DesignTokens.Hex.inkFaint)
-        static let brand = color(DesignTokens.Hex.brand)
-        static let brandInk = color(DesignTokens.Hex.brandInk)
-        static let accent = color(DesignTokens.Hex.accent)
-        static let accentStrong = color(DesignTokens.Hex.accentStrong)
-        static let accentSoft = color(DesignTokens.Hex.accentSoft)
-        static let accentInk = color(DesignTokens.Hex.accentInk)
-        static let border = color(DesignTokens.Hex.border)
-        static let borderStrong = color(DesignTokens.Hex.borderStrong)
-        static let scrollKnob = color(DesignTokens.Hex.scrollKnob)
-        static let scrollKnobActive = color(DesignTokens.Hex.scrollKnobActive)
-        static let success = color(DesignTokens.Hex.success)
-        static let successSoft = color(DesignTokens.Hex.successSoft)
-        static let warning = color(DesignTokens.Hex.warning)
-        static let warningSoft = color(DesignTokens.Hex.warningSoft)
-        static let danger = color(DesignTokens.Hex.danger)
-        static let dangerSoft = color(DesignTokens.Hex.dangerSoft)
-        static let white = color(DesignTokens.Hex.white)
-        static let overlay = color(DesignTokens.Hex.dialogOverlay).opacity(0.18)
+        static let canvas = adaptive(L.canvas, D.canvas)
+        static let rail = adaptive(L.rail, D.rail)
+        static let surface = adaptive(L.surface, D.surface)
+        static let sunken = adaptive(L.sunken, D.sunken)
+        static let bubbleBot = adaptive(L.bubbleBot, D.bubbleBot)
+        static let ink = adaptive(L.ink, D.ink)
+        static let inkMuted = adaptive(L.inkMuted, D.inkMuted)
+        static let inkFaint = adaptive(L.inkFaint, D.inkFaint)
+        static let brand = adaptive(L.brand, D.brand)
+        static let brandInk = adaptive(L.brandInk, D.brandInk)
+        static let accent = adaptive(L.accent, D.accent)
+        static let accentStrong = adaptive(L.accentStrong, D.accentStrong)
+        static let accentSoft = adaptive(L.accentSoft, D.accentSoft)
+        static let accentInk = adaptive(L.accentInk, D.accentInk)
+        static let border = adaptive(L.border, D.border)
+        static let borderStrong = adaptive(L.borderStrong, D.borderStrong)
+        static let scrollKnob = adaptive(L.scrollKnob, D.scrollKnob)
+        static let scrollKnobActive = adaptive(L.scrollKnobActive, D.scrollKnobActive)
+        static let success = adaptive(L.success, D.success)
+        static let successSoft = adaptive(L.successSoft, D.successSoft)
+        static let warning = adaptive(L.warning, D.warning)
+        static let warningSoft = adaptive(L.warningSoft, D.warningSoft)
+        static let danger = adaptive(L.danger, D.danger)
+        static let dangerSoft = adaptive(L.dangerSoft, D.dangerSoft)
+        static let white = color(L.white)
+        static let overlay = color(L.dialogOverlay).opacity(0.18)
+        /// A lifted card's edge: a whisper in light, where the shadow does
+        /// the lifting, and a faint light rim in dark, where shadows vanish.
+        static let edge = Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor(white: 1, alpha: 0.07)
+                : NSColor(white: 0, alpha: 0.05)
+        })
+        /// Shadows stay dark in both appearances; an ink shadow would glow.
+        static let shadow = color(L.ink)
     }
 
     enum R {
@@ -81,6 +108,42 @@ enum Theme {
 
     static func shadow(_ token: DesignTokens.ShadowToken) -> Color {
         color(token.color).opacity(token.opacity)
+    }
+}
+
+/// Which appearance the app draws in. Stored per Mac; System follows the
+/// macOS setting live.
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    static let storageKey = "ub.appearance"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
     }
 }
 
@@ -307,6 +370,18 @@ extension View {
     func raiseShadow() -> some View {
         shadow(color: Theme.shadow(DesignTokens.Shadow.raiseTop), radius: 0.5, x: 0, y: DesignTokens.Shadow.raiseTop.y)
             .shadow(color: Theme.shadow(DesignTokens.Shadow.raise), radius: Theme.radius(DesignTokens.Shadow.raise), x: 0, y: DesignTokens.Shadow.raise.y)
+    }
+
+    /// One level off the page: a whisper of an edge and a short, soft drop.
+    /// The card treatment for bubbles and status cards, in place of a hard
+    /// gray border.
+    func cardLift(cornerRadius: CGFloat) -> some View {
+        overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
+        )
+        .shadow(color: Theme.C.shadow.opacity(0.04), radius: 0.5, x: 0, y: 0.5)
+        .shadow(color: Theme.C.shadow.opacity(0.08), radius: 8, x: 0, y: 3)
     }
 
     func smShadow() -> some View {

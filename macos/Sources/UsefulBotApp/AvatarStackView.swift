@@ -43,7 +43,7 @@ struct AvatarStackView: View {
         content()
             .frame(width: size, height: size)
             .background(Circle().fill(fill))
-            .overlay(Circle().strokeBorder(Theme.C.border, lineWidth: 1))
+            .overlay(Circle().strokeBorder(Theme.C.edge, lineWidth: 1))
             .clipShape(Circle())
     }
 

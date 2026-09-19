@@ -38,7 +38,7 @@ struct RailView: View {
                 // The New Bot affordance is one minimal plus beside the logo.
                 Button(action: onNewChat) {
                     Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 14, weight: .regular))
                         .foregroundStyle(Theme.C.ink)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
@@ -170,17 +170,13 @@ struct RailView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Theme.C.sunken)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(Theme.C.border, lineWidth: 1)
-                    )
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .padding(.horizontal, 10)
             .frame(minHeight: DesignTokens.Control.searchTrigger)
             .background(searchHovering ? Theme.C.accentSoft : Theme.C.surface)
             .overlay(
-                Capsule().strokeBorder(searchHovering ? Theme.C.border : Theme.C.borderStrong, lineWidth: 1)
+                Capsule().strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(Capsule())
             .smShadow()
@@ -410,7 +406,7 @@ struct RailView: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .popShadow()
@@ -515,7 +511,7 @@ struct RowMenuPopover: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .popShadow()
@@ -657,8 +653,11 @@ private struct BotRowView: View {
             // plus this padding lands at 48.
             .frame(minHeight: DesignTokens.Space.botRow)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected || hovering ? Theme.C.sunken : .clear)
+            // The open chat lifts off the rail as a small card; hover is a
+            // tone shift only.
+            .background(selected ? Theme.C.surface : (hovering ? Theme.C.sunken : .clear))
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
+            .shadow(color: Theme.C.shadow.opacity(selected ? 0.06 : 0), radius: 2, x: 0, y: 1)
             .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -765,7 +764,7 @@ private struct RowActionsButton: View {
             onTap(frame, windowFrame)
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: .regular))
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(width: 24, height: 24)
                 .background(hovering ? Theme.C.accentSoft : .clear)
@@ -858,17 +857,10 @@ private struct PinnedCardView: View {
             .padding(DesignTokens.Space.pinnedCardPadding)
             .padding(.trailing, 22)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Theme.C.sunken : Theme.C.surface)
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
-                    .strokeBorder(
-                        selected || hovering ? Theme.C.borderStrong : Theme.C.border,
-                        lineWidth: 1
-                    )
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
-            .smShadow()
-            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
+            .background(selected || hovering ? Theme.C.sunken : Theme.C.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .cardLift(cornerRadius: 12)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerOnHover()

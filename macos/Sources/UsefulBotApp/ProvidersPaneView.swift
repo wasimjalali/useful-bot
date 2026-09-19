@@ -95,7 +95,7 @@ struct ProvidersPaneView: View {
                 toggle(card)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(Theme.C.inkMuted)
                     .frame(width: 40, height: 40)
                     .contentShape(Rectangle())
@@ -206,7 +206,7 @@ struct ProvidersPaneView: View {
         MenuRowButton(action: { pickCatalogEntry(entry) }) {
             HStack(spacing: 10) {
                 Image(systemName: "plus")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(Theme.C.inkMuted)
                     .frame(width: 28)
                 Text("Add custom provider")
@@ -327,7 +327,7 @@ struct ProvidersPaneView: View {
                         toggle(card)
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 13, weight: .regular))
                             .foregroundStyle(Theme.C.inkMuted)
                             .frame(width: 40, height: 40)
                             .contentShape(Rectangle())
@@ -362,7 +362,7 @@ struct ProvidersPaneView: View {
                     .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Theme.C.inkMuted)
             }
             .padding(.horizontal, 10)
@@ -378,7 +378,7 @@ struct ProvidersPaneView: View {
             .onDisappear { ProvidersTriggerFrames.shared.forget(card) }
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .disabled(model.providerBusy == "role-\(role)")
         .accessibilityIdentifier("role-\(role)-model")
@@ -502,7 +502,7 @@ struct ProvidersPaneView: View {
         .background(Theme.C.canvas)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
     }

@@ -490,7 +490,7 @@ private struct RoutineEditorView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 11, weight: .regular))
                         Text("Add another")
                             .font(.system(size: 13))
                     }
@@ -508,7 +508,7 @@ private struct RoutineEditorView: View {
             .background(Theme.C.sunken)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
         }

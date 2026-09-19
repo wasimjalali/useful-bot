@@ -118,7 +118,16 @@ struct ComposerView: View {
             .padding(.horizontal, 10)
             .padding(.top, stacked ? 10 : 8)
             .padding(.bottom, 8)
-            .background(Theme.C.surface)
+            // A 2% fall from the top edge: enough to read as a raised field,
+            // not enough to read as a gradient.
+            .background(
+                LinearGradient(
+                    colors: [Theme.C.bubbleBot, Theme.C.bubbleBot.opacity(0.98)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .background(Theme.C.sunken)
+            )
             .overlay(
                 RoundedRectangle(
                     cornerRadius: stacked || focused ? DesignTokens.Radius.composerExpanded : 26,
@@ -129,7 +138,7 @@ struct ComposerView: View {
                 // held over it lights the edge in the accent: the drop lands
                 // as an attachment.
                 .strokeBorder(
-                    dropTargeted ? Theme.C.accentStrong : (focused ? Theme.C.borderStrong : Theme.C.border),
+                    dropTargeted ? Theme.C.accentStrong : (focused ? Theme.C.borderStrong : Theme.C.edge),
                     lineWidth: 1
                 )
             )
@@ -324,7 +333,7 @@ struct ComposerView: View {
             plusOpen.toggle()
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(width: DesignTokens.Control.composerButton, height: DesignTokens.Control.composerButton)
                 .background(Theme.C.sunken)
@@ -357,7 +366,7 @@ struct ComposerView: View {
                 Text(ComposerView.chipLabel(workspace?.folderName) ?? "Project")
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular))
             }
             .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
             .foregroundStyle(Theme.C.inkMuted)
@@ -382,7 +391,7 @@ struct ComposerView: View {
                 Text(bot.permissionLabel)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular))
             }
             .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
             .foregroundStyle(bot.isFullAccess ? Theme.C.accentStrong : Theme.C.inkMuted)
@@ -415,7 +424,7 @@ struct ComposerView: View {
                         .lineLimit(1)
                 }
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular))
             }
             .font(.system(size: DesignTokens.FontSize.modeChip, weight: .medium))
             .foregroundStyle(Theme.C.inkMuted)
@@ -446,11 +455,19 @@ struct ComposerView: View {
             Button(action: send) {
                 ZStack {
                     Circle()
-                        .fill(canSend ? Theme.C.brand : Theme.C.borderStrong)
+                        .fill(canSend ? Theme.C.brand : Theme.C.sunken)
+                        .overlay(
+                            Circle().fill(LinearGradient(
+                                colors: [Theme.C.white.opacity(canSend ? 0.14 : 0), .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                        )
                         .frame(width: DesignTokens.Control.composerButton, height: DesignTokens.Control.composerButton)
+                        .shadow(color: Theme.C.shadow.opacity(canSend ? 0.18 : 0), radius: 3, x: 0, y: 1)
                     Image(systemName: "arrow.up")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(canSend ? Theme.C.brandInk : Theme.C.inkMuted)
+                        .foregroundStyle(canSend ? Theme.C.brandInk : Theme.C.inkFaint)
                 }
             }
             .buttonStyle(.plain)
@@ -486,7 +503,6 @@ struct ComposerView: View {
                 .padding(.trailing, 6)
                 .frame(height: 28)
                 .background(Theme.C.sunken)
-                .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
                 .clipShape(Capsule())
             }
         }
@@ -627,7 +643,7 @@ private struct PlusMenu: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .popShadow()
@@ -750,7 +766,7 @@ private struct ProjectMenu: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .popShadow()
@@ -805,7 +821,7 @@ private struct PermissionMenu: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .popShadow()
@@ -973,7 +989,7 @@ private struct ComposerModeMenu: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .popShadow()
@@ -1018,7 +1034,7 @@ private struct ComposerModeMenu: View {
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .popShadow()
@@ -1184,7 +1200,7 @@ private struct ModelFlyout: View {
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Image(systemName: shut ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Theme.C.inkMuted)
             }
             .padding(.horizontal, 12)

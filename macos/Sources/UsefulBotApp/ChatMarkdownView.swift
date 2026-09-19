@@ -199,7 +199,7 @@ struct MarkdownTableView: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         // Hugs left when the table is narrower than the column, rather than
@@ -303,7 +303,7 @@ struct CodeBlockView: View {
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(width: 26, height: 26)
                 .background(Theme.C.surface)
-                .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
+                .overlay(Capsule().strokeBorder(Theme.C.edge, lineWidth: 1))
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)

@@ -38,6 +38,7 @@ struct AppSettingsView: View {
 
     let onClose: () -> Void
     @State private var tab: AppSettingsTab
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
     /// The daily limit while it is being typed. The usage tab polls every few
     /// seconds, and the poll must not overwrite a half-typed number.
     @State private var editedBudget: String?
@@ -67,7 +68,7 @@ struct AppSettingsView: View {
             .background(Theme.C.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
             .popShadow()
@@ -235,7 +236,7 @@ struct AppSettingsView: View {
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.C.ink)
                         Spacer(minLength: 0)
-                        settingsValue(themeLabel)
+                        AppearancePicker(selection: $appearance)
                     }
                     settingsRow(last: true) {
                         Text("Language")
@@ -259,11 +260,6 @@ struct AppSettingsView: View {
                 }
             }
         }
-    }
-
-    private var themeLabel: String {
-        let theme = model.appStatus?.theme ?? "light"
-        return theme == "light" ? "Light" : theme
     }
 
     // MARK: - Providers
@@ -506,7 +502,7 @@ struct AppSettingsView: View {
         .frame(height: 32)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
     }
 
@@ -667,7 +663,7 @@ struct AppSettingsView: View {
         .background(Theme.C.canvas)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
     }
@@ -689,5 +685,41 @@ struct AppSettingsView: View {
             .font(.system(size: 13))
             .foregroundStyle(Theme.C.inkMuted)
             .lineLimit(1)
+    }
+}
+
+/// System, Light and Dark as one pill track. Drawn by hand: the native
+/// segmented control fills the pick with the macOS accent color, not ours.
+private struct AppearancePicker: View {
+    @Binding var selection: AppAppearance
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(AppAppearance.allCases) { option in
+                let on = option == selection
+                Button {
+                    selection = option
+                } label: {
+                    Text(option.label)
+                        .font(.system(size: 12, weight: on ? .semibold : .regular))
+                        .foregroundStyle(on ? Theme.C.ink : Theme.C.inkMuted)
+                        .padding(.horizontal, 12)
+                        .frame(height: 26)
+                        .background(on ? Theme.C.surface : .clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .shadow(color: Theme.C.shadow.opacity(on ? 0.1 : 0), radius: 1.5, x: 0, y: 1)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(Theme.C.border)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .animation(.easeOut(duration: DesignTokens.Motion.fast), value: selection)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Theme")
     }
 }

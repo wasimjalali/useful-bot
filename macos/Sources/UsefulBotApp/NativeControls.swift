@@ -23,9 +23,14 @@ private struct ButtonChrome: ButtonStyle {
             .padding(.horizontal, small ? 12 : 14)
             .frame(minHeight: small ? DesignTokens.Control.buttonSmallMinHeight : DesignTokens.Control.buttonMinHeight)
             .background(background)
+            // A primary fill carries a faint top-lit sheen, a few percent of
+            // luminance, so it reads as a button rather than a flat block.
             .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous)
-                    .strokeBorder(borderColor, lineWidth: borderWidth)
+                LinearGradient(
+                    colors: [Theme.C.white.opacity(kind == .primary ? 0.1 : 0), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
             .smShadow()
@@ -47,23 +52,10 @@ private struct ButtonChrome: ButtonStyle {
     private var background: Color {
         switch kind {
         case .primary: return hovering && enabled ? Theme.C.accentStrong : Theme.C.accent
-        case .secondary: return hovering && enabled ? Theme.C.accentSoft : Theme.C.surface
+        case .secondary: return hovering && enabled ? Theme.C.border : Theme.C.sunken
         case .danger: return Theme.C.dangerSoft
         case .ghost: return hovering && enabled ? Theme.C.accentSoft : .clear
         }
-    }
-
-    private var borderColor: Color {
-        switch kind {
-        case .secondary:
-            return hovering && enabled ? Theme.C.accent : Theme.C.borderStrong
-        case .primary, .danger, .ghost:
-            return .clear
-        }
-    }
-
-    private var borderWidth: CGFloat {
-        kind == .secondary ? 1 : 0
     }
 }
 
@@ -123,7 +115,7 @@ extension NativeButton where Label == AnyView {
                 HStack(spacing: 8) {
                     if let systemImage {
                         Image(systemName: systemImage)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 12, weight: .regular))
                     }
                     Text(title)
                 }
@@ -145,7 +137,7 @@ struct NativeIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: iconSize, weight: .medium))
+                .font(.system(size: iconSize, weight: .regular))
                 .foregroundStyle(hovering ? Theme.C.accent : Theme.C.inkMuted)
                 .frame(width: size, height: size)
                 .background(hovering ? Theme.C.accentSoft : .clear)

@@ -17,6 +17,7 @@ enum CreateKind: Identifiable {
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
     @State private var launchFinished = false
 
     @State private var pickerOpen = false
@@ -52,9 +53,11 @@ struct RootView: View {
             }
         }
         .background(Theme.C.canvas)
-        .environment(\.colorScheme, .light)
+        .onChange(of: appearance) { _, next in
+            NSApp.appearance = next.nsAppearance
+        }
         .onAppear {
-            NSApp.appearance = NSAppearance(named: .aqua)
+            NSApp.appearance = appearance.nsAppearance
             ThinScrollbar.install()
             InputModality.shared.install()
             NSApp.applicationIconImage = BrandAssets.image("app/macos/UsefulBot.icns")
@@ -334,7 +337,7 @@ struct NativeDialog<Content: View>: View {
             .background(Theme.C.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
             .popShadow()
@@ -721,7 +724,7 @@ struct ConnectorsDialog: View {
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(Theme.C.inkFaint)
                     TextField("Search apps", text: $search)
                         .textFieldStyle(.plain)
@@ -808,7 +811,7 @@ struct ConnectorsDialog: View {
             .background(Theme.C.canvas)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
             if let next = payload.nextOffset, next > 0 {
@@ -899,7 +902,7 @@ struct ConnectorsDialog: View {
         .background(Theme.C.canvas)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .accessibilityLabel("Loading connectors")

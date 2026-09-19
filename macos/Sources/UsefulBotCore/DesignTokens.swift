@@ -5,8 +5,8 @@ import Foundation
 /// colors, fonts and metrics. Nothing here may drift from the web values.
 public enum DesignTokens {
     public enum Hex {
-        public static let canvas = "#F8F8F8"
-        public static let rail = "#F8F8F8"
+        public static let canvas = "#F3F3F3"
+        public static let rail = "#F3F3F3"
         public static let surface = "#FFFFFF"
         public static let sunken = "#F0F0F0"
         /// A bot's chat bubble: white, not a gray. The chat behind it is white
@@ -42,6 +42,42 @@ public enum DesignTokens {
         public static let white = "#FFFFFF"
         public static let dialogOverlay = "#171717" // 18% opacity over content
         public static let thumbBadge = "#171717" // 72% opacity over images
+    }
+
+    /// The dark appearance. Same neutral brand, inverted: near-black
+    /// surfaces a step apart in tone, light ink, and the accent flips to the
+    /// light end so a primary fill still reads as the loudest thing on screen.
+    public enum DarkHex {
+        public static let canvas = "#0F0F0F"
+        public static let rail = "#0F0F0F"
+        public static let surface = "#171717"
+        public static let sunken = "#232323"
+        public static let bubbleBot = "#202020"
+
+        public static let ink = "#EDEDED"
+        public static let inkMuted = "#A3A3A3"
+        public static let inkFaint = "#6E6E6E"
+
+        public static let brand = "#EDEDED"
+        public static let brandInk = "#141414"
+
+        public static let accent = "#EDEDED"
+        public static let accentStrong = "#FFFFFF"
+        public static let accentSoft = "#262626"
+        public static let accentInk = "#141414"
+
+        public static let border = "#262626"
+        public static let borderStrong = "#333333"
+
+        public static let scrollKnob = "#3A3A3A"
+        public static let scrollKnobActive = "#4A4A4A"
+
+        public static let success = "#4CC39B"
+        public static let successSoft = "#13302A"
+        public static let warning = "#E3A64A"
+        public static let warningSoft = "#33260F"
+        public static let danger = "#F0795C"
+        public static let dangerSoft = "#3A1B14"
     }
 
     public enum Radius {

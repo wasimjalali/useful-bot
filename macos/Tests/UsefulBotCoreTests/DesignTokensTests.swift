@@ -4,8 +4,8 @@ import Testing
 
 @Suite struct DesignTokensTests {
     @Test func coreCanvasTokensMatchGlobalsCSS() {
-        #expect(DesignTokens.Hex.canvas == "#F8F8F8")
-        #expect(DesignTokens.Hex.rail == "#F8F8F8")
+        #expect(DesignTokens.Hex.canvas == "#F3F3F3")
+        #expect(DesignTokens.Hex.rail == "#F3F3F3")
         #expect(DesignTokens.Hex.surface == "#FFFFFF")
         #expect(DesignTokens.Hex.sunken == "#F0F0F0")
         #expect(DesignTokens.Hex.ink == "#171717")

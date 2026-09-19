@@ -260,7 +260,7 @@ private struct BotSettingsFields: View {
         .padding(.vertical, 10)
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
     }
 
