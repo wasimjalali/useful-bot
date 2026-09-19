@@ -45,6 +45,11 @@ export async function POST(
     if (!entry || entry.kind !== "mcp") {
       return NextResponse.json({ ok: false, error: "widget_connection" }, { status: 400 });
     }
+    // The widget page is read without credentials too; a signed-in server's
+    // app gets a clear refusal here, not an anonymous call that fails upstream.
+    if (entry.authKind !== "none") {
+      return NextResponse.json({ ok: false, error: "widget_auth_unsupported" }, { status: 400 });
+    }
     const tools = await listMcpTools(entry.url);
     if (!tools.some((tool) => tool.name === body.name && tool.appCallable)) {
       return NextResponse.json({ ok: false, error: "tool_not_app" }, { status: 403 });

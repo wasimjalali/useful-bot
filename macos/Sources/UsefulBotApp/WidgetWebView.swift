@@ -134,23 +134,34 @@ struct WidgetWebView: NSViewRepresentable {
         }
     }
 
-    /// Covers the window's content while a drawing is in full screen.
-    /// Escape leaves it even when the drawing does not take the key.
+    /// Covers the window while a drawing is in full screen: the drawing
+    /// below the title bar, a Done button in the title bar strip. Escape
+    /// leaves too, even when the drawing does not take the key.
     final class FullscreenOverlay: NSView {
         var onClose: (() -> Void)?
 
         override func cancelOperation(_ sender: Any?) {
             onClose?()
         }
+
+        @objc func close(_ sender: Any?) {
+            onClose?()
+        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedId: String?
+        /// The widget whose page is in the view now. `loadedId` moves as soon
+        /// as a fetch starts; tool calls must speak for the page on screen.
+        private var shownId: String?
         weak var webView: SizedWebView?
         weak var container: NSView?
         private var loading: Task<Void, Never>?
         private var overlay: FullscreenOverlay?
         private var lastLinkOpen = Date.distantPast
+        /// When a tool call that the reader's click started came back. The
+        /// export's link follows that round trip, well after the click.
+        private var clickedCallDone = Date.distantPast
 
         deinit { loading?.cancel() }
 
@@ -164,6 +175,7 @@ struct WidgetWebView: NSViewRepresentable {
         /// the loopback server itself.
         func load(widgetId: String, into view: WKWebView) {
             loadedId = widgetId
+            shownId = nil
             loading?.cancel()
             loading = Task { @MainActor [weak view] in
                 let client = BackendClient(base: ServerConfig.resolved().baseURL)
@@ -175,6 +187,7 @@ struct WidgetWebView: NSViewRepresentable {
                         let html = try await client.widgetPage(id: widgetId)
                         if Task.isCancelled { return }
                         view?.loadHTMLString(html, baseURL: nil)
+                        self.shownId = widgetId
                         return
                     } catch BackendError.http(404) where attempt < 5 {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -204,36 +217,40 @@ struct WidgetWebView: NSViewRepresentable {
             }
             switch kind {
             case "tool":
-                guard let widgetId = loadedId, let name = body["name"] as? String else {
+                guard let widgetId = shownId, let name = body["name"] as? String else {
                     return reply(nil, "refused")
                 }
                 let arguments = body["arguments"] as? [String: Any] ?? [:]
+                let clicked = Self.justClicked(view)
                 Task { @MainActor in
                     do {
                         let client = BackendClient(base: ServerConfig.resolved().baseURL)
-                        reply(try await client.widgetToolCall(id: widgetId, name: name, arguments: arguments), nil)
+                        let result = try await client.widgetToolCall(id: widgetId, name: name, arguments: arguments)
+                        if clicked { self.clickedCallDone = Date() }
+                        reply(result, nil)
                     } catch {
                         reply(nil, "tool_failed")
                     }
                 }
             case "link":
-                // A link opens only on the heels of a click in this drawing.
-                // The export's link comes after a network round trip, so the
-                // window is generous; a page acting on its own gets nothing.
-                guard Date().timeIntervalSince(view.lastClick) < 30,
-                      let raw = body["url"] as? String, let url = Self.openableLink(raw) else {
+                // A link opens only on the heels of a click in this drawing,
+                // or of a tool call such a click started (the export). A page
+                // acting on its own gets nothing.
+                let fromClick = Self.justClicked(view) || Date().timeIntervalSince(clickedCallDone) < 3
+                guard fromClick, let raw = body["url"] as? String, let url = Self.openableLink(raw) else {
                     return reply(nil, "link_refused")
                 }
                 // One link a second: a page cannot fire a burst of tabs.
                 guard Date().timeIntervalSince(lastLinkOpen) > 1 else { return reply(nil, "link_refused") }
                 lastLinkOpen = Date()
+                clickedCallDone = .distantPast
                 NSWorkspace.shared.open(url)
                 reply([String: Any](), nil)
             case "mode":
                 // Full screen covers the whole window, so it too needs the
                 // reader's click; leaving it never does.
                 if body["mode"] as? String == "fullscreen" {
-                    if Date().timeIntervalSince(view.lastClick) < 5 { enterFullscreen() }
+                    if Self.justClicked(view) { enterFullscreen() }
                 } else {
                     leaveFullscreen(tellPage: false)
                 }
@@ -243,27 +260,56 @@ struct WidgetWebView: NSViewRepresentable {
             }
         }
 
-        /// Only web addresses leave the app; no file, app or custom schemes.
+        /// A click this recent still counts as the reader asking.
+        static func justClicked(_ view: SizedWebView) -> Bool {
+            Date().timeIntervalSince(view.lastClick) < 2
+        }
+
+        /// Only public https addresses leave the app: no other schemes, no
+        /// loopback or local names, no bare IP addresses.
         static func openableLink(_ raw: String) -> URL? {
             guard raw.count <= 4096, let url = URL(string: raw),
-                  let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
-                  let host = url.host, !host.isEmpty else { return nil }
+                  url.scheme?.lowercased() == "https",
+                  let host = url.host?.lowercased(), host.contains("."),
+                  !host.hasSuffix(".localhost"), !host.hasSuffix(".local"),
+                  host.rangeOfCharacter(from: CharacterSet.letters) != nil,
+                  !host.contains(":") else { return nil }
             return url
         }
 
         /// Move this web view over the window's content, below the title bar.
+        /// The cover sits on the frame view just above the content view: as a
+        /// subview of the SwiftUI hosting view it was drawn under the chat.
         private func enterFullscreen() {
             guard overlay == nil, let view = webView, let window = view.window,
-                  let content = window.contentView else { return }
-            let cover = FullscreenOverlay(frame: content.convert(window.contentLayoutRect, from: nil))
+                  let content = window.contentView, let frame = content.superview else { return }
+            let cover = FullscreenOverlay(frame: frame.bounds)
             cover.autoresizingMask = [.width, .height]
             cover.wantsLayer = true
             cover.layer?.backgroundColor = NSColor.white.cgColor
             cover.onClose = { [weak self] in self?.leaveFullscreen(tellPage: true) }
+            // The cover fills the frame view, so frame-view coordinates are
+            // its own; it is not in the window yet to convert through.
+            let drawing = frame.convert(window.contentLayoutRect, from: nil)
+            let done = NSButton(title: "Done", target: cover, action: #selector(FullscreenOverlay.close(_:)))
+            done.bezelStyle = .rounded
+            done.controlSize = .small
+            done.sizeToFit()
+            // Level with the traffic lights, mirrored to the right edge.
+            var midY = cover.bounds.maxY - 20
+            if let lights = window.standardWindowButton(.closeButton), let bar = lights.superview {
+                midY = frame.convert(lights.frame, from: bar).midY
+            }
+            done.setFrameOrigin(NSPoint(
+                x: cover.bounds.maxX - done.frame.width - 16,
+                y: midY - done.frame.height / 2
+            ))
+            done.autoresizingMask = [.minXMargin, .minYMargin]
             view.removeFromSuperview()
-            view.frame = cover.bounds
+            view.frame = drawing
             cover.addSubview(view)
-            content.addSubview(cover)
+            cover.addSubview(done)
+            frame.addSubview(cover, positioned: .above, relativeTo: content)
             overlay = cover
             window.makeFirstResponder(view)
         }
