@@ -187,7 +187,7 @@ function Card({
     ? "border-warning/40 bg-warning-soft"
     : "border-border bg-surface";
   return (
-    <div className={`rounded-2xl border px-4 py-3.5 ${ring}`}>
+    <div className={`rounded-md border px-4 py-3.5 ${ring}`}>
       <p className={`text-[11px] font-semibold uppercase tracking-[0.04em] ${tone === "warning" ? "text-warning" : "text-ink-faint"}`}>
         {title}
       </p>

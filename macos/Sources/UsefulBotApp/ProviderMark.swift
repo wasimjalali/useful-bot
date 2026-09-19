@@ -150,7 +150,7 @@ struct ProvidersBrandCard<Content: View>: View {
             .background(Theme.C.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
             .popShadow()

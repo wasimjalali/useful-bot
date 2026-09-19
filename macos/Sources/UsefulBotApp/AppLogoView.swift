@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UsefulBotCore
 
 /// An app's logo from Composio, or its initial on a sunken tile when there is
 /// none or it fails to load. Composio serves SVG, which AsyncImage cannot
@@ -21,7 +22,7 @@ struct AppLogo: View {
             }
         }
         .frame(width: 28, height: 28)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         .accessibilityHidden(true)
         .task(id: url) {
             image = await LogoCache.shared.image(for: url)
@@ -30,7 +31,7 @@ struct AppLogo: View {
 
     private var initial: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                 .fill(Theme.C.sunken)
             Text(String(name.prefix(1)).uppercased())
                 .font(.system(size: 12, weight: .semibold))

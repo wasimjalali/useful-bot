@@ -5,8 +5,8 @@ import Foundation
 /// colors, fonts and metrics. Nothing here may drift from the web values.
 public enum DesignTokens {
     public enum Hex {
-        public static let canvas = "#F8F8F8"
-        public static let rail = "#F8F8F8"
+        public static let canvas = "#F3F3F3"
+        public static let rail = "#F3F3F3"
         public static let surface = "#FFFFFF"
         public static let sunken = "#F0F0F0"
         /// A bot's chat bubble: white, not a gray. The chat behind it is white
@@ -44,17 +44,69 @@ public enum DesignTokens {
         public static let thumbBadge = "#171717" // 72% opacity over images
     }
 
+    /// The dark appearance. Same neutral brand, inverted: near-black
+    /// surfaces a step apart in tone, light ink, and the accent flips to the
+    /// light end so a primary fill still reads as the loudest thing on screen.
+    public enum DarkHex {
+        public static let canvas = "#0F0F0F"
+        public static let rail = "#0F0F0F"
+        public static let surface = "#171717"
+        public static let sunken = "#2C2C2C"
+        public static let bubbleBot = "#202020"
+
+        public static let ink = "#EDEDED"
+        public static let inkMuted = "#A3A3A3"
+        public static let inkFaint = "#6E6E6E"
+
+        public static let brand = "#EDEDED"
+        public static let brandInk = "#141414"
+
+        public static let accent = "#EDEDED"
+        public static let accentStrong = "#FFFFFF"
+        public static let accentSoft = "#262626"
+        public static let accentInk = "#141414"
+
+        public static let border = "#262626"
+        public static let borderStrong = "#333333"
+
+        public static let scrollKnob = "#3A3A3A"
+        public static let scrollKnobActive = "#4A4A4A"
+
+        public static let success = "#4CC39B"
+        public static let successSoft = "#13302A"
+        public static let warning = "#E3A64A"
+        public static let warningSoft = "#33260F"
+        public static let danger = "#F0795C"
+        public static let dangerSoft = "#3A1B14"
+    }
+
+    /// One radius scale, by role, shared with `web/app/globals.css`
+    /// (`--radius-*`). Role names below point into it.
     public enum Radius {
-        public static let channel: CGFloat = 10
-        public static let iconButton: CGFloat = 10
-        public static let field: CGFloat = 12
-        public static let stage: CGFloat = 24
-        public static let dialog: CGFloat = 22
-        public static let card: CGFloat = 16
-        public static let settingsGroup: CGFloat = 14
-        public static let composerExpanded: CGFloat = 22
-        public static let composerCompact: CGFloat = 999
-        public static let action: CGFloat = 6
+        /// Focus rings, tiny chips, kbd, labels.
+        public static let xs: CGFloat = 6
+        /// Buttons, nav items, icon buttons, menu rows.
+        public static let sm: CGFloat = 10
+        /// Fields, settings groups, small cards, chat bubbles.
+        public static let md: CGFloat = 14
+        /// Cards, dialogs, menus, popovers.
+        public static let lg: CGFloat = 16
+        /// The expanded composer.
+        public static let xl: CGFloat = 22
+        /// The main stage.
+        public static let xxl: CGFloat = 24
+        public static let pill: CGFloat = 999
+
+        public static let channel = sm
+        public static let iconButton = sm
+        public static let field = md
+        public static let stage = xxl
+        public static let dialog = lg
+        public static let card = lg
+        public static let settingsGroup = md
+        public static let composerExpanded = xl
+        public static let composerCompact = pill
+        public static let action = xs
     }
 
     public enum Space {

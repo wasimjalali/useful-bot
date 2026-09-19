@@ -538,7 +538,7 @@ export function ChatComposer({
                     <span className="max-w-[180px] truncate">{file.name}</span>
                     <button
                       aria-label={`Remove ${file.name}`}
-                      className="grid size-5 place-items-center rounded-full text-ink-muted"
+                      className="grid size-5 place-items-center rounded-pill text-ink-muted"
                       onClick={() => removeFile(file.id)}
                       type="button"
                     >

@@ -162,7 +162,7 @@ struct ProposalCardView: View {
             card(title: "Connect server", tone: .accent) {
                 HStack(alignment: .center, spacing: 12) {
                     Image(systemName: "server.rack")
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.system(size: 20, weight: .regular))
                         .foregroundStyle(Theme.C.inkMuted)
                         .frame(width: 28, height: 28)
                     VStack(alignment: .leading, spacing: 2) {
@@ -313,7 +313,7 @@ struct ProposalCardView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 12, weight: .regular))
                     Text(dismiss)
                 }
             }
@@ -380,20 +380,18 @@ struct ProposalCardView: View {
             VStack(alignment: .leading, spacing: 0) {
                 content()
             }
-            .padding(.top, 6)
+            .padding(.top, 4)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tone == .warning ? Theme.C.warningSoft : Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(
-                    tone == .warning ? Theme.C.warning.opacity(0.4) : Theme.C.border,
-                    lineWidth: 1
-                )
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                .strokeBorder(Theme.C.warning.opacity(tone == .warning ? 0.4 : 0), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .cardLift(cornerRadius: DesignTokens.Radius.md)
     }
 }
 
@@ -420,19 +418,16 @@ struct OnboardingCardView: View {
                 .foregroundStyle(Theme.C.inkMuted)
                 .padding(.top, 8)
             HStack(spacing: 8) {
-                NativeButton("Fill the form", kind: .secondary, small: true, action: onFillForm)
-                NativeButton("Skip", kind: .secondary, small: true, action: onDismiss)
+                NativeButton("Fill the form", kind: .primary, small: true, action: onFillForm)
+                NativeButton("Skip", kind: .ghost, small: true, action: onDismiss)
             }
-            .padding(.top, 14)
+            .padding(.top, 12)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.C.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .cardLift(cornerRadius: DesignTokens.Radius.md)
     }
 }

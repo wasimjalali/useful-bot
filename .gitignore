@@ -32,3 +32,18 @@ spikes/**/scratch/
 # generated ts
 *.tsbuildinfo
 web/tsconfig.tsbuildinfo
+
+# Root-level QA screenshots from verification runs. Root-anchored so brand/
+# and docs/grokbot-ui-reference/ images stay tracked.
+/final-*.png
+/crash-fix-*.png
+/fold-*.png
+/fold3-*.png
+/baseline-app.png
+/providers-*.png
+/orch-*.png
+/perf-batch*.png
+/full-access-*.png
+/r4-*.png
+/polish-shots/
+/.playwright-mcp/

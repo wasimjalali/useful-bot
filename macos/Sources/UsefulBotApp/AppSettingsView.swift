@@ -38,6 +38,8 @@ struct AppSettingsView: View {
 
     let onClose: () -> Void
     @State private var tab: AppSettingsTab
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
+    @ObservedObject private var avatarStore = OperatorAvatarStore.shared
     /// The daily limit while it is being typed. The usage tab polls every few
     /// seconds, and the poll must not overwrite a half-typed number.
     @State private var editedBudget: String?
@@ -67,7 +69,7 @@ struct AppSettingsView: View {
             .background(Theme.C.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
             .popShadow()
@@ -152,7 +154,7 @@ struct AppSettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(tab == item ? Theme.C.sunken : .clear)
                     .foregroundStyle(tab == item ? Theme.C.ink : Theme.C.inkMuted)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -205,13 +207,15 @@ struct AppSettingsView: View {
                 settingsGroup {
                     settingsRow(last: true) {
                         HStack(spacing: 12) {
-                            Text(model.operatorInitials)
-                                .font(.system(size: 10, weight: .bold))
-                                .tracking(DesignTokens.Tracking.operatorAvatar * 10)
-                                .foregroundStyle(Theme.C.ink)
-                                .frame(width: 32, height: 32)
-                                .background(Theme.C.sunken)
-                                .clipShape(Circle())
+                            Button {
+                                avatarStore.pick()
+                            } label: {
+                                OperatorAvatarView(initials: model.operatorInitials, size: 40)
+                            }
+                            .buttonStyle(.plain)
+                            .pointerOnHover()
+                            .help("Change photo")
+                            .accessibilityLabel("Change profile photo")
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(model.operatorName)
                                     .font(.system(size: 14, weight: .medium))
@@ -221,8 +225,18 @@ struct AppSettingsView: View {
                                     .font(.system(size: 12))
                                     .foregroundStyle(Theme.C.inkMuted)
                                     .lineLimit(1)
+                                if let error = avatarStore.error {
+                                    Text(error)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.C.danger)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer(minLength: 0)
+                            if avatarStore.image != nil {
+                                NativeButton("Remove", kind: .ghost, small: true, action: avatarStore.remove)
+                            }
+                            NativeButton(avatarStore.image == nil ? "Upload photo" : "Change photo", kind: .secondary, small: true, action: avatarStore.pick)
                         }
                     }
                 }
@@ -235,7 +249,7 @@ struct AppSettingsView: View {
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.C.ink)
                         Spacer(minLength: 0)
-                        settingsValue(themeLabel)
+                        AppearancePicker(selection: $appearance)
                     }
                     settingsRow(last: true) {
                         Text("Language")
@@ -259,11 +273,6 @@ struct AppSettingsView: View {
                 }
             }
         }
-    }
-
-    private var themeLabel: String {
-        let theme = model.appStatus?.theme ?? "light"
-        return theme == "light" ? "Light" : theme
     }
 
     // MARK: - Providers
@@ -506,7 +515,7 @@ struct AppSettingsView: View {
         .frame(height: 32)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.action, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
     }
 
@@ -667,7 +676,7 @@ struct AppSettingsView: View {
         .background(Theme.C.canvas)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
     }
@@ -689,5 +698,45 @@ struct AppSettingsView: View {
             .font(.system(size: 13))
             .foregroundStyle(Theme.C.inkMuted)
             .lineLimit(1)
+    }
+}
+
+/// System, Light and Dark as one pill track. Drawn by hand: the native
+/// segmented control fills the pick with the macOS accent color, not ours.
+private struct AppearancePicker: View {
+    @Binding var selection: AppAppearance
+
+    /// The picked segment sits above its track in both appearances: white on
+    /// gray in light, a lighter gray on the dark track in dark.
+    private static let pickFill = Theme.adaptive(DesignTokens.Hex.surface, DesignTokens.DarkHex.borderStrong)
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(AppAppearance.allCases) { option in
+                let on = option == selection
+                Button {
+                    selection = option
+                } label: {
+                    Text(option.label)
+                        .font(.system(size: 12, weight: on ? .semibold : .regular))
+                        .foregroundStyle(on ? Theme.C.ink : Theme.C.inkMuted)
+                        .padding(.horizontal, 12)
+                        .frame(height: 26)
+                        .background(on ? Self.pickFill : .clear)
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
+                        .shadow(color: Theme.C.shadow.opacity(on ? 0.1 : 0), radius: 1.5, x: 0, y: 1)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(Theme.C.border)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+        .animation(.easeOut(duration: DesignTokens.Motion.fast), value: selection)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Theme")
     }
 }

@@ -381,7 +381,7 @@ function BotRow({
         <BotAvatar bot={bot} size="sm" />
         <span className="bot-row-copy">
           <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate">{bot.name}</span>
+            <span className="min-w-0 flex-1 truncate font-semibold">{bot.name}</span>
             {bot.kind === "group" ? <UsersIcon className="size-3 shrink-0 text-ink-faint" /> : null}
             {bot.label ? <span className="bot-label">{bot.label}</span> : null}
           </span>

@@ -23,9 +23,20 @@ private struct ButtonChrome: ButtonStyle {
             .padding(.horizontal, small ? 12 : 14)
             .frame(minHeight: small ? DesignTokens.Control.buttonSmallMinHeight : DesignTokens.Control.buttonMinHeight)
             .background(background)
+            // A primary fill carries a faint top-lit sheen, a few percent of
+            // luminance, so it reads as a button rather than a flat block.
+            .overlay(
+                LinearGradient(
+                    colors: [Theme.C.white.opacity(kind == .primary ? 0.1 : 0), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            // A tone fill alone melts into a canvas-backed group; the whisper
+            // edge keeps a secondary button's shape on any ground.
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous)
-                    .strokeBorder(borderColor, lineWidth: borderWidth)
+                    .strokeBorder(kind == .secondary ? Theme.C.edge : .clear, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
             .smShadow()
@@ -34,6 +45,10 @@ private struct ButtonChrome: ButtonStyle {
             .focusRing(focused)
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: hovering)
     }
+
+    /// One step past the resting fill in both appearances: darker in light,
+    /// lighter in dark, so hover never sinks.
+    private static let secondaryHover = Theme.adaptive(DesignTokens.Hex.border, DesignTokens.DarkHex.borderStrong)
 
     private var foreground: Color {
         switch kind {
@@ -47,23 +62,10 @@ private struct ButtonChrome: ButtonStyle {
     private var background: Color {
         switch kind {
         case .primary: return hovering && enabled ? Theme.C.accentStrong : Theme.C.accent
-        case .secondary: return hovering && enabled ? Theme.C.accentSoft : Theme.C.surface
+        case .secondary: return hovering && enabled ? Self.secondaryHover : Theme.C.sunken
         case .danger: return Theme.C.dangerSoft
         case .ghost: return hovering && enabled ? Theme.C.accentSoft : .clear
         }
-    }
-
-    private var borderColor: Color {
-        switch kind {
-        case .secondary:
-            return hovering && enabled ? Theme.C.accent : Theme.C.borderStrong
-        case .primary, .danger, .ghost:
-            return .clear
-        }
-    }
-
-    private var borderWidth: CGFloat {
-        kind == .secondary ? 1 : 0
     }
 }
 
@@ -123,7 +125,7 @@ extension NativeButton where Label == AnyView {
                 HStack(spacing: 8) {
                     if let systemImage {
                         Image(systemName: systemImage)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 12, weight: .regular))
                     }
                     Text(title)
                 }
@@ -145,7 +147,7 @@ struct NativeIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: iconSize, weight: .medium))
+                .font(.system(size: iconSize, weight: .regular))
                 .foregroundStyle(hovering ? Theme.C.accent : Theme.C.inkMuted)
                 .frame(width: size, height: size)
                 .background(hovering ? Theme.C.accentSoft : .clear)
@@ -262,9 +264,10 @@ struct SectionHeader: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
                     .rotationEffect(.degrees(collapsed ? -90 : 0))
-                Text(title.uppercased())
-                    .font(.system(size: DesignTokens.FontSize.sectionHead, weight: .semibold))
-                    .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.sectionHead)
+                // Sentence case, as the section was named: a quiet label,
+                // not an all-caps eyebrow.
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
             }
             .foregroundStyle(hovering ? Theme.C.inkMuted : Theme.C.inkFaint)
             .frame(maxWidth: .infinity, alignment: .leading)

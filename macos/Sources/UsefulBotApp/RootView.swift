@@ -17,9 +17,11 @@ enum CreateKind: Identifiable {
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
     @State private var launchFinished = false
 
     @State private var pickerOpen = false
+    @State private var windowFullScreen = false
     @State private var newChatTrigger = CGRect.zero
     @State private var createKind: CreateKind?
     @State private var createSectionId: String?
@@ -52,9 +54,15 @@ struct RootView: View {
             }
         }
         .background(Theme.C.canvas)
-        .environment(\.colorScheme, .light)
+        // The title bar is hidden and the lights sit on the header row, so
+        // the content starts at the window's top edge, not under a band.
+        .ignoresSafeArea(.container, edges: .top)
+        .background(WindowChrome(fullScreen: $windowFullScreen))
+        .onChange(of: appearance) { _, next in
+            NSApp.appearance = next.nsAppearance
+        }
         .onAppear {
-            NSApp.appearance = NSAppearance(named: .aqua)
+            NSApp.appearance = appearance.nsAppearance
             ThinScrollbar.install()
             InputModality.shared.install()
             NSApp.applicationIconImage = BrandAssets.image("app/macos/UsefulBot.icns")
@@ -221,7 +229,8 @@ struct RootView: View {
                 },
                 onConnectors: { connectorsOpen = true },
                 onOpenAppSettings: { model.openAppSettings($0) },
-                newChatTriggerFrame: $newChatTrigger
+                newChatTriggerFrame: $newChatTrigger,
+                fullScreen: windowFullScreen
             )
 
             stage
@@ -334,7 +343,7 @@ struct NativeDialog<Content: View>: View {
             .background(Theme.C.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
             .popShadow()
@@ -721,7 +730,7 @@ struct ConnectorsDialog: View {
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(Theme.C.inkFaint)
                     TextField("Search apps", text: $search)
                         .textFieldStyle(.plain)
@@ -808,7 +817,7 @@ struct ConnectorsDialog: View {
             .background(Theme.C.canvas)
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                    .strokeBorder(Theme.C.border, lineWidth: 1)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
             if let next = payload.nextOffset, next > 0 {
@@ -877,14 +886,14 @@ struct ConnectorsDialog: View {
         VStack(spacing: 0) {
             ForEach(0..<4, id: \.self) { index in
                 HStack(spacing: 12) {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                         .fill(Theme.C.border)
                         .frame(width: 28, height: 28)
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
                         .fill(Theme.C.border)
                         .frame(width: 112, height: 14)
                     Spacer(minLength: 0)
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                         .fill(Theme.C.border)
                         .frame(width: 80, height: 32)
                 }
@@ -899,7 +908,7 @@ struct ConnectorsDialog: View {
         .background(Theme.C.canvas)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .accessibilityLabel("Loading connectors")

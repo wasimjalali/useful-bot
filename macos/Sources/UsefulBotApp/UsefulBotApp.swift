@@ -11,8 +11,8 @@ struct UsefulBotDesktopApp: App {
                 .environmentObject(model)
                 .task { await model.start() }
                 .frame(minWidth: 900, minHeight: 600)
-                .preferredColorScheme(.light)
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 780)
         .commands {
             CommandGroup(after: .newItem) {
