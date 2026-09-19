@@ -330,9 +330,10 @@ Round-4 verification after fixes: UITests 4/4 at 390 pt and 4/4 at 375 pt;
 full sim suite green; macOS 285/285; verify-release PASS; `npm test`
 538/538; xcodegen no-diff; all 34 screenshots regenerated.
 
-Review loop round 5 (fresh reviewers on b8646a0): design-a11y requested
-changes, 3 findings, all fixed in `6df1264`; correctness and security
-verdicts are pending and will be re-run on the fix commit regardless.
+Review loop round 5 (fresh reviewers on b8646a0): all three roles
+requested changes; 3+2+2 findings across design-a11y, correctness and
+security. Design-a11y fixes landed in `6df1264`, then `7259531` merged
+main (#104) and `01f03e4` fixed the rest:
 
 Design-a11y (3):
 1. [medium] the iPad check in spec 17.1 gate 3 had no evidence ->
@@ -344,8 +345,34 @@ Design-a11y (3):
    size even when 300 still fit -> `ViewThatFits` keeps 300 while the
    column fits, falls to the 200 pt floor when it does not, then scrolls.
 
-Round-5 verification after fixes: iOS suite 264/264 + UITests 4/4 at
-390 pt, 375 pt and 744 pt (iPad mini); macOS 285/285; verify-release
-PASS; `npm test` 538/538 (an interim run hit the package-lock drift
-left by next_build; restored and re-ran green); xcodegen no-diff;
-50 screenshots in docs/audit/ios-shots/PR-1/.
+Correctness (2):
+1. [blocker] clean-textual merge over #104 but the combined tree fails
+   to compile on both platforms: `widgetToolCall` called the pre-change
+   one-arg `expectOK(response)`, and the widget tool bridge built
+   `BackendClient(base:)` without `try` on the now-throwing init ->
+   merged main, `expectOK(data, response)`, and the bridge reuses the
+   loader's single-flight `Self.client` (a fresh client pays a full
+   sign-in each call).
+2. [low] `signIn`'s session read-back threw bare `.http(status)` on iOS
+   -> funnels through `failure()`, so 401 is `credentialInvalid` and
+   403 `forbidden(code)` there too.
+
+Security (2):
+1. [medium] the stream idle watchdog was only touched per line, so the
+   pre-first-line window (header wait, `errorCode` drain, `reauth()`
+   round trip) could hit the threshold and `finish()` cleanly
+   mid-handling, masking a terminal auth error and presenting an
+   early-cut replay as complete -> activity touches bracket each await
+   in the handshake, and both watchdog stops now throw
+   `streamInterrupted` (spec 8.3: early stop is incomplete, reported
+   as such).
+2. [low] the auth tests swap in a stub session, so `makeSession()`'s
+   isolation controls were unpinned -> `defaultSessionIsIsolated`
+   asserts the private cookie jar, nil urlCache and NoRedirectDelegate
+   on the default session.
+
+Round-5 verification after fixes: iOS suite 266/266 + UITests 4/4 at
+390 pt, 375 pt and 744 pt (iPad mini); macOS 287/287 (now including
+#104's tests); verify-release PASS; `npm test` 545/545 (an interim run
+hit the package-lock drift left by next_build; restored and re-ran
+green); xcodegen no-diff; 50 screenshots in docs/audit/ios-shots/PR-1/.
