@@ -4,8 +4,8 @@ Status: final draft for the build, 2026-09-19. Consumed alongside the frozen
 `docs/spec/IOS-APP-SPEC.md` ("the spec") and the iOS mockups.
 
 - **Mockups:** the Claude Design canvas "Useful Bot iOS"
-  (https://claude.ai/artifact/TJkoZqMsC53FE18sFiojAK): 42 iPhone boards, a dark twin of each
-  ("Dark: Bots") and a handoff board. Mockups are cited by their board title, for example
+  (https://claude.ai/artifact/TJkoZqMsC53FE18sFiojAK): 50 iPhone boards, a dark twin of each
+  ("Dark: Bots"), one dark board recording the rejected token scrim, and a handoff board. Mockups are cited by their board title, for example
   "Bots" or "Approval docked". The boards were redrawn on 2026-09-19 to match this document;
   where they differ, this document wins.
 - **Authority order:** the macOS app is the source of truth for look and behavior. The spec is
@@ -23,7 +23,7 @@ Contents:
 3. Blacklist violations inside the mockups
 4. Token mapping and contrast
 5. Components and reuse boundaries
-6. Open questions for the owner
+6. Owner decisions and closed items
 
 ---
 
@@ -190,8 +190,9 @@ section chevrons stay beside titles; the search field grows in height.
 ### 1.3 Chat
 
 Mockups: "Chat, bot working", "Composer locked", "Approval docked", "Approval states", "New
-chat", "Failed turn", "Runtime down", "Model and effort", "Permission", "Folder, read-only",
-"Add to message", "Connectors".
+chat", "Failed turn", "Runtime down", "Model and effort", "Permission", "Add to message", "Add to
+message, no key", "Connectors", "Mention list", "Mention list, filtered", "Mention list, no
+match", "Mention list, largest text", "Folder sheet", "Folder sheet, no folder".
 
 **Anatomy**
 
@@ -232,7 +233,8 @@ chat", "Failed turn", "Runtime down", "Model and effort", "Permission", "Folder,
      label becomes "Send, locked. Face ID required". First send runs the class B check.
 6. Session chips under the composer, 6 pt below it: folder chip and permission chip only.
    - Folder chip is **read-only on the phone** (R9): folder glyph plus the folder name, no
-     chevron. Tapping shows a small popover "Attach a folder from your Mac".
+     chevron. With no folder attached it reads "No folder" in `inkMuted`. Tapping opens the
+     Working folder sheet (below).
    - Permission chip: shield glyph plus the level in semibold, chevron, opens the Permission
      sheet.
 
@@ -247,9 +249,46 @@ the screen sides and bottom, `Radius.xl` on all four corners, grabber, title row
   Footer line "Applies to Drive Admin on your Mac." Moving toward Auto or Full access is
   class A.
 - **Add to message.** Recent photos strip (84 pt tiles, `Radius.md`), then rows Photos,
-  Camera, Files, a hairline, and Connectors with a trailing chevron.
+  Camera, Files, a hairline, and Connectors with a trailing chevron. With no Composio key saved,
+  the last row reads "Set up connectors in Settings" (same grid glyph and chevron); tapping it
+  dismisses the sheet and pushes Settings, Connectors on the key form (1.13).
+- **Working folder.** Smallest-fit detent. A `sunken` row card with the folder glyph and the
+  folder name in `ink` semibold, or "No folder attached" in `inkMuted`; then "Attach a folder
+  from your Mac. This iPhone can't change it." in `inkMuted` 15; then a full-width secondary
+  "Done". No other actions: attaching is blocked on the phone (F2).
 - **Connectors (from chat).** Pushes inside the same sheet, which grows to the large detent:
   back chevron, title, close. Content is the Connectors list component (1.13).
+
+**Group chat @mentions** (boards "Mention list" and its variants)
+
+- **Trigger.** Typing "@" at the start of the field or after a space opens the list. The text
+  after "@" up to the caret is the query. It closes on a space when nothing matches, on
+  selection, on deleting the "@", or when the field loses focus.
+- **Candidates.** The group's members only, in roster order (the orchestrator is reached by an
+  untargeted message, so it is not listed). Matching is case-insensitive on the start of any
+  word in the name or label: "st" finds Storyboard Artist, "pro" finds YT Producer.
+- **Anchor.** Docked directly above the composer inside the dock, full composer width, 8 pt
+  gap. It sits above any docked ask. A lifted card (`surface`, `edge`, lift shadow,
+  `Radius.lg`), 6 pt vertical padding.
+- **Height cap.** Four rows (52 pt each), then the list scrolls inside the card. At
+  accessibility sizes the cap is three rows.
+- **Row.** `BotRowView` at 32 pt avatars: avatar, 12 pt gap, name 15 semibold, label under it
+  when it differs from the name. Row 52 pt, `Radius.sm` highlight inset 6 pt. The first row is
+  highlighted (`sunken`) as the default target.
+- **Insert.** Tapping a row (or Return with a hardware keyboard) replaces the query with
+  "@" plus the full name and a trailing space, which is the form the shared mention parser
+  matches (`Threads.parseMentions`, full names, case-insensitive).
+- **Keyboard.** Up and Down move the highlight, Return inserts, Escape closes. Tab is not
+  captured.
+- **VoiceOver.** Focus stays in the text field. When the list appears it announces "3
+  suggestions"; each row reads "YT Producer, group member, double-tap to mention"; swiping
+  right from the field reaches the list.
+- **Empty result.** One non-interactive row, "No member named "zz"", in `inkMuted`. The list
+  closes on the next space.
+- **Largest text.** Rows grow to 64 pt, names wrap to two lines instead of truncating, labels
+  drop, cap three rows.
+- **Dark.** The card is `surface #171717` on the `#171717` stage, so it relies on `edge` and the
+  row highlight `sunken #2C2C2C`; both are drawn on the dark boards.
 
 **States**
 
@@ -540,7 +579,8 @@ in `danger` (class A).
 
 ### 1.13 Connectors (push from Settings; also inside the Add to message sheet)
 
-Mockups: "Connectors" (inside the Add to message sheet), "Connectors (Settings)".
+Mockups: "Connectors" (inside the Add to message sheet), "Connectors, key set", "Connectors, no
+key", "Connectors, key rejected", "Add to message, no key".
 
 **Anatomy.** Search pill (40 pt, `Radius.pill`, `borderStrong` edge, `ink` on focus), then a
 flat list (no container card, see V6): each row 64 pt min, app logo 36 pt in a `Radius.sm`
@@ -549,13 +589,27 @@ needed", "Waiting for approval in the browser", "Still not connected. Try again.
 button: "Connect" primary small or "Disconnect" secondary small, 36 pt visible in a 44 pt
 target. Inset hairlines. "Show more" secondary at the end.
 
-**Key configuration** (Settings entry only, R14): a "Composio key" group at the top: when
-missing, a secure field plus "Save key" (class A) and a "Get a key at composio.dev" link row;
-when set, "Key ending digv" plus "Remove" (class A).
+**Key configuration** (Settings entry only; closed item 3). A "Composio API key" section at
+the top of Settings, Connectors, matching the Mac's `keyForm`:
+
+- **No key:** secure field, placeholder "Paste key", then a full-width primary "Save key",
+  disabled (quiet `sunken` fill) until the field has text, with the reason "Paste a key to save
+  it" under it. Then a link row "Get a key at composio.dev", underlined, trailing share glyph,
+  opening Safari. Then the line "Apps show here once a key is saved. Saving or removing a key
+  needs Face ID." The app list is hidden.
+- **Key rejected:** the same form, field edge in `danger`, "Key rejected" in `danger` 13
+  semibold and the server's reason in `inkMuted` under it ("Composio returned 401: invalid API
+  key."). "Save key" enabled for a retry.
+- **Key set:** a group row with the key glyph, "Key ending digv" and a secondary "Remove"
+  (class A), then the app list.
+
+From chat, the Add to message sheet never shows the key form; with no key it offers "Set up
+connectors in Settings" (1.3).
 
 | State | Treatment |
 |-------|-----------|
-| Empty (no key) | Key group only, list hidden. |
+| Empty (no key) | Key form only, list hidden (board "Connectors, no key"). |
+| Key rejected | Board "Connectors, key rejected". |
 | Empty (no apps) | "No apps to show." / "No apps match "gmail"." (macOS copy). |
 | Loading | Four row skeletons (logo tile, name bar, button block). |
 | Error | Red line with Retry, as the Mac. |
@@ -679,7 +733,7 @@ column, so every row below is now resolved on the boards.
 | R11 | Bot settings presentation | "Bot settings": a pushed screen | 10: a sheet | Spec | Navigation is behavior. Content layout of the mockup kept. |
 | R12 | Bot settings content | Model, Permission, Working folder, "Notify when done", one routine, Memory, Delete | 9.3: name, label, description, avatar shape and color, permission, routines with states, memory; no push in v1 (14) | Spec | Add Profile and Avatar groups and past conversations; "Notify when done" removed (owner decision: no notifications in v1). |
 | R13 | Pairing copy | "Enter code instead"; steps say "Settings, then This Mac, Pair a phone" | 6.1, 10: "Scan QR / Enter manually"; Mac path is Settings, Devices, "Show pairing QR" | Spec | Copy follows the real Mac path. Layout kept. |
-| R14 | Connectors key | "Connectors" (from chat) omits the Composio key | 9.4: browse, key configuration, connect, disconnect | Spec, placed | Key lives on the Settings entry of Connectors; the in-chat sheet shows the list only and, with no key, a "Set up connectors in Settings" row. Open item 6.2.3. |
+| R14 | Connectors key | "Connectors" (from chat) omits the Composio key | 9.4: browse, key configuration, connect, disconnect | Spec, placed | Key lives on the Settings entry of Connectors; the in-chat sheet shows the list only and, with no key, a "Set up connectors in Settings" row. Closed in 6.2 item 3. |
 | R15 | Settings structure | "Settings": Account, Appearance (with Language, Time zone), Bots, "This Mac" with Version | 9.4: General, Appearance, Providers, Connectors, Usage, Devices, About | Spec | Groups renamed and reordered per 1.11; "This Mac" becomes Devices; Version moves to About. |
 | R16 | Provider detail | "Providers": list only, a "Reviewer" task model removed earlier | 9.4, 10: provider detail push per mode | Spec | Detail screen specified in 1.12. |
 | R17 | Search | "Search": inline page, bot results only; empty copy "No matching bots." | 9.1, 10: sheet; scope includes labels, descriptions, sections, recent conversation titles; grouped by bot | Spec | Behavior and copy ("No matching chats or bots."). Field-on-top layout kept. |
@@ -688,7 +742,7 @@ column, so every row below is now resolved on the boards.
 | R20 | Sheet shape | Floating sheets, all corners rounded (owner request) | A.5: sheet detents per content | Both | Floating shape from the mockup, detents from the spec. |
 | R21 | Signed-out and credential-invalid | No mockups | 10 screen 18, 4.8 | Spec | Defined in 1.18 and 1.1; boards "Signed out" and "Pair again" added. |
 | R22 | Dark mode | Only one dark chat board | F4, A.7: both appearances for every screen | Spec | Every board now has a dark twin. |
-| R23 | Dark scrim | `rgb(0 0 0 / 0.5)` in dark boards | A.2: solid `rgb(23 23 23 / 0.18)` | Spec | Token. See open item 6.2.2. |
+| R23 | Dark scrim | `rgb(0 0 0 / 0.5)` in dark boards | A.2: solid `rgb(23 23 23 / 0.18)` | Closed 6.2 item 2 | Light keeps the token; dark uses `#000000` at 48% because the token leaves sheets indistinguishable from the dark stage. |
 | R24 | Font sizes | 16 pt body, 17 pt titles, 22 pt large title, 26 pt empty title | 12: `DesignTokens.swift` is the authority for sizes | Spec | Body 15 (`chatBody`), empty title 28 (`emptyTitle`); the iPhone additions in 4.3 are owner-approved. |
 | R25 | Group rows in dark | `#1B1B1B` | Token set has no such value | Spec | Groups use `surface #171717` on `canvas #0F0F0F`. |
 | R26 | Missing screens | Past conversation, Group settings, Pending approvals, Usage, Devices, Image viewer, Widget host, Signed out, Rename, Move, Delete confirm | 10 | Spec | Specified in section 1; boards added for each. |
@@ -711,10 +765,12 @@ canvas.
 | V6 | "Connectors" | The app list sits in a bordered, tinted container inside the sheet: a card inside a card | A.1 cards in cards, A.2 one level | Flat list with inset hairlines directly on the sheet. |
 | V7 | "Search" | Match highlight is a gray block with a one-off 3 to 4 pt radius | A.2 radius scale | Semibold `ink` for matched characters, no block. |
 | V8 | "Chat, dark" and dark CSS | Non-token dark values: group `#1B1B1B`, picked segment `#3A3A3A`, custom shadow `0 1px 2px rgb(0 0 0 / .4)` | 12 tokens are the authority; A.2 | Groups `surface`, picked segment `sunken` (a visible step on the `border` track), lift by `edge` plus tone step. |
-| V9 | Dark boards | Scrim `rgb(0 0 0 / 0.5)` | A.2 scrim | `rgb(23 23 23 / 0.18)`; see open item 6.2.2. |
+| V9 | Dark boards | Scrim `rgb(0 0 0 / 0.5)` | A.2 scrim | Light: token. Dark: `#000000` at 48% (closed 6.2 item 2). |
 | V10 | "Approval docked" | "Approve" does not name the action | A.1 copy | Waived by the owner (R5). |
 | V11 | "Pair with Mac" | Numbered steps | A.1 numbered markers | No violation: the steps are genuinely sequential. Listed to show it was checked. |
 | V12 | "Failed turn" | `dangerSoft` card with a 25% danger edge | A.2 warning card recipe asks for 40% | Edge at 40%. |
+| V13 | Group chat boards (second round) | Bot attribution rows ("YT Producer" above a bubble) in `inkFaint`, 2.3:1 | A.7 contrast | `inkMuted`, as 1.3 already specifies for bot-meta rows. Fixed. |
+| V14 | "Connectors, no key", "Pair, camera denied", "Connectors" (second round) | Disabled primary buttons drawn as the black fill at 55% opacity, white label about 3.4:1 | A.2 disabled rule, A.7 | Disabled is the quiet `sunken` fill with an `inkFaint` label plus a reason line. Fixed on every board. |
 
 Checked and clean across all boards: no gradients beyond the permitted 1 to 3% sheen (the send
 button's top sheen is the macOS value and counts as finish under A.2),
@@ -741,7 +797,7 @@ iOS role.
 | `ink` | `#171717` | `#EDEDED` | Primary text, glyphs of primary controls |
 | `inkMuted` | `#5C5C5C` | `#A3A3A3` | Secondary text, section titles, meta, reasons |
 | `inkFaint` | `#A3A3A3` | `#6E6E6E` | Decorative marks, disabled glyphs, chevrons only. Never readable text |
-| `inkFaintText` (**new**) | `#6B6B6B` | `#949494` | Placeholders and tertiary readable text |
+| `inkFaintText` (**new**, add to `DesignTokens.swift`) | `#6B6B6B` | `#949494` | Placeholders and tertiary readable text. Confirmed on every surface, see 4.2 |
 | `brand` | `#171717` | `#EDEDED` | Primary button fill, send fill, toggle on, picked day |
 | `brandInk` | `#FAFAFA` | `#141414` | Text and glyph on `brand` |
 | `accent` | `#171717` | `#EDEDED` | Focus ring, active state |
@@ -756,7 +812,7 @@ iOS role.
 | `warning` / `warningSoft` | `#8A5300` / `#FBF1DE` | `#E3A64A` / `#33260F` | Approvals entry pill, expiring, changed |
 | `danger` / `dangerSoft` | `#B23C22` / `#FBEAE5` | `#F0795C` / `#3A1B14` | Errors, destructive rows, failed |
 | `edge` (NativeTheme) | black 5% | white 7% | Whisper edge on lifted surfaces |
-| `overlay` (scrim) | `#171717` at 18% | `#171717` at 18% | Sheet scrim |
+| `overlay` (scrim) | `#171717` at 18% | `#000000` at 48% (**new** `overlayDark`) | Sheet scrim. The dark value replaces the token in dark only (closed item 2) |
 | `thumbBadge` | `#171717` at 72% | same | Badges over images |
 
 ### 4.2 Contrast (WCAG 2.x, text on the surface it sits on)
@@ -770,7 +826,7 @@ Computed from the hex values. Below 4.5:1 is a violation (A.7), marked **fail**.
 | `ink` | 17.93 | 16.16 | 15.73 | |
 | `inkMuted` | 6.69 | 6.03 | 5.87 | |
 | `inkFaint` | 2.52 **fail** | 2.27 **fail** | 2.21 **fail** | |
-| `inkFaintText` (new) | 5.33 | 4.80 | 4.68 | |
+| `inkFaintText` (new) | 5.33 | 4.80 | 4.68 | 4.69 on `successSoft`, 4.76 on `warningSoft`, 4.57 on `dangerSoft`, 4.68 on `accentSoft` |
 | `success` | 6.13 | 5.52 | 5.37 | 5.39 on `successSoft` |
 | `warning` | 6.33 | 5.70 | 5.55 | 5.65 on `warningSoft` |
 | `danger` | 5.89 | 5.31 | 5.17 | 5.05 on `dangerSoft` |
@@ -783,7 +839,7 @@ Computed from the hex values. Below 4.5:1 is a violation (A.7), marked **fail**.
 | `ink` | 15.31 | 16.37 | 11.93 | 13.92 | |
 | `inkMuted` | 7.11 | 7.60 | 5.54 | 6.46 | |
 | `inkFaint` | 3.52 **fail** | 3.76 **fail** | 2.74 **fail** | 3.20 **fail** | |
-| `inkFaintText` (new) | 5.91 | 6.32 | 4.60 | 5.37 | |
+| `inkFaintText` (new) | 5.91 | 6.32 | 4.60 | 5.37 | 4.67 on `successSoft`, 4.86 on `warningSoft`, 5.14 on `dangerSoft`, 4.99 on `accentSoft` |
 | `success` | 8.18 | 8.75 | 6.38 | 7.44 | 6.46 on `successSoft` |
 | `warning` | 8.38 | 8.96 | 6.53 | 7.62 | 6.89 on `warningSoft` |
 | `danger` | 6.48 | 6.93 | 5.05 | 5.89 | 5.64 on `dangerSoft` |
@@ -871,8 +927,11 @@ separate. SwiftUI names are the build's.
 | `AsksDockView` | One card, stacked "N more waiting" | Chat |
 | `ComposerView` | Idle, typing, sendable, streaming (stop), locked, disabled with reason, confirming | Chat |
 | `ModelChip` | | Composer |
-| `SessionChip` | Folder (read-only) and permission are one view with an `interactive` flag | Under composer |
-| `FloatingSheet` | Medium, large, smallest-fit detents; internal push | Model, Permission, Add to message, Connectors, create flows, confirms |
+| `SessionChip` | Folder (read-only, "No folder" variant in `inkMuted`) and permission are one view with an `interactive` flag | Under composer |
+| `MentionSuggestionList` | Full, filtered, no match, largest text; highlight row | Group chat composer dock |
+| `FolderInfoSheet` | Folder attached, no folder | Opened by the folder chip |
+| `ConnectorsKeyForm` | No key, rejected, saving; set state is a settings row | Settings, Connectors |
+| `FloatingSheet` | Medium, large, smallest-fit detents; internal push; scrim `overlay` light, `overlayDark` dark | Model, Permission, Add to message, Connectors, Working folder, create flows, confirms |
 | `OptionRow` | Picked (sunken card plus check) or not; with icon tile and consequence line or plain | Model, Permission, Move to section, member picker |
 | `TokenSegmentedControl` | 2 to 4 options; vertical list at accessibility sizes | Effort, theme, routine schedule |
 | `TokenToggle` | On, off, disabled | Settings, routines, speed |
@@ -901,7 +960,7 @@ action). `ReadinessBanner` and `ToastView` (persistent state versus a one-off ev
 
 ---
 
-## 6. Owner decisions and open questions
+## 6. Owner decisions and closed items
 
 ### 6.1 Decided on 2026-09-19
 
@@ -915,20 +974,28 @@ action). `ReadinessBanner` and `ToastView` (persistent state versus a one-off ev
   `sheetInset` 8). The build adds them to `DesignTokens.swift` in PR-1.
 - **Mockups follow this document.** Every screen in section 1 has a board, with a dark twin.
 
-### 6.2 Still open
+### 6.2 Closed on 2026-09-19
 
-The boards already use the proposal in each item; the build follows the proposal unless the
-owner changes it.
+All five items were decided within the spec and drawn. Nothing is left open.
 
-1. **`inkFaintText` values.** Proposed `#6B6B6B` light and `#949494` dark, the lightest grays
-   that pass 4.5:1 on every surface they sit on (including `sunken`). This also seeds the
-   desktop follow-up.
-2. **Dark scrim.** The token scrim (`#171717` at 18%) is nearly invisible over `#0F0F0F`
-   content, so sheets in dark rely on the `pop` shadow and edge. Keep the token as law (current
-   position) or add a dark scrim value?
-3. **Connectors key placement.** The Composio key lives in Settings, Connectors; the chat's Add
-   to message sheet shows only the app list (R14).
-4. **Group chat @mentions.** Parity (9.2) but no board: an inline suggestion list above the
-   composer, using `BotRowView` with 32 pt avatars.
-5. **Folder chip with no folder attached.** The chip reads "No folder" in `inkMuted` and still
-   explains "Attach a folder from your Mac" on tap (board "New chat").
+1. **`inkFaintText` confirmed:** `#6B6B6B` light, `#949494` dark. Every pair clears 4.5:1; the
+   lowest are 4.57:1 (light, on `dangerSoft`) and 4.60:1 (dark, on `sunken`). Full ratios in
+   4.2. It is a new token for `DesignTokens.swift`. Boards: every placeholder, for example
+   "Bots" (search field) and "New bot" (First brief).
+2. **Dark scrim:** the token (`#171717` at 18%) is kept as law in light. In dark it fails: over
+   the `#171717` stage the backdrop does not move, so a sheet reads only by its 7% edge (board
+   "Dark: token scrim 18% (rejected)"). Dark uses `#000000` at 48% (**new** `overlayDark`),
+   which drops the stage to about `#0C0C0C` under the `#171717` sheet. The pair: light
+   `#171717` at 18%, dark `#000000` at 48%. This extends A.2, which did not address dark.
+   Boards: every dark sheet, for example "Dark: Permission".
+3. **Connectors key placement:** the key lives only in Settings, Connectors, in three states
+   (1.13). The chat's Add to message sheet shows "Set up connectors in Settings" when no key is
+   saved, and tapping it opens Settings, Connectors on the key form. Boards: "Connectors, no
+   key", "Connectors, key rejected", "Connectors, key set", "Add to message, no key".
+4. **Group chat @mentions:** an inline suggestion list docked above the composer, specified in
+   1.3 (trigger, candidates, anchor, four-row cap, row anatomy, insert, keyboard, VoiceOver,
+   empty result, largest text, dark). Boards: "Mention list", "Mention list, filtered",
+   "Mention list, no match", "Mention list, largest text", and their dark twins.
+5. **Folder chip with no folder:** the chip reads "No folder" in `inkMuted` and opens the
+   Working folder sheet with "No folder attached" and "Attach a folder from your Mac. This
+   iPhone can't change it." Boards: "New chat", "Folder sheet, no folder", "Folder sheet".
