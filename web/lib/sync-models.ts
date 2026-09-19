@@ -9,13 +9,23 @@ function substituteFields(baseUrl: string, fields: Record<string, string>): stri
 
 /**
  * The refresh running or queued per connection, with the request it was
- * started for. A poll that lands mid-fetch joins it when the request is the
- * same. A forced refresh, or one with a changed key, URL or query, queues
- * behind it and forces its own fetch, so the newest credential always writes
- * last and a job started with an old key can never leave the cache looking
- * fresh over the new one.
+ * started for. A poll that lands mid-fetch joins it. A forced refresh (a
+ * save or a sign in) queues behind it and forces its own fetch, so the
+ * newest credential always writes last and a job started with an old key can
+ * never leave the cache looking fresh over the new one.
  */
-const inFlight = new Map<string, { sig: string; job: Promise<unknown> }>();
+interface SyncState {
+  inFlight: Map<string, { sig: string; job: Promise<unknown> }>;
+  lastAttempt: Map<string, { sig: string; at: number }>;
+}
+// On globalThis: the dev server gives each API route its own copy of this
+// module, and the ordering only holds if every route shares one set of maps.
+const SYNC_STATE_KEY = Symbol.for("useful-bot.sync-models.state");
+const syncState: SyncState = ((globalThis as Record<symbol, unknown>)[SYNC_STATE_KEY] ??= {
+  inFlight: new Map(),
+  lastAttempt: new Map(),
+}) as SyncState;
+const inFlight = syncState.inFlight;
 
 /**
  * When each connection's list was last asked for, and with which request.
@@ -25,7 +35,7 @@ const inFlight = new Map<string, { sig: string; job: Promise<unknown> }>();
  * a success is covered by the 30 minute cache TTL anyway.
  */
 const RETRY_AFTER_MS = 5 * 60 * 1000;
-const lastAttempt = new Map<string, { sig: string; at: number }>();
+const lastAttempt = syncState.lastAttempt;
 
 async function refreshOne(store: ProviderStore, id: string, force: boolean): Promise<unknown> {
   const env = process.env;
@@ -61,7 +71,10 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
   const query = mode.modelsQuery;
   const sig = JSON.stringify([baseUrl, key, headers, query]);
   const running = inFlight.get(id);
-  if (running && !force && running.sig === sig) return running.job;
+  // An unforced poll never queues behind a running fetch: its request may be
+  // older than the one running, and writing after it would put a stale list
+  // in the cache as fresh. It joins, and the next poll picks up any change.
+  if (running && !force) return running.job;
   const tried = lastAttempt.get(id);
   if (!running && !force && tried?.sig === sig && Date.now() - tried.at < RETRY_AFTER_MS) return;
   lastAttempt.set(id, { sig, at: Date.now() });

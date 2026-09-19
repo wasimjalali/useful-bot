@@ -232,6 +232,20 @@ test("the ChatGPT Codex list is read by slug with hidden models left out", async
   assert.equal(sol?.defaultEffort, "high");
 });
 
+test("the Anthropic list is asked with its version header and one full page", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), headers: { ...init?.headers as Record<string, string> } });
+    return new Response(JSON.stringify({ data: [{ id: "claude-opus-5", display_name: "Claude Opus 5", type: "model" }], has_more: false }));
+  };
+  const mode = providerMode("anthropic", "api");
+  const ids = await fetchProviderModelIds(mode.baseUrl, "sk-ant-12345678", fetchImpl, mode.keyHeader, mode.headers, mode.modelsQuery);
+  assert.deepEqual(ids, ["claude-opus-5"]);
+  assert.equal(calls[0]?.url, "https://api.anthropic.com/v1/models?limit=1000");
+  assert.equal(calls[0]?.headers["anthropic-version"], "2023-06-01");
+  assert.equal(calls[0]?.headers["x-api-key"], "sk-ant-12345678");
+});
+
 test("the parsed models cache is reused until another process replaces the file", () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-models-memo-")), "models-cache.json");
   const row = (id: string) => mergeLiveModels("opencode-go:plan", [id]);

@@ -447,6 +447,10 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         protocol: "anthropic-messages",
         keyHeader: "x-api-key",
         listsModels: true,
+        // GET /v1/models 400s without the version header (the messages
+        // adapter sends the same value) and pages at 20 rows by default.
+        headers: { "anthropic-version": "2023-06-01" },
+        modelsQuery: { limit: "1000" },
         keyUrl: "https://platform.claude.com/settings/keys",
         hint: "API key from console.anthropic.com.",
         // UNVERIFIED: not checked against the models.dev anthropic entry here.
