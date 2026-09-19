@@ -329,3 +329,23 @@ Design-a11y (2):
 Round-4 verification after fixes: UITests 4/4 at 390 pt and 4/4 at 375 pt;
 full sim suite green; macOS 285/285; verify-release PASS; `npm test`
 538/538; xcodegen no-diff; all 34 screenshots regenerated.
+
+Review loop round 5 (fresh reviewers on b8646a0): design-a11y requested
+changes, 3 findings, all fixed in `6df1264`; correctness and security
+verdicts are pending and will be re-run on the fix commit regardless.
+
+Design-a11y (3):
+1. [medium] the iPad check in spec 17.1 gate 3 had no evidence ->
+   UITests now also run on iPad mini (744 pt): 16 captures of pairing +
+   manual, both appearances, both type sizes, committed.
+2. [low] numbered steps announced as two VoiceOver elements each ->
+   `.accessibilityElement(children: .combine)` on the step row.
+3. [low] the scanner cap dropped to 200 pt at the first accessibility
+   size even when 300 still fit -> `ViewThatFits` keeps 300 while the
+   column fits, falls to the 200 pt floor when it does not, then scrolls.
+
+Round-5 verification after fixes: iOS suite 264/264 + UITests 4/4 at
+390 pt, 375 pt and 744 pt (iPad mini); macOS 285/285; verify-release
+PASS; `npm test` 538/538 (an interim run hit the package-lock drift
+left by next_build; restored and re-ran green); xcodegen no-diff;
+50 screenshots in docs/audit/ios-shots/PR-1/.
