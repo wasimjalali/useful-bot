@@ -266,7 +266,7 @@ struct AppSettingsView: View {
     // MARK: - Providers
 
     private var providersPaneView: ProvidersPaneView {
-        ProvidersPaneView(openCard: $providersCard, keySheet: $providersKeySheet)
+        ProvidersPaneView(model: model, openCard: $providersCard, keySheet: $providersKeySheet)
     }
 
     private var providersPane: some View {
