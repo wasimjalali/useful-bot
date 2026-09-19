@@ -61,7 +61,8 @@ These resolve the draft's open questions (§20 keeps the full record).
 | # | Date | Amendment |
 |---|------|-----------|
 | A1 | 2026-09-19 | Cloud execution environment pinned: Devin macOS cloud sessions (Apple Silicon, Xcode 26 default, one preinstalled iPhone simulator running iOS 26). One Devin session per PR, sessions chained without a human, independent reviewer sessions, the whole backend stack run inside the VM. Owner-run gates (real Serve, physical device) move to a post-chain owner checklist. See §17.5. |
-| A2 | 2026-09-19 | Design spec `IOS-DESIGN-SPEC.md` is binding alongside this document. Its section 6.2 proposals stand as decided unless the owner overrides before PR-1. Its approved iPhone tokens are added to `DesignTokens.swift` in PR-1. |
+| A2 | 2026-09-19 | Design spec `IOS-DESIGN-SPEC.md` is binding alongside this document. Its section 6.2 items are closed (design agents, Prompt 7). Its approved iPhone tokens, `inkFaintText` and `overlayDark` are added to `DesignTokens.swift` in PR-1. |
+| A3 | 2026-09-19 | Appendix A.2 scrim rule extended for dark mode: light keeps the solid `rgb(23 23 23 / 0.18)`; dark uses a solid `#000000` at 48% (`overlayDark`), because the token scrim does not move a `#0F0F0F` stage. Still solid, still never a blur. Decided by the design agents within the design spec (its section 6.2 item 2), recorded here so A.2 and the design spec agree. |
 
 ### 1.4 Non-goals for v1
 
