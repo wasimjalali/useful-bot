@@ -39,6 +39,7 @@ struct AppSettingsView: View {
     let onClose: () -> Void
     @State private var tab: AppSettingsTab
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
+    @ObservedObject private var avatarStore = OperatorAvatarStore.shared
     /// The daily limit while it is being typed. The usage tab polls every few
     /// seconds, and the poll must not overwrite a half-typed number.
     @State private var editedBudget: String?
@@ -206,13 +207,15 @@ struct AppSettingsView: View {
                 settingsGroup {
                     settingsRow(last: true) {
                         HStack(spacing: 12) {
-                            Text(model.operatorInitials)
-                                .font(.system(size: 10, weight: .bold))
-                                .tracking(DesignTokens.Tracking.operatorAvatar * 10)
-                                .foregroundStyle(Theme.C.ink)
-                                .frame(width: 32, height: 32)
-                                .background(Theme.C.sunken)
-                                .clipShape(Circle())
+                            Button {
+                                avatarStore.pick()
+                            } label: {
+                                OperatorAvatarView(initials: model.operatorInitials, size: 40)
+                            }
+                            .buttonStyle(.plain)
+                            .pointerOnHover()
+                            .help("Change photo")
+                            .accessibilityLabel("Change profile photo")
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(model.operatorName)
                                     .font(.system(size: 14, weight: .medium))
@@ -222,8 +225,18 @@ struct AppSettingsView: View {
                                     .font(.system(size: 12))
                                     .foregroundStyle(Theme.C.inkMuted)
                                     .lineLimit(1)
+                                if let error = avatarStore.error {
+                                    Text(error)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.C.danger)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer(minLength: 0)
+                            if avatarStore.image != nil {
+                                NativeButton("Remove", kind: .ghost, small: true, action: avatarStore.remove)
+                            }
+                            NativeButton(avatarStore.image == nil ? "Upload photo" : "Change photo", kind: .secondary, small: true, action: avatarStore.pick)
                         }
                     }
                 }

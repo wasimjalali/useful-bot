@@ -363,13 +363,7 @@ struct RailView: View {
                 accountOpen.toggle()
             } label: {
                 HStack(spacing: 10) {
-                    Text(model.operatorInitials)
-                        .font(.system(size: 10, weight: .bold))
-                        .tracking(DesignTokens.Tracking.operatorAvatar * 10)
-                        .foregroundStyle(Theme.C.ink)
-                        .frame(width: DesignTokens.Control.operatorAvatar, height: DesignTokens.Control.operatorAvatar)
-                        .background(Theme.C.sunken)
-                        .clipShape(Circle())
+                    OperatorAvatarView(initials: model.operatorInitials)
                     Text(model.operatorName)
                         .font(.system(size: DesignTokens.FontSize.railName, weight: .medium))
                         .foregroundStyle(Theme.C.ink)
