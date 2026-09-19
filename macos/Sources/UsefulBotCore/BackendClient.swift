@@ -241,37 +241,58 @@ private final class TaskBox: @unchecked Sendable {
 
 /// Talks to the local web server on behalf of the native app: device-token
 /// sign-in, the shell store, durable thread events, turn sending and the
-/// session event stream. Cookies live in the shared storage, so the proxy
-/// routes accept the same session the browser would use.
+/// session event stream. Cookies live in a jar private to this client, so the
+/// session never leaks into the shared storage other code might read.
 public actor BackendClient {
     public let base: URL
     private let session: URLSession
-    private let tokenService: String
+    private let tokenStore: any DeviceTokenStore
     private var csrf = ""
 
     public init(
         base: URL = URL(string: "http://127.0.0.1:4320")!,
+        tokenStore: any DeviceTokenStore,
+        endpointPolicy: any EndpointPolicy
+    ) {
+        // The device token and cookies ride on every request: the platform's
+        // policy decides which base is allowed to carry them.
+        self.base = endpointPolicy.endpoint(for: base).baseURL
+        self.tokenStore = tokenStore
+        self.session = Self.makeSession()
+    }
+
+#if os(macOS)
+    /// The desktop construction the app has always used: the device token comes
+    /// from the login Keychain through `security`, and a non-loopback base
+    /// resolves to the supervised local service.
+    public init(
+        base: URL = URL(string: "http://127.0.0.1:4320")!,
         tokenService: String = "com.usefulbot.device.desktop"
     ) {
-        // The device token and cookies ride on every request: the base must be
-        // loopback, never a LAN or remote host.
-        self.base = LocalHost.isLoopback(base.host) ? base : ServerConfig.resolved().baseURL
-        self.tokenService = tokenService
+        self.init(
+            base: base,
+            tokenStore: ProcessDeviceTokenStore(service: tokenService),
+            endpointPolicy: DesktopEndpointPolicy()
+        )
+    }
+#endif
+
+    private static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.default
-        config.httpCookieStorage = .shared
+        config.httpCookieStorage = HTTPCookieStorage()
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 30
         config.waitsForConnectivity = false
-        self.session = URLSession(configuration: config)
+        return URLSession(configuration: config)
     }
 
     // MARK: - Auth
 
     public func signIn() async throws {
-        // Read the Keychain off the actor executor: the security CLI can take
-        // seconds behind a prompt and must not block other requests.
-        let token = try await Task.detached { [tokenService] in
-            try Self.deviceToken(service: tokenService)
+        // Read the credential off the actor executor: a token store can block
+        // behind a Keychain prompt and must not stall other requests.
+        let token = try await Task.detached { [tokenStore] in
+            try tokenStore.token()
         }.value
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "POST"
@@ -303,50 +324,6 @@ public actor BackendClient {
             throw BackendError.unauthorized
         }
         csrf = csrfToken
-    }
-
-    private static func deviceToken(service: String) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", service, "-w"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            throw BackendError.deviceTokenMissing
-        }
-        // A locked Keychain can block the CLI behind a prompt; never stall the
-        // launch on it.
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning, Date() < deadline {
-            usleep(50_000)
-        }
-        if process.isRunning {
-            process.terminate()
-            // A Keychain unlock prompt ignores SIGTERM; give it a short grace
-            // then make sure the CLI cannot leak into the next launch.
-            let killDeadline = Date().addingTimeInterval(1)
-            while process.isRunning, Date() < killDeadline {
-                usleep(50_000)
-            }
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
-            // Still running past the deadline means it was waiting on an
-            // interaction prompt, not that the item is absent.
-            throw BackendError.keychainLocked
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw Self.keychainFailure(for: process.terminationStatus)
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let token = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !token.isEmpty else { throw BackendError.deviceTokenMissing }
-        return token
     }
 
     /// Maps the `security` CLI exit status to a specific Keychain failure.

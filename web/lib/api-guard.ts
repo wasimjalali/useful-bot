@@ -60,7 +60,11 @@ export async function readBody(request: Request, maxBytes: number): Promise<Uint
     if (!value) continue;
     total += value.byteLength;
     if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
+      // The stream is consumed to its end rather than cancelled: this runtime's
+      // body pump keeps enqueueing after a cancel and the throw inside it
+      // escapes as an unhandled rejection. Discarded bytes still bound memory;
+      // only transfer time grows past the cap.
+      while (!(await reader.read()).done) { /* discard */ }
       throw new ApiError(413, "payload_too_large");
     }
     chunks.push(value);

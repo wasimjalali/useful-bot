@@ -1,3 +1,4 @@
+#if os(macOS)
 import Testing
 @testable import UsefulBotCore
 
@@ -77,3 +78,4 @@ import Testing
         ))
     }
 }
+#endif

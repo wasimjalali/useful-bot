@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 import Testing
 @testable import UsefulBotCore
@@ -188,3 +189,4 @@ private final class FakeRunner: ProcessRunner, @unchecked Sendable {
         #expect(elapsed < 5)
     }
 }
+#endif

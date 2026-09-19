@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 public struct ServiceCommand: Equatable, Sendable {
@@ -83,3 +84,4 @@ public struct ServiceSupervisor: Sendable {
             || commandLine.contains("eve/bin/eve.js")
     }
 }
+#endif

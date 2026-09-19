@@ -524,7 +524,7 @@ export default function Page() {
 
   type ThreadRow = {
     id: string;
-    kind: "user" | "assistant" | "handoff" | "post" | "note" | "proposal";
+    kind: "user" | "assistant" | "handoff" | "post" | "note" | "proposal" | "widget";
     text: string;
     authorName: string | null;
     authorBotId: string | null;

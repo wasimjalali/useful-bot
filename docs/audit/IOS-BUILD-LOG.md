@@ -1,0 +1,159 @@
+# Useful Bot iOS build log
+
+Append-only per-PR record of the cloud build (spec §17.4). Measured numbers and
+estimates are never mixed; anything not instrumented is labelled an estimate or
+marked "not exposed". Publishable by construction: no secrets, no personal
+identifiers, no tailnet addresses, no device names.
+
+## Running totals
+
+| Metric | Total |
+|--------|-------|
+| PRs merged | 0/8 |
+| Total wall time | - |
+| Review rounds | 0 |
+| Findings (blocker/high/medium/low) | 0/0/0/0 |
+| Token spend | not exposed |
+
+## Environment record (spec 17.0)
+
+Recorded by the PR-1 session; every `-destination` below means this device.
+
+- VM: Devin macOS cloud, Apple Silicon, macOS 26.5.2
+- Xcode: 26.6 (build 17F113) at `/Applications/Xcode.app`
+- The simulator: iPhone 17, iOS 26.5 runtime (23F73), id
+  `D0B64A8A-D5F1-4668-8FFC-A86B400AF527`, booted. Note: a second iOS 27.0
+  runtime exists on the image; all builds pin the 26.5 device by id.
+- Swift: 6.3.3 (swiftlang-6.3.3.1.3)
+- Node: v24.20.0 at `/opt/homebrew/bin/node`; `/usr/local/bin/node` symlinked to
+  it because `scripts/verify-release.mjs` and `package.json` scripts hard-code
+  the owner's path
+- XcodeGen: 2.46.0 (Homebrew)
+- iOS platform support: not present on first boot; installed via
+  `xcodebuild -downloadPlatform iOS` (iOS 26.5 simulator package 23F77)
+
+Clean-clone proof at `ef24d21` (main before PR-1):
+
+- `cd macos && swift build`: green (12.8s)
+- `make -C macos test`: green, 280 tests in 41 suites
+- Trivial SwiftUI app: built for `iphonesimulator`, installed, launched, one
+  `xcrun simctl io booted screenshot` captured (1206x2622)
+- `node scripts/verify-release.mjs`: green, but only after two fixes for
+  failures preexisting on `main` (see PR-1 Surprises): `tsc_web` failed on
+  `web/app/page.tsx` (a `ThreadRow.kind` union missing `"widget"`) and `unit`
+  failed in `test/api-guard.test.ts` (unhandled rejection when `readBody`
+  cancels a streamed multipart body on Node 24.20)
+
+VM stack (spec 17.5), all live checks target it:
+
+- `node scripts/setup-local.mjs`: minted the five VM Keychain items and
+  `~/.useful-bot/config.json`; `com.usefulbot.opencode-go` installed manually
+  from `UB_CLOUD_PROVIDER_KEY` (the script says so itself)
+- `scripts/service.mjs router|eve|web` running in background, logs under
+  `~/Library/Logs/UsefulBot/`; web serving `mode=production`
+- `GET /api/status`: `ok`, `eve: available`
+- OpenCode Go connected via `PUT /api/providers` (`opencode-go` + `plan`); the
+  `opencode-go:plan` connection is active, models synced (`glm-5.3-flash`
+  workhorse, `glm-5.3` reviewer)
+- "Test Bot" created via `PUT /api/shell`; one turn sent through
+  `POST /eve/v1/session`; streamed `message.appended` deltas and a
+  `message.completed` (`finishReason: stop`) observed on
+  `/eve/v1/session/<id>/stream` - a real model answer, not a fixture
+
+## PR-1 - Repo & project skeleton (P0)
+
+- Session: `devin-598068a36aa04f2fbab55b43459147d6`
+- Started: 2026-09-19T17:23Z
+- Branch: `ios/pr-1`
+
+### Scope
+
+Per spec 17.2/3.2: `Package.swift` gains `.iOS(.v17)` and an explicit
+`UsefulBotCore` library product; macOS-only sources (`LocalServices`,
+`ServiceSupervisor`, `HealthPoller`, `ServerConfig` and their tests) are gated
+`#if os(macOS)`; `BackendClient` now takes injected `DeviceTokenStore` and
+`EndpointPolicy` protocols with the macOS defaults preserved
+(`ProcessDeviceTokenStore`, `DesktopEndpointPolicy`), a private per-client
+`HTTPCookieStorage`, and a portable `ServerEndpoint` value type; iOS project
+scaffolded via XcodeGen 2.46.0 (`ios/project.yml`, generated `.xcodeproj`
+committed); iOS 17.0, bundle id `com.usefulbot.app`, name "Useful Bot", icon
+from `brand/app/useful-bot-app-icon-1024.png`; static pairing screen per design
+spec 1.1 (badge, title, subtitle, 300 pt scanner square with corner guides,
+status line, three numbered steps, secondary "Enter manually" button, manual
+form with Connect gating) in both appearances.
+
+### Effort
+
+One session (`devin-598068a36aa04f2fbab55b43459147d6`). ACU spend is not
+exposed to the session.
+
+### Verification
+
+Measured on this VM against the live stack; destinations are the iPhone 16e
+(390 pt) and iPhone 13 mini (375 pt) simulators unless named.
+
+- `make -C macos test`: 280/280 in 41 suites (macOS regression).
+- `xcodebuild test -only-testing:UsefulBotCoreTests` (iPhone 16e, iOS 26.5):
+  259/259 - the portable suite runs green on the iOS simulator.
+- `xcodebuild test -only-testing:UsefulBotUITests`: 4/4 on 390 pt, 4/4 on
+  375 pt (pairing-empty and pairing-manual, light and dark, plus
+  accessibility-XXXL variants).
+- `node scripts/verify-release.mjs`: all checks PASS.
+- `npm test`: 538/538.
+- `xcodegen generate` twice: byte-identical `project.pbxproj` (sha256 match),
+  so the committed project regenerates with no diff.
+- Visual gate: 16 committed screenshots in `docs/audit/ios-shots/PR-1/` -
+  `pairing-{empty,manual}-{light,dark}[-375][-xxxl].png`, exported via
+  `xcrun simctl io` attachments through the UITest harness, scaled to 1x
+  review size with `sips -Z 1000`.
+- Backend gate: PR-1 ships no server changes (S1-S15 land in PR-2 onward) and
+  creates no owner checklist entries (the checklist file is created in PR-2
+  per spec). Physical-device and real-Tailscale-Serve checks remain red in
+  cloud as designed; nothing in this PR touches them.
+
+### Measurements
+
+- `swift build` (macos/, post-port): ~30 s cold; incremental under 1 s.
+- `xcodebuild` iOS build (app + test bundles): ~80 s cold on this VM.
+- UsefulBotCoreTests on iOS simulator: 259 tests, ~21 s wall including boot.
+- UsefulBotUITests: 4 tests, ~75 s per device (includes two app launches and
+  navigation push).
+- Screenshot matrix: 8 files per width (390 pt, 375 pt), 16 total, all under
+  1 MB after `sips -Z 1000`.
+
+### Surprises
+
+- Spec 3.2 lists `RailClock` in the macOS-only set, but portable sources use
+  it; it stays portable (code wins over spec).
+- `BackendClient.keychainFailure` stays portable rather than macOS-gated:
+  `ShellActionsTests` exercises it and the test target builds for iOS.
+- `xcodebuild` only exposes the package's `UsefulBot` scheme; there is no way
+  to select `UsefulBotCore` alone for an iOS destination, so the portable
+  suite runs inside the Xcode project as a unit-test target pointing at
+  `../macos/Tests/UsefulBotCoreTests`.
+- Local SwiftPM packages need an explicit `.library` product or
+  `Missing package product` results.
+- No iOS-26-capable 360 pt device exists; the smallest is iPhone 13 mini at
+  375 pt. The spec's "one 360 pt" matrix row is run at 375 pt and filenames
+  record `-375`.
+- `UIScreen.main.bounds` inside the UI-test runner reports 320 pt regardless
+  of device; `app.frame.width` is the real width and feeds filename suffixes.
+- `-UIPreferredContentSizeCategoryName` launch arguments are ignored by the
+  runner; `UB_TYPE_SIZE` env + `.environment(\.sizeCategory, ...)` in the app
+  is the working override.
+- `.font(.system(size:))` does not scale with Dynamic Type; token fonts go
+  through `@ScaledMetric` (`ScaledTokenFont` / `tokenFont`) so XXXL evidence
+  is real. Verified by sha256: previously identical light/xxxl shots now
+  differ.
+- `npm ci`/`npm install` on Node 24 rewrites `package-lock.json` (drops
+  `peer` flags), which trips the router's tamper-evidence check
+  (`package-lock hash mismatch`, 503 `configuration_unverified`). Lockfile
+  restored from HEAD; no package changes ship in this PR.
+- Two failures preexisting on `main` (environment record, above) are fixed in
+  this PR: `web/app/page.tsx` `ThreadRow.kind` union adds `"widget"`;
+  `web/lib/api-guard.ts` `readBody` drains the request stream instead of
+  `reader.cancel()` on overflow (Node 24 unhandled rejection).
+
+### Review loop
+
+Filled at merge time per spec 17.4.

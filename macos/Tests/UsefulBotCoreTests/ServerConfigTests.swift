@@ -1,3 +1,4 @@
+#if os(macOS)
 import Testing
 import Foundation
 @testable import UsefulBotCore
@@ -48,3 +49,4 @@ import Foundation
         #expect(!config.repoPath.hasPrefix("~"))
     }
 }
+#endif
