@@ -102,9 +102,18 @@ function runHost(bridge: ((msg: Record<string, unknown>) => Promise<unknown>) | 
     addEventListener: (name: string, fn: (event: unknown) => void) => { listeners[name] = fn; },
     webkit: bridge ? { messageHandlers: { ubHost: { postMessage: bridge } } } : undefined,
   };
-  vm.runInNewContext(script, { window, document: { getElementById: () => iframe }, Number, Math, String });
+  const timers: Array<() => void> = [];
+  const tick = () => timers.splice(0).forEach((fn) => fn());
+  vm.runInNewContext(script, {
+    window,
+    document: { getElementById: () => iframe },
+    Number,
+    Math,
+    String,
+    setTimeout: (fn: () => void) => timers.push(fn),
+  });
   const fromApp = (data: Record<string, unknown>) => listeners.message({ source: frameWindow, data: { jsonrpc: "2.0", ...data } });
-  return { toApp, fromApp, iframe, window };
+  return { toApp, fromApp, iframe, window, tick };
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -164,4 +173,15 @@ test("without the native bridge the host offers no links or full screen", () => 
   assert.deepEqual(host.toApp[0].result.hostCapabilities, {});
   assert.deepEqual(host.toApp[0].result.hostContext.availableDisplayModes, ["inline"]);
   assert.equal(host.toApp[1].error.code, -32601);
+});
+
+test("the drawing is sent again over the first seconds, for an app that listens late", () => {
+  const host = runHost(null);
+  const inputs = () => host.toApp.filter((msg) => msg.method === "ui/notifications/tool-input").length;
+  host.fromApp({ method: "ui/notifications/initialized" });
+  assert.equal(inputs(), 1);
+  host.tick();
+  assert.equal(inputs(), 5);
+  host.tick();
+  assert.equal(inputs(), 5);
 });

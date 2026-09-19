@@ -92,6 +92,12 @@ function fail(id, message, code) {
 function containerHeight() {
   return displayMode === "fullscreen" ? window.innerHeight : inlineHeight;
 }
+function pushInput() {
+  send({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: payload.arguments || {} } });
+  if (payload.result) {
+    send({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: payload.result });
+  }
+}
 function applyMode(mode) {
   displayMode = mode === "fullscreen" ? "fullscreen" : "inline";
   iframe.style.height = containerHeight() + "px";
@@ -137,10 +143,13 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (data.method === "ui/notifications/initialized") {
-    send({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: payload.arguments || {} } });
-    if (payload.result) {
-      send({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: payload.result });
-    }
+    pushInput();
+    // An app may attach its input handler a moment after it says it is
+    // ready (Excalidraw does, in a React effect), and a notification sent
+    // before that is dropped for good: the card stays blank. The app does
+    // not say when it is listening, so send again over the first seconds.
+    // The same input again is a no-op for an app that already has it.
+    for (const delay of [250, 750, 1500, 3000]) setTimeout(pushInput, delay);
     return;
   }
   if (data.method === "ui/notifications/size-changed" && params.height) {
