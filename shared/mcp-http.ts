@@ -66,6 +66,7 @@ async function rpc(
   params: Record<string, unknown> | undefined,
   headers: Record<string, string>,
   id: number,
+  signal?: AbortSignal,
 ): Promise<{ result: unknown; sessionId: string | null }> {
   const target = await assertResolvedPublic(url);
   const res = await activeFetch()(target, {
@@ -76,6 +77,7 @@ async function rpc(
       ...headers,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+    signal,
   });
   if (!res.ok) throw new Error(`mcp_http_${res.status}`);
   const sessionId = res.headers.get("mcp-session-id");
@@ -194,6 +196,7 @@ export async function readMcpResource(
 }
 
 const TOOL_RESULT_MAX = 256 * 1024;
+const TOOL_CALL_TIMEOUT_MS = 30_000;
 
 /**
  * Run one tool for an MCP App's own frame (the app's `tools/call`). The
@@ -205,15 +208,18 @@ export async function callMcpTool(
   args: Record<string, unknown>,
   headers: Record<string, string> = {},
 ): Promise<Record<string, unknown>> {
+  // A server that never answers must not hold the request (and the app's
+  // spinner) open.
+  const signal = AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS);
   const init = await rpc(url, "initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
     clientInfo: { name: "useful-bot", version: "0.0.0" },
-  }, headers, 1);
+  }, headers, 1, signal);
   const sessionHeaders = init.sessionId
     ? { ...headers, "mcp-session-id": init.sessionId }
     : headers;
-  const called = await rpc(url, "tools/call", { name, arguments: args }, sessionHeaders, 4);
+  const called = await rpc(url, "tools/call", { name, arguments: args }, sessionHeaders, 4, signal);
   const rec = asRecord(called.result);
   if (!rec) throw new Error("mcp_tool_result");
   if (JSON.stringify(rec).length > TOOL_RESULT_MAX) throw new Error("mcp_tool_result_too_large");

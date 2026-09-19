@@ -96,10 +96,17 @@ struct WidgetWebView: NSViewRepresentable {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "ubHost", contentWorld: .page)
     }
 
-    /// A web view that says when it first has a width to load into.
+    /// A web view that says when it first has a width to load into, and
+    /// when the reader last clicked in it.
     final class SizedWebView: WKWebView {
         var onFirstSize: (() -> Void)?
         private(set) var sized = false
+        private(set) var lastClick = Date.distantPast
+
+        override func mouseDown(with event: NSEvent) {
+            lastClick = Date()
+            super.mouseDown(with: event)
+        }
 
         override func setFrameSize(_ newSize: NSSize) {
             super.setFrameSize(newSize)
@@ -210,7 +217,11 @@ struct WidgetWebView: NSViewRepresentable {
                     }
                 }
             case "link":
-                guard let raw = body["url"] as? String, let url = Self.openableLink(raw) else {
+                // A link opens only on the heels of a click in this drawing.
+                // The export's link comes after a network round trip, so the
+                // window is generous; a page acting on its own gets nothing.
+                guard Date().timeIntervalSince(view.lastClick) < 30,
+                      let raw = body["url"] as? String, let url = Self.openableLink(raw) else {
                     return reply(nil, "link_refused")
                 }
                 // One link a second: a page cannot fire a burst of tabs.
@@ -219,8 +230,10 @@ struct WidgetWebView: NSViewRepresentable {
                 NSWorkspace.shared.open(url)
                 reply([String: Any](), nil)
             case "mode":
+                // Full screen covers the whole window, so it too needs the
+                // reader's click; leaving it never does.
                 if body["mode"] as? String == "fullscreen" {
-                    enterFullscreen()
+                    if Date().timeIntervalSince(view.lastClick) < 5 { enterFullscreen() }
                 } else {
                     leaveFullscreen(tellPage: false)
                 }
