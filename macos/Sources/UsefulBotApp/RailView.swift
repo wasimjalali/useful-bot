@@ -17,6 +17,8 @@ struct RailView: View {
     /// Window frame of the New Bot plus button, so overlays outside the rail
     /// can treat clicks on it as the toggle rather than "outside".
     @Binding var newChatTriggerFrame: CGRect
+    /// This window is in full screen, where the traffic lights are hidden.
+    var fullScreen = false
 
     @State private var searchHovering = false
     @State private var accountOpen = false
@@ -29,7 +31,6 @@ struct RailView: View {
     @State private var rowMenuAnchor: CGRect = .zero
     @State private var rowMenuTrigger: CGRect = .zero
     @State private var rowMenuPage: RowMenuPage = .root
-    @State private var fullScreen = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -76,12 +77,6 @@ struct RailView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 16)
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
-            fullScreen = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
-            fullScreen = false
-        }
         .frame(width: DesignTokens.Space.railWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.C.rail)

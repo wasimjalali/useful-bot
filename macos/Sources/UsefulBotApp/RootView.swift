@@ -21,6 +21,7 @@ struct RootView: View {
     @State private var launchFinished = false
 
     @State private var pickerOpen = false
+    @State private var windowFullScreen = false
     @State private var newChatTrigger = CGRect.zero
     @State private var createKind: CreateKind?
     @State private var createSectionId: String?
@@ -56,7 +57,7 @@ struct RootView: View {
         // The title bar is hidden and the lights sit on the header row, so
         // the content starts at the window's top edge, not under a band.
         .ignoresSafeArea(.container, edges: .top)
-        .background(WindowChrome())
+        .background(WindowChrome(fullScreen: $windowFullScreen))
         .onChange(of: appearance) { _, next in
             NSApp.appearance = next.nsAppearance
         }
@@ -228,7 +229,8 @@ struct RootView: View {
                 },
                 onConnectors: { connectorsOpen = true },
                 onOpenAppSettings: { model.openAppSettings($0) },
-                newChatTriggerFrame: $newChatTrigger
+                newChatTriggerFrame: $newChatTrigger,
+                fullScreen: windowFullScreen
             )
 
             stage

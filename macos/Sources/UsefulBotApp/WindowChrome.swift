@@ -12,7 +12,18 @@ import UsefulBotCore
 /// out again on resize, full screen and key changes, so every one of those
 /// re-applies it.
 struct WindowChrome: NSViewRepresentable {
-    func makeNSView(context: Context) -> ChromeView { ChromeView() }
+    /// Whether this view's own window is in full screen. Scoped to the one
+    /// window: another window going full screen must not move this rail.
+    @Binding var fullScreen: Bool
+
+    func makeNSView(context: Context) -> ChromeView {
+        let view = ChromeView()
+        view.onFullScreen = { value in
+            if fullScreen != value { fullScreen = value }
+        }
+        return view
+    }
+
     func updateNSView(_ nsView: ChromeView, context: Context) {}
 
     /// Where the lights' centre sits, from the window's top edge: the middle
@@ -24,6 +35,7 @@ struct WindowChrome: NSViewRepresentable {
 
     final class ChromeView: NSView {
         private var observers: [NSObjectProtocol] = []
+        var onFullScreen: ((Bool) -> Void)?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -45,6 +57,14 @@ struct WindowChrome: NSViewRepresentable {
                     self?.placeLights()
                 }
             }
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main
+            ) { [weak self] _ in self?.onFullScreen?(true) })
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main
+            ) { [weak self] _ in self?.onFullScreen?(false) })
+            let startsFullScreen = window.styleMask.contains(.fullScreen)
+            DispatchQueue.main.async { [weak self] in self?.onFullScreen?(startsFullScreen) }
             placeLights()
         }
 

@@ -46,6 +46,10 @@ private struct ButtonChrome: ButtonStyle {
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: hovering)
     }
 
+    /// One step past the resting fill in both appearances: darker in light,
+    /// lighter in dark, so hover never sinks.
+    private static let secondaryHover = Theme.adaptive(DesignTokens.Hex.border, DesignTokens.DarkHex.borderStrong)
+
     private var foreground: Color {
         switch kind {
         case .primary: return Theme.C.accentInk
@@ -58,7 +62,7 @@ private struct ButtonChrome: ButtonStyle {
     private var background: Color {
         switch kind {
         case .primary: return hovering && enabled ? Theme.C.accentStrong : Theme.C.accent
-        case .secondary: return hovering && enabled ? Theme.C.border : Theme.C.sunken
+        case .secondary: return hovering && enabled ? Self.secondaryHover : Theme.C.sunken
         case .danger: return Theme.C.dangerSoft
         case .ghost: return hovering && enabled ? Theme.C.accentSoft : .clear
         }
