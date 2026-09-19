@@ -9,6 +9,8 @@ export type McpToolInfo = {
   name: string;
   description: string;
   visibility: Array<"model" | "app">;
+  /** The server listed "app" itself. A tool with no visibility is not one. */
+  appCallable: boolean;
   resourceUri: string | null;
 };
 
@@ -64,6 +66,7 @@ async function rpc(
   params: Record<string, unknown> | undefined,
   headers: Record<string, string>,
   id: number,
+  signal?: AbortSignal,
 ): Promise<{ result: unknown; sessionId: string | null }> {
   const target = await assertResolvedPublic(url);
   const res = await activeFetch()(target, {
@@ -74,6 +77,7 @@ async function rpc(
       ...headers,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+    signal,
   });
   if (!res.ok) throw new Error(`mcp_http_${res.status}`);
   const sessionId = res.headers.get("mcp-session-id");
@@ -100,6 +104,11 @@ function toolVisibility(meta: unknown): Array<"model" | "app"> {
   return out.length ? out : ["model", "app"];
 }
 
+function toolAppCallable(meta: unknown): boolean {
+  const raw = asRecord(asRecord(meta)?.ui)?.visibility;
+  return Array.isArray(raw) && raw.includes("app");
+}
+
 function toolResourceUri(meta: unknown): string | null {
   const rec = asRecord(meta);
   const ui = asRecord(rec?.ui);
@@ -113,16 +122,17 @@ function toolResourceUri(meta: unknown): string | null {
 export async function listMcpTools(
   url: string,
   headers: Record<string, string> = {},
+  signal?: AbortSignal,
 ): Promise<McpToolInfo[]> {
   const init = await rpc(url, "initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
     clientInfo: { name: "useful-bot", version: "0.0.0" },
-  }, headers, 1);
+  }, headers, 1, signal);
   const sessionHeaders = init.sessionId
     ? { ...headers, "mcp-session-id": init.sessionId }
     : headers;
-  const listed = await rpc(url, "tools/list", {}, sessionHeaders, 2);
+  const listed = await rpc(url, "tools/list", {}, sessionHeaders, 2, signal);
   const rec = asRecord(listed.result);
   const tools = Array.isArray(rec?.tools) ? rec.tools : [];
   const out: McpToolInfo[] = [];
@@ -133,6 +143,7 @@ export async function listMcpTools(
       name: row.name.slice(0, 80),
       description: typeof row.description === "string" ? row.description.slice(0, 400) : "",
       visibility: toolVisibility(row._meta),
+      appCallable: toolAppCallable(row._meta),
       resourceUri: toolResourceUri(row._meta),
     });
     if (out.length >= 200) break;
@@ -183,6 +194,37 @@ export async function readMcpResource(
       baseUriDomains: Array.isArray(csp.baseUriDomains) ? csp.baseUriDomains.filter((d): d is string => typeof d === "string") : [],
     } : null,
   };
+}
+
+const TOOL_RESULT_MAX = 256 * 1024;
+export const TOOL_CALL_TIMEOUT_MS = 25_000;
+
+/**
+ * Run one tool for an MCP App's own frame (the app's `tools/call`). The
+ * caller decides which tools the app may reach; this only runs and bounds it.
+ */
+export async function callMcpTool(
+  url: string,
+  name: string,
+  args: Record<string, unknown>,
+  headers: Record<string, string> = {},
+  // A server that never answers must not hold the request (and the app's
+  // spinner) open. A caller with more steps passes one shared deadline.
+  signal: AbortSignal = AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS),
+): Promise<Record<string, unknown>> {
+  const init = await rpc(url, "initialize", {
+    protocolVersion: "2025-03-26",
+    capabilities: {},
+    clientInfo: { name: "useful-bot", version: "0.0.0" },
+  }, headers, 1, signal);
+  const sessionHeaders = init.sessionId
+    ? { ...headers, "mcp-session-id": init.sessionId }
+    : headers;
+  const called = await rpc(url, "tools/call", { name, arguments: args }, sessionHeaders, 4, signal);
+  const rec = asRecord(called.result);
+  if (!rec) throw new Error("mcp_tool_result");
+  if (JSON.stringify(rec).length > TOOL_RESULT_MAX) throw new Error("mcp_tool_result_too_large");
+  return rec;
 }
 
 export async function countOpenApiOperations(specUrl: string): Promise<number | null> {

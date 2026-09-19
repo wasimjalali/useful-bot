@@ -54,11 +54,11 @@ struct ChatMarkdownView: View, Equatable {
                 }
             }
             .padding(.leading, 18)
-        case .orderedList(let items):
+        case .orderedList(let items, let start):
             VStack(alignment: .leading, spacing: 3) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     HStack(alignment: .top, spacing: 8) {
-                        Text("\(index + 1).")
+                        Text("\(start + index).")
                             .foregroundStyle(Theme.C.inkMuted)
                             .monospacedDigit()
                         // Wraps instead of truncating: inside a bubble that

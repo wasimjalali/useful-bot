@@ -104,8 +104,11 @@ Secrets go in Keychain (`com.usefulbot.connection.{id}`), never in the JSON.
 `setup-local.mjs` seeds Excalidraw (`https://mcp.excalidraw.com/mcp`, no auth).
 A bot that needs a server not in the catalogue raises a Connect server card;
 Authorize or a pasted key adds the row and the bot resumes. Drawings from
-Excalidraw render in the macOS chat as an MCP App widget. The web UI does
-not port this card.
+Excalidraw render in the macOS chat as an MCP App widget. Edit opens it full
+screen over the window (Done or Escape returns), and Open in Excalidraw
+exports it to excalidraw.com in the browser. The app's own tool calls go
+through `POST /api/connections/widget/[id]/call`, limited to tools the server
+marks for its app. The web UI does not port this card.
 
 ## Brand assets
 

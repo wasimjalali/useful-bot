@@ -38,6 +38,9 @@ function cspFor(domains: string[]): string {
 /**
  * Host page for an MCP App. The widget HTML is srcdoc'd into a sandboxed
  * iframe. The page answers ui/initialize and pushes the stored tool input.
+ * Links, full screen and the app's own tool calls go to the native side
+ * through the `ubHost` handler, which checks each one again: the handler is
+ * visible to the app frame too.
  *
  * A srcdoc frame inherits this page's policy on top of its own, so the host
  * carries the same allowlist as the app. With a stricter host policy every
@@ -74,46 +77,127 @@ export function renderWidgetHost(record: WidgetRecord, appHtml: string, cspDomai
 const payload = ${payload};
 const iframe = document.getElementById("app");
 iframe.srcdoc = ${jsonScript(framed)};
+const host = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ubHost;
+let displayMode = "inline";
+let inlineHeight = 480;
+// Bumped whenever the native side changes the mode on its own, so a reply
+// to an older request cannot undo it.
+let modeEpoch = 0;
+const resends = [];
+function stopResends() {
+  while (resends.length) clearTimeout(resends.pop());
+}
 function send(msg) {
   iframe.contentWindow && iframe.contentWindow.postMessage(msg, "*");
 }
+function reply(id, result) {
+  send({ jsonrpc: "2.0", id: id, result: result });
+}
+function fail(id, message, code) {
+  send({ jsonrpc: "2.0", id: id, error: { code: code || -32000, message: String(message).slice(0, 200) } });
+}
+function containerHeight() {
+  return displayMode === "fullscreen" ? window.innerHeight : inlineHeight;
+}
+function pushInput() {
+  send({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: payload.arguments || {} } });
+  if (payload.result) {
+    send({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: payload.result });
+  }
+}
+function applyMode(mode) {
+  displayMode = mode === "fullscreen" ? "fullscreen" : "inline";
+  iframe.style.height = containerHeight() + "px";
+}
+function contextChanged() {
+  send({
+    jsonrpc: "2.0",
+    method: "ui/notifications/host-context-changed",
+    params: { displayMode: displayMode, containerDimensions: { height: containerHeight() } }
+  });
+}
+// The app asks; the native side decides. It answers { mode } with the mode it
+// actually set, and calls this when the reader leaves full screen without
+// asking the app (Escape on the overlay, the chat switching away).
+window.ubHostContext = function (ctx) {
+  modeEpoch++;
+  stopResends();
+  if (ctx && ctx.displayMode) applyMode(ctx.displayMode);
+  contextChanged();
+};
+window.addEventListener("resize", () => {
+  if (displayMode !== "fullscreen") return;
+  applyMode("fullscreen");
+  contextChanged();
+});
 window.addEventListener("message", (event) => {
   if (event.source !== iframe.contentWindow) return;
   const data = event.data;
-  if (!data || data.jsonrpc !== "2.0") return;
+  if (!data || data.jsonrpc !== "2.0" || typeof data.method !== "string") return;
+  const params = data.params || {};
   if (data.method === "ui/initialize") {
-    send({
-      jsonrpc: "2.0",
-      id: data.id,
-      result: {
-        protocolVersion: "2026-01-26",
-        hostCapabilities: {},
-        hostInfo: { name: "useful-bot", version: "0.0.0" },
-        hostContext: {
-          theme: "light",
-          displayMode: "inline",
-          platform: "desktop",
-          containerDimensions: { width: 720, height: 480 },
-          toolInfo: { tool: { name: payload.toolName, inputSchema: { type: "object" } } }
-        }
+    reply(data.id, {
+      protocolVersion: "2026-01-26",
+      hostCapabilities: host ? { openLinks: {}, serverTools: {} } : {},
+      hostInfo: { name: "useful-bot", version: "0.0.0" },
+      hostContext: {
+        theme: "light",
+        displayMode: displayMode,
+        availableDisplayModes: host ? ["inline", "fullscreen"] : ["inline"],
+        platform: "desktop",
+        containerDimensions: { width: 720, height: containerHeight() },
+        toolInfo: { tool: { name: payload.toolName, inputSchema: { type: "object" } } }
       }
     });
     return;
   }
   if (data.method === "ui/notifications/initialized") {
-    send({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: payload.arguments || {} } });
-    if (payload.result) {
-      send({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: payload.result });
-    }
+    pushInput();
+    // An app may attach its input handler a moment after it says it is
+    // ready (Excalidraw does, in a React effect), and a notification sent
+    // before that is dropped for good: the card stays blank. The app does
+    // not say when it is listening, so send again over the first seconds,
+    // and stop as soon as the reader acts in it: a repeat must not land on
+    // top of an edit.
+    for (const delay of [250, 750, 1500, 3000]) resends.push(setTimeout(pushInput, delay));
     return;
   }
-  if (data.method === "ui/notifications/size-changed" && data.params && data.params.height) {
-    const h = Math.max(240, Math.min(720, Number(data.params.height) || 480));
-    iframe.style.height = h + "px";
-    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ubSize) {
-      window.webkit.messageHandlers.ubSize.postMessage({ height: h });
-    }
+  if (data.method === "ui/notifications/size-changed" && params.height) {
+    inlineHeight = Math.max(240, Math.min(720, Number(params.height) || 480));
+    if (displayMode === "inline") iframe.style.height = inlineHeight + "px";
+    return;
   }
+  if (data.id === undefined || data.id === null) return;
+  const id = data.id;
+  stopResends();
+  if (data.method === "ui/update-model-context") {
+    reply(id, {});
+    return;
+  }
+  if (!host) {
+    fail(id, "Method not found", -32601);
+    return;
+  }
+  if (data.method === "tools/call") {
+    host.postMessage({ kind: "tool", name: String(params.name || ""), arguments: params.arguments || {} })
+      .then((result) => reply(id, result), (err) => fail(id, err && err.message || err));
+    return;
+  }
+  if (data.method === "ui/open-link") {
+    host.postMessage({ kind: "link", url: String(params.url || "") })
+      .then(() => reply(id, {}), (err) => fail(id, err && err.message || err));
+    return;
+  }
+  if (data.method === "ui/request-display-mode") {
+    const epoch = modeEpoch;
+    host.postMessage({ kind: "mode", mode: params.mode === "fullscreen" ? "fullscreen" : "inline" })
+      .then((result) => {
+        if (epoch === modeEpoch) applyMode(result && result.mode);
+        reply(id, { mode: displayMode });
+      }, (err) => fail(id, err && err.message || err));
+    return;
+  }
+  fail(id, "Method not found", -32601);
 });
 </script>
 </body>
