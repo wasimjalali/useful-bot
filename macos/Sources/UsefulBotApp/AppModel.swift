@@ -220,7 +220,9 @@ final class AppModel: ObservableObject {
     init() {
         let config = ServerConfig.resolved()
         self.config = config
-        self.client = BackendClient(base: config.baseURL)
+        // DesktopEndpointPolicy never rejects; the throws exists so iOS
+        // policies can refuse an endpoint (spec 4.7).
+        self.client = try! BackendClient(base: config.baseURL)
     }
 
     private var projection = StreamProjection()

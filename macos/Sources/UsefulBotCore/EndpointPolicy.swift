@@ -5,7 +5,10 @@ import Foundation
 /// loopback, so a stray remote base can never carry the device token; the
 /// phone answers the paired origin it validated under spec 4.7.
 public protocol EndpointPolicy: Sendable {
-    func endpoint(for proposed: URL) -> ServerEndpoint
+    /// Answers the endpoint the proposed base may use, or throws (spec 4.7
+    /// requires rejection to be expressible; a policy must never have to
+    /// trap or silently substitute).
+    func endpoint(for proposed: URL) throws -> ServerEndpoint
 }
 
 #if os(macOS)

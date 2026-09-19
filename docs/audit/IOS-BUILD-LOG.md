@@ -156,4 +156,49 @@ Measured on this VM against the live stack; destinations are the iPhone 16e
 
 ### Review loop
 
-Filled at merge time per spec 17.4.
+Round 1: three SWE-2 max-effort reviewer sessions, one per Prompt-6 role
+(correctness `devin-0d37749e7f4a45e69a9ae32e4e0d4b66`, security
+`devin-e105096796dc47dda605298dc38bfb34`, design-a11y
+`devin-69b7c75db5974758b1f241e57298923e`). Each reviewed the real diff, tests
+and screenshots and posted its verdict as a PR comment (reviewer VMs have no
+GitHub API credentials, so the verdict lands as a comment, not a review
+event - recorded here as the chain's convention). All three requested
+changes; 14 findings total.
+
+Security (3):
+1. [medium] `EndpointPolicy.endpoint(for:)` was total and could not express
+   the spec 4.7 rejection path -> now `throws`, and `BackendClient.init`
+   throws through it (macOS call sites use `try!`/`try?` since
+   `DesktopEndpointPolicy` never rejects).
+2. [medium] the shared `URLSession` followed redirects while carrying the
+   credential -> `NoRedirectDelegate` answers nil; a 3xx is an `http` error.
+3. [low] `expectOK` flattened a final 403 to `unauthorized` -> 403 now
+   surfaces as `.http(403)` so the code is preserved for iOS (8.4).
+
+Correctness (3):
+1. [high] `UB_TYPE_SIZE` unset injected `\.sizeCategory = .large`, pinning
+   Dynamic Type in every real run -> the override is applied only when the
+   env var is set.
+2. [medium] `WidgetWebView` built a fresh `BackendClient` per load, each
+   paying a full sign-in against the auth rate limit -> one static client.
+3. [low] same EndpointPolicy drift as security #1.
+
+Design-a11y (8):
+1. [high] title truncated "Mac" at a11y sizes -> `.lineLimit(2)` removed;
+   the title reflows (A.7 beats the design note "wraps to two lines").
+2. [high] scanner guides transposed on top-right/bottom-left -> each arm's
+   direction is derived from the edge its arc endpoint lies on.
+3. [high] system placeholders ~1.7:1 -> styled `prompt:` at `inkFaintText`.
+4. [medium] sunken controls stroked `border` -> `edge` whisper token.
+5. [medium] system blue leaked via caret/selection/back chevron ->
+   `AccentColor` colorset (#171717/#EDEDED) plus `.tint(Theme.C.accent)`;
+   focused fields now show the `ink` edge with a 3 pt 8% ring.
+6. [low] Connect button was 44 pt -> 50 pt.
+7. [low] `PressedScale` had no tone step or reduce-motion gate -> ink 5%
+   overlay on press, scale skipped under Reduce Motion.
+8. [low] every token font scaled on the `.body` curve -> `ScaledTokenFont`
+   maps each size to the nearest `Font.TextStyle`.
+
+Round-1 verification after fixes: `make -C macos test` 280/280; iOS build
+green; UITests 4/4 at 390 pt and 4/4 at 375 pt; screenshots re-exported.
+Round 2 pending at merge time.

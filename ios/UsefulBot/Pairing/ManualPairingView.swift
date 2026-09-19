@@ -7,6 +7,7 @@ import UsefulBotCore
 struct ManualPairingView: View {
     @State private var address = ""
     @State private var token = ""
+    @FocusState private var focusedField: String?
 
     var body: some View {
         VStack(spacing: 16) {
@@ -29,16 +30,20 @@ struct ManualPairingView: View {
         keyboard: UIKeyboardType,
         secure: Bool
     ) -> some View {
-        Group {
+        // The prompt carries the placeholder; `inkFaintText` is the token
+        // that survives contrast on `sunken` in both appearances.
+        let prompt = Text(label).foregroundStyle(Theme.C.inkFaintText)
+        return Group {
             if secure {
-                SecureField(label, text: text)
+                SecureField(label, text: text, prompt: prompt)
             } else {
-                TextField(label, text: text)
+                TextField(label, text: text, prompt: prompt)
                     .keyboardType(keyboard)
             }
         }
         .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
         .foregroundStyle(Theme.C.ink)
+        .focused($focusedField, equals: label)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .padding(.horizontal, 14)
@@ -48,9 +53,18 @@ struct ManualPairingView: View {
             in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                .strokeBorder(Theme.C.border, lineWidth: 1)
+            // Focused field: `ink` edge plus a 3 pt ring at 8% (design spec).
+            ZStack {
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                    .strokeBorder(focusedField == label ? Theme.C.ink : Theme.C.edge, lineWidth: 1)
+                if focusedField == label {
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md + 3, style: .continuous)
+                        .strokeBorder(Theme.C.ink.opacity(0.08), lineWidth: 3)
+                        .padding(-4)
+                }
+            }
         )
+        .animation(.easeOut(duration: DesignTokens.Motion.fast), value: focusedField)
     }
 
     private var connectButton: some View {
@@ -60,7 +74,7 @@ struct ManualPairingView: View {
                 Text("Connect")
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
                     .foregroundStyle(ready ? Theme.C.brandInk : Theme.C.inkFaint)
-                    .frame(maxWidth: .infinity, minHeight: DesignTokens.Space.phoneHitTarget)
+                    .frame(maxWidth: .infinity, minHeight: 50)
                     .background(
                         ready ? Theme.C.brand : Theme.C.sunken,
                         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)

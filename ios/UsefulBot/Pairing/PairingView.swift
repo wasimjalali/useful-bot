@@ -46,7 +46,8 @@ struct PairingView: View {
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
-                .lineLimit(2)
+                // A.7: never truncate; at accessibility sizes the title
+                // reflows onto as many lines as it needs inside the scroll.
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Your bots run on your Mac. This iPhone connects to it over Tailscale.")
@@ -119,7 +120,7 @@ struct PairingView: View {
                 .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                        .strokeBorder(Theme.C.border, lineWidth: 1)
+                        .strokeBorder(Theme.C.edge, lineWidth: 1)
                 )
         }
         .buttonStyle(PressedScale())
@@ -147,26 +148,30 @@ private struct ScannerGuides: Shape {
         ]
         for (center, start, end) in corners {
             path.addArc(center: center, radius: r, startAngle: start, endAngle: end, clockwise: false)
-            // The arc's start sits on the vertical edge, its end on the
-            // horizontal edge; each grows a straight arm toward the midline.
-            let startPoint = CGPoint(
-                x: center.x + r * Darwin.cos(start.radians),
-                y: center.y + r * Darwin.sin(start.radians)
-            )
-            let endPoint = CGPoint(
-                x: center.x + r * Darwin.cos(end.radians),
-                y: center.y + r * Darwin.sin(end.radians)
-            )
-            path.move(to: startPoint)
-            path.addLine(to: CGPoint(
-                x: startPoint.x,
-                y: startPoint.y + (center.y < bounds.midY ? arm : -arm)
-            ))
-            path.move(to: endPoint)
-            path.addLine(to: CGPoint(
-                x: endPoint.x + (center.x < bounds.midX ? arm : -arm),
-                y: endPoint.y
-            ))
+            // Each arc endpoint lies on one edge: an endpoint on a vertical
+            // edge grows a vertical arm toward the midline, an endpoint on a
+            // horizontal edge grows a horizontal one. Which endpoint sits on
+            // which edge differs per corner, so derive it from the point.
+            for angle in [start, end] {
+                let point = CGPoint(
+                    x: center.x + r * Darwin.cos(angle.radians),
+                    y: center.y + r * Darwin.sin(angle.radians)
+                )
+                let onVerticalEdge =
+                    abs(point.x - bounds.minX) < 0.5 || abs(point.x - bounds.maxX) < 0.5
+                path.move(to: point)
+                if onVerticalEdge {
+                    path.addLine(to: CGPoint(
+                        x: point.x,
+                        y: point.y + (point.y < bounds.midY ? arm : -arm)
+                    ))
+                } else {
+                    path.addLine(to: CGPoint(
+                        x: point.x + (point.x < bounds.midX ? arm : -arm),
+                        y: point.y
+                    ))
+                }
+            }
         }
         return path
     }

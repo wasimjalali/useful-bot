@@ -99,6 +99,13 @@ struct WidgetWebView: NSViewRepresentable {
         var loadedId: String?
         private var loading: Task<Void, Never>?
 
+        /// One client for every widget fetch. Each `BackendClient` owns a
+        /// private cookie jar, so a fresh client pays a full sign-in
+        /// (`security` CLI plus `POST /api/auth/session`); a per-load client
+        /// would let widget scrolling burn through the auth rate limit.
+        /// `DesktopEndpointPolicy` never rejects, so construction cannot fail.
+        private static let client = try! BackendClient(base: ServerConfig.resolved().baseURL)
+
         deinit { loading?.cancel() }
 
         func cancel() {
@@ -113,7 +120,7 @@ struct WidgetWebView: NSViewRepresentable {
             loadedId = widgetId
             loading?.cancel()
             loading = Task { @MainActor [weak view] in
-                let client = BackendClient(base: ServerConfig.resolved().baseURL)
+                let client = Self.client
                 // A live drawing renders before its save lands: a 404 in the
                 // first seconds means "not yet", not "gone".
                 for attempt in 0..<6 {

@@ -253,10 +253,10 @@ public actor BackendClient {
         base: URL = URL(string: "http://127.0.0.1:4320")!,
         tokenStore: any DeviceTokenStore,
         endpointPolicy: any EndpointPolicy
-    ) {
+    ) throws {
         // The device token and cookies ride on every request: the platform's
         // policy decides which base is allowed to carry them.
-        self.base = endpointPolicy.endpoint(for: base).baseURL
+        self.base = try endpointPolicy.endpoint(for: base).baseURL
         self.tokenStore = tokenStore
         self.session = Self.makeSession()
     }
@@ -268,8 +268,8 @@ public actor BackendClient {
     public init(
         base: URL = URL(string: "http://127.0.0.1:4320")!,
         tokenService: String = "com.usefulbot.device.desktop"
-    ) {
-        self.init(
+    ) throws {
+        try self.init(
             base: base,
             tokenStore: ProcessDeviceTokenStore(service: tokenService),
             endpointPolicy: DesktopEndpointPolicy()
@@ -283,7 +283,21 @@ public actor BackendClient {
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 30
         config.waitsForConnectivity = false
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
+    }
+
+    /// Spec 4.7/8.1: follow no redirects. A 3xx from the server is an error
+    /// surfaced through `expectOK`, never silently followed with credentials.
+    private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping @Sendable (URLRequest?) -> Void
+        ) {
+            completionHandler(nil)
+        }
     }
 
     // MARK: - Auth
@@ -1498,9 +1512,9 @@ public actor BackendClient {
         guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
         // eve answers 202 Accepted for a session turn, so any 2xx is success.
         guard (200...299).contains(http.statusCode) else {
-            // A final 401/403 after the sign-in retry is an auth failure, not
-            // a generic HTTP error.
-            if http.statusCode == 401 || http.statusCode == 403 {
+            // A final 401 after the sign-in retry is an auth failure; a 403
+            // keeps its code so callers can tell refusal from a bad token.
+            if http.statusCode == 401 {
                 throw BackendError.unauthorized
             }
             throw BackendError.http(http.statusCode)

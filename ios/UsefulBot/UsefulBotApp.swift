@@ -4,12 +4,22 @@ import SwiftUI
 struct UsefulBotApp: App {
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                PairingView()
+            if let testSizeCategory = Self.testSizeCategory {
+                root.environment(\.sizeCategory, testSizeCategory)
+            } else {
+                root
             }
-            .preferredColorScheme(Self.testAppearance)
-            .environment(\.sizeCategory, Self.testSizeCategory ?? .large)
         }
+    }
+
+    private var root: some View {
+        NavigationStack {
+            PairingView()
+        }
+        // The accent is monochrome: `accent` token (#171717/#EDEDED) so
+        // carets, selection and the back chevron never leak system blue.
+        .tint(Theme.C.accent)
+        .preferredColorScheme(Self.testAppearance)
     }
 
     /// UI tests pin an appearance via `UB_APPEARANCE` and a type size via
