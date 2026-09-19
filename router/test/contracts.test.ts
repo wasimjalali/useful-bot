@@ -242,6 +242,9 @@ test("opencode-go forwards the model selected in the composer and reports it", a
     assert.equal(res.headers.get("x-useful-upstream-model"), "glm-5.3");
     assert.equal(forwarded.model, "glm-5.3");
     assert.equal(forwarded.reasoning_effort, "high");
+    // glm-5.3's catalog window is far past ten times the registry cap, so the
+    // whole 32,768 goes out; a 131,072 window would get its last tenth.
+    assert.equal(forwarded.max_tokens, 32_768);
   }, (req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -493,6 +496,32 @@ test("streaming proxies sse and records usage", async () => {
     res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 11, completion_tokens: 4 } })}\n\n`);
     res.write("data: [DONE]\n\n");
     res.end();
+  });
+});
+
+test("a stream cut off after a tool call reaches eve as a tool step", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], stream: true }),
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    const finishes = [...text.matchAll(/"finish_reason":"(\w+)"/g)].map((m) => m[1]);
+    assert.deepEqual(finishes, ["tool_calls"]);
+    assert.equal(text.includes("\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\""), true);
+    // The last block had no closing blank line and still arrives.
+    assert.equal(text.trimEnd().endsWith("data: [DONE]"), true);
+  }, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const call = { index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "{\"command\":\"ls\"}" } };
+    // A block split across two writes is relayed whole.
+    const first = `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] })}\n\n`;
+    res.write(first.slice(0, 20));
+    res.write(first.slice(20));
+    res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }], usage: { prompt_tokens: 11, completion_tokens: 4 } })}\n\n`);
+    res.end("data: [DONE]");
   });
 });
 

@@ -1152,7 +1152,10 @@ final class AppModel: ObservableObject {
             Task { await reloadThread() }
             return
         }
-        send(text, retrying: true)
+        // A session whose history holds a tool call with no result refuses
+        // every turn, so resending into it put the same banner straight back
+        // and Retry looked dead. The message goes to a fresh session instead.
+        send(text, retrying: true, freshSession: projection.failure?.historyBroken == true)
     }
 
     /// The owner's last message, when sending it again is the right thing to
@@ -1170,7 +1173,7 @@ final class AppModel: ObservableObject {
 
     /// `retrying` resends a message the composer does not hold, so it must not
     /// consume the draft or the files waiting there.
-    private func send(_ text: String, retrying: Bool) {
+    private func send(_ text: String, retrying: Bool, freshSession: Bool = false) {
         // The draft is capped in the composer; never clip the formatted
         // message here or attachment bodies and their fences get severed.
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1264,7 +1267,13 @@ final class AppModel: ObservableObject {
                 // no turn ids at all, which is what an empty set used to mean.
                 var untaggedMayArm = true
                 var sendSessionId = bot.sessionId
-                if let sessionId = bot.sessionId, !sessionId.isEmpty {
+                if freshSession, let old = bot.sessionId, !old.isEmpty {
+                    // The same move as a retired session below: drop the
+                    // pointer, then post this message as a new session.
+                    await self.dropSession(botId: bot.id)
+                    sendSessionId = nil
+                }
+                if let sessionId = sendSessionId, !sessionId.isEmpty {
                     do {
                         // The follower has already read this session up to its
                         // cursor, so the snapshot only needs what came after,

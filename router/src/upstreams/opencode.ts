@@ -3,6 +3,7 @@ import { RouterError } from "../errors.ts";
 import type { RegistryEntry } from "../registry.ts";
 import { applyReasoning, modelOption, modelSeesImages } from "../../../shared/models.ts";
 import { catalogFor } from "../../../shared/live-models.ts";
+import { POLICY_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
   readProviderStore,
   recordConnectionError,
@@ -148,12 +149,18 @@ export async function completeUpstream(input: {
   // to glm-5.3-flash whatever the chip said. The registry still names the
   // alias, its window policy and the fallback; the selection names the model.
   const model = resolved.model;
-  const sees = modelSeesImages(modelOption(resolved.connection.id, model, catalogFor(resolved.connection.id)));
+  const option = modelOption(resolved.connection.id, model, catalogFor(resolved.connection.id));
+  const sees = modelSeesImages(option);
+  // eve compacts at 90% of the model's window (agent/lib/model-window.ts reads
+  // the same catalog), so the output cap keeps to the last tenth: a prompt at
+  // the threshold plus a full answer still fits a small model's window.
+  const window = option?.contextTokens && option.contextTokens > 0 ? option.contextTokens : POLICY_WINDOW_TOKENS;
+  const outputCap = Math.min(input.entry.maxOutputTokens, Math.floor(window / 10));
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
     messages: withoutImagesForTextModel(forwardedBody.messages, sees),
     model,
-    max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : input.entry.maxOutputTokens,
+    max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : outputCap,
   });
   const dispatch = (): Promise<Response> => {
     const auth = tokenFor(resolved.providerId, credential);
