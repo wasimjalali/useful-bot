@@ -97,19 +97,22 @@ function toResponsesToolChoice(choice: unknown): unknown {
 }
 
 /**
- * The ChatGPT Codex backend answers 400 to a request with no `instructions`
- * ("Instructions are required"), so a turn with no system message still
- * carries one.
+ * The Codex CLI always sends `instructions`, so a turn with no system message
+ * still carries one. The backend accepted a request without it on 2026-09-19;
+ * what it refuses is `max_output_tokens` and `stream: false`.
  */
 export const DEFAULT_INSTRUCTIONS = "You are a helpful assistant.";
 
-function textOf(content: unknown): string {
+/** The text of a system row, or null when it carries anything but text. */
+function textOnly(content: unknown): string | null {
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : ""))
-    .filter(Boolean)
-    .join("\n");
+  if (!Array.isArray(content)) return null;
+  const texts: string[] = [];
+  for (const part of content) {
+    if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") return null;
+    if (part.text) texts.push(part.text);
+  }
+  return texts.join("\n");
 }
 
 /**
@@ -120,13 +123,18 @@ function textOf(content: unknown): string {
  * CLI uses for mid-conversation guidance on this backend.
  */
 export function splitChatGptInstructions(messages: unknown): { instructions: string; messages: unknown[] } {
-  if (!Array.isArray(messages)) return { instructions: DEFAULT_INSTRUCTIONS, messages: [] };
+  if (!Array.isArray(messages)) {
+    throw new RouterError({ status: 502, type: "upstream_error", code: "upstream_protocol_error", message: "upstream_protocol_error" });
+  }
   const lead: string[] = [];
   let index = 0;
   while (index < messages.length) {
     const item = messages[index];
     if (!isRecord(item) || item.role !== "system") break;
-    const text = textOf(item.content);
+    // A system row with an image or other non-text part stays in the input
+    // as a developer row, so that content still reaches the model.
+    const text = textOnly(item.content);
+    if (text === null) break;
     if (text) lead.push(text);
     index += 1;
   }

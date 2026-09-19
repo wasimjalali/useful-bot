@@ -14,6 +14,7 @@ import {
   postMessages,
   translateMessagesJson,
 } from "../router/src/upstreams/anthropic-messages.ts";
+import { settleCompletion, settleStreamBlock } from "../router/src/tool-finish.ts";
 
 function sse(frames: Array<{ event?: string; data: unknown }>): string {
   return frames.map((frame) => {
@@ -134,7 +135,7 @@ test("responses request maps chat fields, tools and images", () => {
 
 test("chatgpt request shape: instructions always present, streaming forced, system rows lifted", () => {
   // No system message at all: the backend still gets a non-empty instructions
-  // string, or it answers 400 "Instructions are required".
+  // string, the way the Codex CLI always sends one.
   const bare = buildResponsesBody({ model: "gpt-5.5", stream: false, messages: [{ role: "user", content: "hi" }], max_tokens: 4096 }, { model: "gpt-5.5", chatgpt: true });
   assert.equal(bare.instructions, DEFAULT_INSTRUCTIONS);
   assert.equal(bare.stream, true);
@@ -156,6 +157,21 @@ test("chatgpt request shape: instructions always present, streaming forced, syst
     { role: "developer", content: "Reminder: be brief." },
     { role: "assistant", content: "ok" },
   ]);
+  // A leading system row with an image is not folded into instructions, so
+  // the image is not lost; it goes on as a developer row.
+  const image = { type: "image_url", image_url: { url: "data:image/png;base64,AA" } };
+  const withImage = splitChatGptInstructions([
+    { role: "system", content: "You are Test Bot." },
+    { role: "system", content: [{ type: "text", text: "See this." }, image] },
+    { role: "user", content: "hello" },
+  ]);
+  assert.equal(withImage.instructions, "You are Test Bot.");
+  assert.deepEqual(withImage.messages, [
+    { role: "developer", content: [{ type: "text", text: "See this." }, image] },
+    { role: "user", content: "hello" },
+  ]);
+  // A malformed body fails before any upstream call, as it did before the split.
+  assert.throws(() => splitChatGptInstructions("not a list"), /upstream_protocol_error/);
   const wired = JSON.parse(JSON.stringify(buildResponsesBody(
     { model: "gpt-5.5", stream: true, messages: [{ role: "system", content: "S" }, { role: "user", content: "u" }] },
     { model: "gpt-5.5", chatgpt: true },
@@ -459,4 +475,25 @@ test("chat completions post through url, body and headers unchanged", async () =
   assert.equal(seenUrl, "https://opencode.ai/zen/go/v1/chat/completions");
   assert.deepEqual(seenBody, body);
   assert.deepEqual(seenHeaders, headers);
+});
+
+test("a length stop after a tool call becomes a tool step; plain text keeps length", () => {
+  const seen = { toolCall: false };
+  const text = `data: ${JSON.stringify({ choices: [{ delta: { content: "long answer" } }] })}`;
+  assert.equal(settleStreamBlock(text, seen), text);
+  const cut = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] })}`;
+  // No tool call yet: a text-only cut is eve's to continue, unchanged.
+  assert.equal(settleStreamBlock(cut, seen), cut);
+  const call = `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "bash", arguments: "{" } }] } }] })}`;
+  assert.equal(settleStreamBlock(call, seen), call);
+  assert.equal(seen.toolCall, true);
+  assert.match(settleStreamBlock(cut, seen), /"finish_reason":"tool_calls"/);
+  assert.equal(settleStreamBlock("data: [DONE]", seen), "data: [DONE]");
+
+  const json = { choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "c1" }] }, finish_reason: "length" }] };
+  settleCompletion(json);
+  assert.equal(json.choices[0].finish_reason, "tool_calls");
+  const plain = { choices: [{ index: 0, message: { role: "assistant", content: "cut" }, finish_reason: "length" }] };
+  settleCompletion(plain);
+  assert.equal(plain.choices[0].finish_reason, "length");
 });
