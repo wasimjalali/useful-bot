@@ -6,29 +6,38 @@ import UsefulBotCore
 /// camera feed, pairing state machine and validation land in PR-2; this is
 /// the static anatomy the rest of pairing builds on.
 struct PairingView: View {
-    @Environment(\.sizeCategory) private var sizeCategory
-
     var body: some View {
         GeometryReader { proxy in
-            ScrollView {
-                VStack(spacing: 0) {
-                    badge
-                    title
-                    scanner(in: proxy)
-                    statusLine
-                    steps
-                    Spacer(minLength: DesignTokens.Space.phoneGutter)
-                    manualEntry
+            // The square keeps its 300 pt cap until the column genuinely
+            // outgrows the screen (the design spec shrinks it only to keep
+            // the button visible): first the full column at 300, then the
+            // 200 pt floor, then the same floor inside a scroll.
+            ViewThatFits(in: .vertical) {
+                column(in: proxy, scannerCap: 300)
+                column(in: proxy, scannerCap: 200)
+                ScrollView {
+                    column(in: proxy, scannerCap: 200)
                 }
-                .padding(.top, 32)
-                .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                .padding(.bottom, DesignTokens.Space.sheetInset)
-                .frame(minHeight: proxy.size.height)
+                .scrollBounceBehavior(.basedOnSize)
             }
-            .scrollBounceBehavior(.basedOnSize)
         }
         .background(Theme.C.surface)
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func column(in proxy: GeometryProxy, scannerCap: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            badge
+            title
+            scanner(in: proxy, cap: scannerCap)
+            statusLine
+            steps
+            Spacer(minLength: DesignTokens.Space.phoneGutter)
+            manualEntry
+        }
+        .padding(.top, 32)
+        .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        .padding(.bottom, DesignTokens.Space.sheetInset)
     }
 
     private var badge: some View {
@@ -60,13 +69,10 @@ struct PairingView: View {
         .padding(.bottom, 28)
     }
 
-    private func scanner(in proxy: GeometryProxy) -> some View {
+    private func scanner(in proxy: GeometryProxy, cap: CGFloat) -> some View {
         // Full gutter width, square, capped at 300; the Dynamic Type floor is
         // 200 so the area never collapses.
         let guttered = proxy.size.width - 2 * DesignTokens.Space.phoneGutter
-        // Under accessibility type sizes the square yields to the text: its
-        // cap falls to the 200 pt floor so the button stays on screen.
-        let cap: CGFloat = sizeCategory.isAccessibilityCategory ? 200 : 300
         let side = max(200, min(guttered, cap))
         return RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
             .fill(Theme.C.sunken)
@@ -108,6 +114,8 @@ struct PairingView: View {
                 .foregroundStyle(Theme.C.ink)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        // "1. On your Mac, ..." is one step, not two stops.
+        .accessibilityElement(children: .combine)
     }
 
     private var manualEntry: some View {
