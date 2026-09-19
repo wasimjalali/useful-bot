@@ -7,7 +7,11 @@ import UsefulBotCore
 /// what the server returns: names, modes, hints, URLs and models all come
 /// from `GET /api/providers`.
 struct ProvidersPaneView: View {
-    @EnvironmentObject private var model: AppModel
+    /// Passed in, not read from the environment: the settings dialog also
+    /// builds this view's card content from a plain copy of the struct at its
+    /// root, outside the pane's own hierarchy, where an environment object is
+    /// never populated and its getter traps.
+    @ObservedObject var model: AppModel
     /// Which brand card the dialog renders at its root. Owned by
     /// AppSettingsView so the card floats above the scrolling body.
     @Binding var openCard: ProvidersCard?
@@ -47,15 +51,6 @@ struct ProvidersPaneView: View {
                             title: "Default model",
                             sub: "Used for chat",
                             detail: model.defaultRole,
-                            last: true
-                        )
-                    }
-                    settingsGroup {
-                        roleRow(
-                            role: "reviewer",
-                            title: "Reviewer",
-                            sub: "Reviews and second opinions",
-                            detail: model.reviewerRole,
                             last: true
                         )
                     }
@@ -892,7 +887,8 @@ struct ProvidersCardHost: View {
                 .uvScroll()
                 .frame(maxHeight: cap)
         case .picker:
-            pane.modelPickerCardContent(role: card.key, maxHeight: cap)
+            // The picker keeps its 40 pt search row above the list, so the list gets the rest.
+            pane.modelPickerCardContent(role: card.key, maxHeight: max(cap - 40, 80))
         case .effort:
             ScrollView { pane.effortCardContent(role: card.key) }
                 .uvScroll()
