@@ -9,10 +9,10 @@ identifiers, no tailnet addresses, no device names.
 
 | Metric | Total |
 |--------|-------|
-| PRs merged | 0/8 |
-| Total wall time | - |
-| Review rounds | 0 |
-| Findings (blocker/high/medium/low) | 0/0/0/0 |
+| PRs merged | 1/8 |
+| Total wall time | ~6.1 h (PR-1 session) |
+| Review rounds | 6 |
+| Findings (blocker/high/medium/low) | 1/6/14/27 |
 | Token spend | not exposed |
 
 ## Environment record (spec 17.0)
@@ -376,3 +376,24 @@ Round-5 verification after fixes: iOS suite 266/266 + UITests 4/4 at
 #104's tests); verify-release PASS; `npm test` 545/545 (an interim run
 hit the package-lock drift left by next_build; restored and re-ran
 green); xcodegen no-diff; 50 screenshots in docs/audit/ios-shots/PR-1/.
+
+
+Review loop round 6 (fresh reviewers on 7ef580b, post-merge-of-main):
+all three roles approved with zero findings ("Zero findings in role
+correctness" / "security" / "design-a11y"). The one caveat reviewers
+recorded: `router/test/contracts.test.ts:247` (glm-5.3 window needs a
+populated models cache) fails on a clean machine - preexisting on main
+since 4a05209, untouched by this diff, re-verified on origin/main.
+
+## Effort (spec 17.4)
+
+- Author session: this Devin session (SWE-2, max effort, macOS cloud).
+- Reviewer sessions, one per role per round, all SWE-2 max effort:
+  R1 0d37749e / e1050967 / 69b7c75d; R2 5bf97325 / 9c750729 / 992e758f;
+  R3 509147df / 94297541 / 612facd0; R4 b189ab2a / 82dfaa90 / 0a921bdc;
+  R5 fb2b2ed9 / 9616d9c6 / 515d1eb9; R6 b5559c14 / 12f8537a / 1770c72d.
+- ACU: not exposed (child sessions report 0.0).
+- Provider: OpenCode Go (opencode-go, plan) for the VM-stack live checks;
+  no weekly-limit hit this PR.
+
+Merge: squash-merged to main after the all-green round-6 pass.
