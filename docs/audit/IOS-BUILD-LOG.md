@@ -396,4 +396,8 @@ since 4a05209, untouched by this diff, re-verified on origin/main.
 - Provider: OpenCode Go (opencode-go, plan) for the VM-stack live checks;
   no weekly-limit hit this PR.
 
-Merge: squash-merged to main after the all-green round-6 pass.
+Merge: squash-merged to main after the all-green round-6 pass as 69de78a
+(squash via gh is not permitted from this cloud runner; merged locally, PR
+closed with the note).
+
+Chain: PR-2 lead session created: 40126d29de2a4d7b9e0757d40442f917.
