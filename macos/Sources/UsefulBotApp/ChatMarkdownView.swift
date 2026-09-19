@@ -198,10 +198,10 @@ struct MarkdownTableView: View {
             }
         }
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         // Hugs left when the table is narrower than the column, rather than
         // stretching two short columns across the whole width.
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -285,7 +285,7 @@ struct CodeBlockView: View {
         .overlay(alignment: .topTrailing) {
             copyButton.padding(.top, 8).padding(.trailing, 10)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         .animation(.easeOut(duration: 0.15), value: copied)
     }
 

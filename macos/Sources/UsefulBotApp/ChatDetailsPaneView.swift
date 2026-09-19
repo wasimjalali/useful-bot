@@ -729,11 +729,11 @@ private struct ScheduleRowView: View {
                 .frame(width: 28, height: 22)
                 .background(on ? Theme.C.accent : Theme.C.surface)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
                         .strokeBorder(on ? .clear : Theme.C.borderStrong, lineWidth: 1)
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerOnHover()

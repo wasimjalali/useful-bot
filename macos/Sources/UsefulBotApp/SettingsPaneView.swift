@@ -103,10 +103,10 @@ private struct FacePickerView: View {
                         .frame(maxWidth: .infinity, minHeight: 64)
                         .background(selected ? Theme.C.sunken : .clear)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 10)
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
                                 .strokeBorder(selected ? Theme.C.ink : .clear, lineWidth: 1.5)
                         )
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -259,7 +259,7 @@ private struct BotSettingsFields: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
     }
@@ -360,10 +360,10 @@ private struct MemoryNoteView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .smShadow()
     }
 }

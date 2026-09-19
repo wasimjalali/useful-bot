@@ -26,7 +26,7 @@ import Testing
         #expect(DesignTokens.Space.chatHead == 52)
         #expect(DesignTokens.Space.botRow == 36)
         #expect(DesignTokens.Radius.stage == 24)
-        #expect(DesignTokens.Radius.field == 12)
+        #expect(DesignTokens.Radius.field == 14)
         #expect(DesignTokens.Control.switchWidth == 36)
         #expect(DesignTokens.Control.switchHeight == 22)
         #expect(DesignTokens.Control.switchKnob == 16)

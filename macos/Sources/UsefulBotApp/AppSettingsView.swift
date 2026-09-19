@@ -153,7 +153,7 @@ struct AppSettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(tab == item ? Theme.C.sunken : .clear)
                     .foregroundStyle(tab == item ? Theme.C.ink : Theme.C.inkMuted)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -706,7 +706,7 @@ private struct AppearancePicker: View {
                         .padding(.horizontal, 12)
                         .frame(height: 26)
                         .background(on ? Theme.C.surface : .clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
                         .shadow(color: Theme.C.shadow.opacity(on ? 0.1 : 0), radius: 1.5, x: 0, y: 1)
                         .contentShape(Rectangle())
                 }
@@ -717,7 +717,7 @@ private struct AppearancePicker: View {
         }
         .padding(2)
         .background(Theme.C.border)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         .animation(.easeOut(duration: DesignTokens.Motion.fast), value: selection)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Theme")

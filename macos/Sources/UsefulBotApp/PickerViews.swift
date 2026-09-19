@@ -129,10 +129,10 @@ struct NewChatPickerView: View {
             .frame(maxHeight: 420)
             .background(Theme.C.surface)
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                     .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
             .raiseShadow()
             .dismissOnOutsideClick(triggers: { [headerFrame] + (plusTrigger.map { [$0()] } ?? []) }) {
                 onClose()
@@ -166,10 +166,10 @@ struct NewChatPickerView: View {
             .padding(.vertical, 1)
             .background(Theme.C.sunken)
             .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
                     .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
     }
 }
 
@@ -315,10 +315,10 @@ struct SearchPaletteView: View {
             .frame(maxWidth: 560)
             .background(Theme.C.surface)
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                     .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
             .popShadow()
             .padding(.top, 140)
             .padding(.horizontal, 16)
@@ -463,7 +463,7 @@ struct SearchPaletteView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
                         .background(Theme.C.sunken)
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
                 }
             }
             Spacer(minLength: 0)

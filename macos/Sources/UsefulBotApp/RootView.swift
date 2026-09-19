@@ -880,14 +880,14 @@ struct ConnectorsDialog: View {
         VStack(spacing: 0) {
             ForEach(0..<4, id: \.self) { index in
                 HStack(spacing: 12) {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                         .fill(Theme.C.border)
                         .frame(width: 28, height: 28)
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
                         .fill(Theme.C.border)
                         .frame(width: 112, height: 14)
                     Spacer(minLength: 0)
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                         .fill(Theme.C.border)
                         .frame(width: 80, height: 32)
                 }

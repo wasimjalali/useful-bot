@@ -387,11 +387,11 @@ struct ProposalCardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tone == .warning ? Theme.C.warningSoft : Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .strokeBorder(Theme.C.warning.opacity(tone == .warning ? 0.4 : 0), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .cardLift(cornerRadius: 12)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .cardLift(cornerRadius: DesignTokens.Radius.md)
     }
 }
 
@@ -427,7 +427,7 @@ struct OnboardingCardView: View {
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.C.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .cardLift(cornerRadius: 12)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .cardLift(cornerRadius: DesignTokens.Radius.md)
     }
 }

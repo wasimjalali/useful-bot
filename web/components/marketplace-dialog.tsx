@@ -397,7 +397,7 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
                   {[0, 1, 2, 3].map((index) => (
                     <div className="settings-row" key={index}>
                       <div className="flex items-center gap-3">
-                        <div className="skeleton size-7 rounded-lg" />
+                        <div className="skeleton size-7 rounded-sm" />
                         <div className="skeleton h-3.5 w-28" />
                       </div>
                       <div className="skeleton h-8 w-20" />
@@ -475,12 +475,12 @@ function AppLogo({ name, src }: { name: string; src: string | null }) {
   const [failed, setFailed] = useState(false);
   if (!src || failed) {
     return (
-      <span aria-hidden="true" className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-sunken text-xs font-semibold text-ink-muted">
+      <span aria-hidden="true" className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-sunken text-xs font-semibold text-ink-muted">
         {name.slice(0, 1).toUpperCase()}
       </span>
     );
   }
-  return <img alt="" className="size-7 shrink-0 rounded-lg object-contain" onError={() => setFailed(true)} src={src} />;
+  return <img alt="" className="size-7 shrink-0 rounded-sm object-contain" onError={() => setFailed(true)} src={src} />;
 }
 
 export { ConnectorsDialog as MarketplaceDialog };

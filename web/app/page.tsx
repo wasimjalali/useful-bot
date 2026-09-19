@@ -885,7 +885,7 @@ export default function Page() {
                                       Message from {row.authorName}
                                     </p>
                                   ) : null}
-                                  <div className="whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
+                                  <div className="whitespace-pre-wrap break-words rounded-lg rounded-br-xs bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
                                     {row.text}
                                   </div>
                                 </div>
@@ -937,7 +937,7 @@ export default function Page() {
                             <BotAvatar bot={bot} size="sm" />
                             <div className="pt-1.5">
                               <div className="flex items-center gap-2.5">
-                                <span className="size-4 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
+                                <span className="size-4 animate-spin rounded-pill border-2 border-accent/30 border-t-accent" />
                                 <span className="text-sm text-ink-muted">Working.</span>
                               </div>
                             </div>

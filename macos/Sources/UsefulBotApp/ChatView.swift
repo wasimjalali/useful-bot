@@ -285,8 +285,8 @@ struct ChatView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(Theme.C.sunken)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -721,10 +721,10 @@ private struct UserBubbleView: View {
         .background(Theme.C.sunken)
         .clipShape(
             UnevenRoundedRectangle(
-                topLeadingRadius: 12,
-                bottomLeadingRadius: 12,
-                bottomTrailingRadius: 4,
-                topTrailingRadius: 12,
+                topLeadingRadius: DesignTokens.Radius.md,
+                bottomLeadingRadius: DesignTokens.Radius.md,
+                bottomTrailingRadius: DesignTokens.Radius.xs,
+                topTrailingRadius: DesignTokens.Radius.md,
                 style: .continuous
             )
         )
@@ -825,8 +825,8 @@ struct TranscriptRowView: View, Equatable {
             WidgetSlot(widgetId: row.text)
                 .frame(height: 480)
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .cardLift(cornerRadius: 12)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                .cardLift(cornerRadius: DesignTokens.Radius.md)
         }
     }
 
@@ -858,8 +858,8 @@ struct TranscriptRowView: View, Equatable {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(Theme.C.bubbleBot)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .cardLift(cornerRadius: 12)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .cardLift(cornerRadius: DesignTokens.Radius.md)
                     .frame(maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth), alignment: .leading)
             }
             Spacer(minLength: 0)
@@ -893,8 +893,8 @@ struct TranscriptRowView: View, Equatable {
             .padding(.vertical, 8)
             .frame(maxWidth: 420)
             .background(Theme.C.bubbleBot)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .cardLift(cornerRadius: 12)
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .cardLift(cornerRadius: DesignTokens.Radius.md)
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .ignore)

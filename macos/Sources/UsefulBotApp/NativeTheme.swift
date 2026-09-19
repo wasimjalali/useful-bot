@@ -460,7 +460,7 @@ struct FocusRing: ViewModifier {
 
     func body(content: Content) -> some View {
         content.overlay(
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
                 .strokeBorder(Theme.C.accent, lineWidth: 2)
                 .padding(-2)
                 .opacity(focused && !modality.pointerDriven ? 1 : 0)

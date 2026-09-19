@@ -170,7 +170,7 @@ struct RailView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Theme.C.sunken)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
             }
             .padding(.horizontal, 10)
             .frame(minHeight: DesignTokens.Control.searchTrigger)
@@ -620,7 +620,7 @@ private struct BotRowView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(bot.name)
-                            .font(.system(size: DesignTokens.FontSize.railName, weight: selected ? .semibold : .regular))
+                            .font(.system(size: DesignTokens.FontSize.railName, weight: .semibold))
                             .foregroundStyle(Theme.C.ink)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -637,7 +637,7 @@ private struct BotRowView: View {
                     // no preview and no timestamp.
                     if !bot.label.isEmpty {
                         Text(bot.label.uppercased())
-                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .semibold))
+                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .regular))
                             .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
                             .foregroundStyle(Theme.C.inkFaint)
                             .lineLimit(1)
@@ -768,7 +768,7 @@ private struct RowActionsButton: View {
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(width: 24, height: 24)
                 .background(hovering ? Theme.C.accentSoft : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
                 // The pill stays 24pt, but the target around it is the full row
                 // height, so an approach that is a few points off still lands.
                 .frame(width: 30, height: DesignTokens.Space.botRow)
@@ -845,7 +845,7 @@ private struct PinnedCardView: View {
                         .lineLimit(1)
                     if !badge.isEmpty {
                         Text(badge)
-                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .semibold))
+                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .regular))
                             .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
                             .foregroundStyle(Theme.C.inkFaint)
                             .lineLimit(1)
@@ -858,9 +858,9 @@ private struct PinnedCardView: View {
             .padding(.trailing, 22)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(selected || hovering ? Theme.C.sunken : Theme.C.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .cardLift(cornerRadius: 12)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .cardLift(cornerRadius: DesignTokens.Radius.md)
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerOnHover()

@@ -642,10 +642,10 @@ private struct PlusMenu: View {
         .frame(width: 320)
         .background(Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .popShadow()
     }
 
@@ -765,10 +765,10 @@ private struct ProjectMenu: View {
         .frame(width: 248)
         .background(Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .popShadow()
     }
 }
@@ -820,10 +820,10 @@ private struct PermissionMenu: View {
         .frame(width: 248)
         .background(Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .popShadow()
     }
 }
@@ -988,10 +988,10 @@ private struct ComposerModeMenu: View {
         .frame(width: 232)
         .background(Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .popShadow()
     }
 
@@ -1033,10 +1033,10 @@ private struct ComposerModeMenu: View {
         .frame(width: 260)
         .background(Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .popShadow()
     }
 }

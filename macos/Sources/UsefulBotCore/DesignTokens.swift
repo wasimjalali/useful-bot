@@ -80,17 +80,33 @@ public enum DesignTokens {
         public static let dangerSoft = "#3A1B14"
     }
 
+    /// One radius scale, by role, shared with `web/app/globals.css`
+    /// (`--radius-*`). Role names below point into it.
     public enum Radius {
-        public static let channel: CGFloat = 10
-        public static let iconButton: CGFloat = 10
-        public static let field: CGFloat = 12
-        public static let stage: CGFloat = 24
-        public static let dialog: CGFloat = 22
-        public static let card: CGFloat = 16
-        public static let settingsGroup: CGFloat = 14
-        public static let composerExpanded: CGFloat = 22
-        public static let composerCompact: CGFloat = 999
-        public static let action: CGFloat = 6
+        /// Focus rings, tiny chips, kbd, labels.
+        public static let xs: CGFloat = 6
+        /// Buttons, nav items, icon buttons, menu rows.
+        public static let sm: CGFloat = 10
+        /// Fields, settings groups, small cards, chat bubbles.
+        public static let md: CGFloat = 14
+        /// Cards, dialogs, menus, popovers.
+        public static let lg: CGFloat = 16
+        /// The expanded composer.
+        public static let xl: CGFloat = 22
+        /// The main stage.
+        public static let xxl: CGFloat = 24
+        public static let pill: CGFloat = 999
+
+        public static let channel = sm
+        public static let iconButton = sm
+        public static let field = md
+        public static let stage = xxl
+        public static let dialog = lg
+        public static let card = lg
+        public static let settingsGroup = md
+        public static let composerExpanded = xl
+        public static let composerCompact = pill
+        public static let action = xs
     }
 
     public enum Space {
