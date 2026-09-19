@@ -122,16 +122,17 @@ function toolResourceUri(meta: unknown): string | null {
 export async function listMcpTools(
   url: string,
   headers: Record<string, string> = {},
+  signal?: AbortSignal,
 ): Promise<McpToolInfo[]> {
   const init = await rpc(url, "initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
     clientInfo: { name: "useful-bot", version: "0.0.0" },
-  }, headers, 1);
+  }, headers, 1, signal);
   const sessionHeaders = init.sessionId
     ? { ...headers, "mcp-session-id": init.sessionId }
     : headers;
-  const listed = await rpc(url, "tools/list", {}, sessionHeaders, 2);
+  const listed = await rpc(url, "tools/list", {}, sessionHeaders, 2, signal);
   const rec = asRecord(listed.result);
   const tools = Array.isArray(rec?.tools) ? rec.tools : [];
   const out: McpToolInfo[] = [];
@@ -196,7 +197,7 @@ export async function readMcpResource(
 }
 
 const TOOL_RESULT_MAX = 256 * 1024;
-const TOOL_CALL_TIMEOUT_MS = 30_000;
+export const TOOL_CALL_TIMEOUT_MS = 30_000;
 
 /**
  * Run one tool for an MCP App's own frame (the app's `tools/call`). The

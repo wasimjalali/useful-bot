@@ -220,7 +220,7 @@ struct WidgetWebView: NSViewRepresentable {
                 guard let widgetId = shownId, let name = body["name"] as? String else {
                     return reply(nil, "refused")
                 }
-                let arguments = body["arguments"] as? [String: Any] ?? [:]
+                guard let arguments = body["arguments"] as? [String: Any] else { return reply(nil, "refused") }
                 let clicked = Self.justClicked(view)
                 Task { @MainActor in
                     do {
@@ -266,14 +266,19 @@ struct WidgetWebView: NSViewRepresentable {
         }
 
         /// Only public https addresses leave the app: no other schemes, no
-        /// loopback or local names, no bare IP addresses.
+        /// loopback or local names, no IP addresses in any spelling. A real
+        /// public name ends in an all-letter top-level label; an address
+        /// (127.0.0.1, 0x7f.0.0.1, [::1]) never does.
         static func openableLink(_ raw: String) -> URL? {
             guard raw.count <= 4096, let url = URL(string: raw),
-                  url.scheme?.lowercased() == "https",
-                  let host = url.host?.lowercased(), host.contains("."),
-                  !host.hasSuffix(".localhost"), !host.hasSuffix(".local"),
-                  host.rangeOfCharacter(from: CharacterSet.letters) != nil,
-                  !host.contains(":") else { return nil }
+                  url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
+                  var host = url.host?.lowercased() else { return nil }
+            if host.hasSuffix(".") { host.removeLast() }
+            let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+            guard labels.count >= 2, labels.allSatisfy({ !$0.isEmpty }),
+                  let top = labels.last, top.count >= 2,
+                  top.allSatisfy({ $0.isASCII && $0.isLetter }),
+                  !["localhost", "local", "internal", "home", "lan"].contains(String(top)) else { return nil }
             return url
         }
 

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../../../../lib/desktop-gate";
 import { errorCode, rateLimited, readJson } from "../../../../../../lib/api-guard";
 import { findConnectionById } from "../../../../../../../shared/connections-store.ts";
-import { callMcpTool, listMcpTools } from "../../../../../../../shared/mcp-http.ts";
+import { callMcpTool, listMcpTools, TOOL_CALL_TIMEOUT_MS } from "../../../../../../../shared/mcp-http.ts";
 import { readWidget } from "../../../../../../../shared/widgets-store.ts";
 
 export const runtime = "nodejs";
@@ -50,7 +50,7 @@ export async function POST(
     if (entry.authKind !== "none") {
       return NextResponse.json({ ok: false, error: "widget_auth_unsupported" }, { status: 400 });
     }
-    const tools = await listMcpTools(entry.url);
+    const tools = await listMcpTools(entry.url, {}, AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS));
     if (!tools.some((tool) => tool.name === body.name && tool.appCallable)) {
       return NextResponse.json({ ok: false, error: "tool_not_app" }, { status: 403 });
     }

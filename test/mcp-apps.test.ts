@@ -102,15 +102,21 @@ function runHost(bridge: ((msg: Record<string, unknown>) => Promise<unknown>) | 
     addEventListener: (name: string, fn: (event: unknown) => void) => { listeners[name] = fn; },
     webkit: bridge ? { messageHandlers: { ubHost: { postMessage: bridge } } } : undefined,
   };
-  const timers: Array<() => void> = [];
-  const tick = () => timers.splice(0).forEach((fn) => fn());
+  const timers = new Map<number, () => void>();
+  let nextTimer = 1;
+  const tick = () => {
+    const due = [...timers.values()];
+    timers.clear();
+    due.forEach((fn) => fn());
+  };
   vm.runInNewContext(script, {
     window,
     document: { getElementById: () => iframe },
     Number,
     Math,
     String,
-    setTimeout: (fn: () => void) => timers.push(fn),
+    setTimeout: (fn: () => void) => { timers.set(nextTimer, fn); return nextTimer++; },
+    clearTimeout: (id: number) => timers.delete(id),
   });
   const fromApp = (data: Record<string, unknown>) => listeners.message({ source: frameWindow, data: { jsonrpc: "2.0", ...data } });
   return { toApp, fromApp, iframe, window, tick };
@@ -184,4 +190,24 @@ test("the drawing is sent again over the first seconds, for an app that listens 
   assert.equal(inputs(), 5);
   host.tick();
   assert.equal(inputs(), 5);
+});
+
+test("the resends stop once the reader acts in the drawing", async () => {
+  const host = runHost(async () => ({ mode: "fullscreen" }));
+  const inputs = () => host.toApp.filter((msg) => msg.method === "ui/notifications/tool-input").length;
+  host.fromApp({ method: "ui/notifications/initialized" });
+  host.fromApp({ id: 9, method: "ui/request-display-mode", params: { mode: "fullscreen" } });
+  host.tick();
+  assert.equal(inputs(), 1);
+});
+
+test("a full-screen reply that lands after the reader left full screen does not undo it", async () => {
+  let answer: (value: unknown) => void = () => {};
+  const host = runHost(() => new Promise((resolve) => { answer = resolve; }));
+  host.fromApp({ id: 1, method: "ui/request-display-mode", params: { mode: "fullscreen" } });
+  host.window.ubHostContext({ displayMode: "inline" });
+  answer({ mode: "fullscreen" });
+  await settle();
+  assert.equal(host.iframe.style.height, "480px");
+  assert.deepEqual(host.toApp.find((msg) => msg.id === 1)?.result, { mode: "inline" });
 });

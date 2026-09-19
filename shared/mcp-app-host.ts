@@ -80,6 +80,13 @@ iframe.srcdoc = ${jsonScript(framed)};
 const host = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ubHost;
 let displayMode = "inline";
 let inlineHeight = 480;
+// Bumped whenever the native side changes the mode on its own, so a reply
+// to an older request cannot undo it.
+let modeEpoch = 0;
+const resends = [];
+function stopResends() {
+  while (resends.length) clearTimeout(resends.pop());
+}
 function send(msg) {
   iframe.contentWindow && iframe.contentWindow.postMessage(msg, "*");
 }
@@ -113,6 +120,8 @@ function contextChanged() {
 // actually set, and calls this when the reader leaves full screen without
 // asking the app (Escape on the overlay, the chat switching away).
 window.ubHostContext = function (ctx) {
+  modeEpoch++;
+  stopResends();
   if (ctx && ctx.displayMode) applyMode(ctx.displayMode);
   contextChanged();
 };
@@ -147,9 +156,10 @@ window.addEventListener("message", (event) => {
     // An app may attach its input handler a moment after it says it is
     // ready (Excalidraw does, in a React effect), and a notification sent
     // before that is dropped for good: the card stays blank. The app does
-    // not say when it is listening, so send again over the first seconds.
-    // The same input again is a no-op for an app that already has it.
-    for (const delay of [250, 750, 1500, 3000]) setTimeout(pushInput, delay);
+    // not say when it is listening, so send again over the first seconds,
+    // and stop as soon as the reader acts in it: a repeat must not land on
+    // top of an edit.
+    for (const delay of [250, 750, 1500, 3000]) resends.push(setTimeout(pushInput, delay));
     return;
   }
   if (data.method === "ui/notifications/size-changed" && params.height) {
@@ -159,6 +169,7 @@ window.addEventListener("message", (event) => {
   }
   if (data.id === undefined || data.id === null) return;
   const id = data.id;
+  if (data.method !== "ui/update-model-context") stopResends();
   if (data.method === "ui/update-model-context") {
     reply(id, {});
     return;
@@ -178,9 +189,10 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (data.method === "ui/request-display-mode") {
+    const epoch = modeEpoch;
     host.postMessage({ kind: "mode", mode: params.mode === "fullscreen" ? "fullscreen" : "inline" })
       .then((result) => {
-        applyMode(result && result.mode);
+        if (epoch === modeEpoch) applyMode(result && result.mode);
         reply(id, { mode: displayMode });
       }, (err) => fail(id, err && err.message || err));
     return;
