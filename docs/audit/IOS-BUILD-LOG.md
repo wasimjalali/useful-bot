@@ -201,4 +201,45 @@ Design-a11y (8):
 
 Round-1 verification after fixes: `make -C macos test` 280/280; iOS build
 green; UITests 4/4 at 390 pt and 4/4 at 375 pt; screenshots re-exported.
-Round 2 pending at merge time.
+
+Round 2: fresh reviewer sessions (correctness
+`devin-5bf97325aa154436a1cdda9974cd0eff`, security
+`devin-9c750729a2fe49b79940f8bd29ef9d8e`, design-a11y
+`devin-992e758f1cfa406eaba9c54b4f43ee4c`). Design-a11y and security both
+returned findings; correctness still running at commit time for this fix set.
+
+Security (4):
+1. [medium] the round-1 403 fix stopped at `expectOK`: the stream path still
+   flattened a terminal 403 to `unauthorized` and both retry loops re-authed
+   on 403 -> on iOS, 403 is never a re-auth trigger and surfaces as
+   `BackendError.forbidden(code)`; macOS keeps its retry contract (#if).
+2. [medium] a 401 body's `credential_invalid` code was discarded, so the
+   spec 4.8 revocation state was unreachable -> new `.credentialInvalid`
+   error; on iOS an immediate `credential_invalid` skips even the single
+   re-auth, and any terminal 401 maps to it.
+3. [low] concurrent 401s each spawned their own `signIn` -> `reauth()` is a
+   single-flight inflight task shared by requests and streams (both
+   platforms).
+4. [low] `readBody`'s overflow drain ran until EOF -> the drain is
+   time-bounded at 5 s; a stalled peer cannot hold the route open.
+
+Design-a11y (7):
+1. [high] `addArc` on a non-empty `Path` drew connector strokes, painting a
+   continuous outline -> `path.move(to:)` ahead of each arc start; shots now
+   show four true elbows.
+2. [low] white guides were ~1.1:1 on the light `sunken` placeholder ->
+   `Theme.C.scannerGuide`: spec's white 80% in dark, ink 50% in light (drift:
+   spec's white presumes the camera feed).
+3. [low] focus-ring animation used system easing without a Reduce Motion
+   gate -> `Motion.fast` curve, nil under reduce-motion.
+4. [low] disabled reason used `inkFaintText` -> `inkMuted` per token table.
+5. [low] the 5% press tone-step was invisible on `brand` fills -> 8%.
+6. [low] the title lacked the header trait -> `.isHeader` added.
+7. [low] `TARGETED_DEVICE_FAMILY=1` excluded iPad though spec F5 supports it
+   -> `1,2`, with all-orientation Info.plist keys scoped to iPad.
+
+Round-2 verification after fixes: `make -C macos test` 280/280; iOS build
+green; `UsefulBotCoreTests` 259/259 on the simulator; UITests 4/4 at 390 pt
+and 4/4 at 375 pt; `npm test` 538/538; `xcodegen generate` byte-identical;
+all 16 screenshots re-exported (the elbow geometry is visible in both
+appearances).

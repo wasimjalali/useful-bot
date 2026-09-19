@@ -55,6 +55,14 @@ enum Theme {
         static let danger = adaptive(L.danger, D.danger)
         static let dangerSoft = adaptive(L.dangerSoft, D.dangerSoft)
         static let white = color(L.white)
+        /// Scanner corner guides: the spec's white 80% presumes the dark
+        /// camera feed; over the light `sunken` placeholder that is ~1.1:1,
+        /// so light appearance takes ink at a visible strength (3:1 floor).
+        static let scannerGuide = Color(uiColor: UIColor(dynamicProvider: { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(white: 1, alpha: 0.8)
+                : UIColor(white: 0, alpha: 0.5)
+        }))
         /// Sheet scrim: the token's light overlay in light, `overlayDark` in
         /// dark, each at its spec opacity (design spec 4.1).
         static let overlay = Color(uiColor: UIColor(dynamicProvider: { traits in

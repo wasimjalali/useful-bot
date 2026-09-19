@@ -46,6 +46,7 @@ struct PairingView: View {
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
+                .accessibilityAddTraits(.isHeader)
                 // A.7: never truncate; at accessibility sizes the title
                 // reflows onto as many lines as it needs inside the scroll.
                 .multilineTextAlignment(.center)
@@ -72,7 +73,7 @@ struct PairingView: View {
             .frame(width: side, height: side)
             .overlay(
                 ScannerGuides(cornerRadius: DesignTokens.Radius.xl, arm: 28, inset: 10)
-                    .stroke(Theme.C.white.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    .stroke(Theme.C.scannerGuide, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
             )
             .frame(maxWidth: .infinity)
             .padding(.bottom, 16)
@@ -147,6 +148,12 @@ private struct ScannerGuides: Shape {
             (CGPoint(x: bounds.minX + r, y: bounds.maxY - r), .degrees(90), .degrees(180)),
         ]
         for (center, start, end) in corners {
+            // `addArc` on a non-empty path draws a straight connector to the
+            // arc's start; move first so each corner stands alone.
+            path.move(to: CGPoint(
+                x: center.x + r * Darwin.cos(start.radians),
+                y: center.y + r * Darwin.sin(start.radians)
+            ))
             path.addArc(center: center, radius: r, startAngle: start, endAngle: end, clockwise: false)
             // Each arc endpoint lies on one edge: an endpoint on a vertical
             // edge grows a vertical arm toward the midline, an endpoint on a

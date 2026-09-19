@@ -13,7 +13,7 @@ struct PressedScale: ButtonStyle {
         configuration.label
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Theme.C.ink.opacity(configuration.isPressed ? 0.05 : 0))
+                    .fill(Theme.C.ink.opacity(configuration.isPressed ? 0.08 : 0))
                     .allowsHitTesting(false)
             )
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)

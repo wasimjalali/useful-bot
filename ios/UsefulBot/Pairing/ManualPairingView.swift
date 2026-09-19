@@ -8,6 +8,7 @@ struct ManualPairingView: View {
     @State private var address = ""
     @State private var token = ""
     @FocusState private var focusedField: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 16) {
@@ -64,7 +65,10 @@ struct ManualPairingView: View {
                 }
             }
         )
-        .animation(.easeOut(duration: DesignTokens.Motion.fast), value: focusedField)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.fast),
+            value: focusedField
+        )
     }
 
     private var connectButton: some View {
@@ -86,7 +90,7 @@ struct ManualPairingView: View {
             if !ready {
                 Text("Enter the Mac address and pairing token.")
                     .tokenFont(DesignTokens.FontSize.attachError, .regular)
-                    .foregroundStyle(Theme.C.inkFaintText)
+                    .foregroundStyle(Theme.C.inkMuted)
             }
         }
     }

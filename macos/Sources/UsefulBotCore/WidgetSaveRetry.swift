@@ -26,6 +26,9 @@ public enum WidgetSaveRetry {
         if case BackendError.http(let status) = error {
             return (400...499).contains(status) && status != 429
         }
+        // A 403 by code or a rejected credential is just as final as a 4xx.
+        if case BackendError.forbidden = error { return true }
+        if case BackendError.credentialInvalid = error { return true }
         return false
     }
 
