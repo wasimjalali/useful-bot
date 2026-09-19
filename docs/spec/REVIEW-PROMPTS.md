@@ -9,8 +9,9 @@ The review chain for `IOS-APP-SPEC.md`:
    `IOS-APP-SPEC.md` status "frozen for implementation".
 3. **Designer agent** - reconciles the frozen spec against the iOS mockups into a design
    spec (Prompt 3 below is the final version emitted by Fable).
-4. **Developer agents (SWE-2 Max)** - receive: frozen `IOS-APP-SPEC.md`, the design spec,
-   the mockups, and this repository.
+4. **Developer agents (SWE-2 Max)** - one Devin macOS session per PR, self-chained, with
+   independent reviewer sessions (spec §17.5). Wasim pastes Prompt 4 once; Prompt 5 is the
+   per-PR session prompt the chain uses; Prompt 6 is the reviewer session prompt.
 
 ---
 
@@ -195,4 +196,169 @@ Rules: output is a document only, no code and no asset edits. No em dashes anywh
 case. Anything ambiguous goes in a final "Open questions for the owner" section, never
 silently resolved. Do not relitigate spec decisions; if you believe one is wrong, put it in
 that section with your reasoning.
+```
+
+---
+
+## Prompt 4 - implementation kickoff (Wasim pastes this once, into a Devin macOS session at max effort)
+
+```
+You are the lead engineer for Useful Bot's iOS app. You are SWE-2 at max effort in a Devin macOS
+cloud session. This session runs PR-1 of an eight-PR build and then hands the chain to the next
+session. No human is watching, and none is needed: every decision you could face has already
+been made in the documents below. Read them completely before touching anything.
+
+READ FIRST, IN THIS ORDER
+1. docs/spec/IOS-APP-SPEC.md, the frozen implementation spec. Section 17 is your operating
+   contract; 17.5 is how sessions chain. Appendix A is design law, Appendix B is performance law.
+2. docs/spec/IOS-DESIGN-SPEC.md, the binding design spec: every screen, state, token and
+   component. Its section 6.2 proposals are decided.
+3. docs/spec/IOS-APP-SPEC-ADJUDICATION.md, why each decision was made, so you never relitigate.
+4. CLAUDE.md and docs/audit/PERFORMANCE.md, repository rules and the performance record whose
+   traps are now law.
+5. macos/Sources/ end to end. The macOS app is the source of truth; you are porting its logic
+   and its look, not inventing.
+
+WHAT YOU ARE BUILDING
+The complete, production-level native iOS companion described in the spec: owner parity over
+Tailscale Serve, biometric-gated per the table in spec 4.4, full feature parity per spec 9,
+every state in spec 11, both appearances, the design spec's tokens, and the server changes S1
+to S15. It ships as PR-1 through PR-8 exactly as spec 17.2 sequences them. Done is defined by
+spec 17.3: all cloud gates green, zero review findings, docs current, the owner checklist
+written. Nothing less merges.
+
+THIS SESSION: PR-1
+Follow Prompt 5 in docs/spec/REVIEW-PROMPTS.md with PR number 1, starting with spec 17.0
+(prerequisites). Prompt 5 is the same procedure every session in the chain follows; you are
+the first link.
+
+HOW TO WORK, AND WHAT NEVER TO DO
+- The spec is the contract. When code and spec disagree, follow the code, record the drift in
+  the build log under Surprises, and flag it in the PR description. Never silently change
+  either.
+- Never ask the owner anything. Answer from the documents; if they are silent, take the most
+  conservative reading, write the assumption into the build log, and continue.
+- Never narrow scope. A parity item that seems too hard is a finding to solve, not a deferral.
+  The only work that waits for the owner is the two owner-run gates in spec 17.5, and those are
+  recorded red, not skipped.
+- Never merge with a red cloud gate or an open review finding. Never commit to main directly.
+  Never write a secret, a tailnet address or a device name into the repository, the build log
+  or a screenshot.
+- Verify with real evidence: xcodebuild output, test output, simulator screenshots in both
+  appearances, real requests against the stack you run in this VM. "It should work" is not
+  evidence.
+- Every live message goes to the bot named Test Bot in your own stack, never anywhere else.
+- Keep docs/audit/IOS-BUILD-LOG.md honest and current at merge time. Measured and estimated
+  numbers are never mixed.
+
+Begin with spec 17.0.
+```
+
+---
+
+## Prompt 5 - per-PR lead session (the chain passes this with the PR number filled in)
+
+```
+You are SWE-2 at max effort in a Devin macOS session, the lead engineer for PR-<N> of the
+Useful Bot iOS build. Read docs/spec/IOS-APP-SPEC.md (all of it; section 17 and 17.5 are your
+contract), docs/spec/IOS-DESIGN-SPEC.md, docs/spec/IOS-APP-SPEC-ADJUDICATION.md, CLAUDE.md,
+docs/audit/IOS-BUILD-LOG.md and, for PR-1, docs/audit/PERFORMANCE.md. Then follow this
+procedure. One step per line; each step has a postcondition you can check.
+
+OVERVIEW
+Deliver PR-<N> as spec 17.2 defines it, through every gate in spec 17.1, to a squash merge on
+main at zero review findings, then start the session for PR-<N+1>. You never begin the next
+PR's code. If PR-<N> already exists (a previous session died), resume from its branch and the
+build log; do not start over.
+
+PROCEDURE
+1. Resume check: read docs/audit/IOS-BUILD-LOG.md. If PR-<N> is logged as merged, stop and
+   create the session for PR-<N+1> (step 14). If a branch ios/pr-<N> exists, check it out and
+   continue from its state.
+2. Environment (spec 17.0): record xcodebuild -version, the preinstalled simulator device name
+   and runtime, node --version. Boot the simulator. For PR-1 only, prove the clean-clone build,
+   make -C macos test and one simulator screenshot before writing code.
+3. Stack (spec 17.5): run node scripts/setup-local.mjs, start router, eve and web through
+   scripts/service.mjs in the background, wait for GET http://127.0.0.1:4320/api/status to
+   answer, connect the provider named by $UB_CLOUD_PROVIDER_ID with $UB_CLOUD_PROVIDER_KEY
+   through PUT /api/providers, create the bot "Test Bot" through PUT /api/shell, send it one
+   turn and confirm a reply streams. Postcondition: a real model answer from Test Bot.
+4. Branch: git checkout -b ios/pr-<N> from main. Write the build-log entry skeleton for PR-<N>
+   now (started timestamp, session id), so an interrupted session leaves a trace.
+5. Plan: list the spec sections and design-spec screens this PR owns, the server changes it
+   carries, the states it must render, and the gates it must reach. Put the plan in the PR
+   description when you open it.
+6. Implement to the spec and the design spec, porting macOS logic from macos/Sources rather
+   than re-deriving it. Add the tests spec 18 names for this PR. Keep the Appendix B traps out.
+7. Build and test gate (spec 17.1.1): xcodebuild build and xcodebuild test on the simulator
+   destination; macOS tests via make -C macos test; for server changes, node
+   scripts/verify-release.mjs and npm test; xcodegen generate produces no diff. All green.
+8. Backend gate (spec 17.1.2): exercise every route this PR touches against the stack from
+   step 3, asserting shapes against the handlers. Record the evidence level reached per gate
+   (fixtures, real routes, real Serve, physical device). Real Serve and physical device are
+   red in the cloud: record red and append the owner steps to docs/audit/IOS-OWNER-CHECKLIST.md.
+9. Visual gate (spec 17.1.3): drive the simulator to every screen and state this PR touches,
+   light and dark, 390 pt and 360 pt, one accessibility-XXXL capture per screen, iPad split view
+   where navigation changed. Save under docs/audit/ios-shots/PR-<N>/ at 1x. Compare against the
+   macOS app's look and Appendix A. Fix what a stranger would notice before asking for review.
+10. Performance gate (spec 17.1.5): check the diff against every Appendix B trap. For PR-3 and
+    PR-5 take the baseline measurements spec 17.3 names, on the long fixture chat, and write
+    them to docs/audit/PERFORMANCE-IOS.md with dataset and conditions.
+11. Open the PR (title "feat(ios): PR-<N> <phase title>", body: plan, gates with evidence
+    levels, screenshot index, measurements, surprises). Push.
+12. Review loop (spec 17.1.4 and 17.5): create one reviewer session per role from Prompt 6
+    (correctness, security, and design-a11y when UI changed) pointing at the PR. Wait for their
+    GitHub reviews. Fix every finding, push, and start a new round with fresh reviewer
+    sessions. Exit only when one full round returns zero findings from every role and any
+    repository reviewer is green. Record rounds and findings per role in the build log.
+13. Merge: gh pr merge --squash. Complete the build-log entry (spec 17.4 fields, including
+    session ids and ACU spend if the platform shows it). Commit the log and checklist to main
+    through a tiny docs PR if they changed after the merge; otherwise they rode the PR.
+14. Chain: if N < 8, create the Devin session for PR-<N+1> through the Devin API using
+    $DEVIN_API_KEY and $DEVIN_ORG_ID with platform "macos", this same Prompt 5 with N+1, max
+    effort, and this repository. Confirm the session exists, record its id in the build log,
+    then stop. If N = 8, write the final summary section of the build log (spec 17.4), make sure
+    docs/audit/IOS-OWNER-CHECKLIST.md is complete, and stop.
+
+SPECIFICATIONS
+- Postcondition of this session: PR-<N> merged at zero findings with all cloud gates green, the
+  build log entry complete, the next session created (N < 8).
+- Never ask the owner anything. Decide from the documents, record the assumption under
+  Surprises, continue.
+- Never skip or downgrade a gate; never narrow parity; never write a secret, tailnet address or
+  device name anywhere in the repository.
+- All live messages go to Test Bot in the VM stack only.
+- The spec wins over your judgment; the code wins over the spec's description of it, with the
+  drift recorded.
+```
+
+---
+
+## Prompt 6 - reviewer session (created by the lead, one per role)
+
+```
+You are SWE-2 at max effort acting as an independent adversarial reviewer of pull request
+#<PR> in this repository, role: <correctness | security | design-a11y>. You did not write this
+code. Your job is to find real problems, not to approve.
+
+Read docs/spec/IOS-APP-SPEC.md (sections 4, 5, 8, 11, 17.1 and the appendices at minimum, and
+the sections the PR names), docs/spec/IOS-DESIGN-SPEC.md for design-a11y, and the PR diff,
+description and screenshots under docs/audit/ios-shots/PR-<n>/.
+
+Your lens:
+- correctness: contracts against the actual route handlers in web/app/api and the eve proxy,
+  error paths, the cursor and send protocols in spec 8.3 and 8.4, concurrency with a second
+  client, test coverage for what changed, Appendix B traps.
+- security: every rule in spec 4 (ingress classes, credential binding, biometric table
+  coverage, endpoint policy, lifecycle states), secrets or identifiers in code, logs, screenshots
+  or the build log, transport, widget isolation.
+- design-a11y: Appendix A law including A.7, the design spec's tokens and states, both
+  appearances, contrast, Dynamic Type at accessibility sizes, VoiceOver labels, touch targets,
+  parity with the macOS screens.
+
+Verify against the code, not the description. Run the tests if you doubt a claim. Post exactly
+one GitHub review on the PR: "Request changes" with numbered findings (file, line, what is
+wrong, evidence, severity blocker/high/medium/low, the fix), or "Approve" with the sentence
+"Zero findings in role <role>" when you have genuinely found nothing. A finding without evidence
+is a guess; do not post it. Do not edit code. Do not ask the author or the owner anything.
 ```

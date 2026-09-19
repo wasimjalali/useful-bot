@@ -56,6 +56,13 @@ These resolve the draft's open questions (§20 keeps the full record).
 | F11 | Performance cadence | Trap law per PR; baselines in PR-3 and PR-5; full budget pass in PR-8 (§17.3). |
 | F12 | Apple Developer account | **Owner decision required.** Blocks TestFlight and installs beyond 7 days only; nothing in P0 to P7 waits on it. |
 
+**Amendments after the freeze** (dated; the only way this document changes):
+
+| # | Date | Amendment |
+|---|------|-----------|
+| A1 | 2026-09-19 | Cloud execution environment pinned: Devin macOS cloud sessions (Apple Silicon, Xcode 26 default, one preinstalled iPhone simulator running iOS 26). One Devin session per PR, sessions chained without a human, independent reviewer sessions, the whole backend stack run inside the VM. Owner-run gates (real Serve, physical device) move to a post-chain owner checklist. See §17.5. |
+| A2 | 2026-09-19 | Design spec `IOS-DESIGN-SPEC.md` is binding alongside this document. Its section 6.2 proposals stand as decided unless the owner overrides before PR-1. Its approved iPhone tokens are added to `DesignTokens.swift` in PR-1. |
+
 ### 1.4 Non-goals for v1
 
 - Android (follows iOS with a separate spec; design this one so contracts are portable).
@@ -997,16 +1004,25 @@ every gate is green and the review loop converges to zero findings.
 Review found that "fully in the cloud" does not by itself establish the Apple toolchain the
 gates need. Before PR-1 opens, the lead agent proves, and records in the build log:
 
-- A macOS runner with a pinned Xcode version and an installed iOS 17 simulator runtime.
-  `xcodebuild -version`, the destination string and the runtime are recorded.
+- The Devin macOS cloud environment (A1): Apple Silicon VM, Xcode 26 at `/Applications/Xcode.app`,
+  one preinstalled iPhone simulator with the iOS 26 runtime. `xcodebuild -version`, the exact
+  simulator device name (`xcrun simctl list devices available`) and the runtime are recorded, and
+  that device name is what every `-destination` in this document means by "the simulator".
+  Deployment target stays iOS 17.0; the runtime that runs it is whatever the image ships.
 - A clean clone of `main` builds the macOS package, runs `make -C macos test`, and produces
   one simulator screenshot via `xcrun simctl io booted screenshot` from a trivial app.
 - Node toolchain: `node scripts/verify-release.mjs` passes on the clean clone (it typechecks
   root, `web/` and `router/` separately and builds Next; root `npx tsc --noEmit` excludes
   `web/`, so it is not sufficient for server changes).
-- The owner-assisted gates (real Serve, physical device) have a named owner contact and a
-  turnaround expectation recorded. An owner-assisted gate that has not run is **red**, not
-  skipped.
+- The full Useful Bot stack runs inside the VM from the repository (§17.5): `setup-local.mjs`
+  against the VM's login Keychain, router, web and eve started through `scripts/service.mjs`,
+  one provider connected through `PUT /api/providers` with the key from the `UB_CLOUD_PROVIDER_KEY`
+  secret, and a bot named **Test Bot** created through the API. Every live check in this
+  document targets that stack, never the owner's Mac.
+- The owner-run gates (real Serve, physical device) cannot run in the cloud (no Tailscale, no
+  USB). They are recorded **red** in every PR that requires them and collected into
+  `docs/audit/IOS-OWNER-CHECKLIST.md` (§17.5) for the owner to run after the chain finishes.
+  Red is never rewritten as skipped or passed.
 
 ### 17.1 The per-PR loop
 
@@ -1015,7 +1031,8 @@ Each phase below ships as **one PR**. The lead agent may split a phase along a r
 and records the split in the build log. A PR merges only when ALL of this is true:
 
 1. **Build & test gate**
-   - `xcodebuild build -destination 'platform=iOS Simulator,name=iPhone 16'` clean.
+   - `xcodebuild build -destination 'platform=iOS Simulator,name=<the simulator>'` clean, where
+     the name is the preinstalled device recorded in §17.0.
    - `xcodebuild test` for the package on both macOS and iOS Simulator destinations;
      `UsefulBotCoreTests` green on both (macOS-only tests run on macOS only, by `#if`).
    - Server-side changes (S1 to S15 and any later ones): `node scripts/verify-release.mjs`
@@ -1125,8 +1142,10 @@ After all feature PRs merge, the same machinery runs once across the complete ap
   Type on every screen, both appearances.
 - Privacy/release review: secrets scan, logging scan, backup flags, transport checklist,
   endpoint policy tests, open-source hygiene (clean-clone build with only Xcode + xcodegen).
-- Physical-device pass (owner-assisted): real tailnet path end to end.
-- **Done means:** all green, zero open findings, docs current. Not before.
+- Physical-device pass: owner-run after the chain, from `IOS-OWNER-CHECKLIST.md`; recorded red
+  in PR-8 until the owner runs it.
+- **Done means:** all cloud gates green, zero open findings, docs current, the owner checklist
+  written. The two owner-run gates are the only work left, and the checklist names each step.
 
 ### 17.4 Case-study build log (required, append-only)
 
@@ -1158,6 +1177,51 @@ means it never happens.
 
 Rule carried from the perf record: measured numbers and estimates are never mixed; every
 number is either instrumented or labelled an estimate.
+
+### 17.5 Session model in the Devin cloud (amendment A1)
+
+Cognition's guidance is that a single Devin session degrades past roughly 2.5 hours. The build
+therefore runs as a **chain of focused sessions**, one per PR, with no human between them.
+
+- **One macOS session per PR.** The session receives the per-PR prompt (`REVIEW-PROMPTS.md`,
+  Prompt 5) with its PR number, works at SWE-2 **max** effort, and owns that PR from branch to
+  merge. It never starts the next PR's code.
+- **Self-chaining.** At merge, the session appends the build-log entry, then creates the session
+  for the next PR through the Devin API (`DEVIN_API_KEY`, `DEVIN_ORG_ID` secrets;
+  `platform: "macos"`), confirms it exists, records its id in the build log, and stops. If a
+  session dies, the owner restarts the chain by creating one session with Prompt 5 for the
+  first PR whose build-log entry is missing; Prompt 5 is idempotent from the build log and the
+  branch state.
+- **Independent reviewers are separate sessions.** For each review round the lead creates the
+  reviewer sessions (Prompt 6, one per role, Linux is fine, SWE-2 max) pointing at the PR, and
+  waits for their reviews to land as GitHub PR reviews (`gh pr view --json reviews`). The lead
+  fixes, pushes, and starts the next round. Zero findings from every role in one round is the
+  exit. Any automated reviewer configured on the repository must also be green.
+- **Merging.** The lead merges its own PR (`gh pr merge --squash`) only at zero findings with
+  all cloud gates green. The repository rule stands: nothing is ever committed to `main`
+  directly.
+- **Screenshots** are committed under `docs/audit/ios-shots/PR-<n>/` at 1x device scale
+  (`sips -Z 1000` on the capture), named `<screen>-<state>-<light|dark>.png`, at most 60 per PR.
+  Recordings stay out of git; their paths in the session are logged.
+- **The stack in the VM.** Started once per session, before any gate:
+  `node scripts/setup-local.mjs` (VM Keychain), then `scripts/service.mjs router`, `eve`, `web`
+  in the background with logs under `~/Library/Logs/UsefulBot/`; provider connected via
+  `PUT /api/providers` from the secret; Test Bot created via `PUT /api/shell`. Health is
+  `GET /api/status`. The stack is disposable with the VM.
+- **Secrets** (Devin org secrets, exposed as environment variables): `DEVIN_API_KEY`,
+  `DEVIN_ORG_ID`, `UB_CLOUD_PROVIDER_KEY` (plus `UB_CLOUD_PROVIDER_ID`, the catalogue id it
+  belongs to), optionally `UB_CLOUD_COMPOSIO_KEY` for the one real connector check in PR-6. No
+  secret is ever written to the repository, the build log or a screenshot.
+- **Network allowlist** the org must cover: the npm registry, `esm.sh` (widgets),
+  `mcp.excalidraw.com`, the chosen provider's API host, Composio if used, `api.devin.ai`,
+  `github.com`.
+- **Owner checklist.** `docs/audit/IOS-OWNER-CHECKLIST.md`, created in PR-2 and appended by every
+  PR that records a red owner-run gate: the exact steps for the owner's Mac (deploy order from
+  §19, `--pair-phone`, `tailscale serve`, the real-Serve checks from PR-2, install to iPhone,
+  the §17.3 reliability matrix), each with its expected result.
+- **Never wait on a human.** A question a session cannot answer from this document, the design
+  spec, the code or the adjudication is answered by the most conservative reading, recorded in
+  the build log under Surprises with the assumption stated, and the work continues.
 
 ---
 
