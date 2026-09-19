@@ -13,6 +13,7 @@ import {
   refreshProviderModels,
   writeModelsCache,
 } from "../shared/live-models.ts";
+import { providerMode } from "../shared/provider-catalog.ts";
 import { hydrateModel, inferCapabilities, mergeLiveModels, modelSeesImages, snapComposer } from "../shared/models.ts";
 
 test("parseModelList reads OpenAI list envelopes", () => {
@@ -168,6 +169,81 @@ test("model listing sends the catalogue key header and extra headers", async () 
   // x-api-key vendors keep their header shape.
   await fetchProviderModelIds("https://api.anthropic.com/v1", "sk-ant-12345678", fetchImpl, "x-api-key");
   assert.equal(calls[2]?.headers["x-api-key"], "sk-ant-12345678");
+});
+
+test("the ChatGPT Codex list is read by slug with hidden models left out", async () => {
+  // Shape of GET chatgpt.com/backend-api/codex/models on 2026-09-19.
+  const body = {
+    models: [
+      {
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6-Sol",
+        visibility: "list",
+        input_modalities: [],
+        default_reasoning_level: "minimal",
+        supported_reasoning_levels: [{ effort: "max" }, { effort: "minimal" }, { effort: "high" }],
+      },
+      {
+        slug: "gpt-6-astra",
+        display_name: "GPT-6-Astra",
+        visibility: "list",
+        context_window: 272000,
+        input_modalities: ["text", "image"],
+        default_reasoning_level: "medium",
+        supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "max" }, { effort: "minimal" }],
+      },
+      { slug: "gpt-reserve", display_name: "GPT-Reserve", visibility: "hide" },
+      { slug: "codex-auto-review", display_name: "Codex Auto Review", visibility: "hide" },
+    ],
+  };
+  assert.deepEqual(parseModelList(body), ["gpt-5.6-sol", "gpt-6-astra"]);
+  const urls: string[] = [];
+  const fetchImpl = async (input: string | URL | Request) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify(body));
+  };
+  const mode = providerMode("openai", "oauth");
+  const ids = await fetchProviderModelIds(mode.baseUrl, "token-12345678", fetchImpl, "bearer", {}, mode.modelsQuery);
+  assert.deepEqual(ids, ["gpt-5.6-sol", "gpt-6-astra"]);
+  // The list is filtered by client_version and 400s without it.
+  assert.equal(urls[0], "https://chatgpt.com/backend-api/codex/models?client_version=99.0.0");
+  const path = join(mkdtempSync(join(tmpdir(), "ub-models-codex-")), "models-cache.json");
+  await refreshProviderModels({
+    providerId: "openai:oauth",
+    baseUrl: mode.baseUrl,
+    key: "token-12345678",
+    query: mode.modelsQuery,
+    modelsDevId: null,
+    path,
+    fetchImpl,
+  });
+  assert.deepEqual(catalogFor("openai:oauth", path).map((item) => item.id).sort(), ["gpt-5.6-sol", "gpt-6-astra"]);
+  // The vendor's own name, window and reasoning levels beat the guess by name.
+  const astra = catalogFor("openai:oauth", path).find((item) => item.id === "gpt-6-astra");
+  assert.equal(astra?.label, "GPT-6-Astra");
+  assert.equal(astra?.contextTokens, 272000);
+  assert.deepEqual(astra?.inputs, ["text", "image"]);
+  assert.deepEqual(astra?.efforts, ["low", "medium", "max"]);
+  assert.equal(astra?.defaultEffort, "medium");
+  // An empty list says nothing, and an inexpressible default snaps to the lowest level.
+  const sol = catalogFor("openai:oauth", path).find((item) => item.id === "gpt-5.6-sol");
+  assert.equal(sol?.inputs, undefined);
+  assert.deepEqual(sol?.efforts, ["high", "max"]);
+  assert.equal(sol?.defaultEffort, "high");
+});
+
+test("the Anthropic list is asked with its version header and one full page", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), headers: { ...init?.headers as Record<string, string> } });
+    return new Response(JSON.stringify({ data: [{ id: "claude-opus-5", display_name: "Claude Opus 5", type: "model" }], has_more: false }));
+  };
+  const mode = providerMode("anthropic", "api");
+  const ids = await fetchProviderModelIds(mode.baseUrl, "sk-ant-12345678", fetchImpl, mode.keyHeader, mode.headers, mode.modelsQuery);
+  assert.deepEqual(ids, ["claude-opus-5"]);
+  assert.equal(calls[0]?.url, "https://api.anthropic.com/v1/models?limit=1000");
+  assert.equal(calls[0]?.headers["anthropic-version"], "2023-06-01");
+  assert.equal(calls[0]?.headers["x-api-key"], "sk-ant-12345678");
 });
 
 test("the parsed models cache is reused until another process replaces the file", () => {

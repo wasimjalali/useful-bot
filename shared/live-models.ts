@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseConnectionId, providerMode, type KeyHeader } from "./provider-catalog.ts";
-import { mergeLiveModels, modelsFor, type ModelMeta, type ModelOption } from "./models.ts";
+import { EFFORTS, isEffortId, mergeLiveModels, modelsFor, type EffortId, type ModelMeta, type ModelOption } from "./models.ts";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 /** Context windows and modalities change with releases, not by the hour. */
@@ -95,12 +95,62 @@ export function catalogFor(connectionId: string, path = modelsCachePath()): Mode
 }
 
 export function parseModelList(raw: unknown): string[] {
-  if (Array.isArray(raw)) return idsFromRows(raw);
+  return idsFromRows(rowsOf(raw));
+}
+
+/**
+ * OpenAI shaped rows carry `id`. The ChatGPT Codex list carries `slug`
+ * instead and marks internal models (auto review, reserve) with
+ * `visibility: "hide"`, which the Codex picker leaves out too.
+ */
+function rowsOf(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw;
   if (!raw || typeof raw !== "object") return [];
   const rec = raw as Record<string, unknown>;
-  if (Array.isArray(rec.data)) return idsFromRows(rec.data);
-  if (Array.isArray(rec.models)) return idsFromRows(rec.models);
+  if (Array.isArray(rec.data)) return rec.data;
+  if (Array.isArray(rec.models)) return rec.models;
   return [];
+}
+
+/**
+ * Facts the vendor's own list states about each model: the ChatGPT Codex list
+ * carries display_name, context_window, input_modalities and the reasoning
+ * levels the model takes. OpenAI shaped lists carry none of these, so their
+ * rows come back empty and models.dev plus the name guess fill in.
+ */
+export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
+  const out: Record<string, ModelMeta> = {};
+  for (const row of rowsOf(raw)) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    const id = typeof rec.id === "string" ? rec.id : rec.slug;
+    if (typeof id !== "string" || !id.trim()) continue;
+    const meta: ModelMeta = {};
+    if (typeof rec.display_name === "string" && rec.display_name.trim()) meta.label = rec.display_name.trim();
+    if (Number.isInteger(rec.context_window) && (rec.context_window as number) > 0) meta.contextTokens = rec.context_window as number;
+    // An empty array says nothing, so it leaves models.dev and the name guess standing.
+    if (Array.isArray(rec.input_modalities) && rec.input_modalities.length > 0 && rec.input_modalities.every((item) => typeof item === "string")) {
+      meta.inputs = rec.input_modalities as string[];
+    }
+    if (Array.isArray(rec.supported_reasoning_levels)) {
+      const efforts = rec.supported_reasoning_levels
+        .map((level) => (level as { effort?: unknown } | null)?.effort)
+        .filter((effort): effort is EffortId => isEffortId(effort))
+        // Vendor order is not level order ("minimal" can come last), so sort
+        // onto this app's ladder: the menu reads low to max and [0] is lowest.
+        .sort((a, b) => EFFORTS.indexOf(a) - EFFORTS.indexOf(b));
+      if (efforts.length > 0) {
+        meta.efforts = efforts;
+        // A default this app cannot express ("minimal") snaps to the lowest
+        // listed level, so the effort control always has a value.
+        meta.defaultEffort = isEffortId(rec.default_reasoning_level) && efforts.includes(rec.default_reasoning_level)
+          ? rec.default_reasoning_level
+          : efforts[0];
+      }
+    }
+    if (Object.keys(meta).length > 0) out[id.trim()] = meta;
+  }
+  return out;
 }
 
 function idsFromRows(rows: unknown[]): string[] {
@@ -108,7 +158,9 @@ function idsFromRows(rows: unknown[]): string[] {
   for (const row of rows) {
     if (typeof row === "string" && row.trim()) ids.push(row.trim());
     if (!row || typeof row !== "object") continue;
-    const id = (row as { id?: unknown }).id;
+    const rec = row as { id?: unknown; slug?: unknown; visibility?: unknown };
+    if (rec.visibility === "hide") continue;
+    const id = typeof rec.id === "string" ? rec.id : rec.slug;
     if (typeof id === "string" && id.trim()) ids.push(id.trim());
   }
   return ids.filter((id) => !/embed|whisper|tts|moderation/i.test(id));
@@ -179,13 +231,14 @@ export async function modelMetaFor(
   }
 }
 
-export async function fetchProviderModelIds(
+export async function fetchProviderModels(
   baseUrl: string,
   key?: string | null,
   fetchImpl: typeof fetch = fetch,
   keyHeader: KeyHeader = "bearer",
   headers: Record<string, string> = {},
-): Promise<string[]> {
+  query: Record<string, string> = {},
+): Promise<{ ids: string[]; meta: Record<string, ModelMeta> }> {
   const out: Record<string, string> = {
     accept: "application/json",
     "user-agent": "useful-bot/1.0",
@@ -196,12 +249,20 @@ export async function fetchProviderModelIds(
     else if (keyHeader === "api-key") out["api-key"] = key;
     else out.authorization = `Bearer ${key}`;
   }
-  const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/models`, {
+  const search = new URLSearchParams(query).toString();
+  const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/models${search ? `?${search}` : ""}`, {
     headers: out,
     signal: AbortSignal.timeout(4000),
   });
-  if (!res.ok) return [];
-  return parseModelList(await res.json());
+  if (!res.ok) return { ids: [], meta: {} };
+  const raw = await res.json();
+  return { ids: parseModelList(raw), meta: parseListedMeta(raw) };
+}
+
+export async function fetchProviderModelIds(
+  ...args: Parameters<typeof fetchProviderModels>
+): Promise<string[]> {
+  return (await fetchProviderModels(...args)).ids;
 }
 
 /**
@@ -225,6 +286,7 @@ export async function refreshProviderModels(input: {
   key?: string | null;
   keyHeader?: KeyHeader;
   headers?: Record<string, string>;
+  query?: Record<string, string>;
   modelsDevId?: string | null;
   force?: boolean;
   path?: string;
@@ -236,10 +298,14 @@ export async function refreshProviderModels(input: {
   const fresh = current && Date.now() - current.fetchedAt < CACHE_TTL_MS && current.models.length > 0;
   if (!input.force && fresh) return current.models;
   try {
-    const ids = await fetchProviderModelIds(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers);
+    const listed = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, input.query);
+    const ids = listed.ids;
     if (ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
     const metaKey = metaKeyFor(input.providerId, input.modelsDevId);
-    const meta = metaKey ? await modelMetaFor(metaKey, path, input.fetchImpl) : {};
+    const catalogMeta = metaKey ? await modelMetaFor(metaKey, path, input.fetchImpl) : {};
+    // The vendor's own facts win over models.dev, field by field.
+    const meta: Record<string, ModelMeta> = {};
+    for (const id of ids) meta[id] = { ...catalogMeta[id], ...listed.meta[id] };
     const models = mergeLiveModels(input.providerId, ids, meta);
     // The fetch awaited above can overlap a refresh for a different provider,
     // so the snapshot taken before the await is stale by write time. Re-read

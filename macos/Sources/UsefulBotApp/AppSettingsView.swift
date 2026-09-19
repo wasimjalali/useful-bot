@@ -85,7 +85,10 @@ struct AppSettingsView: View {
                         Color.clear
                             .frame(width: proxy.size.width, height: proxy.size.height)
                             .overlay(alignment: host.alignment) {
-                                host.offset(x: host.xOffset, y: host.yOffset)
+                                // Keyed by card: a switch between two cards gets a
+                                // fresh host, so its height is measured anew.
+                                host.id(card)
+                                    .offset(x: host.xOffset, y: host.yOffset)
                             }
                     }
                 }

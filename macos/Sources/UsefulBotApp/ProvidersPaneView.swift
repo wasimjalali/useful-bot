@@ -832,6 +832,9 @@ struct ProvidersCardHost: View {
     let anchor: CGRect
     let dialogSize: CGSize
 
+    /// Natural height of the open card's rows, measured inside its scroll view.
+    @State private var rowsHeight: CGFloat = 0
+
     private var width: CGFloat {
         switch card.kind {
         case .connect, .picker: return 280
@@ -879,21 +882,35 @@ struct ProvidersCardHost: View {
     private func bodyContent() -> some View {
         switch card.kind {
         case .connect:
-            ScrollView { pane.connectCardContent }
-                .uvScroll()
-                .frame(maxHeight: cap)
+            fitOrScroll { pane.connectCardContent }
         case .menu:
-            ScrollView { pane.rowMenuCardContent }
-                .uvScroll()
-                .frame(maxHeight: cap)
+            fitOrScroll { pane.rowMenuCardContent }
         case .picker:
             // The picker keeps its 40 pt search row above the list, so the list gets the rest.
             pane.modelPickerCardContent(role: card.key, maxHeight: max(cap - 40, 80))
         case .effort:
-            ScrollView { pane.effortCardContent(role: card.key) }
-                .uvScroll()
-                .frame(maxHeight: cap)
+            fitOrScroll { pane.effortCardContent(role: card.key) }
         }
     }
-}
 
+    /// The card is as tall as its rows and only scrolls past the cap. A
+    /// `maxHeight` frame is flexible: it grows into all the height it is
+    /// offered, up to the cap, and centers what it holds, which left a two row
+    /// menu hanging down to the bottom of the dialog. So the rows are measured
+    /// at their natural height (from a hidden copy, since the one inside the
+    /// scroll view is laid out by AppKit) and the card takes exactly that, up
+    /// to the cap. Before the first measure the card is zero tall for a frame;
+    /// the settings dialog keys the host by card, so every open measures fresh.
+    private func fitOrScroll<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let rows = content()
+        return ScrollView { rows }
+            .uvScroll()
+            .frame(height: min(rowsHeight, cap))
+            .background(alignment: .top) {
+                rows
+                    .fixedSize(horizontal: false, vertical: true)
+                    .hidden()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { rowsHeight = $0 }
+            }
+    }
+}
