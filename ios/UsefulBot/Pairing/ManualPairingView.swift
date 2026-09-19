@@ -11,15 +11,25 @@ struct ManualPairingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 16) {
-            field("Mac address", text: $address, keyboard: .URL, secure: false)
-            field("Pairing token", text: $token, keyboard: .default, secure: true)
-            Spacer()
-            connectButton
+        // Scrolled so accessibility type sizes reflow rather than truncate
+        // (A.7); at ordinary sizes the column still fills the screen and
+        // pins Connect at `sheetInset` + the safe area.
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    field("Mac address", text: $address, keyboard: .URL, secure: false)
+                    field("Pairing token", text: $token, keyboard: .default, secure: true)
+                    Spacer(minLength: DesignTokens.Space.phoneGutter)
+                    connectButton
+                }
+                .padding(.top, 24)
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, DesignTokens.Space.sheetInset)
+                .frame(minHeight: proxy.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollDismissesKeyboard(.interactively)
         }
-        .padding(.top, 24)
-        .padding(.horizontal, DesignTokens.Space.phoneGutter)
-        .padding(.bottom, DesignTokens.Space.sheetInset)
         .background(Theme.C.surface)
         .navigationTitle("Enter manually")
         .navigationBarTitleDisplayMode(.inline)
@@ -57,7 +67,7 @@ struct ManualPairingView: View {
             // Focused field: `ink` edge plus a 3 pt ring at 8% (design spec).
             ZStack {
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    .strokeBorder(focusedField == label ? Theme.C.ink : Theme.C.edge, lineWidth: 1)
+                    .strokeBorder(focusedField == label ? Theme.C.ink : Theme.C.borderStrong, lineWidth: 1)
                 if focusedField == label {
                     RoundedRectangle(cornerRadius: DesignTokens.Radius.md + 3, style: .continuous)
                         .strokeBorder(Theme.C.ink.opacity(0.08), lineWidth: 3)
@@ -92,6 +102,8 @@ struct ManualPairingView: View {
                 Text("Enter the Mac address and pairing token.")
                     .tokenFont(DesignTokens.FontSize.attachError, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
