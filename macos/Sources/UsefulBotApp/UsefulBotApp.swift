@@ -14,6 +14,7 @@ struct UsefulBotDesktopApp: App {
                 .frame(minWidth: 900, minHeight: 600)
                 .preferredColorScheme(appearance.colorScheme)
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 780)
         .commands {
             CommandGroup(after: .newItem) {

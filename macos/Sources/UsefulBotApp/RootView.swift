@@ -53,6 +53,10 @@ struct RootView: View {
             }
         }
         .background(Theme.C.canvas)
+        // The title bar is hidden and the lights sit on the header row, so
+        // the content starts at the window's top edge, not under a band.
+        .ignoresSafeArea(.container, edges: .top)
+        .background(WindowChrome())
         .onChange(of: appearance) { _, next in
             NSApp.appearance = next.nsAppearance
         }

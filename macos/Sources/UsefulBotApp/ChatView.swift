@@ -309,11 +309,11 @@ struct ChatView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
-            NativeIconButton(systemImage: "info.circle", size: 32, iconSize: 15) {
+            NativeIconButton(systemImage: "gearshape", size: 32, iconSize: 15) {
                 model.detailsOpen.toggle()
             }
-            .help("Chat details")
-            .accessibilityLabel("Chat details")
+            .help("Bot settings")
+            .accessibilityLabel("Bot settings")
             .trackWindowFrame($infoButtonFrame)
         }
         .padding(.horizontal, 16)

@@ -86,7 +86,7 @@
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
 
-  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
@@ -95,7 +95,7 @@ html, body {
   min-height: 100%;
   background: var(--canvas);
   color: var(--ink);
-  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -1117,10 +1117,8 @@ html, body {
     border: 0;
     background: transparent;
     color: var(--ink-faint);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    font-size: 12px;
+    font-weight: 500;
     text-align: left;
   }
   .section-toggle:hover { color: var(--ink-muted); }

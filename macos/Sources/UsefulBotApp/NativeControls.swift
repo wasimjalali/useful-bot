@@ -254,9 +254,10 @@ struct SectionHeader: View {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
                     .rotationEffect(.degrees(collapsed ? -90 : 0))
-                Text(title.uppercased())
-                    .font(.system(size: DesignTokens.FontSize.sectionHead, weight: .semibold))
-                    .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.sectionHead)
+                // Sentence case, as the section was named: a quiet label,
+                // not an all-caps eyebrow.
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
             }
             .foregroundStyle(hovering ? Theme.C.inkMuted : Theme.C.inkFaint)
             .frame(maxWidth: .infinity, alignment: .leading)

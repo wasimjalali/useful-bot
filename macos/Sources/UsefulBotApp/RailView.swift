@@ -49,7 +49,9 @@ struct RailView: View {
                 .accessibilityLabel("New Bot")
             }
             .padding(.horizontal, 4)
-            .padding(.top, 4)
+            // The traffic lights own the row above (`WindowChrome`); the
+            // logo sits under them, on the left.
+            .padding(.top, WindowChrome.railTopInset)
 
             searchTrigger
 
