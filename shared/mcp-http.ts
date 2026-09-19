@@ -197,7 +197,7 @@ export async function readMcpResource(
 }
 
 const TOOL_RESULT_MAX = 256 * 1024;
-export const TOOL_CALL_TIMEOUT_MS = 30_000;
+export const TOOL_CALL_TIMEOUT_MS = 25_000;
 
 /**
  * Run one tool for an MCP App's own frame (the app's `tools/call`). The
@@ -208,10 +208,10 @@ export async function callMcpTool(
   name: string,
   args: Record<string, unknown>,
   headers: Record<string, string> = {},
-): Promise<Record<string, unknown>> {
   // A server that never answers must not hold the request (and the app's
-  // spinner) open.
-  const signal = AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS);
+  // spinner) open. A caller with more steps passes one shared deadline.
+  signal: AbortSignal = AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS),
+): Promise<Record<string, unknown>> {
   const init = await rpc(url, "initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},

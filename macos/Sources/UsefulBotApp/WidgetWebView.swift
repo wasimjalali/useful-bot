@@ -103,6 +103,9 @@ struct WidgetWebView: NSViewRepresentable {
         private(set) var sized = false
         private(set) var lastClick = Date.distantPast
 
+        /// A new page starts with no click to its credit.
+        func forgetClick() { lastClick = .distantPast }
+
         override func mouseDown(with event: NSEvent) {
             lastClick = Date()
             super.mouseDown(with: event)
@@ -152,8 +155,10 @@ struct WidgetWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedId: String?
         /// The widget whose page is in the view now. `loadedId` moves as soon
-        /// as a fetch starts; tool calls must speak for the page on screen.
+        /// as a fetch starts; tool calls must speak for the page on screen,
+        /// which is the handed-over one only once its load has finished.
         private var shownId: String?
+        private var pendingId: String?
         weak var webView: SizedWebView?
         weak var container: NSView?
         private var loading: Task<Void, Never>?
@@ -176,6 +181,10 @@ struct WidgetWebView: NSViewRepresentable {
         func load(widgetId: String, into view: WKWebView) {
             loadedId = widgetId
             shownId = nil
+            pendingId = nil
+            clickedCallDone = .distantPast
+            lastLinkOpen = .distantPast
+            (view as? SizedWebView)?.forgetClick()
             loading?.cancel()
             loading = Task { @MainActor [weak view] in
                 let client = BackendClient(base: ServerConfig.resolved().baseURL)
@@ -186,8 +195,8 @@ struct WidgetWebView: NSViewRepresentable {
                     do {
                         let html = try await client.widgetPage(id: widgetId)
                         if Task.isCancelled { return }
+                        self.pendingId = widgetId
                         view?.loadHTMLString(html, baseURL: nil)
-                        self.shownId = widgetId
                         return
                     } catch BackendError.http(404) where attempt < 5 {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -335,6 +344,13 @@ struct WidgetWebView: NSViewRepresentable {
                 }
             }
             cover.removeFromSuperview()
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if let pendingId {
+                shownId = pendingId
+                self.pendingId = nil
+            }
         }
 
         /// Only the page handed over above and the srcdoc frame inside it.

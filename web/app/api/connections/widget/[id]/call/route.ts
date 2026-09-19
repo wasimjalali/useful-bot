@@ -50,11 +50,13 @@ export async function POST(
     if (entry.authKind !== "none") {
       return NextResponse.json({ ok: false, error: "widget_auth_unsupported" }, { status: 400 });
     }
-    const tools = await listMcpTools(entry.url, {}, AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS));
+    // One deadline for both steps, inside the app's 30 second request limit.
+    const deadline = AbortSignal.timeout(TOOL_CALL_TIMEOUT_MS);
+    const tools = await listMcpTools(entry.url, {}, deadline);
     if (!tools.some((tool) => tool.name === body.name && tool.appCallable)) {
       return NextResponse.json({ ok: false, error: "tool_not_app" }, { status: 403 });
     }
-    const result = await callMcpTool(entry.url, body.name, args as Record<string, unknown>);
+    const result = await callMcpTool(entry.url, body.name, args as Record<string, unknown>, {}, deadline);
     return NextResponse.json({ ok: true, result }, { headers: { "cache-control": "no-store" } });
   } catch (err) {
     return NextResponse.json({ ok: false, error: errorCode(err, "widget_call_failed") }, { status: 400 });
