@@ -993,18 +993,61 @@ private struct ComposerModeMenu: View {
     }
 }
 
+/// `.composer-model-flyout`: the searchable model list, one section per
+/// connected connection from `composer.groups`. The server orders the active
+/// connection first. A section header toggles its models; picking a model in
+/// another group saves "<connectionId>::<modelId>", which switches the active
+/// connection and the model in one write.
 private struct ModelFlyout: View {
     let composer: ComposerState
     let onSave: (_ patch: ComposerPatch) -> Void
     let onOpenProviders: () -> Void
 
     @State private var query = ""
+    /// Collapsed sections by connection id. Every section starts expanded.
+    @State private var collapsed: Set<String> = []
 
-    private var models: [ComposerState.Option] {
+    private struct Section {
+        let group: ComposerState.Group
+        let models: [ComposerState.Option]
+    }
+
+    private var sections: [Section] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return composer.groups.compactMap { group in
+            guard !needle.isEmpty else { return Section(group: group, models: group.models) }
+            if group.label.lowercased().contains(needle) {
+                return Section(group: group, models: group.models)
+            }
+            let models = group.models.filter {
+                $0.label.lowercased().contains(needle) || $0.id.lowercased().contains(needle)
+            }
+            // The search hides sections with no matches.
+            guard !models.isEmpty else { return nil }
+            return Section(group: group, models: models)
+        }
+    }
+
+    /// Servers from before groups existed send only the flat list, which
+    /// reads as today's rows with no header.
+    private var legacyModels: [ComposerState.Option] {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !needle.isEmpty else { return composer.models }
         return composer.models.filter {
             $0.label.lowercased().contains(needle) || $0.id.lowercased().contains(needle)
+        }
+    }
+
+    private func isCurrent(group: ComposerState.Group, model: ComposerState.Option) -> Bool {
+        guard composer.modelId == model.id else { return false }
+        return composer.connectionId.isEmpty || composer.connectionId == group.connectionId
+    }
+
+    private func pick(group: ComposerState.Group, model: ComposerState.Option) {
+        if !composer.connectionId.isEmpty, group.connectionId != composer.connectionId {
+            onSave(ComposerPatch(modelId: "\(group.connectionId)::\(model.id)"))
+        } else {
+            onSave(ComposerPatch(modelId: model.id))
         }
     }
 
@@ -1021,35 +1064,42 @@ private struct ModelFlyout: View {
 
             ScrollView {
                 VStack(spacing: 0) {
-                    if models.isEmpty {
+                    if composer.groups.isEmpty {
+                        if legacyModels.isEmpty {
+                            Text("No models match")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            ForEach(legacyModels, id: \.id) { item in
+                                modelRow(
+                                    label: item.label,
+                                    selected: composer.modelId == item.id,
+                                    action: { onSave(ComposerPatch(modelId: item.id)) }
+                                )
+                            }
+                        }
+                    } else if sections.isEmpty {
                         Text("No models match")
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.C.inkMuted)
                             .padding(12)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        ForEach(models, id: \.id) { item in
-                            let selected = composer.modelId == item.id
-                            let meta = [selected ? composer.effortLabel : nil, composer.speed == "fast" ? "Fast" : nil]
-                                .compactMap { $0 }
-                                .joined(separator: " ")
-                            MenuRowButton(action: { onSave(ComposerPatch(modelId: item.id)) }) {
-                                HStack {
-                                    Text(selected && !meta.isEmpty ? "\(item.label) \(meta)" : item.label)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(Theme.C.ink)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    if selected {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(Theme.C.inkMuted)
-                                    }
+                        ForEach(Array(sections.enumerated()), id: \.element.group.connectionId) { index, section in
+                            if index > 0 {
+                                Hairline()
+                            }
+                            sectionHeader(section.group)
+                            if !collapsed.contains(section.group.connectionId) {
+                                ForEach(section.models, id: \.id) { item in
+                                    modelRow(
+                                        label: item.label,
+                                        selected: isCurrent(group: section.group, model: item),
+                                        action: { pick(group: section.group, model: item) }
+                                    )
                                 }
-                                .padding(.horizontal, 12)
-                                .frame(height: 36)
-                                .frame(maxWidth: .infinity)
-                                .background(selected ? Theme.C.sunken : .clear)
                             }
                         }
                     }
@@ -1067,6 +1117,64 @@ private struct ModelFlyout: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .overlay(alignment: .top) { Hairline() }
+        }
+    }
+
+    private func sectionHeader(_ group: ComposerState.Group) -> some View {
+        let shut = collapsed.contains(group.connectionId)
+        let mark = group.label.prefix(1)
+        return Button {
+            if shut {
+                collapsed.remove(group.connectionId)
+            } else {
+                collapsed.insert(group.connectionId)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                ProviderMark(
+                    icon: group.icon,
+                    monogram: mark.isEmpty ? "?" : String(mark),
+                    size: 18
+                )
+                Text(group.label)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: shut ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .accessibilityLabel("\(group.label) models")
+    }
+
+    private func modelRow(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        let meta = [selected ? composer.effortLabel : nil, composer.speed == "fast" ? "Fast" : nil]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        return MenuRowButton(action: action) {
+            HStack {
+                Text(selected && !meta.isEmpty ? "\(label) \(meta)" : label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .frame(maxWidth: .infinity)
+            .background(selected ? Theme.C.sunken : .clear)
         }
     }
 }

@@ -3,6 +3,21 @@ import Foundation
 import UniformTypeIdentifiers
 import UsefulBotCore
 
+/// A device flow the Providers pane is waiting on. The key itself never
+/// appears here, only the code the owner types on the sign-in page.
+/// `expiresAt` and `intervalMs` come from the start response: the app keeps
+/// polling transient answers until the entry's expiry.
+struct OAuthPending: Equatable {
+    let pollId: String
+    let providerId: String
+    let label: String
+    let userCode: String
+    let verificationUrl: String
+    let verificationUrlComplete: String?
+    let expiresAt: Double
+    var intervalMs: Int
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
@@ -86,6 +101,25 @@ final class AppModel: ObservableObject {
     @Published private(set) var providers: [ProviderPublic]?
     @Published var providersError: String?
     @Published private(set) var providerBusy: String?
+    /// Providers v2 catalogue and connections from `GET /api/providers`. The
+    /// UI renders only what the server returns.
+    @Published private(set) var providerCatalog: [CatalogPublic] = []
+    @Published private(set) var providerConnections: [ConnectionPublic] = []
+    @Published private(set) var defaultRole: RolePublic?
+    @Published private(set) var reviewerRole: RolePublic?
+    /// A connect-sheet failure, shown under the field it belongs to.
+    @Published private(set) var connectError: String?
+    /// A device flow the Providers pane is waiting on, with its poll.
+    @Published private(set) var oauth: OAuthPending?
+    @Published private(set) var oauthError: String?
+    /// True once the flow ended in an error the sheet shows. The pending entry
+    /// stays so the sheet stays up with the error; the spinner and the
+    /// sign-in button hide, and Close clears everything.
+    @Published private(set) var oauthDone = false
+    /// Consecutive poll errors; the flow ends at the limit rather than waiting out the code.
+    private var oauthErrorStreak = 0
+    private static let oauthErrorLimit = 6
+    private var oauthPoll: Task<Void, Never>?
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
     /// A budget change in flight, so the stepper cannot fire twice.
@@ -1881,10 +1915,209 @@ final class AppModel: ObservableObject {
     func loadProviders() async {
         providersError = nil
         do {
-            providers = try await client.providers()
+            applyProviders(try await client.providersPayload())
         } catch {
             providersError = "Could not load providers."
         }
+    }
+
+    private func applyProviders(_ payload: ProvidersPayload) {
+        providerCatalog = payload.catalog
+        providerConnections = payload.connections
+        defaultRole = payload.defaultRole
+        reviewerRole = payload.reviewerRole
+        providers = payload.legacyProviders
+        if let next = payload.composer, next != composer {
+            composer = next
+        }
+    }
+
+    /// The server error code in plain words for the connect sheet.
+    static func connectCopy(_ code: String?) -> String {
+        switch code {
+        case "provider_key":
+            return "That key looks invalid."
+        case "upstream_auth_failed":
+            return "The provider rejected this key."
+        default:
+            return "Could not connect."
+        }
+    }
+
+    func clearConnectError() {
+        connectError = nil
+    }
+
+    func connectProvider(providerId: String, mode: String, key: String?, fields: [String: String]?) async {
+        providerBusy = "\(providerId):\(mode)"
+        connectError = nil
+        providersError = nil
+        do {
+            applyProviders(try await client.connect(providerId: providerId, mode: mode, key: key, fields: fields))
+        } catch {
+            connectError = Self.connectCopy((error as? BackendError)?.providerCode)
+        }
+        providerBusy = nil
+    }
+
+    func setActiveConnection(_ connectionId: String) async {
+        providerBusy = connectionId
+        providersError = nil
+        do {
+            applyProviders(try await client.setActiveConnection(connectionId))
+        } catch {
+            providersError = "Could not switch provider."
+        }
+        providerBusy = nil
+    }
+
+    func disconnectConnection(_ connectionId: String) async {
+        providerBusy = connectionId
+        providersError = nil
+        do {
+            applyProviders(try await client.disconnectConnection(connectionId))
+        } catch {
+            providersError = "Could not disconnect."
+        }
+        providerBusy = nil
+    }
+
+    func saveRole(_ role: String, connectionId: String?, modelId: String?, effort: String?) async {
+        providerBusy = "role-\(role)"
+        providersError = nil
+        do {
+            applyProviders(try await client.setRole(role, connectionId: connectionId, modelId: modelId, effort: effort))
+        } catch {
+            providersError = "That model did not save."
+        }
+        providerBusy = nil
+    }
+
+    func saveDefaultModel(connectionId: String?, modelId: String, effort: String?) async {
+        providerBusy = "role-default"
+        providersError = nil
+        do {
+            applyProviders(try await client.setDefaultModel(connectionId: connectionId, modelId: modelId, effort: effort))
+        } catch {
+            providersError = "That model did not save."
+        }
+        providerBusy = nil
+    }
+
+    func startOAuth(providerId: String, label: String) async {
+        oauthPoll?.cancel()
+        providerBusy = "\(providerId):oauth"
+        oauthError = nil
+        oauthDone = false
+        oauthErrorStreak = 0
+        providersError = nil
+        do {
+            let flow = try await client.startOAuth(providerId: providerId)
+            oauth = OAuthPending(
+                pollId: flow.pollId,
+                providerId: providerId,
+                label: label,
+                userCode: flow.userCode,
+                verificationUrl: flow.verificationUrl,
+                verificationUrlComplete: flow.verificationUrlComplete,
+                expiresAt: flow.expiresAt,
+                intervalMs: flow.intervalMs
+            )
+            startOAuthPoll()
+        } catch {
+            providersError = Self.connectCopy((error as? BackendError)?.providerCode)
+        }
+        providerBusy = nil
+    }
+
+    private func startOAuthPoll() {
+        oauthPoll?.cancel()
+        oauthPoll = Task { [weak self] in
+            while !Task.isCancelled {
+                // The server sets the pace, at least a second between polls.
+                let interval = max(self?.oauth?.intervalMs ?? 2000, 1000)
+                try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.pollOAuthOnce()
+                guard self?.oauth != nil, self?.oauthDone == false else { return }
+            }
+        }
+    }
+
+    /// True once the pending entry's expiry (epoch milliseconds, like the
+    /// server counts them) has passed. A zero expiry means the start response
+    /// carried none, so the server's own terminal answer ends the flow.
+    private var oauthExpired: Bool {
+        guard let pending = oauth, pending.expiresAt > 0 else { return false }
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        return nowMs >= pending.expiresAt
+    }
+
+    private func pollOAuthOnce() async {
+        guard let pending = oauth, !oauthDone else { return }
+        do {
+            let (status, intervalMs, payload) = try await client.pollOAuth(pollId: pending.pollId)
+            if let intervalMs, intervalMs > 0 {
+                oauth?.intervalMs = intervalMs
+            }
+            switch status {
+            case "complete":
+                if let payload {
+                    applyProviders(payload)
+                    providersError = nil
+                } else {
+                    await loadProviders()
+                }
+                oauthPoll?.cancel()
+                oauth = nil
+                oauthError = nil
+            case "pending", "slow_down":
+                oauthErrorStreak = 0
+                oauthError = nil
+                if oauthExpired {
+                    oauthPoll?.cancel()
+                    oauthDone = true
+                    oauthError = "That sign-in expired. Try again."
+                }
+            case "error":
+                // One vendor or transport hiccup keeps polling like "pending",
+                // with a note so the wait is not silent. A run of them ends the
+                // flow: the code is still valid, so Try again just restarts it.
+                oauthErrorStreak += 1
+                if oauthErrorStreak >= Self.oauthErrorLimit || oauthExpired {
+                    oauthPoll?.cancel()
+                    oauthDone = true
+                    oauthError = oauthExpired ? "That sign-in expired. Try again." : "The sign-in server is not answering. Try again."
+                } else {
+                    oauthError = "The sign-in server did not answer. Still waiting."
+                }
+            case "expired":
+                oauthPoll?.cancel()
+                oauthDone = true
+                oauthError = "That sign-in expired. Try again."
+            case "denied":
+                oauthPoll?.cancel()
+                oauthDone = true
+                oauthError = "That sign-in was denied."
+            default:
+                oauthPoll?.cancel()
+                oauthDone = true
+                oauthError = "Could not finish sign-in."
+            }
+        } catch {
+            // A failed poll never kills the flow. The next tick retries.
+        }
+    }
+
+    func cancelOAuth() async {
+        oauthPoll?.cancel()
+        if let pending = oauth {
+            try? await client.cancelOAuth(pollId: pending.pollId)
+        }
+        oauth = nil
+        oauthError = nil
+        oauthDone = false
+        oauthErrorStreak = 0
     }
 
     func connectProvider(id: String, key: String) async {

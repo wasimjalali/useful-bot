@@ -11,17 +11,28 @@ function withStores(fn: () => void, options: { model: string; cacheRows?: unknow
   const providers = join(dir, "providers.json");
   const cache = join(dir, "models-cache.json");
   writeFileSync(providers, JSON.stringify({
-    schemaVersion: 1,
-    activeProviderId: "opencode-go",
-    keys: { "opencode-go": { key: "test-upstream-key", updatedAt: new Date().toISOString() } },
+    schemaVersion: 2,
+    connections: {
+      "opencode-go:plan": {
+        id: "opencode-go:plan",
+        providerId: "opencode-go",
+        mode: "plan",
+        credential: { kind: "key", key: "test-upstream-key" },
+        fields: {},
+        updatedAt: new Date().toISOString(),
+        lastError: null,
+      },
+    },
+    activeConnectionId: "opencode-go:plan",
     selectedModel: options.model,
     effort: null,
     speed: "standard",
+    roles: {},
   }));
   if (options.cacheRows) {
     writeFileSync(cache, JSON.stringify({
       schemaVersion: 2,
-      providers: { "opencode-go": { fetchedAt: Date.now(), models: options.cacheRows } },
+      providers: { "opencode-go:plan": { fetchedAt: Date.now(), models: options.cacheRows } },
     }));
   }
   const previous = { providers: process.env.UB_PROVIDERS_PATH, cache: process.env.UB_MODELS_CACHE_PATH };

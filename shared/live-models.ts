@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { parseConnectionId, providerMode, type KeyHeader } from "./provider-catalog.ts";
 import { mergeLiveModels, modelsFor, type ModelMeta, type ModelOption } from "./models.ts";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
@@ -75,9 +76,22 @@ export function cachedModels(providerId: string, path = modelsCachePath()): Mode
   return readModelsCache(path).providers[providerId]?.models ?? [];
 }
 
-export function catalogFor(providerId: string, path = modelsCachePath()): ModelOption[] {
-  const live = cachedModels(providerId, path);
-  return live.length > 0 ? live : modelsFor(providerId);
+/**
+ * Live list for a connection, keyed by connection id so plan and api lists
+ * do not collide. Falls back to the static or catalogue derived list. Caches
+ * written before connections existed are keyed by bare provider id, so those
+ * are read once as a bridge until the next refresh rewrites the entry.
+ */
+export function catalogFor(connectionId: string, path = modelsCachePath()): ModelOption[] {
+  const live = cachedModels(connectionId, path);
+  if (live.length > 0) return live;
+  try {
+    const legacy = cachedModels(parseConnectionId(connectionId).providerId, path);
+    if (legacy.length > 0) return legacy;
+  } catch {
+    /* not a connection id, modelsFor below handles bare ids and unknowns */
+  }
+  return modelsFor(connectionId);
 }
 
 export function parseModelList(raw: unknown): string[] {
@@ -169,24 +183,49 @@ export async function fetchProviderModelIds(
   baseUrl: string,
   key?: string | null,
   fetchImpl: typeof fetch = fetch,
+  keyHeader: KeyHeader = "bearer",
+  headers: Record<string, string> = {},
 ): Promise<string[]> {
-  const headers: Record<string, string> = {
+  const out: Record<string, string> = {
     accept: "application/json",
     "user-agent": "useful-bot/1.0",
+    ...headers,
   };
-  if (key) headers.authorization = `Bearer ${key}`;
+  if (key) {
+    if (keyHeader === "x-api-key") out["x-api-key"] = key;
+    else if (keyHeader === "api-key") out["api-key"] = key;
+    else out.authorization = `Bearer ${key}`;
+  }
   const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/models`, {
-    headers,
+    headers: out,
     signal: AbortSignal.timeout(4000),
   });
   if (!res.ok) return [];
   return parseModelList(await res.json());
 }
 
+/**
+ * models.dev key for the meta lookup. Prefers an explicit override, then the
+ * catalogue modelsDevId for the connection, then the raw id for legacy bare
+ * provider calls. Null means models.dev has no entry, so no meta is fetched.
+ */
+function metaKeyFor(providerId: string, override?: string | null): string | null {
+  if (override !== undefined) return override;
+  try {
+    const parsed = parseConnectionId(providerId);
+    return providerMode(parsed.providerId, parsed.mode).modelsDevId;
+  } catch {
+    return providerId;
+  }
+}
+
 export async function refreshProviderModels(input: {
   providerId: string;
   baseUrl: string;
   key?: string | null;
+  keyHeader?: KeyHeader;
+  headers?: Record<string, string>;
+  modelsDevId?: string | null;
   force?: boolean;
   path?: string;
   fetchImpl?: typeof fetch;
@@ -197,9 +236,10 @@ export async function refreshProviderModels(input: {
   const fresh = current && Date.now() - current.fetchedAt < CACHE_TTL_MS && current.models.length > 0;
   if (!input.force && fresh) return current.models;
   try {
-    const ids = await fetchProviderModelIds(input.baseUrl, input.key, input.fetchImpl);
+    const ids = await fetchProviderModelIds(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers);
     if (ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
-    const meta = await modelMetaFor(input.providerId, path, input.fetchImpl);
+    const metaKey = metaKeyFor(input.providerId, input.modelsDevId);
+    const meta = metaKey ? await modelMetaFor(metaKey, path, input.fetchImpl) : {};
     const models = mergeLiveModels(input.providerId, ids, meta);
     // The fetch awaited above can overlap a refresh for a different provider,
     // so the snapshot taken before the await is stale by write time. Re-read

@@ -15,7 +15,7 @@ import { readProviderStore, resolveUpstream } from "../../shared/providers.ts";
 export function currentWindowTokens(): number {
   try {
     const resolved = resolveUpstream(readProviderStore(), "workhorse");
-    const model = modelOption(resolved.providerId, resolved.model, catalogFor(resolved.providerId));
+    const model = modelOption(resolved.providerId, resolved.modelId, catalogFor(resolved.connection.id));
     const tokens = model?.contextTokens;
     return Number.isInteger(tokens) && (tokens as number) > 0 ? (tokens as number) : POLICY_WINDOW_TOKENS;
   } catch {

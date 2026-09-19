@@ -1,3 +1,5 @@
+import { parseConnectionId, providerDef, providerMode } from "./provider-catalog.ts";
+
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export const SPEEDS = ["standard", "fast"] as const;
 
@@ -30,8 +32,17 @@ export function modelSeesImages(model: Pick<ModelOption, "inputs"> | null | unde
   return model.inputs.includes("image");
 }
 
+export type ComposerGroup = {
+  connectionId: string;
+  label: string;
+  icon: string;
+  models: Array<{ id: string; label: string }>;
+};
+
 export type ComposerPublic = {
   providerId: string;
+  /** Connection the composer reads, e.g. "openai:api". Empty for legacy bare provider calls. */
+  connectionId: string;
   providerName: string;
   modelId: string;
   modelLabel: string;
@@ -41,6 +52,8 @@ export type ComposerPublic = {
   efforts: Array<{ id: EffortId; label: string }>;
   speeds: Array<{ id: SpeedId; label: string }>;
   models: Array<{ id: string; label: string }>;
+  /** One entry per connected connection, the active one first. The macOS model flyout groups by this. */
+  groups: ComposerGroup[];
 };
 
 const EFFORT_LABELS: Record<EffortId, string> = {
@@ -57,7 +70,7 @@ const SPEED_LABELS: Record<SpeedId, string> = {
 };
 
 const OPTIONS: Record<string, ModelOption[]> = {
-  "opencode-go": [
+  "opencode-go:plan": [
     {
       id: "glm-5.3-flash",
       label: "GLM 5.3 Flash",
@@ -75,7 +88,7 @@ const OPTIONS: Record<string, ModelOption[]> = {
       defaultSpeed: "standard",
     },
   ],
-  openai: [
+  "openai:api": [
     {
       id: "gpt-4.1-mini",
       label: "GPT-4.1 Mini",
@@ -93,7 +106,7 @@ const OPTIONS: Record<string, ModelOption[]> = {
       defaultSpeed: "standard",
     },
   ],
-  openrouter: [
+  "openrouter:api": [
     {
       id: "openai/gpt-4.1-mini",
       label: "GPT-4.1 Mini",
@@ -111,7 +124,7 @@ const OPTIONS: Record<string, ModelOption[]> = {
       defaultSpeed: "standard",
     },
   ],
-  google: [
+  "google:api": [
     {
       id: "gemini-2.5-flash",
       label: "Gemini 2.5 Flash",
@@ -129,7 +142,7 @@ const OPTIONS: Record<string, ModelOption[]> = {
       defaultSpeed: "standard",
     },
   ],
-  anthropic: [
+  "anthropic:api": [
     {
       id: "claude-sonnet-4-0",
       label: "Claude Sonnet 4",
@@ -157,9 +170,33 @@ export function speedLabel(id: SpeedId): string {
   return SPEED_LABELS[id];
 }
 
-export function modelsFor(providerId: string): ModelOption[] {
-  return OPTIONS[providerId] ?? [];
+export function modelsFor(id: string): ModelOption[] {
+  const direct = OPTIONS[id];
+  if (direct) return direct;
+  const legacy = LEGACY_CONNECTION[id];
+  if (legacy) return OPTIONS[legacy] ?? [];
+  try {
+    const parsed = parseConnectionId(id);
+    const mode = providerMode(parsed.providerId, parsed.mode);
+    const ids = [...new Set([mode.defaults.workhorse, mode.defaults.reviewer])];
+    return ids.map((modelId) => ({
+      id: modelId,
+      label: humanizeModelId(modelId),
+      ...inferCapabilities(modelId, parsed.providerId),
+    }));
+  } catch {
+    return [];
+  }
 }
+
+/** Bare provider ids from before connections existed, mapped to their api connection. */
+const LEGACY_CONNECTION: Record<string, string> = {
+  "opencode-go": "opencode-go:plan",
+  openai: "openai:api",
+  openrouter: "openrouter:api",
+  google: "google:api",
+  anthropic: "anthropic:api",
+};
 
 export function humanizeModelId(id: string): string {
   const slug = id.split("/").pop() ?? id;
@@ -188,7 +225,14 @@ export function humanizeModelId(id: string): string {
     .join(" ");
 }
 
-function speedCaps(providerId?: string): Pick<ModelOption, "speeds" | "defaultSpeed"> {
+function providerPart(id?: string): string | undefined {
+  if (!id) return undefined;
+  const sep = id.lastIndexOf(":");
+  return sep > 0 ? id.slice(0, sep) : id;
+}
+
+function speedCaps(id?: string): Pick<ModelOption, "speeds" | "defaultSpeed"> {
+  const providerId = providerPart(id);
   if (providerId === "openai" || providerId === "openrouter") {
     return { speeds: ["standard", "fast"], defaultSpeed: "standard" };
   }
@@ -263,18 +307,28 @@ export function modelOption(
 }
 
 export function snapComposer(
-  providerId: string,
+  id: string,
   providerName: string,
   preferredModel: string | null | undefined,
   preferredEffort: EffortId | null | undefined,
   preferredSpeed: SpeedId | null | undefined,
   catalog?: ModelOption[],
+  groups: ComposerGroup[] = [],
 ): ComposerPublic {
-  const list = catalog && catalog.length > 0 ? catalog : modelsFor(providerId);
-  const model = modelOption(providerId, preferredModel, list);
+  let providerId = id;
+  let connectionId = "";
+  try {
+    providerId = parseConnectionId(id).providerId;
+    connectionId = id;
+  } catch {
+    connectionId = LEGACY_CONNECTION[id] ?? "";
+  }
+  const list = catalog && catalog.length > 0 ? catalog : modelsFor(id);
+  const model = modelOption(id, preferredModel, list);
   if (!model) {
     return {
       providerId,
+      connectionId,
       providerName,
       modelId: "",
       modelLabel: providerName,
@@ -284,6 +338,7 @@ export function snapComposer(
       efforts: [],
       speeds: [],
       models: [],
+      groups,
     };
   }
   const effort = model.efforts.length === 0
@@ -292,17 +347,43 @@ export function snapComposer(
   const speed = preferredSpeed && model.speeds.includes(preferredSpeed) ? preferredSpeed : model.defaultSpeed;
   return {
     providerId,
+    connectionId,
     providerName,
     modelId: model.id,
     modelLabel: model.label,
     effort,
     effortLabel: effort ? effortLabel(effort) : null,
     speed,
-    efforts: model.efforts.map((id) => ({ id, label: effortLabel(id) })),
-    speeds: model.speeds.map((id) => ({ id, label: speedLabel(id) })),
+    efforts: model.efforts.map((item) => ({ id: item, label: effortLabel(item) })),
+    speeds: model.speeds.map((item) => ({ id: item, label: speedLabel(item) })),
     models: list.map((item) => ({ id: item.id, label: item.label })),
+    groups,
   };
 }
+
+const EFFORT_ORDER: EffortId[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** Nearest accepted level at or below the ask. Falls to the lowest level when nothing is lower. */
+function nearestLevel(effort: EffortId, levels: EffortId[]): EffortId | null {
+  if (levels.length === 0) return null;
+  if (levels.includes(effort)) return effort;
+  const rank = (id: EffortId) => EFFORT_ORDER.indexOf(id);
+  const lower = levels
+    .filter((level) => rank(level) <= rank(effort))
+    .sort((a, b) => rank(b) - rank(a));
+  if (lower[0]) return lower[0];
+  return [...levels].sort((a, b) => rank(a) - rank(b))[0] ?? null;
+}
+
+// UNVERIFIED: Anthropic budget tiers are provisional. The router adapter maps
+// effort to output_config.effort or thinking.budget_tokens per the digest.
+const THINKING_BUDGET: Record<EffortId, number> = {
+  low: 1024,
+  medium: 4096,
+  high: 16384,
+  xhigh: 32768,
+  max: 65536,
+};
 
 export function applyReasoning(
   providerId: string,
@@ -311,18 +392,25 @@ export function applyReasoning(
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   const next = { ...body };
+  const bare = providerPart(providerId) ?? providerId;
+  const def = providerDef(bare);
   if (effort) {
-    const modelId = typeof body.model === "string" ? body.model : "";
-    const model = hydrateModel(providerId, modelId);
-    if (model.efforts.includes(effort)) {
-      next.reasoning_effort = effort;
-    } else if (providerId === "opencode-go") {
-      next.reasoning_effort = effort === "xhigh" ? "high" : effort === "medium" ? "low" : effort;
-    } else {
-      next.reasoning_effort = effort;
+    const mapped = nearestLevel(effort, def.reasoning.levels);
+    if (mapped) {
+      if (def.reasoning.param === "reasoning_effort") {
+        next.reasoning_effort = mapped;
+      } else if (def.reasoning.param === "reasoning.effort") {
+        const prev = next.reasoning;
+        next.reasoning = {
+          ...(prev && typeof prev === "object" ? (prev as Record<string, unknown>) : {}),
+          effort: mapped,
+        };
+      } else if (def.reasoning.param === "thinking") {
+        next.thinking = { type: "enabled", budget_tokens: THINKING_BUDGET[mapped] };
+      }
     }
   }
-  if (speed === "fast" && (providerId === "openai" || providerId === "openrouter")) {
+  if (speed === "fast" && (bare === "openai" || bare === "openrouter")) {
     next.service_tier = "priority";
   }
   return next;

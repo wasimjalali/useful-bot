@@ -157,6 +157,7 @@ private struct ProvidersResponse: Decodable {
     let providers: [ProviderPublic]?
     let error: String?
 }
+private struct ProvidersErrorResponse: Decodable { let error: String? }
 private struct ApprovalsResponse: Decodable { let approvals: [ApprovalItem] }
 private struct ConnectorAuthorizeResponse: Decodable {
     let ok: Bool?
@@ -479,6 +480,152 @@ public actor BackendClient {
     @discardableResult
     public func disconnectProvider(id: String) async throws -> [ProviderPublic] {
         try await providerWrite(method: "DELETE", body: ["providerId": id])
+    }
+
+    // MARK: - Providers v2
+
+    /// The full providers payload: catalogue, connections, roles, composer
+    /// and the legacy rows.
+    public func providersPayload() async throws -> ProvidersPayload {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base.appendingPathComponent("api/providers"))
+        }
+        try Self.expectOK(response)
+        guard let decoded = try? JSONDecoder().decode(ProvidersPayload.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
+    /// Connect or replace a key, plan or local connection. A nil or empty key
+    /// is left out of the body, so local modes connect without one.
+    @discardableResult
+    public func connect(providerId: String, mode: String, key: String?, fields: [String: String]?) async throws -> ProvidersPayload {
+        var body: [String: Any] = ["providerId": providerId, "mode": mode]
+        if let key, !key.isEmpty { body["key"] = key }
+        if let fields { body["fields"] = fields }
+        return try await providersWrite(method: "PUT", body: body)
+    }
+
+    @discardableResult
+    public func setActiveConnection(_ connectionId: String) async throws -> ProvidersPayload {
+        try await providersWrite(method: "PUT", body: ["activeConnectionId": connectionId])
+    }
+
+    @discardableResult
+    public func disconnectConnection(_ connectionId: String) async throws -> ProvidersPayload {
+        try await providersWrite(method: "DELETE", body: ["connectionId": connectionId])
+    }
+
+    /// Save one role's model pick. `modelId` may be
+    /// "<connectionId>::<modelId>" to switch connection and model in one
+    /// write. A nil `modelId` clears a reviewer choice. Nil subkeys are left
+    /// out, so an unchanged effort is kept, not cleared.
+    @discardableResult
+    public func setRole(
+        _ role: String,
+        connectionId: String?,
+        modelId: String?,
+        effort: String?
+    ) async throws -> ProvidersPayload {
+        let selection: Any
+        if let modelId {
+            var row: [String: Any] = ["modelId": modelId]
+            if let connectionId { row["connectionId"] = connectionId }
+            if let effort { row["effort"] = effort }
+            selection = row
+        } else {
+            selection = NSNull()
+        }
+        return try await providersWrite(method: "PUT", body: ["roles": [role: selection]])
+    }
+
+    /// Save the default (chat) model pick through the composer keys.
+    @discardableResult
+    public func setDefaultModel(connectionId: String?, modelId: String, effort: String?) async throws -> ProvidersPayload {
+        var body: [String: Any] = [:]
+        if let connectionId {
+            body["modelId"] = "\(connectionId)::\(modelId)"
+        } else {
+            body["modelId"] = modelId
+        }
+        if let effort { body["effort"] = effort }
+        return try await providersWrite(method: "PUT", body: body)
+    }
+
+    private func providersWrite(method: String, body: [String: Any]) async throws -> ProvidersPayload {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/providers"))
+            request.httpMethod = method
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            return request
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            // The route reports its own code in the body; surface that so the
+            // dialog can say why a connect was refused.
+            let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
+            throw BackendError.provider(decoded?.error ?? "provider_failed")
+        }
+        guard let decoded = try? JSONDecoder().decode(ProvidersPayload.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
+    /// Start a device flow for one OAuth provider. Answers with what the
+    /// device sheet shows.
+    public func startOAuth(providerId: String) async throws -> DeviceFlowStart {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/providers/oauth"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["providerId": providerId])
+            return request
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
+            throw BackendError.provider(decoded?.error ?? "provider_failed")
+        }
+        guard let decoded = try? JSONDecoder().decode(DeviceFlowStart.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
+    /// Poll one device flow. On `complete` the route also returns the full GET
+    /// payload, decoded here when present. Every poll answer carries the next
+    /// `intervalMs` the server wants between polls.
+    public func pollOAuth(pollId: String) async throws -> (status: String, intervalMs: Int?, payload: ProvidersPayload?) {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/providers/oauth/\(Self.pathComponent(pollId))"))
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectOK(response)
+        struct Poll: Decodable { let status: String?; let intervalMs: Int? }
+        guard let poll = try? JSONDecoder().decode(Poll.self, from: data),
+              let status = poll.status, !status.isEmpty else {
+            throw BackendError.decoding
+        }
+        let payload = try? JSONDecoder().decode(ProvidersPayload.self, from: data)
+        let hasPayload = payload.map { !$0.catalog.isEmpty || !$0.connections.isEmpty } ?? false
+        return (status, poll.intervalMs, hasPayload ? payload : nil)
+    }
+
+    public func cancelOAuth(pollId: String) async throws {
+        let (_, response) = try await perform { client, token in
+            var request = URLRequest(
+                url: client.base.appendingPathComponent("api/providers/oauth/\(Self.pathComponent(pollId))")
+            )
+            request.httpMethod = "DELETE"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectOK(response)
     }
 
     private func providerWrite(method: String, body: [String: Any]) async throws -> [ProviderPublic] {
