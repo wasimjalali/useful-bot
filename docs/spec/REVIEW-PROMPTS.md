@@ -248,6 +248,10 @@ HOW TO WORK, AND WHAT NEVER TO DO
   appearances, real requests against the stack you run in this VM. "It should work" is not
   evidence.
 - Every live message goes to the bot named Test Bot in your own stack, never anywhere else.
+- The provider key in $UB_CLOUD_PROVIDER_KEY is a short-lived key issued for this build only.
+  Use it freely: when a check needs ten real turns, send ten; when a reliability case needs a
+  long conversation, build one. Never economize on verification. The only waste is a loop that
+  retries the same failing call; stop those, fix the cause, and continue.
 - Keep docs/audit/IOS-BUILD-LOG.md honest and current at merge time. Measured and estimated
   numbers are never mixed.
 
@@ -327,7 +331,8 @@ SPECIFICATIONS
   Surprises, continue.
 - Never skip or downgrade a gate; never narrow parity; never write a secret, tailnet address or
   device name anywhere in the repository.
-- All live messages go to Test Bot in the VM stack only.
+- All live messages go to Test Bot in the VM stack only. The provider key is dedicated to this
+  build; spend it on real verification as freely as a check requires, and never on a retry loop.
 - The spec wins over your judgment; the code wins over the spec's description of it, with the
   drift recorded.
 ```
@@ -361,4 +366,47 @@ one GitHub review on the PR: "Request changes" with numbered findings (file, lin
 wrong, evidence, severity blocker/high/medium/low, the fix), or "Approve" with the sentence
 "Zero findings in role <role>" when you have genuinely found nothing. A finding without evidence
 is a guess; do not post it. Do not edit code. Do not ask the author or the owner anything.
+```
+
+---
+
+## Prompt 7 - design agents, closing the design spec's open items
+
+```
+You are the design agent for Useful Bot's iOS app, continuing the work in
+docs/spec/IOS-DESIGN-SPEC.md against the frozen docs/spec/IOS-APP-SPEC.md and the Claude Design
+canvas "Useful Bot iOS". The build starts next; it will follow whatever the design spec says.
+Section 6.2 of the design spec lists five items still marked open, each with a proposal that
+the boards already use. Close all five so the build agent has nothing left to guess, and
+update the boards where a decision changes a pixel.
+
+For each item, decide, redraw and document:
+
+1. inkFaintText. Confirm or replace the proposed values (#6B6B6B light, #949494 dark) by
+   checking contrast on every surface the token sits on (surface, canvas, sunken, bubbleBot,
+   the soft fills) in both appearances; every pair must reach 4.5:1. Show the ratios. Add the
+   final values to the section 4.1 table and mark the token new for DesignTokens.swift.
+2. Dark scrim. Test the token scrim (#171717 at 18%) over the dark canvas and dark chat on the
+   boards. If a sheet reads as floating without it, keep the token as law and say so. If not,
+   propose one dark scrim value, show it on a board, and state the light and dark pair.
+3. Connectors key placement. Draw the Settings, Connectors screen with the Composio key field
+   and its states (empty, set, invalid), and the in-chat Add to message sheet with the "Set up
+   connectors in Settings" row when no key exists. Confirm the row's copy and target.
+4. Group chat @mentions. Draw the inline suggestion list above the composer: anchor, height
+   cap, row anatomy (BotRowView at 32 pt avatars), filtering as the owner types, keyboard and
+   VoiceOver behavior, empty result, both appearances, and the accessibility-size layout.
+5. Folder chip with no folder. Draw the "No folder" chip in inkMuted on the New chat board and
+   the explanation sheet it opens ("Attach a folder from your Mac"), both appearances.
+
+Then:
+- Rewrite section 6.2 as "Closed on <date>" with the decision and the board title for each.
+- Update sections 1, 4 and 5 wherever a decision changed a value, a state or a component.
+- Check the redrawn boards against Appendix A.1 and A.7 of the spec and add any new finding
+  to section 3.
+
+Rules: the spec is law for tokens, states and the blacklist; the macOS app is the source of
+truth for look and behavior; you decide within those. Output is the updated
+IOS-DESIGN-SPEC.md and the redrawn boards, no code. No em dashes. Sentence case. If any item
+truly cannot be decided within the spec, say exactly why in one sentence and give the owner
+two options with your recommendation first.
 ```
