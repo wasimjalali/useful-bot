@@ -1214,6 +1214,32 @@ public actor BackendClient {
         return html
     }
 
+    /// One of a drawing's own tool calls (Excalidraw's export). The server
+    /// runs only tools the MCP server marked for its app; the result goes
+    /// back to the app as JSON.
+    public func widgetToolCall(id: String, name: String, arguments: [String: Any]) async throws -> Any {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base
+                .appendingPathComponent("api/connections/widget")
+                .appendingPathComponent(id)
+                .appendingPathComponent("call"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "name": name,
+                "arguments": arguments,
+            ])
+            return request
+        }
+        try Self.expectOK(response)
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = body["result"] as? [String: Any] else {
+            throw BackendError.decoding
+        }
+        return result
+    }
+
     /// Resolve a proposal without a shell action (the dismiss path).
     @discardableResult
     public func resolveProposal(proposalId: String, status: String) async throws -> ShellStore {
