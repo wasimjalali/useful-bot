@@ -78,3 +78,31 @@ test("a refresh with a new key lands after one still running with the old key", 
     delete process.env.UB_MODELS_CACHE_PATH;
   }
 });
+
+test("a provider whose list fails is not asked again on every poll", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-sync-backoff-")), "models-cache.json");
+  process.env.UB_MODELS_CACHE_PATH = path;
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response("unauthorized", { status: 401 });
+  }) as typeof fetch;
+  const store = {
+    activeConnectionId: "moonshot:api",
+    connections: {
+      "moonshot:api": { id: "moonshot:api", providerId: "moonshot", mode: "api", fields: {}, credential: { kind: "key", key: "revoked-key-1234" } },
+    },
+  } as unknown as ProviderStore;
+  try {
+    await syncProviderModels(store);
+    await syncProviderModels(store);
+    assert.equal(calls, 1);
+    // A save forces a fresh try straight away.
+    await syncProviderModels(store, { force: true });
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.UB_MODELS_CACHE_PATH;
+  }
+});

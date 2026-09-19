@@ -17,6 +17,16 @@ function substituteFields(baseUrl: string, fields: Record<string, string>): stri
  */
 const inFlight = new Map<string, { sig: string; job: Promise<unknown> }>();
 
+/**
+ * When each connection's list was last asked for, and with which request.
+ * A failed fetch writes nothing, so the cache TTL alone would retry an
+ * expired key or a stopped local server on every 2.5 s poll. An unforced
+ * refresh with the same request waits this long after the last attempt;
+ * a success is covered by the 30 minute cache TTL anyway.
+ */
+const RETRY_AFTER_MS = 5 * 60 * 1000;
+const lastAttempt = new Map<string, { sig: string; at: number }>();
+
 async function refreshOne(store: ProviderStore, id: string, force: boolean): Promise<unknown> {
   const env = process.env;
   const conn = store.connections[id] ?? null;
@@ -52,6 +62,9 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
   const sig = JSON.stringify([baseUrl, key, headers, query]);
   const running = inFlight.get(id);
   if (running && !force && running.sig === sig) return running.job;
+  const tried = lastAttempt.get(id);
+  if (!running && !force && tried?.sig === sig && Date.now() - tried.at < RETRY_AFTER_MS) return;
+  lastAttempt.set(id, { sig, at: Date.now() });
   const run = () => refreshProviderModels({
     providerId: id,
     baseUrl,
