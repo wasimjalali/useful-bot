@@ -693,6 +693,10 @@ struct AppSettingsView: View {
 private struct AppearancePicker: View {
     @Binding var selection: AppAppearance
 
+    /// The picked segment sits above its track in both appearances: white on
+    /// gray in light, a lighter gray on the dark track in dark.
+    private static let pickFill = Theme.adaptive(DesignTokens.Hex.surface, DesignTokens.DarkHex.borderStrong)
+
     var body: some View {
         HStack(spacing: 2) {
             ForEach(AppAppearance.allCases) { option in
@@ -705,7 +709,7 @@ private struct AppearancePicker: View {
                         .foregroundStyle(on ? Theme.C.ink : Theme.C.inkMuted)
                         .padding(.horizontal, 12)
                         .frame(height: 26)
-                        .background(on ? Theme.C.surface : .clear)
+                        .background(on ? Self.pickFill : .clear)
                         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
                         .shadow(color: Theme.C.shadow.opacity(on ? 0.1 : 0), radius: 1.5, x: 0, y: 1)
                         .contentShape(Rectangle())

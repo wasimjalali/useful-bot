@@ -885,7 +885,7 @@ export default function Page() {
                                       Message from {row.authorName}
                                     </p>
                                   ) : null}
-                                  <div className="whitespace-pre-wrap break-words rounded-lg rounded-br-xs bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
+                                  <div className="whitespace-pre-wrap break-words rounded-md rounded-br-xs bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
                                     {row.text}
                                   </div>
                                 </div>

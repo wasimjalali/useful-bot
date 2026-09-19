@@ -29,6 +29,7 @@ struct RailView: View {
     @State private var rowMenuAnchor: CGRect = .zero
     @State private var rowMenuTrigger: CGRect = .zero
     @State private var rowMenuPage: RowMenuPage = .root
+    @State private var fullScreen = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -50,8 +51,9 @@ struct RailView: View {
             }
             .padding(.horizontal, 4)
             // The traffic lights own the row above (`WindowChrome`); the
-            // logo sits under them, on the left.
-            .padding(.top, WindowChrome.railTopInset)
+            // logo sits under them, on the left. Full screen hides the
+            // lights, so the band goes with them.
+            .padding(.top, fullScreen ? 4 : WindowChrome.railTopInset)
 
             searchTrigger
 
@@ -74,6 +76,12 @@ struct RailView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 16)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
+            fullScreen = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
+            fullScreen = false
+        }
         .frame(width: DesignTokens.Space.railWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.C.rail)

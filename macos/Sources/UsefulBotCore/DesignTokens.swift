@@ -51,7 +51,7 @@ public enum DesignTokens {
         public static let canvas = "#0F0F0F"
         public static let rail = "#0F0F0F"
         public static let surface = "#171717"
-        public static let sunken = "#232323"
+        public static let sunken = "#2C2C2C"
         public static let bubbleBot = "#202020"
 
         public static let ink = "#EDEDED"

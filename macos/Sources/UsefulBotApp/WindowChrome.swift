@@ -48,6 +48,13 @@ struct WindowChrome: NSViewRepresentable {
             placeLights()
         }
 
+        /// An appearance switch lays the titlebar out again without any
+        /// window notification, which dropped the lights back to the top edge.
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            DispatchQueue.main.async { [weak self] in self?.placeLights() }
+        }
+
         private func placeLights() {
             guard
                 let window,

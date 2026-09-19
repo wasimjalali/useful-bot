@@ -32,6 +32,12 @@ private struct ButtonChrome: ButtonStyle {
                     endPoint: .bottom
                 )
             )
+            // A tone fill alone melts into a canvas-backed group; the whisper
+            // edge keeps a secondary button's shape on any ground.
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous)
+                    .strokeBorder(kind == .secondary ? Theme.C.edge : .clear, lineWidth: 1)
+            )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
             .smShadow()
             .opacity(enabled ? 1 : 0.55)
