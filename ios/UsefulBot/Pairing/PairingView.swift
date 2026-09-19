@@ -23,12 +23,12 @@ struct PairingView: View {
                 .padding(.top, 32)
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
                 .padding(.bottom, DesignTokens.Space.sheetInset)
-                .frame(minHeight: proxy.size.height - 40)
+                .frame(minHeight: proxy.size.height)
             }
             .scrollBounceBehavior(.basedOnSize)
         }
         .background(Theme.C.surface)
-        .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     private var badge: some View {

@@ -66,7 +66,9 @@ struct ManualPairingView: View {
             }
         )
         .animation(
-            reduceMotion ? nil : .easeOut(duration: DesignTokens.Motion.fast),
+            reduceMotion
+                ? nil
+                : .timingCurve(0.22, 1, 0.36, 1, duration: DesignTokens.Motion.fast),
             value: focusedField
         )
     }
@@ -79,14 +81,13 @@ struct ManualPairingView: View {
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
                     .foregroundStyle(ready ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 50)
-                    .background(
-                        ready ? Theme.C.brand : Theme.C.sunken,
-                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    )
-                    .smShadow(enabled: ready)
             }
             .disabled(!ready)
-            .buttonStyle(PressedScale())
+            .buttonStyle(PressedScale(
+                fill: ready ? Theme.C.brand : Theme.C.sunken,
+                pressedFill: ready ? Theme.C.accentStrong : Theme.C.sunken,
+                shadowed: ready
+            ))
             if !ready {
                 Text("Enter the Mac address and pairing token.")
                     .tokenFont(DesignTokens.FontSize.attachError, .regular)
@@ -96,19 +97,3 @@ struct ManualPairingView: View {
     }
 }
 
-private extension View {
-    /// Primary buttons carry the `sm` shadow; disabled ones drop it so the
-    /// sunken fill reads quiet, not lifted.
-    @ViewBuilder func smShadow(enabled: Bool) -> some View {
-        if enabled {
-            shadow(
-                color: Theme.shadow(DesignTokens.Shadow.sm),
-                radius: Theme.radius(DesignTokens.Shadow.sm),
-                x: 0,
-                y: DesignTokens.Shadow.sm.y
-            )
-        } else {
-            self
-        }
-    }
-}

@@ -53,9 +53,16 @@ final class PairingUITests: XCTestCase {
         shot("pairing-manual-\(suffix)")
 
         // Connect stays disabled until both fields hold text (design 1.1).
+        // The focused field shows its ink edge and 3 pt ring; the filled
+        // fields enable Connect with the keyboard still up.
         app.textFields["Mac address"].tap()
-        app.textFields["Mac address"].typeText("example.internal")
+        shot("pairing-manual-focused-\(suffix)")
+        app.typeText("example.internal")
         XCTAssertFalse(app.buttons["Connect"].isEnabled)
+        app.secureTextFields["Pairing token"].tap()
+        app.typeText("ub_pair_token_test")
+        XCTAssertTrue(app.buttons["Connect"].isEnabled)
+        shot("pairing-manual-ready-\(suffix)")
     }
 
     func testPairingLight() { pairingShots(appearance: "light") }

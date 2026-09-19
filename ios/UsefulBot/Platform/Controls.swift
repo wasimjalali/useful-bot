@@ -7,13 +7,34 @@ import UsefulBotCore
 /// drop does not.
 struct PressedScale: ButtonStyle {
     var cornerRadius: CGFloat = DesignTokens.Radius.md
+    /// Set when the pressed state needs a different fill, not an overlay:
+    /// `brand`/`accent` fills step to `accentStrong` on press (the macOS
+    /// precedent) because `ink == accent` makes an ink overlay composite to
+    /// the identical color. With `fill` nil the ink tone step overlays.
+    var fill: Color? = nil
+    var pressedFill: Color? = nil
+    /// Primary buttons carry the `sm` shadow; disabled ones drop it.
+    var shadowed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .background {
+                if let fill {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(configuration.isPressed ? (pressedFill ?? fill) : fill)
+                }
+            }
+            .shadow(
+                color: shadowed ? Theme.shadow(DesignTokens.Shadow.sm) : .clear,
+                radius: shadowed ? Theme.radius(DesignTokens.Shadow.sm) : 0,
+                x: 0,
+                y: shadowed ? DesignTokens.Shadow.sm.y : 0
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Theme.C.ink.opacity(configuration.isPressed ? 0.08 : 0))
+                    .fill(Theme.C.ink.opacity(
+                        pressedFill == nil && configuration.isPressed ? 0.08 : 0))
                     .allowsHitTesting(false)
             )
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
