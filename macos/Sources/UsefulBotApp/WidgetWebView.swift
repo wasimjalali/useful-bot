@@ -235,7 +235,9 @@ struct WidgetWebView: NSViewRepresentable {
                     do {
                         let client = BackendClient(base: ServerConfig.resolved().baseURL)
                         let result = try await client.widgetToolCall(id: widgetId, name: name, arguments: arguments)
-                        if clicked { self.clickedCallDone = Date() }
+                        // Credit only the page that asked: a slow call from a
+                        // page since replaced must not open links for the next.
+                        if clicked, self.shownId == widgetId { self.clickedCallDone = Date() }
                         reply(result, nil)
                     } catch {
                         reply(nil, "tool_failed")
