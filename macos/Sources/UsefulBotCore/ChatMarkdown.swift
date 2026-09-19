@@ -6,7 +6,9 @@ public enum MarkdownBlock: Equatable, Sendable {
     case paragraph(String)
     case heading(level: Int, text: String)
     case unorderedList([String])
-    case orderedList([String])
+    /// `start` is the first item's number as written: a list broken by a
+    /// paragraph carries on from 2, 3, not from 1 again.
+    case orderedList([String], start: Int = 1)
     case code(lang: String, text: String)
     case table(MarkdownTable)
     case quote([MarkdownBlock])
@@ -104,12 +106,14 @@ public enum ChatMarkdownParser {
                 continue
             }
             if matches(ordered, in: line) {
+                let digits = line.drop(while: { $0 == " " || $0 == "\t" }).prefix(while: \.isNumber)
+                let start = Int(digits.prefix(9)) ?? 1
                 var items: [String] = []
                 while i < lines.count, matches(ordered, in: lines[i]) {
                     items.append(replace(ordered, in: lines[i], with: ""))
                     i += 1
                 }
-                blocks.append(.orderedList(items))
+                blocks.append(.orderedList(items, start: start))
                 continue
             }
             if line.trimmingCharacters(in: .whitespaces).isEmpty {

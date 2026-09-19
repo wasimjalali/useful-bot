@@ -25,6 +25,15 @@ import Testing
         #expect(blocks[4] == .orderedList(["One", "Two"]))
     }
 
+    @Test func orderedListKeepsItsStartNumber() {
+        let blocks = ChatMarkdownParser.blocks(from: ["1. **Google**", "Subject: one", "", "2. **Katja**", "Subject: two", "", "3. **Apple**"].joined(separator: "\n"))
+        let lists = blocks.compactMap { block -> Int? in
+            if case .orderedList(_, let start) = block { return start }
+            return nil
+        }
+        #expect(lists == [1, 2, 3])
+    }
+
     @Test func paragraphsJoinUntilABlankLine() {
         let blocks = ChatMarkdownParser.blocks(from: "first line\nsecond line\n\nnext")
         #expect(blocks == [.paragraph("first line\nsecond line"), .paragraph("next")])
