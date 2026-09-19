@@ -675,9 +675,15 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             }
             if (!firstEvent) writeHeaders();
             // A stream that ended without a closing blank line still owes its
-            // last block to the client, as the raw relay delivered it.
+            // last block to the client, terminated, and its usage to the meter.
             leftover += decoder.decode();
-            res.end(leftover ? settleStreamBlock(leftover, toolSeen) : undefined);
+            if (leftover.trim()) {
+              const usage = usageFromSseBlock(leftover);
+              if (usage) record(usage);
+              res.end(`${settleStreamBlock(leftover, toolSeen)}\n\n`);
+            } else {
+              res.end();
+            }
             circuit.recordSuccess(entry.alias);
             return;
           }

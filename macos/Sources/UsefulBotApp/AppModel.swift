@@ -1267,10 +1267,10 @@ final class AppModel: ObservableObject {
                 // no turn ids at all, which is what an empty set used to mean.
                 var untaggedMayArm = true
                 var sendSessionId = bot.sessionId
-                if freshSession, let old = bot.sessionId, !old.isEmpty {
-                    // The same move as a retired session below: drop the
-                    // pointer, then post this message as a new session.
-                    await self.dropSession(botId: bot.id)
+                if freshSession {
+                    // Posted as a new session. The old pointer stays until the
+                    // new one replaces it, so a post that fails leaves the
+                    // broken chat readable rather than gone.
                     sendSessionId = nil
                 }
                 if let sessionId = sendSessionId, !sessionId.isEmpty {

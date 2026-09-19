@@ -154,13 +154,15 @@ export async function completeUpstream(input: {
   // eve compacts at 90% of the model's window (agent/lib/model-window.ts reads
   // the same catalog), so the output cap keeps to the last tenth: a prompt at
   // the threshold plus a full answer still fits a small model's window.
-  const window = option?.contextTokens && option.contextTokens > 0 ? option.contextTokens : POLICY_WINDOW_TOKENS;
-  const outputCap = Math.min(input.entry.maxOutputTokens, Math.floor(window / 10));
+  // `modelOption` falls back to the list's first model; only the picked
+  // model's own window may size its cap.
+  const sized = option?.id === model && option.contextTokens && option.contextTokens > 0 ? option.contextTokens : null;
+  const outputCap = Math.min(input.entry.maxOutputTokens, Math.floor((sized ?? POLICY_WINDOW_TOKENS) / 10));
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
     messages: withoutImagesForTextModel(forwardedBody.messages, sees),
     model,
-    max_tokens: typeof payload.max_tokens === "number" ? payload.max_tokens : outputCap,
+    max_tokens: typeof payload.max_tokens === "number" ? Math.min(payload.max_tokens, outputCap) : outputCap,
   });
   const dispatch = (): Promise<Response> => {
     const auth = tokenFor(resolved.providerId, credential);
