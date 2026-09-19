@@ -20,7 +20,14 @@ export type ModelOption = {
 };
 
 /** Catalog facts about one model that the live list cannot tell on its own. */
-export type ModelMeta = { contextTokens?: number; inputs?: string[] };
+export type ModelMeta = {
+  contextTokens?: number;
+  inputs?: string[];
+  /** Set only when the vendor's own list names them (the ChatGPT Codex list does); they beat the guess by name. */
+  label?: string;
+  efforts?: EffortId[];
+  defaultEffort?: EffortId | null;
+};
 
 /**
  * Whether the model takes image input. Null when the catalog has not said:
@@ -279,6 +286,11 @@ export function hydrateModel(providerId: string, id: string, label?: string, met
     : { id, label: label?.trim() || humanizeModelId(id), ...inferCapabilities(id, providerId) };
   if (meta?.contextTokens) base.contextTokens = meta.contextTokens;
   if (meta?.inputs) base.inputs = meta.inputs;
+  if (meta?.label) base.label = meta.label;
+  if (meta?.efforts) {
+    base.efforts = meta.efforts;
+    base.defaultEffort = meta.defaultEffort ?? null;
+  }
   return base;
 }
 

@@ -33,6 +33,8 @@ export interface ProviderMode {
   keyHeader: KeyHeader;
   /** GET {baseUrl}/models works with this credential. */
   listsModels: boolean;
+  /** Query string the /models call needs. The ChatGPT Codex list requires client_version. */
+  modelsQuery?: Record<string, string>;
   keyUrl: string | null;
   hint: string;
   /** Extra text fields the connect sheet must collect (Cloudflare account id, custom base URL). */
@@ -78,6 +80,12 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         protocol: "openai-responses",
         keyHeader: "bearer",
         listsModels: true,
+        // The Codex /models list is filtered by client_version: each model
+        // carries a minimal_client_version and anything newer than the version
+        // sent is left out. A pinned real CLI version goes stale with every
+        // release (0.99.0 returned only GPT-5.5), so send one above any
+        // shipped CLI and let the account decide what it sees.
+        modelsQuery: { client_version: "99.0.0" },
         keyUrl: null,
         hint: "ChatGPT Plus or Pro through Codex sign in.",
         // Codex device flow per github.com/openai/codex
@@ -104,10 +112,10 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
           redirectUri: "https://auth.openai.com/deviceauth/callback",
           scopes: "openid profile email offline_access api.connectors.read api.connectors.invoke",
         },
-        // Current Codex CLI lineup per developers.openai.com/codex/models (Sep 2026):
-        // gpt-5.4 flagship default, gpt-5.4-mini fast, gpt-5.3-codex specialist.
-        // UNVERIFIED: these ids are not checked against the models.dev openai entry here.
-        defaults: { workhorse: "gpt-5.4-mini", reviewer: "gpt-5.4" },
+        // Checked against the live Codex /models list on 2026-09-19 (GPT-5.6
+        // Sol, Terra and Luna, GPT-6 Astra, GPT-5.5). Only the fallback until
+        // the live list lands; the live list overrides these.
+        defaults: { workhorse: "gpt-5.6-luna", reviewer: "gpt-6-astra" },
         modelsDevId: "openai",
       },
       {

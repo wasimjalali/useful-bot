@@ -1,16 +1,13 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
-import { refreshProviderModels } from "../../../../shared/live-models.ts";
+import { syncProviderModels } from "../../../lib/sync-models";
 import { isEffortId, isSpeedId } from "../../../../shared/models.ts";
 import {
   connectionId,
   parseConnectionId,
   providerDef,
-  providerMode,
-  type ProviderMode,
 } from "../../../../shared/provider-catalog.ts";
-import { accessTokenFor } from "../../../../shared/provider-oauth.ts";
 import {
   clearConnection,
   clearProviderKey,
@@ -33,10 +30,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((item) => typeof item === "string");
-}
-
-function substituteFields(baseUrl: string, fields: Record<string, string>): string {
-  return baseUrl.replace(/\{(\w+)\}/g, (_, name: string) => fields[name] ?? "");
 }
 
 /** Legacy provider ids map to their api connection, opencode-go to its plan. */
@@ -66,51 +59,6 @@ function activeUsable(store: ProviderStore): boolean {
   return Boolean(process.env.UB_OPENCODE_GO_KEY);
 }
 
-/**
- * Refresh the active connection's model list. The cache is keyed by
- * connection id, so plan and api lists never collide.
- */
-async function syncActiveModels(store: ProviderStore, force = false): Promise<void> {
-  const env = process.env;
-  const activeId = store.activeConnectionId
-    ?? (!store.connections["opencode-go:plan"] && env.UB_OPENCODE_GO_KEY ? "opencode-go:plan" : null);
-  if (!activeId) return;
-  const conn = store.connections[activeId] ?? null;
-  let mode: ProviderMode;
-  let baseUrl: string;
-  let key: string | null = null;
-  let headers: Record<string, string>;
-  if (conn) {
-    mode = providerMode(conn.providerId, conn.mode);
-    if (!mode.listsModels) return;
-    baseUrl = substituteFields(mode.baseUrl, conn.fields);
-    if (conn.providerId === "opencode-go" && env.UB_OPENCODE_GO_BASE) baseUrl = env.UB_OPENCODE_GO_BASE;
-    headers = { ...(mode.headers ?? {}) };
-    if (conn.credential.kind === "key") {
-      key = conn.credential.key;
-    } else if (conn.credential.kind === "oauth") {
-      const auth = accessTokenFor(conn.providerId, conn.credential);
-      key = auth.token;
-      headers = { ...headers, ...auth.headers };
-    }
-  } else {
-    // The implicit env connection for the Go plan.
-    mode = providerMode("opencode-go", "plan");
-    if (!mode.listsModels) return;
-    key = env.UB_OPENCODE_GO_KEY ?? null;
-    baseUrl = env.UB_OPENCODE_GO_BASE || mode.baseUrl;
-    headers = { ...(mode.headers ?? {}) };
-  }
-  await refreshProviderModels({
-    providerId: activeId,
-    baseUrl,
-    key,
-    keyHeader: mode.keyHeader,
-    headers,
-    force,
-  });
-}
-
 function legacyActiveId(store: ProviderStore): string | null {
   if (!store.activeConnectionId) return null;
   try {
@@ -137,7 +85,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
   }
   const store = readProviderStore();
-  await syncActiveModels(store);
+  await syncProviderModels(store);
   return NextResponse.json(payload(store));
 }
 
@@ -226,7 +174,7 @@ export async function PUT(request: Request) {
     }
     return store;
     });
-    await syncActiveModels(store, true);
+    await syncProviderModels(store, { force: true });
     return NextResponse.json(payload(store));
   } catch (err) {
     return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
@@ -260,7 +208,7 @@ export async function DELETE(request: Request) {
       }
       throw new Error("invalid");
     });
-    await syncActiveModels(store, true);
+    await syncProviderModels(store, { force: true });
     return NextResponse.json(payload(store));
   } catch (err) {
     return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });

@@ -13,6 +13,7 @@ import {
   refreshProviderModels,
   writeModelsCache,
 } from "../shared/live-models.ts";
+import { providerMode } from "../shared/provider-catalog.ts";
 import { hydrateModel, inferCapabilities, mergeLiveModels, modelSeesImages, snapComposer } from "../shared/models.ts";
 
 test("parseModelList reads OpenAI list envelopes", () => {
@@ -168,6 +169,55 @@ test("model listing sends the catalogue key header and extra headers", async () 
   // x-api-key vendors keep their header shape.
   await fetchProviderModelIds("https://api.anthropic.com/v1", "sk-ant-12345678", fetchImpl, "x-api-key");
   assert.equal(calls[2]?.headers["x-api-key"], "sk-ant-12345678");
+});
+
+test("the ChatGPT Codex list is read by slug with hidden models left out", async () => {
+  // Shape of GET chatgpt.com/backend-api/codex/models on 2026-09-19.
+  const body = {
+    models: [
+      { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+      {
+        slug: "gpt-6-astra",
+        display_name: "GPT-6-Astra",
+        visibility: "list",
+        context_window: 272000,
+        input_modalities: ["text", "image"],
+        default_reasoning_level: "medium",
+        supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "max" }, { effort: "minimal" }],
+      },
+      { slug: "gpt-reserve", display_name: "GPT-Reserve", visibility: "hide" },
+      { slug: "codex-auto-review", display_name: "Codex Auto Review", visibility: "hide" },
+    ],
+  };
+  assert.deepEqual(parseModelList(body), ["gpt-5.6-sol", "gpt-6-astra"]);
+  const urls: string[] = [];
+  const fetchImpl = async (input: string | URL | Request) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify(body));
+  };
+  const mode = providerMode("openai", "oauth");
+  const ids = await fetchProviderModelIds(mode.baseUrl, "token-12345678", fetchImpl, "bearer", {}, mode.modelsQuery);
+  assert.deepEqual(ids, ["gpt-5.6-sol", "gpt-6-astra"]);
+  // The list is filtered by client_version and 400s without it.
+  assert.equal(urls[0], "https://chatgpt.com/backend-api/codex/models?client_version=99.0.0");
+  const path = join(mkdtempSync(join(tmpdir(), "ub-models-codex-")), "models-cache.json");
+  await refreshProviderModels({
+    providerId: "openai:oauth",
+    baseUrl: mode.baseUrl,
+    key: "token-12345678",
+    query: mode.modelsQuery,
+    modelsDevId: null,
+    path,
+    fetchImpl,
+  });
+  assert.deepEqual(catalogFor("openai:oauth", path).map((item) => item.id).sort(), ["gpt-5.6-sol", "gpt-6-astra"]);
+  // The vendor's own name, window and reasoning levels beat the guess by name.
+  const astra = catalogFor("openai:oauth", path).find((item) => item.id === "gpt-6-astra");
+  assert.equal(astra?.label, "GPT-6-Astra");
+  assert.equal(astra?.contextTokens, 272000);
+  assert.deepEqual(astra?.inputs, ["text", "image"]);
+  assert.deepEqual(astra?.efforts, ["low", "medium", "max"]);
+  assert.equal(astra?.defaultEffort, "medium");
 });
 
 test("the parsed models cache is reused until another process replaces the file", () => {
