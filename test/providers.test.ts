@@ -14,6 +14,7 @@ import {
   last4,
   legacyProviders,
   parseProviderStore,
+  pickComposerModel,
   publicProviders,
   readProviderStore,
   recordConnectionError,
@@ -449,4 +450,72 @@ test("legacy rows list every keyable vendor so the old web pane can still connec
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(rows.find((row) => row.id === "opencode-go")?.kind, "coding-plan");
   assert.equal(rows.find((row) => row.id === "openai")?.connected, false);
+});
+
+test("the router follows the picked model's connection across three providers, turn after turn", () => {
+  // Three connections at once: a Go plan key, a ChatGPT sign-in and a DeepSeek
+  // key. Whatever was active before, the turn after a pick goes to the picked
+  // model's own connection with that connection's credential.
+  const env = {} as NodeJS.ProcessEnv;
+  let store = setProviderKey(emptyProviderStore(), "opencode-go", "plan", "go-key-12345678");
+  store = setProviderKey(store, "deepseek", "api", "ds-key-12345678");
+  store = setOAuthCredential(store, "openai", {
+    kind: "oauth",
+    accessToken: "chatgpt-access",
+    refreshToken: "chatgpt-refresh",
+    expiresAt: Date.now() + 3_600_000,
+    accountId: "acct_123",
+  });
+  store = setActiveConnection(store, "opencode-go:plan", env);
+
+  const picks: Array<[string, string, string, string]> = [
+    // pick, provider, protocol, model the router sends
+    ["openai:oauth::gpt-6-astra", "openai", "openai-responses", "gpt-6-astra"],
+    ["opencode-go:plan::glm-5.3", "opencode-go", "openai-chat", "glm-5.3"],
+    ["deepseek:api::deepseek-v4-flash", "deepseek", "openai-chat", "deepseek-v4-flash"],
+    ["openai:oauth::gpt-5.6-luna", "openai", "openai-responses", "gpt-5.6-luna"],
+    ["opencode-go:plan::glm-5.3-flash", "opencode-go", "openai-chat", "glm-5.3-flash"],
+  ];
+  for (const [pick, providerId, protocol, modelId] of picks) {
+    store = pickComposerModel(store, pick, env);
+    const resolved = resolveUpstream(store, "workhorse", env);
+    assert.equal(resolved.connection.id, pick.split("::")[0], pick);
+    assert.equal(resolved.providerId, providerId, pick);
+    assert.equal(resolved.protocol, protocol, pick);
+    assert.equal(resolved.modelId, modelId, pick);
+    assert.equal(resolved.fallback, false, pick);
+    assert.equal(resolved.credential, store.connections[resolved.connection.id]!.credential, pick);
+  }
+  // The ChatGPT turn carries the sign-in's token and account, at the Codex base URL.
+  store = pickComposerModel(store, "openai:oauth::gpt-6-astra", env);
+  const chatgpt = resolveUpstream(store, "workhorse", env);
+  assert.equal(chatgpt.baseUrl, "https://chatgpt.com/backend-api/codex");
+  assert.equal(chatgpt.keyHeader, "bearer");
+  assert.equal(chatgpt.credential.kind, "oauth");
+  assert.equal(chatgpt.credential.kind === "oauth" ? chatgpt.credential.accountId : null, "acct_123");
+  assert.equal(chatgpt.opencodeSession, false);
+  // A bare model id keeps the connection.
+  store = pickComposerModel(store, "gpt-5.6-luna", env);
+  assert.equal(store.activeConnectionId, "openai:oauth");
+  assert.equal(resolveUpstream(store, "workhorse", env).modelId, "gpt-5.6-luna");
+  // A pick on a connection that is not signed in is refused, not silently rerouted.
+  assert.throws(() => pickComposerModel(store, "anthropic:api::claude-sonnet-4", env), /connection_unknown/);
+  assert.throws(() => pickComposerModel(store, "nonsense::x", env), /provider_unknown|connection_unknown/);
+});
+
+test("two bots on different providers do not share a credential mid-flight", () => {
+  // Each router call resolves from the store as it stands when the call
+  // starts; a pick for one bot between two calls changes only later calls.
+  const env = {} as NodeJS.ProcessEnv;
+  let store = setProviderKey(emptyProviderStore(), "opencode-go", "plan", "go-key-12345678");
+  store = setOAuthCredential(store, "openai", { kind: "oauth", accessToken: "chatgpt-access", refreshToken: null, expiresAt: null, accountId: "acct_1" });
+  store = pickComposerModel(store, "opencode-go:plan::glm-5.3-flash", env);
+  const botA = resolveUpstream(store, "workhorse", env);
+  store = pickComposerModel(store, "openai:oauth::gpt-6-astra", env);
+  const botB = resolveUpstream(store, "workhorse", env);
+  assert.equal(botA.providerId, "opencode-go");
+  assert.equal(botA.key, "go-key-12345678");
+  assert.equal(botB.providerId, "openai");
+  assert.equal(botB.credential.kind, "oauth");
+  assert.notEqual(botA.baseUrl, botB.baseUrl);
 });

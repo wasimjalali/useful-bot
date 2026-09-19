@@ -3,8 +3,10 @@ import test from "node:test";
 import { usageFromSseBlock } from "../shared/usage-parse.ts";
 import { postChatCompletions } from "../router/src/upstreams/openai-chat.ts";
 import {
+  DEFAULT_INSTRUCTIONS,
   buildResponsesBody,
   postResponses,
+  splitChatGptInstructions,
   translateResponsesJson,
 } from "../router/src/upstreams/openai-responses.ts";
 import {
@@ -12,6 +14,7 @@ import {
   postMessages,
   translateMessagesJson,
 } from "../router/src/upstreams/anthropic-messages.ts";
+import { settleCompletion, settleStreamBlock } from "../router/src/tool-finish.ts";
 
 function sse(frames: Array<{ event?: string; data: unknown }>): string {
   return frames.map((frame) => {
@@ -92,20 +95,23 @@ test("responses request maps chat fields, tools and images", () => {
   assert.equal(out.stream, true);
   assert.equal(out.store, false);
   assert.deepEqual(out.include, ["reasoning.encrypted_content"]);
-  assert.equal(out.max_output_tokens, 512);
+  // The ChatGPT backend refuses max_output_tokens and wants the system
+  // prompt as instructions, not as a system row.
+  assert.equal(out.max_output_tokens, undefined);
+  assert.equal(out.instructions, "You are helpful.");
   assert.deepEqual(out.reasoning, { effort: "low" });
   assert.deepEqual(out.tool_choice, { type: "function", name: "get_weather" });
   const input = out.input as Array<Record<string, unknown>>;
-  assert.equal(input.length, 5);
-  assert.deepEqual(input[0], { role: "system", content: "You are helpful." });
-  assert.deepEqual(input[2], {
+  assert.equal(input.length, 4);
+  assert.deepEqual(input[0], { role: "user", content: "What is the weather?" });
+  assert.deepEqual(input[1], {
     type: "function_call",
     call_id: "call_1",
     name: "get_weather",
     arguments: "{\"location\":\"Berlin\"}",
   });
-  assert.deepEqual(input[3], { type: "function_call_output", call_id: "call_1", output: "{\"temp\":21}" });
-  assert.deepEqual(input[4], {
+  assert.deepEqual(input[2], { type: "function_call_output", call_id: "call_1", output: "{\"temp\":21}" });
+  assert.deepEqual(input[3], {
     role: "user",
     content: [
       { type: "input_text", text: "And a picture" },
@@ -121,6 +127,84 @@ test("responses request maps chat fields, tools and images", () => {
   });
   const plain = buildResponsesBody({ ...CHAT_BODY }, { model: "gpt-5.4-mini", chatgpt: false });
   assert.equal(plain.include, undefined);
+  // The Responses API on api.openai.com keeps the old shape.
+  assert.equal(plain.instructions, undefined);
+  assert.equal(plain.max_output_tokens, 512);
+  assert.deepEqual((plain.input as Array<Record<string, unknown>>)[0], { role: "system", content: "You are helpful." });
+});
+
+test("chatgpt request shape: instructions always present, streaming forced, system rows lifted", () => {
+  // No system message at all: the backend still gets a non-empty instructions
+  // string, the way the Codex CLI always sends one.
+  const bare = buildResponsesBody({ model: "gpt-5.5", stream: false, messages: [{ role: "user", content: "hi" }], max_tokens: 4096 }, { model: "gpt-5.5", chatgpt: true });
+  assert.equal(bare.instructions, DEFAULT_INSTRUCTIONS);
+  assert.equal(bare.stream, true);
+  assert.equal(bare.store, false);
+  assert.equal(bare.max_output_tokens, undefined);
+  assert.deepEqual(bare.input, [{ role: "user", content: "hi" }]);
+  // Two leading system rows join; a system row after the first user turn
+  // stays in place as a developer row, the role the Codex CLI uses there.
+  const split = splitChatGptInstructions([
+    { role: "system", content: "You are Test Bot." },
+    { role: "system", content: [{ type: "text", text: "Standing instructions: help." }] },
+    { role: "user", content: "hello" },
+    { role: "system", content: "Reminder: be brief." },
+    { role: "assistant", content: "ok" },
+  ]);
+  assert.equal(split.instructions, "You are Test Bot.\n\nStanding instructions: help.");
+  assert.deepEqual(split.messages, [
+    { role: "user", content: "hello" },
+    { role: "developer", content: "Reminder: be brief." },
+    { role: "assistant", content: "ok" },
+  ]);
+  // A leading system row with an image is not folded into instructions, so
+  // the image is not lost; it goes on as a developer row.
+  const image = { type: "image_url", image_url: { url: "data:image/png;base64,AA" } };
+  const withImage = splitChatGptInstructions([
+    { role: "system", content: "You are Test Bot." },
+    { role: "system", content: [{ type: "text", text: "See this." }, image] },
+    { role: "user", content: "hello" },
+  ]);
+  assert.equal(withImage.instructions, "You are Test Bot.");
+  assert.deepEqual(withImage.messages, [
+    { role: "developer", content: [{ type: "text", text: "See this." }, image] },
+    { role: "user", content: "hello" },
+  ]);
+  // A malformed body fails before any upstream call, as it did before the split.
+  assert.throws(() => splitChatGptInstructions("not a list"), /upstream_protocol_error/);
+  const wired = JSON.parse(JSON.stringify(buildResponsesBody(
+    { model: "gpt-5.5", stream: true, messages: [{ role: "system", content: "S" }, { role: "user", content: "u" }] },
+    { model: "gpt-5.5", chatgpt: true },
+  ))) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(wired).sort(), ["include", "input", "instructions", "model", "store", "stream"]);
+});
+
+test("chatgpt non-stream caller is sent streaming and gets one chat completion back", async () => {
+  let sent: Record<string, unknown> | null = null;
+  const stub: typeof fetch = async (_url, init) => {
+    sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(RESPONSES_STREAM, { headers: { "content-type": "text/event-stream" } });
+  };
+  const res = await postResponses({
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    model: "gpt-5.5",
+    chatgpt: true,
+    body: { ...CHAT_BODY, stream: false },
+    headers: { "content-type": "application/json" },
+    signal: AbortSignal.timeout(5000),
+    fetchImpl: stub,
+  });
+  assert.equal(sent!.stream, true);
+  assert.equal(res.headers.get("content-type"), "application/json");
+  const body = await res.json() as Record<string, unknown>;
+  assert.equal(body.object, "chat.completion");
+  const choice = (body.choices as Array<Record<string, unknown>>)[0]!;
+  const message = choice.message as Record<string, unknown>;
+  assert.equal(message.content, "Hello, world");
+  assert.equal(message.reasoning_content, "Thinking it over");
+  assert.deepEqual(message.tool_calls, [{ id: "call_abc", type: "function", function: { name: "get_weather", arguments: "{\"location\":\"Berlin\"}" } }]);
+  assert.equal(choice.finish_reason, "tool_calls");
+  assert.deepEqual(body.usage, { prompt_tokens: 12, completion_tokens: 34, total_tokens: 46 });
 });
 
 test("responses non-stream json becomes a chat completion", async () => {
@@ -136,7 +220,9 @@ test("responses non-stream json becomes a chat completion", async () => {
   const res = await postResponses({
     baseUrl: "https://chatgpt.com/backend-api/codex",
     model: "gpt-5.4-mini",
-    chatgpt: true,
+    // api.openai.com Responses: a non-stream call stays non-stream. (The
+    // ChatGPT backend always streams; see the chatgpt non-stream test.)
+    chatgpt: false,
     body: { ...CHAT_BODY, stream: false },
     headers: { "content-type": "application/json" },
     signal: AbortSignal.timeout(5000),
@@ -389,4 +475,25 @@ test("chat completions post through url, body and headers unchanged", async () =
   assert.equal(seenUrl, "https://opencode.ai/zen/go/v1/chat/completions");
   assert.deepEqual(seenBody, body);
   assert.deepEqual(seenHeaders, headers);
+});
+
+test("a length stop after a tool call becomes a tool step; plain text keeps length", () => {
+  const seen = { toolCall: false };
+  const text = `data: ${JSON.stringify({ choices: [{ delta: { content: "long answer" } }] })}`;
+  assert.equal(settleStreamBlock(text, seen), text);
+  const cut = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] })}`;
+  // No tool call yet: a text-only cut is eve's to continue, unchanged.
+  assert.equal(settleStreamBlock(cut, seen), cut);
+  const call = `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "bash", arguments: "{" } }] } }] })}`;
+  assert.equal(settleStreamBlock(call, seen), call);
+  assert.equal(seen.toolCall, true);
+  assert.match(settleStreamBlock(cut, seen), /"finish_reason":"tool_calls"/);
+  assert.equal(settleStreamBlock("data: [DONE]", seen), "data: [DONE]");
+
+  const json = { choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{ id: "c1" }] }, finish_reason: "length" }] };
+  settleCompletion(json);
+  assert.equal(json.choices[0].finish_reason, "tool_calls");
+  const plain = { choices: [{ index: 0, message: { role: "assistant", content: "cut" }, finish_reason: "length" }] };
+  settleCompletion(plain);
+  assert.equal(plain.choices[0].finish_reason, "length");
 });

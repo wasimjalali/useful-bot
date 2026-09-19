@@ -216,6 +216,21 @@ import Testing
         }
     }
 
+    @Test func aToolCallWithNoResultMarksTheHistoryBroken() {
+        // What eve reports for every turn after a step was cut off mid-call.
+        var projection = StreamProjection()
+        projection.apply(EveEvent(
+            type: "turn.failed",
+            id: "1",
+            message: "Tool result is missing for tool call call_00_4BJAueiafcVPEJSqALkO5701.",
+            data: .object(["code": .string("MODEL_CALL_FAILED")])
+        ), live: false)
+        #expect(projection.failure?.historyBroken == true)
+        #expect(projection.failure?.reason
+            == "This chat's last step was cut off and can't continue. Retry sends your message in a fresh chat.")
+        #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_protocol_error").historyBroken == false)
+    }
+
     @Test func aFailedTurnSaysWhy() {
         var projection = StreamProjection()
         projection.apply(EveEvent(

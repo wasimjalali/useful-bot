@@ -9,7 +9,7 @@
       "catalogContextTokens": 1000000,
       "catalogMaxOutputTokens": 131072,
       "modelContextWindowTokens": 131072,
-      "maxOutputTokens": 4096,
+      "maxOutputTokens": 32768,
       "reasoningEffort": "low",
       "modalities": ["text"],
       "capabilities": { "streaming": true, "tools": true, "reasoningReplay": true },

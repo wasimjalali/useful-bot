@@ -162,8 +162,19 @@ public struct TurnFailure: Equatable, Sendable {
     /// "the turn failed" for that leaves the owner with nothing to do, when in
     /// fact one setting fixes it. `nil` when the cause is not one this app can
     /// explain, so the caller keeps its own wording rather than repeating it.
+    /// eve kept a tool call with no result in the session's history (a step
+    /// cut off mid-call), and every later turn is refused before any model
+    /// runs. Nothing sent to this session can succeed again; only a fresh
+    /// session can.
+    public var historyBroken: Bool {
+        "\(code) \(detail)".lowercased().contains("tool result is missing")
+    }
+
     public var reason: String? {
         let haystack = "\(code) \(detail)".lowercased()
+        if historyBroken {
+            return "This chat's last step was cut off and can't continue. Retry sends your message in a fresh chat."
+        }
         // The two concurrency refusals come first. Neither is about spend, and
         // both arrive wrapped in text that can also carry `rate_limit_error`,
         // the router's TYPE for every 429, so a later branch would claim them.

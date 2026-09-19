@@ -12,6 +12,7 @@ import { entryFor, loadRegistry } from "./registry.ts";
 import { search } from "./search.ts";
 import { completeUpstream } from "./upstreams/opencode.ts";
 import { usageFromPayload, usageFromSseBlock } from "../../shared/usage-parse.ts";
+import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
 
 const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
 if (NODE_MAJOR !== POLICY_NODE_MAJOR) {
@@ -595,6 +596,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             const reader = upstream.response.body.getReader();
             const decoder = new TextDecoder();
             let leftover = "";
+            const toolSeen = { toolCall: false };
             let firstEvent = false;
             let idleTimer: NodeJS.Timeout | undefined;
             const armIdle = (ms: number) => {
@@ -628,6 +630,10 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                     message: "upstream event too large",
                   });
                 }
+                // Whole blocks are relayed, not raw chunks, so a block can be
+                // repaired on its way through (see tool-finish.ts); a partial
+                // block waits in `leftover` for the rest of it.
+                let out = "";
                 for (const part of parts) {
                   if (Buffer.byteLength(part, "utf8") > MAX_EVENT_BYTES) {
                     throw new RouterError({
@@ -639,12 +645,13 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                   }
                   const usage = usageFromSseBlock(part);
                   if (usage) record(usage);
+                  out += `${settleStreamBlock(part, toolSeen)}\n\n`;
                 }
                 if (!firstEvent) {
                   firstEvent = true;
                   writeHeaders();
                 }
-                if (!res.write(Buffer.from(chunk))) {
+                if (out && !res.write(out)) {
                   try {
                     await waitForDrain(res, signal);
                   } catch (error) {
@@ -667,7 +674,16 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               clearTimeout(idleTimer);
             }
             if (!firstEvent) writeHeaders();
-            res.end();
+            // A stream that ended without a closing blank line still owes its
+            // last block to the client, terminated, and its usage to the meter.
+            leftover += decoder.decode();
+            if (leftover.trim()) {
+              const usage = usageFromSseBlock(leftover);
+              if (usage) record(usage);
+              res.end(`${settleStreamBlock(leftover, toolSeen)}\n\n`);
+            } else {
+              res.end();
+            }
             circuit.recordSuccess(entry.alias);
             return;
           }
@@ -696,6 +712,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             (json as { model: string }).model = parsed.model;
           }
           record(usageFromPayload(json));
+          settleCompletion(json);
           send(res, upstream.response.status, json, outHeaders);
           if (upstream.response.status < 500) circuit.recordSuccess(entry.alias);
           return;
