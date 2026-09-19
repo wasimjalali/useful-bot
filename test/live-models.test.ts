@@ -175,7 +175,14 @@ test("the ChatGPT Codex list is read by slug with hidden models left out", async
   // Shape of GET chatgpt.com/backend-api/codex/models on 2026-09-19.
   const body = {
     models: [
-      { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+      {
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6-Sol",
+        visibility: "list",
+        input_modalities: [],
+        default_reasoning_level: "minimal",
+        supported_reasoning_levels: [{ effort: "minimal" }, { effort: "high" }, { effort: "max" }],
+      },
       {
         slug: "gpt-6-astra",
         display_name: "GPT-6-Astra",
@@ -218,6 +225,11 @@ test("the ChatGPT Codex list is read by slug with hidden models left out", async
   assert.deepEqual(astra?.inputs, ["text", "image"]);
   assert.deepEqual(astra?.efforts, ["low", "medium", "max"]);
   assert.equal(astra?.defaultEffort, "medium");
+  // An empty list says nothing, and an inexpressible default snaps to the lowest level.
+  const sol = catalogFor("openai:oauth", path).find((item) => item.id === "gpt-5.6-sol");
+  assert.equal(sol?.inputs, undefined);
+  assert.deepEqual(sol?.efforts, ["high", "max"]);
+  assert.equal(sol?.defaultEffort, "high");
 });
 
 test("the parsed models cache is reused until another process replaces the file", () => {

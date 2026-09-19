@@ -128,17 +128,22 @@ export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
     const meta: ModelMeta = {};
     if (typeof rec.display_name === "string" && rec.display_name.trim()) meta.label = rec.display_name.trim();
     if (Number.isInteger(rec.context_window) && (rec.context_window as number) > 0) meta.contextTokens = rec.context_window as number;
-    if (Array.isArray(rec.input_modalities) && rec.input_modalities.every((item) => typeof item === "string")) {
+    // An empty array says nothing, so it leaves models.dev and the name guess standing.
+    if (Array.isArray(rec.input_modalities) && rec.input_modalities.length > 0 && rec.input_modalities.every((item) => typeof item === "string")) {
       meta.inputs = rec.input_modalities as string[];
     }
     if (Array.isArray(rec.supported_reasoning_levels)) {
       const efforts = rec.supported_reasoning_levels
         .map((level) => (level as { effort?: unknown } | null)?.effort)
         .filter((effort): effort is EffortId => isEffortId(effort));
-      meta.efforts = efforts;
-      meta.defaultEffort = isEffortId(rec.default_reasoning_level) && efforts.includes(rec.default_reasoning_level)
-        ? rec.default_reasoning_level
-        : null;
+      if (efforts.length > 0) {
+        meta.efforts = efforts;
+        // A default this app cannot express ("minimal") snaps to the lowest
+        // listed level, so the effort control always has a value.
+        meta.defaultEffort = isEffortId(rec.default_reasoning_level) && efforts.includes(rec.default_reasoning_level)
+          ? rec.default_reasoning_level
+          : efforts[0];
+      }
     }
     if (Object.keys(meta).length > 0) out[id.trim()] = meta;
   }
