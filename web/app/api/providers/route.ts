@@ -174,7 +174,12 @@ export async function PUT(request: Request) {
     }
     return store;
     });
-    await syncProviderModels(store, { force: true });
+    // A key or field written to a connection that is not the active one needs
+    // its list fetched with the new credential now, not on the cache TTL.
+    const written = typeof body.providerId === "string"
+      ? connectionId(body.providerId, body.mode === undefined ? legacyMode(body.providerId) : body.mode as "api" | "plan" | "local")
+      : undefined;
+    await syncProviderModels(store, { force: true, alsoAwait: written });
     return NextResponse.json(payload(store));
   } catch (err) {
     return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });

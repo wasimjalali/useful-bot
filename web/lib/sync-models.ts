@@ -7,8 +7,15 @@ function substituteFields(baseUrl: string, fields: Record<string, string>): stri
   return baseUrl.replace(/\{(\w+)\}/g, (_, name: string) => fields[name] ?? "");
 }
 
-/** Refreshes already running, so a poll that lands mid-fetch joins it instead of starting another. */
-const inFlight = new Map<string, Promise<unknown>>();
+/**
+ * The refresh running or queued per connection, with the request it was
+ * started for. A poll that lands mid-fetch joins it when the request is the
+ * same. A forced refresh, or one with a changed key, URL or query, queues
+ * behind it and forces its own fetch, so the newest credential always writes
+ * last and a job started with an old key can never leave the cache looking
+ * fresh over the new one.
+ */
+const inFlight = new Map<string, { sig: string; job: Promise<unknown> }>();
 
 async function refreshOne(store: ProviderStore, id: string, force: boolean): Promise<unknown> {
   const env = process.env;
@@ -41,20 +48,23 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
   } else {
     return;
   }
+  const query = mode.modelsQuery;
+  const sig = JSON.stringify([baseUrl, key, headers, query]);
   const running = inFlight.get(id);
-  if (running && !force) return running;
-  const job = refreshProviderModels({
+  if (running && !force && running.sig === sig) return running.job;
+  const run = () => refreshProviderModels({
     providerId: id,
     baseUrl,
     key,
     keyHeader: mode.keyHeader,
     headers,
-    query: mode.modelsQuery,
-    force,
-  }).finally(() => {
-    if (inFlight.get(id) === job) inFlight.delete(id);
+    query,
+    force: force || Boolean(running),
   });
-  inFlight.set(id, job);
+  const job: Promise<unknown> = (running ? running.job.catch(() => undefined).then(run) : run()).finally(() => {
+    if (inFlight.get(id)?.job === job) inFlight.delete(id);
+  });
+  inFlight.set(id, { sig, job });
   return job;
 }
 

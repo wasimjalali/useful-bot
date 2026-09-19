@@ -44,3 +44,37 @@ test("every connected provider gets its live list, not only the active one", asy
     delete process.env.UB_MODELS_CACHE_PATH;
   }
 });
+
+test("a refresh with a new key lands after one still running with the old key", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-sync-race-")), "models-cache.json");
+  process.env.UB_MODELS_CACHE_PATH = path;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).startsWith("https://models.dev/")) return new Response("{}");
+    const auth = (init?.headers as Record<string, string>).authorization;
+    // The old key's list is slow, so without ordering it would write last.
+    if (auth === "Bearer old-key-12345678") {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return new Response(JSON.stringify({ data: [{ id: "old-model" }] }));
+    }
+    return new Response(JSON.stringify({ data: [{ id: "new-model" }] }));
+  }) as typeof fetch;
+  const storeWith = (key: string) => ({
+    activeConnectionId: "zai:api",
+    connections: {
+      "zai:api": { id: "zai:api", providerId: "zai", mode: "api", fields: {}, credential: { kind: "key", key } },
+    },
+  }) as unknown as ProviderStore;
+  try {
+    const first = syncProviderModels(storeWith("old-key-12345678"));
+    const second = syncProviderModels(storeWith("new-key-12345678"), { force: true });
+    await Promise.all([first, second]);
+    assert.deepEqual(catalogFor("zai:api", path).map((item) => item.id), ["new-model"]);
+    // A poll with the new key after that joins nothing stale and keeps the new list.
+    await syncProviderModels(storeWith("new-key-12345678"));
+    assert.deepEqual(catalogFor("zai:api", path).map((item) => item.id), ["new-model"]);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.UB_MODELS_CACHE_PATH;
+  }
+});
