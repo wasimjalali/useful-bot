@@ -1,10 +1,11 @@
 import AppKit
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 import UsefulBotCore
 
 /// The owner's profile photo. There is no account backend, so the photo
-/// lives on this Mac only: a 256pt square PNG in the app's Application
+/// lives on this Mac only: a 256px square PNG in the app's Application
 /// Support folder. No photo means the initials show, as before.
 @MainActor
 final class OperatorAvatarStore: ObservableObject {
@@ -14,8 +15,6 @@ final class OperatorAvatarStore: ObservableObject {
     /// Why the last pick failed, shown under the account row until the next
     /// pick or removal.
     @Published private(set) var error: String?
-
-    private static let side: CGFloat = 256
 
     private let fileURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -51,40 +50,64 @@ final class OperatorAvatarStore: ObservableObject {
         }
     }
 
+    /// Decoding, cropping and writing happen off the main thread: a large
+    /// camera photo would otherwise freeze the window after "Use Photo".
     private func save(from url: URL) {
-        guard let source = NSImage(contentsOf: url), source.isValid else {
-            error = "That file is not an image this Mac can read."
-            return
-        }
-        guard let png = Self.squarePNG(source) else {
-            error = "That image could not be prepared."
-            return
-        }
-        do {
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try png.write(to: fileURL, options: .atomic)
-            image = NSImage(data: png)
-            error = nil
-        } catch {
-            self.error = "The photo could not be saved: \(error.localizedDescription)"
+        let target = fileURL
+        Task.detached(priority: .userInitiated) {
+            let outcome = Self.prepare(url, writingTo: target)
+            await MainActor.run {
+                switch outcome {
+                case .success(let png):
+                    self.image = NSImage(data: png)
+                    self.error = nil
+                case .failure(let failure):
+                    self.error = failure.message
+                }
+            }
         }
     }
 
-    /// Centre-crops to a square and scales to `side` pixels.
-    private static func squarePNG(_ source: NSImage) -> Data? {
-        guard let cg = source.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+    private struct Failure: Error {
+        let message: String
+    }
+
+    nonisolated private static func prepare(_ url: URL, writingTo target: URL) -> Result<Data, Failure> {
+        guard let png = squarePNG(from: url) else {
+            return .failure(Failure(message: "That file is not an image this Mac can read."))
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: target.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try png.write(to: target, options: .atomic)
+            return .success(png)
+        } catch {
+            return .failure(Failure(message: "The photo could not be saved: \(error.localizedDescription)"))
+        }
+    }
+
+    /// Downsamples at decode (EXIF rotation applied, so a portrait phone
+    /// photo stays upright), centre-crops to a square and scales to 256px.
+    nonisolated private static func squarePNG(from url: URL) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1024,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              cg.width > 0, cg.height > 0 else { return nil }
         let edge = min(cg.width, cg.height)
         let crop = CGRect(x: (cg.width - edge) / 2, y: (cg.height - edge) / 2, width: edge, height: edge)
         guard let square = cg.cropping(to: crop) else { return nil }
-        let pixels = Int(side)
-        guard let context = CGContext(
-            data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
+        let pixels = 256
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
         context.interpolationQuality = .high
         context.draw(square, in: CGRect(x: 0, y: 0, width: pixels, height: pixels))
         guard let scaled = context.makeImage() else { return nil }
