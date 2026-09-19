@@ -245,7 +245,9 @@ struct WidgetWebView: NSViewRepresentable {
                 let clicked = Self.justClicked(view)
                 Task { @MainActor in
                     do {
-                        let client = BackendClient(base: ServerConfig.resolved().baseURL)
+                        // Same per-load rationale as `Self.client`: a fresh
+                        // client per call pays a full sign-in each time.
+                        let client = Self.client
                         let result = try await client.widgetToolCall(id: widgetId, name: name, arguments: arguments)
                         // Credit only the page that asked: a slow call from a
                         // page since replaced must not open links for the next.

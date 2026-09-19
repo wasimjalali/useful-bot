@@ -153,6 +153,18 @@ private final class CallCounter: @unchecked Sendable {
         #expect(signIns.value == 1)
     }
 
+    /// The default session carries the isolation controls themselves: a
+    /// private cookie jar, no shared URLCache for authed GET bodies, and the
+    /// no-redirect delegate. Removing one must fail a test, not slip through.
+    @Test func defaultSessionIsIsolated() {
+        let session = BackendClient.makeSession()
+        let config = session.configuration
+        #expect(config.urlCache == nil)
+        #expect(config.httpCookieStorage != nil)
+        #expect(config.httpCookieStorage !== HTTPCookieStorage.shared)
+        #expect(session.delegate is BackendClient.NoRedirectDelegate)
+    }
+
     @Test func refusalCoversNewTerminalErrors() {
         #expect(WidgetSaveRetry.isRefusal(BackendError.forbidden("csrf")))
         #expect(WidgetSaveRetry.isRefusal(BackendError.credentialInvalid))

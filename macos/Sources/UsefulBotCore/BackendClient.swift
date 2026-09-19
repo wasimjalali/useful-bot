@@ -301,7 +301,8 @@ public actor BackendClient {
     }
 #endif
 
-    private static func makeSession() -> URLSession {
+    /// Internal (not private) so tests can pin the isolation controls.
+    static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.default
         config.httpCookieStorage = HTTPCookieStorage()
         config.httpShouldSetCookies = true
@@ -316,7 +317,8 @@ public actor BackendClient {
 
     /// Spec 4.7/8.1: follow no redirects. A 3xx from the server is an error
     /// surfaced through `expectOK`, never silently followed with credentials.
-    private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    /// Internal so tests can pin the delegate on the default session.
+    final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(
             _ session: URLSession,
             task: URLSessionTask,
@@ -367,7 +369,18 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         guard (200...299).contains(sessionHttp.statusCode) else {
+#if os(iOS)
+            // Same taxonomy as the POST above: a rejected credential is
+            // terminal, a 403 carries its code (§8.4).
+            throw Self.failure(
+                status: sessionHttp.statusCode,
+                code: Self.errorCode(sessionData),
+                fallback: "session_failed",
+                typed: { _ in .http(sessionHttp.statusCode) }
+            )
+#else
             throw BackendError.http(sessionHttp.statusCode)
+#endif
         }
         let body = (try? JSONSerialization.jsonObject(with: sessionData)) as? [String: Any]
         // A missing CSRF token would make every write 403 and loop through
@@ -1232,7 +1245,7 @@ public actor BackendClient {
             ])
             return request
         }
-        try Self.expectOK(response)
+        try Self.expectOK(data, response)
         guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = body["result"] as? [String: Any] else {
             throw BackendError.decoding
@@ -1472,6 +1485,11 @@ public actor BackendClient {
             let reader = Task {
                 do {
                     for attempt in 0..<2 {
+                        // The idle watchdog covers the whole handshake, not
+                        // just the line loop: the header wait, an error-body
+                        // drain and a re-auth round trip each reset it so a
+                        // slow link cannot finish() the stream mid-handling.
+                        activity.touch()
                         var components = URLComponents(
                             url: base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/stream"),
                             resolvingAgainstBaseURL: false
@@ -1484,6 +1502,7 @@ public actor BackendClient {
                         var request = URLRequest(url: url)
                         request.timeoutInterval = 180
                         let (bytes, response) = try await session.bytes(for: request)
+                        activity.touch()
                         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 #if os(iOS)
                         // §6.2/§8.4: a 401 re-auths through the shared single
@@ -1491,8 +1510,10 @@ public actor BackendClient {
                         // terminal and never re-auth.
                         if status == 401, attempt == 0 {
                             let code = try await Self.errorCode(bytes)
+                            activity.touch()
                             if code != "credential_invalid" {
                                 try await client.reauth()
+                                activity.touch()
                                 continue
                             }
                             throw BackendError.credentialInvalid
@@ -1513,6 +1534,7 @@ public actor BackendClient {
                             // The session rotated (server restart); sign in and
                             // rebuild the stream once.
                             try await client.reauth()
+                            activity.touch()
                             continue
                         }
                         guard (200...299).contains(status) else {
@@ -1628,7 +1650,10 @@ public actor BackendClient {
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         if activity.idle > 3 {
-                            continuation.finish()
+                            // §8.3: a watchdog stop is an early stop - the
+                            // read is incomplete and reported as such, never
+                            // presented as a complete replay.
+                            continuation.finish(throwing: BackendError.streamInterrupted)
                             return
                         }
                     }
@@ -1641,7 +1666,7 @@ public actor BackendClient {
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         if !armedBox.value, activity.idle > 20 {
-                            continuation.finish()
+                            continuation.finish(throwing: BackendError.streamInterrupted)
                             return
                         }
                     }
