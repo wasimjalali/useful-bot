@@ -267,11 +267,22 @@ public actor BackendClient {
         tokenStore: any DeviceTokenStore,
         endpointPolicy: any EndpointPolicy
     ) throws {
+        try self.init(base: base, tokenStore: tokenStore, endpointPolicy: endpointPolicy, session: nil)
+    }
+
+    /// Test seam: a session built on a stubbed `URLProtocol` configuration
+    /// answers canned responses without a server.
+    init(
+        base: URL,
+        tokenStore: any DeviceTokenStore,
+        endpointPolicy: any EndpointPolicy,
+        session: URLSession?
+    ) throws {
         // The device token and cookies ride on every request: the platform's
         // policy decides which base is allowed to carry them.
         self.base = try endpointPolicy.endpoint(for: base).baseURL
         self.tokenStore = tokenStore
-        self.session = Self.makeSession()
+        self.session = session ?? Self.makeSession()
     }
 
 #if os(macOS)
@@ -296,6 +307,10 @@ public actor BackendClient {
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 30
         config.waitsForConnectivity = false
+        // Authenticated GET bodies are the app's own cached state, not the
+        // shared URLCache's: §13 sanctions one cache and §4.8's unpair purge
+        // cannot reach Cache.db. No disk caching here.
+        config.urlCache = nil
         return URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }
 
@@ -392,6 +407,23 @@ public actor BackendClient {
     /// Pull the `{ok:false,error:"code"}` code out of a small error body.
     private static func errorCode(_ data: Data) -> String? {
         (try? JSONDecoder().decode(ShellErrorResponse.self, from: data))?.error
+    }
+
+    /// §6.2/§8.4 applied to the endpoints that decode `{error: code}` bodies:
+    /// on iOS a 401 is the terminal `credentialInvalid` (§4.8) and a 403 is
+    /// `forbidden(code)` — never the endpoint's own error shape; on macOS the
+    /// typed code (or its per-route fallback) stands, exactly as before.
+    private static func failure(
+        status: Int, code: String?, fallback: String, typed: (String) -> BackendError
+    ) -> BackendError {
+#if os(iOS)
+        if status == 401 { return .credentialInvalid }
+        if status == 403 { return .forbidden(code?.isEmpty == false ? code! : "forbidden") }
+        if let code, !code.isEmpty { return typed(code) }
+        return .http(status)
+#else
+        return typed(code?.isEmpty == false ? code! : fallback)
+#endif
     }
 
     /// The same code read off a failed stream's body: bounded to a prefix so
@@ -620,7 +652,7 @@ public actor BackendClient {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a connect was refused.
             let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "provider_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersPayload.self, from: data) else {
             throw BackendError.decoding
@@ -641,7 +673,7 @@ public actor BackendClient {
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "provider_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(DeviceFlowStart.self, from: data) else {
             throw BackendError.decoding
@@ -695,7 +727,7 @@ public actor BackendClient {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a key was refused.
             let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "provider_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
             throw BackendError.decoding
@@ -763,7 +795,7 @@ public actor BackendClient {
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let decoded = try? JSONDecoder().decode(ConnectorsErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "connectors_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "connectors_failed", typed: BackendError.provider)
         }
         return data
     }
@@ -795,7 +827,7 @@ public actor BackendClient {
         }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             let decoded = try? JSONDecoder().decode(ConnectorsErrorResponse.self, from: data)
-            throw BackendError.provider(decoded?.error ?? "budget_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "budget_failed", typed: BackendError.provider)
         }
         guard let decoded = try? JSONDecoder().decode(UsagePayload.self, from: data) else {
             throw BackendError.decoding
@@ -1271,7 +1303,7 @@ public actor BackendClient {
         }
         let decoded = try? JSONDecoder().decode(AttachmentResponse.self, from: responseData)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw BackendError.attachment(decoded?.error ?? "attachment_failed")
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "attachment_failed", typed: BackendError.attachment)
         }
         guard let decoded, let resolvedName = decoded.name, let bytes = decoded.bytes else {
             throw BackendError.decoding
@@ -1628,12 +1660,23 @@ public actor BackendClient {
     private static func expectShellOK(_ data: Data, _ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
         guard (200...299).contains(http.statusCode) else {
+#if os(iOS)
+            // §6.2: a post-retry 401 is terminal `credentialInvalid`, a 403 is
+            // `forbidden(code)` — never `.shell("unauthorized")`.
+            throw Self.failure(
+                status: http.statusCode,
+                code: Self.errorCode(data),
+                fallback: "shell_failed",
+                typed: BackendError.shell
+            )
+#else
             if let decoded = try? JSONDecoder().decode(ShellErrorResponse.self, from: data),
                let code = decoded.error, !code.isEmpty {
                 throw BackendError.shell(code)
             }
             try expectOK(data, response)
             return
+#endif
         }
     }
 

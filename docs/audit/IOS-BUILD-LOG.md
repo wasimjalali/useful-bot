@@ -252,3 +252,35 @@ green; `UsefulBotCoreTests` 259/259 on the simulator; UITests 4/4 at 390 pt
 and 4/4 at 375 pt; `npm test` 538/538; `xcodegen generate` byte-identical;
 all 16 screenshots re-exported (the elbow geometry is visible in both
 appearances).
+
+Round 3: fresh sessions (correctness `devin-509147df56864b52be718ba549590570`,
+security `devin-9429754199cf4776a6091a957b91f7c0`, design-a11y
+`devin-612facd0d2ff4ec790175358a77ec97b`). Correctness and security both
+returned findings; design-a11y still running at commit time.
+
+Correctness (2):
+1. [high] seven non-2xx write paths (`providersWrite`, `startOAuth`,
+   `providerWrite`, `connectorsWrite`, `setDailyTokenBudget`,
+   `uploadAttachment`, `expectShellOK`) decoded `{error:code}` and threw the
+   typed error directly, so on iOS a terminal 401 surfaced as
+   `.provider("unauthorized")` and a 403 as `.provider("forbidden")` -> all
+   route through `failure(status:code:fallback:typed:)`, the single helper
+   that applies the iOS lifecycle map before the typed code.
+2. [low] no test touched the new seam -> `BackendClientAuthTests` (5 tests)
+   pins both platforms with a stubbed `URLProtocol`: terminal 401 ->
+   `credentialInvalid` iOS / `shell("unauthorized")` macOS;
+   `credential_invalid` body skips the re-auth on iOS; 403 -> `forbidden(code)`
+   iOS / `shell(code)` macOS; four concurrent 401s cost one sign-in.
+
+Security (3):
+1. [medium] same `expectShellOK` bypass as correctness #1 -> same fix.
+2. [medium] `URLSessionConfiguration.default` let `URLCache.shared` persist
+   authenticated GET bodies (roster, transcripts, the csrfToken readback) to
+   Cache.db, outside the spec 13 cache and the spec 4.8 purge ->
+   `config.urlCache = nil`.
+3. [low] the taxonomy had no tests -> `BackendClientAuthTests` covers it
+   (same file as correctness #2).
+
+Round-3 verification after fixes: `make -C macos test` 285/285 (five new);
+`UsefulBotCoreTests` 264/264 on the simulator; `xcodegen generate` run after
+the new test file was added so the iOS target picks it up.
