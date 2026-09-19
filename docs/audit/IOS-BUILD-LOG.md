@@ -309,3 +309,23 @@ the new states, macOS 285/285, verify-release PASS, `npm test` 538/538,
 xcodegen no-diff, 34 screenshots in `docs/audit/ios-shots/PR-1/`. One
 flake was hit and re-run green: `aPortThatIsStillComingUpIsNotKilledAsWedged`
 (macOS, timing-sensitive port test, unrelated to this branch).
+
+Review loop round 4 (fresh reviewers on 5d385e6): correctness approved
+("Zero findings in role correctness"; gates re-run green; the lone
+`contracts.test.ts` glm-5.3 max_tokens failure reproduces on `origin/main`,
+pre-existing, not a finding); security approved ("Zero findings in role
+security"); design-a11y requested changes, 2 findings, both fixed in
+`420cf14`:
+
+Design-a11y (2):
+1. [medium] `ManualPairingView` had no scroll container, so at 375 pt x
+   a11y-XXXL the disabled-reason text clipped with a rendered ellipsis ->
+   wrapped in ScrollView pinned to screen height (same pattern as
+   PairingView); the reason wraps via `fixedSize`. New 375-xxxl captures
+   show all three lines.
+2. [low] resting field edges stroked `edge` instead of `borderStrong`,
+   the token table's Field edges entry -> `Theme.C.borderStrong`.
+
+Round-4 verification after fixes: UITests 4/4 at 390 pt and 4/4 at 375 pt;
+full sim suite green; macOS 285/285; verify-release PASS; `npm test`
+538/538; xcodegen no-diff; all 34 screenshots regenerated.
