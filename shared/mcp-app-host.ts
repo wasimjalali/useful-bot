@@ -169,7 +169,7 @@ window.addEventListener("message", (event) => {
   }
   if (data.id === undefined || data.id === null) return;
   const id = data.id;
-  if (data.method !== "ui/update-model-context") stopResends();
+  stopResends();
   if (data.method === "ui/update-model-context") {
     reply(id, {});
     return;

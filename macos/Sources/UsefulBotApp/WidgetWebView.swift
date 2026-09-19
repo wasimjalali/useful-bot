@@ -64,14 +64,17 @@ struct WidgetWebView: NSViewRepresentable {
         // frame is `width: 100%`, and a drawing that laid itself out in a
         // zero-width frame, which is what a view created mid-scroll had for
         // its first moments, stayed blank after the frame grew.
+        context.coordinator.wantedId = widgetId
         view.onFirstSize = { [weak view, coordinator = context.coordinator] in
-            guard let view else { return }
-            coordinator.load(widgetId: widgetId, into: view)
+            guard let view, let wanted = coordinator.wantedId else { return }
+            coordinator.load(widgetId: wanted, into: view)
         }
         return container
     }
 
     func updateNSView(_ container: NSView, context: Context) {
+        // A row whose id changes before its first size loads the new id.
+        context.coordinator.wantedId = widgetId
         guard let view = context.coordinator.webView else { return }
         if view.sized, context.coordinator.loadedId != widgetId {
             context.coordinator.load(widgetId: widgetId, into: view)
@@ -154,6 +157,8 @@ struct WidgetWebView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedId: String?
+        /// The id the row wants shown, read when the view first has a size.
+        var wantedId: String?
         /// The widget whose page is in the view now. `loadedId` moves as soon
         /// as a fetch starts; tool calls must speak for the page on screen,
         /// which is the handed-over one only once its load has finished.
