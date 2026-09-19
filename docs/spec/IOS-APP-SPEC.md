@@ -1016,8 +1016,8 @@ gates need. Before PR-1 opens, the lead agent proves, and records in the build l
   `web/`, so it is not sufficient for server changes).
 - The full Useful Bot stack runs inside the VM from the repository (§17.5): `setup-local.mjs`
   against the VM's login Keychain, router, web and eve started through `scripts/service.mjs`,
-  one provider connected through `PUT /api/providers` with the key from the `UB_CLOUD_PROVIDER_KEY`
-  secret, and a bot named **Test Bot** created through the API. Every live check in this
+  OpenCode Go connected through `PUT /api/providers` with the key from the
+  `UB_CLOUD_PROVIDER_KEY` secret (§17.5), and a bot named **Test Bot** created through the API. Every live check in this
   document targets that stack, never the owner's Mac.
 - The owner-run gates (real Serve, physical device) cannot run in the cloud (no Tailscale, no
   USB). They are recorded **red** in every PR that requires them and collected into
@@ -1205,13 +1205,23 @@ therefore runs as a **chain of focused sessions**, one per PR, with no human bet
   Recordings stay out of git; their paths in the session are logged.
 - **The stack in the VM.** Started once per session, before any gate:
   `node scripts/setup-local.mjs` (VM Keychain), then `scripts/service.mjs router`, `eve`, `web`
-  in the background with logs under `~/Library/Logs/UsefulBot/`; provider connected via
+  in the background with logs under `~/Library/Logs/UsefulBot/`; OpenCode Go connected via
   `PUT /api/providers` from the secret; Test Bot created via `PUT /api/shell`. Health is
   `GET /api/status`. The stack is disposable with the VM.
 - **Secrets** (Devin org secrets, exposed as environment variables): `DEVIN_API_KEY`,
-  `DEVIN_ORG_ID`, `UB_CLOUD_PROVIDER_KEY` (plus `UB_CLOUD_PROVIDER_ID`, the catalogue id it
-  belongs to), optionally `UB_CLOUD_COMPOSIO_KEY` for the one real connector check in PR-6. No
-  secret is ever written to the repository, the build log or a screenshot.
+  `DEVIN_ORG_ID`, `UB_CLOUD_PROVIDER_KEY`, optionally `UB_CLOUD_COMPOSIO_KEY` for the one real
+  connector check in PR-6. No secret is ever written to the repository, the build log or a
+  screenshot.
+- **The provider is OpenCode Go** (catalogue id `opencode-go`, mode `plan`, connection
+  `opencode-go:plan`, default models `glm-5.3-flash` for chat and `glm-5.3` for the reviewer).
+  The key in `UB_CLOUD_PROVIDER_KEY` is a plan key issued for this build; it is connected
+  through `PUT /api/providers` the way the route expects. Spend it on real verification as
+  freely as a check requires. The plan has a **weekly usage limit**: when the upstream answers
+  `Weekly usage limit reached` (or a turn produces no tokens and the router log shows that
+  error), that is the provider, not a defect. The session records it in the build log, marks
+  the live checks it could not finish **red (provider limit)** rather than green, completes the
+  same checks against the contract fixtures, and continues; the next session retries the live
+  checks first. Never loop on a limited provider.
 - **Network allowlist** the org must cover: the npm registry, `esm.sh` (widgets),
   `mcp.excalidraw.com`, the chosen provider's API host, Composio if used, `api.devin.ai`,
   `github.com`.

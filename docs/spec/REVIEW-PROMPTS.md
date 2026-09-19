@@ -248,10 +248,13 @@ HOW TO WORK, AND WHAT NEVER TO DO
   appearances, real requests against the stack you run in this VM. "It should work" is not
   evidence.
 - Every live message goes to the bot named Test Bot in your own stack, never anywhere else.
-- The provider key in $UB_CLOUD_PROVIDER_KEY is a short-lived key issued for this build only.
-  Use it freely: when a check needs ten real turns, send ten; when a reliability case needs a
-  long conversation, build one. Never economize on verification. The only waste is a loop that
-  retries the same failing call; stop those, fix the cause, and continue.
+- The provider is OpenCode Go (spec 17.5): catalogue id opencode-go, mode plan, key in
+  $UB_CLOUD_PROVIDER_KEY, issued for this build only. Use it freely: when a check needs ten
+  real turns, send ten; when a reliability case needs a long conversation, build one. Never
+  economize on verification. The plan has a weekly usage limit; "Weekly usage limit reached"
+  from the upstream is the provider, not your bug. Record it, mark the affected live checks red
+  (provider limit), finish them against fixtures, and continue. The only waste is a loop that
+  retries the same failing call.
 - Keep docs/audit/IOS-BUILD-LOG.md honest and current at merge time. Measured and estimated
   numbers are never mixed.
 
@@ -284,9 +287,12 @@ PROCEDURE
    make -C macos test and one simulator screenshot before writing code.
 3. Stack (spec 17.5): run node scripts/setup-local.mjs, start router, eve and web through
    scripts/service.mjs in the background, wait for GET http://127.0.0.1:4320/api/status to
-   answer, connect the provider named by $UB_CLOUD_PROVIDER_ID with $UB_CLOUD_PROVIDER_KEY
-   through PUT /api/providers, create the bot "Test Bot" through PUT /api/shell, send it one
-   turn and confirm a reply streams. Postcondition: a real model answer from Test Bot.
+   answer, connect OpenCode Go (providerId opencode-go, mode plan) with $UB_CLOUD_PROVIDER_KEY
+   through PUT /api/providers as web/app/api/providers/route.ts expects, create the bot
+   "Test Bot" through PUT /api/shell, send it one turn and confirm a reply streams.
+   Postcondition: a real model answer from Test Bot. If the upstream reports the weekly usage
+   limit, record it and follow spec 17.5: live checks go red (provider limit), fixtures cover
+   the same checks, the session continues.
 4. Branch: git checkout -b ios/pr-<N> from main. Write the build-log entry skeleton for PR-<N>
    now (started timestamp, session id), so an interrupted session leaves a trace.
 5. Plan: list the spec sections and design-spec screens this PR owns, the server changes it
@@ -331,8 +337,9 @@ SPECIFICATIONS
   Surprises, continue.
 - Never skip or downgrade a gate; never narrow parity; never write a secret, tailnet address or
   device name anywhere in the repository.
-- All live messages go to Test Bot in the VM stack only. The provider key is dedicated to this
-  build; spend it on real verification as freely as a check requires, and never on a retry loop.
+- All live messages go to Test Bot in the VM stack only. The OpenCode Go key is dedicated to
+  this build; spend it on real verification as freely as a check requires, never on a retry
+  loop, and treat its weekly limit as the provider speaking, not as a defect.
 - The spec wins over your judgment; the code wins over the spec's description of it, with the
   drift recorded.
 ```
