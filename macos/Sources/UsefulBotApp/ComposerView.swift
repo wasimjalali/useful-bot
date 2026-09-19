@@ -199,7 +199,9 @@ struct ComposerView: View {
                                 onOpenProviders()
                             },
                             onSave: { patch in
-                                modeOpen = false
+                                // A model pick keeps the menu open so its
+                                // effort can be picked next.
+                                if patch.modelId == nil { modeOpen = false }
                                 Task {
                                     await model.saveComposer(
                                         modelId: patch.modelId,
@@ -403,9 +405,15 @@ struct ComposerView: View {
             permissionOpen = false
             modeOpen.toggle()
         } label: {
+            // The model by name, then its effort, like the Providers page chip.
             HStack(spacing: 4) {
-                Text(model.composer?.chipLabel ?? "Model")
+                Text(ComposerView.chipLabel(model.composer?.modelLabel, max: 24) ?? "Model")
+                    .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
+                if let meta = model.composer?.chipMeta {
+                    Text(meta)
+                        .lineLimit(1)
+                }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .medium))
             }
@@ -833,6 +841,9 @@ private struct ComposerModeMenu: View {
 
     @State private var flyout: Flyout?
     @State private var hoverTask: Task<Void, Never>?
+    /// A model pick is saving; the effort list opens once the saved state
+    /// (and that model's efforts) comes back.
+    @State private var pendingModel = false
 
     enum Flyout {
         case effort
@@ -855,11 +866,32 @@ private struct ComposerModeMenu: View {
         .onHover { hovering in
             if !hovering { hoverTask?.cancel() }
         }
+        .onChange(of: composer) { _, next in
+            guard pendingModel else { return }
+            pendingModel = false
+            flyout = next.efforts.isEmpty ? nil : .effort
+        }
     }
 
-    /// Open (or switch) the flyout after the hover settles.
+    /// Picking a model moves straight to its effort list, since efforts
+    /// differ per model. A pick of the current model has nothing to save.
+    private func pickModel(_ patch: ComposerPatch?) {
+        hoverTask?.cancel()
+        guard let patch else {
+            flyout = composer.efforts.isEmpty ? nil : .effort
+            return
+        }
+        pendingModel = true
+        onSave(patch)
+    }
+
+    /// Open the flyout after the hover settles. Hover only opens; it never
+    /// switches an open flyout. The pointer crosses the Effort row on its way
+    /// up to the model search, and a switch there swapped the model list out
+    /// from under it. Switching takes a click on the row.
     private func hover(_ target: Flyout) {
         hoverTask?.cancel()
+        guard flyout == nil else { return }
         // A plain Task body runs off the main actor; the flyout is SwiftUI
         // state and must be written on the main thread.
         hoverTask = Task { @MainActor in
@@ -977,7 +1009,7 @@ private struct ComposerModeMenu: View {
                 }
                 .frame(maxHeight: 240)
             case .model:
-                ModelFlyout(composer: composer, onSave: onSave, onOpenProviders: onOpenProviders)
+                ModelFlyout(composer: composer, onPick: pickModel, onOpenProviders: onOpenProviders)
             case .none:
                 EmptyView()
             }
@@ -1000,10 +1032,12 @@ private struct ComposerModeMenu: View {
 /// connection and the model in one write.
 private struct ModelFlyout: View {
     let composer: ComposerState
-    let onSave: (_ patch: ComposerPatch) -> Void
+    /// Nil when the pick is the model already in use.
+    let onPick: (_ patch: ComposerPatch?) -> Void
     let onOpenProviders: () -> Void
 
     @State private var query = ""
+    @FocusState private var searchFocused: Bool
     /// Collapsed sections by connection id. Every section starts expanded.
     @State private var collapsed: Set<String> = []
 
@@ -1044,10 +1078,12 @@ private struct ModelFlyout: View {
     }
 
     private func pick(group: ComposerState.Group, model: ComposerState.Option) {
-        if !composer.connectionId.isEmpty, group.connectionId != composer.connectionId {
-            onSave(ComposerPatch(modelId: "\(group.connectionId)::\(model.id)"))
+        if isCurrent(group: group, model: model) {
+            onPick(nil)
+        } else if !composer.connectionId.isEmpty, group.connectionId != composer.connectionId {
+            onPick(ComposerPatch(modelId: "\(group.connectionId)::\(model.id)"))
         } else {
-            onSave(ComposerPatch(modelId: model.id))
+            onPick(ComposerPatch(modelId: model.id))
         }
     }
 
@@ -1057,6 +1093,7 @@ private struct ModelFlyout: View {
                 TextField("Search models", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
+                    .focused($searchFocused)
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
@@ -1076,7 +1113,7 @@ private struct ModelFlyout: View {
                                 modelRow(
                                     label: item.label,
                                     selected: composer.modelId == item.id,
-                                    action: { onSave(ComposerPatch(modelId: item.id)) }
+                                    action: { onPick(composer.modelId == item.id ? nil : ComposerPatch(modelId: item.id)) }
                                 )
                             }
                         }
@@ -1117,6 +1154,11 @@ private struct ModelFlyout: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .overlay(alignment: .top) { Hairline() }
+        }
+        // The list opens ready to type into. Deferred a turn: the field has
+        // to be in the window before it can take first responder.
+        .onAppear {
+            DispatchQueue.main.async { searchFocused = true }
         }
     }
 

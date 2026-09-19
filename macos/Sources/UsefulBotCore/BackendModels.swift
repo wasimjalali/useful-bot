@@ -322,11 +322,11 @@ public struct ComposerState: Codable, Equatable, Sendable {
     public var models: [Option]
     public var groups: [Group]
 
-    /// The chip label: effort plus fast when either exists, else the model.
-    public var chipLabel: String {
+    /// What the chip shows after the model name: effort plus fast, or nil
+    /// when neither applies.
+    public var chipMeta: String? {
         let parts = [effortLabel, speed == "fast" ? "Fast" : nil].compactMap { $0 }
-        if !parts.isEmpty { return parts.joined(separator: " ") }
-        return modelLabel.isEmpty ? "Model" : modelLabel
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
     enum CodingKeys: String, CodingKey {

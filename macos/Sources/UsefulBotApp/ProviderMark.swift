@@ -2,33 +2,34 @@ import AppKit
 import SwiftUI
 import UsefulBotCore
 
-/// A vendored provider mark from brand/providers/<icon>.svg, tinted ink on a
-/// sunken tile. Falls back to the monogram tile when the file is missing, so
-/// `swift build` debug runs and unknown slugs render without the bundle copy.
+/// A vendored provider mark from brand/providers/<icon>.svg, tinted ink and
+/// drawn at the full size with no tile behind it. Falls back to a monogram on
+/// a sunken tile when the file is missing, so `swift build` debug runs and
+/// unknown slugs still render.
 struct ProviderMark: View {
     let icon: String
     let monogram: String
     var size: CGFloat = 28
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
-                .fill(Theme.C.sunken)
+        Group {
             if let image = ProviderMarkImage.load(icon) {
                 Image(nsImage: image)
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
                     .foregroundStyle(Theme.C.ink)
-                    .frame(width: size - 10, height: size - 10)
             } else {
-                Text(monogram)
-                    .font(.system(size: markFont, weight: .semibold))
-                    .foregroundStyle(Theme.C.ink)
+                ZStack {
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
+                        .fill(Theme.C.sunken)
+                    Text(monogram)
+                        .font(.system(size: markFont, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                }
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
         .accessibilityHidden(true)
     }
 
