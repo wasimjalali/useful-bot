@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { LimitStore } from "../../../../router/src/limits.ts";
 import {
@@ -93,7 +93,7 @@ function payload() {
 }
 
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   return NextResponse.json(payload());
 }
@@ -104,7 +104,7 @@ export async function GET(request: Request) {
  * much the owner can spend in a day.
  */
 export async function PUT(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

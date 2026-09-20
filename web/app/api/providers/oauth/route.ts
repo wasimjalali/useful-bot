@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
 import { providerMode } from "../../../../../shared/provider-catalog.ts";
 import { startDeviceFlow } from "../../../../../shared/provider-oauth.ts";
@@ -7,7 +7,7 @@ import { startDeviceFlow } from "../../../../../shared/provider-oauth.ts";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

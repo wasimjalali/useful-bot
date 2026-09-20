@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
 import { appendAgentEvent, listThreadEvents } from "../../../../../shared/agent-store.ts";
 import { findConnectionById } from "../../../../../shared/connections-store.ts";
@@ -12,7 +12,7 @@ import { readShell } from "../../../../../shared/shell-io.ts";
 import { writeWidget, type WidgetRecord } from "../../../../../shared/widgets-store.ts";
 
 export async function POST(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

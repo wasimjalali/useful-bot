@@ -1,5 +1,6 @@
 import { completeConnectionOAuth } from "../../../../../shared/connection-flow.ts";
 import { requestIsLoopback } from "../../../../../shared/origin.ts";
+import { runtimeConfig } from "../../../../lib/auth";
 
 export const runtime = "nodejs";
 
@@ -38,8 +39,25 @@ function html(ok: boolean, detail: string, status = 200) {
   });
 }
 
+/**
+ * The OAuth return lands on loopback for the desktop, or on the configured
+ * tailnet origin for a phone-driven flow (S6): Serve forwards to this same
+ * route with the original https origin in the request URL. Nothing else is
+ * trusted with the completion code.
+ */
+function callbackOriginAllowed(requestUrl: string): boolean {
+  if (requestIsLoopback(requestUrl)) return true;
+  const tailnet = runtimeConfig()?.tailnet;
+  if (!tailnet || runtimeConfig()?.phoneEnabled !== true) return false;
+  try {
+    return new URL(requestUrl).origin === tailnet.httpsOrigin;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET(request: Request) {
-  if (!requestIsLoopback(request.url)) {
+  if (!callbackOriginAllowed(request.url)) {
     return html(false, "The sign-in could not finish. You can close this tab and use Reopen.", 403);
   }
   const url = new URL(request.url);

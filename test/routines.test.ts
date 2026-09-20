@@ -336,9 +336,9 @@ test("every routines route is behind the desktop gate", () => {
   for (const parts of [["route.ts"], ["[id]", "route.ts"], ["[id]", "run", "route.ts"]]) {
     const source = routeSource(...parts);
     const where = parts.join("/");
-    // requireDesktop rejects a missing or non-desktop session and any origin
-    // that is not this loopback server.
-    assert.match(source, /requireDesktop\(request\)/, `${where} misses requireDesktop`);
+    // requireOwner rejects a missing session, a non-owner profile, an
+    // unknown ingress class and any origin that is not this loopback server.
+    assert.match(source, /requireOwner\(request\)/, `${where} misses requireOwner`);
     assert.match(source, /isGateError\(gate\)\)\s*return gate\.error/, `${where} ignores the gate result`);
   }
 });
@@ -364,7 +364,7 @@ test("the manual run route refuses to start without the agent credential", () =>
   // The gate runs before anything reads or starts a routine. The start call
   // is the claim: the route answers after the claim, so a claim failure can
   // still be mapped to a status instead of vanishing into a voided run.
-  assert.ok(source.indexOf("requireDesktop") < source.indexOf("startRoutineNow"));
+  assert.ok(source.indexOf("requireOwner") < source.indexOf("startRoutineNow"));
 });
 
 // MARK: - Agent-requested runs

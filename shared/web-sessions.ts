@@ -20,6 +20,13 @@ export type BrowserSession = {
   profile: string;
   csrf: string;
   expiresAt: number;
+  /**
+   * The credential row this session was minted from (spec S9): the gate
+   * re-resolves it per request so a revoked or expired credential kills its
+   * sessions without a restart. Null for a desktop auto-session, which is not
+   * bound to a credential.
+   */
+  credentialId: string | null;
 };
 
 export function defaultWebSessionsPath(): string {

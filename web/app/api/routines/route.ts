@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { createRoutine, deleteRoutine, listRoutines, readRoutine } from "../../../../shared/routines-store.ts";
 import { readShell } from "../../../../shared/shell-io.ts";
@@ -13,7 +13,7 @@ export const runtime = "nodejs";
  */
 
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const params = new URL(request.url).searchParams;
   const id = params.get("id");
@@ -32,7 +32,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

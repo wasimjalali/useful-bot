@@ -1,4 +1,4 @@
-import { isGateError, requireDesktop } from "../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import {
   eveGetAllowed,
   evePostAllowed,
@@ -48,7 +48,7 @@ export async function POST(
 async function proxy(request: Request, params: { path: string[] }, method: string): Promise<Response> {
   // Only the owner desktop session may reach eve: a device/router credential
   // minted a browser session must not get a chat-completions proxy.
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const session = gate.session;
   const suffix = params.path.join("/");

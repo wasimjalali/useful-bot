@@ -35,7 +35,10 @@ export const CALLER_LIMITS = {
   // are unchanged: they are the spend guard, and the owner sets them in
   // Settings.
   desktop: { aliases: ["workhorse"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
-  phone: { aliases: ["workhorse"], search: true, rpm: 4, requests24h: 40, input24h: 400_000, output24h: 40_000 },
+  // The phone profile is the owner's own phone, with the desktop budget
+  // verbatim (spec S1): there is one owner inference budget, and which device
+  // sent the turn does not change it.
+  phone: { aliases: ["workhorse"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
   reviewer: { aliases: ["reviewer"], search: false, rpm: 4, requests24h: 20, input24h: 300_000, output24h: 80_000 },
   eval: { aliases: ["workhorse", "reviewer"], search: true, rpm: 12, requests24h: 80, input24h: 1_000_000, output24h: 160_000 },
   ops: { aliases: [], search: false, rpm: 30, requests24h: 0, input24h: 0, output24h: 0 },

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { appVersion, systemOperator } from "../../../../shared/operator.ts";
 
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const session = gate.session;
   let eve = "unknown";
@@ -15,6 +15,7 @@ export async function GET(request: Request) {
   }
   return NextResponse.json({
     ok: true,
+    apiVersion: 1,
     profile: session.profile,
     eve,
     operator: systemOperator(),

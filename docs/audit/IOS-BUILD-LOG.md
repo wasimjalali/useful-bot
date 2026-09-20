@@ -401,3 +401,47 @@ Merge: squash-merged to main after the all-green round-6 pass as 69de78a
 closed with the note).
 
 Chain: PR-2 lead session created: 40126d29de2a4d7b9e0757d40442f917.
+
+## PR-2 - Connectivity & auth (P1)
+
+- Session: `devin-40126d29de2a4d7b9e0757d40442f917`
+- Started: 2026-09-19T23:34Z
+- Branch: `ios/pr-2`
+
+### Scope
+
+(in progress) Per spec 17.2: `KeychainStore`, `TailnetEndpointPolicy`,
+`PairingStore` with the 4.8 states, pairing UI wired for real (QR scan +
+manual), session exchange, re-auth, readiness levels, error taxonomy. Server
+S1-S9, S13, S15. Creates `docs/audit/IOS-OWNER-CHECKLIST.md`.
+
+### Verification
+
+(pending — unit suite green; live route checks run under `next dev` against
+the new code)
+
+### Surprises
+
+- **Spec 4.2's "zero proxy headers" loopback rule is unreachable under Next**:
+  `base-server` synthesizes `x-forwarded-for/host/port/proto` (`??=`) on every
+  request, so a plain `curl` to 127.0.0.1 arrives at the route carrying all
+  four. `classifyIngress` therefore treats a *loopback-valued* echo — all XFF
+  hops loopback, proto `http` or absent, forwarded host loopback or absent,
+  and none of `forwarded`/`tailscale-*`/https-proto/remote-hop material — as
+  no proxy material, and forces the strict tailnet path for anything else.
+  A local client sending the same echo is inside the loopback trust domain
+  already, so nothing extra is granted. Recorded here per the code-vs-spec
+  rule; flagged in the PR description.
+- **XFF empty-hop handling**: hop entries are never dropped — an empty first
+  entry (`" , 100.x"`) fails the tailnet check rather than promoting hop 1
+  into the trusted position.
+- **Module layout**: `next/server` and `next/headers` cannot resolve under
+  `node --test` (extensionless package entries), so the pure pieces moved to
+  `web/lib/ingress.ts` (classifyIngress + originAllowed) and
+  `web/lib/runtime-config.ts` (runtimeConfig/credentialById/phoneDisabled);
+  `desktop-gate.ts`/`auth.ts` re-export them so the spec's symbol homes still
+  hold. Cookie-bound session helpers live in `web/lib/cookie-sessions.ts`.
+- `router/test/contracts.test.ts` fails on a clean `main` checkout too
+  (`opencode-go forwards the model …` — live catalogue drift: glm-5.3's
+  window now reports 131,072 so `max_tokens` comes back 13,107 not 32,768).
+  Pre-existing, unrelated to this PR; verified via `git stash`.
