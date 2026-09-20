@@ -86,11 +86,20 @@ keychain, a `claude` line reaches the keychain and not `~/.codex`, and a `cat`
 line on the same posture reaches neither. The store is derived from the
 program's own name (`~/.<name>`, `~/.config/<name>`, `~/.local/share/<name>`,
 `~/.local/state/<name>`), so a CLI installed later needs no entry anywhere;
-`agent/lib/cli-registry.ts` holds only what a name cannot imply, which today
-is Claude Code's keychain item. A line that is not one plain command, or whose
-program is named after a protected store, is handed nothing. Every other
-credential store (`.ssh`, `.aws`, `.npmrc`, `.env`) stays refused in every
-mode, and the text tripwire still refuses a line that names one.
+`agent/lib/cli-registry.ts` holds only what a name cannot imply, which today is
+the login keychain that `gh` and Claude Code keep their token in. A line that
+is not one plain command, or whose program is named after a protected store, is
+handed nothing. Every other credential store (`.ssh`, `.aws`, `.npmrc`, `.env`)
+stays refused in every mode, and the text tripwire still refuses a line that
+names one.
+
+A directory opens for reading and writing, because a CLI refreshes its token
+into it. The keychain is the one file case and opens **read-only, as that one
+file**: `~/Library/Keychains/login.keychain-db`, never the directory holding it.
+Probed under the profile, a `gh` line reports "logged in (keyring)" while the
+keychain directory is not even listable, no sibling keychain is readable, and
+the owner's `.ssh` keys stay refused. Nothing a bot runs can write the keychain,
+so if a CLI ever fails to persist a refreshed token, that rule is why.
 
 Config that a tool reads and then executes is never writable, in any mode and
 including inside a store just opened for its own CLI: `~/.claude/settings.json`,

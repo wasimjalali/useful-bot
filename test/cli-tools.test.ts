@@ -306,24 +306,27 @@ test("a CLI that keeps its token in the keyring is handed the keyring", () => {
   // guard also ran over the registry's own entries, so `gh` and `claude`
   // silently lost the keychain and both reported themselves signed out. The
   // sandbox tests pass paths in directly, so none of them saw it.
+  const keychainFile = "/Library/Keychains/login.keychain-db";
   for (const entry of CLI_REGISTRY) {
-    if (!entry.state.includes("Library/Keychains")) continue;
+    if (!entry.state.some((store) => store.endsWith("login.keychain-db"))) continue;
     const opened = credentialPathsFor(`${entry.id} --version`);
     // Skipped rather than failed when the CLI is not installed here: the
     // list is resolved on the owner's PATH.
     if (opened.length === 0) continue;
     assert.equal(
-      opened.some((store) => store.endsWith("/Library/Keychains")),
+      opened.some((store) => store.endsWith(keychainFile)),
       true,
       `${entry.id} must reach the keyring it stores its token in`,
     );
+    // The one file, never the directory it sits in.
+    assert.equal(opened.some((store) => store.endsWith("/Library/Keychains")), false, entry.id);
   }
   // gh needs BOTH halves, so a registry row adds to what the name derives
   // rather than replacing it.
   const gh = credentialPathsFor("gh auth status");
   if (gh.length > 0) {
     assert.equal(gh.some((store) => store.endsWith("/.config/gh")), true);
-    assert.equal(gh.some((store) => store.endsWith("/Library/Keychains")), true);
+    assert.equal(gh.some((store) => store.endsWith(keychainFile)), true);
   }
   // And none of that reaches a line that is not the CLI itself.
   assert.deepEqual(credentialPathsFor("cat /etc/hosts"), []);

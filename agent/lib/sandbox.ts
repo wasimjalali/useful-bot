@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -141,13 +141,30 @@ function credentialRules(paths: readonly string[]): string[] {
     // somewhere else, so a store swapped for a symlink between the two
     // cannot widen the profile. A path is opened as it is spelled or not at
     // all.
+    let directory: boolean;
     try {
       if (lstatSync(path).isSymbolicLink()) continue;
+      const stat = statSync(path);
+      if (!stat.isDirectory() && !stat.isFile()) continue;
       if (realpathSync(path) !== path) continue;
+      directory = stat.isDirectory();
     } catch {
       continue;
     }
-    rules.push(`(allow file-read* file-write* (subpath ${sbplString(path)}))`);
+    // A directory is a tool's own working state: it opens for reading and
+    // writing, because a CLI refreshes its token into it and a refresh it
+    // cannot save turns into a sign-in loop.
+    //
+    // A file is the narrow case, and today the only one is the login
+    // keychain that gh and Claude Code read their token from. It opens as
+    // itself and READ ONLY: the rest of the keyring never opens with it, and
+    // nothing a bot runs can write the owner's keychain. Reading is what
+    // authenticating needs; verified by running `gh auth status` through a
+    // read-only literal grant. If a CLI ever fails to persist a refreshed
+    // token, this rule is why.
+    rules.push(directory
+      ? `(allow file-read* file-write* (subpath ${sbplString(path)}))`
+      : `(allow file-read* (literal ${sbplString(path)}))`);
   }
   return rules;
 }

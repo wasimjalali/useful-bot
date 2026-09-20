@@ -63,7 +63,7 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     signIn: { kind: "keychain", service: "Claude Code-credentials", paths: [".claude/.credentials.json"] },
     // The login keychain, which the `/keychains` deny refuses. Nothing under
     // `~/.claude` itself is denied, so it needs no rule of its own.
-    state: ["Library/Keychains"],
+    state: ["Library/Keychains/login.keychain-db"],
     docs: "https://docs.claude.com/en/docs/claude-code",
   },
   {
@@ -93,7 +93,7 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     // macOS keyring, so without this it reads its own host file, finds no
     // usable token and reports "the token in default is invalid". Caught by
     // running `gh auth status` through the profile, not by reading the code.
-    state: ["Library/Keychains"],
+    state: ["Library/Keychains/login.keychain-db"],
     docs: "https://cli.github.com",
   },
   {
@@ -247,21 +247,31 @@ export function credentialPathsFor(command: string, path = ownerPath()): string[
 function literalStore(store: string, home: string): boolean {
   try {
     if (lstatSync(store).isSymbolicLink()) return false;
-    if (!statSync(store).isDirectory()) return false;
+    const stat = statSync(store);
+    if (!stat.isDirectory() && !stat.isFile()) return false;
     // resolve() is lexical; realpath sees through a link in any component
     // above it too.
     if (realpathSync(store) !== store) return false;
-    return store.startsWith(`${home}/`);
-    // Deliberately NOT screened against the protected list here. That screen
-    // belongs to derivation, where the path is inferred from a name the bot
-    // may control; a row in the registry is a decision someone made in a
-    // reviewed file. Screening both is what stopped gh and Claude Code
-    // reaching the keyring they keep their token in, which is exactly what
-    // their rows exist to allow.
+    if (!store.startsWith(`${home}/`)) return false;
+    const relative = store.slice(home.length + 1);
+    // The protected list stays the last gate for everything, registry rows
+    // included, so a row added later cannot quietly open `~/.ssh`. The one
+    // way past it is this list: named in full, and a FILE, so no row can
+    // satisfy the exemption with the directory that file sits in.
+    if (PROTECTED_STORE_EXEMPT.has(relative)) return stat.isFile();
+    return !namesProtectedStore(relative);
   } catch {
     return false;
   }
 }
+
+/**
+ * The exact paths a registry row may open although the protected list names
+ * them. Only the login keychain file, because two CLIs keep their token as a
+ * keychain item and nothing else can reach it for them. Its siblings, and
+ * every other keychain on this Mac, stay refused.
+ */
+const PROTECTED_STORE_EXEMPT = new Set(["Library/Keychains/login.keychain-db"]);
 
 /**
  * Where a tool called `name` conventionally keeps its own state, for a CLI
