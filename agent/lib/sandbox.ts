@@ -73,8 +73,9 @@ const TOOLING_READS = new Set([".env", ".npmrc", ".docker", ".kube"]);
  */
 const SECRETS_DENY_PATTERN = "/secrets($|[/.])";
 /**
- * Allowed back, after the deny so it wins: the source file of a module
- * called `secrets`, and nothing else. An extension list on the deny side was
+ * Allowed back for READING only, after the deny so it wins: the source file
+ * of a module called `secrets`. Never for writing, so no `secrets.py` can be
+ * planted anywhere; importing one is what a CLI needs, writing one is not. An extension list on the deny side was
  * the first attempt and it is the wrong way round, because the list that has
  * to be complete should be the one that opens files, not the one that closes
  * them. `secrets.db` or `secrets.p12` stay refused without anyone having to
@@ -254,7 +255,6 @@ export function sandboxProfile(
   const protectedRules = [
     ...PROTECTED_NAMES.map((name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`),
     `(deny file-write* (regex #"${SECRETS_DENY_PATTERN}"))`,
-    `(allow file-write* (regex #"${SECRETS_ALLOW_PATTERN}"))`,
   ];
   // Inside a project folder the build tooling reads its own .env and the
   // like. Scoped, that is the whole of what the line can reach anyway;

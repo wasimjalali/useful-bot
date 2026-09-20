@@ -337,34 +337,22 @@ test("install_cli refuses to install in Read only", async () => {
   }
 });
 
-test("a CLI that keeps its token in the keyring is handed the keyring", () => {
-  // Through `credentialPathsFor`, not around it. The screens are layered and
-  // an earlier version of them cancelled these rows out: the derived-path
-  // guard also ran over the registry's own entries, so `gh` and `claude`
-  // silently lost the keychain and both reported themselves signed out. The
-  // sandbox tests pass paths in directly, so none of them saw it.
-  const keychainFile = "/Library/Keychains/login.keychain-db";
+test("no line reaches the keychain, whatever CLI it names", () => {
+  // No line reaches the keychain, whatever it runs. A seatbelt grant covers
+  // everything the line spawns, and the two CLIs that wanted the keyring are
+  // agents that run whatever a model asks, so granting it to them granted it
+  // to anything they chose to run. They report themselves signed out when run
+  // unattended and work on a card, which runs unconfined.
   for (const entry of CLI_REGISTRY) {
-    if (!entry.state.some((store) => store.endsWith("login.keychain-db"))) continue;
-    const opened = credentialPathsFor(`${entry.id} --version`);
-    // Skipped rather than failed when the CLI is not installed here: the
-    // list is resolved on the owner's PATH.
-    if (opened.length === 0) continue;
-    assert.equal(
-      opened.some((store) => store.endsWith(keychainFile)),
-      true,
-      `${entry.id} must reach the keyring it stores its token in`,
-    );
-    // The one file, never the directory it sits in.
-    assert.equal(opened.some((store) => store.endsWith("/Library/Keychains")), false, entry.id);
+    for (const store of credentialPathsFor(`${entry.id} --version`)) {
+      assert.equal(store.includes("/Library/Keychains"), false, `${entry.id} -> ${store}`);
+    }
+    // And no row may name a protected store in the first place.
+    assert.equal(entry.state.some((store) => store.includes("Keychains")), false, entry.id);
   }
-  // gh needs BOTH halves, so a registry row adds to what the name derives
-  // rather than replacing it.
+  // A CLI still gets its own directory, which is the part that works.
   const gh = credentialPathsFor("gh auth status");
-  if (gh.length > 0) {
-    assert.equal(gh.some((store) => store.endsWith("/.config/gh")), true);
-    assert.equal(gh.some((store) => store.endsWith(keychainFile)), true);
-  }
+  if (gh.length > 0) assert.equal(gh.some((store) => store.endsWith("/.config/gh")), true);
   // And none of that reaches a line that is not the CLI itself.
   assert.deepEqual(credentialPathsFor("cat /etc/hosts"), []);
   assert.deepEqual(credentialPathsFor("echo x && gh auth status"), []);

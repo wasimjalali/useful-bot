@@ -85,21 +85,21 @@ the tool that owns it**: a `codex` line reaches `~/.codex` and not the
 keychain, a `claude` line reaches the keychain and not `~/.codex`, and a `cat`
 line on the same posture reaches neither. The store is derived from the
 program's own name (`~/.<name>`, `~/.config/<name>`, `~/.local/share/<name>`,
-`~/.local/state/<name>`), so a CLI installed later needs no entry anywhere;
-`agent/lib/cli-registry.ts` holds only what a name cannot imply, which today is
-the login keychain that `gh` and Claude Code keep their token in. A line that
-is not one plain command, or whose program is named after a protected store, is
-handed nothing. Every other credential store (`.ssh`, `.aws`, `.npmrc`, `.env`)
-stays refused in every mode, and the text tripwire still refuses a line that
-names one.
+`~/.local/state/<name>`), so a CLI installed later needs no entry anywhere. A
+line that is not one plain command, or whose program is named after a protected
+store, is handed nothing. Every credential store the profile protects (`.ssh`,
+`.aws`, `.npmrc`, `.env`, the keychains) stays refused in every mode, with no
+exemption, and the text tripwire still refuses a line that names one.
 
-A directory opens for reading and writing, because a CLI refreshes its token
-into it. The keychain is the one file case and opens **read-only, as that one
-file**: `~/Library/Keychains/login.keychain-db`, never the directory holding it.
-Probed under the profile, a `gh` line reports "logged in (keyring)" while the
-keychain directory is not even listable, no sibling keychain is readable, and
-the owner's `.ssh` keys stay refused. Nothing a bot runs can write the keychain,
-so if a CLI ever fails to persist a refreshed token, that rule is why.
+**A grant cannot be scoped to a binary.** A seatbelt rule applies to everything
+the line spawns, so naming a CLI opens its store to whatever that CLI then runs.
+For a tool's own directory that is a fair trade. For the login keychain it is
+not, and the two CLIs that wanted it (`gh` and Claude Code, which keep their
+token in the keyring) are both agents that run whatever a model asks them to.
+So the keychain is granted to nothing. Run unattended at Full access, those two
+report themselves signed out; on an approval card they work normally, because an
+approved line runs unconfined. `install_cli list` still reports their sign-in,
+since that probe runs in the parent process outside the profile.
 
 Config that a tool reads and then executes is never writable, in any mode and
 including inside a store just opened for its own CLI: `~/.claude/settings.json`,

@@ -32,13 +32,16 @@ export type CliEntry = {
   install: string;
   /** Null when the CLI has no stored credential worth probing for. */
   signIn: SignInCheck | null;
-   /**
-   * State this CLI keeps somewhere its own name does not imply, ADDED to
-   * what the name does. `credentialPathsFor` derives `~/.<name>`,
-   * `~/.config/<name>` and the two `~/.local` ones for any program on PATH,
-   * so almost every CLI needs nothing here, including ones this table has
-   * never heard of. The exceptions are the two that keep their token in the
-   * macOS keyring, which no name can imply: Claude Code and gh.
+  /**
+   * State this CLI keeps somewhere its own name does not imply, ADDED to what
+   * the name does. `credentialPathsFor` derives `~/.<name>`, `~/.config/<name>`
+   * and the two `~/.local` ones for any program on PATH, so a CLI installed
+   * later needs nothing here.
+   *
+   * Empty for every row today. It cannot name a store the profile protects:
+   * the keychain was tried and taken back out, because a seatbelt grant
+   * applies to everything a line spawns and the two CLIs that wanted it are
+   * agents that run whatever a model asks. See `credentialPathsFor`.
    */
   state: string[];
   docs: string;
@@ -58,12 +61,11 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     id: "claude",
     label: "Claude Code",
     install: "npm install -g @anthropic-ai/claude-code",
-    // macOS keeps this one in the login keychain; the file is the fallback
-    // on an install that predates that or runs with a different store.
+    // macOS keeps this one in the login keychain, which no line may open.
+    // `install_cli list` still reports it: that probe runs in the parent,
+    // outside the profile.
     signIn: { kind: "keychain", service: "Claude Code-credentials", paths: [".claude/.credentials.json"] },
-    // The login keychain, which the `/keychains` deny refuses. Nothing under
-    // `~/.claude` itself is denied, so it needs no rule of its own.
-    state: ["Library/Keychains/login.keychain-db"],
+    state: [],
     docs: "https://docs.claude.com/en/docs/claude-code",
   },
   {
@@ -89,11 +91,10 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     // without Homebrew gets that as the error rather than a silent miss.
     install: "brew install gh",
     signIn: { kind: "file", paths: [".config/gh/hosts.yml"] },
-    // `hosts.yml` records the account but not the token: gh keeps that in the
-    // macOS keyring, so without this it reads its own host file, finds no
-    // usable token and reports "the token in default is invalid". Caught by
-    // running `gh auth status` through the profile, not by reading the code.
-    state: ["Library/Keychains/login.keychain-db"],
+    // `hosts.yml` records the account; the token is in the keyring, which no
+    // line may open, so an unattended `gh` reports the token invalid. A
+    // carded `gh` line runs unconfined and works.
+    state: [],
     docs: "https://cli.github.com",
   },
   {
@@ -194,12 +195,21 @@ export type CliStatus = {
  * Codex and Claude Code never had to solve this: in those products the CLI
  * is the parent process, so it reads its own token before it sandboxes
  * anything the model asked for. Here the CLI is the child, inside the
- * profile, so the profile has to let it through. Deciding that per command
- * rather than per posture is what keeps `cat` out of the keychain while
- * `claude -p` still authenticates.
+ * profile, so the profile has to let it through.
  *
  * `loneCommandHead` refuses anything but a single plain command, so a chain,
  * a pipe, a substitution or a redirection gets nothing, whatever it names.
+ *
+ * What this CANNOT do is scope a grant to the binary. A seatbelt rule applies
+ * to everything the line spawns, so naming a CLI opens its store to whatever
+ * that CLI then runs. For a store the profile does not otherwise protect that
+ * is a fair trade: the tool reaches its own config and the blast radius is
+ * one tool's directory. For a protected store it is not, which is why the
+ * login keychain was granted here and then taken back out: `claude` and `gh`
+ * were the two that wanted it, and both run arbitrary shell, so the grant
+ * would have reached anything a model chose to run on that line. They report
+ * themselves signed out when run unattended, and work on an approval card,
+ * which runs unconfined because the owner read the line.
  */
 export function credentialPathsFor(command: string, path = ownerPath()): string[] {
   const head = loneCommandHead(command);
@@ -253,25 +263,15 @@ function literalStore(store: string, home: string): boolean {
     // above it too.
     if (realpathSync(store) !== store) return false;
     if (!store.startsWith(`${home}/`)) return false;
-    const relative = store.slice(home.length + 1);
-    // The protected list stays the last gate for everything, registry rows
-    // included, so a row added later cannot quietly open `~/.ssh`. The one
-    // way past it is this list: named in full, and a FILE, so no row can
-    // satisfy the exemption with the directory that file sits in.
-    if (PROTECTED_STORE_EXEMPT.has(relative)) return stat.isFile();
-    return !namesProtectedStore(relative);
+    // The protected list is the last gate for everything, registry rows
+    // included. There is no way past it: a row that names a protected store
+    // opens nothing, which is what keeps this from being a second door into
+    // `~/.ssh` or the keychain.
+    return !namesProtectedStore(store.slice(home.length + 1));
   } catch {
     return false;
   }
 }
-
-/**
- * The exact paths a registry row may open although the protected list names
- * them. Only the login keychain file, because two CLIs keep their token as a
- * keychain item and nothing else can reach it for them. Its siblings, and
- * every other keychain on this Mac, stay refused.
- */
-const PROTECTED_STORE_EXEMPT = new Set(["Library/Keychains/login.keychain-db"]);
 
 /**
  * Where a tool called `name` conventionally keeps its own state, for a CLI
