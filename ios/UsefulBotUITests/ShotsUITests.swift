@@ -146,6 +146,25 @@ final class ShotsUITests: XCTestCase {
         element.typeText(text)
     }
 
+    /// `scrollDismissesKeyboard(.interactively)` doesn't take on every sim
+    /// (iOS-26.5 iPhone 17 kept the keyboard up through a swipeDown, and the
+    /// raw coordinate tap on Connect then landed on the keyboard). The
+    /// Return key resigns the field without scrolling content; the swipe is
+    /// kept as fallback.
+    private func dismissKeyboard(_ app: XCUIApplication) {
+        guard app.keyboards.firstMatch.exists else { return }
+        for name in ["return", "Return", "Done", "done"] {
+            let key = app.keyboards.buttons[name]
+            if key.exists {
+                key.tap()
+                break
+            }
+        }
+        if app.keyboards.firstMatch.waitForNonExistence(timeout: 6) { return }
+        app.swipeDown()
+        _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 4)
+    }
+
     /// Sheet buttons can hit a stale snapshot mid-rerender ("Computed hit
     /// point {-1,-1}"). Gate on isHittable first, then coordinate-tap — a
     /// coordinate tap can never fail "not hittable".
@@ -167,28 +186,38 @@ final class ShotsUITests: XCTestCase {
 
     private func pairThroughManualEntry(_ app: XCUIApplication, _ pair: Pairing) {
         type(app, app.textFields["Mac address"], pair.host)
-        type(app, app.secureTextFields["Pairing token"], pair.token)
-        // A system alert surfacing mid-type can steal the SecureField's
-        // first responder and silently drop the token — SecureField values
-        // are unreadable, so the disabled Connect button is the tell. Give
-        // the binding a beat to propagate before deciding it dropped.
-        var waited = 0.0
-        while !app.buttons["Connect"].isEnabled && waited < 3 {
-            usleep(250_000)
-            waited += 0.25
-        }
-        if !app.buttons["Connect"].isEnabled {
+        let status = app.staticTexts["pairing-status"]
+        // The SecureField type can drop silently when a system alert steals
+        // first responder (the disabled Connect button is the only readable
+        // tell), and a coordinate tap on a disabled button no-ops without an
+        // error — so confirm the attempt registered, then retry the whole
+        // token entry once when it didn't.
+        for _ in 0..<2 {
             type(app, app.secureTextFields["Pairing token"], pair.token)
+            var waited = 0.0
+            while !app.buttons["manual-connect"].isEnabled && waited < 3 {
+                usleep(250_000)
+                waited += 0.25
+            }
+            if !app.buttons["manual-connect"].isEnabled { continue }
+            // The keyboard can still be settling over the button row when
+            // the coordinate resolves — a raw coordinate tap lands on it
+            // with no hit-failure. Dismiss first so the tap reaches Connect.
+            dismissKeyboard(app)
+            tapButton(app, "Connect")
+            // A real tap moves the status line off idle; if it never did
+            // the tap no-opped and the token needs retyping.
+            let deadline = Date().addingTimeInterval(12)
+            while Date() < deadline {
+                if app.staticTexts["Useful Bot"].exists { return }
+                if status.exists, !status.label.isEmpty,
+                   status.label != "Point the camera at the code on your Mac" { return }
+                usleep(300_000)
+            }
         }
-        tapButton(app, "Connect")
         // The keyboard can outlive the push to the Bots list and cover the
-        // Devices sheet's bottom rows on small screens. Dismiss it with a
-        // bare swipe (scrollDismissesKeyboard is .interactively): no element
-        // resolution, so it can never fail on a keyboard already gone.
-        if app.keyboards.firstMatch.waitForExistence(timeout: 2) {
-            app.swipeDown()
-            _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 8)
-        }
+        // Devices sheet's bottom rows on small screens.
+        dismissKeyboard(app)
     }
     /// Full paired journey: bots list → Devices sheet → sign out → sign in.
     /// One run per (appearance, typeSize) the gate requires.
@@ -258,6 +287,9 @@ final class ShotsUITests: XCTestCase {
                     || app.staticTexts["Agent runtime is down on your Mac"].waitForExistence(timeout: 5),
                 "readiness banner never appeared")
             shot("bots-unreachable-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            openDevices(app)
+            XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10))
+            shot("devices-unreachable-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -275,8 +307,22 @@ final class ShotsUITests: XCTestCase {
                 app.staticTexts["You're offline"].waitForExistence(timeout: 25),
                 "offline banner never appeared")
             shot("bots-offline-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            // Devices carries its own non-ready copy (the status pill) —
+            // §17.1.3 wants every state it can reach, not just the banner.
+            openDevices(app)
+            XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10))
+            shot("devices-offline-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
+        // The xxxl pass is the evidence for the banner's drop-under rule:
+        // Retry leaves the trailing slot and stacks under the copy.
+        let app = XCUIApplication()
+        launch(app, appearance: "light", typeSize: "xxxl", offline: true)
+        XCTAssertTrue(
+            app.staticTexts["You're offline"].waitForExistence(timeout: 25),
+            "offline banner never appeared at xxxl")
+        shot("bots-offline-\(suffix(app, appearance: "light", typeSize: "xxxl"))", app)
+        app.terminate()
     }
 
     /// Runtime-down banner: the gate kills eve (:4321) but leaves the web
@@ -293,6 +339,9 @@ final class ShotsUITests: XCTestCase {
                 app.staticTexts["Agent runtime is down on your Mac"].waitForExistence(timeout: 25),
                 "runtime-down banner never appeared")
             shot("bots-runtime-down-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            openDevices(app)
+            XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10))
+            shot("devices-runtime-down-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -306,7 +355,10 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(app.textFields["Mac address"].waitForExistence(timeout: 15))
             type(app, app.textFields["Mac address"], "http://127.0.0.1:1")
             type(app, app.secureTextFields["Pairing token"], "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-            app.buttons["Connect"].tap()
+            // The keyboard can cover the Connect row — dismiss so the tap
+            // reaches the button, not the keyboard.
+            dismissKeyboard(app)
+            app.buttons["manual-connect"].tap()
             // The failure copy differs per failure mode; poll the status
             // label until it leaves idle/connecting, then shoot the error.
             let status = app.staticTexts["pairing-status"]
@@ -343,17 +395,20 @@ final class ShotsUITests: XCTestCase {
             type(app, app.textFields["Mac address"], pair.host)
             type(app, app.secureTextFields["Pairing token"], pair.token)
             var waited = 0.0
-            while !app.buttons["Connect"].isEnabled && waited < 3 {
+            while !app.buttons["manual-connect"].isEnabled && waited < 3 {
                 usleep(250_000)
                 waited += 0.25
             }
-            if !app.buttons["Connect"].isEnabled {
+            if !app.buttons["manual-connect"].isEnabled {
                 type(app, app.secureTextFields["Pairing token"], pair.token)
             }
+            // The hold is 8 s — the keyboard still covers the button row
+            // here; dismiss with Return (the swipe doesn't take on iOS-26.5)
+            // or the coordinate tap on Connect lands on the keyboard.
+            dismissKeyboard(app)
             tapButton(app, "Connect")
-            // The hold is 8 s — poll for the success line and dismiss the
-            // keyboard on the way (a blocking wait for non-existence would
-            // outlast the hold and shoot the Bots list instead). Manual
+            // Poll for the success line; a blocking keyboard-wait would
+            // outlast the hold and shoot the Bots list instead. Manual
             // pairing names the Mac by its host (PairingPayload falls back
             // to host when the QR name is absent), so match the prefix.
             let status = app.staticTexts["pairing-status"]
@@ -364,7 +419,6 @@ final class ShotsUITests: XCTestCase {
                     connectedSeen = true
                     break
                 }
-                if app.keyboards.firstMatch.exists { app.swipeDown() }
                 usleep(250_000)
             }
             if !connectedSeen {
@@ -405,13 +459,14 @@ final class ShotsUITests: XCTestCase {
             type(app, app.textFields["Mac address"], pair.host)
             type(app, app.secureTextFields["Pairing token"], pair.token)
             var waited = 0.0
-            while !app.buttons["Connect"].isEnabled && waited < 3 {
+            while !app.buttons["manual-connect"].isEnabled && waited < 3 {
                 usleep(250_000)
                 waited += 0.25
             }
-            if !app.buttons["Connect"].isEnabled {
+            if !app.buttons["manual-connect"].isEnabled {
                 type(app, app.secureTextFields["Pairing token"], pair.token)
             }
+            dismissKeyboard(app)
             tapButton(app, "Connect")
             let status = app.staticTexts["pairing-status"]
             let deadline = Date().addingTimeInterval(15)
@@ -421,7 +476,6 @@ final class ShotsUITests: XCTestCase {
                     connectedSeen = true
                     break
                 }
-                if app.keyboards.firstMatch.exists { app.swipeDown() }
                 usleep(250_000)
             }
             if !connectedSeen {
@@ -458,7 +512,8 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(app.textFields["Mac address"].waitForExistence(timeout: 15))
             type(app, app.textFields["Mac address"], "http://127.0.0.1:59999")
             type(app, app.secureTextFields["Pairing token"], "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-            app.buttons["Connect"].tap()
+            dismissKeyboard(app)
+            app.buttons["manual-connect"].tap()
             XCTAssertTrue(
                 app.staticTexts["Connecting to your Mac"].waitForExistence(timeout: 15),
                 "connecting copy never appeared")

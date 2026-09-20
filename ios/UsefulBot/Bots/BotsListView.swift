@@ -1,6 +1,19 @@
 import SwiftUI
 import UsefulBotCore
 
+extension DynamicTypeSize {
+    /// `isAccessibilityCategory` is a `ContentSizeCategory` member — this
+    /// SDK's `DynamicTypeSize` has none, so the same set by hand.
+    var ubIsAccessibilitySize: Bool {
+        switch self {
+        case .accessibility1, .accessibility2, .accessibility3, .accessibility4, .accessibility5:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 /// The paired landing: the Bots list. PR-3 builds the real rail+list anatomy;
 /// this is the honest minimum PR-2 needs — the nav chrome with the badge and
 /// "Useful Bot", the live roster read from `/api/shell`, the readiness banner
@@ -8,6 +21,7 @@ import UsefulBotCore
 struct BotsListView: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var bots: [ShellBot] = []
     /// `loaded` means a roster fetch has *succeeded* at least once — a failed
     /// first load shows the error row, never "Create your first bot".
@@ -157,23 +171,38 @@ struct BotsListView: View {
     /// Design spec 1.2's Error row: danger glyph, one muted sentence,
     /// trailing secondary Retry — the cached list stays visible under it.
     private func loadErrorRow(_ copy: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        let retry = Button("Retry") {
+            Task {
+                await coordinator.probeReadiness()
+                await refresh()
+            }
+        }
+        .tokenFont(DesignTokens.FontSize.button, .semibold)
+        .foregroundStyle(Theme.C.ink)
+        .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+        let text = HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "exclamationmark.circle")
                 .foregroundStyle(Theme.C.danger)
             Text(copy)
                 .tokenFont(DesignTokens.FontSize.attachError, .regular)
                 .foregroundStyle(Theme.C.inkMuted)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button("Retry") {
-                Task {
-                    await coordinator.probeReadiness()
-                    await refresh()
+        }
+        return Group {
+            if dynamicTypeSize.ubIsAccessibilitySize {
+                // A.7/1.0: the trailing action drops under the text at
+                // accessibility sizes instead of squeezing it.
+                VStack(alignment: .leading, spacing: 8) {
+                    text
+                    retry
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    text
+                    Spacer(minLength: 8)
+                    retry
                 }
             }
-            .tokenFont(DesignTokens.FontSize.button, .semibold)
-            .foregroundStyle(Theme.C.ink)
-            .frame(minHeight: DesignTokens.Space.phoneHitTarget)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("bots-load-error")
@@ -281,7 +310,28 @@ struct BotsListView: View {
     /// "Retry" (design spec 1.2's Readiness banner table, verbatim copy).
     private func readinessBanner(_ level: MacReadiness) -> some View {
         let (glyph, title, line) = bannerCopy(level)
-        return HStack(alignment: .top, spacing: 12) {
+        let retry = Button {
+            Task {
+                await coordinator.probeReadiness()
+                await refresh()
+            }
+        } label: {
+            Text("Retry")
+                .tokenFont(DesignTokens.FontSize.button, .semibold)
+                .foregroundStyle(Theme.C.ink)
+                .padding(.horizontal, 14)
+                .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+        }
+        .buttonStyle(PressedScale())
+        .background(
+            Theme.C.sunken,
+            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
+        )
+        let text = HStack(alignment: .top, spacing: 12) {
             Image(systemName: glyph)
                 .font(Theme.font(DesignTokens.FontSize.emptyBody, .medium))
                 .foregroundStyle(Theme.C.danger)
@@ -296,28 +346,22 @@ struct BotsListView: View {
                     .foregroundStyle(Theme.C.inkMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 8)
-            Button {
-                Task {
-                    await coordinator.probeReadiness()
-                    await refresh()
+        }
+        return Group {
+            if dynamicTypeSize.ubIsAccessibilitySize {
+                // Same A.7/1.0 rule as the error row: the trailing Retry
+                // drops under the copy rather than squeezing it.
+                VStack(alignment: .leading, spacing: 10) {
+                    text
+                    retry
                 }
-            } label: {
-                Text("Retry")
-                    .tokenFont(DesignTokens.FontSize.button, .semibold)
-                    .foregroundStyle(Theme.C.ink)
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    text
+                    Spacer(minLength: 8)
+                    retry
+                }
             }
-            .buttonStyle(PressedScale())
-            .background(
-                Theme.C.sunken,
-                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    .strokeBorder(Theme.C.edge, lineWidth: 1)
-            )
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -483,14 +527,8 @@ struct DevicesView: View {
     // nearest text style at this point size (same rule tokenFont uses).
     @ScaledMetric(relativeTo: .footnote) private var hostMonoSize: CGFloat = 13
 
-    // DynamicTypeSize has no isAccessibilityCategory member on this SDK.
     private var hostNeedsWrap: Bool {
-        switch dynamicTypeSize {
-        case .accessibility1, .accessibility2, .accessibility3, .accessibility4, .accessibility5:
-            return true
-        default:
-            return false
-        }
+        dynamicTypeSize.ubIsAccessibilitySize
     }
 
     /// Design spec 1.15's group titles: `fieldLabel` 13 medium in

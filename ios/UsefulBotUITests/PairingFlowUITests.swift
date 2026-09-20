@@ -99,6 +99,25 @@ final class PairingFlowUITests: XCTestCase {
         element.typeText(text)
     }
 
+    /// `scrollDismissesKeyboard(.interactively)` doesn't take on every sim
+    /// (iOS-26.5 iPhone 17 kept the keyboard up through a swipeDown, and the
+    /// raw coordinate tap on Connect then landed on the keyboard). The
+    /// Return key resigns the field without scrolling content; the swipe is
+    /// kept as fallback.
+    private func dismissKeyboard(_ app: XCUIApplication) {
+        guard app.keyboards.firstMatch.exists else { return }
+        for name in ["return", "Return", "Done", "done"] {
+            let key = app.keyboards.buttons[name]
+            if key.exists {
+                key.tap()
+                break
+            }
+        }
+        if app.keyboards.firstMatch.waitForNonExistence(timeout: 6) { return }
+        app.swipeDown()
+        _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 4)
+    }
+
     /// Sheet buttons can hit a stale snapshot mid-rerender ("Computed hit
     /// point {-1,-1}"). Gate on isHittable first, then coordinate-tap — a
     /// coordinate tap can never fail "not hittable".
@@ -120,28 +139,38 @@ final class PairingFlowUITests: XCTestCase {
 
     private func pairThroughManualEntry(_ app: XCUIApplication, _ pair: Pairing) {
         type(app, app.textFields["Mac address"], pair.host)
-        type(app, app.secureTextFields["Pairing token"], pair.token)
-        // A system alert surfacing mid-type can steal the SecureField's
-        // first responder and silently drop the token — SecureField values
-        // are unreadable, so the disabled Connect button is the tell. Give
-        // the binding a beat to propagate before deciding it dropped.
-        var waited = 0.0
-        while !app.buttons["Connect"].isEnabled && waited < 3 {
-            usleep(250_000)
-            waited += 0.25
-        }
-        if !app.buttons["Connect"].isEnabled {
+        let status = app.staticTexts["pairing-status"]
+        // The SecureField type can drop silently when a system alert steals
+        // first responder (the disabled Connect button is the only readable
+        // tell), and a coordinate tap on a disabled button no-ops without an
+        // error — so confirm the attempt registered, then retry the whole
+        // token entry once when it didn't.
+        for _ in 0..<2 {
             type(app, app.secureTextFields["Pairing token"], pair.token)
+            var waited = 0.0
+            while !app.buttons["manual-connect"].isEnabled && waited < 3 {
+                usleep(250_000)
+                waited += 0.25
+            }
+            if !app.buttons["manual-connect"].isEnabled { continue }
+            // The keyboard can still be settling over the button row when
+            // the coordinate resolves — a raw coordinate tap lands on it
+            // with no hit-failure. Dismiss first so the tap reaches Connect.
+            dismissKeyboard(app)
+            tapButton(app, "Connect")
+            // A real tap moves the status line off idle; if it never did
+            // the tap no-opped and the token needs retyping.
+            let deadline = Date().addingTimeInterval(12)
+            while Date() < deadline {
+                if app.staticTexts["Useful Bot"].exists { return }
+                if status.exists, !status.label.isEmpty,
+                   status.label != "Point the camera at the code on your Mac" { return }
+                usleep(300_000)
+            }
         }
-        tapButton(app, "Connect")
         // The keyboard can outlive the push to the Bots list and cover the
-        // Devices sheet's bottom rows on small screens. Dismiss it with a
-        // bare swipe (scrollDismissesKeyboard is .interactively): no element
-        // resolution, so it can never fail on a keyboard already gone.
-        if app.keyboards.firstMatch.waitForExistence(timeout: 2) {
-            app.swipeDown()
-            _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 8)
-        }
+        // Devices sheet's bottom rows on small screens.
+        dismissKeyboard(app)
     }
     /// Leg A — pair, sign out, sign in. Runs before any credential flip.
     func testA_PairAndSessionLifecycle() throws {
