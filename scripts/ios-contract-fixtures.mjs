@@ -174,6 +174,20 @@ async function main() {
       note: "Real proxy material that is not the enrolled tailnet → unknown → 403.",
     });
 
+    // phoneEnabled off (S9 mint-side): a phone credential must not mint a
+    // session every gated route would kill the next request anyway. Tailnet
+    // cannot classify at all with it off, so the check rides loopback — the
+    // same request the dev path uses.
+    writeConfig(path.join(work, "config"), { phoneEnabled: false });
+    await new Promise((r) => setTimeout(r, 50));
+    await call("auth.post-phone-disabled", {
+      method: "POST", url: SESSION,
+      headers: { ...loopback, authorization: `Bearer ${PHONE_TOKEN}` },
+      note: "S9 at mint: while phoneEnabled is false a phone credential gets credential_invalid — the same verdict the routes answer.",
+    });
+    writeConfig(path.join(work, "config"));
+    await new Promise((r) => setTimeout(r, 50));
+
     // --- sessions bound to credentials --------------------------------
 
     const cookie = cookieHeader(phone.setCookie);

@@ -46,7 +46,6 @@ struct SignedOutView: View {
             } else {
                 Spacer().frame(height: 28)
             }
-            reasonLine
             VStack(spacing: 12) {
                 Button {
                     Task { await coordinator.signIn() }
@@ -64,6 +63,9 @@ struct SignedOutView: View {
                 ))
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
                 .accessibilityIdentifier("signed-out-sign-in")
+                // Disabled reason sits directly under the control it
+                // disables (the §1.0 recipe), not above the button stack.
+                reasonLine
 
                 Button {
                     Task {
@@ -111,7 +113,6 @@ struct SignedOutView: View {
             Text("You're offline")
                 .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                 .foregroundStyle(Theme.C.inkMuted)
-                .padding(.bottom, 16)
                 .accessibilityIdentifier("signed-out-reason")
         } else if case .failed(let message) = coordinator.phase {
             Text(message)
@@ -119,10 +120,7 @@ struct SignedOutView: View {
                 .foregroundStyle(Theme.C.danger)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 16)
                 .accessibilityIdentifier("signed-out-reason")
-        } else {
-            Spacer().frame(height: 16)
         }
     }
 }

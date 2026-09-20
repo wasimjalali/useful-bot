@@ -9,9 +9,10 @@ import AVFoundation
 /// view renders nothing — the sunken square and guides behind it show
 /// through, which is the spec's Empty treatment.
 struct QRScannerView: UIViewControllerRepresentable {
-    /// Paused (loading) or offline: the session keeps running so the last
-    /// frame holds, but detection stops — scanning can never fire while the
-    /// status line says otherwise.
+    /// Paused (loading) or offline: the capture session stops — the
+    /// preview layer holds its last frame, which is the spec's freeze — and
+    /// detection stops, so scanning can never fire while the status line
+    /// says otherwise.
     var paused: Bool
     var onScan: (String) -> Void
 
@@ -79,8 +80,13 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
                 // Resuming after an error clears the latch so the next code
                 // can scan.
                 self.fired = false
+                if !self.session.isRunning { self.session.startRunning() }
             } else {
                 self.fired = true
+                // A stopped session holds the preview's last frame — the
+                // design spec's "scanner freezes" — and no frames reach
+                // detection while it is down.
+                if self.session.isRunning { self.session.stopRunning() }
             }
         }
     }

@@ -24,6 +24,9 @@ final class PairingCoordinator: ObservableObject {
     /// Last successful contact with the Mac — the banner's "Last seen …"
     /// line quotes it.
     @Published private(set) var lastContact: Date?
+    /// Stamped on each foreground resync (spec 8.5); the Bots list re-fetches
+    /// `/api/shell` off it.
+    @Published private(set) var resyncAt = Date()
 
     let store: PairingStore
     let monitor: PathMonitor
@@ -75,6 +78,9 @@ final class PairingCoordinator: ObservableObject {
             )
         } catch {
             store.markCredentialInvalid()
+            // A stale `.connected` phase would read as "Connected to <name>"
+            // on the credential-invalid screen's status line.
+            phase = .idle
             return
         }
         if store.state == .paired {
@@ -100,6 +106,16 @@ final class PairingCoordinator: ObservableObject {
     }
 
     private func connect(_ makePayload: () throws -> PairingPayload) async {
+        // Connecting and the 600 ms connected hold are both busy: a second
+        // scan or Connect tap mid-flight would interleave Keychain writes
+        // and store transitions (and can retire the token the first attempt
+        // just stored). Failed retries still enter.
+        switch phase {
+        case .connecting, .connected:
+            return
+        case .idle, .failed:
+            break
+        }
         guard monitor.isOnline else {
             phase = .failed("You're offline")
             return
@@ -152,6 +168,13 @@ final class PairingCoordinator: ObservableObject {
                 credentialExpiresAt: credentialExpiry(reporting: info.credentialExpiresAt)
             )
             readiness = .ready
+        } catch BackendError.deviceTokenMissing {
+            // The just-written item could not be read back — the Keychain
+            // dropped it. Terminal on iOS the same as a revoked credential.
+            keychain.deleteToken()
+            client = nil
+            store.markCredentialInvalid()
+            phase = .failed(Self.copy(for: BackendError.deviceTokenMissing))
         } catch {
             // A failed sign-in leaves no usable token behind.
             keychain.deleteToken()
@@ -171,14 +194,30 @@ final class PairingCoordinator: ObservableObject {
                 credentialExpiresAt: credentialExpiry(reporting: info.credentialExpiresAt)
             )
             lastContact = Date()
-        } catch BackendError.credentialInvalid {
+        } catch BackendError.credentialInvalid, BackendError.deviceTokenMissing {
+            // A rejected credential and a vanished Keychain item are the same
+            // terminal verdict (§4.8): `kSecAttrAccessibleWhenPasscodeSet-
+            // ThisDeviceOnly` + non-syncable means the item never survives a
+            // device migration or a removed passcode, while the `paired`
+            // record in defaults does.
             store.markCredentialInvalid()
+            phase = .idle
         } catch {
             await probeReadiness()
             // On the signed-out surface this is the Sign-in result — render
             // it instead of leaving the button silently re-enabled.
             phase = .failed(Self.copy(for: error))
         }
+    }
+
+    /// Spec 8.5: the one resync on `.active` — a status probe (a dead
+    /// credential lands on `credentialInvalid` here, a dropped session
+    /// re-auths inside the request) plus the shell re-fetch the list runs
+    /// off `resyncAt`.
+    func sceneBecameActive() async {
+        guard store.state == .paired else { return }
+        await probeReadiness()
+        resyncAt = Date()
     }
 
     /// UI-test seam: UB_CREDENTIAL_EXPIRY_DAYS overrides the reported
@@ -250,8 +289,12 @@ final class PairingCoordinator: ObservableObject {
             }
             lastContact = Date()
             readiness = status.eve == "available" ? .ready : .runtimeDown
-        } catch BackendError.credentialInvalid {
+        } catch BackendError.credentialInvalid, BackendError.deviceTokenMissing {
+            // Same terminal verdict as in exchangeSession: the token can no
+            // longer be used, so the pairing's only exits are re-pair and
+            // unpair — never a permanent "unreachable" banner.
             store.markCredentialInvalid()
+            phase = .idle
         } catch {
             readiness = .macUnreachable(lastSeen: lastContact, detail: String(describing: error))
         }
@@ -276,6 +319,10 @@ final class PairingCoordinator: ObservableObject {
             return "That code is not a Useful Bot pairing code."
         case BackendError.credentialInvalid, BackendError.unauthorized:
             return "This pairing was revoked. Re-pair from the Mac"
+        case BackendError.deviceTokenMissing:
+            // The shared BackendError copy names a macOS remediation; on
+            // iOS a vanished item is only cured by a fresh pair.
+            return "This iPhone lost its pairing token. Pair again from your Mac."
         default:
             break
         }

@@ -30,8 +30,14 @@ struct PairingView: View {
         cameraStatus == .denied || cameraStatus == .restricted
     }
 
-    private var isConnecting: Bool {
-        coordinator.phase == .connecting
+    /// Busy through the 600 ms connected hold too: a second scan mid-hold
+    /// would re-enter `connect()` while the first attempt still owns the
+    /// Keychain writes (the coordinator also refuses re-entry itself).
+    private var connectBusy: Bool {
+        switch coordinator.phase {
+        case .connecting, .connected: return true
+        case .idle, .failed: return false
+        }
     }
 
     var body: some View {
@@ -128,7 +134,7 @@ struct PairingView: View {
                     .padding(16)
                     .frame(minWidth: side, minHeight: side)
             } else {
-                QRScannerView(paused: isConnecting || isOffline) { scanned in
+                QRScannerView(paused: connectBusy || isOffline) { scanned in
                     Task { await coordinator.pair(scanned: scanned) }
                 }
                 .frame(width: side, height: side)
@@ -256,7 +262,7 @@ struct PairingView: View {
     /// "Enter manually" — or, in `credentialInvalid`, the tertiary "Unpair"
     /// text button alongside it (class A; the gate runs in the coordinator).
     private var footer: some View {
-        let manualEnabled = !isConnecting && !isOffline
+        let manualEnabled = !connectBusy && !isOffline
         return VStack(spacing: 8) {
             // Denied shows the fields inline ("no extra tap") — pushing the
             // same form would be redundant.
@@ -277,7 +283,9 @@ struct PairingView: View {
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
                 if !manualEnabled {
                     // Design spec 1.1: disabled with the reason, in inkMuted.
-                    Text(isOffline ? "You're offline" : "Connecting to your Mac")
+                    // During the connected hold the status line already says
+                    // "Connected to <name>" — no second line argues with it.
+                    Text(isOffline ? "You're offline" : (coordinator.phase == .connecting ? "Connecting to your Mac" : ""))
                         .tokenFont(DesignTokens.FontSize.attachError, .regular)
                         .foregroundStyle(Theme.C.inkMuted)
                         .multilineTextAlignment(.center)

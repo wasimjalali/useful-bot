@@ -6,17 +6,21 @@ import { createBrowserSession, credentialById, phoneDisabled, sessionCookie, cle
 import { destroySession, readSession } from "../../../../lib/cookie-sessions";
 
 /**
- * Per-source limiter key (S13): the ingress class is part of the key so a
- * tailnet client cannot borrow the loopback bucket, and the source behind it
- * is the first forwarded hop on tailnet or the request host on loopback —
- * never a header the caller chose itself. Opaque, bounded; the raw forwarded
- * address is never stored.
+ * Per-source limiter key (S13): the caller must never choose its own bucket.
+ * On tailnet the only Serve-attested identity is `tailscale-user-login` —
+ * classifying as `tailnet` at all means it already matched the enrolled
+ * tailnet identity, so every tailnet caller lands in that one bucket; absent
+ * it, fall back to the *last* XFF hop, the address Serve itself appended,
+ * never a caller-written first hop. Loopback has no trustworthy source at
+ * all, so local callers share one bucket. Opaque, bounded; the raw identity
+ * is never stored.
  */
 function clientKey(request: Request, ingress: IngressClass): string {
-  const forwarded = ingress === "tailnet"
-    ? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? ""
-    : "";
-  const identity = forwarded || request.headers.get("host") || "local";
+  const identity = ingress === "tailnet"
+    ? request.headers.get("tailscale-user-login")?.trim()
+      ?? request.headers.get("x-forwarded-for")?.split(",").pop()?.trim()
+      ?? "tailnet"
+    : "loopback";
   return createHash("sha256").update(`${ingress}:${identity}`).digest("hex").slice(0, 16);
 }
 
@@ -143,6 +147,12 @@ export async function POST(request: Request) {
   // credential is the only one a proxied request may turn into a session.
   if (ingress === "tailnet" && identity.profile !== "phone") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  // The S9 invariant belongs at mint too: a phone credential is dead while
+  // phone access is disabled — answer the use-side verdict instead of
+  // minting a session every gated route would kill the next request.
+  if (identity.profile === "phone" && phoneDisabled()) {
+    return NextResponse.json({ ok: false, error: "credential_invalid" }, { status: 401 });
   }
   // Re-issuing a session must retire the one it replaces, or the old cookie
   // stays valid until its own expiry.

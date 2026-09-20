@@ -550,6 +550,23 @@ Creates `docs/audit/IOS-OWNER-CHECKLIST.md`.
 - **`DynamicTypeSize.isAccessibilityCategory` is not in this SDK**:
   the wrap decision switches on `.accessibility1`–`.accessibility5`
   explicitly.
+- **Scanner guide color deviates deliberately** (design spec 1.1 item 5):
+  white@80% presumes a dark camera feed, but on the simulator — and on a
+  denied camera, the state every automated run produces — the square is
+  the light `sunken` placeholder where white@80% is ~1.1:1 (invisible).
+  `Theme.C.scannerGuide` is dark white@80% / light ink@50% (≈3:1 on
+  `sunken`); the live-camera path still gets the spec color in both
+  appearances. Recorded here per the code-vs-spec rule.
+- **The gate's "dev stack running" prereq is real**: a run against a dead
+  :4320 makes leg A fail as "Can't reach your Mac" on screen — read the
+  stack before blaming the app. `setup-local`'s credential operations are
+  local-file, so `payload()` passes either way; `lsof -ti tcp:4320` is
+  the true tell.
+- **Devices re-pair pushes the real pairing flow**: `credentialExpiring`
+  drives both the banner's seven-day window and the warning value; the
+  row's destination is `PairingView` itself, and a landed `.connected`
+  dismisses back to Devices (`phase` returns to `.idle` so a second
+  re-pair is never born dead).
 
 ### Review loop
 
@@ -607,3 +624,81 @@ correctness requested changes (5 findings), design-a11y requested changes
   leg A, and `shot()` polls the full window answering late alerts; both
   connected shots pin the scroll position first so the paired list never
   lands mid-scroll.
+
+Round 3: fresh reviewer sessions on `2ae311a` (correctness
+`devin-6e3310bbec0040a58ab49e499a2ba7e2`, security
+`devin-2c6f667cc75d47319ef84b3afb32825d`, design-a11y
+`devin-6a232769a8794c31a64f3d057c15d63b`). Security approved clean for the
+second consecutive round; correctness requested changes (6 findings + 1
+nit), design-a11y requested changes (12 findings). Fixes:
+
+- `deviceTokenMissing` is terminal on iOS, not `macUnreachable` forever
+  (correctness 1, high): the Keychain item is
+  `WhenPasscodeSetThisDeviceOnly` + non-syncable while the `paired` record
+  is plain UserDefaults — a new-iPhone restore or a removed passcode
+  orphans the record. `exchangeSession`, `probeReadiness` and `connect`
+  now map it to `credentialInvalid` (paths that survive: re-pair, unpair)
+  with iOS remediation copy ("This iPhone lost its pairing token. Pair
+  again from your Mac."); `keychainLocked`/`keychainCancelled` stay
+  transient. `markCredentialInvalid` call sites also reset `phase` to
+  `.idle` so a stale `.connected` never reads as "Connected to …" on the
+  revoked screen.
+- Spec 1.2 Error row (correctness 2): a failed `/api/shell` while the Mac
+  is reachable now renders the inline error line + Retry (`loadError`),
+  and `loaded` flips only on a *successful* fetch — the empty state can
+  never masquerade a failure. New `UB_FAIL_SHELL` seam + two gate legs
+  capture it (`bots-load-error-*`).
+- §8.5 foreground resync (correctness 3): `UsefulBotApp` watches
+  `scenePhase`; `.active` calls `sceneBecameActive()` → `probeReadiness()`
+  + `resyncAt` stamp, and the Bots list re-fetches `/api/shell` on it.
+- S13 limiter key (correctness 4, medium): per-source bucketing keyed on
+  caller-chosen headers let a sprayer rotate buckets and saturate the
+  global cap, locking out the real phone. Tailnet keys on the
+  Serve-attested `tailscale-user-login` (falling back to the last XFF
+  hop); loopback uses a single constant bucket — there is no trustworthy
+  caller identity off-loopback and honest collapse beats spoofable
+  separation.
+- `connect()` re-entry guard (correctness 5): a second scan or Connect
+  tap during `.connecting`/the 600 ms `.connected` hold returns early —
+  the same hold now disables the manual forms' controls too
+  (design-a11y 6).
+- S9 at mint (correctness 6): `POST /api/auth/session` rejects a `phone`
+  credential with `credential_invalid` while `phoneEnabled` is false —
+  closing the mint-vs-use gap where a session could be minted that every
+  gated route would kill. Recorded exchange `auth.post-phone-disabled`
+  pins it.
+- Eve comment drift (nit): the `[...path]` route comment now describes
+  the real rule (owner sessions of either profile; a bare credential
+  never mints).
+- Devices section headers (design-a11y 1): custom `fieldLabel` 13 medium
+  `inkMuted` headers instead of iOS 26's large group style.
+- Devices credential-expiring state (design-a11y 2): the expiry value
+  goes `warning` inside the seven-day window with a "Re-pair from your
+  Mac" row under it that pushes the real pairing flow; new
+  `devices-expiring-*` shots.
+- Status pill vocabulary (design-a11y 3): `ready` → "Connected"
+  (`success`); `macUnreachable`/`noNetwork` → "Unreachable" (`warning`);
+  `runtimeDown` → "Runtime down" (`warning`); nil-before-first-probe →
+  neutral "Checking" — `danger` is reserved for refused/destructive.
+- Loading anatomy (design-a11y 4): the skeleton gains the "Connecting to
+  <Mac>" status line + `inkFaint` dot, the pinned-card skeleton and the
+  section-title bar.
+- "New bot" is inert until PR-6 (design-a11y 5): the create sheet is
+  design 1.7/PR-6 scope — the button now renders disabled-with-reason
+  ("Bot creation arrives with the chat update.") instead of silently
+  minting an unnamed bot.
+- Scanner freezes while paused (design-a11y 7): `stopRunning()` on pause —
+  the preview layer holds its last frame and no frames reach detection.
+- 360 pt + iPad split-view captures (design-a11y 8): iPhone 12 mini sim
+  added for the full 360 pt leg set; spec §10's iPad shape is now real —
+  `NavigationSplitView` with the Bots list as the rail equivalent and a
+  "Select a bot" detail — pairing/sign-in/credentialInvalid stay
+  full-width; the 834 subset regenerates in the split layout.
+- Offline banner clock (design-a11y 9): sub-minute relative times render
+  "just now" instead of "in 0 sec.".
+- Signed-out reason placement (design-a11y 10): the disabled reason sits
+  directly under the Sign in button it explains, not above the stack.
+- Scanner guides color (design-a11y 11): recorded as a deliberate
+  deviation under Surprises rather than shipped white@80%.
+- Bot row anatomy (design-a11y 12): `chatName` semibold at the
+  `phoneRowMinHeight` 60 pt floor.

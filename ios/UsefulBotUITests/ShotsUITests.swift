@@ -103,6 +103,7 @@ final class ShotsUITests: XCTestCase {
                         reset: Bool = false, offline: Bool = false,
                         holdConnected: Bool = false,
                         hangShell: Bool = false, emptyShell: Bool = false,
+                        failShell: Bool = false,
                         expiryDays: Double? = nil) {
         app.launchEnvironment["UB_APPEARANCE"] = appearance
         app.launchEnvironment["UB_CAMERA_STATE"] = "denied"
@@ -111,6 +112,7 @@ final class ShotsUITests: XCTestCase {
         if holdConnected { app.launchEnvironment["UB_HOLD_CONNECTED"] = "1" }
         if hangShell { app.launchEnvironment["UB_HANG_SHELL"] = "1" }
         if emptyShell { app.launchEnvironment["UB_EMPTY_SHELL"] = "1" }
+        if failShell { app.launchEnvironment["UB_FAIL_SHELL"] = "1" }
         if let expiryDays {
             app.launchEnvironment["UB_CREDENTIAL_EXPIRY_DAYS"] = "\(expiryDays)"
         }
@@ -509,9 +511,43 @@ final class ShotsUITests: XCTestCase {
         }
     }
 
+    /// Error state (design spec 1.2): UB_FAIL_SHELL makes the roster fetch
+    /// fail while the Mac stays reachable — the inline error line + Retry
+    /// render, never the empty state.
+    func testBotsLoadError() throws {
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance, failShell: true)
+            XCTAssertTrue(
+                app.descendants(matching: .any)
+                    .matching(identifier: "bots-load-error").firstMatch
+                    .waitForExistence(timeout: 20),
+                "load-error row never rendered")
+            shot("bots-load-error-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            app.terminate()
+        }
+    }
+
+    /// Same state at accessibility XXXL — the error line must wrap, never
+    /// truncate (A.7).
+    func testBotsLoadErrorAccessibility() throws {
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance, typeSize: "xxxl", failShell: true)
+            XCTAssertTrue(
+                app.descendants(matching: .any)
+                    .matching(identifier: "bots-load-error").firstMatch
+                    .waitForExistence(timeout: 20),
+                "load-error row never rendered")
+            shot("bots-load-error-\(suffix(app, appearance: appearance, typeSize: "xxxl"))", app)
+            app.terminate()
+        }
+    }
+
     /// Credential-expiring banner (spec 11, design 1.2's fourth row):
     /// UB_CREDENTIAL_EXPIRY_DAYS=3 puts the credential inside the seven-day
-    /// window so the one-time banner renders.
+    /// window so the one-time banner renders — and Devices shows its own
+    /// Credential-expiring state (warning value + the re-pair row).
     func testExpiryBanner() throws {
         for appearance in ["light", "dark"] {
             let app = XCUIApplication()
@@ -524,6 +560,13 @@ final class ShotsUITests: XCTestCase {
                 XCTFail("expiry banner never rendered; texts: \(tree)")
             }
             shot("bots-expiring-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+
+            openDevices(app)
+            XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10),
+                          "Devices push never presented")
+            XCTAssertTrue(app.buttons["Re-pair from your Mac"].waitForExistence(timeout: 10),
+                          "re-pair row never rendered")
+            shot("devices-expiring-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }

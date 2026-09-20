@@ -110,7 +110,14 @@ struct ManualPairingView: View {
     private var connectButton: some View {
         let filled = !address.isEmpty && !token.isEmpty
         let online = coordinator.monitor.isOnline
-        let connecting = coordinator.phase == .connecting
+        // Busy means connecting *or* the connected hold — a tap mid-hold
+        // would race a second pair against the first attempt's retire.
+        let connecting: Bool = {
+            switch coordinator.phase {
+            case .connecting, .connected: return true
+            case .idle, .failed: return false
+            }
+        }()
         let enabled = filled && online && !connecting
         return VStack(spacing: 8) {
             Button {

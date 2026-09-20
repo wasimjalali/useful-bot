@@ -120,3 +120,10 @@ test("auth.get-session-revoked: S9 — introspection answers the same verdict", 
   // The dead session is destroyed and the cookie cleared, not just refused.
   assert.equal(response.setCookie, true);
 });
+
+test("auth.post-phone-disabled: S9 — a disabled phone credential never mints", () => {
+  const { response } = fixture("auth.post-phone-disabled");
+  assert.equal(response.status, 401);
+  assert.equal(response.json?.error, "credential_invalid");
+  assert.equal(response.setCookie, false);
+});

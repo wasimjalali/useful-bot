@@ -9,7 +9,12 @@ struct BotsListView: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bots: [ShellBot] = []
+    /// `loaded` means a roster fetch has *succeeded* at least once — a failed
+    /// first load shows the error row, never "Create your first bot".
     @State private var loaded = false
+    /// The last non-readiness fetch failure, rendered as the spec 1.2 Error
+    /// row (inline line + Retry); cleared by the next successful fetch.
+    @State private var loadError: String?
     @State private var showDevices = false
     /// When `/api/shell` last answered — the "cached N min ago" the offline
     /// banner quotes.
@@ -19,11 +24,6 @@ struct BotsListView: View {
     /// life so the banner doesn't flicker out in the same frame.
     @State private var expiryBannerShown = false
 
-    /// Writes ride readiness: anything below `ready` disables the New bot
-    /// button with the level's own reason (design spec 1.2 Disabled row).
-    private var writesEnabled: Bool {
-        coordinator.readiness == nil || coordinator.readiness == .ready
-    }
 
     var body: some View {
         List {
@@ -33,15 +33,20 @@ struct BotsListView: View {
                 expiryBanner
             }
             Section {
-                if !loaded {
+                if let loadError {
+                    loadErrorRow(loadError)
+                }
+                if loadError == nil && !loaded {
                     skeletonRows
                 } else if bots.isEmpty {
-                    emptyState
+                    // A failed fetch never asserts an empty roster.
+                    if loadError == nil { emptyState }
                 } else {
                     ForEach(bots) { bot in
                         Text(bot.name)
-                            .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
                             .foregroundStyle(Theme.C.ink)
+                            .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
                     }
                 }
             }
@@ -86,6 +91,11 @@ struct BotsListView: View {
             await coordinator.probeReadiness()
             await refresh()
         }
+        // §8.5's one resync on foreground: the coordinator stamps resyncAt
+        // after its status probe; the shell re-fetch rides it.
+        .onChange(of: coordinator.resyncAt) { _, _ in
+            Task { await refresh() }
+        }
         .refreshable {
             await coordinator.probeReadiness()
             await refresh()
@@ -110,65 +120,96 @@ struct BotsListView: View {
             loaded = true
             return
         }
+        // Same class of seam: FAIL makes the roster fetch error while the
+        // Mac stays reachable, so the 1.2 Error row (not the empty state)
+        // is what the visual gate records.
+        if ProcessInfo.processInfo.environment["UB_FAIL_SHELL"] == "1" {
+            loadError = Self.loadErrorCopy(for: BackendError.http(500))
+            return
+        }
         do {
             let shell = try await coordinator.client?.shell()
             bots = shell?.bots.filter { $0.kind == "bot" } ?? []
             lastFetchAt = Date()
-        } catch BackendError.credentialInvalid {
+            loadError = nil
+            loaded = true
+        } catch BackendError.credentialInvalid, BackendError.deviceTokenMissing {
             coordinator.store.markCredentialInvalid()
+            coordinator.phase = .idle
         } catch {
-            // A failed refresh is a readiness fact, not a list state.
+            // A fetch failure can mean the Mac went quiet — probe so the
+            // banner tells that story — but whatever the level, the failure
+            // itself is the spec 1.2 Error row, never the empty state.
             await coordinator.probeReadiness()
+            loadError = Self.loadErrorCopy(for: error)
         }
-        loaded = true
     }
 
-    private func createBot() async {
-        do {
-            _ = try await coordinator.client?.shellAction(
-                ShellActions.createBot(
-                    name: "New bot",
-                    petname: nil,
-                    label: "",
-                    description: "",
-                    sectionId: nil
-                )
-            )
-            await refresh()
-        } catch {
-            await coordinator.probeReadiness()
+    /// Spec 1.2 Error: the server's typed copy when it sent one, else a
+    /// plain sentence — readiness failures are already told by the banner.
+    private static func loadErrorCopy(for error: Error) -> String {
+        if let backend = error as? BackendError {
+            return backend.localizedDescription
         }
+        return "Could not load your bots."
+    }
+
+    /// Design spec 1.2's Error row: danger glyph, one muted sentence,
+    /// trailing secondary Retry — the cached list stays visible under it.
+    private func loadErrorRow(_ copy: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(Theme.C.danger)
+            Text(copy)
+                .tokenFont(DesignTokens.FontSize.attachError, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Retry") {
+                Task {
+                    await coordinator.probeReadiness()
+                    await refresh()
+                }
+            }
+            .tokenFont(DesignTokens.FontSize.button, .semibold)
+            .foregroundStyle(Theme.C.ink)
+            .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("bots-load-error")
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     /// "Create your first bot" as the only content, primary "New bot" under
-    /// it (design spec 1.2 Empty row).
+    /// it (design spec 1.2 Empty row). The button is the shell's own CTA:
+    /// the designed create sheet (1.7) is PR-6 scope, so until it lands the
+    /// control is disabled-with-reason rather than minting an unnamed bot.
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let newBotEnabled = false
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Create your first bot")
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Button {
-                Task { await createBot() }
             } label: {
                 Text("New bot")
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
-                    .foregroundStyle(writesEnabled ? Theme.C.brandInk : Theme.C.inkFaint)
+                    .foregroundStyle(newBotEnabled ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 50)
             }
-            .disabled(!writesEnabled)
+            .disabled(true)
             .buttonStyle(PressedScale(
-                fill: writesEnabled ? Theme.C.brand : Theme.C.sunken,
-                pressedFill: writesEnabled ? Theme.C.accentStrong : Theme.C.sunken,
-                shadowed: writesEnabled
+                fill: newBotEnabled ? Theme.C.brand : Theme.C.sunken,
+                pressedFill: newBotEnabled ? Theme.C.accentStrong : Theme.C.sunken,
+                shadowed: newBotEnabled
             ))
-            if !writesEnabled {
-                Text(readinessReason)
-                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text("Bot creation arrives with the chat update.")
+                .tokenFont(DesignTokens.FontSize.attachError, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 48)
@@ -176,36 +217,53 @@ struct BotsListView: View {
         .listRowSeparator(.hidden)
     }
 
-    private var readinessReason: String {
-        switch coordinator.readiness {
-        case .noNetwork: return "You're offline"
-        case .macUnreachable: return "Your Mac is unreachable"
-        case .runtimeDown: return "Agent runtime is down on your Mac"
-        case .ready, nil: return ""
-        }
-    }
 
-    /// Loading (spec 1.2 / §11): five row skeletons at loaded geometry in
-    /// `border`, 1.6 s pulse; static under Reduce Motion.
+    /// Loading (design spec 1.2's mockup, §11): the "Connecting to
+    /// <Mac>" status line with its `inkFaint` dot, a pinned-card skeleton,
+    /// the section-title bar, then five row skeletons at loaded geometry in
+    /// `border` — 1.6 s pulse; static under Reduce Motion.
     private var skeletonRows: some View {
-        let rows = ForEach(0..<5, id: \.self) { _ in
-            HStack(spacing: 12) {
+        let rows = VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
                 Circle()
-                    .fill(Theme.C.border)
-                    .frame(width: 40, height: 40)
-                VStack(alignment: .leading, spacing: 6) {
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
-                        .fill(Theme.C.border)
-                        .frame(width: 110, height: 12)
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
-                        .fill(Theme.C.border)
-                        .frame(width: 170, height: 10)
-                }
+                    .fill(Theme.C.inkFaint)
+                    .frame(width: 6, height: 6)
+                Text("Connecting to \(coordinator.store.pairedName ?? "your Mac")")
+                    .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
                 Spacer()
             }
             .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
-            .accessibilityIdentifier("bots-skeleton")
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                .fill(Theme.C.border)
+                .frame(height: DesignTokens.Space.phoneRowMinHeight)
+                .padding(.vertical, 8)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
+                .fill(Theme.C.border)
+                .frame(width: 90, height: 10)
+                .padding(.vertical, 10)
+            ForEach(0..<5, id: \.self) { _ in
+                HStack(spacing: 12) {
+                    Circle()
+                        .fill(Theme.C.border)
+                        .frame(width: 40, height: 40)
+                    VStack(alignment: .leading, spacing: 6) {
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
+                            .fill(Theme.C.border)
+                            .frame(width: 110, height: 12)
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
+                            .fill(Theme.C.border)
+                            .frame(width: 170, height: 10)
+                    }
+                    Spacer()
+                }
+                .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
+            }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("bots-skeleton")
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
         return Group {
             if reduceMotion {
                 rows
@@ -367,7 +425,7 @@ struct BotsListView: View {
                 return (
                     "wifi.slash",
                     "You're offline",
-                    "Showing what was cached \(Self.agoFormatter.localizedString(for: lastFetchAt, relativeTo: .now))."
+                    "Showing what was cached \(Self.ago(lastFetchAt))."
                 )
             }
             return ("wifi.slash", "You're offline", "Showing cached data.")
@@ -376,7 +434,7 @@ struct BotsListView: View {
                 return (
                     "desktopcomputer",
                     "Your Mac is unreachable",
-                    "Last seen \(Self.agoFormatter.localizedString(for: lastSeen, relativeTo: .now)). Bots pick up when it's back."
+                    "Last seen \(Self.ago(lastSeen)). Bots pick up when it's back."
                 )
             }
             return (
@@ -395,7 +453,14 @@ struct BotsListView: View {
         }
     }
 
-    /// "4 min ago", abbreviated to match the spec's sample copy.
+    /// "4 min ago", abbreviated to match the spec's sample copy. Under a
+    /// minute the abbreviated formatter emits future tense ("in 0 sec") —
+    /// clamp those to "just now".
+    private static func ago(_ date: Date) -> String {
+        if Date().timeIntervalSince(date) < 60 { return "just now" }
+        return agoFormatter.localizedString(for: date, relativeTo: .now)
+    }
+
     private static let agoFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
@@ -413,6 +478,7 @@ struct DevicesView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var gateUnavailable = false
     @State private var confirmUnpair = false
+    @State private var showRePair = false
     // The host value's mono 13 still rides Dynamic Type — footnote is the
     // nearest text style at this point size (same rule tokenFont uses).
     @ScaledMetric(relativeTo: .footnote) private var hostMonoSize: CGFloat = 13
@@ -427,9 +493,18 @@ struct DevicesView: View {
         }
     }
 
+    /// Design spec 1.15's group titles: `fieldLabel` 13 medium in
+    /// `inkMuted`, never iOS's large header style (adjudication V1).
+    private func groupHeader(_ title: String) -> some View {
+        Text(title)
+            .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
+            .foregroundStyle(Theme.C.inkMuted)
+            .textCase(nil)
+    }
+
     var body: some View {
         List {
-            Section("This Mac") {
+            Section {
                 if let name = coordinator.store.pairedName {
                     LabeledContent("Name", value: name)
                 }
@@ -450,16 +525,36 @@ struct DevicesView: View {
                 LabeledContent("Status") {
                     statusPill
                 }
+            } header: {
+                groupHeader("This Mac")
             }
             .foregroundStyle(Theme.C.ink)
 
-            Section("Expiry") {
+            Section {
                 if let session = coordinator.store.sessionExpiresAt {
                     LabeledContent("Session expires", value: session, format: .dateTime)
                 }
                 if let credential = coordinator.store.credentialExpiresAt {
-                    LabeledContent("Pairing expires", value: credential, format: .dateTime)
+                    // 1.15's Credential-expiring state: the value goes
+                    // `warning` inside the seven-day window and the re-pair
+                    // row appears under it — the banner's "Re-pair" needs a
+                    // path that is not the destructive Unpair.
+                    LabeledContent {
+                        Text(credential, format: .dateTime)
+                            .foregroundStyle(credentialExpiring ? Theme.C.warning : Theme.C.ink)
+                    } label: {
+                        Text("Pairing expires")
+                    }
+                    if credentialExpiring {
+                        Button {
+                            showRePair = true
+                        } label: {
+                            Text("Re-pair from your Mac")
+                        }
+                    }
                 }
+            } header: {
+                groupHeader("Expiry")
             }
             .foregroundStyle(Theme.C.ink)
 
@@ -508,6 +603,19 @@ struct DevicesView: View {
         }
         .navigationTitle("Devices")
         .navigationBarTitleDisplayMode(.inline)
+        // Re-pairing pushes the real pairing flow; a fresh pair lands on
+        // `.connected` — close back to Devices.
+        .navigationDestination(isPresented: $showRePair) {
+            PairingView()
+        }
+        .onChange(of: coordinator.phase) { _, phase in
+            // A landed re-pair closes back to Devices; reset so a second
+            // re-pair doesn't mount a view that reads busy forever.
+            if case .connected = phase {
+                showRePair = false
+                coordinator.phase = .idle
+            }
+        }
         .scrollContentBackground(.hidden)
         // Grouped settings sit on canvas; the group rows are the surfaces.
         .background(Theme.C.canvas)
@@ -528,18 +636,21 @@ struct DevicesView: View {
         return host
     }
 
-    /// Small state pill per 1.15's "This Mac" group: readiness in words.
+    /// The 1.15 status pill speaks the spec's vocabulary (1.11): a good
+    /// connection is "Connected" in `success`, anything degraded is
+    /// `warning` — `danger` is reserved for refused/destructive states — and
+    /// a nil readiness (probe not yet landed) is the neutral "Checking".
     private var statusPill: some View {
         let (text, foreground, background): (String, Color, Color)
         switch coordinator.readiness {
-        case .ready, nil:
-            (text, foreground, background) = ("Ready", Theme.C.success, Theme.C.successSoft)
-        case .noNetwork:
-            (text, foreground, background) = ("Offline", Theme.C.danger, Theme.C.dangerSoft)
-        case .macUnreachable:
-            (text, foreground, background) = ("Unreachable", Theme.C.danger, Theme.C.dangerSoft)
+        case .ready:
+            (text, foreground, background) = ("Connected", Theme.C.success, Theme.C.successSoft)
+        case .noNetwork, .macUnreachable:
+            (text, foreground, background) = ("Unreachable", Theme.C.warning, Theme.C.warningSoft)
         case .runtimeDown:
-            (text, foreground, background) = ("Runtime down", Theme.C.danger, Theme.C.dangerSoft)
+            (text, foreground, background) = ("Runtime down", Theme.C.warning, Theme.C.warningSoft)
+        case nil:
+            (text, foreground, background) = ("Checking", Theme.C.inkMuted, Theme.C.sunken)
         }
         return Text(text)
             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
@@ -547,5 +658,14 @@ struct DevicesView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(background, in: Capsule())
+    }
+
+    /// Inside the one-time seven-day warning window (spec 11) — the same
+    /// predicate the banner uses.
+    private var credentialExpiring: Bool {
+        guard let expiry = coordinator.store.credentialExpiresAt,
+              expiry.timeIntervalSinceNow > 0,
+              expiry.timeIntervalSinceNow <= 7 * 86_400 else { return false }
+        return true
     }
 }

@@ -235,6 +235,8 @@ leg testRepairedDark ShotsUITests
 # app stays paired underneath either way.
 leg testBotsLoading ShotsUITests
 leg testBotsEmpty ShotsUITests
+leg testBotsLoadError ShotsUITests
+leg testBotsLoadErrorAccessibility ShotsUITests
 # §11's fourth banner row: the credential expiry override puts the pairing
 # inside the seven-day window for the one-time "Pairing expires" banner.
 leg testExpiryBanner ShotsUITests

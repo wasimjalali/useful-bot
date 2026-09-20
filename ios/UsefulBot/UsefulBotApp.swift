@@ -4,6 +4,7 @@ import UsefulBotCore
 @main
 struct UsefulBotApp: App {
     @StateObject private var coordinator = PairingCoordinator()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var booted = false
 
     var body: some Scene {
@@ -17,24 +18,40 @@ struct UsefulBotApp: App {
     }
 
     private var root: some View {
-        NavigationStack {
-            Group {
-                if !booted {
-                    // Launch settles the stored state first: a persisted
-                    // `paired` re-exchanges, a broken stored origin lands in
-                    // credentialInvalid — before any screen renders.
-                    ZStack {
-                        Theme.C.surface.ignoresSafeArea()
-                        ProgressView()
-                    }
-                } else {
-                    switch coordinator.store.state {
-                    case .paired:
-                        BotsListView()
-                    case .signedOut:
-                        SignedOutView()
-                    case .unpaired, .credentialInvalid:
-                        PairingView()
+        Group {
+            if !booted {
+                // Launch settles the stored state first: a persisted
+                // `paired` re-exchanges, a broken stored origin lands in
+                // credentialInvalid — before any screen renders.
+                ZStack {
+                    Theme.C.surface.ignoresSafeArea()
+                    ProgressView()
+                }
+            } else if isPad, coordinator.store.state == .paired {
+                // Spec 10: iPad is NavigationSplitView — the rail equivalent
+                // in the sidebar, the detail column holding pushes (Devices
+                // today; chat lands with PR-3). Pairing, sign-in and
+                // credential-invalid stay full-width.
+                NavigationSplitView {
+                    BotsListView()
+                } detail: {
+                    Text("Select a bot")
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Theme.C.canvas)
+                }
+            } else {
+                NavigationStack {
+                    Group {
+                        switch coordinator.store.state {
+                        case .paired:
+                            BotsListView()
+                        case .signedOut:
+                            SignedOutView()
+                        case .unpaired, .credentialInvalid:
+                            PairingView()
+                        }
                     }
                 }
             }
@@ -48,6 +65,17 @@ struct UsefulBotApp: App {
             await coordinator.bootstrap()
             booted = true
         }
+        // Spec 8.5: returning to active runs one resync — a status probe
+        // plus the shell re-fetch the Bots list drives off `resyncAt`.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task { await coordinator.sceneBecameActive() }
+            }
+        }
+    }
+
+    private var isPad: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
     }
 
     /// UI tests pin an appearance via `UB_APPEARANCE` and a type size via
