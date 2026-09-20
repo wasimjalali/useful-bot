@@ -93,13 +93,19 @@ exemption, and the text tripwire still refuses a line that names one.
 
 **A grant cannot be scoped to a binary.** A seatbelt rule applies to everything
 the line spawns, so naming a CLI opens its store to whatever that CLI then runs.
-For a tool's own directory that is a fair trade. For the login keychain it is
-not, and the two CLIs that wanted it (`gh` and Claude Code, which keep their
-token in the keyring) are both agents that run whatever a model asks them to.
-So the keychain is granted to nothing. Run unattended at Full access, those two
-report themselves signed out; on an approval card they work normally, because an
-approved line runs unconfined. `install_cli list` still reports their sign-in,
-since that probe runs in the parent process outside the profile.
+For a tool's own directory that is a fair trade: the blast radius is that tool's
+own token, which is exactly what it was opened for. The login keychain is not,
+because it holds every other application's secrets as well, so it is granted to
+nothing and no row may name it.
+
+What that means per tool, measured rather than assumed: a `codex` line reads
+`~/.codex/auth.json` and a `claude` line reads `~/.claude/.credentials.json`,
+each from its own line only — a plain `cat`, or the other tool's line, is
+refused both. `gh` is the one that keeps its token solely in the keyring with no
+file form, so an unattended `gh` reports itself signed out; on an approval card
+it works, because an approved line runs unconfined. `install_cli list` reports
+every sign-in either way, since that probe runs in the parent process outside
+the profile.
 
 Config that a tool reads and then executes is never writable, in any mode and
 including inside a store just opened for its own CLI: `~/.claude/settings.json`,

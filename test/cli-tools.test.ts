@@ -353,6 +353,12 @@ test("no line reaches the keychain, whatever CLI it names", () => {
   // A CLI still gets its own directory, which is the part that works.
   const gh = credentialPathsFor("gh auth status");
   if (gh.length > 0) assert.equal(gh.some((store) => store.endsWith("/.config/gh")), true);
+  // And a tool's own directory is its own: one line never collects another
+  // tool's store, which is what keeps a token's blast radius to its owner.
+  const claude = credentialPathsFor("claude -p hi");
+  const codex = credentialPathsFor("codex exec x");
+  for (const store of claude) assert.equal(store.includes("/.codex"), false, store);
+  for (const store of codex) assert.equal(store.includes("/.claude"), false, store);
   // And none of that reaches a line that is not the CLI itself.
   assert.deepEqual(credentialPathsFor("cat /etc/hosts"), []);
   assert.deepEqual(credentialPathsFor("echo x && gh auth status"), []);
