@@ -1,20 +1,26 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
 import { commandRisk, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
 import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
+import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { ownerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
-
-const execFileAsync = promisify(execFile);
 
 const OUTPUT_MAX_BYTES = 32 * 1024;
 const INPUT_MAX_BYTES = 1024 * 1024;
+const DEFAULT_TIMEOUT_MS = 30_000;
+/**
+ * A coding CLI working through a task runs for minutes, so the old 60s
+ * ceiling killed every useful run of one. The default stays where it was: a
+ * line that needs longer says so, rather than every mistyped command holding
+ * a turn open for half an hour.
+ */
+const MAX_TIMEOUT_MS = 30 * 60_000;
 
 /**
  * Best-effort refusal for commands that reach for credential stores or walk
@@ -50,10 +56,10 @@ function blockedReason(command: string, scoped: boolean): string | null {
 }
 
 export default defineTool({
-  description: "Run a shell command on this Mac, in the attached folder or under the owner's home when none is attached. Lines that only read run at once; what else runs without asking depends on the owner's permission: Full access runs everything, anywhere on the Mac, and asks only before a wipe. Not a login shell.",
+  description: "Run a shell command on this Mac, in the attached folder or under the owner's home when none is attached. The owner's own PATH and home directory apply, so a CLI they have installed and signed in to (codex, claude, gh, npm...) runs the way it does in their terminal. Lines that only read run at once; what else runs without asking depends on the owner's permission: Full access runs everything, anywhere on the Mac, and asks only before a wipe. Not a login shell, and stdin is closed: pass a non-interactive flag. Default timeout 30s; pass timeoutMs for a command that works for minutes.",
   inputSchema: z.object({
     command: z.string().min(1).max(8192),
-    timeoutMs: z.number().int().min(1).max(60_000).optional(),
+    timeoutMs: z.number().int().min(1).max(MAX_TIMEOUT_MS).optional(),
   }),
   async execute(input, ctx) {
     // One grant read for root AND permission: two reads could pair a root
@@ -70,8 +76,14 @@ export default defineTool({
       throw error;
     }
     const { root, permission, scope } = workspace;
-    // The HOME the line runs with, so `~` in it is the root in both scopes.
-    const shellHome = root;
+    // The HOME the line runs with is the owner's real one, in both scopes.
+    // It used to be the attached folder, so `~` stayed inside the grant; the
+    // cost was that every CLI on this Mac looked unconfigured and signed out,
+    // because `codex` reads `~/.codex`, `gh` reads `~/.config/gh` and `git`
+    // reads `~/.gitconfig`. Nothing was gained by the swap: writes are
+    // refused by the sandbox profile, not by where `~` points, and a line
+    // that spelled the home path in full was never affected either way.
+    const shellHome = homedir();
     const blocked = blockedReason(input.command, permission !== "full_access");
     if (blocked) {
       return { status: "blocked", error: blocked };
@@ -106,9 +118,8 @@ export default defineTool({
     if (readOnly) {
       askOwner = false;
     } else if (permission === "full_access") {
-      // `~` is what the line runs with (`shellHome` below); the owner's
-      // real home is where the top-level folders are.
-      risk = wipeRisk(input.command, root, shellHome, scope === "computer" ? root : homedir());
+      // `~` and the top-level folders are now the same home in both scopes.
+      risk = wipeRisk(input.command, root, shellHome, shellHome);
       askOwner = risk !== null;
     } else if (scope === "folder") {
       risk = commandRisk(input.command, root);
@@ -160,49 +171,52 @@ export default defineTool({
       const args = askOwner
         ? ["/bin/sh", "-c", input.command]
         : confinedCommand(readOnly ? null : root, input.command, scope, permission === "full_access" && !readOnly);
-      let stdout: string;
-      let stderr: string;
-      let exitCode = 0;
-      try {
-        ({ stdout, stderr } = await execFileAsync(args[0], args.slice(1), {
-          cwd: root,
-          timeout: input.timeoutMs ?? 30_000,
-          // The turn's signal reaches the child: a Stop must not leave a
-          // cancelled line running to its own timeout with side effects
-          // landing after the owner gave up.
-          signal: ctx?.abortSignal,
-          maxBuffer: INPUT_MAX_BYTES,
-          env: {
-            PATH: "/usr/bin:/bin",
-            HOME: shellHome,
-            // A read-only line runs with no writable root at all, so its
-            // temp dir is the system one the sandbox profile allows.
-            TMPDIR: readOnly ? tmpdir() : root,
-            LANG: "C",
-          },
-        }));
-      } catch (err) {
-        // A line that exits non-zero (`grep` with no match, a failing test)
-        // is a result, not a tool failure: the exit code and the output go
-        // back as they are. Rejecting instead would hand the model an error
-        // whose text is the whole sandbox command line, which reads like a
-        // permission refusal. Output past the input cap rejects the whole
-        // execFile call with the partial output attached; clip what came
-        // through. Anything else (a spawn failure, an abort) is real.
-        const failed = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; signal?: string | null };
-        const exited = typeof failed.code === "number" && !failed.signal;
-        if (!exited && failed.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw err;
-        // A line killed at the output cap did not finish: not exit 0.
-        exitCode = typeof failed.code === "number" ? failed.code : 1;
-        stdout = failed.stdout ?? "";
-        stderr = failed.stderr ?? "";
-      }
-      const truncated = stdout.length > OUTPUT_MAX_BYTES || stderr.length > OUTPUT_MAX_BYTES;
+      const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      // A line that exits non-zero (`grep` with no match, a failing test) is
+      // a result, not a tool failure, and so is one the timeout killed: the
+      // exit code and whatever output arrived go back as they are. Only a
+      // spawn failure or the owner's Stop throws, which is what `runCommand`
+      // rejects on.
+      const run = await runCommand(args, {
+        cwd: root,
+        env: {
+          // The owner's own PATH, so a CLI they installed and signed in to
+          // is found the way their terminal finds it.
+          PATH: ownerPath(),
+          HOME: shellHome,
+          // The system temp dir, which every posture's profile allows to be
+          // written. It used to be the workspace root for a line that could
+          // write, which left a CLI's scratch files sitting in the owner's
+          // project.
+          TMPDIR: tmpdir(),
+          // Enough for a CLI to behave: its own config, a non-interactive
+          // terminal and the owner's locale. Deliberately still a list and
+          // not `...process.env`, so the router's own credentials never
+          // reach a child.
+          LANG: process.env.LANG ?? "en_US.UTF-8",
+          TERM: "dumb",
+          SHELL: process.env.SHELL ?? "/bin/zsh",
+          ...(process.env.USER ? { USER: process.env.USER, LOGNAME: process.env.USER } : {}),
+          ...(process.env.TZ ? { TZ: process.env.TZ } : {}),
+        },
+        timeoutMs,
+        maxBytes: INPUT_MAX_BYTES,
+        // The turn's signal reaches the child: a Stop must not leave a
+        // cancelled line running to its own timeout with side effects
+        // landing after the owner gave up.
+        signal: ctx?.abortSignal,
+      });
+      const truncated = run.truncated
+        || run.stdout.length > OUTPUT_MAX_BYTES
+        || run.stderr.length > OUTPUT_MAX_BYTES;
       return {
-        stdout: wrapUntrusted("bash stdout", stdout.slice(0, OUTPUT_MAX_BYTES)),
-        stderr: wrapUntrusted("bash stderr", stderr.slice(0, OUTPUT_MAX_BYTES)),
-        exitCode,
+        stdout: wrapUntrusted("bash stdout", run.stdout.slice(0, OUTPUT_MAX_BYTES)),
+        stderr: wrapUntrusted("bash stderr", run.stderr.slice(0, OUTPUT_MAX_BYTES)),
+        exitCode: run.exitCode,
         truncated,
+        // Named, so the model reads "this ran out of time" instead of
+        // guessing at exit 124 and retrying the same line unchanged.
+        ...(run.timedOut ? { timedOut: true, timeoutMs } : {}),
       };
     });
   },

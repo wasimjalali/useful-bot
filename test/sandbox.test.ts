@@ -131,3 +131,65 @@ test("a Full access line writes outside the folder and still not into a credenti
     rmSync(outside, { force: true });
   }
 });
+
+test("Full access opens the CLI sign-in stores and nothing else under the home", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-sb-cli-"));
+  const home = realpathSync(dir);
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  const keys = join(home, ".ssh");
+  try {
+    // Only the directories that are actually there become rules, so the
+    // profile stays a readable list of what is open on this Mac.
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    mkdirSync(join(home, ".config", "gh"), { recursive: true });
+    mkdirSync(keys, { recursive: true });
+    const full = sandboxProfile(home, "computer", true);
+    assert.ok(full.includes(`(allow file-read* file-write* (subpath "${join(home, ".codex")}"))`));
+    assert.ok(full.includes(`(allow file-read* file-write* (subpath "${join(home, ".config", "gh")}"))`));
+    // Not installed here, so not named.
+    assert.equal(full.includes(join(home, ".gemini")), false);
+    // The owner's keys are not a CLI sign-in and stay refused.
+    assert.equal(full.includes(`(subpath "${keys}"`), false);
+    // An allow has to come after the deny it overrides, or seatbelt keeps
+    // the deny and a CLI still cannot read its own token.
+    assert.ok(full.indexOf(`(subpath "${join(home, ".codex")}"`) > full.indexOf('(deny file-read* (regex #"/auth\\.json($|[/.])"))'));
+    // Auto and Read only keep every credential store refused.
+    for (const scoped of [sandboxProfile(home, "computer"), sandboxProfile(home, "folder"), sandboxProfile(null)]) {
+      assert.equal(scoped.includes("(allow file-read* file-write* (subpath"), false);
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Full access line reads a CLI sign-in store and still not a private key", { skip: !darwin || !sandboxAvailable() }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-sb-clirun-"));
+  const home = realpathSync(dir);
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  const keyDir = join(home, ".ssh");
+  const keyFile = join(keyDir, "id_rsa");
+  const authFile = join(home, ".codex", "auth.json");
+  try {
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    mkdirSync(keyDir, { recursive: true });
+    writeFileSync(authFile, '{"token":"fixture"}\n', "utf8");
+    writeFileSync(keyFile, "fixture\n", "utf8");
+    const env = { PATH: "/usr/bin:/bin", HOME: home, TMPDIR: home };
+    const ok = confinedCommand(home, `cat ${JSON.stringify(authFile)}`, "computer", true);
+    const { stdout } = await execFileAsync(ok[0], ok.slice(1), { cwd: home, env });
+    assert.ok(stdout.includes("fixture"));
+    // The CLI refreshes its own token, so the write has to land too.
+    const write = confinedCommand(home, `printf '{}' > ${JSON.stringify(authFile)}`, "computer", true);
+    await execFileAsync(write[0], write.slice(1), { cwd: home, env });
+    const denied = confinedCommand(home, `cat ${JSON.stringify(keyFile)}`, "computer", true);
+    await assert.rejects(() => execFileAsync(denied[0], denied.slice(1), { cwd: home, env }), /not permitted/i);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

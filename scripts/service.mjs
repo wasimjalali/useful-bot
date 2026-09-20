@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
 import { createServer } from "node:net";
 import { webLaunch } from "./web-mode.mjs";
+import { ownerPath } from "../shared/user-path.ts";
 
 // The interpreter running this script, not a fixed path: the supervisor
 // accepts more than one install location and launches this file with it.
@@ -107,9 +108,13 @@ function signChannelJwt(secret, sub) {
 }
 
 async function childEnv() {
+  // launchd and the app bundle both hand this script the minimal system
+  // PATH, so a service that shells out sees none of what the owner has
+  // installed. `ownerPath` is the same answer the bash tool runs commands
+  // with; resolving it here means one probe per service, not one per line.
   const env = {
     ...process.env,
-    PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    PATH: ownerPath(),
     NODE_ENV: process.env.NODE_ENV || "production",
   };
   if (process.env.UB_SKIP_KEYCHAIN === "1") {
@@ -172,7 +177,7 @@ async function main() {
     await waitReady("http://127.0.0.1:4319/health/live", 60_000);
     const env = {
       ...process.env,
-      PATH: "/usr/local/bin:/usr/bin:/bin",
+      PATH: ownerPath(),
       NODE_ENV: process.env.NODE_ENV || "production",
     };
     try {
@@ -197,7 +202,7 @@ async function main() {
   if (mode === "web") {
     const env = {
       ...process.env,
-      PATH: "/usr/local/bin:/usr/bin:/bin",
+      PATH: ownerPath(),
       UB_ROUTER_CONFIG: process.env.UB_ROUTER_CONFIG ?? path.join(process.env.HOME ?? "", ".useful-bot/config.json"),
     };
     try {

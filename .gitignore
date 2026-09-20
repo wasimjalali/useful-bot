@@ -47,3 +47,4 @@ web/tsconfig.tsbuildinfo
 /r4-*.png
 /polish-shots/
 /.playwright-mcp/
+/cli-verify-*.png

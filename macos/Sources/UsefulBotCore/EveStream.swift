@@ -123,6 +123,7 @@ public enum TurnActivity: Equatable, Sendable {
         "create_routine": "Writing a routine",
         "delete_bot": "Removing a bot",
         "delete_routine": "Removing a routine",
+        "install_cli": "Setting up a tool",
         "list_bots": "Checking the roster",
         "list_dir": "Reading a folder",
         "list_routines": "Checking the routines",

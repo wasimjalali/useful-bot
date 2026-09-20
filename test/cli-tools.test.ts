@@ -1,0 +1,229 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+import { ownerPath, resetOwnerPath } from "../shared/user-path.ts";
+import { runCommand } from "../agent/lib/run-command.ts";
+import { CLI_REGISTRY, cliStatus, findCli, resolveBin } from "../agent/lib/cli-registry.ts";
+import installCli from "../agent/tools/install_cli.ts";
+import { upsertSessionGrant } from "../shared/workspace-store.ts";
+
+type Tool = { execute: (input: never, context: never) => unknown };
+
+async function run<T>(tool: Tool, input: Record<string, unknown>, context: Record<string, unknown> = {}): Promise<T> {
+  return await tool.execute(input as never, context as never) as T;
+}
+
+/** A directory with one executable in it, and the PATH that finds it. */
+function binFixture(name: string) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-bin-")));
+  const file = join(dir, name);
+  writeFileSync(file, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(file, 0o755);
+  return { dir, file, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+function withOwnerPath(value: string | undefined, body: () => void): void {
+  const previous = process.env.UB_OWNER_PATH;
+  resetOwnerPath();
+  if (value === undefined) delete process.env.UB_OWNER_PATH;
+  else process.env.UB_OWNER_PATH = value;
+  try {
+    body();
+  } finally {
+    if (previous === undefined) delete process.env.UB_OWNER_PATH;
+    else process.env.UB_OWNER_PATH = previous;
+    resetOwnerPath();
+  }
+}
+
+test("the owner PATH honours a pin and drops what a shell would resolve as the cwd", () => {
+  const fixture = binFixture("ub-fixture-cli");
+  try {
+    withOwnerPath([fixture.dir, "", "relative/bin", join(fixture.dir, "missing")].join(delimiter), () => {
+      assert.equal(ownerPath(), fixture.dir);
+    });
+    // A pin of nothing usable falls back rather than handing a child an
+    // empty PATH, which resolves every bare name against the cwd.
+    withOwnerPath("relative/bin", () => {
+      assert.ok(ownerPath().split(delimiter).includes("/usr/bin"));
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the resolved PATH always carries the system directories and no duplicates", () => {
+  withOwnerPath(undefined, () => {
+    const dirs = ownerPath().split(delimiter);
+    for (const dir of ["/usr/bin", "/bin"]) assert.ok(dirs.includes(dir), dir);
+    assert.equal(new Set(dirs).size, dirs.length);
+    assert.ok(dirs.every((dir) => dir.startsWith("/")));
+  });
+});
+
+test("a command's exit code and output come back as a result", async () => {
+  const run = await runCommand(["/bin/sh", "-c", "printf hello; printf oops >&2; exit 3"], {
+    cwd: tmpdir(),
+    env: { PATH: "/usr/bin:/bin" },
+    timeoutMs: 5_000,
+    maxBytes: 1024,
+  });
+  assert.equal(run.stdout, "hello");
+  assert.equal(run.stderr, "oops");
+  assert.equal(run.exitCode, 3);
+  assert.equal(run.timedOut, false);
+  assert.equal(run.truncated, false);
+});
+
+test("a command that runs out of time keeps the output it produced", async () => {
+  const run = await runCommand(["/bin/sh", "-c", "printf early; sleep 30"], {
+    cwd: tmpdir(),
+    env: { PATH: "/usr/bin:/bin" },
+    timeoutMs: 300,
+    maxBytes: 1024,
+  });
+  assert.equal(run.timedOut, true);
+  assert.equal(run.exitCode, 124);
+  // The old execFile path threw here, and the partial output went with it.
+  assert.equal(run.stdout, "early");
+});
+
+test("output past the cap is clipped and the command still finishes", async () => {
+  const run = await runCommand(["/bin/sh", "-c", "for i in 1 2 3 4 5 6 7 8 9 10; do printf 0123456789; done; exit 0"], {
+    cwd: tmpdir(),
+    env: { PATH: "/usr/bin:/bin" },
+    timeoutMs: 5_000,
+    maxBytes: 20,
+  });
+  assert.equal(run.stdout.length, 20);
+  assert.equal(run.truncated, true);
+  assert.equal(run.exitCode, 0);
+  assert.equal(run.timedOut, false);
+});
+
+test("stdin is closed, so a command that reads it does not hang", async () => {
+  const run = await runCommand(["/bin/cat"], {
+    cwd: tmpdir(),
+    env: { PATH: "/usr/bin:/bin" },
+    timeoutMs: 3_000,
+    maxBytes: 1024,
+  });
+  assert.equal(run.exitCode, 0);
+  assert.equal(run.timedOut, false);
+  assert.equal(run.stdout, "");
+});
+
+test("a bin resolves only when it is there and executable", () => {
+  const fixture = binFixture("ub-fixture-cli");
+  const plain = join(fixture.dir, "ub-not-executable");
+  writeFileSync(plain, "text\n", "utf8");
+  try {
+    assert.equal(resolveBin("ub-fixture-cli", fixture.dir), fixture.file);
+    assert.equal(resolveBin("ub-not-executable", fixture.dir), null);
+    assert.equal(resolveBin("ub-missing-cli", fixture.dir), null);
+    // A name with a separator in it is a path, not something to look up.
+    assert.equal(resolveBin("../ub-fixture-cli", fixture.dir), null);
+    assert.equal(resolveBin("", fixture.dir), null);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the registry answers by name and reports what is installed", () => {
+  assert.equal(findCli("CODEX")?.id, "codex");
+  assert.equal(findCli(" gh ")?.id, "gh");
+  assert.equal(findCli("not-a-cli"), null);
+  // Every entry names a command that could resolve and a line to install it.
+  for (const entry of CLI_REGISTRY) {
+    assert.match(entry.id, /^[a-z][a-z0-9-]*$/);
+    assert.ok(entry.install.length > 0);
+    assert.ok(entry.docs.startsWith("https://"));
+  }
+  const fixture = binFixture("codex");
+  try {
+    const status = cliStatus(findCli("codex")!, fixture.dir);
+    assert.equal(status.installed, true);
+    assert.equal(status.path, fixture.file);
+    const missing = cliStatus(findCli("vercel")!, fixture.dir);
+    assert.equal(missing.installed, false);
+    assert.equal(missing.path, null);
+    // Nothing is claimed about a sign-in for a CLI that is not there.
+    assert.equal(missing.signedIn, null);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("install_cli lists, refuses an unknown name and does not reinstall", async () => {
+  const fixture = binFixture("codex");
+  try {
+    withOwnerPath(fixture.dir, () => {});
+    process.env.UB_OWNER_PATH = fixture.dir;
+    resetOwnerPath();
+    const listed = await run<{ status: string; clis: Array<{ name: string; installed: boolean }> }>(installCli, { action: "list" });
+    assert.equal(listed.status, "ok");
+    assert.equal(listed.clis.length, CLI_REGISTRY.length);
+    assert.equal(listed.clis.find((cli) => cli.name === "codex")?.installed, true);
+    assert.equal(listed.clis.find((cli) => cli.name === "vercel")?.installed, false);
+
+    const unknown = await run<{ status: string; hint: string }>(installCli, { action: "install", name: "totally-made-up" });
+    assert.equal(unknown.status, "not_found");
+    assert.ok(unknown.hint.includes("codex"));
+
+    const nameless = await run<{ status: string }>(installCli, { action: "install" });
+    assert.equal(nameless.status, "not_found");
+
+    const present = await run<{ status: string; path: string }>(installCli, { action: "install", name: "codex" });
+    assert.equal(present.status, "already_installed");
+    assert.equal(present.path, fixture.file);
+  } finally {
+    delete process.env.UB_OWNER_PATH;
+    resetOwnerPath();
+    fixture.cleanup();
+  }
+});
+
+test("install_cli refuses to install in Read only", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-install-"));
+  const fixture = binFixture("codex");
+  const previous = {
+    store: process.env.UB_WORKSPACE_STORE_PATH,
+    root: process.env.UB_WORKSPACE_ROOT,
+    path: process.env.UB_OWNER_PATH,
+  };
+  try {
+    mkdirSync(join(dir, "home"), { recursive: true });
+    process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
+    process.env.UB_WORKSPACE_ROOT = realpathSync(join(dir, "home"));
+    process.env.UB_OWNER_PATH = fixture.dir;
+    resetOwnerPath();
+    upsertSessionGrant(
+      { sessionId: "sess-read-only", path: null, permission: "read_only" },
+      new Date(),
+      process.env.UB_WORKSPACE_STORE_PATH,
+    );
+    // Reading what is installed is fine in every mode; installing is not.
+    const listed = await run<{ status: string }>(installCli, { action: "list" }, { session: { id: "sess-read-only" } });
+    assert.equal(listed.status, "ok");
+    const blocked = await run<{ status: string; error: string }>(
+      installCli,
+      { action: "install", name: "vercel" },
+      { session: { id: "sess-read-only" } },
+    );
+    assert.equal(blocked.status, "blocked");
+    assert.equal(blocked.error, "workspace_read_only");
+  } finally {
+    const put = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    };
+    put("UB_WORKSPACE_STORE_PATH", previous.store);
+    put("UB_WORKSPACE_ROOT", previous.root);
+    put("UB_OWNER_PATH", previous.path);
+    resetOwnerPath();
+    fixture.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

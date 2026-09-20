@@ -154,8 +154,19 @@ const PACKAGE_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
 /** Variables that change which program a later command runs, or with what. */
 const HIJACK_VARS = /^(PATH|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_(SSH|SSH_COMMAND|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|PAGER|CONFIG[A-Z_]*|EXEC_PATH|ASKPASS|TEMPLATE_DIR|DIR|WORK_TREE|PROXY_COMMAND)|EDITOR|VISUAL|PAGER|LESSOPEN|LESSCLOSE|NODE_OPTIONS|PYTHONSTARTUP|PYTHONPATH|PERL5OPT|PERL5LIB|RUBYOPT|BASH_ENV|ENV|SHELL|CDPATH|IFS|HOME|TMPDIR|PROMPT_COMMAND|ZDOTDIR)=/;
 
-/** Executables the confined PATH would find anyway; not "outside the folder". */
-const SYSTEM_BIN_PREFIXES = ["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/"];
+/**
+ * Executables the PATH a line runs with would find anyway; spelling one in
+ * full is not "outside the folder". Kept in step with `commonDirs` in
+ * shared/user-path.ts: a CLI the owner installed is reachable by bare name,
+ * so the absolute path to the same binary must not read as an escape.
+ */
+const SYSTEM_BIN_PREFIXES = [
+  "/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/",
+  "/opt/homebrew/bin/", "/opt/homebrew/sbin/",
+  `${join(homedir(), ".local", "bin")}/`,
+  `${join(homedir(), ".bun", "bin")}/`,
+  `${join(homedir(), ".cargo", "bin")}/`,
+];
 const DEVICE_PATHS = ["/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/"];
 
 const SQL_DESTRUCTIVE = /\b(drop|truncate)\s+(table|database|schema|index|view)\b|\bdelete\s+from\b/i;

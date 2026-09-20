@@ -68,6 +68,34 @@ minutes. Either way the turn is cancelled rather than left running, and the chat
 says which happened. The service log names every routine start with its trigger
 and bot, and every finish and failure with how long it took.
 
+## Command-line tools
+
+A shell line runs with the owner's own PATH and home directory, worked out once
+per service from their login shell and cached (`shared/user-path.ts`, pinnable
+with `UB_OWNER_PATH`). So a CLI they have installed and signed in to runs the
+way it does in their terminal: Homebrew binaries, `~/.local/bin`, `codex`,
+`claude`, `gh`. It is still not a login shell, stdin is closed, and the child's
+environment is a short list rather than the service's own, so none of the app's
+credentials reach it.
+
+At Full access the sandbox profile also opens the directories those tools keep
+their own sign-in in (`~/.codex`, `~/.claude`, `~/.config/gh`, opencode's state,
+the login keychain) for reading and writing, because a tool that cannot read its
+token reports itself signed out and one that cannot write a refreshed token
+loops. Every other credential store (`.ssh`, `.aws`, `.npmrc`, `.env`) stays
+refused in every mode, and the text tripwire still refuses a line that names one.
+
+`install_cli` lists the tools this app knows, where each resolves and whether a
+sign-in is stored, and installs one by name from `agent/lib/cli-registry.ts`.
+The install runs the registry's exact command: Read only refuses it, Auto puts
+it on a card, Full access runs it. Anything outside that table is installed
+through `bash`, where the owner reads the whole line.
+
+The default command timeout is 30 seconds and the ceiling is 30 minutes, so a
+coding CLI working through a task can finish. A timeout returns the output that
+arrived with `timedOut: true` instead of failing the tool, and the child runs in
+its own process group so a timeout or a Stop takes down what the line started.
+
 ## Connectors
 
 Connectors let a bot act in the owner's apps (Gmail, Google Calendar, Slack,

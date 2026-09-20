@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 /**
@@ -73,6 +73,50 @@ export type SandboxScope = "folder" | "computer";
  */
 const SYSTEM_WRITE_DENIED = ["/etc", "/private/etc", "/var/db", "/private/var/db", "/Library/Keychains", "/Library/Cookies"];
 
+/**
+ * Where the CLIs on this Mac keep their own sign-in, relative to the owner's
+ * home. Full access is the posture whose whole promise is that a bot runs
+ * what the owner would run; without these a `codex` or `claude` line comes
+ * back "not logged in", because the deny rules above catch `auth.json` by
+ * name and the login keychain by path. Allowed for reading AND writing: a
+ * CLI refreshes its own token mid-run, and a refresh it cannot save turns
+ * into a sign-in loop.
+ *
+ * Scoped by full path, so this opens one named directory per CLI and not a
+ * credential file wherever it happens to sit. `.npmrc`, `.ssh`, `.aws` and
+ * the rest stay refused in every posture: no CLI here needs them, and a
+ * registry token is not a sign-in.
+ */
+const CLI_STATE_DIRS = [
+  ".codex",
+  ".claude",
+  ".gemini",
+  ".config/gh",
+  ".config/opencode",
+  ".local/share/opencode",
+  ".local/state/opencode",
+  // Claude Code keeps its token as a keychain item, so a `security` lookup
+  // has to reach the login keychain or the CLI sees itself as signed out.
+  "Library/Keychains",
+];
+
+/**
+ * The allows for the CLI stores, last so they win over the denies above.
+ * A directory that does not exist is skipped: `subpath` on a missing path is
+ * accepted by the parser but says nothing, and leaving it out keeps the
+ * profile a readable list of what is actually open.
+ */
+function cliStateRules(): string[] {
+  const home = homedir();
+  const rules: string[] = [];
+  for (const name of CLI_STATE_DIRS) {
+    const path = join(home, name);
+    if (!existsSync(path)) continue;
+    rules.push(`(allow file-read* file-write* (subpath ${sbplString(realpathSync(path))}))`);
+  }
+  return rules;
+}
+
 export function sandboxProfile(root: string | null, scope: SandboxScope = "computer", unbounded = false): string {
   const real = root === null ? null : realpathSync(root);
   // Tools that ignore TMPDIR fall back to the darwin per-user dirs; those
@@ -108,6 +152,9 @@ export function sandboxProfile(root: string | null, scope: SandboxScope = "compu
     ]),
     ...protectedRules,
     ...readRules,
+    // Full access only. Auto and read-only lines keep every credential
+    // store refused, including the CLIs' own.
+    ...(unbounded ? cliStateRules() : []),
   ].join("\n");
 }
 
