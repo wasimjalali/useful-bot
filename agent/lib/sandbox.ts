@@ -1,6 +1,6 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { ownerPath } from "../../shared/user-path.ts";
+import { ownerPath, pathCandidates } from "../../shared/user-path.ts";
 import { delimiter, dirname, join } from "node:path";
 
 /**
@@ -18,9 +18,14 @@ import { delimiter, dirname, join } from "node:path";
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 /** Names that never take a write inside the folder, whatever the mode. */
-const PROTECTED_NAMES = [
+export const PROTECTED_NAMES = [
   ".env", ".ssh", ".aws", ".gnupg", ".netrc", "netrc", ".npmrc", ".pypirc",
   ".docker", ".kube", ".kubeconfig", "id_rsa", "id_ecdsa", "id_ed25519", "keychain", "keychains", "auth.json",
+  // Claude Code's token in its file form. `auth.json` covered codex and
+  // opencode, and this one was left reachable by a plain `cat` at Full
+  // access, with no grant and no tripwire, which would have made dropping
+  // the keychain grant pointless.
+  ".credentials.json",
   ".authinfo",
   // The user-domain stores, spelled as the disk spells them: the text
   // tripwire lowercases, the kernel does not.
@@ -73,15 +78,19 @@ const TOOLING_READS = new Set([".env", ".npmrc", ".docker", ".kube"]);
  */
 const SECRETS_DENY_PATTERN = "/secrets($|[/.])";
 /**
- * Allowed back for READING only, after the deny so it wins: the source file
- * of a module called `secrets`. Never for writing, so no `secrets.py` can be
- * planted anywhere; importing one is what a CLI needs, writing one is not. An extension list on the deny side was
- * the first attempt and it is the wrong way round, because the list that has
- * to be complete should be the one that opens files, not the one that closes
- * them. `secrets.db` or `secrets.p12` stay refused without anyone having to
- * think of them.
+ * Allowed back for READING only, after the deny so it wins. Never for
+ * writing, so no `secrets.py` can be planted anywhere: importing one is what
+ * a CLI needs, writing one is not.
+ *
+ * Narrow twice over. Only Python, because its standard library is the whole
+ * of the demonstrated need and a `secrets.ts` in a project is a plausible
+ * place for a hardcoded key. And only under a `python3.N` directory, which
+ * every install has - Homebrew, the framework builds, uv, pyenv, conda, a
+ * venv - rather than a list of install prefixes, because pinning prefixes
+ * breaks the next interpreter that keeps its library somewhere else, which
+ * is the same class of bug this rule exists to fix.
  */
-const SECRETS_ALLOW_PATTERN = "/secrets\\.(py|pyc|pyi|pyd|so|ts|js|mjs|cjs|rb|go)$";
+const SECRETS_ALLOW_PATTERN = "/python3\\.[0-9]+/([^/]+/)*secrets\\.(py|pyc|pyi|so)$";
 
 export type SandboxScope = "folder" | "computer";
 
@@ -126,20 +135,66 @@ const PLANTED_CONFIG_WRITE_DENIED = [
   ".claude/plugins",
   ".claude/commands",
   ".claude.json",
+  // The standing instructions each agent reads at startup. Denying a skill
+  // while leaving the file that tells the agent what to do is not a guard:
+  // both run in the owner's own next session.
+  ".claude/CLAUDE.md",
+  ".claude/global-rules.md",
   ".codex/config.toml",
+  ".codex/AGENTS.md",
   ".config/gh/config.yml",
-  ".config/opencode/opencode.json",
+  // The whole directory, not one filename: the config is `opencode.jsonc` as
+  // often as `opencode.json`, and `plugin/` beside it is executed too. A
+  // suffix-matched name missed the file that actually exists on this Mac.
+  ".config/opencode",
   ".gemini/settings.json",
-  // A git hook runs on the owner's next commit, in their own shell.
-  ".git/hooks",
-  // And so does a git config, which is why denying the hooks alone was not
-  // enough: `core.hooksPath` moves the hooks somewhere undenied, and
+  ".gemini/GEMINI.md",
+  // A git config runs commands too, which is why the hooks alone are not the
+  // whole of it: `core.hooksPath` moves the hooks somewhere undenied, and
   // `[alias] x = !sh -c`, `core.pager`, `core.sshCommand` and
   // `credential.helper` are each a command the owner's next git run executes.
+  // Only the GLOBAL ones: a repository's own `.git/config` is written by
+  // `git init` and `git clone`, and denying it refuses both outright
+  // ("could not lock config file"), which is ordinary work for a bot in a
+  // folder the owner handed over.
   ".gitconfig",
   ".config/git/config",
   // A workflow runs on the owner's CI, with the repository's secrets.
   ".github/workflows",
+];
+
+/**
+ * The same class, for entries the name-to-regex shape above cannot express.
+ *
+ * A git hook has no extension; the templates `git init` writes are all
+ * `*.sample`. Denying the hooks DIRECTORY refuses `git init` and `git clone`
+ * outright, because both create it and fill it with those templates - a
+ * regression measured, not guessed. Denying the hook names themselves leaves
+ * both working and still refuses a planted `post-checkout`.
+ */
+const PLANTED_CONFIG_PATTERNS = [
+  "/\\.git/hooks($|/)",
+];
+
+/**
+ * Allowed back after those denies, and nothing else. The hooks directory
+ * itself, because `git init` and `git clone` create it, and the templates
+ * they fill it with, which git never runs. A real hook has none of these
+ * names, so denying everything and naming the exceptions is the way round
+ * that stays correct when git adds a hook nobody here thought of.
+ */
+const PLANTED_CONFIG_WRITE_ALLOW = [
+  "/\\.git/hooks/[^/]+\\.sample$",
+];
+
+/**
+ * The hooks directory itself, and ONLY the right to bring it into being.
+ * `git init` and `git clone` create it; nothing needs to unlink it, rename
+ * it or swap it for a symlink, and `file-write*` would have permitted all
+ * three - which would put the hooks somewhere this profile never looks.
+ */
+const PLANTED_CONFIG_CREATE_ALLOW = [
+  "/\\.git/hooks$",
 ];
 
 /**
@@ -155,25 +210,37 @@ const PLANTED_CONFIG_WRITE_DENIED = [
  */
 function toolBinDirs(): string[] {
   const dirs = new Set<string>();
-  for (const dir of ownerPath().split(delimiter)) {
-    if (!dir) continue;
+  // The resolved PATH holds only directories that exist, because that is what
+  // a PATH means. The candidates hold the ones a shell profile names whether
+  // they are there or not, and those matter more: a `subpath` deny on a
+  // missing path is exactly what stops it being created and then used. Without
+  // them, a bot makes its own `~/.cargo/bin`, plants a `git` in it, and the
+  // owner's next terminal runs that instead.
+  for (const dir of [...ownerPath().split(delimiter), ...pathCandidates()]) {
+    if (!dir || !dir.startsWith("/")) continue;
     try {
-      if (!statSync(dir).isDirectory()) continue;
+      const stat = statSync(dir);
+      if (!stat.isDirectory()) continue;
       // A directory the owner cannot write is not a way in, and denying it
       // would only make the profile longer.
       accessSync(dir, constants.W_OK);
       dirs.add(realpathSync(dir));
     } catch {
-      continue;
+      // Missing, or not writable yet. A missing one is still denied, so it
+      // cannot be created and filled; anything else is skipped.
+      if (!existsSync(dir)) dirs.add(dir);
     }
   }
   return [...dirs];
 }
 
 function plantedConfigRules(allowToolInstall: boolean): string[] {
-  const rules = PLANTED_CONFIG_WRITE_DENIED.map(
-    (name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`,
-  );
+  const rules = [
+    ...PLANTED_CONFIG_WRITE_DENIED.map((name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`),
+    ...PLANTED_CONFIG_PATTERNS.map((pattern) => `(deny file-write* (regex #"${pattern}"))`),
+    ...PLANTED_CONFIG_WRITE_ALLOW.map((pattern) => `(allow file-write* (regex #"${pattern}"))`),
+    ...PLANTED_CONFIG_CREATE_ALLOW.map((pattern) => `(allow file-write-create (regex #"${pattern}"))`),
+  ];
   if (allowToolInstall) return rules;
   for (const path of toolBinDirs()) {
     rules.push(`(deny file-write* (subpath ${sbplString(path)}))`);

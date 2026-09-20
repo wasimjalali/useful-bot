@@ -205,12 +205,22 @@ test("config a tool executes later is never writable, including inside an opened
       for (const name of [
         "/\\.claude/settings\\.json", "/\\.claude/skills", "/\\.claude/agents",
         "/\\.claude/plugins", "/\\.claude/commands", "/\\.claude\\.json",
-        "/\\.codex/config\\.toml", "/\\.git/hooks", "/\\.github/workflows",
+        "/\\.codex/config\\.toml", "/\\.github/workflows",
+        // The standing instructions, not just the settings file.
+        "/\\.claude/CLAUDE\\.md", "/\\.codex/AGENTS\\.md",
+        // The directory, because the config file is `.jsonc` as often as
+        // `.json` and the plugins beside it are executed too.
+        "/\\.config/opencode",
         // Denying the hooks alone is not enough: a git config relocates them.
         "/\\.gitconfig", "/\\.config/git/config",
       ]) {
         assert.ok(profile.includes(`(deny file-write* (regex #"${name}($|[/.])"))`), name);
       }
+      // The hooks are denied as a subtree, with only git's own templates and
+      // the creation of the directory allowed back, so `git init` still works.
+      assert.ok(profile.includes('(deny file-write* (regex #"/\\.git/hooks($|/)"))'));
+      assert.ok(profile.includes('(allow file-write* (regex #"/\\.git/hooks/[^/]+\\.sample$"))'));
+      assert.ok(profile.includes('(allow file-write-create (regex #"/\\.git/hooks$"))'));
       assert.ok(profile.includes(`(deny file-write* (subpath "${bin}"))`));
       // Reading one is not what gets it run.
       assert.equal(profile.includes('(deny file-read* (regex #"/\\.claude/settings\\.json'), false);
@@ -219,7 +229,7 @@ test("config a tool executes later is never writable, including inside an opened
     // program on their PATH.
     const install = sandboxProfile(fixture.home, "computer", true, { allowToolInstall: true });
     assert.equal(install.includes(`(deny file-write* (subpath "${bin}"))`), false);
-    assert.ok(install.includes('(deny file-write* (regex #"/\\.git/hooks($|[/.])"))'));
+    assert.ok(install.includes('(deny file-write* (regex #"/\\.git/hooks($|/)"))'));
   } finally {
     if (previousPath === undefined) delete process.env.UB_OWNER_PATH;
     else process.env.UB_OWNER_PATH = previousPath;

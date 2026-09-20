@@ -8,7 +8,7 @@ import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals
 import { getApprovalStore } from "../lib/write.ts";
 import { inAppGate, READ_ONLY_BLOCKED, settle } from "../lib/permission.ts";
 import { CLI_REGISTRY, cliStatus, findCli, resolveBin } from "../lib/cli-registry.ts";
-import { ownerPath, resetOwnerPath } from "../../shared/user-path.ts";
+import { ownerPath, rescanOwnerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 /** An install fetches a package and builds it; npm on a cold cache is slow. */
@@ -107,14 +107,14 @@ export default defineTool({
         maxBytes: BUFFER_MAX_BYTES,
         signal: ctx?.abortSignal,
       });
-      // A fresh probe, not the PATH resolved before the install ran. That one
-      // dropped every directory that did not exist when it was cached, so a
-      // first-ever `~/.local/bin` (or `~/.cargo/bin`, or `~/go/bin`) created
-      // BY this install would be invisible, and a install that worked would
-      // be reported as failed. Resetting also means the next `bash` line
-      // finds the new command instead of waiting for a service restart.
-      resetOwnerPath();
-      const resolved = resolveBin(entry.id, ownerPath());
+      // Look again at the directories already known, rather than reuse the
+      // PATH resolved before the install ran: that one dropped every
+      // directory that did not exist when it was cached, so a first-ever
+      // `~/.local/bin` created BY this install would be invisible and a
+      // working install would report itself failed. A rescan, not a reset:
+      // resetting re-runs the login shell, synchronously, on the one thread
+      // every bot shares.
+      const resolved = resolveBin(entry.id, rescanOwnerPath());
       // Exit 0 is the installer's opinion; the binary resolving on the
       // owner's own PATH is the thing that decides whether a bot can now
       // run it, and a global install can land somewhere PATH never looks.

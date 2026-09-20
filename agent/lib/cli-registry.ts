@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } 
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { loneCommandHead } from "./command-risk.ts";
+import { PROTECTED_NAMES } from "./sandbox.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 
 /**
@@ -325,19 +326,37 @@ function holdsProtectedStore(relative: string): boolean {
  */
 function namesProtectedStore(relative: string): boolean {
   const lowered = relative.toLowerCase();
-  return NEVER_DERIVED.some((name) => lowered === name || lowered.startsWith(`${name}/`) || lowered.endsWith(`/${name}`));
+  return NEVER_DERIVED.some((name) => {
+    if (lowered === name || lowered.startsWith(`${name}/`) || lowered.endsWith(`/${name}`) || lowered.includes(`/${name}/`)) {
+      return true;
+    }
+    // A bare word covers its dotfile form too: a program called `secrets`
+    // derives `~/.secrets`, and `~/.secrets` is the same store the profile
+    // refuses under the name without the dot.
+    if (name.startsWith(".")) return false;
+    return lowered === `.${name}` || lowered.endsWith(`/.${name}`) || lowered.startsWith(`.${name}/`);
+  });
 }
 
 /**
  * Credential stores that are never a CLI's own working state, whatever a
- * program on PATH happens to be called. Kept beside the profile's deny list
- * rather than derived from it: this is the list that must not grow by
- * accident when a new protected name is added there.
+ * program on PATH happens to be called.
+ *
+ * Built FROM the profile's own deny list rather than written beside it. Two
+ * hand-kept lists drifted exactly once and that was enough: the profile
+ * refused anything called `secrets`, this list named only `.secrets`, so a
+ * program called `secrets` derived `~/.config/secrets` and the credential
+ * allow - which the profile emits after its denies, because a CLI has to
+ * reach its own `auth.json` - overrode the refusal and opened the directory
+ * for reading and writing. Deriving the list means a name added to the
+ * profile closes this door at the same time.
  */
 const NEVER_DERIVED = [
-  ".ssh", ".aws", ".gnupg", ".docker", ".kube", ".npm", ".npmrc", ".pypirc",
-  ".netrc", ".authinfo", ".config/fish", ".useful-bot", ".git", ".env", ".secrets",
-  "library/keychains", "library/cookies",
+  ...PROTECTED_NAMES.map((name) => name.toLowerCase()),
+  // The word the profile matches with a pattern rather than a name.
+  "secrets",
+  // Not credential stores, but never a CLI's own state either.
+  ".npm", ".git",
 ];
 
 export function cliStatus(entry: CliEntry, path = ownerPath()): CliStatus {

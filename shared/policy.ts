@@ -104,6 +104,8 @@ export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".git",
   "LaunchAgents",
   "auth.json",
+  // The same store under its other name, which Claude Code uses.
+  ".credentials.json",
   // Credential stores that sit under a home directory a grant may cover.
   // read_file is ungated, so a folder grant on $HOME would otherwise hand
   // these over with no approval card. The list cannot be exhaustive, which is

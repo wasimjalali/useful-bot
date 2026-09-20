@@ -358,6 +358,28 @@ test("no line reaches the keychain, whatever CLI it names", () => {
   assert.deepEqual(credentialPathsFor("echo x && gh auth status"), []);
 });
 
+test("the secrets allow-back opens a stdlib module and nothing else", () => {
+  // Asserting the deny line is present says nothing, because a later allow
+  // can override it: seatbelt is last rule wins. So this asserts the shape
+  // of the allow itself. The deny exists because a credential file is often
+  // called `secrets.*`; the allow exists because Python's own standard
+  // library has a module by that name and every Python CLI died without it.
+  const profile = sandboxProfile(tmpdir(), "computer", true);
+  assert.ok(profile.includes('(deny file-read* (regex #"/secrets($|[/.])"))'));
+  const allow = profile.split("\n").filter((line) => line.startsWith("(allow file-read* (regex") && line.includes("secrets"));
+  assert.equal(allow.length, 1, allow.join(" "));
+  // Under a python3.N directory, so it cannot reach a project's own file...
+  assert.ok(allow[0].includes("python3"));
+  // ...only these extensions, and read only: nothing may write a secrets file.
+  assert.ok(allow[0].includes("(py|pyc|pyi|so)"));
+  assert.equal(profile.includes('(allow file-write* (regex #"/python3'), false);
+  for (const line of profile.split("\n")) {
+    if (line.startsWith("(allow file-write*") && line.includes("secrets")) {
+      assert.fail(`a secrets file must never be writable: ${line}`);
+    }
+  }
+});
+
 test("a derived store cannot be a link, a container, or a way into a protected one", () => {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "ub-derive-")));
   const home = join(base, "home");

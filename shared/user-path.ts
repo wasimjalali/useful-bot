@@ -114,6 +114,12 @@ function probe(): string[] {
 }
 
 let cached: string | null = null;
+/**
+ * Every directory the probe and the defaults named, before the existence
+ * check dropped any of them. Kept so `rescanOwnerPath` can look again
+ * without asking the shell a second time.
+ */
+let candidates: string[] | null = null;
 
 /**
  * The PATH for a child process the owner asked for, computed once per
@@ -124,7 +130,8 @@ export function ownerPath(): string {
   if (cached !== null) return cached;
   const pinned = process.env.UB_OWNER_PATH?.trim();
   if (pinned) {
-    const fixed = sanitise(pinned.split(delimiter));
+    candidates = pinned.split(delimiter);
+    const fixed = sanitise(candidates);
     cached = (fixed.length > 0 ? fixed : SYSTEM_DIRS).join(delimiter);
     return cached;
   }
@@ -132,11 +139,47 @@ export function ownerPath(): string {
   // The probe first, in its own order: that is what the owner's terminal
   // resolves. The common dirs fill in what a minimal profile left out, and
   // the system dirs are last so a `sh` always exists.
-  cached = sanitise([...probe(), ...commonDirs(home), ...SYSTEM_DIRS]).join(delimiter);
+  candidates = [...probe(), ...commonDirs(home), ...SYSTEM_DIRS];
+  cached = sanitise(candidates).join(delimiter);
+  return cached;
+}
+
+/**
+ * Look again at the directories already known, and keep any that have since
+ * appeared.
+ *
+ * `sanitise` drops a directory that is not there yet, so a first-ever
+ * `~/.local/bin` created by an install would stay invisible until the
+ * service restarted. This re-checks those same candidates and nothing else:
+ * no shell runs, which matters because the probe is a synchronous
+ * `execFileSync` of the owner's login shell with a three second ceiling, and
+ * this service runs every bot on one thread. Resetting the cache outright
+ * would have stalled every other bot's turn for as long as that shell took
+ * to start.
+ */
+/**
+ * Every directory a PATH could name here, existing or not: what the login
+ * shell reported plus the conventional install locations. The sandbox profile
+ * denies writes to all of them, and a directory that is not there yet is the
+ * one that matters, because denying it is what stops a bot creating it and
+ * putting a program on the owner's PATH.
+ */
+export function pathCandidates(): string[] {
+  if (candidates === null) ownerPath();
+  return [...new Set([...(candidates ?? []), ...commonDirs(homedir())])]
+    .map((dir) => dir.trim())
+    .filter((dir) => dir.startsWith("/"));
+}
+
+export function rescanOwnerPath(): string {
+  if (candidates === null) return ownerPath();
+  const fixed = sanitise(candidates);
+  cached = (fixed.length > 0 ? fixed : SYSTEM_DIRS).join(delimiter);
   return cached;
 }
 
 /** Test seam. The probe is cached for the life of the process otherwise. */
 export function resetOwnerPath(): void {
   cached = null;
+  candidates = null;
 }
