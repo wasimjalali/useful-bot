@@ -340,7 +340,9 @@ final class ShotsUITests: XCTestCase {
             shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: nil))")
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
-            _ = status.waitForNonExistence(timeout: 12)
+            // Wait for the positive paired-root signal (its nav bar): a
+            // nonexistence poll can return on a transient snapshot miss.
+            _ = app.navigationBars["Useful Bot"].waitForExistence(timeout: 15)
             app.terminate()
         }
     }
@@ -391,7 +393,9 @@ final class ShotsUITests: XCTestCase {
             shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))")
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
-            _ = status.waitForNonExistence(timeout: 12)
+            // Wait for the positive paired-root signal (its nav bar): a
+            // nonexistence poll can return on a transient snapshot miss.
+            _ = app.navigationBars["Useful Bot"].waitForExistence(timeout: 15)
             app.terminate()
         }
     }
