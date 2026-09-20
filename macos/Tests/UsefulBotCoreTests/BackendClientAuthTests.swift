@@ -43,7 +43,9 @@ private final class CallCounter: @unchecked Sendable {
     private func makeClient() throws -> BackendClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
-        config.httpCookieStorage = HTTPCookieStorage()
+        // The ephemeral jar, not `HTTPCookieStorage()`. Every auth test ran
+        // against a jar that keeps nothing, so none of them could have caught
+        // the dropped session cookie however close it came.
         return try BackendClient(
             base: URL(string: "http://127.0.0.1:9")!,
             tokenStore: StubTokenStore(),
@@ -163,6 +165,17 @@ private final class CallCounter: @unchecked Sendable {
         #expect(config.httpCookieStorage != nil)
         #expect(config.httpCookieStorage !== HTTPCookieStorage.shared)
         #expect(session.delegate is BackendClient.NoRedirectDelegate)
+        // A jar has to keep what it is given. `HTTPCookieStorage()` passes
+        // every check above and keeps nothing, so the session cookie from
+        // sign-in was dropped and the app launched to "Unauthorized" with no
+        // test to show for it.
+        let base = URL(string: "http://127.0.0.1:4320")!
+        let cookie = HTTPCookie(properties: [
+            .domain: "127.0.0.1", .path: "/", .name: "ub_session", .value: "probe",
+        ])
+        #expect(cookie != nil)
+        if let cookie { config.httpCookieStorage?.setCookie(cookie) }
+        #expect(config.httpCookieStorage?.cookies(for: base)?.isEmpty == false)
     }
 
     @Test func refusalCoversNewTerminalErrors() {
