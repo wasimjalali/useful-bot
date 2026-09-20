@@ -702,3 +702,42 @@ nit), design-a11y requested changes (12 findings). Fixes:
   deviation under Surprises rather than shipped white@80%.
 - Bot row anatomy (design-a11y 12): `chatName` semibold at the
   `phoneRowMinHeight` 60 pt floor.
+
+Round 3 verification after fixes (head `43a0965`, rebased on `049af9a`):
+
+- `npm test` 579/579 (`main` grew by four tests since the last run;
+  `auth.post-phone-disabled` fixture + assertion in place).
+- `make -C macos test` 303/303.
+- Pairing gate green end-to-end on all four devices: iPhone SE (375 pt,
+  iOS 27), iPhone 17 (402 pt, iOS 26.5), iPhone 12 mini (360 pt-class leg —
+  see Surprises), iPad Pro 11 (834 pt, iOS 26.5). The 402 run flaked once at
+  `testB_RevokedCredentialInvalidates` (store read back `unpaired` after a
+  clean connected leg — cfprefsd-level persistence loss under multi-sim
+  memory pressure, reran clean; not a code path, evidenced by the web log
+  showing the revoke never reached `POST /api/auth/session`); all other legs
+  and the rerun passed first try.
+- `scripts/verify-release.mjs` PASS (tsc ×3, unit, next_build,
+  launchd_render); `package-lock.json`/`web/next-env.d.ts` restored.
+- Rebase on `049af9a` (PRs #107-#109): one real conflict in
+  `BackendClient.makeSession` — kept `main`'s ephemeral jar
+  (`httpShouldSetCookies = true`, fixes the signed-in-then-401 desktop
+  regression) alongside this PR's per-request opt-out and manual
+  `ub_session` header carry; `defaultSessionIsIsolated` now pins the merged
+  posture. `shared/policy.ts` phone budget and `requireOwner` in the
+  routines run route survived semantically intact.
+
+### Surprises (post-round-3)
+
+- **iPhone 12 mini is not a 360 pt device on this image**: under both
+  iOS-26.5 and iOS-27.0 runtimes the simulator's framebuffer is native
+  1080×2340 but UIKit reports 375×812 to the app (`app.frame.width` == 375;
+  XCUIScreen captures render at 1124×2436). A literal 360 pt capture is not
+  producible with the device set this toolchain offers; the narrow-width
+  evidence is the 375 pt class (SE on iOS 27, mini compat render identical).
+  Recorded per the code-vs-spec rule; the `-375` shots now come from the
+  mini run.
+- **`next dev` cold start raced a TypeScript auto-install**: a `web:dev`
+  restart began `yarn add typescript` inside `web/` (the known lockfile
+  trap) when `node_modules` was momentarily inconsistent; it settled
+  harmless, but it briefly made eve's module bundler read an empty
+  `package.json` mid-write. Both recovered; nothing committed.
