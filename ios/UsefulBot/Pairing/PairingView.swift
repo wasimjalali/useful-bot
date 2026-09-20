@@ -10,11 +10,19 @@ import AVFoundation
 /// camera-denied (sunken block + inline manual fields), credentialInvalid
 /// ("Pair again" + Unpair), offline ("You're offline", scanning paused).
 struct PairingView: View {
+    /// `pushedFlow` is Devices' "Re-pair" push — there the nav bar stays up
+    /// so the back chevron is the exit affordance the root flow lacks
+    /// (design 1.1's anatomy has no navigation chrome at all).
+    private let pushedFlow: Bool
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(\.sizeCategory) private var sizeCategory
     @State private var cameraStatus: AVAuthorizationStatus = CameraAccess.status()
     @State private var showManual = false
     @State private var gateUnavailable = false
+
+    init(pushedFlow: Bool = false) {
+        self.pushedFlow = pushedFlow
+    }
 
     private var isInvalid: Bool {
         coordinator.store.state == .credentialInvalid
@@ -58,7 +66,7 @@ struct PairingView: View {
             .scrollBounceBehavior(.basedOnSize)
         }
         .background(Theme.C.surface)
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbar(pushedFlow ? .visible : .hidden, for: .navigationBar)
         .task {
             if cameraStatus == .notDetermined {
                 cameraStatus = await CameraAccess.request()
@@ -310,8 +318,11 @@ struct PairingView: View {
                 } label: {
                     Text("Unpair")
                         .tokenFont(DesignTokens.FontSize.button, .regular)
-                        .foregroundStyle(Theme.C.inkMuted)
+                        .foregroundStyle(connectBusy ? Theme.C.inkFaint : Theme.C.inkMuted)
                 }
+                // A connect in flight owns the exchange — the wipe waits for
+                // it (the coordinator's generation guard is the backstop).
+                .disabled(connectBusy)
                 .frame(minHeight: 44)
                 if gateUnavailable {
                     Text(OwnerGate.unavailableCopy)

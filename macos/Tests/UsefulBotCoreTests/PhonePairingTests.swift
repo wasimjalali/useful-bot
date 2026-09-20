@@ -283,6 +283,19 @@ import Testing
         #expect(store.isCurrent(generation: store.dataGeneration))
     }
 
+    /// Sign-out bumps the generation like unpair does (no purge): a sign-in
+    /// still in flight must not land `.paired` after the transition.
+    @Test func signOutBumpsGeneration() throws {
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        store.markPaired(origin: origin("https://a.tailnet-name.ts.net"), name: "A")
+        let generation = store.dataGeneration
+
+        store.signOut()
+        #expect(store.state == .signedOut)
+        #expect(!store.isCurrent(generation: generation))
+    }
+
     @Test func persistedStateSurvivesReinit() {
         let suite = "PairingStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

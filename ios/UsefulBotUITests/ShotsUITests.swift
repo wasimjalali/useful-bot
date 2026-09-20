@@ -31,11 +31,14 @@ final class ShotsUITests: XCTestCase {
         return Pairing(host: raw.host, token: raw.token, name: raw.name)
     }
 
-    private func shot(_ name: String, _ app: XCUIApplication) {
+    /// `alertsWindow` bounds the dismissal poll: transient states (the
+    /// "Connected to" hold) can't afford the full 5 s window or the state
+    /// under capture expires underneath the camera.
+    private func shot(_ name: String, _ app: XCUIApplication, alertsWindow: TimeInterval = 5) {
         // The Keychain save sheet can surface seconds after the last event;
         // the capture is only trustworthy immediately after a dismissal
         // pass, so it lives inside shot() rather than at the call site.
-        dismissSystemAlerts(app)
+        dismissSystemAlerts(app, window: alertsWindow)
         let shot = XCUIScreen.main.screenshot()
         // The simulator shares the host filesystem: drop the PNG on /tmp so
         // the shot survives Xcode pruning the xcresult. The caller copies
@@ -101,7 +104,7 @@ final class ShotsUITests: XCTestCase {
 
     private func launch(_ app: XCUIApplication, appearance: String, typeSize: String? = nil,
                         reset: Bool = false, offline: Bool = false,
-                        holdConnected: Bool = false,
+                        holdSeconds: TimeInterval? = nil,
                         hangShell: Bool = false, emptyShell: Bool = false,
                         failShell: Bool = false,
                         expiryDays: Double? = nil) {
@@ -109,7 +112,7 @@ final class ShotsUITests: XCTestCase {
         app.launchEnvironment["UB_CAMERA_STATE"] = "denied"
         if reset { app.launchEnvironment["UB_RESET_PAIRING"] = "1" }
         if offline { app.launchEnvironment["UB_OFFLINE"] = "1" }
-        if holdConnected { app.launchEnvironment["UB_HOLD_CONNECTED"] = "1" }
+        if let holdSeconds { app.launchEnvironment["UB_HOLD_CONNECTED"] = "\(holdSeconds)" }
         if hangShell { app.launchEnvironment["UB_HANG_SHELL"] = "1" }
         if emptyShell { app.launchEnvironment["UB_EMPTY_SHELL"] = "1" }
         if failShell { app.launchEnvironment["UB_FAIL_SHELL"] = "1" }
@@ -380,8 +383,8 @@ final class ShotsUITests: XCTestCase {
     }
 
     /// Success line: "Connected to <name>" is a 600 ms transient by design,
-    /// faster than XCTest polls. UB_HOLD_CONNECTED stretches the hold to 8 s
-    /// so the state is capturable; each run pairs fresh against the live
+    /// faster than XCTest polls. UB_HOLD_CONNECTED stretches the hold so the
+    /// state is capturable; each run pairs fresh against the live
     /// credential, so it needs the live token like every pairing leg.
     func testConnectedPairScreen() throws {
         guard FileManager.default.contents(atPath: pairFilePath) != nil else {
@@ -390,7 +393,10 @@ final class ShotsUITests: XCTestCase {
         for appearance in ["light", "dark"] {
             let pair = try pairing()
             let app = XCUIApplication()
-            launch(app, appearance: appearance, reset: true, holdConnected: true)
+            // 15 s of hold: the alert-dismissal pass + pinToTop + capture
+            // inside shot() must land inside it or the Bots list is what the
+            // capture records instead of the success line.
+            launch(app, appearance: appearance, reset: true, holdSeconds: 15)
             XCTAssertTrue(app.textFields["Mac address"].waitForExistence(timeout: 15))
             type(app, app.textFields["Mac address"], pair.host)
             type(app, app.secureTextFields["Pairing token"], pair.token)
@@ -402,7 +408,7 @@ final class ShotsUITests: XCTestCase {
             if !app.buttons["manual-connect"].isEnabled {
                 type(app, app.secureTextFields["Pairing token"], pair.token)
             }
-            // The hold is 8 s — the keyboard still covers the button row
+            // The hold runs while the keyboard still covers the button row
             // here; dismiss with Return (the swipe doesn't take on iOS-26.5)
             // or the coordinate tap on Connect lands on the keyboard.
             dismissKeyboard(app)
@@ -430,7 +436,8 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
                           "success line expired before the shot — hold too short")
             pinToTop(app)
-            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: nil))", app,
+                 alertsWindow: 1.5)
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
             // Wait for the positive paired-root signal (its nav bar): a
@@ -454,7 +461,7 @@ final class ShotsUITests: XCTestCase {
             let pair = try pairing()
             let app = XCUIApplication()
             launch(app, appearance: appearance, typeSize: "xxxl", reset: true,
-                   holdConnected: true)
+                   holdSeconds: 15)
             XCTAssertTrue(app.textFields["Mac address"].waitForExistence(timeout: 15))
             type(app, app.textFields["Mac address"], pair.host)
             type(app, app.secureTextFields["Pairing token"], pair.token)
@@ -487,7 +494,8 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
                           "success line expired before the shot — hold too short")
             pinToTop(app)
-            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))", app)
+            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))", app,
+                 alertsWindow: 1.5)
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
             // Same reasoning as testConnectedPairScreen: assert the paired
@@ -622,6 +630,19 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(app.buttons["Re-pair from your Mac"].waitForExistence(timeout: 10),
                           "re-pair row never rendered")
             shot("devices-expiring-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+
+            // Re-pair pushes the real pairing flow (design spec 1.15); the
+            // pushed state keeps the nav bar so the back chevron is the exit.
+            tapButton(app, "Re-pair from your Mac")
+            XCTAssertTrue(
+                app.staticTexts["Connect to your Mac"].waitForExistence(timeout: 15),
+                "pushed pairing screen never presented")
+            let navBar = app.navigationBars.firstMatch
+            XCTAssertTrue(navBar.waitForExistence(timeout: 10),
+                          "pushed pairing screen hid its nav bar")
+            XCTAssertTrue(navBar.buttons.count > 0,
+                          "pushed pairing screen has no back affordance")
+            shot("pairing-repair-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }

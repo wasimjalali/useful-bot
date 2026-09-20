@@ -79,7 +79,7 @@ struct SignedOutView: View {
                 } label: {
                     Text("Unpair")
                         .tokenFont(DesignTokens.FontSize.button, .semibold)
-                        .foregroundStyle(Theme.C.ink)
+                        .foregroundStyle(isSigningIn ? Theme.C.inkFaint : Theme.C.ink)
                         .frame(maxWidth: .infinity, minHeight: 50)
                         .background(
                             Theme.C.sunken,
@@ -90,6 +90,9 @@ struct SignedOutView: View {
                                 .strokeBorder(Theme.C.edge, lineWidth: 1)
                         )
                 }
+                // The exchange and the wipe must not interleave (the
+                // coordinator's generation guard is the backstop).
+                .disabled(isSigningIn)
                 .buttonStyle(PressedScale())
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
                 if gateUnavailable {

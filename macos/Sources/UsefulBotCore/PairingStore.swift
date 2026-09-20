@@ -43,7 +43,8 @@ public final class PairingStore: ObservableObject {
     @Published public private(set) var sessionExpiresAt: Date?
     /// The credential's own expiry when the server reported it (30-day row).
     @Published public private(set) var credentialExpiresAt: Date?
-    /// Bumped on every unpair; every in-flight response is checked against it.
+    /// Bumped on every unpair, sign-out and cross-Mac re-pair; every
+    /// in-flight response is checked against it.
     @Published public private(set) var dataGeneration: Int
     /// The credential expiry the seven-day warning already fired for — the
     /// banner is one-time per credential (spec 11), so a re-pair or rotation
@@ -124,6 +125,9 @@ public final class PairingStore: ObservableObject {
         guard state == .paired else { return }
         sessionExpiresAt = nil
         state = .signedOut
+        // Same stale-response rule as unpair: a sign-in still in flight
+        // must not land `.paired` after this transition.
+        dataGeneration &+= 1
         persist()
     }
 

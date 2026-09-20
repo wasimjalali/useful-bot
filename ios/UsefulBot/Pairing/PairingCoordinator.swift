@@ -131,12 +131,33 @@ final class PairingCoordinator: ObservableObject {
             return
         }
         phase = .connecting
+        // Spec 8.1's stale-response rule, applied to the whole attempt:
+        // unpair, sign-out or a cross-Mac re-pair landing mid-flight bumps
+        // the generation, and every post-await write below checks it — a
+        // late answer must not repopulate a wiped or superseded pairing.
+        let generation = store.dataGeneration
         let keychain = PhoneKeychainStore(account: payload.host)
+        // A same-host re-pair overwrites the Keychain item in place before
+        // any server contact; keep the incumbent so a transient failure
+        // cannot burn a working credential.
+        let incumbent = payload.host.value == store.pairedOrigin ? try? keychain.token() : nil
         do {
             try keychain.store(token: payload.token)
         } catch {
             phase = .failed("The token could not be stored in the Keychain.")
             return
+        }
+        /// Roll back only this attempt's write: the item is touched iff the
+        /// live value is still ours (a concurrent attempt's overwrite is not
+        /// ours to delete), and the incumbent it replaced goes back — except
+        /// after an unpair, where the credential must die, not come back.
+        func rollbackToken() {
+            guard (try? keychain.token()) == payload.token else { return }
+            if let incumbent, store.state != .unpaired {
+                try? keychain.store(token: incumbent)
+            } else {
+                keychain.deleteToken()
+            }
         }
         do {
             let next = try BackendClient(
@@ -144,21 +165,28 @@ final class PairingCoordinator: ObservableObject {
                 tokenStore: keychain,
                 endpointPolicy: TailnetEndpointPolicy()
             )
-            client = next
             let info = try await next.signIn()
             // Design 1.1: the success line "Connected to <name>" reads for
             // 600 ms before the root swaps the pairing screen for the Bots
             // list — so `paired` lands after the pause, not on sign-in.
-            // UB_HOLD_CONNECTED stretches that hold for the visual gate;
-            // never set outside the test harness.
+            // UB_HOLD_CONNECTED stretches that hold for the visual gate
+            // (seconds); never set outside the test harness.
             phase = .connected(payload.name)
-            let hold = ProcessInfo.processInfo.environment["UB_HOLD_CONNECTED"] == "1"
-                ? 8_000 : 600
-            try await Task.sleep(for: .milliseconds(hold))
+            let holdSeconds = ProcessInfo.processInfo.environment["UB_HOLD_CONNECTED"]
+                .flatMap(Double.init) ?? 0.6
+            try await Task.sleep(for: .milliseconds(Int(holdSeconds * 1000)))
+            guard store.isCurrent(generation: generation) else {
+                rollbackToken()
+                return
+            }
             // Re-pairing to a different Mac retires the old origin's Keychain
             // token: purgeData clears defaults and dirs, not Keychain items.
             let priorOrigin = store.pairedOrigin
             store.markPaired(origin: payload.host, name: payload.name)
+            // The client swaps only once the pairing is durable — a failed
+            // re-pair from `.paired` keeps the working session path, so the
+            // store can never sit `.paired` over a nil client.
+            client = next
             if priorOrigin != payload.host.value,
                let stale = PhoneKeychainStore(storedOrigin: priorOrigin) {
                 stale.deleteToken()
@@ -168,17 +196,22 @@ final class PairingCoordinator: ObservableObject {
                 credentialExpiresAt: credentialExpiry(reporting: info.credentialExpiresAt)
             )
             readiness = .ready
+            // The mounted Bots list re-fetches off resyncAt (§8.5); a re-pair
+            // to a different Mac is exactly when its roster is stale.
+            resyncAt = Date()
         } catch BackendError.deviceTokenMissing {
             // The just-written item could not be read back — the Keychain
             // dropped it. Terminal on iOS the same as a revoked credential.
-            keychain.deleteToken()
-            client = nil
+            rollbackToken()
+            guard store.isCurrent(generation: generation) else { return }
             store.markCredentialInvalid()
             phase = .failed(Self.copy(for: BackendError.deviceTokenMissing))
         } catch {
-            // A failed sign-in leaves no usable token behind.
-            keychain.deleteToken()
-            client = nil
+            // A failed sign-in leaves no usable token behind — but only this
+            // attempt's write; the incumbent credential is restored and the
+            // client, never swapped, still walks the live pairing.
+            rollbackToken()
+            guard store.isCurrent(generation: generation) else { return }
             phase = .failed(Self.copy(for: error))
         }
     }
@@ -187,8 +220,12 @@ final class PairingCoordinator: ObservableObject {
     /// `signedOut`, and on foreground when the level dropped below ready.
     func exchangeSession() async {
         guard let client else { return }
+        // An unpair/sign-out landing while the exchange is in flight bumps
+        // the generation — a late 200 must not re-mark the store `.paired`.
+        let generation = store.dataGeneration
         do {
             let info = try await client.signIn()
+            guard store.isCurrent(generation: generation) else { return }
             store.markSignedIn(
                 sessionExpiresAt: info.expiresAt,
                 credentialExpiresAt: credentialExpiry(reporting: info.credentialExpiresAt)
@@ -200,6 +237,7 @@ final class PairingCoordinator: ObservableObject {
             // ThisDeviceOnly` + non-syncable means the item never survives a
             // device migration or a removed passcode, while the `paired`
             // record in defaults does.
+            guard store.isCurrent(generation: generation) else { return }
             store.markCredentialInvalid()
             phase = .idle
         } catch {
@@ -207,7 +245,10 @@ final class PairingCoordinator: ObservableObject {
             // A probe that landed credentialInvalid already owns the
             // verdict — `.failed` on top would show reachability copy on the
             // credential-invalid screen, which renders `.failed` first.
-            if store.state != .credentialInvalid {
+            // Stale (superseded by an unpair/sign-out mid-flight) likewise
+            // writes nothing.
+            if store.isCurrent(generation: generation),
+               store.state != .credentialInvalid {
                 // On the signed-out surface this is the Sign-in result —
                 // render it instead of leaving the button silently re-enabled.
                 phase = .failed(Self.copy(for: error))
@@ -279,13 +320,19 @@ final class PairingCoordinator: ObservableObject {
     /// Derive the level from the path monitor plus one `/api/status` probe.
     /// `runtimeDown` when the eve probe inside status reports not-available.
     func probeReadiness() async {
+        await probeReadiness(reschedule429: true)
+    }
+
+    private func probeReadiness(reschedule429: Bool) async {
         guard monitor.isOnline else {
             readiness = .noNetwork
             return
         }
         guard let client else { return }
+        let generation = store.dataGeneration
         do {
             let status = try await client.status()
+            guard store.isCurrent(generation: generation) else { return }
             // S15: absent or malformed apiVersion is not a version the
             // client knows — fail closed, never silently ready.
             guard let version = status.apiVersion, APIVersion.known.contains(version) else {
@@ -298,9 +345,28 @@ final class PairingCoordinator: ObservableObject {
             // Same terminal verdict as in exchangeSession: the token can no
             // longer be used, so the pairing's only exits are re-pair and
             // unpair — never a permanent "unreachable" banner.
+            guard store.isCurrent(generation: generation) else { return }
             store.markCredentialInvalid()
             phase = .idle
         } catch {
+            guard store.isCurrent(generation: generation) else { return }
+            if case BackendError.http(429) = error {
+                // §8.4: 429 backs off on the server's window, not the
+                // reachability banner — the Mac answered (the status probe's
+                // single-flight re-auth hit the rate-limited session POST).
+                // The 429 carries no Retry-After and the bucket is
+                // per-minute, so re-probe once a window later; a repeat 429
+                // does not reschedule — the level then waits for the next
+                // trigger (foreground resync, Retry).
+                lastContact = Date()
+                if reschedule429 {
+                    Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(60))
+                        await self?.probeReadiness(reschedule429: false)
+                    }
+                }
+                return
+            }
             readiness = .macUnreachable(lastSeen: lastContact, detail: String(describing: error))
         }
     }

@@ -141,13 +141,19 @@ struct BotsListView: View {
             loadError = Self.loadErrorCopy(for: BackendError.http(500))
             return
         }
+        // A response stamped with an older generation is dropped before it
+        // touches the model (spec 8.1): an unpair or a cross-Mac re-pair
+        // landing mid-fetch must not repopulate the list it just wiped.
+        let generation = coordinator.store.dataGeneration
         do {
             let shell = try await coordinator.client?.shell()
+            guard coordinator.store.isCurrent(generation: generation) else { return }
             bots = shell?.bots.filter { $0.kind == "bot" } ?? []
             lastFetchAt = Date()
             loadError = nil
             loaded = true
         } catch BackendError.credentialInvalid, BackendError.deviceTokenMissing {
+            guard coordinator.store.isCurrent(generation: generation) else { return }
             coordinator.store.markCredentialInvalid()
             coordinator.phase = .idle
         } catch {
@@ -155,6 +161,7 @@ struct BotsListView: View {
             // banner tells that story — but whatever the level, the failure
             // itself is the spec 1.2 Error row, never the empty state.
             await coordinator.probeReadiness()
+            guard coordinator.store.isCurrent(generation: generation) else { return }
             loadError = Self.loadErrorCopy(for: error)
         }
     }
@@ -531,6 +538,15 @@ struct DevicesView: View {
         dynamicTypeSize.ubIsAccessibilitySize
     }
 
+    /// A connect running anywhere (the pushed re-pair) makes the lifecycle
+    /// rows inert: the exchange and the wipe must not interleave.
+    private var connectBusy: Bool {
+        switch coordinator.phase {
+        case .connecting, .connected: return true
+        case .idle, .failed: return false
+        }
+    }
+
     /// Design spec 1.15's group titles: `fieldLabel` 13 medium in
     /// `inkMuted`, never iOS's large header style (adjudication V1).
     private func groupHeader(_ title: String) -> some View {
@@ -589,6 +605,7 @@ struct DevicesView: View {
                         } label: {
                             Text("Re-pair from your Mac")
                         }
+                        .disabled(connectBusy)
                     }
                 }
             } header: {
@@ -604,6 +621,7 @@ struct DevicesView: View {
                     }
                 }
                 .foregroundStyle(Theme.C.ink)
+                .disabled(connectBusy)
                 Button {
                     // Class A: the spec's confirm sheet explains the purge,
                     // then the biometric prompt runs (the gate is the final
@@ -613,6 +631,7 @@ struct DevicesView: View {
                     Text("Unpair")
                         .foregroundStyle(Theme.C.danger)
                 }
+                .disabled(connectBusy)
                 if gateUnavailable {
                     Text(OwnerGate.unavailableCopy)
                         .foregroundStyle(Theme.C.danger)
@@ -644,7 +663,9 @@ struct DevicesView: View {
         // Re-pairing pushes the real pairing flow; a fresh pair lands on
         // `.connected` — close back to Devices.
         .navigationDestination(isPresented: $showRePair) {
-            PairingView()
+            // Pushed, not root: keep the nav bar so the back chevron is the
+            // exit affordance the root flow does not need (or have).
+            PairingView(pushedFlow: true)
         }
         .onChange(of: coordinator.phase) { _, phase in
             // A landed re-pair closes back to Devices; reset so a second
