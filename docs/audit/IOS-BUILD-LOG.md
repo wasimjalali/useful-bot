@@ -774,3 +774,41 @@ Round 4 verification after fixes (iPhone SE 375×667, iOS 27):
 - Full pairing gate green end-to-end; PairingUITests 6/6 standalone.
 - `npm test` 579/579, `make -C macos test` 303/303 unchanged (Swift-only
   diff).
+
+Round 5 (verdicts: security Approve, correctness Approve, design-a11y Request changes — 3 findings) + post-R5 merge:
+
+- Trailing Retry under text (design-a11y 1+2): `loadErrorRow` and the
+  readiness banner kept Retry trailing at every size; at accessibility
+  sizes it now drops under the copy per design 1.0/A.7. Shared
+  `DynamicTypeSize.ubIsAccessibilitySize` (this SDK has no
+  `isAccessibilityCategory` member) — the DevicesView wrap check uses it
+  too instead of its own switch.
+- Devices non-ready evidence (design-a11y 3): the offline, unreachable and
+  runtime-down banner legs now also open the Devices screen and capture its
+  status pill (`devices-{offline,unreachable,runtime-down}-*` on 375/402/834);
+  the offline leg adds an xxxl pass for the banner's drop-under copy
+  (`bots-offline-light-*-xxxl`).
+- UITest flake chased to ground on iPhone 17 / iOS-26.5 (3 consecutive
+  testA failures + testConnectedPairScreen): `scrollDismissesKeyboard
+  (.interactively)` never dismissed the keyboard on that sim, and at 402 pt
+  the camera-denied column is tall enough that Connect sits under the
+  keyboard — the raw coordinate tap landed on it silently. The harness now
+  presses the keyboard's Return key to dismiss (swipe kept as fallback) and
+  `pairThroughManualEntry` verifies the attempt left the status line before
+  retrying. Green on a fresh-erased sim afterwards.
+- Merged main @1ddfa19 (#110): conflicts were `.gitignore` (both additions
+  kept) and the `package.json` test list (main's cli-tools.test.ts + this
+  branch's phone-ingress/ios-contract both kept).
+- Environment note for the suite, not a code fix: `test/cli-tools.test.ts`
+  "no line reaches the keychain" is env-dependent — it needs a used-gh
+  machine (`~/.config/gh` present). Fails on a clean main worktree in this
+  VM too; `mkdir -p ~/.config/gh` restores the precondition. Recorded, not
+  papered over.
+
+Round 5 verification after fixes:
+
+- Pairing gate green on all three widths: iPhone SE 375×667 (iOS 27),
+  iPhone 17 402×874 (iOS 26.5, after sim erase), iPad Pro 11 834 (iOS 27).
+- `npm test` 599/599 (cli-tools env precondition restored),
+  `macos/test.sh` 303/303.
+- Shots: 231 committed under docs/audit/ios-shots/PR-2/.
