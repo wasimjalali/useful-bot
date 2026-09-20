@@ -211,6 +211,9 @@ final class PairingCoordinator: ObservableObject {
         await client?.signOut()
         store.signOut()
         readiness = nil
+        // A `.failed` left by a failed probe/re-auth is not part of signing
+        // out; the signed-out screen would read it as a fresh error.
+        phase = .idle
     }
 
     /// Unpair (class A — the caller has already run the biometric gate):

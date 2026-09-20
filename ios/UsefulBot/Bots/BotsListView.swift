@@ -48,7 +48,8 @@ struct BotsListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Theme.C.surface)
+        // Lists sit on canvas, one tone under surfaces (design spec 1.0).
+        .background(Theme.C.canvas)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -142,11 +143,12 @@ struct BotsListView: View {
     /// "Create your first bot" as the only content, primary "New bot" under
     /// it (design spec 1.2 Empty row).
     private var emptyState: some View {
-        VStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Create your first bot")
-                .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
+                .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
-                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             Button {
                 Task { await createBot() }
             } label: {
@@ -165,11 +167,10 @@ struct BotsListView: View {
                 Text(readinessReason)
                     .tokenFont(DesignTokens.FontSize.attachError, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
-                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 48)
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
@@ -248,7 +249,7 @@ struct BotsListView: View {
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
                     .foregroundStyle(Theme.C.ink)
                     .padding(.horizontal, 14)
-                    .frame(minHeight: 36)
+                    .frame(minHeight: DesignTokens.Space.phoneHitTarget)
             }
             .buttonStyle(PressedScale())
             .background(
@@ -409,8 +410,22 @@ struct BotsListView: View {
 struct DevicesView: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var gateUnavailable = false
     @State private var confirmUnpair = false
+    // The host value's mono 13 still rides Dynamic Type — footnote is the
+    // nearest text style at this point size (same rule tokenFont uses).
+    @ScaledMetric(relativeTo: .footnote) private var hostMonoSize: CGFloat = 13
+
+    // DynamicTypeSize has no isAccessibilityCategory member on this SDK.
+    private var hostNeedsWrap: Bool {
+        switch dynamicTypeSize {
+        case .accessibility1, .accessibility2, .accessibility3, .accessibility4, .accessibility5:
+            return true
+        default:
+            return false
+        }
+    }
 
     var body: some View {
         List {
@@ -419,10 +434,18 @@ struct DevicesView: View {
                     LabeledContent("Name", value: name)
                 }
                 if let host = pairedHost {
-                    LabeledContent("Host", value: host)
-                        .font(.system(size: 13, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    // 1.15: the host value is SF Mono 13 and scales like
+                    // every other token; at accessibility sizes it wraps to
+                    // two lines instead of truncating.
+                    LabeledContent {
+                        Text(host)
+                            .font(.system(size: hostMonoSize, design: .monospaced))
+                            .lineLimit(hostNeedsWrap ? 2 : 1)
+                            .truncationMode(.middle)
+                            .multilineTextAlignment(.trailing)
+                    } label: {
+                        Text("Host")
+                    }
                 }
                 LabeledContent("Status") {
                     statusPill
@@ -486,7 +509,8 @@ struct DevicesView: View {
         .navigationTitle("Devices")
         .navigationBarTitleDisplayMode(.inline)
         .scrollContentBackground(.hidden)
-        .background(Theme.C.surface)
+        // Grouped settings sit on canvas; the group rows are the surfaces.
+        .background(Theme.C.canvas)
     }
 
     /// The tailnet host with the scheme stripped (design spec 1.15 renders
@@ -518,7 +542,7 @@ struct DevicesView: View {
             (text, foreground, background) = ("Runtime down", Theme.C.danger, Theme.C.dangerSoft)
         }
         return Text(text)
-            .tokenFont(DesignTokens.FontSize.chatMeta, .medium)
+            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
             .foregroundStyle(foreground)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)

@@ -40,10 +40,13 @@ function html(ok: boolean, detail: string, status = 200) {
 }
 
 /**
- * The OAuth return lands on loopback for the desktop, or on the configured
- * tailnet origin for a phone-driven flow (S6): Serve forwards to this same
- * route with the original https origin in the request URL. Nothing else is
- * trusted with the completion code.
+ * The OAuth return lands on loopback for the desktop, or through Serve for
+ * a phone-driven flow (S6). Under Next the handler's request.url is always
+ * built as proto://<bind-host>:<port>/<path> — the original tailnet origin
+ * never reaches it, so the loopback branch is what actually admits the
+ * proxied return (the same request-URL drift spec §4.2 records for
+ * x-forwarded-*). The tailnet comparison stays as the rule for any stack
+ * that preserves the request URL; on this one it can never fire.
  */
 function callbackOriginAllowed(requestUrl: string): boolean {
   if (requestIsLoopback(requestUrl)) return true;

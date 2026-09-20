@@ -31,7 +31,11 @@ final class ShotsUITests: XCTestCase {
         return Pairing(host: raw.host, token: raw.token, name: raw.name)
     }
 
-    private func shot(_ name: String) {
+    private func shot(_ name: String, _ app: XCUIApplication) {
+        // The Keychain save sheet can surface seconds after the last event;
+        // the capture is only trustworthy immediately after a dismissal
+        // pass, so it lives inside shot() rather than at the call site.
+        dismissSystemAlerts(app)
         let shot = XCUIScreen.main.screenshot()
         // The simulator shares the host filesystem: drop the PNG on /tmp so
         // the shot survives Xcode pruning the xcresult. The caller copies
@@ -67,23 +71,31 @@ final class ShotsUITests: XCTestCase {
 
     /// The Keychain "Save Password?" sheet can surface *after* the last
     /// synthesized event — during a hold there is nothing for the
-    /// interruption monitor to interrupt, so it lingers into the shot.
-    /// Poll until the alerts have stayed away for two consecutive checks
-    /// (4 s ceiling), answering each one that does appear.
-    private func dismissSystemAlerts(_ app: XCUIApplication) {
+    /// interruption monitor to interrupt, so it lingers into the shot
+    /// (observed async at ~2 s post-submit, which an early-exit poll missed).
+    /// Poll the full window, answering each alert that appears.
+    private func dismissSystemAlerts(_ app: XCUIApplication, window: TimeInterval = 5) {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let deadline = Date().addingTimeInterval(4)
-        var quiet = 0
-        while Date() < deadline && quiet < 2 {
-            var handled = false
+        let deadline = Date().addingTimeInterval(window)
+        while Date() < deadline {
             for host in [app, springboard] where host.alerts.firstMatch.exists {
                 for label in ["Not Now", "Allow", "OK"] {
                     let button = host.buttons[label]
-                    if button.exists { button.tap(); handled = true }
+                    if button.exists { button.tap() }
                 }
             }
-            quiet = handled ? 0 : quiet + 1
-            usleep(400_000)
+            usleep(300_000)
+        }
+    }
+
+    /// A typed field can leave the ScrollView offset after the keyboard
+    /// drops — the light connected shots came back mid-scroll. Drag the
+    /// scroll view back to the top before capturing (bounded; the drag is a
+    /// no-op once the content is home).
+    private func pinToTop(_ app: XCUIApplication) {
+        for _ in 0..<3 where app.scrollViews.firstMatch.exists {
+            app.swipeDown()
+            usleep(200_000)
         }
     }
 
@@ -187,25 +199,21 @@ final class ShotsUITests: XCTestCase {
         pairThroughManualEntry(app, pair)
         XCTAssertTrue(waitForBotsRoot(app, timeout: 20))
         let s = suffix(app, appearance: appearance, typeSize: typeSize)
-        dismissSystemAlerts(app)
-        shot("bots-paired-\(s)")
+        shot("bots-paired-\(s)", app)
 
         openDevices(app)
         XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10),
                       "Devices push never presented")
         XCTAssertTrue(app.staticTexts["This Mac"].waitForExistence(timeout: 10))
-        dismissSystemAlerts(app)
-        shot("devices-paired-\(s)")
+        shot("devices-paired-\(s)", app)
 
         tapButton(app, "Sign out on this phone")
         XCTAssertTrue(app.staticTexts["Signed out"].waitForExistence(timeout: 10))
-        dismissSystemAlerts(app)
-        shot("signed-out-\(s)")
+        shot("signed-out-\(s)", app)
 
         tapButton(app, "signed-out-sign-in")
         XCTAssertTrue(waitForBotsRoot(app, timeout: 15))
-        dismissSystemAlerts(app)
-        shot("bots-resigned-in-\(s)")
+        shot("bots-resigned-in-\(s)", app)
     }
 
     func testJourneyLight() throws { try sessionJourney(appearance: "light") }
@@ -230,7 +238,7 @@ final class ShotsUITests: XCTestCase {
             "This pairing was revoked or expired. Scan a new code from your Mac."
         ].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["Pair again"].exists)
-        shot("pairing-credential-invalid-\(suffix(app, appearance: "dark", typeSize: nil))")
+        shot("pairing-credential-invalid-\(suffix(app, appearance: "dark", typeSize: nil))", app)
     }
 
     /// Mac unreachable readiness banner: the gate kills the web service
@@ -247,7 +255,7 @@ final class ShotsUITests: XCTestCase {
                 app.staticTexts["Your Mac is unreachable"].waitForExistence(timeout: 25)
                     || app.staticTexts["Agent runtime is down on your Mac"].waitForExistence(timeout: 5),
                 "readiness banner never appeared")
-            shot("bots-unreachable-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("bots-unreachable-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -264,7 +272,7 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 app.staticTexts["You're offline"].waitForExistence(timeout: 25),
                 "offline banner never appeared")
-            shot("bots-offline-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("bots-offline-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -282,7 +290,7 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 app.staticTexts["Agent runtime is down on your Mac"].waitForExistence(timeout: 25),
                 "runtime-down banner never appeared")
-            shot("bots-runtime-down-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("bots-runtime-down-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -312,7 +320,7 @@ final class ShotsUITests: XCTestCase {
                 usleep(300_000)
             }
             XCTAssertTrue(status.exists)
-            shot("pairing-connect-failed-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("pairing-connect-failed-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -359,14 +367,14 @@ final class ShotsUITests: XCTestCase {
             }
             if !connectedSeen {
                 XCTFail("success line never appeared; status='\(status.exists ? status.label : "<none>")'")
-                shot("pairing-connected-debug-\(suffix(app, appearance: appearance, typeSize: nil))")
+                shot("pairing-connected-debug-\(suffix(app, appearance: appearance, typeSize: nil))", app)
                 app.terminate()
                 continue
             }
-            dismissSystemAlerts(app)
             XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
                           "success line expired before the shot — hold too short")
-            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: nil))")
+            pinToTop(app)
+            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
             // Wait for the positive paired-root signal (its nav bar): a
@@ -416,14 +424,14 @@ final class ShotsUITests: XCTestCase {
             }
             if !connectedSeen {
                 XCTFail("success line never appeared; status='\(status.exists ? status.label : "<none>")'")
-                shot("pairing-connected-debug-\(suffix(app, appearance: appearance, typeSize: "xxxl"))")
+                shot("pairing-connected-debug-\(suffix(app, appearance: appearance, typeSize: "xxxl"))", app)
                 app.terminate()
                 continue
             }
-            dismissSystemAlerts(app)
             XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
                           "success line expired before the shot — hold too short")
-            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))")
+            pinToTop(app)
+            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))", app)
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
             // Same reasoning as testConnectedPairScreen: assert the paired
@@ -452,7 +460,7 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 app.staticTexts["Connecting to your Mac"].waitForExistence(timeout: 15),
                 "connecting copy never appeared")
-            shot("pairing-connecting-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("pairing-connecting-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -467,8 +475,7 @@ final class ShotsUITests: XCTestCase {
         let app = XCUIApplication()
         launch(app, appearance: "dark")
         XCTAssertTrue(waitForBotsRoot(app, timeout: 25), "re-paired app never reached the Bots list")
-        dismissSystemAlerts(app)
-        shot("bots-repaired-\(suffix(app, appearance: "dark", typeSize: nil))")
+        shot("bots-repaired-\(suffix(app, appearance: "dark", typeSize: nil))", app)
         app.terminate()
     }
 
@@ -483,7 +490,7 @@ final class ShotsUITests: XCTestCase {
                     .matching(identifier: "bots-skeleton").firstMatch
                     .waitForExistence(timeout: 20),
                 "skeleton never rendered")
-            shot("bots-loading-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("bots-loading-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -497,8 +504,7 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 app.staticTexts["Create your first bot"].waitForExistence(timeout: 25),
                 "empty state never rendered")
-            dismissSystemAlerts(app)
-            shot("bots-empty-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("bots-empty-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -517,7 +523,7 @@ final class ShotsUITests: XCTestCase {
                     .allElementsBoundByIndex.map(\.label)
                 XCTFail("expiry banner never rendered; texts: \(tree)")
             }
-            shot("bots-expiring-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("bots-expiring-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -536,8 +542,7 @@ final class ShotsUITests: XCTestCase {
             // its Connect carries the same disabled-with-reason chrome.
             XCTAssertFalse(app.buttons["manual-connect"].isEnabled,
                            "manual Connect should be disabled offline")
-            dismissSystemAlerts(app)
-            shot("pairing-offline-\(suffix(app, appearance: appearance, typeSize: nil))")
+            shot("pairing-offline-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             app.terminate()
         }
     }
@@ -571,8 +576,7 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 app.staticTexts["signed-out-reason"].waitForExistence(timeout: 15),
                 "error reason never appeared")
-            dismissSystemAlerts(app)
-            shot("signed-out-error-\(s)")
+            shot("signed-out-error-\(s)", app)
             app.terminate()
 
             // Offline state: the pinned monitor renders the disabled reason
@@ -584,7 +588,7 @@ final class ShotsUITests: XCTestCase {
             XCTAssertFalse(off.buttons["signed-out-sign-in"].isEnabled,
                            "Sign in should be disabled offline")
             dismissSystemAlerts(off)
-            shot("signed-out-offline-\(s)")
+            shot("signed-out-offline-\(s)", app)
             off.terminate()
         }
     }

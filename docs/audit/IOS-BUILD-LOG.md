@@ -418,7 +418,7 @@ Creates `docs/audit/IOS-OWNER-CHECKLIST.md`.
 ### Verification
 
 - Build/test (17.1.1): `xcodebuild build`/`test` green on iPhone 17 (402 pt)
-  and iPhone SE (375 pt); `make -C macos test` 301/301; `npm test` 573/573
+  and iPhone SE (375 pt); `make -C macos test` 302/302; `npm test` 573/573
   including `test/phone-ingress.test.ts` and `test/ios-contract.test.ts`;
   `scripts/verify-release.mjs` PASS (tsc ×3, unit, next_build,
   launchd_render); `xcodegen generate` no diff.
@@ -428,12 +428,13 @@ Creates `docs/audit/IOS-OWNER-CHECKLIST.md`.
   `scripts/ios-contract-fixtures.mjs` against the running web service).
   Evidence level: real routes. Real Serve + physical device: red (cloud) —
   owner steps recorded in `docs/audit/IOS-OWNER-CHECKLIST.md`.
-- Visual (17.1.3): 122 shots in `docs/audit/ios-shots/PR-2/` — 16 states ×
+- Visual (17.1.3): 156 shots in `docs/audit/ios-shots/PR-2/` — 21 states ×
   light/dark × 375 + 402 (+ xxxl where a11y applies, + 834 where navigation
-  changed), driven by `scripts/ios-pairing-gate.sh`; full gate green on
-  iPhone 17 at final code (pair → connected → revoke → credentialInvalid →
-  rotate → repair → journey → offline/unreachable/runtimeDown →
-  connecting/connect-failed).
+  changed), driven by `scripts/ios-pairing-gate.sh`; full gate green at
+  final code on both phones and the iPad subset (pair → connected → revoke
+  → credentialInvalid → rotate → repair → expiry banner → journeys ×4 →
+  offline/unreachable/runtimeDown banners → signed-out variants →
+  connecting/connect-failed → offline pairing).
 - Performance (17.1.5): Appendix B traps diff check — clean (no per-frame
   work in draw paths, no layout-in-render, monitors cancelled in deinit,
   single owned URLSession per client).
@@ -508,3 +509,101 @@ Creates `docs/audit/IOS-OWNER-CHECKLIST.md`.
   commit; `npm test` 573/573 run after the restore.
 - **Device geometry**: iPhone 17 sim reports 402 pt (not 390); iPhone SE 375;
   iPad Pro 11" 834 — shot names carry the measured width suffix.
+- **iOS 26 `.topBarLeading` clips to the first subview**: a custom
+  `HStack { badge; Text("Useful Bot") }` rendered only the badge — the nav-bar
+  title silently vanished. `.fixedSize()` on the stack keeps the title
+  past the badge; verified in `bots-paired-*` shots.
+- **XCTest polling starves the MainActor**: with `UB_HOLD_CONNECTED` at 8 s,
+  `markPaired`/`persist()` run on MainActor after the hold; constant element
+  queries starve that continuation past a 15 s wait. `_ = waitForBotsRoot`
+  discarded the timeout, so `app.terminate()` banked `unpaired` and the next
+  leg (revoke → testB) failed on "Pair again" with zero requests reaching
+  the server. Both connected legs now `XCTAssertTrue(waitForBotsRoot(_, 40))`
+  so the leg that actually broke fails, not a downstream one.
+- **`shared/web-sessions.ts` mkdir lock contention**: a re-sign-in POST can
+  take ~15 s under `withLock` spin (`LOCK_TIMEOUT_MS` 8000, 15 ms tries) —
+  post-sign-in and `Pair again` waits widened to 30 s. Harness, not product.
+- **Credential-expiry banner** (spec 11 fourth row): `expiryWarnedFor` is
+  keyed to the credential's `expiresAt` Date so rotation/re-pair warns
+  again; `UB_CREDENTIAL_EXPIRY_DAYS` seam sets the window at both
+  `markSignedIn` sites for the gate's `bots-expiring` legs.
+- **`web:dev` restart without `UB_ROUTER_CONFIG` fails silently open for
+  tokens**: `runtimeConfig()` returns null when the env var is absent,
+  `deviceCredentials()` is then empty, and every Bearer 401s `{ok:false}`
+  — the app reads it as `credentialInvalid`. The gate's
+  `capture_web_env` exists for exactly this; a bare `npm run web:dev`
+  needs the var passed explicitly.
+- **A second concurrent gate run races the shared stack**: an orphaned
+  script (its launcher died, the script survived) kept driving rotate/
+  revoke/web-stop while a fresh gate ran — flags under `/tmp/ub-*` and
+  the services are singletons. Check `pgrep -f ios-pairing-gate` before
+  starting one; a stale run's `/tmp/ub-web-down` et al. poison shots.
+- **Cold-boot race after the autofill write**: the restrictedBool payload
+  is written while the sim is shut down, so the first leg's xcodebuild
+  arrives mid-boot and dies `Mach error -308 (ipc/mig) server died`. The
+  gate now boots the sim itself and settles 5 s past `Booted` before leg
+  A.
+- **Stale stall stub on :59999**: a leftover `node -e` listener made the
+  fresh stub EADDRINUSE; the leg still passed because a never-answering
+  listener is the stub's whole behaviour — but the flag was already
+  touched, so a stale one can mask a real failure to start it.
+- **`DynamicTypeSize.isAccessibilityCategory` is not in this SDK**:
+  the wrap decision switches on `.accessibility1`–`.accessibility5`
+  explicitly.
+
+### Review loop
+
+Round 1: three SWE-2 max-effort reviewer sessions, one per Prompt-6 role
+(correctness `devin-9548202ee2714e22a8d94e4b5ef90467`, security
+`devin-9e787bfdda48401ca7c39a40dc0b57ee`, design-a11y
+`devin-7fe6a1000b234f799b4aa5b514abab58`). All three requested changes;
+23 findings total — correctness 7, security 5, design-a11y 11. Headline
+fixes: unique per-mint credential ids so `--rotate-phone` kills the rotated
+row's sessions (security blocker); `signIn()` attaches the live cookie so
+POST destroys the session it replaces; `/api/status` apiVersion absent or
+malformed fails closed to `runtimeDown`; `OwnerGate` returns the real
+tri-state verdict; the missing fourth banner row (credential-expiring) and
+the nav-bar title clip shipped; connected-leg asserts fix the silent-unpair
+race. All landed in `424a709`.
+
+Round 2: fresh reviewer sessions on `424a709` (correctness
+`devin-8797052f36654407a4adaeb74196135a`, security
+`devin-c611046fef3c4d54adce78c4f439594e`, design-a11y
+`devin-46650d56fea748c2b16cab37b99efb2f`). Security approved clean;
+correctness requested changes (5 findings), design-a11y requested changes
+(8 findings). Fixes:
+
+- `collectTailnet` canonicalizes `--tailnet-origin`/stored
+  `tailnet.httpsOrigin` to the same rule `shared/runtime.ts`'s loader
+  applies — trailing slash, explicit `:443` and case normalize; http,
+  paths, queries, credentials and non-443 ports fail
+  `tailnet_origin_invalid` instead of writing a config every request then
+  401s against (correctness 1, medium).
+- `GET /api/auth/session` re-resolves `session.credentialId` and
+  `phoneDisabled()` on every call (the same check every gated route
+  performs); a dead row destroys the session and answers 401
+  `credential_invalid` with a cleared cookie. New recorded exchange
+  `auth.get-session-revoked` pins it (correctness 2).
+- `callbackOriginAllowed`'s comment now records that under Next the
+  request URL is always the bind host, so the loopback branch is what
+  admits the Serve-proxied return — the tailnet comparison stays as the
+  rule for any stack that preserves the request URL (correctness 3, drift
+  in the same class as §4.2's XFF note).
+- `PairingCoordinator.signOut()` ends `phase = .idle` — a stale `.failed`
+  read as a fresh error on the signed-out screen (correctness 4).
+- `PhoneReadiness`'s `pathUpdateHandler` compares before assigning
+  `isOnline` (Appendix B: no unconditional publishes) (correctness 5).
+- Lists sit on `canvas`, one tone under surfaces (§1.0): Bots list and
+  Devices swapped off `surface`; the retry label in the offline banner
+  takes the 44 pt hit floor; Devices' host value scales via
+  `ScaledMetric(.footnote)` and wraps to two lines at accessibility sizes
+  instead of truncating; `statusPill` uses `phoneChatMeta`; the empty
+  state adopts the §1.0 title treatment (`emptyTitle` 28 semibold, tight
+  tracking, left-aligned) (design-a11y 2/3/4/5/8).
+- The denied-camera block grows in both axes, so the XXXL "Open Settings"
+  label can never break mid-word as "Open Settin/gs" (design-a11y 7).
+- Shot hygiene (design-a11y 1/6, high): the gate writes the simulator's
+  `restrictedBool.allowPasswordAutoFill=false` payload cold-boot before
+  leg A, and `shot()` polls the full window answering late alerts; both
+  connected shots pin the scroll position first so the paired list never
+  lands mid-scroll.

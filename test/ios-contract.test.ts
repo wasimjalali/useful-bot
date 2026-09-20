@@ -112,3 +112,11 @@ test("status.session-revoked: S9 — revoked bound credential is terminal", () =
   assert.equal(response.status, 401);
   assert.equal(response.json?.error, "credential_invalid");
 });
+
+test("auth.get-session-revoked: S9 — introspection answers the same verdict", () => {
+  const { response } = fixture("auth.get-session-revoked");
+  assert.equal(response.status, 401);
+  assert.equal(response.json?.error, "credential_invalid");
+  // The dead session is destroyed and the cookie cleared, not just refused.
+  assert.equal(response.setCookie, true);
+});

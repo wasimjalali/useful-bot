@@ -14,9 +14,9 @@
     "json": {
       "ok": true,
       "profile": "phone",
-      "expiresAt": 1789908500831,
+      "expiresAt": 1789945569074,
       "csrfToken": "<csrfToken>",
-      "credentialExpiresAt": "2026-10-20T00:48:18.402Z"
+      "credentialExpiresAt": "2026-10-20T11:05:47.346Z"
     }
   }
 }

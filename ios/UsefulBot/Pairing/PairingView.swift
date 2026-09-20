@@ -121,12 +121,12 @@ struct PairingView: View {
             if cameraDenied {
                 // Camera denied: the square becomes a sunken block with the
                 // reason and the settings escape (design spec 1.1). The block
-                // keeps the square as its minimum but grows to fit the copy
-                // at accessibility sizes rather than truncating it (A.7).
+                // keeps the square as its minimum but grows past it — wider
+                // too, so grown button copy never breaks mid-word — to fit
+                // the copy at accessibility sizes (A.7).
                 deniedBlock
                     .padding(16)
-                    .frame(width: side)
-                    .frame(minHeight: side)
+                    .frame(minWidth: side, minHeight: side)
             } else {
                 QRScannerView(paused: isConnecting || isOffline) { scanned in
                     Task { await coordinator.pair(scanned: scanned) }

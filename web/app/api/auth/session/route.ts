@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { classifyIngress, originAllowed, type IngressClass } from "../../../../lib/desktop-gate";
 import { rateLimited } from "../../../../lib/api-guard";
-import { createBrowserSession, credentialById, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
+import { createBrowserSession, credentialById, phoneDisabled, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
 import { destroySession, readSession } from "../../../../lib/cookie-sessions";
 
 /**
@@ -94,6 +94,17 @@ export async function GET(request: Request) {
   // would have.
   if (ingress === "tailnet" && session.profile !== "phone") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  // The session is only as live as the credential row it is bound to (S9):
+  // a revoked or expired row makes every gated route 401, and a phone
+  // session dies with phoneEnabled — introspection answers the same
+  // verdict instead of reporting ok on a dead session.
+  if ((session.credentialId && !credentialById(session.credentialId))
+    || (session.profile === "phone" && phoneDisabled())) {
+    await destroySession();
+    const dead = NextResponse.json({ ok: false, error: "credential_invalid" }, { status: 401 });
+    dead.headers.append("set-cookie", clearSessionCookie());
+    return dead;
   }
   return NextResponse.json({
     ok: true,

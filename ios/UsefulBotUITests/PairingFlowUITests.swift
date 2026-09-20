@@ -35,13 +35,16 @@ final class PairingFlowUITests: XCTestCase {
     }
 
     private func shot(_ name: String) {
+        // The capture is only trustworthy immediately after an alert
+        // dismissal pass — the save sheet can surface seconds late.
+        let app = XCUIApplication()
+        dismissSystemAlerts(app)
         let shot = XCUIScreen.main.screenshot()
         // The simulator shares the host filesystem: drop the PNG on /tmp so
         // the shot survives Xcode pruning the xcresult. The caller copies
         // them to docs/audit/ios-shots/PR-2/. Flow legs always run the
         // system (light) appearance; tag the width so reruns on a second
         // device do not overwrite the first's shots.
-        let app = XCUIApplication()
         let tagged = "\(name)-light-\(Int(app.frame.width.rounded()))"
         let dir = URL(fileURLWithPath: "/tmp/ub-shots", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -65,22 +68,20 @@ final class PairingFlowUITests: XCTestCase {
     }
 
     /// The Keychain "Save Password?" sheet can surface *after* the last
-    /// synthesized event, then linger into the shot — poll until the alerts
-    /// have stayed away for two consecutive checks (4 s ceiling).
-    private func dismissSystemAlerts(_ app: XCUIApplication) {
+    /// synthesized event, then linger into the shot — poll the full window,
+    /// answering each alert that appears (an early-exit quiet check let an
+    /// async sheet slip past).
+    private func dismissSystemAlerts(_ app: XCUIApplication, window: TimeInterval = 5) {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let deadline = Date().addingTimeInterval(4)
-        var quiet = 0
-        while Date() < deadline && quiet < 2 {
-            var handled = false
+        let deadline = Date().addingTimeInterval(window)
+        while Date() < deadline {
             for host in [app, springboard] where host.alerts.firstMatch.exists {
                 for label in ["Not Now", "Allow", "OK"] {
                     let button = host.buttons[label]
-                    if button.exists { button.tap(); handled = true }
+                    if button.exists { button.tap() }
                 }
             }
-            quiet = handled ? 0 : quiet + 1
-            usleep(400_000)
+            usleep(300_000)
         }
     }
 

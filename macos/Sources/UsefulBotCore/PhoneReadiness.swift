@@ -39,7 +39,14 @@ public final class PathMonitor: ObservableObject {
         monitor = NWPathMonitor()
         isOnline = monitor.currentPath.status == .satisfied
         monitor.pathUpdateHandler = { [weak self] path in
-            Task { @MainActor in self?.isOnline = path.status == .satisfied }
+            let online = path.status == .satisfied
+            Task { @MainActor in
+                // NWPathMonitor fires on attribute-level changes too, not
+                // only satisfied↔unsatisfied — compare before assigning or
+                // every event republishes the subscribers (Appendix B).
+                guard let self, online != self.isOnline else { return }
+                self.isOnline = online
+            }
         }
         monitor.start(queue: queue)
     }

@@ -196,7 +196,7 @@ async function main() {
 
     // Revocation (S9): re-write the config with the credential revoked; the
     // very next request on the live cookie must die credential_invalid at a
-    // gate, not at the session route (which only reports the row's expiry).
+    // gate — and at the session route too, which mirrors the same verdict.
     writeConfig(path.join(work, "config"), {
       credentials: [
         { id: "device-phone", kind: "device", sha256: sha256(PHONE_TOKEN),
@@ -211,13 +211,26 @@ async function main() {
       note: "S9: the bound credential revoked mid-session → 401 credential_invalid.",
     });
 
-    // Un-revoke for the sign-out case, which needs a live session.
+    await call("auth.get-session-revoked", {
+      url: SESSION, headers: tailnetHeaders({ cookie }),
+      note: "S9: introspection answers the same verdict — a dead credential row is a 401 credential_invalid that destroys the session and clears the cookie.",
+    });
+
+    // Un-revoke and re-mint a session for the sign-out case — the revoked
+    // GET destroyed the first one. Raw fetch: the re-sign-in is a repeat of
+    // auth.post-tailnet-phone and needs no fixture of its own.
     writeConfig(path.join(work, "config"));
     await new Promise((r) => setTimeout(r, 50));
+    const resign = await fetch(SESSION, {
+      method: "POST",
+      headers: tailnetHeaders({ authorization: `Bearer ${PHONE_TOKEN}` }),
+    });
+    const cookie2 = cookieHeader(resign.headers.get("set-cookie") ?? "");
+    const csrf2 = (await resign.json())?.csrfToken;
 
     await call("auth.delete-session", {
       method: "DELETE", url: SESSION,
-      headers: tailnetHeaders({ cookie, "x-ub-csrf": String(csrf) }),
+      headers: tailnetHeaders({ cookie: cookie2, "x-ub-csrf": String(csrf2) }),
       note: "Sign-out: cookie + CSRF, the session row is destroyed.",
     });
   } finally {

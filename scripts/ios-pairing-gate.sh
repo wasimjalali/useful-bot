@@ -26,6 +26,74 @@ else
   DEST="platform=iOS Simulator,name=${SIM_NAME:-iPhone 17},OS=${SIM_OS:-latest}"
 fi
 
+# Password autofill suppression: a typed SecureField submission fires
+# Keychain's "Save Password?" sheet asynchronously, and it has shipped in
+# gate shots. The allowPasswordAutoFill restrictedBool payload is the
+# headless equivalent of Settings > Passwords > AutoFill off; write it
+# while the sim is shut down so the settings daemon reads it cold, then
+# boot it back up here — a leg racing the cold boot dies with
+# "Mach error -308" before the first test line.
+sim_udid() {
+  if [ -n "$SIM_ID" ]; then printf '%s' "$SIM_ID"; return; fi
+  xcrun simctl list devices available -j | /usr/bin/python3 - "${SIM_NAME:-iPhone 17}" <<'PY'
+import json, sys
+name = sys.argv[1]
+for runtime, devs in json.load(sys.stdin)["devices"].items():
+    if "iOS" not in runtime:
+        continue
+    for d in devs:
+        if d["name"] == name:
+            print(d["udid"]); sys.exit(0)
+sys.exit("no iOS sim named %r" % name)
+PY
+}
+
+disable_password_autofill() {
+  local udid dev
+  udid=$(sim_udid)
+  dev="$HOME/Library/Developer/CoreSimulator/Devices/$udid"
+  xcrun simctl shutdown "$udid" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    xcrun simctl list devices -j | /usr/bin/python3 -c "
+import json,sys
+for devs in json.load(sys.stdin)['devices'].values():
+    for d in devs:
+        if d.get('udid')=='$udid' and d.get('state')=='Shutdown': sys.exit(0)
+sys.exit(1)" && break
+    sleep 0.5
+  done
+  for plist in \
+    "$dev/data/Containers/Shared/SystemGroup/systemgroup.com.apple.configurationprofiles/Library/ConfigurationProfiles/UserSettings.plist" \
+    "$dev/data/Library/UserConfigurationProfiles/EffectiveUserSettings.plist" \
+    "$dev/data/Library/UserConfigurationProfiles/PublicInfo/PublicEffectiveUserSettings.plist"; do
+    mkdir -p "$(dirname "$plist")"
+    /usr/bin/python3 - "$plist" <<'PY'
+import plistlib, sys, os
+path = sys.argv[1]
+if os.path.exists(path):
+    with open(path, "rb") as f: d = plistlib.load(f)
+else:
+    d = {}
+d.setdefault("restrictedBool", {}).setdefault("allowPasswordAutoFill", {})["value"] = False
+with open(path, "wb") as f: plistlib.dump(d, f)
+PY
+  done
+  # Cold-boot now and let launchd settle: the first leg must find a device
+  # that is up, not one still starting.
+  xcrun simctl boot "$udid" 2>/dev/null || true
+  for _ in $(seq 1 60); do
+    xcrun simctl list devices -j | /usr/bin/python3 -c "
+import json,sys
+for devs in json.load(sys.stdin)['devices'].values():
+    for d in devs:
+        if d.get('udid')=='$udid' and d.get('state')=='Booted': sys.exit(0)
+sys.exit(1)" && break
+    sleep 0.5
+  done
+  sleep 5
+}
+disable_password_autofill
+
 PAIR_FILE=/tmp/ub-pair.json
 REVOKED_FLAG=/tmp/ub-pair-revoked
 WEB_DOWN_FLAG=/tmp/ub-web-down

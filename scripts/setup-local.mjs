@@ -179,6 +179,26 @@ function writeConfig(config) {
 }
 
 /**
+ * Canonical https origin — the same rule shared/runtime.ts's validateTailnet
+ * applies at load (scheme https, non-empty host, no credentials, path, query
+ * or fragment, no port but the implicit 443). The string form is what the
+ * Origin header carries, so the stored value must equal it exactly.
+ */
+function canonicalHttpsOrigin(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || !url.hostname) return null;
+  if (url.username || url.password) return null;
+  if (url.pathname !== "/" || url.search || url.hash) return null;
+  if (url.port && url.port !== "443") return null;
+  return url.origin;
+}
+
+/**
  * The tailnet record (spec S2): fields come from flags, then the existing
  * config, then interactive prompts — the last resort so an automated caller
  * without a TTY fails loudly instead of hanging.
@@ -217,6 +237,21 @@ async function collectTailnet(existing) {
   if (stillMissing.length > 0) {
     fail({ error: "tailnet_fields_required", missing: stillMissing });
   }
+  // The loader's rule, enforced here so a plausible operator form never
+  // lands as a config every request then 401s against (the runtime
+  // validator throws on load, emptying every credential check): the
+  // httpsOrigin must be the canonical https origin an Origin header
+  // carries. Canonicalize the harmless variants — trailing slash, an
+  // explicit :443, uppercase host — and refuse the rest naming the field.
+  const canonical = canonicalHttpsOrigin(merged.httpsOrigin);
+  if (!canonical) {
+    fail({
+      error: "tailnet_origin_invalid",
+      field: "httpsOrigin",
+      hint: "expected a bare https origin like https://<mac>.<tailnet>.ts.net — no http, path, query, credentials or non-443 port",
+    });
+  }
+  merged.httpsOrigin = canonical;
   return merged;
 }
 
