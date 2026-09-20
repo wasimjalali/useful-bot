@@ -238,6 +238,32 @@ test("config a tool executes later is never writable, including inside an opened
   }
 });
 
+test("a deny holds however the path is spelled", { skip: !darwin || !sandboxAvailable() }, async () => {
+  // The deny list spells some names with capitals (`CLAUDE.md`) and some
+  // without, and the kernel canonicalises against the filesystem rather than
+  // matching the regex against the spelling, so both directions hold here.
+  // That is a property of a case-INSENSITIVE volume, which is the macOS
+  // default. On a case-sensitive one these become different files and this
+  // test fails - which is the point of asserting it rather than assuming it.
+  const fixture = homeFixture();
+  try {
+    mkdirSync(join(fixture.home, ".claude"), { recursive: true });
+    const env = { PATH: "/usr/bin:/bin", HOME: fixture.home, TMPDIR: fixture.home };
+    for (const name of ["CLAUDE.md", "claude.md", "Claude.MD", "SETTINGS.JSON"]) {
+      const target = join(fixture.home, ".claude", name);
+      const args = confinedCommand(fixture.home, `printf x > ${JSON.stringify(target)}`, "computer", true);
+      await assert.rejects(
+        () => execFileAsync(args[0], args.slice(1), { cwd: fixture.home, env }),
+        /not permitted/i,
+        name,
+      );
+      assert.equal(existsSync(target), false, name);
+    }
+  } finally {
+    fixture.restore();
+  }
+});
+
 test("a Full access line reads the store it was handed and still not a private key", { skip: !darwin || !sandboxAvailable() }, async () => {
   const fixture = homeFixture();
   const store = join(fixture.home, ".codex");
