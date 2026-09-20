@@ -32,12 +32,13 @@ export type CliEntry = {
   install: string;
   /** Null when the CLI has no stored credential worth probing for. */
   signIn: SignInCheck | null;
-  /**
-   * Only the state this CLI keeps somewhere its own name does not imply.
-   * `credentialPathsFor` derives `~/.<name>`, `~/.config/<name>` and the
-   * two `~/.local` ones for any program on PATH, so almost every CLI needs
-   * nothing here, including ones this table has never heard of. Claude Code
-   * is the exception: a keychain item cannot be derived from a name.
+   /**
+   * State this CLI keeps somewhere its own name does not imply, ADDED to
+   * what the name does. `credentialPathsFor` derives `~/.<name>`,
+   * `~/.config/<name>` and the two `~/.local` ones for any program on PATH,
+   * so almost every CLI needs nothing here, including ones this table has
+   * never heard of. The exceptions are the two that keep their token in the
+   * macOS keyring, which no name can imply: Claude Code and gh.
    */
   state: string[];
   docs: string;
@@ -88,7 +89,11 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     // without Homebrew gets that as the error rather than a silent miss.
     install: "brew install gh",
     signIn: { kind: "file", paths: [".config/gh/hosts.yml"] },
-    state: [],
+    // `hosts.yml` records the account but not the token: gh keeps that in the
+    // macOS keyring, so without this it reads its own host file, finds no
+    // usable token and reports "the token in default is invalid". Caught by
+    // running `gh auth status` through the profile, not by reading the code.
+    state: ["Library/Keychains"],
     docs: "https://cli.github.com",
   },
   {
@@ -218,8 +223,11 @@ export function credentialPathsFor(command: string, path = ownerPath()): string[
     }
   }
   const home = realpathSync(homedir());
-  const named = findCli(name)?.state ?? [];
-  const stores = named.length > 0 ? named : derivedStores(name);
+  // The registry ADDS to what the name implies rather than replacing it: gh
+  // needs both its own directory and the keyring, and a row that quietly
+  // dropped the derived half would have been a second version of the bug
+  // this whole change is about.
+  const stores = [...new Set([...derivedStores(name), ...(findCli(name)?.state ?? [])])];
   return stores
     .map((relative) => join(home, relative))
     .filter((store) => literalStore(store, home));
@@ -243,8 +251,13 @@ function literalStore(store: string, home: string): boolean {
     // resolve() is lexical; realpath sees through a link in any component
     // above it too.
     if (realpathSync(store) !== store) return false;
-    if (!store.startsWith(`${home}/`)) return false;
-    return !namesProtectedStore(store.slice(home.length + 1));
+    return store.startsWith(`${home}/`);
+    // Deliberately NOT screened against the protected list here. That screen
+    // belongs to derivation, where the path is inferred from a name the bot
+    // may control; a row in the registry is a decision someone made in a
+    // reviewed file. Screening both is what stopped gh and Claude Code
+    // reaching the keyring they keep their token in, which is exactly what
+    // their rows exist to allow.
   } catch {
     return false;
   }
