@@ -43,7 +43,9 @@ private final class CallCounter: @unchecked Sendable {
     private func makeClient() throws -> BackendClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
-        config.httpCookieStorage = HTTPCookieStorage()
+        // The ephemeral jar, not `HTTPCookieStorage()`. Every auth test ran
+        // against a jar that keeps nothing, so none of them could have caught
+        // the dropped session cookie however close it came.
         return try BackendClient(
             base: URL(string: "http://127.0.0.1:9")!,
             tokenStore: StubTokenStore(),
