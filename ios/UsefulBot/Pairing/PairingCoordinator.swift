@@ -204,9 +204,14 @@ final class PairingCoordinator: ObservableObject {
             phase = .idle
         } catch {
             await probeReadiness()
-            // On the signed-out surface this is the Sign-in result — render
-            // it instead of leaving the button silently re-enabled.
-            phase = .failed(Self.copy(for: error))
+            // A probe that landed credentialInvalid already owns the
+            // verdict — `.failed` on top would show reachability copy on the
+            // credential-invalid screen, which renders `.failed` first.
+            if store.state != .credentialInvalid {
+                // On the signed-out surface this is the Sign-in result —
+                // render it instead of leaving the button silently re-enabled.
+                phase = .failed(Self.copy(for: error))
+            }
         }
     }
 

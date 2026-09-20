@@ -741,3 +741,36 @@ Round 3 verification after fixes (head `43a0965`, rebased on `049af9a`):
   trap) when `node_modules` was momentarily inconsistent; it settled
   harmless, but it briefly made eve's module bundler read an empty
   `package.json` mid-write. Both recovered; nothing committed.
+
+Round 4: fresh reviewer sessions on `7ead69e` (correctness
+`devin-c9a43e47ec40488e8353a8b54908d1e7`, security
+`devin-42abeb403efe420e90108a3d9d446603`, design-a11y
+`devin-5338cf4c50104775b510f19379bde7d0`). Security: **Approve, zero
+findings**. Correctness: **Request changes — 1 finding (low)**. Design-a11y:
+**Request changes — 1 finding (medium)**.
+
+Fixed (head pending):
+
+- Generic-catch phase stomp (correctness 1): `exchangeSession`'s catch-all
+  ran `probeReadiness()` then set `phase = .failed` unconditionally — when
+  the probe itself landed `credentialInvalid`, the `.failed` copy
+  ("Can't reach your Mac") stomped the terminal verdict and PairingView
+  rendered it first. Now `.failed` only applies when the probe did not
+  settle the terminal state.
+- SE column overflow (design-a11y 1): the 300 pt scanner cap keyed on
+  `height > 640`, but the full pairing column is ~740 pt — on the SE
+  (375×667) "Enter manually" and, in credentialInvalid, "Unpair" sat below
+  the fold. Cap now flips at the real column height (>= 740), and the
+  camera-denied block drops its square-minimum under the same rule so the
+  field column + footer fit at 667 pt. Regenerated evidence:
+  `pairing-empty-*-375`, `pairing-camera-denied-*-375`,
+  `pairing-credential-invalid-*-375` all show the footer on screen.
+- Gate coverage gap found while fixing it: the PairingUITests shots were
+  stale manual-run output — the six legs are now part of
+  `ios-pairing-gate.sh` (last, since they reset the store).
+
+Round 4 verification after fixes (iPhone SE 375×667, iOS 27):
+
+- Full pairing gate green end-to-end; PairingUITests 6/6 standalone.
+- `npm test` 579/579, `make -C macos test` 303/303 unchanged (Swift-only
+  diff).

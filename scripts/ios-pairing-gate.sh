@@ -275,6 +275,16 @@ leg testConnectFailedBothAppearances ShotsUITests
 # Offline pairing screen: "You're offline" + disabled-with-reason chrome.
 leg testOfflinePairing ShotsUITests
 
+# The PR-1 pairing-shot suite still owns the pairing-empty/manual/camera-
+# denied captures — run it last (it leaves the store unpaired) so those
+# files in the audit dir always come from the code under test.
+leg testPairingLight PairingUITests
+leg testPairingDark PairingUITests
+leg testPairingAccessibilityLight PairingUITests
+leg testPairingAccessibilityDark PairingUITests
+leg testPairingCameraDeniedLight PairingUITests
+leg testPairingCameraDeniedDark PairingUITests
+
 rm -f "$PAIR_FILE"
 
 echo "pairing gate: all legs passed"

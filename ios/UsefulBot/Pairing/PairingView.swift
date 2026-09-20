@@ -43,14 +43,15 @@ struct PairingView: View {
     var body: some View {
         GeometryReader { proxy in
             // The square keeps its 300 pt cap until the column outgrows the
-            // screen; below 640 pt it shrinks to 200 inside the scroll, and
-            // accessibility type sizes pin the same 200 pt floor so the footer
-            // button stays on screen (design spec 1.1 Dynamic Type row).
+            // screen: the full column measures ~740 pt with a 300 pt scanner,
+            // so below that it shrinks to 200 to keep the footer button on
+            // screen (the SE's 667 pt is the narrow case), and accessibility
+            // type sizes pin the same 200 pt floor (design spec 1.1).
             // (ViewThatFits would instantiate every variant, leaving ghost
             // fields in the accessibility tree, so the cap is picked once.)
             let cap: CGFloat = sizeCategory.isAccessibilityCategory
                 ? 200
-                : (proxy.size.height > 640 ? 300 : 200)
+                : (proxy.size.height >= 740 ? 300 : 200)
             ScrollView {
                 column(in: proxy, scannerCap: cap)
             }
@@ -129,10 +130,13 @@ struct PairingView: View {
                 // reason and the settings escape (design spec 1.1). The block
                 // keeps the square as its minimum but grows past it — wider
                 // too, so grown button copy never breaks mid-word — to fit
-                // the copy at accessibility sizes (A.7).
+                // the copy at accessibility sizes (A.7). On a height under
+                // the full column (~740 pt) it shrinks to its content so
+                // manual entry and the footer stay on screen — the same rule
+                // the scanner cap applies to the live preview.
                 deniedBlock
                     .padding(16)
-                    .frame(minWidth: side, minHeight: side)
+                    .frame(minWidth: side, minHeight: proxy.size.height >= 740 ? side : 0)
             } else {
                 QRScannerView(paused: connectBusy || isOffline) { scanned in
                     Task { await coordinator.pair(scanned: scanned) }
