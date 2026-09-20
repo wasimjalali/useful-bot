@@ -246,6 +246,13 @@ public struct TurnFailure: Equatable, Sendable {
         if haystack.contains("upstream_protocol_error") || haystack.contains("upstream_timeout") {
             return "The model provider did not answer. Check its status or your usage limit, then send again."
         }
+        // The provider closed the stream part way through an answer: eve gets
+        // no finish reason, so the reply on screen stops mid-sentence. Nothing
+        // is wrong locally and sending it again usually works, but a bare "the
+        // turn failed" under a half-written answer reads as the app losing it.
+        if haystack.contains("ended without a finish reason") {
+            return "The model's answer was cut off before it finished. Send it again."
+        }
         if haystack.contains("empty-model-response") || haystack.contains("did not return a response") {
             return "The model returned nothing. Send it again."
         }

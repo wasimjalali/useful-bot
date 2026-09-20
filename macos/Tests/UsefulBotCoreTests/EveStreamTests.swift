@@ -242,6 +242,12 @@ import Testing
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_protocol_error").reason
             == "The model provider did not answer. Check its status or your usage limit, then send again.")
 
+        // The provider closing the stream mid-answer, seen live on 2026-09-20.
+        #expect(TurnFailure(
+            code: "MODEL_CALL_FAILED",
+            detail: "AI_InvalidResponseDataError: Response stream ended without a finish reason."
+        ).reason == "The model's answer was cut off before it finished. Send it again.")
+
         // A caller rate limit carries a retry_after_ms of its own. It must not
         // arm the cool-down gate, or Retry would hold with the wrong reason.
         let limited = TurnFailure(
