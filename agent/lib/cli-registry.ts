@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { loneCommandHead } from "./command-risk.ts";
@@ -217,10 +217,37 @@ export function credentialPathsFor(command: string, path = ownerPath()): string[
       return [];
     }
   }
-  const home = homedir();
+  const home = realpathSync(homedir());
   const named = findCli(name)?.state ?? [];
   const stores = named.length > 0 ? named : derivedStores(name);
-  return stores.map((relative) => join(home, relative)).filter((store) => existsSync(store));
+  return stores
+    .map((relative) => join(home, relative))
+    .filter((store) => literalStore(store, home));
+}
+
+/**
+ * Whether the store is really the directory its path says it is.
+ *
+ * Without this, a derived name is a way through the deny list: a bot at Full
+ * access can create `~/.anything` and a program called `anything` on a
+ * writable PATH directory, and if `~/.anything` is a symlink then the
+ * profile resolves it and opens whatever it points at, after the denies, so
+ * the allow wins. `~/.anything -> ~/.ssh` would hand out the owner's keys.
+ * The workspace root is screened the same way and for the same reason (see
+ * `assertSafeRoot`): a path that is not what it says it is is not used.
+ */
+function literalStore(store: string, home: string): boolean {
+  try {
+    if (lstatSync(store).isSymbolicLink()) return false;
+    if (!statSync(store).isDirectory()) return false;
+    // resolve() is lexical; realpath sees through a link in any component
+    // above it too.
+    if (realpathSync(store) !== store) return false;
+    if (!store.startsWith(`${home}/`)) return false;
+    return !namesProtectedStore(store.slice(home.length + 1));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -238,13 +265,34 @@ export function credentialPathsFor(command: string, path = ownerPath()): string[
  * a program called `ssh` does not get `~/.ssh` by being run.
  */
 function derivedStores(name: string): string[] {
+  // A program named after one of the shared directories would derive the
+  // whole of it: `config` would open `~/.config`, every tool's settings
+  // inside it, and `local` would open `~/.local`, the PATH directory
+  // included. These are containers, never one tool's own state.
+  if (RESERVED_DERIVED_NAMES.has(name.toLowerCase())) return [];
   const candidates = [
     `.${name}`,
     join(".config", name),
     join(".local", "share", name),
     join(".local", "state", name),
   ];
-  return candidates.filter((relative) => !namesProtectedStore(relative));
+  return candidates.filter((relative) => !namesProtectedStore(relative) && !holdsProtectedStore(relative));
+}
+
+/** Container directories, which are nobody's own state. */
+const RESERVED_DERIVED_NAMES = new Set([
+  "config", "local", "share", "state", "cache", "bin", "lib", "library",
+  "applications", "desktop", "documents", "downloads", "tmp", "var",
+]);
+
+/**
+ * Whether the path is an ancestor of a store the profile protects. Opening
+ * `~/.config` opens `~/.config/fish` with it, so the deny has to be read as
+ * covering everything above it as well as the name itself.
+ */
+function holdsProtectedStore(relative: string): boolean {
+  const lowered = relative.toLowerCase();
+  return NEVER_DERIVED.some((name) => name.startsWith(`${lowered}/`));
 }
 
 /**

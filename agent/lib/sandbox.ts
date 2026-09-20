@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -136,8 +136,18 @@ function plantedConfigRules(allowToolInstall: boolean): string[] {
 function credentialRules(paths: readonly string[]): string[] {
   const rules: string[] = [];
   for (const path of paths) {
-    if (!existsSync(path)) continue;
-    rules.push(`(allow file-read* file-write* (subpath ${sbplString(realpathSync(path))}))`);
+    // Never resolve a link into a rule. The caller screens which paths may
+    // be opened at all; this refuses to turn any of them into an allow for
+    // somewhere else, so a store swapped for a symlink between the two
+    // cannot widen the profile. A path is opened as it is spelled or not at
+    // all.
+    try {
+      if (lstatSync(path).isSymbolicLink()) continue;
+      if (realpathSync(path) !== path) continue;
+    } catch {
+      continue;
+    }
+    rules.push(`(allow file-read* file-write* (subpath ${sbplString(path)}))`);
   }
   return rules;
 }

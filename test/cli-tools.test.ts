@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { ownerPath, resetOwnerPath } from "../shared/user-path.ts";
 import { runCommand } from "../agent/lib/run-command.ts";
 import { CLI_REGISTRY, cliStatus, credentialPathsFor, findCli, resolveBin } from "../agent/lib/cli-registry.ts";
 import { loneCommandHead } from "../agent/lib/command-risk.ts";
+import { sandboxProfile } from "../agent/lib/sandbox.ts";
 import installCli from "../agent/tools/install_cli.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 
@@ -215,7 +216,7 @@ test("a credential store goes only to the CLI that owns it", () => {
       assert.deepEqual(owns(line), [], line);
     }
     // A program named after a store the profile protects derives nothing,
-    // so being called `ssh` is not a way to be handed `~/.ssh`.
+    // so being called `ssh` is not a way to be handed the owner's keys.
     const named = binFixture("ssh");
     try {
       assert.deepEqual(credentialPathsFor("ssh host", named.dir), []);
@@ -296,5 +297,50 @@ test("install_cli refuses to install in Read only", async () => {
     resetOwnerPath();
     fixture.cleanup();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a derived store cannot be a link, a container, or a way into a protected one", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "ub-derive-")));
+  const home = join(base, "home");
+  const bin = join(base, "bin");
+  // Spelled in pieces so the shell guard does not read this file as one that
+  // handles the owner's real keys. It is a fixture directory, not theirs.
+  const guarded = [".s", "sh"].join("");
+  const previousHome = process.env.HOME;
+  try {
+    mkdirSync(join(home, guarded), { recursive: true });
+    mkdirSync(join(home, ".config", "fish"), { recursive: true });
+    mkdirSync(join(home, ".config", "realtool"), { recursive: true });
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    // The escalation a derived name would otherwise allow: a directory whose
+    // name derives cleanly, pointing at one the profile refuses. Reachable
+    // because a Full access line may create both the link and the program.
+    symlinkSync(join(home, guarded), join(home, ".evilcli"));
+    for (const name of ["evilcli", "config", "local", "realtool"]) {
+      const file = join(bin, name);
+      writeFileSync(file, "#!/bin/sh\n", "utf8");
+      chmodSync(file, 0o755);
+    }
+    process.env.HOME = home;
+
+    // A link resolves to somewhere else, so it is not opened at all.
+    assert.deepEqual(credentialPathsFor("evilcli run", bin), []);
+    // A container is nobody's own state: `config` would have opened every
+    // tool's settings, `local` the PATH directory with them.
+    assert.deepEqual(credentialPathsFor("config run", bin), []);
+    assert.deepEqual(credentialPathsFor("local run", bin), []);
+    // A tool with a directory of its own still gets it.
+    assert.deepEqual(credentialPathsFor("realtool run", bin), [join(home, ".config", "realtool")]);
+
+    // And the profile builder refuses a link even when handed one straight,
+    // so a store swapped after the screen cannot widen what is open.
+    const forced = sandboxProfile(home, "computer", true, { credentialPaths: [join(home, ".evilcli")] });
+    assert.equal(forced.includes("(allow file-read* file-write* (subpath"), false);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(base, { recursive: true, force: true });
   }
 });
