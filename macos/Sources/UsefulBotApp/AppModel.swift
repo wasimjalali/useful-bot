@@ -1599,7 +1599,16 @@ final class AppModel: ObservableObject {
         // deadline keeps Retry from firing back into the closed window, where
         // it fails in milliseconds and leaves a second copy of the owner's
         // message in the chat for its trouble.
-        if let retryAfter { retryNotBefore[botId] = Date().addingTimeInterval(TimeInterval(retryAfter)) }
+        //
+        // Cleared by every other failure, or a deadline armed by a cool-down
+        // would outlive it: the next failure inside that window is a different
+        // one, and Retry would answer it with the pause wording instead of its
+        // own reason.
+        if let retryAfter {
+            retryNotBefore[botId] = Date().addingTimeInterval(TimeInterval(retryAfter))
+        } else {
+            retryNotBefore.removeValue(forKey: botId)
+        }
         if selectedBotId == botId {
             stickyThreadError = message
             threadError = message
