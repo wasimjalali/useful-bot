@@ -117,6 +117,43 @@ test("stdin is closed, so a command that reads it does not hang", async () => {
   assert.equal(run.stdout, "");
 });
 
+test("a spawn that fails rejects, and does not take the process with it", async () => {
+  // Reaching either of these used to end the whole service: killing a child
+  // whose spawn failed synchronously crashes Node outright, and an `error`
+  // event with no listener is unhandled. Both are reachable from one turn -
+  // the owner presses Stop as a line starts, on a workspace folder that has
+  // since been deleted. That this test returns at all is the assertion.
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(
+    () => runCommand(["/bin/sleep", "30"], {
+      cwd: "/no/such/directory-for-this-test",
+      env: { PATH: "/usr/bin:/bin" },
+      timeoutMs: 5_000,
+      maxBytes: 128,
+      signal: aborted.signal,
+    }),
+    /abort/i,
+  );
+  await assert.rejects(
+    () => runCommand(["/bin/no-such-binary-for-this-test"], {
+      cwd: tmpdir(),
+      env: { PATH: "/usr/bin:/bin" },
+      timeoutMs: 5_000,
+      maxBytes: 128,
+    }),
+    /ENOENT/,
+  );
+  // Still working afterwards, so nothing was left in a broken state.
+  const after = await runCommand(["/bin/echo", "ok"], {
+    cwd: tmpdir(),
+    env: { PATH: "/usr/bin:/bin" },
+    timeoutMs: 5_000,
+    maxBytes: 128,
+  });
+  assert.equal(after.stdout.trim(), "ok");
+});
+
 test("a bin resolves only when it is there and executable", () => {
   const fixture = binFixture("ub-fixture-cli");
   const plain = join(fixture.dir, "ub-not-executable");

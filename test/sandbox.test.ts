@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { confinedCommand, sandboxAvailable, sandboxProfile, type ConfineOptions } from "../agent/lib/sandbox.ts";
 import { selectSandbox } from "../shared/sandbox.ts";
+import { resetOwnerPath } from "../shared/user-path.ts";
 
 const execFileAsync = promisify(execFile);
 const darwin = process.platform === "darwin";
@@ -186,15 +187,28 @@ test("a credential store opens only for the line that was handed it", () => {
 test("config a tool executes later is never writable, including inside an opened store", () => {
   const fixture = homeFixture();
   const bin = join(fixture.home, ".local", "bin");
+  const previousPath = process.env.UB_OWNER_PATH;
   try {
     mkdirSync(bin, { recursive: true });
     mkdirSync(join(fixture.home, ".codex"), { recursive: true });
+    // The PATH the profile denies writes on is the one commands run with, so
+    // the fixture has to pin it. A real `/opt/homebrew/bin` is writable by
+    // its owner, and denying only `~/.local/bin` covered one directory of
+    // several that this change put on PATH.
+    process.env.UB_OWNER_PATH = bin;
+    resetOwnerPath();
     for (const profile of [
       sandboxProfile(fixture.home, "computer", true, { credentialPaths: [join(fixture.home, ".codex")] }),
       sandboxProfile(fixture.home, "folder"),
       sandboxProfile(null),
     ]) {
-      for (const name of ["/\\.claude/settings\\.json", "/\\.codex/config\\.toml", "/\\.git/hooks", "/\\.github/workflows"]) {
+      for (const name of [
+        "/\\.claude/settings\\.json", "/\\.claude/skills", "/\\.claude/agents",
+        "/\\.claude/plugins", "/\\.claude/commands", "/\\.claude\\.json",
+        "/\\.codex/config\\.toml", "/\\.git/hooks", "/\\.github/workflows",
+        // Denying the hooks alone is not enough: a git config relocates them.
+        "/\\.gitconfig", "/\\.config/git/config",
+      ]) {
         assert.ok(profile.includes(`(deny file-write* (regex #"${name}($|[/.])"))`), name);
       }
       assert.ok(profile.includes(`(deny file-write* (subpath "${bin}"))`));
@@ -207,6 +221,9 @@ test("config a tool executes later is never writable, including inside an opened
     assert.equal(install.includes(`(deny file-write* (subpath "${bin}"))`), false);
     assert.ok(install.includes('(deny file-write* (regex #"/\\.git/hooks($|[/.])"))'));
   } finally {
+    if (previousPath === undefined) delete process.env.UB_OWNER_PATH;
+    else process.env.UB_OWNER_PATH = previousPath;
+    resetOwnerPath();
     fixture.restore();
   }
 });

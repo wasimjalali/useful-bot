@@ -336,7 +336,7 @@ function namesProtectedStore(relative: string): boolean {
  */
 const NEVER_DERIVED = [
   ".ssh", ".aws", ".gnupg", ".docker", ".kube", ".npm", ".npmrc", ".pypirc",
-  ".netrc", ".authinfo", ".config/fish", ".useful-bot", ".git", ".env",
+  ".netrc", ".authinfo", ".config/fish", ".useful-bot", ".git", ".env", ".secrets",
   "library/keychains", "library/cookies",
 ];
 

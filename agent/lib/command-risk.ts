@@ -1189,7 +1189,10 @@ export function loneCommandHead(command: string): string | null {
   for (const token of plain) {
     if (token.quoted) continue;
     // `>out`, `2>&1`, `<in`: the line does more than run the program.
-    if (/^[0-9]*[<>]/.test(token.text)) return null;
+    // Tested across the whole token, not just its start: `tokenize` does not
+    // split on a redirection, so `codex foo>/tmp/x` arrives as one token and
+    // a check anchored at the head would read it as a plain argument.
+    if (/[<>]/.test(token.text)) return null;
     // `PATH=... codex` runs whatever that PATH resolves.
     if (isAssignment(token)) return null;
   }

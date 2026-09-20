@@ -1,6 +1,7 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { ownerPath } from "../../shared/user-path.ts";
+import { delimiter, dirname, join } from "node:path";
 
 /**
  * Confinement for a shell line that runs without a card.
@@ -20,7 +21,7 @@ export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 const PROTECTED_NAMES = [
   ".env", ".ssh", ".aws", ".gnupg", ".netrc", "netrc", ".npmrc", ".pypirc",
   ".docker", ".kube", ".kubeconfig", "id_rsa", "id_ecdsa", "id_ed25519", "keychain", "keychains", "auth.json",
-  "secrets", ".authinfo",
+  ".authinfo",
   // The user-domain stores, spelled as the disk spells them: the text
   // tripwire lowercases, the kernel does not.
   "Library/Keychains", "Library/Cookies",
@@ -55,6 +56,32 @@ function regexEscape(value: string): string {
 const READ_DENIED_NAMES = PROTECTED_NAMES.filter((name) => !name.startsWith(".z") && !name.startsWith(".bash") && name !== ".profile" && name !== ".inputrc");
 const TOOLING_READS = new Set([".env", ".npmrc", ".docker", ".kube"]);
 
+/**
+ * `secrets` cannot be matched the way the other names are.
+ *
+ * As a plain name it produced `(regex #"/secrets($|[/.])")`, which also
+ * matches `.../lib/python3.14/secrets.py` - a module in Python's OWN
+ * standard library. Any Python program that imports it, directly or through
+ * a dependency, died inside the profile with `ModuleNotFoundError: No module
+ * named 'secrets'`, which reads like a broken install rather than a refusal
+ * and sent at least one debugging session after the wrong thing entirely.
+ *
+ * So the store is named rather than the word: a file or folder called
+ * `secrets`, and the extensions a credential file actually carries. Source
+ * files keep their name. This is the only entry whose bare word is both
+ * common English and a module name, which is why it is the only exception.
+ */
+const SECRETS_DENY_PATTERN = "/secrets($|[/.])";
+/**
+ * Allowed back, after the deny so it wins: the source file of a module
+ * called `secrets`, and nothing else. An extension list on the deny side was
+ * the first attempt and it is the wrong way round, because the list that has
+ * to be complete should be the one that opens files, not the one that closes
+ * them. `secrets.db` or `secrets.p12` stay refused without anyone having to
+ * think of them.
+ */
+const SECRETS_ALLOW_PATTERN = "/secrets\\.(py|pyc|pyi|pyd|so|ts|js|mjs|cjs|rb|go)$";
+
 export type SandboxScope = "folder" | "computer";
 
 /**
@@ -87,35 +114,68 @@ const SYSTEM_WRITE_DENIED = ["/etc", "/private/etc", "/var/db", "/private/var/db
  * reading one is not what gets it run.
  */
 const PLANTED_CONFIG_WRITE_DENIED = [
+  // Claude Code runs all of these, not just its settings file: a skill, a
+  // subagent, a plugin or a slash command planted here runs in the owner's
+  // own next session. `.claude.json` holds the MCP servers it launches.
   ".claude/settings.json",
   ".claude/settings.local.json",
   ".claude/hooks",
+  ".claude/skills",
+  ".claude/agents",
+  ".claude/plugins",
+  ".claude/commands",
+  ".claude.json",
   ".codex/config.toml",
   ".config/gh/config.yml",
   ".config/opencode/opencode.json",
   ".gemini/settings.json",
   // A git hook runs on the owner's next commit, in their own shell.
   ".git/hooks",
+  // And so does a git config, which is why denying the hooks alone was not
+  // enough: `core.hooksPath` moves the hooks somewhere undenied, and
+  // `[alias] x = !sh -c`, `core.pager`, `core.sshCommand` and
+  // `credential.helper` are each a command the owner's next git run executes.
+  ".gitconfig",
+  ".config/git/config",
   // A workflow runs on the owner's CI, with the repository's secrets.
   ".github/workflows",
 ];
 
 /**
- * A directory on the PATH a bot's own lines run with. A binary planted here
- * shadows the real `git` or `ls` for the owner and for the next turn alike.
+ * Every directory on the PATH a bot's own lines run with.
+ *
+ * A binary planted on that PATH shadows the real `git` or `ls` for the owner
+ * and for the next turn alike, and it is also how a line claims another
+ * tool's name and so its credential store. `~/.local/bin` alone was one of
+ * six: `/opt/homebrew/bin` and `/opt/homebrew/sbin` are writable by this
+ * user on a normal Homebrew install, and nothing refused a write there.
+ *
  * `install_cli` lifts this for an install the owner approved by name.
  */
-const TOOL_BIN_DIRS = [".local/bin"];
+function toolBinDirs(): string[] {
+  const dirs = new Set<string>();
+  for (const dir of ownerPath().split(delimiter)) {
+    if (!dir) continue;
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+      // A directory the owner cannot write is not a way in, and denying it
+      // would only make the profile longer.
+      accessSync(dir, constants.W_OK);
+      dirs.add(realpathSync(dir));
+    } catch {
+      continue;
+    }
+  }
+  return [...dirs];
+}
 
 function plantedConfigRules(allowToolInstall: boolean): string[] {
   const rules = PLANTED_CONFIG_WRITE_DENIED.map(
     (name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`,
   );
   if (allowToolInstall) return rules;
-  for (const name of TOOL_BIN_DIRS) {
-    const path = join(homedir(), name);
-    if (!existsSync(path)) continue;
-    rules.push(`(deny file-write* (subpath ${sbplString(realpathSync(path))}))`);
+  for (const path of toolBinDirs()) {
+    rules.push(`(deny file-write* (subpath ${sbplString(path)}))`);
   }
   return rules;
 }
@@ -191,9 +251,11 @@ export function sandboxProfile(
   // sit beside each other under one parent (.../T for temp, .../C for cache).
   const temp = realpathSync(tmpdir());
   const cache = join(dirname(temp), "C");
-  const protectedRules = PROTECTED_NAMES.map(
-    (name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`,
-  );
+  const protectedRules = [
+    ...PROTECTED_NAMES.map((name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`),
+    `(deny file-write* (regex #"${SECRETS_DENY_PATTERN}"))`,
+    `(allow file-write* (regex #"${SECRETS_ALLOW_PATTERN}"))`,
+  ];
   // Inside a project folder the build tooling reads its own .env and the
   // like. Scoped, that is the whole of what the line can reach anyway;
   // unbounded, the deny stays on for the rest of the disk and only the
@@ -204,6 +266,8 @@ export function sandboxProfile(
     : READ_DENIED_NAMES;
   const readRules = [
     ...readDenied.map((name) => `(deny file-read* (regex #"/${regexEscape(name)}($|[/.])"))`),
+    `(deny file-read* (regex #"${SECRETS_DENY_PATTERN}"))`,
+    `(allow file-read* (regex #"${SECRETS_ALLOW_PATTERN}"))`,
     ...(tooling && unbounded && real !== null
       ? [...TOOLING_READS].map((name) => `(allow file-read* (regex #"^${regexEscape(real)}(/.*)?/${regexEscape(name)}($|[/.])"))`)
       : []),

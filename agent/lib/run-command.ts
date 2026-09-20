@@ -102,9 +102,14 @@ export function runCommand(argv: string[], options: RunOptions): Promise<Command
      * ignores it or has wedged.
      */
     const signalGroup = (signal: NodeJS.Signals) => {
+      // No pid means the spawn failed outright (a missing binary, a cwd that
+      // is gone), and there is nothing left to signal. Killing that handle
+      // anyway does not throw and cannot be caught: it takes the whole
+      // process down, which here is the service every bot runs on. The
+      // pending `error` event is what settles this call.
+      if (child.pid === undefined) return;
       try {
-        if (child.pid !== undefined) process.kill(-child.pid, signal);
-        else child.kill(signal);
+        process.kill(-child.pid, signal);
       } catch {
         try { child.kill(signal); } catch { /* already gone */ }
       }
@@ -128,8 +133,24 @@ export function runCommand(argv: string[], options: RunOptions): Promise<Command
       end("SIGTERM");
     }
 
+    child.stdout?.on("data", (chunk: Buffer) => out.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => err.push(chunk));
+
+    // Attached before anything below can return. A spawn that fails emits
+    // `error` asynchronously, and an `error` on a ChildProcess with no
+    // listener is an unhandled event: it takes the process down, and this
+    // process is the service. So nothing returns from here without a
+    // listener already in place, whatever the reason for returning.
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      stopTimers();
+      reject(error);
+    });
+
     if (options.signal) {
       if (options.signal.aborted) {
+        settled = true;
         stopTimers();
         signalGroup("SIGKILL");
         reject(options.signal.reason ?? new Error("aborted"));
@@ -137,16 +158,6 @@ export function runCommand(argv: string[], options: RunOptions): Promise<Command
       }
       options.signal.addEventListener("abort", onAbort, { once: true });
     }
-
-    child.stdout?.on("data", (chunk: Buffer) => out.push(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => err.push(chunk));
-
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      stopTimers();
-      reject(error);
-    });
 
     // `close` rather than `exit`: the pipes have to drain first, or the tail
     // of a command's output is lost to the race with its own exit.
