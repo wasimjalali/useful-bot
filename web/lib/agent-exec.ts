@@ -45,7 +45,30 @@ import type { ShellBot } from "../../shared/shell-store.ts";
  */
 
 const EVE = "http://127.0.0.1:4321";
+/**
+ * A handoff is a bot waiting on another bot inside its own turn, so the wait
+ * has to stay short: two minutes, then the sender is told it got nothing.
+ */
 const DELIVER_TIMEOUT_MS = 120_000;
+/**
+ * A routine is not a wait, it is the work. The same two minutes were applied
+ * to it, and a scheduled job that scans a folder or files documents runs far
+ * longer than that: at 120 seconds the reader gave up, the run was written to
+ * history as `failed: This operation was aborted`, and the turn it had started
+ * carried on inside eve for hours. The owner saw a routine cut off mid-sentence
+ * with a bot that never stopped working. A routine gets an hour, bounded by an
+ * idle cap so a genuinely stuck turn is still let go of.
+ */
+const ROUTINE_TIMEOUT_MS = 60 * 60_000;
+/**
+ * No event at all from the session for this long ends the run. Sized off the
+ * longest gap a healthy turn can leave: a model call the router caps at 180
+ * seconds, a shell line the bash tool caps at 60, or a `send_to_bot` waiting
+ * out a teammate's whole turn on the handoff's two-minute budget. Ten minutes
+ * clears all three with room to spare, so silence this long is a turn that is
+ * not coming back rather than one taking its time.
+ */
+const ROUTINE_IDLE_MS = 10 * 60_000;
 
 /**
  * Stamp — or revoke — the workspace grant a turn's tools will read. Called
@@ -182,6 +205,8 @@ export async function readHandoffStream(
   signal: AbortSignal,
   historyIds: Set<string> = new Set(),
   expectedMessage = "",
+  /** Called for every event parsed, so a caller can keep an idle timer fed. */
+  onEvent?: () => void,
 ): Promise<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -220,6 +245,10 @@ export async function readHandoffStream(
           continue;
         }
         if (!event || typeof event.type !== "string") continue;
+        // Before the history skip: a replay of a long session is progress too,
+        // and an idle timer that only counted new events would fire part way
+        // through one.
+        onEvent?.();
         const eventId = event.meta?.id;
         if (eventId && historyIds.has(eventId)) continue;
         if (!armed) {
@@ -361,7 +390,38 @@ function turnPrefixFor(bot: ShellBot): string {
  * way: the same envelope-matched stream read, the same timeout, the same
  * history skip that keeps a second send from resolving with an older turn.
  */
-async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: string; reply: string }> {
+/**
+ * Tag a failure with the session its turn ran in, so the run history can point
+ * at it. The first writer wins: an inner frame knows the session better than
+ * an outer one that only has the pointer it started with.
+ */
+function withSession(err: unknown, sessionId: string): unknown {
+  if (sessionId && err instanceof Error && !(err as Error & { sessionId?: string }).sessionId) {
+    (err as Error & { sessionId?: string }).sessionId = sessionId;
+  }
+  return err;
+}
+
+/**
+ * Stop a turn this process gave up on. Best effort: the run is already over as
+ * far as the caller is concerned, and a cancel that fails must not replace the
+ * timeout it is cleaning up with an error of its own.
+ */
+async function cancelEveTurn(sessionId: string, jwt: string): Promise<void> {
+  try {
+    await fetch(`${EVE}/eve/v1/session/${sessionId}/cancel`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${jwt}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch { /* the turn outlives us either way */ }
+}
+
+async function runEveTurn(
+  bot: ShellBot,
+  message: string,
+  budget: { totalMs: number; idleMs?: number } = { totalMs: DELIVER_TIMEOUT_MS },
+): Promise<{ sessionId: string; reply: string }> {
   const jwt = channelJwt();
   if (!jwt) throw new Error("channel_credential_missing");
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
@@ -370,7 +430,26 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
   // because eve echoes the turn as it was stored.
   const sent = `${turnPrefixFor(bot)}${message}`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DELIVER_TIMEOUT_MS);
+  // Which of the two clocks ran out, for the error the caller reports. A bare
+  // "This operation was aborted" was the whole explanation a cut-off routine
+  // ever gave.
+  // The first clock to fire is the one that stopped the run, and it keeps the
+  // name: the other can still go off while this one is cancelling the turn.
+  let expiry = "";
+  const expire = (reason: string) => {
+    if (expiry) return;
+    expiry = reason;
+    controller.abort();
+  };
+  const timer = setTimeout(() => expire("turn_budget_exhausted"), budget.totalMs);
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const feedIdle = budget.idleMs === undefined ? undefined : () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => expire("turn_went_silent"), budget.idleMs);
+  };
+  feedIdle?.();
+  const follow = (stream: ReadableStream<Uint8Array>, ids: Set<string>) =>
+    readHandoffStream(stream, controller.signal, ids, sent, feedIdle);
   let sessionId = bot.sessionId ?? "";
   let reply = "";
   try {
@@ -416,7 +495,7 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
           signal: controller.signal,
         });
         if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-        reply = await readHandoffStream(stream.body, controller.signal, historyIds, sent);
+        reply = await follow(stream.body, historyIds);
         return { sessionId, reply };
       }
       throw new Error(`eve_send_${res.status}`);
@@ -431,9 +510,24 @@ async function runEveTurn(bot: ShellBot, message: string): Promise<{ sessionId: 
       signal: controller.signal,
     });
     if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-    reply = await readHandoffStream(stream.body, controller.signal, historyIds, sent);
+    reply = await follow(stream.body, historyIds);
+  } catch (err) {
+    // Our clock ran out, not eve's. The turn is still running in there, and
+    // walking away from it leaves the bot working on a job nobody is waiting
+    // for any more: it holds the session, so the owner's next message to that
+    // bot is refused as busy. Stop it, and say which clock it was.
+    if (expiry) {
+      if (sessionId) await cancelEveTurn(sessionId, jwt);
+      throw withSession(new Error(expiry), sessionId);
+    }
+    // The session this turn actually ran in, which is not the one the caller
+    // handed us when eve opened a new one or the 409 retry above rotated it.
+    // The caller writes it to the run history, and a stale or empty id there
+    // is a part-finished turn the owner cannot open.
+    throw withSession(err, sessionId);
   } finally {
     clearTimeout(timer);
+    if (idleTimer) clearTimeout(idleTimer);
   }
   return { sessionId, reply };
 }
@@ -682,6 +776,42 @@ function runFailure(err: unknown): string {
   return message.slice(0, 300);
 }
 
+/**
+ * One line per routine lifecycle event, on the web service's own stdout.
+ *
+ * A routine runs with nobody watching, and until now the only trace it left
+ * was a run-history row holding whatever string the failure carried. Working
+ * out that a run had been cut off by this process, while its turn carried on
+ * inside eve, meant reading the eve session stream event by event. The line
+ * is short and it names the routine, the elapsed time and the session, so the
+ * next incident is answered from the log.
+ */
+function routineLog(routine: Routine, event: string, fields: Record<string, string | number>): void {
+  const detail = Object.entries(fields)
+    .filter(([, value]) => value !== "")
+    .map(([key, value]) => `${key}=${typeof value === "string" ? JSON.stringify(value) : value}`)
+    .join(" ");
+  console.log(`[useful-bot] routine ${event} id=${routine.id} name=${JSON.stringify(routine.name)} ${detail}`);
+}
+
+/** The session a failed run left its part-finished turn in, when it had one. */
+function failedSession(err: unknown): string | null {
+  const carried = (err as { sessionId?: unknown } | null)?.sessionId;
+  return typeof carried === "string" && carried ? carried : null;
+}
+
+/** The failure note the owner reads in the chat, not the code the log holds. */
+function routineFailureText(err: unknown): string {
+  const code = err instanceof Error ? err.message : "routine_failed";
+  if (code === "turn_budget_exhausted") {
+    return "it was still running after an hour, so it was stopped. Narrow the instruction or split it in two.";
+  }
+  if (code === "turn_went_silent") {
+    return "the bot went quiet part way through and the run was stopped.";
+  }
+  return code;
+}
+
 async function executeRoutine(
   routine: Routine,
   trigger: "schedule" | "manual",
@@ -733,19 +863,36 @@ async function executeRoutine(
   // with nothing after them.
   let sessionId: string;
   let reply: string;
+  const startedAt = Date.now();
+  routineLog(routine, "started", { trigger, bot: bot.name, session: bot.sessionId ?? "new" });
   try {
-    ({ sessionId, reply } = await runEveTurn(bot, routine.instruction));
+    ({ sessionId, reply } = await runEveTurn(bot, routine.instruction, {
+      totalMs: ROUTINE_TIMEOUT_MS,
+      idleMs: ROUTINE_IDLE_MS,
+    }));
+    routineLog(routine, "finished", { ms: Date.now() - startedAt, session: sessionId, replyChars: reply.length });
   } catch (err) {
+    // The session the turn really ran in, which runEveTurn tagged onto the
+    // error; the bot's own pointer only stands in when it never got that far.
+    const ranIn = failedSession(err) ?? bot.sessionId ?? "";
+    routineLog(routine, "failed", {
+      ms: Date.now() - startedAt,
+      session: ranIn,
+      error: err instanceof Error ? err.message : "unknown",
+    });
     // Best effort, like the pre-append note: a locked store must not become
     // the error the caller sees in place of whatever eve actually did.
     try {
       appendAgentEvent(bot.id, {
         kind: "note",
         threadKind,
-        text: `Routine "${routine.name}" failed: ${err instanceof Error ? err.message : "routine_failed"}`.slice(0, 300),
+        text: `Routine "${routine.name}" failed: ${routineFailureText(err)}`.slice(0, 300),
       });
     } catch { /* the run history still records the failure */ }
-    throw err;
+    // The history row is the only place the pane can send the owner from, and
+    // a failed run used to land there with no session at all. The turn that
+    // failed is in this one, part-finished, and it is what they want to read.
+    throw withSession(err, ranIn);
   }
   if (reply) {
     appendAgentEvent(bot.id, {
@@ -812,7 +959,7 @@ async function runClaimedRoutine(routine: Routine): Promise<RoutineRunResult> {
     recordRun(routine.id, { status: "ok", sessionId: result.sessionId });
     return result;
   } catch (err) {
-    recordRun(routine.id, { status: "failed", error: runFailure(err) });
+    recordRun(routine.id, { status: "failed", error: runFailure(err), sessionId: failedSession(err) });
     throw err;
   } finally {
     routinesInflight.delete(routine.id);
@@ -851,41 +998,83 @@ function recordRun(
 // same minute no longer run back to back.
 
 export type RoutinePumpResult = {
-  ran: Array<{ id: string; name: string }>;
+  /**
+   * Runs this pump claimed and set going, not runs that finished. The pump
+   * used to await them, which was survivable while a run was capped at two
+   * minutes and is not now one may take an hour: the single-flight chain would
+   * have held every other bot's routine behind the slowest one. The claim is
+   * what has to be serialised, and the claim is all this waits for.
+   */
+  started: Array<{ id: string; name: string }>;
+  /** Candidates whose claim itself failed. A run that fails does so later. */
   failed: Array<{ id: string; error: string }>;
   /** Candidates a contended store lock made someone else's turn this tick. */
   skipped: Array<{ id: string; reason: string }>;
 };
 
+/**
+ * Runs allowed at once across every routine. One per bot per pump already
+ * holds, but a pump no longer waits for the last one to finish, so without a
+ * ceiling a morning's worth of due routines could all be in flight together.
+ */
+const MAX_ACTIVE_ROUTINES = 4;
+
 export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
-  const run = pumpState.routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
+  const run = pumpState.routineQueue.then(
+    () => pumpRoutinesOnce(limit),
+    () => pumpRoutinesOnce(limit),
+  );
   pumpState.routineQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
-async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
-  const ran: Array<{ id: string; name: string }> = [];
+/**
+ * The bots whose routine is running right now. Read from the in-flight set
+ * rather than kept beside it, so the two can never drift; a routine deleted
+ * mid-run has no row to read and its bot frees up, which is the same caveat
+ * `backgroundWorkingBotIds` carries.
+ */
+function botsRunningRoutines(): string[] {
+  const ids: string[] = [];
+  for (const routineId of routinesInflight) {
+    const routine = readRoutine(routineId);
+    if (routine) ids.push(routine.botId);
+  }
+  return ids;
+}
+
+function pumpRoutinesOnce(limit: number): RoutinePumpResult {
+  const started: Array<{ id: string; name: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
   const skipped: Array<{ id: string; reason: string }> = [];
   const now = new Date();
-  const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
+  const free = Math.max(0, MAX_ACTIVE_ROUTINES - routinesInflight.size);
+  const room = Math.min(limit, free);
+  const candidates = room === 0
+    ? []
+    : pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
   // One per bot: a routine is a turn in the bot's own chat, and eve runs one
-  // turn per session. A bot's second due routine waits for the next pump.
-  const owners = new Set<string>();
+  // turn per session. A bot's second due routine waits.
+  //
+  // Seeded from the runs already going, not empty. While the pump awaited its
+  // batch, the next tick could not start anything until every run was done, so
+  // a per-pump set was enough. Now that runs are detached, the next tick comes
+  // round in seconds and would claim the same bot's other routine straight
+  // into a session eve still has a turn on.
+  const owners = new Set<string>(botsRunningRoutines());
   const batch: Routine[] = [];
   for (const candidate of candidates) {
-    if (batch.length >= limit) break;
+    if (batch.length >= room) break;
     if (owners.has(candidate.botId)) continue;
     owners.add(candidate.botId);
     batch.push(candidate);
   }
-  // Everything up to `routinesInflight.add` below runs without an await, so
-  // each callback reaches its claim before any of them yields: the mutex with
-  // startRoutineNow holds exactly as it did in the sequential loop.
-  await Promise.all(batch.map(async (candidate) => {
+  // This loop never awaits, so every claim lands before anything else can run:
+  // the mutex with startRoutineNow holds exactly as it did before.
+  for (const candidate of batch) {
     // Re-checked here, not only when the list was built: a Test run can have
     // started on this routine since, and it marks the set before it yields.
-    if (routinesInflight.has(candidate.id)) return;
+    if (routinesInflight.has(candidate.id)) continue;
     // Both claims flip their marker inside the store lock, so a tick that raced
     // this one finds the request already taken or nothing due. A contended
     // lock is that race, not a fault in this routine: skip the candidate and
@@ -903,23 +1092,26 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
       } else {
         failed.push({ id: candidate.id, error });
       }
-      return;
+      continue;
     }
-    if (!claim) return;
+    if (!claim) continue;
     routinesInflight.add(candidate.id);
-    try {
-      const result = await executeRoutine(claim.routine, manual ? "manual" : "schedule");
-      recordRun(candidate.id, { status: "ok", sessionId: result.sessionId });
-      ran.push({ id: candidate.id, name: claim.routine.name });
-    } catch (err) {
-      const error = runFailure(err);
-      recordRun(candidate.id, { status: "failed", error });
-      failed.push({ id: candidate.id, error });
-    } finally {
-      routinesInflight.delete(candidate.id);
-    }
-  }));
-  return { ran, failed, skipped };
+    started.push({ id: candidate.id, name: claim.routine.name });
+    // Detached on purpose: see RoutinePumpResult. The in-flight set is what
+    // keeps a second run off this routine until this one is done, and it is
+    // released in every branch below.
+    void executeRoutine(claim.routine, manual ? "manual" : "schedule")
+      .then((result) => {
+        recordRun(candidate.id, { status: "ok", sessionId: result.sessionId });
+      })
+      .catch((err) => {
+        recordRun(candidate.id, { status: "failed", error: runFailure(err), sessionId: failedSession(err) });
+      })
+      .finally(() => {
+        routinesInflight.delete(candidate.id);
+      });
+  }
+  return { started, failed, skipped };
 }
 
 /**

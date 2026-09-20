@@ -170,6 +170,28 @@ public struct TurnFailure: Equatable, Sendable {
         "\(code) \(detail)".lowercased().contains("tool result is missing")
     }
 
+    /// Whether the router has stopped calling the provider for a moment. Only
+    /// this failure may hold Retry back: every other one the owner can act on
+    /// now, and a few of them (a caller rate limit, a search limit) carry a
+    /// `retry_after_ms` of their own that would otherwise arm the same gate
+    /// and show them the cool-down wording instead of their own reason.
+    public var coolingDown: Bool {
+        "\(code) \(detail)".lowercased().contains("circuit_open")
+    }
+
+    /// How long to hold Retry, in whole seconds, for a cool-down that said.
+    public var coolDownSeconds: Int? { coolingDown ? retryAfterSeconds : nil }
+
+    /// How long the router said to wait, in whole seconds, when its error body
+    /// carried a `retry_after_ms`. eve wraps the body into the failure detail,
+    /// so the number survives the trip even though the field does not.
+    public var retryAfterSeconds: Int? {
+        guard let range = detail.range(of: "retry_after_ms") else { return nil }
+        let digits = detail[range.upperBound...].drop { !$0.isNumber }.prefix { $0.isNumber }
+        guard let ms = Int(digits), ms > 0 else { return nil }
+        return max(1, Int((Double(ms) / 1000).rounded(.up)))
+    }
+
     public var reason: String? {
         let haystack = "\(code) \(detail)".lowercased()
         if historyBroken {
@@ -185,6 +207,29 @@ public struct TurnFailure: Equatable, Sendable {
         }
         if haystack.contains("global_concurrency_limit") {
             return "Ten bots are already working. Try again in a moment."
+        }
+        // The router stops calling a provider that failed three times in a
+        // minute, and every turn inside that window is refused before it
+        // reaches a model. Retry fires straight back into it and fails in
+        // milliseconds, so a cool-down that is really seconds long read as a
+        // dead app. Name it, and say when it lifts.
+        // Not a pause. The router stops an alias outright when a turn reports
+        // more usage than it reserved, and nothing but a restart clears that,
+        // so telling the owner to retry in a moment would be a lie.
+        if haystack.contains("circuit_disabled") {
+            return "The router stopped this model: a turn used more than it reserved. Restart the local services to clear it."
+        }
+        if haystack.contains("circuit_open") {
+            if let seconds = retryAfterSeconds {
+                return "The model provider failed repeatedly, so sending is paused for \(seconds) more seconds. Retry after that."
+            }
+            return "The model provider failed repeatedly, so sending is paused briefly. Retry in a moment."
+        }
+        // The router caps how many messages one request may carry. eve retires
+        // a session that gets a non-retryable 400, so this one ends the chat
+        // rather than the turn, and the owner has to be told that plainly.
+        if haystack.contains("messages_count") {
+            return "This chat is too long to continue. Start a fresh chat with this bot."
         }
         if haystack.contains("budget_exhausted") {
             return "The daily token limit is used up. Raise it in Settings, under Usage."

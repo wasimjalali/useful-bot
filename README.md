@@ -63,6 +63,11 @@ Test run ignores the pause switch. Pausing stops the schedule, not the button, s
 a paused routine can still be tried by hand; the run does not consume the next
 scheduled slot either way.
 
+A run has an hour to finish, and is stopped if the session goes quiet for ten
+minutes. Either way the turn is cancelled rather than left running, and the chat
+says which happened. The service log names every routine start with its trigger
+and bot, and every finish and failure with how long it took.
+
 ## Connectors
 
 Connectors let a bot act in the owner's apps (Gmail, Google Calendar, Slack,
