@@ -303,8 +303,15 @@ public actor BackendClient {
 
     /// Internal (not private) so tests can pin the isolation controls.
     static func makeSession() -> URLSession {
-        let config = URLSessionConfiguration.default
-        config.httpCookieStorage = HTTPCookieStorage()
+        // An ephemeral configuration is how a client gets a cookie jar of its
+        // own. `HTTPCookieStorage()` looks like one and is not: a jar built
+        // that way keeps nothing, so the session cookie the sign-in sets was
+        // dropped and every authenticated call after it came back 401. The app
+        // signed in and then showed "Local server unavailable / Unauthorized"
+        // on every launch. Measured against the running service: sign-in 200,
+        // cookies kept 0, next call 401; ephemeral keeps the cookie, answers
+        // 200, and still leaves the shared jar untouched.
+        let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 30
         config.waitsForConnectivity = false
