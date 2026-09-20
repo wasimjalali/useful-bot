@@ -445,3 +445,48 @@ the new code)
   (`opencode-go forwards the model …` — live catalogue drift: glm-5.3's
   window now reports 131,072 so `max_tokens` comes back 13,107 not 32,768).
   Pre-existing, unrelated to this PR; verified via `git stash`.
+- **iOS "Save Password?" alert**: the pairing-token `SecureField` triggers
+  Keychain's save sheet, which can (a) steal first responder mid-`typeText`
+  so the token silently never lands — Connect stays disabled — and (b)
+  surface *after* the last synthesized event, lingering into screenshots.
+  Mitigations: `.textContentType(.oneTimeCode)` on both the sheet and the
+  inline `SecureField` (reduces but does not eliminate the sheet), a
+  `addUIInterruptionMonitor` answering "Not Now" in all three UITest
+  classes, a Connect-`isEnabled` retype guard (SecureField values are
+  unreadable, so the disabled button is the only tell), and a direct
+  `dismissSystemAlerts` helper (app + springboard) before every post-pair
+  shot.
+- **Manual pairing names the Mac by host**: `PairingPayload(manualHost:)`
+  falls back to `host.url.host` when no QR `name` exists, so the success
+  line reads "Connected to 127.0.0.1" under manual entry. Tests that waited
+  for "Connected to <payload.name>" missed the state entirely — the spec's
+  §11 copy is `Connected to <name>` and `pairing-status` prefix matching is
+  the reliable assert.
+- **`UB_HOLD_CONNECTED` seam**: the 600 ms `connected` hold is faster than
+  XCTest's ~1.3 s poll cadence; the seam stretches it to 8 s so the visual
+  gate can capture the state. Never set outside the test harness.
+- **Keyboard dismissal races**: coordinate-tapping `keyboards.buttons["return"]`
+  fails with "Failed to get matching snapshot" when the keyboard has already
+  self-dismissed; bare `app.swipeDown()` cannot fail on an absent keyboard.
+  During the `connected` hold, a blocking `waitForNonExistence` on the
+  keyboard outlives the hold — poll the target text while dismissing.
+- **Leg-ordering hazard**: `--rotate-phone` invalidates the token in
+  `/tmp/ub-pair.json` — the file must be regenerated after *every* rotate
+  before the next pairing leg or the exchange 401s straight back into
+  `credentialInvalid`.
+- **xcodebuild post-test hang**: the tool idles after "TEST SUCCEEDED" on
+  some legs; shots land under `/tmp/ub-shots/` regardless (the sim shares
+  the host fs), so killing the runner loses nothing.
+- **Connected-legs mid-hold terminate**: `markPaired`/`markSignedIn` run after
+  the `connected` hold inside `connect()`; a UITest that terminates on first
+  sight of the success line kills them, leaving the store `unpaired` for the
+  revoke → testB legs (observed: testB saw "Connect to your Mac", never
+  "Pair again"). Both connected tests now wait for `pairing-status`
+  nonexistence (state swap to paired) before terminating.
+- **verify-release's `next_build` leg rewrites `package-lock.json`** (drops
+  `peer` flags, Node 24 `next build` auto-install) — the same drift recorded
+  under PR-1 for `npm ci`; it re-trips the router's tamper-evidence hash the
+  moment it lands. Lockfile restored to the registry-recorded state for the
+  commit; `npm test` 573/573 run after the restore.
+- **Device geometry**: iPhone 17 sim reports 402 pt (not 390); iPhone SE 375;
+  iPad Pro 11" 834 — shot names carry the measured width suffix.

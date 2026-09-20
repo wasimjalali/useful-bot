@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { classifyIngress, originAllowed, type IngressClass } from "../../../../lib/desktop-gate";
 import { rateLimited } from "../../../../lib/api-guard";
-import { createBrowserSession, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
+import { createBrowserSession, credentialById, sessionCookie, clearSessionCookie, verifyDeviceToken } from "../../../../lib/auth";
 import { destroySession, readSession } from "../../../../lib/cookie-sessions";
 
 /**
@@ -94,6 +94,11 @@ export async function GET(request: Request) {
     profile: session.profile,
     expiresAt: session.expiresAt,
     csrfToken: session.csrf,
+    // Null on a desktop auto-session (credentialId: null); a credential-bound
+    // session reports its row's expiry so Devices can show both clocks.
+    credentialExpiresAt: session.credentialId
+      ? credentialById(session.credentialId)?.expiresAt ?? null
+      : null,
   });
 }
 
@@ -136,6 +141,9 @@ export async function POST(request: Request) {
     profile: identity.profile,
     expiresAt: created.expiresAt,
     csrfToken: created.csrf,
+    // The bound credential's own expiry (S9 row), null for a desktop
+    // auto-session: Settings > Devices shows both clocks (spec 6.2).
+    credentialExpiresAt: identity.expiresAt,
   });
   response.headers.append("set-cookie", sessionCookie(created.token, { secure: ingress === "tailnet" }));
   return response;

@@ -155,15 +155,17 @@ private final class CallCounter: @unchecked Sendable {
         #expect(signIns.value == 1)
     }
 
-    /// The default session carries the isolation controls themselves: a
-    /// private cookie jar, no shared URLCache for authed GET bodies, and the
-    /// no-redirect delegate. Removing one must fail a test, not slip through.
+    /// The default session carries the isolation controls themselves: no
+    /// shared URLCache for authed GET bodies, cookie handling off (the client
+    /// carries `ub_session` itself — a detached jar is inert on modern
+    /// Foundation and the shared jar would leak it), and the no-redirect
+    /// delegate. Removing one must fail a test, not slip through.
     @Test func defaultSessionIsIsolated() {
         let session = BackendClient.makeSession()
         let config = session.configuration
         #expect(config.urlCache == nil)
-        #expect(config.httpCookieStorage != nil)
         #expect(config.httpCookieStorage !== HTTPCookieStorage.shared)
+        #expect(config.httpShouldSetCookies == false)
         #expect(session.delegate is BackendClient.NoRedirectDelegate)
         // A jar has to keep what it is given. `HTTPCookieStorage()` passes
         // every check above and keeps nothing, so the session cookie from
@@ -176,6 +178,31 @@ private final class CallCounter: @unchecked Sendable {
         #expect(cookie != nil)
         if let cookie { config.httpCookieStorage?.setCookie(cookie) }
         #expect(config.httpCookieStorage?.cookies(for: base)?.isEmpty == false)
+    }
+
+    /// The sign-in response's `Set-Cookie` is captured and replayed as a
+    /// `Cookie` header on the next request — the jar is never consulted.
+    @Test func sessionCookieRidesAsHeader() async throws {
+        let cookieHeader = CallCounter()
+        StubURLProtocol.handler = { [self] request in
+            if request.url?.path == "/api/auth/session" {
+                let response = HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil,
+                    headerFields: [
+                        "content-type": "application/json",
+                        "set-cookie": "ub_session=abc123; Path=/; HttpOnly; SameSite=Strict",
+                    ])!
+                return (response, Data(#"{"ok":true,"csrfToken":"t"}"#.utf8))
+            }
+            if request.value(forHTTPHeaderField: "cookie") == "ub_session=abc123" {
+                cookieHeader.bump()
+            }
+            return self.respond(200, #"{"store":{"bots":[]}}"#, to: request.url!)
+        }
+        let client = try makeClient()
+        try await client.signIn()
+        _ = try? await client.shell()
+        #expect(cookieHeader.value == 1)
     }
 
     @Test func refusalCoversNewTerminalErrors() {

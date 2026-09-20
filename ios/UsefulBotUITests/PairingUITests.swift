@@ -11,8 +11,19 @@ final class PairingUITests: XCTestCase {
     private func launch(appearance: String, typeSize: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["UB_APPEARANCE"] = appearance
+        // Pairing screens are the subject, whatever the device remembers.
+        app.launchEnvironment["UB_RESET_PAIRING"] = "1"
         if let typeSize {
             app.launchEnvironment["UB_TYPE_SIZE"] = typeSize
+        }
+        // System alerts that slip through (Keychain "Save Password", camera
+        // consent) must not wedge a leg — answer them and carry on.
+        addUIInterruptionMonitor(withDescription: "system alerts") { alert in
+            for label in ["Not Now", "Allow", "OK"] where alert.buttons[label].exists {
+                alert.buttons[label].tap()
+                return true
+            }
+            return false
         }
         app.launch()
         return app
@@ -30,7 +41,14 @@ final class PairingUITests: XCTestCase {
     }
 
     private func shot(_ name: String) {
-        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        let shot = XCUIScreen.main.screenshot()
+        // The simulator shares the host filesystem: drop the PNG on /tmp so
+        // the shot survives Xcode pruning the xcresult. The caller copies
+        // them to docs/audit/ios-shots/PR-2/.
+        let dir = URL(fileURLWithPath: "/tmp/ub-shots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? shot.pngRepresentation.write(to: dir.appendingPathComponent(name + ".png"))
+        let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -73,4 +91,24 @@ final class PairingUITests: XCTestCase {
     func testPairingAccessibilityDark() {
         pairingShots(appearance: "dark", typeSize: "xxxl")
     }
+
+    /// Camera denied (design 1.1): the scanner square becomes the sunken
+    /// "Camera access is off" block with Open Settings, and the manual fields
+    /// come inline — no sheet, no push. `UB_CAMERA_STATE` pins the status.
+    private func cameraDeniedShots(appearance: String) {
+        let app = XCUIApplication()
+        app.launchEnvironment["UB_APPEARANCE"] = appearance
+        app.launchEnvironment["UB_CAMERA_STATE"] = "denied"
+        app.launchEnvironment["UB_RESET_PAIRING"] = "1"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Camera access is off"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Open Settings"].exists)
+        // Manual fields inline, not behind another tap.
+        XCTAssertTrue(app.textFields["Mac address"].exists)
+        XCTAssertTrue(app.secureTextFields["Pairing token"].exists)
+        shot("pairing-camera-denied-\(suffix(appearance: appearance, typeSize: nil, app: app))")
+    }
+
+    func testPairingCameraDeniedLight() { cameraDeniedShots(appearance: "light") }
+    func testPairingCameraDeniedDark() { cameraDeniedShots(appearance: "dark") }
 }

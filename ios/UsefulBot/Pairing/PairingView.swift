@@ -1,28 +1,66 @@
 import SwiftUI
 import UsefulBotCore
+import AVFoundation
 
-/// The unpaired screen (design spec 1.1, Empty state): badge, title, scanner
-/// square, status line, numbered steps, and the manual-entry button. The
-/// camera feed, pairing state machine and validation land in PR-2; this is
-/// the static anatomy the rest of pairing builds on.
+/// The pairing screen (design spec 1.1), wired for real: badge, title,
+/// scanner square with the live camera feed, status line, numbered steps,
+/// manual entry. States: empty, loading (frozen scanner + "Connecting to
+/// your Mac"), success ("Connected to <name>", dismiss into the Bots list
+/// after 600 ms), error (danger status line with the exact spec copy),
+/// camera-denied (sunken block + inline manual fields), credentialInvalid
+/// ("Pair again" + Unpair), offline ("You're offline", scanning paused).
 struct PairingView: View {
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @State private var cameraStatus: AVAuthorizationStatus = CameraAccess.status()
+    @State private var showManual = false
+
+    private var isInvalid: Bool {
+        coordinator.store.state == .credentialInvalid
+    }
+
+    private var isOffline: Bool {
+        !coordinator.monitor.isOnline
+    }
+
+    /// Denied or restricted: the scanner square becomes the sunken block and
+    /// the manual fields come inline (design spec 1.1).
+    private var cameraDenied: Bool {
+        cameraStatus == .denied || cameraStatus == .restricted
+    }
+
+    private var isConnecting: Bool {
+        coordinator.phase == .connecting
+    }
+
     var body: some View {
         GeometryReader { proxy in
-            // The square keeps its 300 pt cap until the column genuinely
-            // outgrows the screen (the design spec shrinks it only to keep
-            // the button visible): first the full column at 300, then the
-            // 200 pt floor, then the same floor inside a scroll.
-            ViewThatFits(in: .vertical) {
-                column(in: proxy, scannerCap: 300)
-                column(in: proxy, scannerCap: 200)
-                ScrollView {
-                    column(in: proxy, scannerCap: 200)
-                }
-                .scrollBounceBehavior(.basedOnSize)
+            // The square keeps its 300 pt cap until the column outgrows the
+            // screen; below 640 pt it shrinks to 200 inside the scroll.
+            // (ViewThatFits would instantiate every variant, leaving ghost
+            // fields in the accessibility tree, so the cap is picked once.)
+            let cap: CGFloat = proxy.size.height > 640 ? 300 : 200
+            ScrollView {
+                column(in: proxy, scannerCap: cap)
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
         .background(Theme.C.surface)
         .toolbar(.hidden, for: .navigationBar)
+        .task {
+            if cameraStatus == .notDetermined {
+                cameraStatus = await CameraAccess.request()
+            }
+        }
+        .sheet(isPresented: $showManual) {
+            NavigationStack {
+                ManualPairingView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { showManual = false }
+                        }
+                    }
+            }
+        }
     }
 
     private func column(in proxy: GeometryProxy, scannerCap: CGFloat) -> some View {
@@ -31,9 +69,13 @@ struct PairingView: View {
             title
             scanner(in: proxy, cap: scannerCap)
             statusLine
-            steps
+            if cameraDenied {
+                manualFields
+            } else {
+                steps
+            }
             Spacer(minLength: DesignTokens.Space.phoneGutter)
-            manualEntry
+            footer
         }
         .padding(.top, 32)
         .padding(.horizontal, DesignTokens.Space.phoneGutter)
@@ -51,7 +93,7 @@ struct PairingView: View {
 
     private var title: some View {
         VStack(spacing: 8) {
-            Text("Connect to your Mac")
+            Text(isInvalid ? "Pair again" : "Connect to your Mac")
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
@@ -74,25 +116,94 @@ struct PairingView: View {
         // 200 so the area never collapses.
         let guttered = proxy.size.width - 2 * DesignTokens.Space.phoneGutter
         let side = max(200, min(guttered, cap))
-        return RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
-            .fill(Theme.C.sunken)
-            .frame(width: side, height: side)
-            .overlay(
-                ScannerGuides(cornerRadius: DesignTokens.Radius.xl, arm: 28, inset: 10)
-                    .stroke(Theme.C.scannerGuide, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-            )
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 16)
-            .accessibilityElement()
-            .accessibilityLabel("Camera preview for scanning the pairing code")
+        return ZStack {
+            if cameraDenied {
+                // Camera denied: the square becomes a sunken block with the
+                // reason and the settings escape (design spec 1.1).
+                VStack(spacing: 12) {
+                    Text("Camera access is off")
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .medium)
+                        .foregroundStyle(Theme.C.ink)
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
+                    .foregroundStyle(Theme.C.ink)
+                    .padding(.horizontal, 20)
+                    .frame(minHeight: 44)
+                    .background(Theme.C.surface, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            .strokeBorder(Theme.C.edge, lineWidth: 1)
+                    )
+                }
+            } else {
+                QRScannerView(paused: isConnecting || isOffline) { scanned in
+                    Task { await coordinator.pair(scanned: scanned) }
+                }
+            }
+        }
+        .frame(width: side, height: side)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
+                .fill(Theme.C.sunken)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
+        .overlay(
+            ScannerGuides(cornerRadius: DesignTokens.Radius.xl, arm: 28, inset: 10)
+                .stroke(Theme.C.scannerGuide, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                .allowsHitTesting(false)
+        )
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, 16)
+        .accessibilityElement()
+        .accessibilityLabel(cameraDenied
+            ? "Camera access is off. Open Settings to allow scanning."
+            : "Camera preview for scanning the pairing code")
     }
 
+    /// The status line: one of empty/loading/success/error/credentialInvalid/
+    /// offline, all in the spec's exact copy.
     private var statusLine: some View {
-        Text("Point the camera at the code on your Mac")
+        let (text, color) = statusCopy
+        return Text(text)
             .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
-            .foregroundStyle(Theme.C.inkMuted)
+            .foregroundStyle(color)
             .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.bottom, 12)
+            .accessibilityIdentifier("pairing-status")
+    }
+
+    private var statusCopy: (String, Color) {
+        if isOffline {
+            return ("You're offline", Theme.C.danger)
+        }
+        switch coordinator.phase {
+        case .connecting:
+            return ("Connecting to your Mac", Theme.C.inkMuted)
+        case .connected(let name):
+            return ("Connected to \(name)", Theme.C.success)
+        case .failed(let message):
+            return (message, Theme.C.danger)
+        case .idle:
+            if isInvalid {
+                return (
+                    "This pairing was revoked or expired. Scan a new code from your Mac.",
+                    Theme.C.danger
+                )
+            }
+            return ("Point the camera at the code on your Mac", Theme.C.inkMuted)
+        }
+    }
+
+    /// Camera denied: the manual fields sit inline below the sunken block,
+    /// no extra tap (design spec 1.1).
+    private var manualFields: some View {
+        ManualPairingForm()
+            .padding(.top, 4)
     }
 
     private var steps: some View {
@@ -118,22 +229,99 @@ struct PairingView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var manualEntry: some View {
-        NavigationLink {
-            ManualPairingView()
-        } label: {
-            Text("Enter manually")
-                .tokenFont(DesignTokens.FontSize.button, .semibold)
-                .foregroundStyle(Theme.C.ink)
-                .frame(maxWidth: .infinity, minHeight: 50)
-                .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                        .strokeBorder(Theme.C.edge, lineWidth: 1)
-                )
+    /// "Enter manually" — or, in `credentialInvalid`, the tertiary "Unpair"
+    /// text button alongside it (class A; the gate runs in the coordinator).
+    private var footer: some View {
+        VStack(spacing: 8) {
+            Button { showManual = true } label: {
+                Text("Enter manually")
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
+                    .foregroundStyle(Theme.C.ink)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            .strokeBorder(Theme.C.edge, lineWidth: 1)
+                    )
+            }
+            .buttonStyle(PressedScale())
+            .disabled(isConnecting || isOffline)
+            .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+            if isInvalid {
+                Button {
+                    Task {
+                        // Class A: the biometric prompt is the confirmation.
+                        guard await OwnerGate.evaluate(reason: "Unpair this iPhone") else { return }
+                        await coordinator.unpair()
+                    }
+                } label: {
+                    Text("Unpair")
+                        .tokenFont(DesignTokens.FontSize.button, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                .frame(minHeight: 44)
+            }
         }
-        .buttonStyle(PressedScale())
-        .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+    }
+}
+
+/// The inline manual fields used by the camera-denied state — the same two
+/// fields as the pushed manual screen, without its page chrome.
+private struct ManualPairingForm: View {
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @State private var address = ""
+    @State private var token = ""
+
+    var body: some View {
+        VStack(spacing: 16) {
+            field("Mac address", text: $address, secure: false)
+            field("Pairing token", text: $token, secure: true)
+            let ready = !address.isEmpty && !token.isEmpty
+            Button {
+                Task { await coordinator.pairManually(host: address, token: token) }
+            } label: {
+                Text("Connect")
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
+                    .foregroundStyle(ready ? Theme.C.brandInk : Theme.C.inkFaint)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+            }
+            .disabled(!ready || !coordinator.monitor.isOnline)
+            .buttonStyle(PressedScale(
+                fill: ready ? Theme.C.brand : Theme.C.sunken,
+                pressedFill: ready ? Theme.C.accentStrong : Theme.C.sunken,
+                shadowed: ready
+            ))
+        }
+    }
+
+    private func field(_ label: String, text: Binding<String>, secure: Bool) -> some View {
+        let prompt = Text(label).foregroundStyle(Theme.C.inkFaintText)
+        return Group {
+            if secure {
+                SecureField(label, text: text, prompt: prompt)
+                    // oneTimeCode keeps Keychain from offering "Save
+                    // Password?" over the field — the token is one-shot
+                    // and the alert steals first responder mid-typing.
+                    .textContentType(.oneTimeCode)
+            } else {
+                TextField(label, text: text, prompt: prompt)
+                    .keyboardType(.URL)
+            }
+        }
+        .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
+        .foregroundStyle(Theme.C.ink)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .padding(.horizontal, 14)
+        .frame(minHeight: DesignTokens.Control.phoneFieldMinHeight)
+        .background(
+            Theme.C.sunken,
+            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
+        )
     }
 }
 
@@ -165,7 +353,7 @@ private struct ScannerGuides: Shape {
             path.addArc(center: center, radius: r, startAngle: start, endAngle: end, clockwise: false)
             // Each arc endpoint lies on one edge: an endpoint on a vertical
             // edge grows a vertical arm toward the midline, an endpoint on a
-            // horizontal edge grows a horizontal one. Which endpoint sits on
+            // horizontal one grows a horizontal one. Which endpoint sits on
             // which edge differs per corner, so derive it from the point.
             for angle in [start, end] {
                 let point = CGPoint(

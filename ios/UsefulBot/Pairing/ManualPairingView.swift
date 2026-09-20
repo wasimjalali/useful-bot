@@ -5,6 +5,8 @@ import UsefulBotCore
 /// field, masked token field, Connect disabled until both hold text. The
 /// endpoint validation and the request itself are PR-2; this is the anatomy.
 struct ManualPairingView: View {
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(\.dismiss) private var dismiss
     @State private var address = ""
     @State private var token = ""
     @FocusState private var focusedField: String?
@@ -33,6 +35,24 @@ struct ManualPairingView: View {
         .background(Theme.C.surface)
         .navigationTitle("Enter manually")
         .navigationBarTitleDisplayMode(.inline)
+        // Pairing succeeded underneath the sheet: close it; the root swap to
+        // the Bots list happens on the state change.
+        .onChange(of: coordinator.store.state) { _, state in
+            if state == .paired { dismiss() }
+        }
+        // The error reason rides the coordinator's phase so the inline error
+        // and the pairing screen's status line never disagree.
+        .overlay(alignment: .bottom) {
+            if case .failed(let message) = coordinator.phase {
+                Text(message)
+                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
+                    .foregroundStyle(Theme.C.danger)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                    .padding(.bottom, 4)
+            }
+        }
     }
 
     private func field(
@@ -47,6 +67,10 @@ struct ManualPairingView: View {
         return Group {
             if secure {
                 SecureField(label, text: text, prompt: prompt)
+                    // A pairing token is one-shot, not a login password —
+                    // oneTimeCode keeps Keychain from offering "Save
+                    // Password?" (and AutoFill from offering credentials).
+                    .textContentType(.oneTimeCode)
             } else {
                 TextField(label, text: text, prompt: prompt)
                     .keyboardType(keyboard)
@@ -85,23 +109,34 @@ struct ManualPairingView: View {
 
     private var connectButton: some View {
         let ready = !address.isEmpty && !token.isEmpty
+        let offline = !coordinator.monitor.isOnline
         return VStack(spacing: 8) {
-            Button {} label: {
-                Text("Connect")
+            Button {
+                Task { await coordinator.pairManually(host: address, token: token) }
+            } label: {
+                Text(coordinator.phase == .connecting ? "Connecting" : "Connect")
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
                     .foregroundStyle(ready ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 50)
             }
-            .disabled(!ready)
+            .disabled(!ready || offline || coordinator.phase == .connecting)
             .buttonStyle(PressedScale(
                 fill: ready ? Theme.C.brand : Theme.C.sunken,
                 pressedFill: ready ? Theme.C.accentStrong : Theme.C.sunken,
                 shadowed: ready
             ))
+            .accessibilityIdentifier("manual-connect")
             if !ready {
                 Text("Enter the Mac address and pairing token.")
                     .tokenFont(DesignTokens.FontSize.attachError, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if offline {
+                // Offline: Connect disabled with that reason (design spec).
+                Text("You're offline")
+                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
+                    .foregroundStyle(Theme.C.danger)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }

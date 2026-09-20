@@ -259,8 +259,14 @@ public actor BackendClient {
     private let session: URLSession
     private let tokenStore: any DeviceTokenStore
     private var csrf = ""
+    /// The `ub_session` credential, captured from the sign-in response and
+    /// re-attached as a `Cookie` header on every request. A detached
+    /// `HTTPCookieStorage` is inert on modern Foundation (it never stores),
+    /// and the shared jar would leak the cookie into web views, so the client
+    /// carries the pair itself.
+    private var sessionCookie: String?
     /// The one in-flight re-authentication; concurrent 401s share it.
-    private var reauthTask: Task<Void, Error>?
+    private var reauthTask: Task<SessionInfo, Error>?
 
     public init(
         base: URL = URL(string: "http://127.0.0.1:4320")!,
@@ -310,7 +316,9 @@ public actor BackendClient {
         // signed in and then showed "Local server unavailable / Unauthorized"
         // on every launch. Measured against the running service: sign-in 200,
         // cookies kept 0, next call 401; ephemeral keeps the cookie, answers
-        // 200, and still leaves the shared jar untouched.
+        // 200, and still leaves the shared jar untouched. `send(_:)` opts out
+        // per request (`httpShouldHandleCookies = false`) and carries the
+        // `ub_session` pair itself, so the jar only ever holds sign-in output.
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = true
         config.timeoutIntervalForRequest = 30
@@ -339,7 +347,17 @@ public actor BackendClient {
 
     // MARK: - Auth
 
-    public func signIn() async throws {
+    /// What a sign-in established: the session expiry and, when the session
+    /// is credential-bound (S9), the credential's own expiry — the two clocks
+    /// Settings > Devices shows (spec 6.2).
+    public struct SessionInfo: Sendable, Equatable {
+        public let profile: String?
+        public let expiresAt: Date?
+        public let credentialExpiresAt: Date?
+    }
+
+    @discardableResult
+    public func signIn() async throws -> SessionInfo {
         // Read the credential off the actor executor: a token store can block
         // behind a Keychain prompt and must not stall other requests.
         let token = try await Task.detached { [tokenStore] in
@@ -363,14 +381,17 @@ public actor BackendClient {
             throw http.statusCode == 401 ? BackendError.unauthorized : BackendError.http(http.statusCode)
 #endif
         }
+        if let cookie = Self.sessionCookie(from: http, url: base) {
+            sessionCookie = cookie
+        }
         if let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
            let token = body["csrfToken"] as? String, !token.isEmpty {
             csrf = token
-            return
+            return Self.sessionInfo(body)
         }
         // Older servers may not echo the token, so read the session back.
-        let (sessionData, sessionResponse) = try await session.data(
-            from: base.appendingPathComponent("api/auth/session")
+        let (sessionData, sessionResponse) = try await send(
+            URLRequest(url: base.appendingPathComponent("api/auth/session"))
         )
         guard let sessionHttp = sessionResponse as? HTTPURLResponse else {
             throw BackendError.decoding
@@ -396,6 +417,41 @@ public actor BackendClient {
             throw BackendError.unauthorized
         }
         csrf = csrfToken
+        return Self.sessionInfo(body ?? [:])
+    }
+
+    /// The `{expiresAt, credentialExpiresAt, profile}` block both session
+    /// responses carry; epoch milliseconds on the wire.
+    private static func sessionInfo(_ body: [String: Any]) -> SessionInfo {
+        func millis(_ key: String) -> Date? {
+            if let seconds = body[key] as? Double { return Date(timeIntervalSince1970: seconds / 1000) }
+            if let iso = body[key] as? String {
+                let parser = ISO8601DateFormatter()
+                parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                return parser.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+            }
+            return nil
+        }
+        return SessionInfo(
+            profile: body["profile"] as? String,
+            expiresAt: millis("expiresAt"),
+            credentialExpiresAt: millis("credentialExpiresAt")
+        )
+    }
+
+    /// Sign out (spec 6.2): clear the local cookie jar and CSRF for real, and
+    /// tell the server with a best-effort DELETE — the call must work offline
+    /// because signed-out is a local state first.
+    public func signOut() async {
+        var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
+        request.httpMethod = "DELETE"
+        if !csrf.isEmpty {
+            request.setValue(csrf, forHTTPHeaderField: "x-ub-csrf")
+        }
+        _ = try? await send(request)
+        csrf = ""
+        sessionCookie = nil
+        session.configuration.httpCookieStorage?.removeCookies(since: .distantPast)
     }
 
     /// Maps the `security` CLI exit status to a specific Keychain failure.
@@ -417,11 +473,14 @@ public actor BackendClient {
     /// a burst of 401s shares one sign-in instead of stampeding the
     /// rate-limited endpoint.
     private func reauth() async throws {
-        if let task = reauthTask { return try await task.value }
+        if let task = reauthTask {
+            _ = try await task.value
+            return
+        }
         let task = Task { try await signIn() }
         reauthTask = task
         defer { reauthTask = nil }
-        try await task.value
+        _ = try await task.value
     }
 
     /// Pull the `{ok:false,error:"code"}` code out of a small error body.
@@ -461,7 +520,7 @@ public actor BackendClient {
     /// and retry it. Without this a server restart leaves the app broken until
     /// relaunch.
     private func perform(_ build: (BackendClient, String) throws -> URLRequest) async throws -> (Data, URLResponse) {
-        var result = try await session.data(for: try build(self, csrf))
+        var result = try await send(try build(self, csrf))
         if let http = result.1 as? HTTPURLResponse {
 #if os(iOS)
             // §6.2/§8.4: 401 re-auths through the single flight once (an
@@ -470,17 +529,48 @@ public actor BackendClient {
             if http.statusCode == 401, Self.errorCode(result.0) != "credential_invalid" {
                 try await reauth()
                 // Rebuild with the fresh token, not the one from the failed try.
-                result = try await session.data(for: try build(self, csrf))
+                result = try await send(try build(self, csrf))
             }
 #else
             if http.statusCode == 401 || http.statusCode == 403 {
                 try await reauth()
                 // Rebuild with the fresh token, not the one from the failed try.
-                result = try await session.data(for: try build(self, csrf))
+                result = try await send(try build(self, csrf))
             }
 #endif
         }
         return result
+    }
+
+    /// Send one request with the session cookie attached. Automatic cookie
+    /// handling stays off so the shared jar never sees `ub_session`; the
+    /// header below is the whole cookie story.
+    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        var request = request
+        request.httpShouldHandleCookies = false
+        if let sessionCookie {
+            request.setValue(sessionCookie, forHTTPHeaderField: "cookie")
+        }
+        return try await session.data(for: request)
+    }
+
+    /// `send(_:)` for the byte-stream variant the event pipe uses.
+    private func sendBytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        var request = request
+        request.httpShouldHandleCookies = false
+        if let sessionCookie {
+            request.setValue(sessionCookie, forHTTPHeaderField: "cookie")
+        }
+        return try await session.bytes(for: request)
+    }
+
+    /// Pull the `ub_session` pair out of a sign-in `Set-Cookie` header.
+    private static func sessionCookie(from http: HTTPURLResponse, url: URL) -> String? {
+        guard let fields = http.allHeaderFields as? [String: String] else { return nil }
+        for cookie in HTTPCookie.cookies(withResponseHeaderFields: fields, for: url) {
+            if cookie.name == "ub_session" { return "\(cookie.name)=\(cookie.value)" }
+        }
+        return nil
     }
 
     // MARK: - Reads
@@ -1508,7 +1598,7 @@ public actor BackendClient {
                         guard let url = components?.url else { throw BackendError.decoding }
                         var request = URLRequest(url: url)
                         request.timeoutInterval = 180
-                        let (bytes, response) = try await session.bytes(for: request)
+                        let (bytes, response) = try await sendBytes(request)
                         activity.touch()
                         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 #if os(iOS)

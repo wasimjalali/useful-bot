@@ -1,0 +1,21 @@
+{
+  "note": "Sign-out: cookie + CSRF, the session row is destroyed.",
+  "request": {
+    "method": "DELETE",
+    "path": "/api/auth/session",
+    "headers": {
+      "tailscale-user-login": "owner@tailnet.example",
+      "x-forwarded-for": "100.64.1.2",
+      "x-forwarded-proto": "https",
+      "cookie": "<sessionCookie>",
+      "x-ub-csrf": "D3t5b4Y7hCVrg1M_4aN6Y06Wa5MEEI0UPdJnFs3xudg"
+    }
+  },
+  "response": {
+    "status": 200,
+    "setCookie": true,
+    "json": {
+      "ok": true
+    }
+  }
+}
