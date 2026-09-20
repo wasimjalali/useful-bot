@@ -1170,6 +1170,35 @@ function basename(text: string): string {
   return slash >= 0 ? text.slice(slash + 1) : text;
 }
 
+/**
+ * The program this line runs, when the line runs exactly one and nothing
+ * else. Null for anything with a chain, a pipe, a substitution, a
+ * redirection, an environment prefix or a variable in the program's own
+ * name.
+ *
+ * This is what decides whether a command is handed the credentials of the
+ * CLI it names (see `credentialPathsFor`), so it answers narrowly on
+ * purpose: a "no" costs that one run its sign-in, a wrong "yes" hands a
+ * second command on the same line a token it was never meant to see.
+ */
+export function loneCommandHead(command: string): string | null {
+  const tokens = tokenize(command.replace(/\\\n/g, " "));
+  // A separator means a second command, a subshell or a backtick.
+  if (tokens.some((item) => "separator" in item)) return null;
+  const plain = tokens as Token[];
+  for (const token of plain) {
+    if (token.quoted) continue;
+    // `>out`, `2>&1`, `<in`: the line does more than run the program.
+    if (/^[0-9]*[<>]/.test(token.text)) return null;
+    // `PATH=... codex` runs whatever that PATH resolves.
+    if (isAssignment(token)) return null;
+  }
+  const head = plain[0];
+  // A quoted or expanded head is not a name this can verify.
+  if (!head || head.quoted || head.text.includes("$") || head.text.length === 0) return null;
+  return head.text;
+}
+
 /** Split into segments at `&&`, `||`, `;`, `|`, `&` and newlines. */
 function split(tokens: (Token | { separator: string })[]): Segment[] {
   const segments: Segment[] = [];

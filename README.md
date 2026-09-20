@@ -78,12 +78,28 @@ way it does in their terminal: Homebrew binaries, `~/.local/bin`, `codex`,
 environment is a short list rather than the service's own, so none of the app's
 credentials reach it.
 
-At Full access the sandbox profile also opens the directories those tools keep
-their own sign-in in (`~/.codex`, `~/.claude`, `~/.config/gh`, opencode's state,
-the login keychain) for reading and writing, because a tool that cannot read its
-token reports itself signed out and one that cannot write a refreshed token
-loops. Every other credential store (`.ssh`, `.aws`, `.npmrc`, `.env`) stays
-refused in every mode, and the text tripwire still refuses a line that names one.
+At Full access the sandbox profile also opens the state a tool keeps for
+itself, because one that cannot read its token reports itself signed out and
+one that cannot write a refreshed token loops. It opens it **per command, to
+the tool that owns it**: a `codex` line reaches `~/.codex` and not the
+keychain, a `claude` line reaches the keychain and not `~/.codex`, and a `cat`
+line on the same posture reaches neither. The store is derived from the
+program's own name (`~/.<name>`, `~/.config/<name>`, `~/.local/share/<name>`,
+`~/.local/state/<name>`), so a CLI installed later needs no entry anywhere;
+`agent/lib/cli-registry.ts` holds only what a name cannot imply, which today
+is Claude Code's keychain item. A line that is not one plain command, or whose
+program is named after a protected store, is handed nothing. Every other
+credential store (`.ssh`, `.aws`, `.npmrc`, `.env`) stays refused in every
+mode, and the text tripwire still refuses a line that names one.
+
+Config that a tool reads and then executes is never writable, in any mode and
+including inside a store just opened for its own CLI: `~/.claude/settings.json`,
+`~/.codex/config.toml`, `~/.config/gh/config.yml`, `.git/hooks`,
+`.github/workflows` and `~/.local/bin`. A hook planted in one of those runs
+unconfined the next time the owner runs that tool themselves, which is the same
+reason `.zshrc` has been refused here since the profile was written. Reading
+them stays open, and `install_cli` is the one path that may put a program on the
+owner's PATH.
 
 `install_cli` lists the tools this app knows, where each resolves and whether a
 sign-in is stored, and installs one by name from `agent/lib/cli-registry.ts`.

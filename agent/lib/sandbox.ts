@@ -74,50 +74,91 @@ export type SandboxScope = "folder" | "computer";
 const SYSTEM_WRITE_DENIED = ["/etc", "/private/etc", "/var/db", "/private/var/db", "/Library/Keychains", "/Library/Cookies"];
 
 /**
- * Where the CLIs on this Mac keep their own sign-in, relative to the owner's
- * home. Full access is the posture whose whole promise is that a bot runs
- * what the owner would run; without these a `codex` or `claude` line comes
- * back "not logged in", because the deny rules above catch `auth.json` by
- * name and the login keychain by path. Allowed for reading AND writing: a
- * CLI refreshes its own token mid-run, and a refresh it cannot save turns
- * into a sign-in loop.
+ * Config that a tool reads and then executes, relative to the owner's home
+ * or to the folder the line runs in. A hook planted in one of these runs
+ * unconfined the next time the owner runs that tool themselves, exactly the
+ * way a line planted in `.zshrc` would, which is why those are already here.
+ * The shell startup files were the whole of this class when this profile was
+ * written; the agent CLIs are the rest of it now.
  *
- * Scoped by full path, so this opens one named directory per CLI and not a
- * credential file wherever it happens to sit. `.npmrc`, `.ssh`, `.aws` and
- * the rest stay refused in every posture: no CLI here needs them, and a
- * registry token is not a sign-in.
+ * Writes are refused in every posture, including Full access and including
+ * inside a store this same profile opened for a CLI to authenticate.
+ * Reading stays open: a bot may need to explain what a hook does, and
+ * reading one is not what gets it run.
  */
-const CLI_STATE_DIRS = [
-  ".codex",
-  ".claude",
-  ".gemini",
-  ".config/gh",
-  ".config/opencode",
-  ".local/share/opencode",
-  ".local/state/opencode",
-  // Claude Code keeps its token as a keychain item, so a `security` lookup
-  // has to reach the login keychain or the CLI sees itself as signed out.
-  "Library/Keychains",
+const PLANTED_CONFIG_WRITE_DENIED = [
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  ".claude/hooks",
+  ".codex/config.toml",
+  ".config/gh/config.yml",
+  ".config/opencode/opencode.json",
+  ".gemini/settings.json",
+  // A git hook runs on the owner's next commit, in their own shell.
+  ".git/hooks",
+  // A workflow runs on the owner's CI, with the repository's secrets.
+  ".github/workflows",
 ];
 
 /**
- * The allows for the CLI stores, last so they win over the denies above.
- * A directory that does not exist is skipped: `subpath` on a missing path is
- * accepted by the parser but says nothing, and leaving it out keeps the
- * profile a readable list of what is actually open.
+ * A directory on the PATH a bot's own lines run with. A binary planted here
+ * shadows the real `git` or `ls` for the owner and for the next turn alike.
+ * `install_cli` lifts this for an install the owner approved by name.
  */
-function cliStateRules(): string[] {
-  const home = homedir();
+const TOOL_BIN_DIRS = [".local/bin"];
+
+function plantedConfigRules(allowToolInstall: boolean): string[] {
+  const rules = PLANTED_CONFIG_WRITE_DENIED.map(
+    (name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`,
+  );
+  if (allowToolInstall) return rules;
+  for (const name of TOOL_BIN_DIRS) {
+    const path = join(homedir(), name);
+    if (!existsSync(path)) continue;
+    rules.push(`(deny file-write* (subpath ${sbplString(realpathSync(path))}))`);
+  }
+  return rules;
+}
+
+/**
+ * The allows for the credential stores this one command may reach.
+ *
+ * The caller decides which: `credentialPathsFor` in agent/lib/cli-registry.ts
+ * hands over the store of the CLI the line runs, and nothing at all for any
+ * other line. So a `claude` line reaches the login keychain and a `cat` line
+ * on the same posture does not.
+ *
+ * Read AND write, because a CLI refreshes its own token mid-run and a
+ * refresh it cannot save turns into a sign-in loop. A path that does not
+ * exist is skipped: `subpath` on a missing path parses but says nothing, and
+ * leaving it out keeps the profile a readable list of what is really open.
+ */
+function credentialRules(paths: readonly string[]): string[] {
   const rules: string[] = [];
-  for (const name of CLI_STATE_DIRS) {
-    const path = join(home, name);
+  for (const path of paths) {
     if (!existsSync(path)) continue;
     rules.push(`(allow file-read* file-write* (subpath ${sbplString(realpathSync(path))}))`);
   }
   return rules;
 }
 
-export function sandboxProfile(root: string | null, scope: SandboxScope = "computer", unbounded = false): string {
+export type ConfineOptions = {
+  /**
+   * Absolute credential-store paths this one command may reach. Only honoured
+   * at Full access; the scoped postures card a CLI line instead, and an
+   * approved line runs unconfined anyway.
+   */
+  credentialPaths?: readonly string[];
+  /** The line is an install of a named CLI the owner approved. */
+  allowToolInstall?: boolean;
+};
+
+export function sandboxProfile(
+  root: string | null,
+  scope: SandboxScope = "computer",
+  unbounded = false,
+  options: ConfineOptions = {},
+): string {
   const real = root === null ? null : realpathSync(root);
   // Tools that ignore TMPDIR fall back to the darwin per-user dirs; those
   // sit beside each other under one parent (.../T for temp, .../C for cache).
@@ -152,13 +193,24 @@ export function sandboxProfile(root: string | null, scope: SandboxScope = "compu
     ]),
     ...protectedRules,
     ...readRules,
-    // Full access only. Auto and read-only lines keep every credential
-    // store refused, including the CLIs' own.
-    ...(unbounded ? cliStateRules() : []),
+    // Full access only, and only the store belonging to the CLI this very
+    // line runs. Auto and read-only lines keep every credential store
+    // refused, including the CLIs' own.
+    ...(unbounded ? credentialRules(options.credentialPaths ?? []) : []),
+    // Last, so a planted hook stays refused even inside a store the rule
+    // above just opened: `~/.codex` is readable to a codex line, but
+    // `~/.codex/config.toml` is not writable by it.
+    ...plantedConfigRules(options.allowToolInstall === true),
   ].join("\n");
 }
 
 /** The argv that runs `command` confined to `root` (null: no writes at all). */
-export function confinedCommand(root: string | null, command: string, scope: SandboxScope = "computer", unbounded = false): string[] {
-  return [SANDBOX_EXEC, "-p", sandboxProfile(root, scope, unbounded), "/bin/sh", "-c", command];
+export function confinedCommand(
+  root: string | null,
+  command: string,
+  scope: SandboxScope = "computer",
+  unbounded = false,
+  options: ConfineOptions = {},
+): string[] {
+  return [SANDBOX_EXEC, "-p", sandboxProfile(root, scope, unbounded, options), "/bin/sh", "-c", command];
 }

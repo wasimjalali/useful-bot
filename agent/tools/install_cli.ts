@@ -91,7 +91,7 @@ export default defineTool({
       // and the app's own stores.
       const argv = gate === "ask"
         ? ["/bin/sh", "-c", entry.install]
-        : confinedCommand(root, entry.install, scope, true);
+        : confinedCommand(root, entry.install, scope, true, { allowToolInstall: true });
       const run = await runCommand(argv, {
         cwd: root,
         env: {

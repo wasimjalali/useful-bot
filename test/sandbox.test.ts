@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { confinedCommand, sandboxAvailable, sandboxProfile } from "../agent/lib/sandbox.ts";
+import { confinedCommand, sandboxAvailable, sandboxProfile, type ConfineOptions } from "../agent/lib/sandbox.ts";
 import { selectSandbox } from "../shared/sandbox.ts";
 
 const execFileAsync = promisify(execFile);
@@ -132,64 +132,121 @@ test("a Full access line writes outside the folder and still not into a credenti
   }
 });
 
-test("Full access opens the CLI sign-in stores and nothing else under the home", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-sb-cli-"));
+/** A home of its own, so a rule never names the home of whoever runs this. */
+function homeFixture(): { home: string; restore: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "ub-sb-home-"));
   const home = realpathSync(dir);
-  const previousHome = process.env.HOME;
+  const previous = process.env.HOME;
   process.env.HOME = home;
-  const keys = join(home, ".ssh");
+  return {
+    home,
+    restore() {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+test("a credential store opens only for the line that was handed it", () => {
+  const fixture = homeFixture();
+  const store = join(fixture.home, ".codex");
+  const keys = join(fixture.home, ".ssh");
   try {
-    // Only the directories that are actually there become rules, so the
-    // profile stays a readable list of what is open on this Mac.
-    mkdirSync(join(home, ".codex"), { recursive: true });
-    mkdirSync(join(home, ".config", "gh"), { recursive: true });
+    mkdirSync(store, { recursive: true });
     mkdirSync(keys, { recursive: true });
-    const full = sandboxProfile(home, "computer", true);
-    assert.ok(full.includes(`(allow file-read* file-write* (subpath "${join(home, ".codex")}"))`));
-    assert.ok(full.includes(`(allow file-read* file-write* (subpath "${join(home, ".config", "gh")}"))`));
-    // Not installed here, so not named.
-    assert.equal(full.includes(join(home, ".gemini")), false);
-    // The owner's keys are not a CLI sign-in and stay refused.
-    assert.equal(full.includes(`(subpath "${keys}"`), false);
+    const opened = sandboxProfile(fixture.home, "computer", true, { credentialPaths: [store] });
+    assert.ok(opened.includes(`(allow file-read* file-write* (subpath "${store}"))`));
     // An allow has to come after the deny it overrides, or seatbelt keeps
     // the deny and a CLI still cannot read its own token.
-    assert.ok(full.indexOf(`(subpath "${join(home, ".codex")}"`) > full.indexOf('(deny file-read* (regex #"/auth\\.json($|[/.])"))'));
-    // Auto and Read only keep every credential store refused.
-    for (const scoped of [sandboxProfile(home, "computer"), sandboxProfile(home, "folder"), sandboxProfile(null)]) {
+    assert.ok(opened.indexOf(`(subpath "${store}"`) > opened.indexOf('(deny file-read* (regex #"/auth\\.json($|[/.])"))'));
+    // A path that is not there is not named, so the profile stays a list of
+    // what is really open.
+    const missing = sandboxProfile(fixture.home, "computer", true, { credentialPaths: [join(fixture.home, ".gemini")] });
+    assert.equal(missing.includes("(allow file-read* file-write* (subpath"), false);
+    // The same posture with nothing handed over opens nothing. That is every
+    // line but a run of a CLI the registry knows.
+    assert.equal(sandboxProfile(fixture.home, "computer", true).includes("(allow file-read* file-write* (subpath"), false);
+    // The owner's keys are not a CLI sign-in: naming one does not open it,
+    // because the deny is emitted whatever the caller asked for.
+    const asked = sandboxProfile(fixture.home, "computer", true, { credentialPaths: [keys] });
+    assert.ok(asked.includes('(deny file-read* (regex #"/\\.ssh($|[/.])"))'));
+    // Auto and Read only never open one at all.
+    for (const scoped of [
+      sandboxProfile(fixture.home, "computer", false, { credentialPaths: [store] }),
+      sandboxProfile(null, "computer", false, { credentialPaths: [store] }),
+    ]) {
       assert.equal(scoped.includes("(allow file-read* file-write* (subpath"), false);
     }
   } finally {
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
-    rmSync(dir, { recursive: true, force: true });
+    fixture.restore();
   }
 });
 
-test("a Full access line reads a CLI sign-in store and still not a private key", { skip: !darwin || !sandboxAvailable() }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-sb-clirun-"));
-  const home = realpathSync(dir);
-  const previousHome = process.env.HOME;
-  process.env.HOME = home;
-  const keyDir = join(home, ".ssh");
-  const keyFile = join(keyDir, "id_rsa");
-  const authFile = join(home, ".codex", "auth.json");
+test("config a tool executes later is never writable, including inside an opened store", () => {
+  const fixture = homeFixture();
+  const bin = join(fixture.home, ".local", "bin");
   try {
-    mkdirSync(join(home, ".codex"), { recursive: true });
-    mkdirSync(keyDir, { recursive: true });
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(fixture.home, ".codex"), { recursive: true });
+    for (const profile of [
+      sandboxProfile(fixture.home, "computer", true, { credentialPaths: [join(fixture.home, ".codex")] }),
+      sandboxProfile(fixture.home, "folder"),
+      sandboxProfile(null),
+    ]) {
+      for (const name of ["/\\.claude/settings\\.json", "/\\.codex/config\\.toml", "/\\.git/hooks", "/\\.github/workflows"]) {
+        assert.ok(profile.includes(`(deny file-write* (regex #"${name}($|[/.])"))`), name);
+      }
+      assert.ok(profile.includes(`(deny file-write* (subpath "${bin}"))`));
+      // Reading one is not what gets it run.
+      assert.equal(profile.includes('(deny file-read* (regex #"/\\.claude/settings\\.json'), false);
+    }
+    // An install the owner approved by name is the one line that may put a
+    // program on their PATH.
+    const install = sandboxProfile(fixture.home, "computer", true, { allowToolInstall: true });
+    assert.equal(install.includes(`(deny file-write* (subpath "${bin}"))`), false);
+    assert.ok(install.includes('(deny file-write* (regex #"/\\.git/hooks($|[/.])"))'));
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("a Full access line reads the store it was handed and still not a private key", { skip: !darwin || !sandboxAvailable() }, async () => {
+  const fixture = homeFixture();
+  const store = join(fixture.home, ".codex");
+  const authFile = join(store, "auth.json");
+  const planted = join(store, "config.toml");
+  const keyFile = join(fixture.home, ".ssh", "id_rsa");
+  try {
+    mkdirSync(store, { recursive: true });
+    mkdirSync(join(fixture.home, ".ssh"), { recursive: true });
     writeFileSync(authFile, '{"token":"fixture"}\n', "utf8");
     writeFileSync(keyFile, "fixture\n", "utf8");
-    const env = { PATH: "/usr/bin:/bin", HOME: home, TMPDIR: home };
-    const ok = confinedCommand(home, `cat ${JSON.stringify(authFile)}`, "computer", true);
-    const { stdout } = await execFileAsync(ok[0], ok.slice(1), { cwd: home, env });
+    const env = { PATH: "/usr/bin:/bin", HOME: fixture.home, TMPDIR: fixture.home };
+    const opened = { credentialPaths: [store] };
+    const run = (command: string, options: ConfineOptions = opened) =>
+      confinedCommand(fixture.home, command, "computer", true, options);
+
+    const ok = run(`cat ${JSON.stringify(authFile)}`);
+    const { stdout } = await execFileAsync(ok[0], ok.slice(1), { cwd: fixture.home, env });
     assert.ok(stdout.includes("fixture"));
+
     // The CLI refreshes its own token, so the write has to land too.
-    const write = confinedCommand(home, `printf '{}' > ${JSON.stringify(authFile)}`, "computer", true);
-    await execFileAsync(write[0], write.slice(1), { cwd: home, env });
-    const denied = confinedCommand(home, `cat ${JSON.stringify(keyFile)}`, "computer", true);
-    await assert.rejects(() => execFileAsync(denied[0], denied.slice(1), { cwd: home, env }), /not permitted/i);
+    const write = run(`printf '{}' > ${JSON.stringify(authFile)}`);
+    await execFileAsync(write[0], write.slice(1), { cwd: fixture.home, env });
+
+    // The same opened store still refuses the file that would run a command.
+    const plant = run(`printf 'x' > ${JSON.stringify(planted)}`);
+    await assert.rejects(() => execFileAsync(plant[0], plant.slice(1), { cwd: fixture.home, env }), /not permitted/i);
+    assert.equal(existsSync(planted), false);
+
+    // A line handed nothing reads nothing, on the same posture.
+    const bare = run(`cat ${JSON.stringify(authFile)}`, {});
+    await assert.rejects(() => execFileAsync(bare[0], bare.slice(1), { cwd: fixture.home, env }), /not permitted/i);
+
+    const denied = run(`cat ${JSON.stringify(keyFile)}`);
+    await assert.rejects(() => execFileAsync(denied[0], denied.slice(1), { cwd: fixture.home, env }), /not permitted/i);
   } finally {
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
-    rmSync(dir, { recursive: true, force: true });
+    fixture.restore();
   }
 });

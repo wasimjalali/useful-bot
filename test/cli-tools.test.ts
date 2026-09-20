@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { ownerPath, resetOwnerPath } from "../shared/user-path.ts";
 import { runCommand } from "../agent/lib/run-command.ts";
-import { CLI_REGISTRY, cliStatus, findCli, resolveBin } from "../agent/lib/cli-registry.ts";
+import { CLI_REGISTRY, cliStatus, credentialPathsFor, findCli, resolveBin } from "../agent/lib/cli-registry.ts";
+import { loneCommandHead } from "../agent/lib/command-risk.ts";
 import installCli from "../agent/tools/install_cli.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
 
@@ -153,6 +154,76 @@ test("the registry answers by name and reports what is installed", () => {
     assert.equal(missing.signedIn, null);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("only a plain run of one command is a command at all", () => {
+  for (const line of ["codex exec hello", "claude -p hi", "/usr/bin/env", "gh auth status"]) {
+    assert.equal(loneCommandHead(line), line.split(" ")[0], line);
+  }
+  // A quoted separator is an argument, not a second command.
+  assert.equal(loneCommandHead('codex exec "fix this; then that"'), "codex");
+  for (const line of [
+    "codex --version && cat x",
+    "codex; cat x",
+    "echo hi | codex",
+    "codex $(cat x)",
+    "codex `cat x`",
+    "(codex)",
+    "codex > out",
+    "codex 2>&1",
+    "cat < in",
+    "PATH=/tmp codex x",
+    "$CMD --version",
+  ]) {
+    assert.equal(loneCommandHead(line), null, line);
+  }
+});
+
+test("a credential store goes only to the CLI that owns it", () => {
+  const codex = binFixture("codex");
+  try {
+    const path = codex.dir;
+    const home = homedir();
+    const owns = (line: string) => credentialPathsFor(line, path).map((p) => p.replace(home, "~"));
+    // Only the stores this machine actually has come back, so the shape of
+    // the assertion is "never another CLI's", not "always present".
+    for (const line of ["codex exec hello", `${codex.file} exec hello`]) {
+      assert.equal(owns(line).every((p) => p.startsWith("~/.codex")), true, line);
+    }
+    assert.equal(owns("claude -p hi").some((p) => p.startsWith("~/.codex")), false);
+    // A CLI the registry never heard of still gets its own state, derived
+    // from its name, so installing one needs no entry here.
+    const unknown = binFixture("ub-made-up-cli");
+    try {
+      assert.equal(findCli("ub-made-up-cli"), null);
+      const derived = credentialPathsFor("ub-made-up-cli run", unknown.dir);
+      assert.equal(derived.every((p) => p.includes("ub-made-up-cli")), true);
+    } finally {
+      unknown.cleanup();
+    }
+    // Not a single plain command, not a known CLI, or not the binary the
+    // name resolves to: nothing at all.
+    for (const line of [
+      "cat /Users/someone/Library/Keychains/login.keychain-db",
+      "codex exec x && cat y",
+      "echo hi | codex",
+      "./codex exec x",
+      "/tmp/definitely-not-codex/codex exec x",
+      "PATH=/tmp codex exec x",
+    ]) {
+      assert.deepEqual(owns(line), [], line);
+    }
+    // A program named after a store the profile protects derives nothing,
+    // so being called `ssh` is not a way to be handed `~/.ssh`.
+    const named = binFixture("ssh");
+    try {
+      assert.deepEqual(credentialPathsFor("ssh host", named.dir), []);
+    } finally {
+      named.cleanup();
+    }
+  } finally {
+    codex.cleanup();
   }
 });
 

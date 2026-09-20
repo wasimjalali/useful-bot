@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
 import { commandRisk, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
 import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
+import { credentialPathsFor } from "../lib/cli-registry.ts";
 import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -168,9 +169,15 @@ export default defineTool({
       // so a line the classifier misjudged still cannot write outside it.
       // Full access writes anywhere but into credential files and the
       // app's own stores. A line the owner approved runs as they read it.
+      const unbounded = permission === "full_access" && !readOnly;
       const args = askOwner
         ? ["/bin/sh", "-c", input.command]
-        : confinedCommand(readOnly ? null : root, input.command, scope, permission === "full_access" && !readOnly);
+        : confinedCommand(readOnly ? null : root, input.command, scope, unbounded, {
+            // The store of the CLI this line runs, and nothing for a line
+            // that runs anything else. An approved line skips this because
+            // it is not confined at all: the owner read it and said yes.
+            credentialPaths: unbounded ? credentialPathsFor(input.command) : [],
+          });
       const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       // A line that exits non-zero (`grep` with no match, a failing test) is
       // a result, not a tool failure, and so is one the timeout killed: the

@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import { loneCommandHead } from "./command-risk.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 
 /**
@@ -31,6 +32,14 @@ export type CliEntry = {
   install: string;
   /** Null when the CLI has no stored credential worth probing for. */
   signIn: SignInCheck | null;
+  /**
+   * Only the state this CLI keeps somewhere its own name does not imply.
+   * `credentialPathsFor` derives `~/.<name>`, `~/.config/<name>` and the
+   * two `~/.local` ones for any program on PATH, so almost every CLI needs
+   * nothing here, including ones this table has never heard of. Claude Code
+   * is the exception: a keychain item cannot be derived from a name.
+   */
+  state: string[];
   docs: string;
 };
 
@@ -40,6 +49,8 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     label: "OpenAI Codex",
     install: "npm install -g @openai/codex",
     signIn: { kind: "file", paths: [".codex/auth.json"] },
+    // `~/.codex` is derived from the name.
+    state: [],
     docs: "https://developers.openai.com/codex/cli",
   },
   {
@@ -49,6 +60,9 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     // macOS keeps this one in the login keychain; the file is the fallback
     // on an install that predates that or runs with a different store.
     signIn: { kind: "keychain", service: "Claude Code-credentials", paths: [".claude/.credentials.json"] },
+    // The login keychain, which the `/keychains` deny refuses. Nothing under
+    // `~/.claude` itself is denied, so it needs no rule of its own.
+    state: ["Library/Keychains"],
     docs: "https://docs.claude.com/en/docs/claude-code",
   },
   {
@@ -56,6 +70,7 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     label: "opencode",
     install: "npm install -g opencode-ai",
     signIn: { kind: "file", paths: [".local/share/opencode/auth.json"] },
+    state: [],
     docs: "https://opencode.ai/docs",
   },
   {
@@ -63,6 +78,7 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     label: "Gemini CLI",
     install: "npm install -g @google/gemini-cli",
     signIn: { kind: "file", paths: [".gemini/oauth_creds.json"] },
+    state: [],
     docs: "https://github.com/google-gemini/gemini-cli",
   },
   {
@@ -72,6 +88,7 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     // without Homebrew gets that as the error rather than a silent miss.
     install: "brew install gh",
     signIn: { kind: "file", paths: [".config/gh/hosts.yml"] },
+    state: [],
     docs: "https://cli.github.com",
   },
   {
@@ -81,6 +98,7 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     // Its store sits among the owner's other credentials and the sandbox
     // refuses it in every posture, so the CLI reports its own auth instead.
     signIn: null,
+    state: [],
     docs: "https://developers.cloudflare.com/workers/wrangler",
   },
   {
@@ -88,6 +106,7 @@ export const CLI_REGISTRY: readonly CliEntry[] = [
     label: "Vercel CLI",
     install: "npm install -g vercel",
     signIn: null,
+    state: [],
     docs: "https://vercel.com/docs/cli",
   },
 ] as const;
@@ -162,6 +181,93 @@ export type CliStatus = {
   install: string;
   docs: string;
 };
+
+/**
+ * The credential stores one shell line may reach, which is the store of the
+ * CLI it runs and nothing else. Empty for every other line.
+ *
+ * Codex and Claude Code never had to solve this: in those products the CLI
+ * is the parent process, so it reads its own token before it sandboxes
+ * anything the model asked for. Here the CLI is the child, inside the
+ * profile, so the profile has to let it through. Deciding that per command
+ * rather than per posture is what keeps `cat` out of the keychain while
+ * `claude -p` still authenticates.
+ *
+ * `loneCommandHead` refuses anything but a single plain command, so a chain,
+ * a pipe, a substitution or a redirection gets nothing, whatever it names.
+ */
+export function credentialPathsFor(command: string, path = ownerPath()): string[] {
+  const head = loneCommandHead(command);
+  if (!head) return [];
+  // A relative program (`./codex`) is not the CLI on PATH, whatever it is
+  // called, and resolving it would depend on a cwd this cannot verify.
+  if (head.includes("/") && !head.startsWith("/")) return [];
+  const name = head.slice(head.lastIndexOf("/") + 1);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return [];
+  // The program has to be one the owner really has, or any word at all would
+  // name a directory to open.
+  const resolved = resolveBin(name, path);
+  if (!resolved) return [];
+  if (head.startsWith("/")) {
+    // An absolute path only inherits the credentials if it IS the binary the
+    // bare name resolves to. `/tmp/evil/codex` is not codex.
+    try {
+      if (realpathSync(head) !== realpathSync(resolved)) return [];
+    } catch {
+      return [];
+    }
+  }
+  const home = homedir();
+  const named = findCli(name)?.state ?? [];
+  const stores = named.length > 0 ? named : derivedStores(name);
+  return stores.map((relative) => join(home, relative)).filter((store) => existsSync(store));
+}
+
+/**
+ * Where a tool called `name` conventionally keeps its own state, for a CLI
+ * the registry has never heard of.
+ *
+ * Without this, every CLI whose token file happens to be called `auth.json`
+ * would report itself signed out until someone added a registry row, which
+ * is the same class of bug as the PATH this change set out to fix. The
+ * registry stays for what cannot be derived, like Claude Code's keychain
+ * item; everything else follows the convention its own name implies.
+ *
+ * Still one directory, still only for the line that runs that program. A
+ * tool named after a credential store the profile protects derives nothing:
+ * a program called `ssh` does not get `~/.ssh` by being run.
+ */
+function derivedStores(name: string): string[] {
+  const candidates = [
+    `.${name}`,
+    join(".config", name),
+    join(".local", "share", name),
+    join(".local", "state", name),
+  ];
+  return candidates.filter((relative) => !namesProtectedStore(relative));
+}
+
+/**
+ * Whether a derived path would open one of the stores the profile refuses on
+ * purpose. Matched on the whole relative path, the way the profile's own
+ * rules are written, so `.config/fish` is caught as well as `.ssh`.
+ */
+function namesProtectedStore(relative: string): boolean {
+  const lowered = relative.toLowerCase();
+  return NEVER_DERIVED.some((name) => lowered === name || lowered.startsWith(`${name}/`) || lowered.endsWith(`/${name}`));
+}
+
+/**
+ * Credential stores that are never a CLI's own working state, whatever a
+ * program on PATH happens to be called. Kept beside the profile's deny list
+ * rather than derived from it: this is the list that must not grow by
+ * accident when a new protected name is added there.
+ */
+const NEVER_DERIVED = [
+  ".ssh", ".aws", ".gnupg", ".docker", ".kube", ".npm", ".npmrc", ".pypirc",
+  ".netrc", ".authinfo", ".config/fish", ".useful-bot", ".git", ".env",
+  "library/keychains", "library/cookies",
+];
 
 export function cliStatus(entry: CliEntry, path = ownerPath()): CliStatus {
   const resolved = resolveBin(entry.id, path);
