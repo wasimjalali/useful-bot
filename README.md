@@ -65,8 +65,8 @@ scheduled slot either way.
 
 A run has an hour to finish, and is stopped if the session goes quiet for ten
 minutes. Either way the turn is cancelled rather than left running, and the chat
-says which happened. The service log names every routine start, finish and
-failure with its elapsed time and session id.
+says which happened. The service log names every routine start with its trigger
+and bot, and every finish and failure with how long it took.
 
 ## Connectors
 

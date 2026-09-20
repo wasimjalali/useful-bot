@@ -1028,6 +1028,21 @@ export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
   return run;
 }
 
+/**
+ * The bots whose routine is running right now. Read from the in-flight set
+ * rather than kept beside it, so the two can never drift; a routine deleted
+ * mid-run has no row to read and its bot frees up, which is the same caveat
+ * `backgroundWorkingBotIds` carries.
+ */
+function botsRunningRoutines(): string[] {
+  const ids: string[] = [];
+  for (const routineId of routinesInflight) {
+    const routine = readRoutine(routineId);
+    if (routine) ids.push(routine.botId);
+  }
+  return ids;
+}
+
 function pumpRoutinesOnce(limit: number): RoutinePumpResult {
   const started: Array<{ id: string; name: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
@@ -1039,8 +1054,14 @@ function pumpRoutinesOnce(limit: number): RoutinePumpResult {
     ? []
     : pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
   // One per bot: a routine is a turn in the bot's own chat, and eve runs one
-  // turn per session. A bot's second due routine waits for the next pump.
-  const owners = new Set<string>();
+  // turn per session. A bot's second due routine waits.
+  //
+  // Seeded from the runs already going, not empty. While the pump awaited its
+  // batch, the next tick could not start anything until every run was done, so
+  // a per-pump set was enough. Now that runs are detached, the next tick comes
+  // round in seconds and would claim the same bot's other routine straight
+  // into a session eve still has a turn on.
+  const owners = new Set<string>(botsRunningRoutines());
   const batch: Routine[] = [];
   for (const candidate of candidates) {
     if (batch.length >= room) break;

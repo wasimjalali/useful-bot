@@ -213,6 +213,12 @@ public struct TurnFailure: Equatable, Sendable {
         // reaches a model. Retry fires straight back into it and fails in
         // milliseconds, so a cool-down that is really seconds long read as a
         // dead app. Name it, and say when it lifts.
+        // Not a pause. The router stops an alias outright when a turn reports
+        // more usage than it reserved, and nothing but a restart clears that,
+        // so telling the owner to retry in a moment would be a lie.
+        if haystack.contains("circuit_disabled") {
+            return "The router stopped this model: a turn used more than it reserved. Restart the local services to clear it."
+        }
         if haystack.contains("circuit_open") {
             if let seconds = retryAfterSeconds {
                 return "The model provider failed repeatedly, so sending is paused for \(seconds) more seconds. Retry after that."

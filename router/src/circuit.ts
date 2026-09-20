@@ -45,13 +45,15 @@ export class AliasCircuit {
 
   assertClosed(alias: string, now = Date.now()): void {
     const current = this.state(alias);
-    // The spend tripwire, which no timer lifts.
+    // The spend tripwire, which no timer lifts. Its own code, because the app
+    // tells the owner to wait out a `circuit_open` and no wait clears this:
+    // the two states read alike from the outside and do not mean alike.
     if (current.disabled) {
       throw new RouterError({
         status: 503,
         type: "internal_error",
-        code: "circuit_open",
-        message: "circuit_open",
+        code: "circuit_disabled",
+        message: "circuit_disabled",
         alias: alias as "workhorse" | "reviewer",
       });
     }
