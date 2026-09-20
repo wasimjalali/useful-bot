@@ -706,13 +706,19 @@ function grantFixture(mode: "read_only" | "auto" | "full_access") {
   const dir = mkdtempSync(join(tmpdir(), "ub-grant-"));
   const project = join(dir, "project");
   mkdirSync(project, { recursive: true });
+  // A shell line runs with the owner's real home now, so `~` in a test would
+  // otherwise name this machine's own home. The fixture stands one in.
+  mkdirSync(join(dir, "home", "Documents"), { recursive: true });
+  const fixtureHome = realpathSync(join(dir, "home"));
   const previous = {
     store: process.env.UB_WORKSPACE_STORE_PATH,
     approvals: process.env.UB_APPROVALS_PATH,
     root: process.env.UB_WORKSPACE_ROOT,
+    home: process.env.HOME,
   };
   process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
   process.env.UB_APPROVALS_PATH = join(dir, "approvals.json");
+  process.env.HOME = fixtureHome;
   delete process.env.UB_WORKSPACE_ROOT;
   const approvals = new ApprovalStore(Date.now, join(dir, "approvals.json"));
   setApprovalStore(approvals);
@@ -726,6 +732,7 @@ function grantFixture(mode: "read_only" | "auto" | "full_access") {
   writeFileSync(join(project, "note.txt"), "hello from the project\n", "utf8");
   return {
     project,
+    home: fixtureHome,
     approvals,
     restore() {
       const put = (key: string, value: string | undefined) => {
@@ -735,6 +742,7 @@ function grantFixture(mode: "read_only" | "auto" | "full_access") {
       put("UB_WORKSPACE_STORE_PATH", previous.store);
       put("UB_APPROVALS_PATH", previous.approvals);
       put("UB_WORKSPACE_ROOT", previous.root);
+      put("HOME", previous.home);
       setApprovalStore(new ApprovalStore(() => 1_000));
     },
   };
@@ -757,10 +765,14 @@ function homeFixture(mode: "read_only" | "auto" | "full_access") {
     store: process.env.UB_WORKSPACE_STORE_PATH,
     approvals: process.env.UB_APPROVALS_PATH,
     root: process.env.UB_WORKSPACE_ROOT,
+    home: process.env.HOME,
   };
   process.env.UB_WORKSPACE_STORE_PATH = join(dir, "workspace.json");
   process.env.UB_APPROVALS_PATH = join(dir, "approvals.json");
   process.env.UB_WORKSPACE_ROOT = home;
+  // The stand-in home is the shell's HOME too, so `~` in a line under test
+  // never reaches the home of whoever is running the suite.
+  process.env.HOME = home;
   const approvals = new ApprovalStore(Date.now, join(dir, "approvals.json"));
   setApprovalStore(approvals);
   upsertSessionGrant({ sessionId: "sess-home", path: null, permission: mode }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
@@ -776,6 +788,7 @@ function homeFixture(mode: "read_only" | "auto" | "full_access") {
       put("UB_WORKSPACE_STORE_PATH", previous.store);
       put("UB_APPROVALS_PATH", previous.approvals);
       put("UB_WORKSPACE_ROOT", previous.root);
+      put("HOME", previous.home);
       setApprovalStore(new ApprovalStore(() => 1_000));
     },
   };
@@ -928,11 +941,28 @@ test("full access runs deletes and reaches outside without a card, asks before a
     assert.equal(typeof up.stdout, "string");
     assert.equal(box.approvals.listPending().length, 0);
 
-    // `~` is the root here, the way the line runs (HOME is the root), so
-    // a folder under it is the project's own; a top-level folder of the
-    // Mac is the wipe that waits for the owner.
-    await run<{ stdout: string }>(bash, { command: "mkdir -p ~/Documents && rm -rf ~/Documents" }, { session: { id: "sess-1" } });
+    // `~` is the owner's own home, the way the line runs (HOME is the home),
+    // so a CLI finds its config there. A folder deep under it is Full
+    // access doing what Full access says; a top-level folder of that home
+    // is the wipe that waits for the owner.
+    mkdirSync(join(box.home, "Documents", "scratch"), { recursive: true });
+    await run<{ stdout: string }>(bash, { command: "rm -rf ~/Documents/scratch" }, { session: { id: "sess-1" } });
     assert.equal(box.approvals.listPending().length, 0);
+    assert.equal(existsSync(join(box.home, "Documents", "scratch")), false);
+    let wipeSettled = false;
+    const homeWipe = run<{ stdout: string }>(bash, { command: "rm -rf ~/Documents" }, { session: { id: "sess-1" } })
+      .then((value) => {
+        wipeSettled = true;
+        return value;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(wipeSettled, false, "a top-level folder of the home must wait for the owner");
+    const homeCards = box.approvals.listPending();
+    assert.equal(homeCards.length, 1);
+    assert.equal(homeCards[0].preview.includes("wipes a top-level home folder"), true, homeCards[0].preview);
+    box.approvals.decide(homeCards[0].id, "deny", homeCards[0].actionSha256);
+    await assert.rejects(homeWipe);
+    assert.equal(existsSync(join(box.home, "Documents")), true);
     let settled = false;
     const wipe = run<{ stdout: string }>(bash, { command: "rm -rf /Applications" }, { session: { id: "sess-1" } })
       .then((value) => {

@@ -63,7 +63,8 @@ export type ApprovalTool =
   | "delete_routine"
   | "create_routine"
   | "update_routine"
-  | "connector";
+  | "connector"
+  | "install_cli";
 export type ApprovalDecision = "approve" | "deny";
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
 

@@ -154,8 +154,19 @@ const PACKAGE_RUNNERS = new Set(["npx", "bunx", "pnpx"]);
 /** Variables that change which program a later command runs, or with what. */
 const HIJACK_VARS = /^(PATH|LD_[A-Z_]+|DYLD_[A-Z_]+|GIT_(SSH|SSH_COMMAND|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|PAGER|CONFIG[A-Z_]*|EXEC_PATH|ASKPASS|TEMPLATE_DIR|DIR|WORK_TREE|PROXY_COMMAND)|EDITOR|VISUAL|PAGER|LESSOPEN|LESSCLOSE|NODE_OPTIONS|PYTHONSTARTUP|PYTHONPATH|PERL5OPT|PERL5LIB|RUBYOPT|BASH_ENV|ENV|SHELL|CDPATH|IFS|HOME|TMPDIR|PROMPT_COMMAND|ZDOTDIR)=/;
 
-/** Executables the confined PATH would find anyway; not "outside the folder". */
-const SYSTEM_BIN_PREFIXES = ["/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/opt/homebrew/bin/"];
+/**
+ * Executables the PATH a line runs with would find anyway; spelling one in
+ * full is not "outside the folder". Kept in step with `commonDirs` in
+ * shared/user-path.ts: a CLI the owner installed is reachable by bare name,
+ * so the absolute path to the same binary must not read as an escape.
+ */
+const SYSTEM_BIN_PREFIXES = [
+  "/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/",
+  "/opt/homebrew/bin/", "/opt/homebrew/sbin/",
+  `${join(homedir(), ".local", "bin")}/`,
+  `${join(homedir(), ".bun", "bin")}/`,
+  `${join(homedir(), ".cargo", "bin")}/`,
+];
 const DEVICE_PATHS = ["/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd/"];
 
 const SQL_DESTRUCTIVE = /\b(drop|truncate)\s+(table|database|schema|index|view)\b|\bdelete\s+from\b/i;
@@ -1157,6 +1168,38 @@ function outsideFolder(tokens: Token[], root: string): string | null {
 function basename(text: string): string {
   const slash = text.lastIndexOf("/");
   return slash >= 0 ? text.slice(slash + 1) : text;
+}
+
+/**
+ * The program this line runs, when the line runs exactly one and nothing
+ * else. Null for anything with a chain, a pipe, a substitution, a
+ * redirection, an environment prefix or a variable in the program's own
+ * name.
+ *
+ * This is what decides whether a command is handed the credentials of the
+ * CLI it names (see `credentialPathsFor`), so it answers narrowly on
+ * purpose: a "no" costs that one run its sign-in, a wrong "yes" hands a
+ * second command on the same line a token it was never meant to see.
+ */
+export function loneCommandHead(command: string): string | null {
+  const tokens = tokenize(command.replace(/\\\n/g, " "));
+  // A separator means a second command, a subshell or a backtick.
+  if (tokens.some((item) => "separator" in item)) return null;
+  const plain = tokens as Token[];
+  for (const token of plain) {
+    if (token.quoted) continue;
+    // `>out`, `2>&1`, `<in`: the line does more than run the program.
+    // Tested across the whole token, not just its start: `tokenize` does not
+    // split on a redirection, so `codex foo>/tmp/x` arrives as one token and
+    // a check anchored at the head would read it as a plain argument.
+    if (/[<>]/.test(token.text)) return null;
+    // `PATH=... codex` runs whatever that PATH resolves.
+    if (isAssignment(token)) return null;
+  }
+  const head = plain[0];
+  // A quoted or expanded head is not a name this can verify.
+  if (!head || head.quoted || head.text.includes("$") || head.text.length === 0) return null;
+  return head.text;
 }
 
 /** Split into segments at `&&`, `||`, `;`, `|`, `&` and newlines. */

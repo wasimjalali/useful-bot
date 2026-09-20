@@ -68,6 +68,65 @@ minutes. Either way the turn is cancelled rather than left running, and the chat
 says which happened. The service log names every routine start with its trigger
 and bot, and every finish and failure with how long it took.
 
+## Command-line tools
+
+A shell line runs with the owner's own PATH and home directory, worked out once
+per service from their login shell and cached (`shared/user-path.ts`, pinnable
+with `UB_OWNER_PATH`). So a CLI they have installed and signed in to runs the
+way it does in their terminal: Homebrew binaries, `~/.local/bin`, `codex`,
+`claude`, `gh`. It is still not a login shell, stdin is closed, and the child's
+environment is a short list rather than the service's own, so none of the app's
+credentials reach it.
+
+At Full access the sandbox profile also opens the state a tool keeps for
+itself, because one that cannot read its token reports itself signed out and
+one that cannot write a refreshed token loops. It opens it **per command, to
+the tool that owns it**: a `codex` line reaches `~/.codex` and not the
+keychain, a `claude` line reaches the keychain and not `~/.codex`, and a `cat`
+line on the same posture reaches neither. The store is derived from the
+program's own name (`~/.<name>`, `~/.config/<name>`, `~/.local/share/<name>`,
+`~/.local/state/<name>`), so a CLI installed later needs no entry anywhere. A
+line that is not one plain command, or whose program is named after a protected
+store, is handed nothing. Every credential store the profile protects (`.ssh`,
+`.aws`, `.npmrc`, `.env`, the keychains) stays refused in every mode, with no
+exemption, and the text tripwire still refuses a line that names one.
+
+**A grant cannot be scoped to a binary.** A seatbelt rule applies to everything
+the line spawns, so naming a CLI opens its store to whatever that CLI then runs.
+For a tool's own directory that is a fair trade: the blast radius is that tool's
+own token, which is exactly what it was opened for. The login keychain is not,
+because it holds every other application's secrets as well, so it is granted to
+nothing and no row may name it.
+
+What that means per tool, measured rather than assumed: a `codex` line reads
+`~/.codex/auth.json` and a `claude` line reads `~/.claude/.credentials.json`,
+each from its own line only — a plain `cat`, or the other tool's line, is
+refused both. `gh` is the one that keeps its token solely in the keyring with no
+file form, so an unattended `gh` reports itself signed out; on an approval card
+it works, because an approved line runs unconfined. `install_cli list` reports
+every sign-in either way, since that probe runs in the parent process outside
+the profile.
+
+Config that a tool reads and then executes is never writable, in any mode and
+including inside a store just opened for its own CLI: `~/.claude/settings.json`,
+`~/.codex/config.toml`, `~/.config/gh/config.yml`, `.git/hooks`,
+`.github/workflows` and `~/.local/bin`. A hook planted in one of those runs
+unconfined the next time the owner runs that tool themselves, which is the same
+reason `.zshrc` has been refused here since the profile was written. Reading
+them stays open, and `install_cli` is the one path that may put a program on the
+owner's PATH.
+
+`install_cli` lists the tools this app knows, where each resolves and whether a
+sign-in is stored, and installs one by name from `agent/lib/cli-registry.ts`.
+The install runs the registry's exact command: Read only refuses it, Auto puts
+it on a card, Full access runs it. Anything outside that table is installed
+through `bash`, where the owner reads the whole line.
+
+The default command timeout is 30 seconds and the ceiling is 30 minutes, so a
+coding CLI working through a task can finish. A timeout returns the output that
+arrived with `timedOut: true` instead of failing the tool, and the child runs in
+its own process group so a timeout or a Stop takes down what the line started.
+
 ## Connectors
 
 Connectors let a bot act in the owner's apps (Gmail, Google Calendar, Slack,

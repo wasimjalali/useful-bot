@@ -288,12 +288,24 @@ public struct FoundationProcessRunner: ProcessRunner {
         // handler below.
         process.standardOutput = handle ?? FileHandle.nullDevice
         process.standardError = handle ?? FileHandle.nullDevice
-        process.environment = [
+        // Still a list and not the app's whole environment: a service must not
+        // pick up a stray NODE_OPTIONS or DYLD_* from however the app was
+        // launched. The names below are what the service needs to work out the
+        // owner's real PATH for itself (see shared/user-path.ts), which is what
+        // lets a bot run the CLIs this Mac has installed.
+        var env: [String: String] = [
             // Apple Silicon Homebrew lives under /opt/homebrew; without it a
             // Homebrew-node subtree cannot see its sibling tools.
             "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory(),
         ]
+        let inherited = ProcessInfo.processInfo.environment
+        for name in ["SHELL", "USER", "LOGNAME", "LANG", "TZ"] {
+            if let value = inherited[name], !value.isEmpty {
+                env[name] = value
+            }
+        }
+        process.environment = env
         process.terminationHandler = { [registry, handle] finished in
             let pid = finished.processIdentifier
             registry.remove(pid: pid)
