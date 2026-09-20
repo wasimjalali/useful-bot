@@ -89,6 +89,12 @@ export async function GET(request: Request) {
   if (!session) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
+  // A desktop-profile session never counts on the tailnet, however it was
+  // minted — the introspection endpoint answers the same verdict POST
+  // would have.
+  if (ingress === "tailnet" && session.profile !== "phone") {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
   return NextResponse.json({
     ok: true,
     profile: session.profile,

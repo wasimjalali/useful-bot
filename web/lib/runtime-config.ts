@@ -51,9 +51,9 @@ export function deviceCredentials(): CredentialDigest[] {
  */
 export function credentialById(id: string): CredentialDigest | null {
   const now = Date.now();
-  // An id can leave a revoked row behind beside its live replacement
-  // (--rotate-phone keeps the history), so resolve to the row that is
-  // actually usable rather than the first match.
+  // Minted ids are unique per credential (--rotate-phone revokes the old row
+  // and pushes a new id), so a session dies with its row — resolve only the
+  // exact row, while it is usable.
   return (runtimeConfig()?.credentials ?? [])
     .find((row) => row.id === id && !row.revokedAt && Date.parse(row.expiresAt) > now) ?? null;
 }

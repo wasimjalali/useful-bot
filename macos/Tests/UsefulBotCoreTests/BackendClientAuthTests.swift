@@ -205,6 +205,37 @@ private final class CallCounter: @unchecked Sendable {
         #expect(cookieHeader.value == 1)
     }
 
+    /// The exchange POST must carry the live session cookie itself — the
+    /// detached jar never would, and the server retires the session being
+    /// replaced by reading it. A second signIn sends the first's cookie.
+    @Test func resignInCarriesLiveCookie() async throws {
+        let postsWithoutCookie = CallCounter()
+        var postCount = 0
+        StubURLProtocol.handler = { [self] request in
+            let isPost = request.httpMethod == "POST"
+                && request.url?.path == "/api/auth/session"
+            if isPost {
+                postCount += 1
+                if postCount > 1,
+                   request.value(forHTTPHeaderField: "cookie") != "ub_session=abc123" {
+                    postsWithoutCookie.bump()
+                }
+            }
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: [
+                    "content-type": "application/json",
+                    "set-cookie": "ub_session=abc123; Path=/; HttpOnly; SameSite=Strict",
+                ])!
+            return (response, Data(#"{"ok":true,"csrfToken":"t","profile":"phone"}"#.utf8))
+        }
+        let client = try makeClient()
+        try await client.signIn()
+        try await client.signIn()
+        #expect(postCount == 2)
+        #expect(postsWithoutCookie.value == 0)
+    }
+
     @Test func refusalCoversNewTerminalErrors() {
         #expect(WidgetSaveRetry.isRefusal(BackendError.forbidden("csrf")))
         #expect(WidgetSaveRetry.isRefusal(BackendError.credentialInvalid))

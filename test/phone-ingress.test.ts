@@ -316,15 +316,18 @@ test("revocation without restart: the next read fails the row", () => {
   });
 });
 
-test("rotation: a revoked row beside the live row resolves to the live one", () => {
+test("rotation kills sessions bound to the replaced credential (S9)", () => {
+  // --rotate-phone mints a per-mint-unique row id; a session bound to the
+  // revoked row resolves nothing even though a live phone row exists.
   const dir = tailnetConfigDir({
     credentials: [
-      credentialRow({ revokedAt: new Date().toISOString() }),
-      credentialRow({ sha256: sha256("rotated-phone-token-32-bytes-pad") }),
+      credentialRow({ id: "device-phone-old01", revokedAt: new Date().toISOString() }),
+      credentialRow({ id: "device-phone-new02", sha256: sha256("rotated-phone-token-32-bytes-pad") }),
     ],
   });
   withFixture(join(dir, "config.json"), () => {
-    assert.notEqual(credentialById("device-phone"), null);
+    assert.equal(credentialById("device-phone-old01"), null);
+    assert.notEqual(credentialById("device-phone-new02"), null);
     assert.equal(verifyDeviceToken(PHONE_TOKEN), null);
     assert.equal(verifyDeviceToken("rotated-phone-token-32-bytes-pad")?.profile, "phone");
   });

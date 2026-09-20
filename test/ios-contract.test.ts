@@ -35,6 +35,9 @@ test("every fixture is a recorded exchange, not a hand stub", () => {
     if (record.response.json?.csrfToken !== undefined) {
       assert.equal(record.response.json?.csrfToken, "<csrfToken>", `${file} leaks a CSRF token`);
     }
+    if (record.request?.headers?.["x-ub-csrf"] !== undefined) {
+      assert.equal(record.request.headers["x-ub-csrf"], "<csrfToken>", `${file} leaks a CSRF token in request headers`);
+    }
   }
 });
 

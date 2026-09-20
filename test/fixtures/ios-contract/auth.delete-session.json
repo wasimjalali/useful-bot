@@ -8,7 +8,7 @@
       "x-forwarded-for": "100.64.1.2",
       "x-forwarded-proto": "https",
       "cookie": "<sessionCookie>",
-      "x-ub-csrf": "D3t5b4Y7hCVrg1M_4aN6Y06Wa5MEEI0UPdJnFs3xudg"
+      "x-ub-csrf": "<csrfToken>"
     }
   },
   "response": {

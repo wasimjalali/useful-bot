@@ -75,6 +75,7 @@ async function call(name, { method = "GET", url, headers = {}, body, note }) {
   const recordedJson = json ? { ...json, csrfToken: json.csrfToken === undefined ? undefined : "<csrfToken>" } : null;
   const maskedHeaders = { ...headers };
   if (maskedHeaders.cookie) maskedHeaders.cookie = "<sessionCookie>";
+  if (maskedHeaders["x-ub-csrf"]) maskedHeaders["x-ub-csrf"] = "<csrfToken>";
   const record = {
     note,
     request: { method, path: new URL(url).pathname, headers: maskedHeaders },

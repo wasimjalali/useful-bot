@@ -14,6 +14,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+# The pair file below holds a live device token; nothing it or the nohup
+# logs create should be world-readable.
+umask 077
 NODE=/usr/local/bin/node
 XCB="${XCB:-xcodebuild}"
 SIM_ID="${SIM_ID:-}"
@@ -158,6 +161,15 @@ rm -f "$REVOKED_FLAG"
 "$NODE" scripts/setup-local.mjs --rotate-phone >/dev/null
 payload > "$PAIR_FILE"
 leg testC_RePairAfterRotation
+leg testRepairedDark ShotsUITests
+
+# Loading/empty list states: env seams hold or empty the roster fetch; the
+# app stays paired underneath either way.
+leg testBotsLoading ShotsUITests
+leg testBotsEmpty ShotsUITests
+# §11's fourth banner row: the credential expiry override puts the pairing
+# inside the seven-day window for the one-time "Pairing expires" banner.
+leg testExpiryBanner ShotsUITests
 
 # Visual-gate legs while the pairing + payload are still live: the paired
 # journey (Bots, Devices, sign out, sign in) in dark and at XXXL.
@@ -166,13 +178,17 @@ leg testJourneyDark ShotsUITests
 leg testJourneyAccessibilityLight ShotsUITests
 leg testJourneyAccessibilityDark ShotsUITests
 
-# Readiness banners: the paired app is left on the sim from leg C. No
-# network first (UB_OFFLINE pins the monitor), then web down for "Mac
-# unreachable", then eve down for "Agent runtime is down".
+# Readiness banners: the paired app is left on the sim from the journeys.
+# No network first (UB_OFFLINE pins the monitor), then web down for "Your
+# Mac is unreachable" — and inside that window, the signed-out error and
+# offline shots (sign-out is offline-pure by spec). Resign before eve-down
+# so the runtime-down leg still launches a paired app.
 leg testOfflineBanner ShotsUITests
 stop_web
 leg testMacUnreachableBanner ShotsUITests
+leg testSignedOutStates ShotsUITests
 start_web
+leg testResignIn ShotsUITests
 stop_eve
 leg testRuntimeDownBanner ShotsUITests
 start_eve
@@ -185,6 +201,9 @@ kill "$STUB_PID" 2>/dev/null || true
 STUB_PID=""
 rm -f "$STUB_UP_FLAG"
 leg testConnectFailedBothAppearances ShotsUITests
+
+# Offline pairing screen: "You're offline" + disabled-with-reason chrome.
+leg testOfflinePairing ShotsUITests
 
 rm -f "$PAIR_FILE"
 

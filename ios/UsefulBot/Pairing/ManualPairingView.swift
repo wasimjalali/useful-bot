@@ -108,39 +108,42 @@ struct ManualPairingView: View {
     }
 
     private var connectButton: some View {
-        let ready = !address.isEmpty && !token.isEmpty
-        let offline = !coordinator.monitor.isOnline
+        let filled = !address.isEmpty && !token.isEmpty
+        let online = coordinator.monitor.isOnline
+        let connecting = coordinator.phase == .connecting
+        let enabled = filled && online && !connecting
         return VStack(spacing: 8) {
             Button {
                 Task { await coordinator.pairManually(host: address, token: token) }
             } label: {
-                Text(coordinator.phase == .connecting ? "Connecting" : "Connect")
+                Text(connecting ? "Connecting" : "Connect")
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
-                    .foregroundStyle(ready ? Theme.C.brandInk : Theme.C.inkFaint)
+                    .foregroundStyle(enabled ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 50)
             }
-            .disabled(!ready || offline || coordinator.phase == .connecting)
+            .disabled(!enabled)
             .buttonStyle(PressedScale(
-                fill: ready ? Theme.C.brand : Theme.C.sunken,
-                pressedFill: ready ? Theme.C.accentStrong : Theme.C.sunken,
-                shadowed: ready
+                fill: enabled ? Theme.C.brand : Theme.C.sunken,
+                pressedFill: enabled ? Theme.C.accentStrong : Theme.C.sunken,
+                shadowed: enabled
             ))
             .accessibilityIdentifier("manual-connect")
-            if !ready {
-                Text("Enter the Mac address and pairing token.")
+            if !enabled {
+                // Disabled-with-reason (design spec 1.1): inkMuted, never
+                // danger — nothing failed.
+                Text(reason(online: online, connecting: connecting, filled: filled))
                     .tokenFont(DesignTokens.FontSize.attachError, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if offline {
-                // Offline: Connect disabled with that reason (design spec).
-                Text("You're offline")
-                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
-                    .foregroundStyle(Theme.C.danger)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func reason(online: Bool, connecting: Bool, filled: Bool) -> String {
+        if connecting { return "Connecting to your Mac" }
+        if !online { return "You're offline" }
+        return "Enter the Mac address and pairing token."
     }
 }
 

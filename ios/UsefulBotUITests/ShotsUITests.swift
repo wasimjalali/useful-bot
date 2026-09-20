@@ -68,30 +68,62 @@ final class ShotsUITests: XCTestCase {
     /// The Keychain "Save Password?" sheet can surface *after* the last
     /// synthesized event — during a hold there is nothing for the
     /// interruption monitor to interrupt, so it lingers into the shot.
-    /// Query + tap the buttons directly (the sheet lives on the app or
-    /// springboard depending on runtime).
+    /// Poll until the alerts have stayed away for two consecutive checks
+    /// (4 s ceiling), answering each one that does appear.
     private func dismissSystemAlerts(_ app: XCUIApplication) {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        for host in [app, springboard] {
-            guard host.alerts.firstMatch.waitForExistence(timeout: 0.3) else { continue }
-            for label in ["Not Now", "Allow", "OK"] {
-                let button = host.buttons[label]
-                if button.exists { button.tap() }
+        let deadline = Date().addingTimeInterval(4)
+        var quiet = 0
+        while Date() < deadline && quiet < 2 {
+            var handled = false
+            for host in [app, springboard] where host.alerts.firstMatch.exists {
+                for label in ["Not Now", "Allow", "OK"] {
+                    let button = host.buttons[label]
+                    if button.exists { button.tap(); handled = true }
+                }
             }
+            quiet = handled ? 0 : quiet + 1
+            usleep(400_000)
         }
     }
 
     private func launch(_ app: XCUIApplication, appearance: String, typeSize: String? = nil,
                         reset: Bool = false, offline: Bool = false,
-                        holdConnected: Bool = false) {
+                        holdConnected: Bool = false,
+                        hangShell: Bool = false, emptyShell: Bool = false,
+                        expiryDays: Double? = nil) {
         app.launchEnvironment["UB_APPEARANCE"] = appearance
         app.launchEnvironment["UB_CAMERA_STATE"] = "denied"
         if reset { app.launchEnvironment["UB_RESET_PAIRING"] = "1" }
         if offline { app.launchEnvironment["UB_OFFLINE"] = "1" }
         if holdConnected { app.launchEnvironment["UB_HOLD_CONNECTED"] = "1" }
+        if hangShell { app.launchEnvironment["UB_HANG_SHELL"] = "1" }
+        if emptyShell { app.launchEnvironment["UB_EMPTY_SHELL"] = "1" }
+        if let expiryDays {
+            app.launchEnvironment["UB_CREDENTIAL_EXPIRY_DAYS"] = "\(expiryDays)"
+        }
         if let typeSize { app.launchEnvironment["UB_TYPE_SIZE"] = typeSize }
         installInterruptionMonitor()
         app.launch()
+    }
+
+    /// The paired root's positive signal: the bots list's nav-bar title.
+    /// Used instead of `navigationBars[…]` (the title is a toolbar item,
+    /// not `.navigationTitle`) and instead of a nonexistence poll (a
+    /// transient snapshot miss fakes it).
+    @discardableResult
+    private func waitForBotsRoot(_ app: XCUIApplication, timeout: TimeInterval = 15) -> Bool {
+        app.staticTexts["Useful Bot"].waitForExistence(timeout: timeout)
+    }
+
+    /// Opens the pushed Devices screen and waits for its own nav bar.
+    private func openDevices(_ app: XCUIApplication) {
+        for _ in 0..<8 {
+            if app.navigationBars["Devices"].exists { return }
+            let gear = app.buttons["Devices"]
+            if gear.exists { gear.tap() }
+            usleep(400_000)
+        }
     }
 
     private func type(_ app: XCUIApplication, _ element: XCUIElement, _ text: String) {
@@ -153,19 +185,14 @@ final class ShotsUITests: XCTestCase {
 
         XCTAssertTrue(app.textFields["Mac address"].waitForExistence(timeout: 15))
         pairThroughManualEntry(app, pair)
-        XCTAssertTrue(app.navigationBars["Useful Bot"].waitForExistence(timeout: 20))
+        XCTAssertTrue(waitForBotsRoot(app, timeout: 20))
         let s = suffix(app, appearance: appearance, typeSize: typeSize)
         dismissSystemAlerts(app)
         shot("bots-paired-\(s)")
 
-        for _ in 0..<6 {
-            if app.buttons["Done"].exists { break }
-            let gear = app.buttons["Devices"]
-            if gear.exists { gear.tap() }
-            usleep(400_000)
-        }
-        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 10),
-                      "Devices sheet never presented")
+        openDevices(app)
+        XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10),
+                      "Devices push never presented")
         XCTAssertTrue(app.staticTexts["This Mac"].waitForExistence(timeout: 10))
         dismissSystemAlerts(app)
         shot("devices-paired-\(s)")
@@ -176,7 +203,7 @@ final class ShotsUITests: XCTestCase {
         shot("signed-out-\(s)")
 
         tapButton(app, "signed-out-sign-in")
-        XCTAssertTrue(app.navigationBars["Useful Bot"].waitForExistence(timeout: 15))
+        XCTAssertTrue(waitForBotsRoot(app, timeout: 15))
         dismissSystemAlerts(app)
         shot("bots-resigned-in-\(s)")
     }
@@ -217,7 +244,7 @@ final class ShotsUITests: XCTestCase {
             let app = XCUIApplication()
             launch(app, appearance: appearance)
             XCTAssertTrue(
-                app.staticTexts["Mac unreachable"].waitForExistence(timeout: 25)
+                app.staticTexts["Your Mac is unreachable"].waitForExistence(timeout: 25)
                     || app.staticTexts["Agent runtime is down on your Mac"].waitForExistence(timeout: 5),
                 "readiness banner never appeared")
             shot("bots-unreachable-\(suffix(app, appearance: appearance, typeSize: nil))")
@@ -235,7 +262,7 @@ final class ShotsUITests: XCTestCase {
             let app = XCUIApplication()
             launch(app, appearance: appearance, offline: true)
             XCTAssertTrue(
-                app.staticTexts["You're offline — showing cached data"].waitForExistence(timeout: 25),
+                app.staticTexts["You're offline"].waitForExistence(timeout: 25),
                 "offline banner never appeared")
             shot("bots-offline-\(suffix(app, appearance: appearance, typeSize: nil))")
             app.terminate()
@@ -277,8 +304,10 @@ final class ShotsUITests: XCTestCase {
             while Date() < deadline {
                 if status.exists {
                     let label = status.label
-                    if label != "Connecting to your Mac"
-                        && label != "Point the camera at the code on your Mac" { break }
+                    // The denied state suppresses the idle line to "" —
+                    // that is idle, not a result; keep polling past it.
+                    if !label.isEmpty, label != "Connecting to your Mac",
+                       label != "Point the camera at the code on your Mac" { break }
                 }
                 usleep(300_000)
             }
@@ -342,7 +371,11 @@ final class ShotsUITests: XCTestCase {
             // would leave the store unpaired for the revoke/testB legs.
             // Wait for the positive paired-root signal (its nav bar): a
             // nonexistence poll can return on a transient snapshot miss.
-            _ = app.navigationBars["Useful Bot"].waitForExistence(timeout: 15)
+            // XCTest polling starves the MainActor the hold sleeps on, so
+            // give it real headroom and fail THIS leg, not testB downstream.
+            XCTAssertTrue(
+                waitForBotsRoot(app, timeout: 40),
+                "paired root never appeared — terminating would bank unpaired")
             app.terminate()
         }
     }
@@ -393,9 +426,11 @@ final class ShotsUITests: XCTestCase {
             shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))")
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
-            // Wait for the positive paired-root signal (its nav bar): a
-            // nonexistence poll can return on a transient snapshot miss.
-            _ = app.navigationBars["Useful Bot"].waitForExistence(timeout: 15)
+            // Same reasoning as testConnectedPairScreen: assert the paired
+            // root with headroom so this leg fails instead of testB.
+            XCTAssertTrue(
+                waitForBotsRoot(app, timeout: 40),
+                "paired root never appeared — terminating would bank unpaired")
             app.terminate()
         }
     }
@@ -420,5 +455,150 @@ final class ShotsUITests: XCTestCase {
             shot("pairing-connecting-\(suffix(app, appearance: appearance, typeSize: nil))")
             app.terminate()
         }
+    }
+
+    /// Re-paired Bots list in dark — the flow leg's `bots-repaired` shot is
+    /// light-only, so the gate runs this right after testC while the rotated
+    /// credential still holds the pairing.
+    func testRepairedDark() throws {
+        guard FileManager.default.contents(atPath: pairFilePath) != nil else {
+            throw XCTSkip("\(pairFilePath) missing — drive this test through scripts/ios-pairing-gate.sh")
+        }
+        let app = XCUIApplication()
+        launch(app, appearance: "dark")
+        XCTAssertTrue(waitForBotsRoot(app, timeout: 25), "re-paired app never reached the Bots list")
+        dismissSystemAlerts(app)
+        shot("bots-repaired-\(suffix(app, appearance: "dark", typeSize: nil))")
+        app.terminate()
+    }
+
+    /// Loading state (spec 1.2): UB_HANG_SHELL holds the roster fetch so the
+    /// skeleton rows stay on screen for the shot.
+    func testBotsLoading() throws {
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance, hangShell: true)
+            XCTAssertTrue(
+                app.descendants(matching: .any)
+                    .matching(identifier: "bots-skeleton").firstMatch
+                    .waitForExistence(timeout: 20),
+                "skeleton never rendered")
+            shot("bots-loading-\(suffix(app, appearance: appearance, typeSize: nil))")
+            app.terminate()
+        }
+    }
+
+    /// Empty state (spec 1.2): UB_EMPTY_SHELL answers the roster with zero
+    /// bots so "Create your first bot" + "New bot" render for the shot.
+    func testBotsEmpty() throws {
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance, emptyShell: true)
+            XCTAssertTrue(
+                app.staticTexts["Create your first bot"].waitForExistence(timeout: 25),
+                "empty state never rendered")
+            dismissSystemAlerts(app)
+            shot("bots-empty-\(suffix(app, appearance: appearance, typeSize: nil))")
+            app.terminate()
+        }
+    }
+
+    /// Credential-expiring banner (spec 11, design 1.2's fourth row):
+    /// UB_CREDENTIAL_EXPIRY_DAYS=3 puts the credential inside the seven-day
+    /// window so the one-time banner renders.
+    func testExpiryBanner() throws {
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance, expiryDays: 3)
+            XCTAssertTrue(waitForBotsRoot(app, timeout: 15))
+            if !app.staticTexts["Pairing expires in 3 days"]
+                .waitForExistence(timeout: 15) {
+                let tree = app.descendants(matching: .staticText)
+                    .allElementsBoundByIndex.map(\.label)
+                XCTFail("expiry banner never rendered; texts: \(tree)")
+            }
+            shot("bots-expiring-\(suffix(app, appearance: appearance, typeSize: nil))")
+            app.terminate()
+        }
+    }
+
+    /// Pairing screen offline (spec 1.1): "You're offline" on the status
+    /// line, scanning paused, Enter manually disabled with the reason.
+    /// Runs at the end of the gate — needs no credential.
+    func testOfflinePairing() throws {
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance, reset: true, offline: true)
+            XCTAssertTrue(
+                app.staticTexts["You're offline"].waitForExistence(timeout: 15),
+                "offline status never appeared")
+            // Camera is pinned denied for shots, so manual entry sits inline:
+            // its Connect carries the same disabled-with-reason chrome.
+            XCTAssertFalse(app.buttons["manual-connect"].isEnabled,
+                           "manual Connect should be disabled offline")
+            dismissSystemAlerts(app)
+            shot("pairing-offline-\(suffix(app, appearance: appearance, typeSize: nil))")
+            app.terminate()
+        }
+    }
+
+    /// Signed-out error + offline (spec 1.18): the gate holds the web
+    /// service down for this leg, so the sign-out is offline-pure and the
+    /// Sign-in retry lands the unreachable error on the reason line.
+    /// Leaves the app signedOut — testResignIn re-pairs it.
+    func testSignedOutStates() throws {
+        guard FileManager.default.contents(atPath: "/tmp/ub-web-down") != nil else {
+            throw XCTSkip("/tmp/ub-web-down missing — only valid while the gate holds the web service down")
+        }
+        for appearance in ["light", "dark"] {
+            // Reach signedOut: from the paired root open Devices and sign
+            // out; on the second appearance the state is already there.
+            let app = XCUIApplication()
+            launch(app, appearance: appearance)
+            if app.buttons["Devices"].waitForExistence(timeout: 10) {
+                openDevices(app)
+                XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10),
+                              "Devices push never presented")
+                tapButton(app, "Sign out on this phone")
+            }
+            XCTAssertTrue(app.staticTexts["Signed out"].waitForExistence(timeout: 15),
+                          "signed-out screen never appeared")
+            let s = suffix(app, appearance: appearance, typeSize: nil)
+
+            // Error state: the web service is down, so tapping Sign in
+            // exchanges nowhere and the reason line carries the failure.
+            tapButton(app, "signed-out-sign-in")
+            XCTAssertTrue(
+                app.staticTexts["signed-out-reason"].waitForExistence(timeout: 15),
+                "error reason never appeared")
+            dismissSystemAlerts(app)
+            shot("signed-out-error-\(s)")
+            app.terminate()
+
+            // Offline state: the pinned monitor renders the disabled reason
+            // and greys Sign in.
+            let off = XCUIApplication()
+            launch(off, appearance: appearance, offline: true)
+            XCTAssertTrue(off.staticTexts["Signed out"].waitForExistence(timeout: 15))
+            XCTAssertTrue(off.staticTexts["You're offline"].waitForExistence(timeout: 10))
+            XCTAssertFalse(off.buttons["signed-out-sign-in"].isEnabled,
+                           "Sign in should be disabled offline")
+            dismissSystemAlerts(off)
+            shot("signed-out-offline-\(s)")
+            off.terminate()
+        }
+    }
+
+    /// Recovery leg for testSignedOutStates: the web service is back up, so
+    /// a Sign-in tap re-exchanges and the app lands paired again for the
+    /// banner legs that follow.
+    func testResignIn() throws {
+        let app = XCUIApplication()
+        launch(app, appearance: "light")
+        XCTAssertTrue(app.staticTexts["Signed out"].waitForExistence(timeout: 15),
+                      "app was not left signedOut")
+        tapButton(app, "signed-out-sign-in")
+        XCTAssertTrue(waitForBotsRoot(app, timeout: 30), "re-sign-in never reached the Bots list")
+        app.terminate()
     }
 }

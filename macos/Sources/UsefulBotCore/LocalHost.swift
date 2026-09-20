@@ -117,9 +117,18 @@ public enum LocalHost {
     /// must never open the paired host either, which is the credential's own
     /// address. `pairedHost` is a bare host string (no scheme) or nil.
     public static func isBlocked(_ host: String?, pairedHost: String?) -> Bool {
-        if let pairedHost, let host,
-           host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                == pairedHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        func normalized(_ value: String) -> String {
+            var host = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if host.hasPrefix("["), host.hasSuffix("]") {
+                host = String(host.dropFirst().dropLast())
+            }
+            if let zone = host.firstIndex(of: "%") {
+                host = String(host[..<zone])
+            }
+            if host.hasSuffix(".") { host.removeLast() }
+            return host
+        }
+        if let pairedHost, let host, normalized(host) == normalized(pairedHost) {
             return true
         }
         return isLocal(host)

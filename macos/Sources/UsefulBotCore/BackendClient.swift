@@ -366,6 +366,12 @@ public actor BackendClient {
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+        // The cookie jar is manual (detached HTTPCookieStorage is inert), so
+        // send() never runs here: attach the live cookie ourselves or the
+        // server's destroySession cannot retire the session this replaces.
+        if let sessionCookie {
+            request.setValue(sessionCookie, forHTTPHeaderField: "Cookie")
+        }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
         guard (200...299).contains(http.statusCode) else {

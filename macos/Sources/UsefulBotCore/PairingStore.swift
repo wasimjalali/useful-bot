@@ -45,6 +45,10 @@ public final class PairingStore: ObservableObject {
     @Published public private(set) var credentialExpiresAt: Date?
     /// Bumped on every unpair; every in-flight response is checked against it.
     @Published public private(set) var dataGeneration: Int
+    /// The credential expiry the seven-day warning already fired for — the
+    /// banner is one-time per credential (spec 11), so a re-pair or rotation
+    /// (a different `credentialExpiresAt`) resets it.
+    @Published public private(set) var expiryWarnedFor: Date?
 
     /// Non-secret defaults keys, all under the app's suite.
     private enum Key {
@@ -54,6 +58,7 @@ public final class PairingStore: ObservableObject {
         static let sessionExpiresAt = "pairing.sessionExpiresAt"
         static let credentialExpiresAt = "pairing.credentialExpiresAt"
         static let dataGeneration = "pairing.dataGeneration"
+        static let expiryWarnedFor = "pairing.expiryWarnedFor"
     }
 
     private let defaults: UserDefaults
@@ -70,6 +75,7 @@ public final class PairingStore: ObservableObject {
         self.sessionExpiresAt = defaults.object(forKey: Key.sessionExpiresAt) as? Date
         self.credentialExpiresAt = defaults.object(forKey: Key.credentialExpiresAt) as? Date
         self.dataGeneration = defaults.integer(forKey: Key.dataGeneration)
+        self.expiryWarnedFor = defaults.object(forKey: Key.expiryWarnedFor) as? Date
         // A persisted non-unpaired state without a stored origin is corrupt:
         // it cannot name the endpoint a token belongs to, so fail to
         // credentialInvalid rather than guess one.
@@ -99,6 +105,7 @@ public final class PairingStore: ObservableObject {
         pairedName = name
         sessionExpiresAt = nil
         credentialExpiresAt = nil
+        expiryWarnedFor = nil
         state = .paired
         persist()
     }
@@ -137,7 +144,15 @@ public final class PairingStore: ObservableObject {
         pairedName = nil
         sessionExpiresAt = nil
         credentialExpiresAt = nil
+        expiryWarnedFor = nil
         state = .unpaired
+        persist()
+    }
+
+    /// The credential-expiry banner rendered once (spec 11: one-time at
+    /// seven days); keyed to the expiry so a rotated credential warns again.
+    public func markExpiryWarned() {
+        expiryWarnedFor = credentialExpiresAt
         persist()
     }
 
@@ -165,6 +180,7 @@ public final class PairingStore: ObservableObject {
         defaults.set(sessionExpiresAt, forKey: Key.sessionExpiresAt)
         defaults.set(credentialExpiresAt, forKey: Key.credentialExpiresAt)
         defaults.set(dataGeneration, forKey: Key.dataGeneration)
+        defaults.set(expiryWarnedFor, forKey: Key.expiryWarnedFor)
         // UserDefaults batches writes; a lifecycle record must survive the
         // process dying the next moment (revocation, unpair, kill -9), so
         // flush synchronously. Writes are rare — state transitions only.

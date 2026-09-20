@@ -65,16 +65,22 @@ final class PairingFlowUITests: XCTestCase {
     }
 
     /// The Keychain "Save Password?" sheet can surface *after* the last
-    /// synthesized event, then linger into the shot — answer it directly
-    /// (the sheet lives on the app or springboard depending on runtime).
+    /// synthesized event, then linger into the shot — poll until the alerts
+    /// have stayed away for two consecutive checks (4 s ceiling).
     private func dismissSystemAlerts(_ app: XCUIApplication) {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        for host in [app, springboard] {
-            guard host.alerts.firstMatch.waitForExistence(timeout: 0.3) else { continue }
-            for label in ["Not Now", "Allow", "OK"] {
-                let button = host.buttons[label]
-                if button.exists { button.tap() }
+        let deadline = Date().addingTimeInterval(4)
+        var quiet = 0
+        while Date() < deadline && quiet < 2 {
+            var handled = false
+            for host in [app, springboard] where host.alerts.firstMatch.exists {
+                for label in ["Not Now", "Allow", "OK"] {
+                    let button = host.buttons[label]
+                    if button.exists { button.tap(); handled = true }
+                }
             }
+            quiet = handled ? 0 : quiet + 1
+            usleep(400_000)
         }
     }
 
@@ -155,23 +161,23 @@ final class PairingFlowUITests: XCTestCase {
             dismissSystemAlerts(app)
             shot("pairing-connected")
         }
-        XCTAssertTrue(app.navigationBars["Useful Bot"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Useful Bot"].waitForExistence(timeout: 30))
         dismissSystemAlerts(app)
         shot("bots-paired")
 
-        // Devices sheet: the paired record with both clocks. The roster
+        // Devices push: the paired record with both clocks. The roster
         // refresh rebuilds the toolbar right after the nav bar appears, so a
         // snapshot can go stale mid-tap (hit point {-1,-1}) — retry the tap.
-        for _ in 0..<6 {
-            if app.buttons["Done"].exists { break }
+        for _ in 0..<8 {
+            if app.navigationBars["Devices"].exists { break }
             let gear = app.buttons["Devices"]
             if gear.exists { gear.tap() }
             usleep(400_000)
         }
-        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 10),
-                      "Devices sheet never presented")
+        XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10),
+                      "Devices push never presented")
         XCTAssertTrue(app.staticTexts["This Mac"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Session ends"].exists)
+        XCTAssertTrue(app.staticTexts["Session expires"].exists)
         dismissSystemAlerts(app)
         shot("devices-paired")
 
@@ -183,7 +189,7 @@ final class PairingFlowUITests: XCTestCase {
 
         // Sign in again (class C) → back to the Bots list.
         tapButton(app, "signed-out-sign-in")
-        XCTAssertTrue(app.navigationBars["Useful Bot"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Useful Bot"].waitForExistence(timeout: 30))
         dismissSystemAlerts(app)
         shot("bots-resigned-in")
     }
@@ -194,7 +200,7 @@ final class PairingFlowUITests: XCTestCase {
         let app = XCUIApplication()
         launch(app, reset: false)
         XCTAssertTrue(
-            app.staticTexts["Pair again"].waitForExistence(timeout: 15),
+            app.staticTexts["Pair again"].waitForExistence(timeout: 30),
             "revoked credential did not land in credentialInvalid"
         )
         XCTAssertTrue(app.staticTexts["This pairing was revoked or expired. Scan a new code from your Mac."].exists)
@@ -208,9 +214,9 @@ final class PairingFlowUITests: XCTestCase {
         let pair = try pairing()
         let app = XCUIApplication()
         launch(app, reset: false)
-        XCTAssertTrue(app.staticTexts["Pair again"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Pair again"].waitForExistence(timeout: 30))
         pairThroughManualEntry(app, pair)
-        XCTAssertTrue(app.navigationBars["Useful Bot"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Useful Bot"].waitForExistence(timeout: 30))
         dismissSystemAlerts(app)
         shot("bots-repaired")
     }

@@ -21,6 +21,9 @@ final class PairingCoordinator: ObservableObject {
     @Published private(set) var client: BackendClient?
     @Published var phase: ConnectPhase = .idle
     @Published var readiness: MacReadiness?
+    /// Last successful contact with the Mac — the banner's "Last seen …"
+    /// line quotes it.
+    @Published private(set) var lastContact: Date?
 
     let store: PairingStore
     let monitor: PathMonitor
@@ -136,10 +139,17 @@ final class PairingCoordinator: ObservableObject {
             let hold = ProcessInfo.processInfo.environment["UB_HOLD_CONNECTED"] == "1"
                 ? 8_000 : 600
             try await Task.sleep(for: .milliseconds(hold))
+            // Re-pairing to a different Mac retires the old origin's Keychain
+            // token: purgeData clears defaults and dirs, not Keychain items.
+            let priorOrigin = store.pairedOrigin
             store.markPaired(origin: payload.host, name: payload.name)
+            if priorOrigin != payload.host.value,
+               let stale = PhoneKeychainStore(storedOrigin: priorOrigin) {
+                stale.deleteToken()
+            }
             store.markSignedIn(
                 sessionExpiresAt: info.expiresAt,
-                credentialExpiresAt: info.credentialExpiresAt
+                credentialExpiresAt: credentialExpiry(reporting: info.credentialExpiresAt)
             )
             readiness = .ready
         } catch {
@@ -158,13 +168,29 @@ final class PairingCoordinator: ObservableObject {
             let info = try await client.signIn()
             store.markSignedIn(
                 sessionExpiresAt: info.expiresAt,
-                credentialExpiresAt: info.credentialExpiresAt
+                credentialExpiresAt: credentialExpiry(reporting: info.credentialExpiresAt)
             )
+            lastContact = Date()
         } catch BackendError.credentialInvalid {
             store.markCredentialInvalid()
         } catch {
             await probeReadiness()
+            // On the signed-out surface this is the Sign-in result — render
+            // it instead of leaving the button silently re-enabled.
+            phase = .failed(Self.copy(for: error))
         }
+    }
+
+    /// UI-test seam: UB_CREDENTIAL_EXPIRY_DAYS overrides the reported
+    /// credential expiry so the seven-day banner (spec 11) is shot-able
+    /// without waiting out a real 30-day credential. Never set outside the
+    /// harness.
+    private func credentialExpiry(reporting reported: Date?) -> Date? {
+        let env = ProcessInfo.processInfo.environment
+        if let days = env["UB_CREDENTIAL_EXPIRY_DAYS"].flatMap(Double.init) {
+            return Date().addingTimeInterval(days * 86_400)
+        }
+        return reported
     }
 
     /// Sign in from `signedOut` (class C — no biometric, spec 4.4).
@@ -213,15 +239,18 @@ final class PairingCoordinator: ObservableObject {
         guard let client else { return }
         do {
             let status = try await client.status()
-            if let version = status.apiVersion, !APIVersion.known.contains(version) {
+            // S15: absent or malformed apiVersion is not a version the
+            // client knows — fail closed, never silently ready.
+            guard let version = status.apiVersion, APIVersion.known.contains(version) else {
                 readiness = .runtimeDown
                 return
             }
+            lastContact = Date()
             readiness = status.eve == "available" ? .ready : .runtimeDown
         } catch BackendError.credentialInvalid {
             store.markCredentialInvalid()
         } catch {
-            readiness = .macUnreachable(lastSeen: nil, detail: String(describing: error))
+            readiness = .macUnreachable(lastSeen: lastContact, detail: String(describing: error))
         }
     }
 

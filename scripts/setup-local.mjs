@@ -28,6 +28,10 @@ const TOKEN_CREDENTIALS = [
 // The owner-phone credential (spec S7/§4.1): minted by --pair-phone only, so a
 // plain setup or --add-missing never creates phone authority by accident.
 const PHONE_CREDENTIAL = { id: "device-phone", kind: "device", callerId: "phone", profile: "phone", keychain: "com.usefulbot.device.phone" };
+// Phone rows match by kind+callerId, never by id: the id is unique per mint
+// so a session bound to a rotated-away row resolves to nothing (S9).
+const isPhoneRow = (row) => row && row.kind === PHONE_CREDENTIAL.kind && row.callerId === PHONE_CREDENTIAL.callerId;
+const mintPhone = () => mint({ ...PHONE_CREDENTIAL, id: `${PHONE_CREDENTIAL.id}-${randomBytes(6).toString("hex")}` });
 const CHANNEL_KEYCHAIN = "com.usefulbot.channel.desktop";
 const KEYCHAIN_ITEMS = [...TOKEN_CREDENTIALS.map((cred) => cred.keychain), CHANNEL_KEYCHAIN];
 
@@ -243,7 +247,7 @@ function printPayload(config, { host } = {}) {
 async function main() {
   if (phoneOps > 0) {
     const config = readExistingConfig();
-    const phoneRows = () => config.credentials.filter((row) => row && row.id === PHONE_CREDENTIAL.id);
+    const phoneRows = () => config.credentials.filter(isPhoneRow);
     const livePhoneRow = () => phoneRows().find((row) => row.revokedAt === null);
 
     if (printOnly) {
@@ -281,7 +285,7 @@ async function main() {
     // --pair-phone and --rotate-phone share the mint path: a new token in the
     // Keychain, the old row(s) revoked in place, everything else untouched.
     const tailnet = await collectTailnet(config.tailnet);
-    const entry = mint(PHONE_CREDENTIAL);
+    const entry = mintPhone();
     const now = new Date().toISOString();
     try {
       putKeychain(entry.keychain, entry.token);
@@ -348,14 +352,14 @@ async function main() {
   } else if (rotate) {
     const previous = existsSync(configPath) ? readExistingConfig() : null;
     const phoneActive = previous?.credentials?.some?.(
-      (row) => row && row.id === PHONE_CREDENTIAL.id && row.revokedAt === null
+      (row) => isPhoneRow(row) && row.revokedAt === null
     );
     minted = [
       ...TOKEN_CREDENTIALS.map(mint),
       // --rotate covers the phone credential too when one is live, and keeps
       // the phone enrollment as it was (S7): a rotation must not silently
       // switch phoneEnabled off or lose the tailnet record.
-      ...(phoneActive ? [mint(PHONE_CREDENTIAL)] : []),
+      ...(phoneActive ? [mintPhone()] : []),
       { token: randomBytes(32).toString("base64url"), keychain: CHANNEL_KEYCHAIN, row: null },
     ];
     config = {

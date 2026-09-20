@@ -7,6 +7,7 @@ import UsefulBotCore
 /// shown. Offline disables Sign in with "You're offline".
 struct SignedOutView: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
+    @State private var gateUnavailable = false
 
     private var isSigningIn: Bool {
         coordinator.phase == .connecting
@@ -14,6 +15,10 @@ struct SignedOutView: View {
 
     private var isOffline: Bool {
         !coordinator.monitor.isOnline
+    }
+
+    private var signInEnabled: Bool {
+        !isSigningIn && !isOffline
     }
 
     var body: some View {
@@ -48,21 +53,25 @@ struct SignedOutView: View {
                 } label: {
                     Text(isSigningIn ? "Signing in" : "Sign in")
                         .tokenFont(DesignTokens.FontSize.button, .semibold)
-                        .foregroundStyle(Theme.C.brandInk)
+                        .foregroundStyle(signInEnabled ? Theme.C.brandInk : Theme.C.inkFaint)
                         .frame(maxWidth: .infinity, minHeight: 50)
                 }
-                .disabled(isSigningIn || isOffline)
+                .disabled(!signInEnabled)
                 .buttonStyle(PressedScale(
-                    fill: Theme.C.brand,
-                    pressedFill: Theme.C.accentStrong,
-                    shadowed: true
+                    fill: signInEnabled ? Theme.C.brand : Theme.C.sunken,
+                    pressedFill: signInEnabled ? Theme.C.accentStrong : Theme.C.sunken,
+                    shadowed: signInEnabled
                 ))
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
                 .accessibilityIdentifier("signed-out-sign-in")
 
                 Button {
                     Task {
-                        guard await OwnerGate.evaluate(reason: "Unpair this iPhone") else { return }
+                        let verdict = await OwnerGate.evaluate(reason: "Unpair this iPhone")
+                        guard verdict == .approved else {
+                            gateUnavailable = verdict == .unavailable
+                            return
+                        }
                         await coordinator.unpair()
                     }
                 } label: {
@@ -81,6 +90,12 @@ struct SignedOutView: View {
                 }
                 .buttonStyle(PressedScale())
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+                if gateUnavailable {
+                    Text(OwnerGate.unavailableCopy)
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                        .foregroundStyle(Theme.C.danger)
+                        .multilineTextAlignment(.center)
+                }
             }
             Spacer()
             Spacer()
@@ -92,10 +107,12 @@ struct SignedOutView: View {
     @ViewBuilder
     private var reasonLine: some View {
         if isOffline {
+            // A disabled reason, not an error — inkMuted per the §1.0 recipe.
             Text("You're offline")
                 .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
-                .foregroundStyle(Theme.C.danger)
+                .foregroundStyle(Theme.C.inkMuted)
                 .padding(.bottom, 16)
+                .accessibilityIdentifier("signed-out-reason")
         } else if case .failed(let message) = coordinator.phase {
             Text(message)
                 .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
@@ -103,6 +120,7 @@ struct SignedOutView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 16)
+                .accessibilityIdentifier("signed-out-reason")
         } else {
             Spacer().frame(height: 16)
         }

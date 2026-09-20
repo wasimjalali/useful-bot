@@ -135,6 +135,12 @@ import Testing
         #expect(LocalHost.isBlocked("Mac.Tailnet-Name.TS.NET", pairedHost: "mac.tailnet-name.ts.net"))
         #expect(!LocalHost.isBlocked("other.tailnet-name.ts.net", pairedHost: "mac.tailnet-name.ts.net"))
         #expect(!LocalHost.isBlocked("mac.tailnet-name.ts.net", pairedHost: nil))
+        // Same host in every DNS-spellable spelling: whitespace, trailing
+        // dot, brackets, an IPv6 zone — all normalize to the paired host.
+        #expect(LocalHost.isBlocked("  mac.tailnet-name.ts.net  ", pairedHost: "mac.tailnet-name.ts.net"))
+        #expect(LocalHost.isBlocked("mac.tailnet-name.ts.net.", pairedHost: "mac.tailnet-name.ts.net"))
+        #expect(LocalHost.isBlocked("[mac.tailnet-name.ts.net]", pairedHost: "mac.tailnet-name.ts.net"))
+        #expect(LocalHost.isBlocked("mac.tailnet-name.ts.net.", pairedHost: " mac.tailnet-name.ts.net "))
     }
 
     @Test func tailnetAndPrivateRangesBlocked() {
@@ -219,6 +225,31 @@ import Testing
         // The credential clock survives sign-out (sign-out clears the
         // session only — spec 4.8).
         #expect(store.credentialExpiresAt == credential)
+    }
+
+    /// §11: the seven-day warning is one-time per credential — keyed to the
+    /// expiry, so rotation/re-pair (a different expiresAt) warns again and
+    /// unpair/re-pair clears the record entirely.
+    @Test func expiryWarningIsOncePerCredential() {
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let host = try! TailnetEndpointPolicy.validate("https://mac.tailnet-name.ts.net")
+        store.markPaired(origin: host, name: "Mac Studio")
+        let expiry = Date().addingTimeInterval(3 * 86_400)
+        store.markSignedIn(sessionExpiresAt: nil, credentialExpiresAt: expiry)
+
+        #expect(store.expiryWarnedFor == nil)
+        store.markExpiryWarned()
+        #expect(store.expiryWarnedFor == expiry)
+
+        // A rotated credential reports a different expiry → warnable again.
+        let rotated = expiry.addingTimeInterval(30 * 86_400)
+        store.markSignedIn(sessionExpiresAt: nil, credentialExpiresAt: rotated)
+        #expect(store.expiryWarnedFor != rotated)
+
+        // Re-pair clears the record outright.
+        store.markPaired(origin: host, name: "Mac Studio")
+        #expect(store.expiryWarnedFor == nil)
     }
 
     @Test func repairToDifferentHostPurgesData() throws {
