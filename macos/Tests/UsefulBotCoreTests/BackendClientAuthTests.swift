@@ -156,16 +156,17 @@ private final class CallCounter: @unchecked Sendable {
     }
 
     /// The default session carries the isolation controls themselves: no
-    /// shared URLCache for authed GET bodies, cookie handling off (the client
-    /// carries `ub_session` itself — a detached jar is inert on modern
-    /// Foundation and the shared jar would leak it), and the no-redirect
-    /// delegate. Removing one must fail a test, not slip through.
+    /// shared URLCache for authed GET bodies, a private cookie jar that is
+    /// not the shared one (the client also re-attaches `ub_session` as a
+    /// header per request, which opts out of cookie handling anyway), and
+    /// the no-redirect delegate. Removing one must fail a test, not slip
+    /// through.
     @Test func defaultSessionIsIsolated() {
         let session = BackendClient.makeSession()
         let config = session.configuration
         #expect(config.urlCache == nil)
         #expect(config.httpCookieStorage !== HTTPCookieStorage.shared)
-        #expect(config.httpShouldSetCookies == false)
+        #expect(config.httpShouldSetCookies == true)
         #expect(session.delegate is BackendClient.NoRedirectDelegate)
         // A jar has to keep what it is given. `HTTPCookieStorage()` passes
         // every check above and keeps nothing, so the session cookie from
