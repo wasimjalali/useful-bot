@@ -45,3 +45,17 @@ test("handoff stream records an empty reply when the turn has no text", async ()
   ]), new AbortController().signal, new Set(), "expected");
   assert.equal(reply, "");
 });
+
+test("the idle hook fires for replayed history too, so a long replay is not read as silence", async () => {
+  let beats = 0;
+  const reply = await readHandoffStream(sse([
+    // Two events already in the skip set: progress, even though neither is new.
+    { type: "message.completed", data: { message: "old" }, meta: { id: "h1" } },
+    { type: "turn.completed", data: {}, meta: { id: "h2" } },
+    { type: "message.received", data: { message: "expected" }, meta: { id: "n1" } },
+    { type: "message.appended", data: { messageDelta: "ok" }, meta: { id: "n2" } },
+    { type: "turn.completed", data: {}, meta: { id: "n3" } },
+  ]), new AbortController().signal, new Set(["h1", "h2"]), "expected", () => { beats += 1; });
+  assert.equal(reply, "ok");
+  assert.equal(beats, 5);
+});

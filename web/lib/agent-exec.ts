@@ -61,11 +61,14 @@ const DELIVER_TIMEOUT_MS = 120_000;
  */
 const ROUTINE_TIMEOUT_MS = 60 * 60_000;
 /**
- * No event at all from the session for this long ends the run. eve emits a
- * step, a delta or a tool result every few seconds while a turn is alive, so
- * five minutes of silence means it is not coming back.
+ * No event at all from the session for this long ends the run. Sized off the
+ * longest gap a healthy turn can leave: a model call the router caps at 180
+ * seconds, a shell line the bash tool caps at 60, or a `send_to_bot` waiting
+ * out a teammate's whole turn on the handoff's two-minute budget. Ten minutes
+ * clears all three with room to spare, so silence this long is a turn that is
+ * not coming back rather than one taking its time.
  */
-const ROUTINE_IDLE_MS = 5 * 60_000;
+const ROUTINE_IDLE_MS = 10 * 60_000;
 
 /**
  * Stamp — or revoke — the workspace grant a turn's tools will read. Called
@@ -388,6 +391,18 @@ function turnPrefixFor(bot: ShellBot): string {
  * history skip that keeps a second send from resolving with an older turn.
  */
 /**
+ * Tag a failure with the session its turn ran in, so the run history can point
+ * at it. The first writer wins: an inner frame knows the session better than
+ * an outer one that only has the pointer it started with.
+ */
+function withSession(err: unknown, sessionId: string): unknown {
+  if (sessionId && err instanceof Error && !(err as Error & { sessionId?: string }).sessionId) {
+    (err as Error & { sessionId?: string }).sessionId = sessionId;
+  }
+  return err;
+}
+
+/**
  * Stop a turn this process gave up on. Best effort: the run is already over as
  * far as the caller is concerned, and a cancel that fails must not replace the
  * timeout it is cleaning up with an error of its own.
@@ -418,18 +433,19 @@ async function runEveTurn(
   // Which of the two clocks ran out, for the error the caller reports. A bare
   // "This operation was aborted" was the whole explanation a cut-off routine
   // ever gave.
+  // The first clock to fire is the one that stopped the run, and it keeps the
+  // name: the other can still go off while this one is cancelling the turn.
   let expiry = "";
-  const timer = setTimeout(() => {
-    expiry = "turn_budget_exhausted";
+  const expire = (reason: string) => {
+    if (expiry) return;
+    expiry = reason;
     controller.abort();
-  }, budget.totalMs);
+  };
+  const timer = setTimeout(() => expire("turn_budget_exhausted"), budget.totalMs);
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const feedIdle = budget.idleMs === undefined ? undefined : () => {
     if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      expiry = "turn_went_silent";
-      controller.abort();
-    }, budget.idleMs);
+    idleTimer = setTimeout(() => expire("turn_went_silent"), budget.idleMs);
   };
   feedIdle?.();
   const follow = (stream: ReadableStream<Uint8Array>, ids: Set<string>) =>
@@ -502,9 +518,13 @@ async function runEveTurn(
     // bot is refused as busy. Stop it, and say which clock it was.
     if (expiry) {
       if (sessionId) await cancelEveTurn(sessionId, jwt);
-      throw new Error(expiry);
+      throw withSession(new Error(expiry), sessionId);
     }
-    throw err;
+    // The session this turn actually ran in, which is not the one the caller
+    // handed us when eve opened a new one or the 409 retry above rotated it.
+    // The caller writes it to the run history, and a stale or empty id there
+    // is a part-finished turn the owner cannot open.
+    throw withSession(err, sessionId);
   } finally {
     clearTimeout(timer);
     if (idleTimer) clearTimeout(idleTimer);
@@ -787,7 +807,7 @@ function routineFailureText(err: unknown): string {
     return "it was still running after an hour, so it was stopped. Narrow the instruction or split it in two.";
   }
   if (code === "turn_went_silent") {
-    return "the bot stopped responding part way through and the run was stopped.";
+    return "the bot went quiet part way through and the run was stopped.";
   }
   return code;
 }
@@ -852,9 +872,12 @@ async function executeRoutine(
     }));
     routineLog(routine, "finished", { ms: Date.now() - startedAt, session: sessionId, replyChars: reply.length });
   } catch (err) {
+    // The session the turn really ran in, which runEveTurn tagged onto the
+    // error; the bot's own pointer only stands in when it never got that far.
+    const ranIn = failedSession(err) ?? bot.sessionId ?? "";
     routineLog(routine, "failed", {
       ms: Date.now() - startedAt,
-      session: bot.sessionId ?? "",
+      session: ranIn,
       error: err instanceof Error ? err.message : "unknown",
     });
     // Best effort, like the pre-append note: a locked store must not become
@@ -869,10 +892,7 @@ async function executeRoutine(
     // The history row is the only place the pane can send the owner from, and
     // a failed run used to land there with no session at all. The turn that
     // failed is in this one, part-finished, and it is what they want to read.
-    if (err instanceof Error && bot.sessionId) {
-      (err as Error & { sessionId?: string }).sessionId = bot.sessionId;
-    }
-    throw err;
+    throw withSession(err, ranIn);
   }
   if (reply) {
     appendAgentEvent(bot.id, {
@@ -978,41 +998,62 @@ function recordRun(
 // same minute no longer run back to back.
 
 export type RoutinePumpResult = {
-  ran: Array<{ id: string; name: string }>;
+  /**
+   * Runs this pump claimed and set going, not runs that finished. The pump
+   * used to await them, which was survivable while a run was capped at two
+   * minutes and is not now one may take an hour: the single-flight chain would
+   * have held every other bot's routine behind the slowest one. The claim is
+   * what has to be serialised, and the claim is all this waits for.
+   */
+  started: Array<{ id: string; name: string }>;
+  /** Candidates whose claim itself failed. A run that fails does so later. */
   failed: Array<{ id: string; error: string }>;
   /** Candidates a contended store lock made someone else's turn this tick. */
   skipped: Array<{ id: string; reason: string }>;
 };
 
+/**
+ * Runs allowed at once across every routine. One per bot per pump already
+ * holds, but a pump no longer waits for the last one to finish, so without a
+ * ceiling a morning's worth of due routines could all be in flight together.
+ */
+const MAX_ACTIVE_ROUTINES = 4;
+
 export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
-  const run = pumpState.routineQueue.then(() => pumpRoutinesOnce(limit), () => pumpRoutinesOnce(limit));
+  const run = pumpState.routineQueue.then(
+    () => pumpRoutinesOnce(limit),
+    () => pumpRoutinesOnce(limit),
+  );
   pumpState.routineQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
-async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
-  const ran: Array<{ id: string; name: string }> = [];
+function pumpRoutinesOnce(limit: number): RoutinePumpResult {
+  const started: Array<{ id: string; name: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
   const skipped: Array<{ id: string; reason: string }> = [];
   const now = new Date();
-  const candidates = pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
+  const free = Math.max(0, MAX_ACTIVE_ROUTINES - routinesInflight.size);
+  const room = Math.min(limit, free);
+  const candidates = room === 0
+    ? []
+    : pendingRoutines(now).filter((routine) => !routinesInflight.has(routine.id));
   // One per bot: a routine is a turn in the bot's own chat, and eve runs one
   // turn per session. A bot's second due routine waits for the next pump.
   const owners = new Set<string>();
   const batch: Routine[] = [];
   for (const candidate of candidates) {
-    if (batch.length >= limit) break;
+    if (batch.length >= room) break;
     if (owners.has(candidate.botId)) continue;
     owners.add(candidate.botId);
     batch.push(candidate);
   }
-  // Everything up to `routinesInflight.add` below runs without an await, so
-  // each callback reaches its claim before any of them yields: the mutex with
-  // startRoutineNow holds exactly as it did in the sequential loop.
-  await Promise.all(batch.map(async (candidate) => {
+  // This loop never awaits, so every claim lands before anything else can run:
+  // the mutex with startRoutineNow holds exactly as it did before.
+  for (const candidate of batch) {
     // Re-checked here, not only when the list was built: a Test run can have
     // started on this routine since, and it marks the set before it yields.
-    if (routinesInflight.has(candidate.id)) return;
+    if (routinesInflight.has(candidate.id)) continue;
     // Both claims flip their marker inside the store lock, so a tick that raced
     // this one finds the request already taken or nothing due. A contended
     // lock is that race, not a fault in this routine: skip the candidate and
@@ -1030,23 +1071,26 @@ async function pumpRoutinesOnce(limit: number): Promise<RoutinePumpResult> {
       } else {
         failed.push({ id: candidate.id, error });
       }
-      return;
+      continue;
     }
-    if (!claim) return;
+    if (!claim) continue;
     routinesInflight.add(candidate.id);
-    try {
-      const result = await executeRoutine(claim.routine, manual ? "manual" : "schedule");
-      recordRun(candidate.id, { status: "ok", sessionId: result.sessionId });
-      ran.push({ id: candidate.id, name: claim.routine.name });
-    } catch (err) {
-      const error = runFailure(err);
-      recordRun(candidate.id, { status: "failed", error, sessionId: failedSession(err) });
-      failed.push({ id: candidate.id, error });
-    } finally {
-      routinesInflight.delete(candidate.id);
-    }
-  }));
-  return { ran, failed, skipped };
+    started.push({ id: candidate.id, name: claim.routine.name });
+    // Detached on purpose: see RoutinePumpResult. The in-flight set is what
+    // keeps a second run off this routine until this one is done, and it is
+    // released in every branch below.
+    void executeRoutine(claim.routine, manual ? "manual" : "schedule")
+      .then((result) => {
+        recordRun(candidate.id, { status: "ok", sessionId: result.sessionId });
+      })
+      .catch((err) => {
+        recordRun(candidate.id, { status: "failed", error: runFailure(err), sessionId: failedSession(err) });
+      })
+      .finally(() => {
+        routinesInflight.delete(candidate.id);
+      });
+  }
+  return { started, failed, skipped };
 }
 
 /**

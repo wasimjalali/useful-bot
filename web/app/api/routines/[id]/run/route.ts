@@ -7,9 +7,9 @@ import { readRoutine } from "../../../../../../shared/routines-store.ts";
 export const runtime = "nodejs";
 
 /**
- * Manual "Test run". A turn can take up to two minutes, which is longer than
- * the app's request timeout, so the run starts in the background and the pane
- * reads the outcome from the routine's run history on its next poll.
+ * Manual "Test run". A run has up to an hour, far longer than the app's
+ * request timeout, so it starts in the background and the pane reads the
+ * outcome from the routine's run history on its next poll.
  *
  * A paused routine still runs from here. Pausing stops the schedule, and the
  * owner pressing this button is not the schedule; refusing would leave no way

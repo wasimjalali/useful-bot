@@ -170,6 +170,18 @@ public struct TurnFailure: Equatable, Sendable {
         "\(code) \(detail)".lowercased().contains("tool result is missing")
     }
 
+    /// Whether the router has stopped calling the provider for a moment. Only
+    /// this failure may hold Retry back: every other one the owner can act on
+    /// now, and a few of them (a caller rate limit, a search limit) carry a
+    /// `retry_after_ms` of their own that would otherwise arm the same gate
+    /// and show them the cool-down wording instead of their own reason.
+    public var coolingDown: Bool {
+        "\(code) \(detail)".lowercased().contains("circuit_open")
+    }
+
+    /// How long to hold Retry, in whole seconds, for a cool-down that said.
+    public var coolDownSeconds: Int? { coolingDown ? retryAfterSeconds : nil }
+
     /// How long the router said to wait, in whole seconds, when its error body
     /// carried a `retry_after_ms`. eve wraps the body into the failure detail,
     /// so the number survives the trip even though the field does not.

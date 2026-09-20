@@ -932,7 +932,7 @@ final class AppModel: ObservableObject {
                                 .compactMap { $0 }
                                 .joined(separator: " "),
                             resendable: true,
-                            retryAfter: projection.failure?.retryAfterSeconds
+                            retryAfter: projection.failure?.coolDownSeconds
                         )
                     } else if ["turn.started", "turn.completed", "turn.cancelled"].contains(event.type),
                               !projection.failed {
@@ -1417,7 +1417,7 @@ final class AppModel: ObservableObject {
                         bot.id,
                         live?.failure?.message ?? "The turn failed.",
                         resendable: true,
-                        retryAfter: live?.failure?.retryAfterSeconds
+                        retryAfter: live?.failure?.coolDownSeconds
                     )
                 } else if !sawUserTurn {
                     self.recordSendError(bot.id, "The turn did not start.", resendable: false)

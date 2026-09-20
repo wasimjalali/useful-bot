@@ -639,6 +639,12 @@ test("a model the upstream does not have opens the alias for a while, not for go
   circuit.assertClosed("workhorse", at + 300_001);
 });
 
+test("a reservation overrun keeps the alias shut, because a spend guard on a timer is not one", () => {
+  const circuit = new AliasCircuit();
+  circuit.disable("workhorse");
+  assert.throws(() => circuit.assertClosed("workhorse", Date.now() + 86_400_000), /circuit_open/);
+});
+
 test("an open circuit says how long is left, so the app can stop retrying into it", () => {
   const circuit = new AliasCircuit();
   const at = 2_000_000;

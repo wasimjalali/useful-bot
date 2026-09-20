@@ -229,6 +229,7 @@ import Testing
             """
         )
         #expect(timed.retryAfterSeconds == 22)
+        #expect(timed.coolDownSeconds == 22)
         #expect(timed.reason
             == "The model provider failed repeatedly, so sending is paused for 22 more seconds. Retry after that.")
 
@@ -240,6 +241,16 @@ import Testing
         // The provider's own failures keep their wording.
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_protocol_error").reason
             == "The model provider did not answer. Check its status or your usage limit, then send again.")
+
+        // A caller rate limit carries a retry_after_ms of its own. It must not
+        // arm the cool-down gate, or Retry would hold with the wrong reason.
+        let limited = TurnFailure(
+            code: "MODEL_CALL_FAILED",
+            detail: #"AI_APICallError: caller_rate_limit {"error":{"code":"caller_rate_limit","retry_after_ms":4000}}"#
+        )
+        #expect(limited.retryAfterSeconds == 4)
+        #expect(limited.coolDownSeconds == nil)
+        #expect(limited.reason == "The router is rate limiting. Wait a moment and send again.")
     }
 
     @Test func aToolCallWithNoResultMarksTheHistoryBroken() {
