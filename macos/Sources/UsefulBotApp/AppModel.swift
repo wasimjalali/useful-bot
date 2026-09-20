@@ -931,7 +931,8 @@ final class AppModel: ObservableObject {
                             ["The last turn failed.", projection.failure?.reason]
                                 .compactMap { $0 }
                                 .joined(separator: " "),
-                            resendable: true
+                            resendable: true,
+                            retryAfter: projection.failure?.retryAfterSeconds
                         )
                     } else if ["turn.started", "turn.completed", "turn.cancelled"].contains(event.type),
                               !projection.failed {
@@ -1140,6 +1141,18 @@ final class AppModel: ObservableObject {
     /// still the best this button can do.
     func retryLastTurn() {
         guard !pending else { return }
+        // The router stopped calling the provider for a few seconds. Sending
+        // now is refused before it reaches a model, so the only thing a resend
+        // achieves is another copy of the owner's message in the chat. Say how
+        // long is left instead, and let them press it again after that.
+        if let botId = selectedBotId, let until = retryNotBefore[botId], until > Date() {
+            let seconds = max(1, Int(until.timeIntervalSinceNow.rounded(.up)))
+            let message = "Sending is paused for \(seconds) more \(seconds == 1 ? "second" : "seconds"). Retry after that."
+            sendErrors[botId] = SendFailure(message: message, resendable: true)
+            stickyThreadError = message
+            threadError = message
+            return
+        }
         // Only a turn that never ran may be sent again. "The reply could not be
         // read" and "The session pointer could not be saved" both leave the
         // turn with the server, and resending those files a second copy of a
@@ -1400,7 +1413,12 @@ final class AppModel: ObservableObject {
                     ? self.projection
                     : self.backgroundProjections[bot.id]
                 if live?.failed == true {
-                    self.recordSendError(bot.id, live?.failure?.message ?? "The turn failed.", resendable: true)
+                    self.recordSendError(
+                        bot.id,
+                        live?.failure?.message ?? "The turn failed.",
+                        resendable: true,
+                        retryAfter: live?.failure?.retryAfterSeconds
+                    )
                 } else if !sawUserTurn {
                     self.recordSendError(bot.id, "The turn did not start.", resendable: false)
                 }
@@ -1575,13 +1593,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func recordSendError(_ botId: String, _ message: String, resendable: Bool) {
+    private func recordSendError(_ botId: String, _ message: String, resendable: Bool, retryAfter: Int? = nil) {
         sendErrors[botId] = SendFailure(message: message, resendable: resendable)
+        // A router cool-down is the one failure with a time on it. Holding the
+        // deadline keeps Retry from firing back into the closed window, where
+        // it fails in milliseconds and leaves a second copy of the owner's
+        // message in the chat for its trouble.
+        if let retryAfter { retryNotBefore[botId] = Date().addingTimeInterval(TimeInterval(retryAfter)) }
         if selectedBotId == botId {
             stickyThreadError = message
             threadError = message
         }
     }
+
+    /// When the router's cool-down lifts, per bot. A deadline in the past is
+    /// simply spent, so nothing has to clear these.
+    private var retryNotBefore: [String: Date] = [:]
 
     private func markWorking(_ botId: String, _ running: Bool) {
         var next = workingBotIds

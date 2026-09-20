@@ -9,6 +9,8 @@ import { startRouter } from "../src/index.ts";
 import { LimitStore, estimateInputUnits } from "../src/limits.ts";
 import { CEILING_RETRY_AFTER_MS, ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs } from "../src/retry-after.ts";
+import { AliasCircuit } from "../src/circuit.ts";
+import { RouterError } from "../src/errors.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
@@ -620,6 +622,45 @@ test("wrong method on a known route is 405 with Allow", async () => {
     assert.equal(res.status, 405);
     assert.equal(res.headers.get("allow"), "GET");
   });
+});
+
+test("a model the upstream does not have opens the alias for a while, not for good", () => {
+  const circuit = new AliasCircuit();
+  const at = 1_000_000;
+  circuit.recordFailure("workhorse", new RouterError({
+    status: 502,
+    type: "upstream_error",
+    code: "model_unavailable",
+    message: "model_unavailable",
+  }), at);
+  assert.throws(() => circuit.assertClosed("workhorse", at + 1_000), /circuit_open/);
+  // The alias used to stay dead for the life of the process, so the only way
+  // back was restarting the services.
+  circuit.assertClosed("workhorse", at + 300_001);
+});
+
+test("an open circuit says how long is left, so the app can stop retrying into it", () => {
+  const circuit = new AliasCircuit();
+  const at = 2_000_000;
+  const protocolError = new RouterError({
+    status: 502,
+    type: "upstream_error",
+    code: "upstream_protocol_error",
+    message: "upstream_protocol_error",
+  });
+  for (let i = 0; i < 3; i += 1) circuit.recordFailure("workhorse", protocolError, at);
+  try {
+    circuit.assertClosed("workhorse", at + 10_000);
+    assert.fail("the circuit should be open");
+  } catch (err) {
+    assert.equal(err instanceof RouterError, true);
+    assert.equal((err as RouterError).code, "circuit_open");
+    assert.equal((err as RouterError).retryable, true);
+    assert.equal((err as RouterError).retryAfterMs, 20_000);
+  }
+  // One good call closes it again.
+  circuit.recordSuccess("workhorse");
+  circuit.assertClosed("workhorse", at + 10_000);
 });
 
 test("unknown route is 404", async () => {

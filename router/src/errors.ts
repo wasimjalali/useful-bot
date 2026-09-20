@@ -7,6 +7,13 @@ export class RouterError extends Error {
   readonly retryable: boolean;
   readonly alias?: Alias;
   readonly retryAfterMs?: number;
+  /**
+   * Which rule the caller broke, when the code alone does not say. Every
+   * rejection looked the same from the app, a bare "The turn failed.", while
+   * the one line naming the real reason went to the router log where nobody
+   * was reading it. A local app on the loopback is the only caller.
+   */
+  readonly detail?: string;
 
   constructor(input: {
     status: number;
@@ -16,6 +23,7 @@ export class RouterError extends Error {
     retryable?: boolean;
     alias?: Alias;
     retryAfterMs?: number;
+    detail?: string;
   }) {
     super(input.message);
     this.status = input.status;
@@ -24,6 +32,7 @@ export class RouterError extends Error {
     this.retryable = input.retryable === true;
     this.alias = input.alias;
     this.retryAfterMs = input.retryAfterMs;
+    this.detail = input.detail;
   }
 }
 
@@ -37,6 +46,7 @@ export function errorBody(err: RouterError, requestId: string) {
       alias: err.alias,
       retryable: err.retryable,
       ...(err.retryAfterMs !== undefined ? { retry_after_ms: err.retryAfterMs } : {}),
+      ...(err.detail ? { detail: err.detail } : {}),
     },
   };
 }

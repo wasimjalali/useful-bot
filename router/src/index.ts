@@ -238,6 +238,10 @@ function validationError(code: string, reason?: string): RouterError {
     type: "invalid_request_error",
     code,
     message: code,
+    // The same string the log line carries. Callers are local and every
+    // reason here is already a safe alphabet, built from this router's own
+    // rule names rather than echoed caller input.
+    detail: reason ?? code,
   });
 }
 

@@ -68,7 +68,21 @@ export const MAX_ACTIVE_UPSTREAM = 10;
 // The provider allows about one search a second, so four is already generous.
 export const MAX_ACTIVE_SEARCH = 4;
 
-export const MAX_MESSAGE_COUNT = 256;
+/**
+ * A count, like `MAX_TOOL_SCHEMAS` below, and not the real bound either:
+ * `COMPLETION_BODY_LIMIT_BYTES` is what keeps the upstream payload sane, and
+ * eve compacts a session at 90% of the model's window long before a
+ * conversation of this length is a problem for anyone.
+ *
+ * It was 256, which a bot doing real work walks through in an afternoon: every
+ * step adds an assistant message and a tool result, so a few hours of filing
+ * documents is a few hundred messages. Crossing it threw `unsupported_parameter`,
+ * a non-retryable 400, and eve retires a session that gets one: the chat was
+ * dead for good and the owner's only way on was a fresh one. It happened twice
+ * in two days (2026-09-19, and to Drive Admin mid-task on 2026-09-20). The cap
+ * is here to stop a runaway caller, not to end a long conversation.
+ */
+export const MAX_MESSAGE_COUNT = 4_096;
 /**
  * A count, not the real bound: `MAX_TOOL_SCHEMA_BYTES` is what keeps the
  * upstream payload sane, and a schema's size has little to do with how many
