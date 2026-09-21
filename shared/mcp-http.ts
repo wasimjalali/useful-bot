@@ -78,6 +78,39 @@ function activeFetch(): FetchFn {
   return injectedFetch ?? fetch;
 }
 
+/**
+ * How much of a response this side will take. `res.text()` reads whatever
+ * arrives before anything can look at it, so a server that answers with a
+ * gigabyte takes the app down before the size check it was heading for. The
+ * limit is enforced while reading, not after.
+ */
+const MAX_RPC_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_SPEC_BODY_BYTES = 1024 * 1024;
+
+async function boundedText(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const whole = await res.text();
+    if (Buffer.byteLength(whole, "utf8") > max) throw new Error("mcp_body_too_large");
+    return whole;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > max) throw new Error("mcp_body_too_large");
+      chunks.push(value);
+    }
+  } finally {
+    try { await reader.cancel(); } catch { /* already done */ }
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -126,7 +159,7 @@ async function rpc(
   });
   if (!res.ok) throw new Error(`mcp_http_${res.status}`);
   const sessionId = res.headers.get("mcp-session-id");
-  const body = await res.text();
+  const body = await boundedText(res, MAX_RPC_BODY_BYTES);
   const parsed = parseSseData(body);
   const rec = asRecord(parsed);
   if (!rec) throw new Error("mcp_parse");
@@ -305,8 +338,9 @@ export async function measureOpenApiConnection(
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return null;
-    const body = await res.text();
-    if (body.length > 1_000_000) return null;
+    // Bounded while reading: the old check ran after the whole thing was
+    // already in memory, which is the part that hurts.
+    const body = await boundedText(res, MAX_SPEC_BODY_BYTES);
     return measureOpenApiSpec(JSON.parse(body));
   } catch {
     return null;

@@ -147,3 +147,38 @@ test("a listing and a resource read carry a deadline of their own", async () => 
     setConnectionLookup(null);
   }
 });
+
+test("a server that answers with more than this side will take is cut off", async () => {
+  setConnectionLookup(async () => "8.8.8.8");
+  // `res.text()` reads whatever arrives before any size check can run, so a
+  // server answering with gigabytes took the app down on the way to being
+  // rejected. The limit is enforced while reading now.
+  let sent = 0;
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const chunk = new TextEncoder().encode("x".repeat(64 * 1024));
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        sent += chunk.byteLength;
+        // Far past the cap: the read must stop long before this does.
+        if (sent > 512 * 1024 * 1024) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch);
+  try {
+    await assert.rejects(() => listMcpTools("https://mcp.example.com/mcp"), /too_large/);
+    assert.ok(sent < 16 * 1024 * 1024, `read ${sent} bytes before stopping`);
+  } finally {
+    setMcpFetch(null);
+    setConnectionLookup(null);
+  }
+});
