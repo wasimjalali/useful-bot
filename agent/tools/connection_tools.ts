@@ -100,7 +100,9 @@ export default defineDynamic({
                 .filter((hit) => !outcome.refused.includes(hit.name))
                 .map((hit) => ({
                   name: hit.name,
-                  app: hit.connectionName,
+                  // Outside the fence, so kept to one line like the
+                  // mounted description keeps it.
+                  app: hit.connectionName.replace(/[\r\n]+/g, " ").trim(),
                   // The server wrote this, so it is quoted rather than
                   // spoken: a listing is a place to plant instructions.
                   description: wrapUntrusted(`connection:${hit.connectionId}`, hit.description),

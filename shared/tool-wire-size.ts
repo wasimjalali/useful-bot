@@ -205,6 +205,11 @@ export function longestOperationName(spec: unknown): number | null {
     .replace(/^[_-]+|[_-]+$/g, "")
     .slice(0, 64);
   const taken = new Set<string>();
+  // Where each base name's suffix search left off. eve restarts at `_2`
+  // every time, which is quadratic in clashes; a name once taken stays taken,
+  // so resuming finds the same free suffix. A spec of ten thousand identical
+  // operationIds would otherwise hold the turn boundary.
+  const nextSuffix = new Map<string, number>();
   let longest = 0;
   for (const [route, item] of Object.entries(paths)) {
     const path = asRecord(item);
@@ -220,7 +225,12 @@ export function longestOperationName(spec: unknown): number | null {
       }
       // A clash takes a suffix, which is where a name can pass sixty-four.
       let unique = name;
-      for (let n = 2; taken.has(unique); n += 1) unique = `${name}_${n}`;
+      let n = nextSuffix.get(name) ?? 2;
+      while (taken.has(unique)) {
+        unique = `${name}_${n}`;
+        n += 1;
+      }
+      nextSuffix.set(name, n);
       taken.add(unique);
       longest = Math.max(longest, unique.length);
     }

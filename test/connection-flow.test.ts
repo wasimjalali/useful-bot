@@ -645,3 +645,30 @@ test("the budget check never reads a credential the new row does not own yet", a
   assert.deepEqual([...new Set(seen)], [""]);
   assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
 });
+
+test("a spec whose tool names would pass sixty-four under a reassigned id is refused", async () => {
+  const { storePath } = paths();
+  // "spec__" plus fifty-six fits, but the store can hand this row "spec-2",
+  // and eve prefixes whatever id the row ends up with.
+  const serve = (operationId: string) => setMcpFetch(async () => new Response(
+    JSON.stringify({ paths: { "/a": { get: { operationId } } } }),
+    { headers: { "content-type": "application/json" } },
+  ));
+  serve("o".repeat(56));
+  const refused = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+  });
+  await assert.rejects(
+    () => startConnectionConfirm(refused.id, { callbackUrl: CALLBACK }),
+    /tool_name_too_long/,
+  );
+  assert.equal(findConnectionById("spec"), null);
+  assert.equal(readProposal(refused.id, storePath)?.status, "pending");
+  serve("o".repeat(55));
+  await startConnectionConfirm(refused.id, { callbackUrl: CALLBACK });
+  assert.equal(findConnectionById("spec")?.id, "spec");
+});

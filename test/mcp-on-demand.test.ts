@@ -742,3 +742,17 @@ test("a spec whose prefixed tool names pass sixty-four is never mounted", () => 
   putConnectionOperations("weather", { operations: 3, schemaBytes: 100, textBytes: 0, longestName: 20 });
   assert.deepEqual(eagerConnections().map((item) => item.id), ["weather"]);
 });
+
+test("naming many clashing operations stays linear and matches eve", () => {
+  const paths: Record<string, unknown> = {};
+  for (let i = 0; i < 20_000; i += 1) paths[`/p${i}`] = { get: { operationId: "same" } };
+  const started = Date.now();
+  assert.equal(longestOperationName({ paths }), "same_20000".length);
+  assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started}ms`);
+  // An explicit `x_2` is skipped over the way eve skips it.
+  assert.equal(longestOperationName({ paths: {
+    "/a": { get: { operationId: "x" } },
+    "/b": { get: { operationId: "x_2" } },
+    "/c": { get: { operationId: "x" } },
+  } }), "x_3".length);
+});

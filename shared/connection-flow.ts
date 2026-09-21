@@ -206,7 +206,12 @@ async function assertToolBudget(
     const size = await measureOpenApiConnection(entry.url, headers).catch(() => null);
     if (size === null) throw new Error("tool_count_unknown");
     // A name the provider refuses retires every session it is mounted in.
-    if (!specNamesFit(entry.id, size.longestName)) throw new Error("tool_name_too_long");
+    // Checked against the longest id the store could give this row: an id
+    // another server holds is reassigned `<first sixty>-<n>`, up to three
+    // longer, and a check against the shorter one admitted a row the mount
+    // then skipped for good.
+    const longestId = "x".repeat(Math.max(entry.id.length, Math.min(entry.id.length, 60) + 3));
+    if (!specNamesFit(longestId, size.longestName)) throw new Error("tool_name_too_long");
     adding = size.operations;
     // The same weighing the clamp uses, so the two cannot disagree.
     addingBytes = specWireBytes(size);
