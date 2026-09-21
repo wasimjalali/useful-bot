@@ -1420,9 +1420,19 @@ against the commits named here.
 | `79e9d91` | PR-3 chat core | `xcodebuild build` and `xcodebuild test` on the simulator; `make -C macos test`; shots for the bots list and chat in light and dark, 390 and 360, one XXXL, iPad split; long-fixture baseline into `docs/audit/PERFORMANCE-IOS.md`; a Test Bot send that streams; two-client check that selection does not cross and a session does not fork |
 | (this commit) | PR-4 asks, S10 | Same build and test gates. Shots of the approval card states (pending, approving, approved, denied, expired, resolved, changed), light and dark. `xcrun simctl biometric` match, cancel, and failure. Scripted approve and deny. Provenance visible on the card (bot, directory, full preview) |
 
-S10 is in this commit: an approval records `botId`, `botName`, `sessionId`, and
+S10 is in `57242a5`: an approval records `botId`, `botName`, `sessionId`, and
 `cwd` when it is raised, and `listPending` keeps that snapshot after the bot
 is renamed. `peekShell` is used so the lookup does not write the shell.
 `approval_not_pending` now answers 404, which is the phone's "resolved
 elsewhere" state. Node tests for provenance, compare-and-set, and pump
 coalescing passed on Node v24.11.1.
+
+The follow-up commit on `ios/pr-3` finishes the PR-3 list (pinned, sections,
+unassigned, hidden, rename, move, new chat, delete) and the PR-4 ask surface
+(proposal confirm and dismiss, owner questions, Safari sheet for a connect
+redirect). Approve, delete, proposal confirm, and a permission raise use
+`OwnerGate`, so a cancelled Face ID does not send. Deny stays ungated.
+
+Simulator checks for that commit, same closing PR: shots of the sectioned
+bots list, the proposal card, the owner-question card, and the Safari sheet,
+light and dark. No new measured numbers until that session.

@@ -1,3 +1,4 @@
+import SafariServices
 import SwiftUI
 import UsefulBotCore
 
@@ -127,4 +128,92 @@ struct PendingApprovalsView: View {
         .navigationTitle("Approvals")
         .navigationBarTitleDisplayMode(.inline)
     }
+}
+
+struct ProposalCardView: View {
+    let proposal: Proposal
+    var onDecide: (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                .foregroundStyle(Theme.C.ink)
+            Text(detail)
+                .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+            if proposal.kind == .unknown {
+                Text("This proposal cannot be confirmed by this app. Dismiss it instead.")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            HStack(spacing: 8) {
+                Button("Dismiss") { onDecide(false) }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                if proposal.kind != .unknown {
+                    Button("Confirm") { onDecide(true) }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.C.surface)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
+        )
+    }
+
+    private var title: String {
+        switch proposal.kind {
+        case .createBot: return "New bot"
+        case .createGroup: return "New group"
+        case .updateBotProfile: return "Update bot"
+        case .fanout: return "Send to another bot"
+        case .connectApp: return proposal.name ?? "Connect an app"
+        case .connectServer: return proposal.urlHost ?? "Connect a server"
+        case .unknown: return "Request"
+        }
+    }
+
+    private var detail: String {
+        proposal.brief ?? proposal.description ?? proposal.message ?? proposal.purpose ?? proposal.name ?? ""
+    }
+}
+
+struct QuestionCardView: View {
+    let question: OwnerQuestion
+    var onPick: (OwnerQuestion.Option) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(question.prompt)
+                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                .foregroundStyle(Theme.C.ink)
+            ForEach(question.options) { option in
+                Button(option.label) { onPick(option) }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.C.surface)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
+        )
+    }
+}
+
+struct SafariSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 }

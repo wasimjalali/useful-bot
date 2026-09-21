@@ -50,6 +50,23 @@ struct ChatScreen: View {
                 readinessStrip(readiness)
             }
             transcript
+            ForEach(phone.proposals(for: botId)) { proposal in
+                ProposalCardView(proposal: proposal) { confirmed in
+                    Task {
+                        if confirmed { await phone.confirmProposal(proposal) }
+                        else { await phone.dismissProposal(proposal) }
+                    }
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
+            ForEach(phone.questions(for: botId)) { question in
+                QuestionCardView(question: question) { option in
+                    phone.answer(question, option: option, readiness: coordinator.readiness)
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
             ForEach(phone.approvals(for: botId)) { card in
                 ApprovalCardView(card: card) { approve in
                     Task { await phone.decide(card, approve: approve) }
@@ -81,6 +98,11 @@ struct ChatScreen: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityAddTraits(.isHeader)
                 }
+            }
+        }
+        .sheet(isPresented: safariPresented) {
+            if let url = phone.safariURL {
+                SafariSheet(url: url)
             }
         }
         .sheet(isPresented: $showModel) { modelSheet }
@@ -404,6 +426,10 @@ struct ChatScreen: View {
         guard let at = text.lastIndex(of: "@") else { return }
         text.replaceSubrange(at..., with: "@\(name) ")
         phone.updateDraft(text)
+    }
+
+    private var safariPresented: Binding<Bool> {
+        Binding(get: { phone.safariURL != nil }, set: { if !$0 { phone.safariURL = nil } })
     }
 
     private var draftBinding: Binding<String> {

@@ -12,6 +12,8 @@ final class PhoneModel {
     private(set) var selectedBotId: String?
     private(set) var workingBotIds: Set<String> = []
     private(set) var approvals: [ApprovalCard] = []
+    private(set) var proposalsByBot: [String: [Proposal]] = [:]
+    var safariURL: URL?
     private(set) var chats: [String: OpenChat] = [:]
     var draft = ""
     var composer: ComposerState?
@@ -137,8 +139,13 @@ final class PhoneModel {
     func decide(_ card: ApprovalCard, approve: Bool) async {
         guard card.phase == .pending || card.phase == .changed else { return }
         if approve {
-            if let reason = await biometrics.confirm() {
-                passcodeMessage = reason
+            switch await OwnerGate.evaluate(reason: "Approve this request") {
+            case .approved:
+                break
+            case .unavailable:
+                passcodeMessage = OwnerGate.unavailableCopy
+                return
+            case .cancelledOrFailed:
                 return
             }
         }
@@ -276,6 +283,123 @@ final class PhoneModel {
         }
     }
 
+    func proposals(for botId: String) -> [Proposal] {
+        (proposalsByBot[botId] ?? []).filter { $0.isOpen() }
+    }
+
+    func questions(for botId: String) -> [OwnerQuestion] {
+        chats[botId]?.projection.questions ?? []
+    }
+
+    func answer(_ question: OwnerQuestion, option: OwnerQuestion.Option, readiness: MacReadiness?) {
+        send(option.label, readiness: readiness)
+    }
+
+    func confirmProposal(_ proposal: Proposal) async {
+        guard var action = ProposalActions.confirm(proposal) else {
+            actionError = "This proposal cannot be confirmed by this app. Dismiss it instead."
+            return
+        }
+        if action["type"] as? String == "createBot" || action["type"] as? String == "createGroup" {
+            action["preserveSelection"] = true
+        }
+        let verdict = await OwnerGate.evaluate(reason: "Confirm this request")
+        guard verdict == .approved else {
+            if verdict == .unavailable { passcodeMessage = OwnerGate.unavailableCopy }
+            return
+        }
+        guard let client else { return }
+        let generation = pairing?.dataGeneration ?? 0
+        let before = Set(shell?.bots.map(\.id) ?? [])
+        do {
+            let result = try await client.shellActionResult(
+                action,
+                proposalId: proposal.id,
+                proposalStatus: "confirmed"
+            )
+            guard current(generation) else { return }
+            adopt(result.store)
+            if let created = result.store.bots.first(where: { !before.contains($0.id) }) {
+                select(created.id)
+            }
+            if let raw = result.redirectUrl, let url = URL(string: raw),
+               Proposal.connectRedirectAllowed(raw, kind: proposal.kind, expectedHost: result.redirectHost ?? proposal.redirectHost) {
+                safariURL = url
+            }
+            if let botId = proposal.botId ?? proposal.sourceBotId {
+                await reloadProposals(botId)
+            }
+        } catch {
+            actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
+        }
+    }
+
+    func dismissProposal(_ proposal: Proposal) async {
+        guard let client else { return }
+        let generation = pairing?.dataGeneration ?? 0
+        do {
+            let next = try await client.resolveProposal(proposalId: proposal.id, status: "dismissed")
+            guard current(generation) else { return }
+            adopt(next)
+            if let botId = proposal.botId ?? proposal.sourceBotId {
+                await reloadProposals(botId)
+            }
+        } catch {
+            actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
+        }
+    }
+
+    func rename(_ id: String, _ name: String) async {
+        await act(ShellActions.rename(botId: id, name: name))
+    }
+
+    func move(_ id: String, sectionId: String?) async {
+        await act(ShellActions.move(botId: id, sectionId: sectionId))
+    }
+
+    func deleteBot(_ id: String) async {
+        let verdict = await OwnerGate.evaluate(reason: "Delete this bot")
+        guard verdict == .approved else {
+            if verdict == .unavailable { passcodeMessage = OwnerGate.unavailableCopy }
+            return
+        }
+        await act(ShellActions.deleteBot(botId: id))
+        if selectedBotId == id { clearSelection() }
+    }
+
+    func toggleSection(_ id: String) async {
+        await act(ShellActions.toggleSection(sectionId: id))
+    }
+
+    func createSection(name: String) async {
+        await act(ShellActions.createSection(name: name))
+    }
+
+    func createGroup(name: String, memberIds: [String]) async {
+        guard let client else { return }
+        let generation = pairing?.dataGeneration ?? 0
+        let before = Set(shell?.bots.map(\.id) ?? [])
+        do {
+            let next = try await client.shellAction(
+                ShellActions.createGroup(name: name, memberIds: memberIds, preserveSelection: true)
+            )
+            guard current(generation) else { return }
+            adopt(next)
+            if let created = next.bots.first(where: { !before.contains($0.id) }) {
+                select(created.id)
+            }
+        } catch {
+            actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
+        }
+    }
+
+    private func reloadProposals(_ botId: String) async {
+        guard let client else { return }
+        if let state = try? await client.threadState(botId: botId) {
+            proposalsByBot[botId] = state.proposals
+        }
+    }
+
     func pin(_ id: String, _ pinned: Bool) async {
         await act(ShellActions.pin(botId: id, pinned: pinned))
     }
@@ -287,8 +411,13 @@ final class PhoneModel {
     func setPermission(_ id: String, _ permission: String) async {
         guard let bot = bot(id) else { return }
         if Self.privilege(permission) > Self.privilege(bot.permission) {
-            if let reason = await biometrics.confirm() {
-                passcodeMessage = reason
+            switch await OwnerGate.evaluate(reason: "Change what this bot is allowed to do") {
+            case .approved:
+                break
+            case .unavailable:
+                passcodeMessage = OwnerGate.unavailableCopy
+                return
+            case .cancelledOrFailed:
                 return
             }
         }
@@ -471,7 +600,9 @@ final class PhoneModel {
         chat.updating = true
         chats[id] = chat
         do {
-            let events = try await client.events(botId: id)
+            let state = try await client.threadState(botId: id)
+            let events = state.events
+            proposalsByBot[id] = state.proposals
             guard current(generation), selectedStill(id) else { return }
             chat = chats[id] ?? chat
             if chat.durable != events { chat.durable = events }

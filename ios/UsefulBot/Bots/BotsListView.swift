@@ -26,7 +26,14 @@ struct BotsListView: View {
     @State private var showApprovals = false
     @State private var showSearch = false
     @State private var showCreate = false
+    @State private var showGroup = false
+    @State private var showSection = false
     @State private var newBotName = ""
+    @State private var newGroupName = ""
+    @State private var newSectionName = ""
+    @State private var groupMembers: Set<String> = []
+    @State private var renameTarget: ShellBot?
+    @State private var renameText = ""
     /// `loaded` means a roster fetch has *succeeded* at least once — a failed
     /// first load shows the error row, never "Create your first bot".
     private var loaded: Bool { phone.loaded }
@@ -102,41 +109,8 @@ struct BotsListView: View {
                 } else if bots.isEmpty {
                     // A failed fetch never asserts an empty roster.
                     if loadError == nil { emptyState }
-                } else {
-                    ForEach(bots.filter { !$0.hidden }) { bot in
-                        Button {
-                            phone.select(bot.id)
-                        } label: {
-                            HStack(spacing: 12) {
-                                BotFace(bot: bot, size: 40)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(bot.name)
-                                        .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                                        .foregroundStyle(Theme.C.ink)
-                                    if bot.label != bot.name && !bot.label.isEmpty {
-                                        Text(phone.workingBotIds.contains(bot.id) && reduceMotion ? "\(bot.label) · Working" : bot.label)
-                                            .tokenFont(DesignTokens.FontSize.phoneRailLabel, .regular)
-                                            .foregroundStyle(Theme.C.inkMuted)
-                                    }
-                                }
-                                Spacer()
-                            }
-                            .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
-                        }
-                        .buttonStyle(.plain)
-                        .listRowBackground(Color.clear)
-                        .accessibilityLabel(phone.workingBotIds.contains(bot.id) ? "\(bot.name), working" : bot.name)
-                        .accessibilityHint("double-tap to open")
-                        .swipeActions(edge: .leading) {
-                            Button(bot.pinned ? "Unpin" : "Pin") {
-                                Task { await phone.pin(bot.id, !bot.pinned) }
-                            }
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button("Hide") { Task { await phone.hide(bot.id, true) } }
-                                .tint(Theme.C.sunken)
-                        }
-                    }
+                } else if let shell = phone.shell {
+                    roster(shell)
                 }
             }
         }
@@ -168,15 +142,17 @@ struct BotsListView: View {
                 .fixedSize()
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showCreate = true
+                Menu {
+                    Button("New bot") { showCreate = true }
+                    Button("New group") { showGroup = true }
+                    Button("New section") { showSection = true }
                 } label: {
                     Image(systemName: "plus")
                         .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
                         .foregroundStyle(Theme.C.ink)
                         .frame(minWidth: 44, minHeight: 44)
                 }
-                .accessibilityLabel("New bot")
+                .accessibilityLabel("New")
                 .ubFocusRing()
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -252,6 +228,75 @@ struct BotsListView: View {
             }
             .presentationDetents([.medium])
         }
+        .sheet(isPresented: $showSection) {
+            NavigationStack {
+                Form {
+                    TextField("Name", text: $newSectionName)
+                    Button("Create") {
+                        let name = newSectionName
+                        newSectionName = ""
+                        showSection = false
+                        Task { await phone.createSection(name: name) }
+                    }
+                    .disabled(newSectionName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .navigationTitle("New section")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDetents([.medium])
+        }
+        .sheet(isPresented: $showGroup) {
+            NavigationStack {
+                Form {
+                    TextField("Name", text: $newGroupName)
+                    Section("Members") {
+                        ForEach(bots.filter { !$0.isGroup }) { bot in
+                            Button {
+                                if groupMembers.contains(bot.id) { groupMembers.remove(bot.id) }
+                                else { groupMembers.insert(bot.id) }
+                            } label: {
+                                HStack {
+                                    Text(bot.name).foregroundStyle(Theme.C.ink)
+                                    Spacer()
+                                    if groupMembers.contains(bot.id) {
+                                        Image(systemName: "checkmark").foregroundStyle(Theme.C.ink)
+                                    }
+                                }
+                            }
+                            .frame(minHeight: 44)
+                        }
+                    }
+                    Button("Create") {
+                        let name = newGroupName
+                        let members = Array(groupMembers)
+                        newGroupName = ""
+                        groupMembers = []
+                        showGroup = false
+                        Task { await phone.createGroup(name: name, memberIds: members) }
+                    }
+                    .disabled(newGroupName.trimmingCharacters(in: .whitespaces).isEmpty || groupMembers.count < 2)
+                }
+                .navigationTitle("New group")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $renameTarget) { bot in
+            NavigationStack {
+                Form {
+                    TextField("Name", text: $renameText)
+                    Button("Rename") {
+                        let name = renameText
+                        renameTarget = nil
+                        Task { await phone.rename(bot.id, name) }
+                    }
+                    .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .navigationTitle("Rename")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDetents([.medium])
+        }
     }
 
     private var searchBinding: Binding<String> {
@@ -263,6 +308,110 @@ struct BotsListView: View {
             get: { phone.selectedBotId != nil && UIDevice.current.userInterfaceIdiom != .pad },
             set: { if !$0 { phone.clearSelection() } }
         )
+    }
+
+    @ViewBuilder
+    private func roster(_ shell: ShellStore) -> some View {
+        let pinned = shell.pinnedBots
+        if !pinned.isEmpty {
+            sectionHeader("Pinned", id: nil, collapsed: false)
+            ForEach(pinned) { botRow($0, shell: shell) }
+        }
+        ForEach(shell.sections.sorted { $0.order < $1.order }) { section in
+            sectionHeader(section.name, id: section.id, collapsed: section.collapsed)
+            if !section.collapsed {
+                ForEach(shell.sectionBots(section.id)) { botRow($0, shell: shell) }
+            }
+        }
+        sectionHeader("Unassigned", id: "unassigned", collapsed: shell.collapsedUnassigned)
+        if !shell.collapsedUnassigned {
+            ForEach(shell.sectionBots(nil)) { botRow($0, shell: shell) }
+        }
+        sectionHeader("Hidden", id: "hidden", collapsed: shell.collapsedHidden)
+        if !shell.collapsedHidden {
+            ForEach(shell.hiddenBots) { botRow($0, shell: shell) }
+        }
+    }
+
+    private func sectionHeader(_ title: String, id: String?, collapsed: Bool) -> some View {
+        Button {
+            if let id { Task { await phone.toggleSection(id) } }
+        } label: {
+            HStack(spacing: 8) {
+                if id != nil {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(Theme.font(12, .regular))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                Text(title)
+                    .tokenFont(DesignTokens.FontSize.phoneRailLabel, .medium)
+                    .foregroundStyle(Theme.C.inkMuted)
+                Spacer()
+            }
+            .frame(minHeight: 44)
+        }
+        .buttonStyle(.plain)
+        .disabled(id == nil)
+        .listRowBackground(Color.clear)
+    }
+
+    private func botRow(_ bot: ShellBot, shell: ShellStore) -> some View {
+        Button {
+            phone.select(bot.id)
+        } label: {
+            HStack(spacing: 12) {
+                BotFace(bot: bot, size: bot.pinned ? 44 : 40)
+                    .scaleEffect(phone.workingBotIds.contains(bot.id) && !reduceMotion ? 1.04 : 1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bot.name)
+                        .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                        .foregroundStyle(Theme.C.ink)
+                    if bot.label != bot.name && !bot.label.isEmpty {
+                        Text(phone.workingBotIds.contains(bot.id) && reduceMotion ? "\(bot.label) · Working" : bot.label)
+                            .tokenFont(DesignTokens.FontSize.phoneRailLabel, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
+                }
+                Spacer()
+            }
+            .padding(bot.pinned ? 12 : 0)
+            .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
+            .background {
+                if bot.pinned {
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+                        .fill(Theme.C.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+                                .strokeBorder(Theme.C.edge, lineWidth: 1)
+                        )
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color.clear)
+        .accessibilityLabel(phone.workingBotIds.contains(bot.id) ? "\(bot.name), working" : bot.name)
+        .swipeActions(edge: .leading) {
+            Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }
+        }
+        .swipeActions(edge: .trailing) {
+            Button("Hide") { Task { await phone.hide(bot.id, !bot.hidden) } }
+        }
+        .contextMenu {
+            Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }
+            Button("Rename") {
+                renameText = bot.name
+                renameTarget = bot
+            }
+            Menu("Move to section") {
+                Button("Unassigned") { Task { await phone.move(bot.id, sectionId: nil) } }
+                ForEach(shell.sections) { section in
+                    Button(section.name) { Task { await phone.move(bot.id, sectionId: section.id) } }
+                }
+            }
+            Button("New chat") { Task { await phone.newChat(bot.id) } }
+            Button("Hide") { Task { await phone.hide(bot.id, true) } }
+            Button("Delete", role: .destructive) { Task { await phone.deleteBot(bot.id) } }
+        }
     }
 
     private func refresh() async {
