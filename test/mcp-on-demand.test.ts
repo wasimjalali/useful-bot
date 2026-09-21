@@ -494,7 +494,7 @@ test("an operation's own words are weighed, not guessed at", () => {
   assert.ok(specWireBytes(documented!) > specWireBytes(bare!) + 1_500);
 });
 
-test("a pinned server that has gone quiet is listed once, not at every turn", async () => {
+test("a pinned server is charged its ceiling, whatever it answers", async () => {
   paths();
   const pinned = upsertConnection(entry({
     id: "excalidraw",
@@ -502,58 +502,29 @@ test("a pinned server that has gone quiet is listed once, not at every turn", as
     url: "https://mcp.excalidraw.com/mcp",
     toolsAllow: ["read_me", "create_view"],
   })).entry;
-  let tries = 0;
-  setMcpFetch((async () => {
-    tries += 1;
-    return new Response("no", { status: 503 });
-  }) as typeof fetch);
-  await ensureMeasured([pinned]);
-  await ensureMeasured([pinned]);
-  await ensureMeasured([pinned]);
-  // Fifteen seconds at every turn boundary, for as long as it stays down, is
-  // what the recorded attempt prevents.
-  assert.equal(tries, 1);
-  // It is still mounted meanwhile, at the ceiling its allow-list could weigh,
-  // rather than dropped for want of a listing.
-  assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
-  assert.ok((mountedToolBytes(pinned) ?? 0) > 8_000);
-});
+  const ceiling = mountedToolBytes(pinned);
+  assert.ok((ceiling ?? 0) > 8_000, `charged ${ceiling}`);
 
-test("a listing that came back empty is not a listing that never arrived", async () => {
-  paths();
-  const pinned = upsertConnection(entry({
-    id: "excalidraw",
-    name: "Excalidraw",
-    url: "https://mcp.excalidraw.com/mcp",
-    toolsAllow: ["read_me", "create_view"],
-  })).entry;
+  // eve mounts this connection by asking the server itself, so a listing
+  // taken here says nothing about the roster eve will be handed. A server
+  // that answers empty to this side and full to eve would otherwise be
+  // charged nothing and mount everything.
+  let listed = 0;
   setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    listed += 1;
     const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
     const result = body.method === "initialize" ? {} : { tools: [] };
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), {
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch);
+  putConnectionIndex("excalidraw", []);
+  assert.equal(mountedToolBytes(pinned), ceiling);
+  assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
+
+  // And nothing lists it at a turn boundary, because nothing reads the answer.
   await ensureMeasured([pinned]);
-  // A server that answered and offers nothing weighs nothing, and must not
-  // sit on most of the budget over a bookkeeping artefact.
-  assert.equal(mountedToolBytes(pinned), 0);
-  assert.equal(mountedToolCount(pinned), 2);
+  await ensureMeasured([pinned]);
+  assert.equal(listed, 0);
 });
 
-test("a server's own description is charged at the length eve mounts", () => {
-  paths();
-  const long = "d".repeat(4_000);
-  putConnectionIndex("example", [{
-    name: "one",
-    // What this side kept, clipped to four hundred.
-    description: long.slice(0, 400),
-    inputSchema: null,
-    inputSchemaBytes: 2,
-    // What the server actually sent, which is what eve mounts.
-    descriptionBytes: long.length,
-  }]);
-  const row = entry({ toolsAllow: ["one"] });
-  upsertConnection(row);
-  assert.ok((mountedToolBytes(row) ?? 0) > 4_000, `charged ${mountedToolBytes(row)}`);
-});

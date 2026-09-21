@@ -19,6 +19,17 @@ import { MAX_TOOL_INPUT_SCHEMA_BYTES } from "./mcp-http.ts";
  * Which connections are mounted for every turn, and how a bot finds the tools
  * of the ones that are not.
  *
+ * What the budgets are and are not. eve mounts an eagerly mounted connection
+ * by asking the server itself, so what this side measured and what eve puts
+ * on the wire are two fetches of the same endpoint and need not agree: those
+ * connections are charged a ceiling, never a measurement. A tool taken on
+ * demand is built here, from this index, so its charge is exact.
+ *
+ * Neither is a defence against a server that deliberately answers one thing
+ * to a measurement and another to a mount. The owner approved that server on
+ * a card; the budgets are here so an honest one cannot walk a bot into a wall
+ * that kills the chat.
+ *
  * eve owns OpenAPI spec parsing, and those connections are few, so they stay
  * mounted. So does a small MCP server whose own allow-list is short: two
  * tools cost nothing against the budget and making the bot look them up first
@@ -98,20 +109,10 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
     // A pinned MCP server nobody has listed is being charged a ceiling. One
     // listing replaces that with what it really weighs, and the listing is
     // what `find_tools` would have fetched anyway.
-    if (entry.kind === "mcp") {
-      // Re-listed when the last one is old, not only when there is none: a
-      // server that grows after it was connected would otherwise keep the
-      // charge it had on the day, while eve mounts the larger set.
-      if (!indexIsStale(connectionIndex(entry.id, path))) continue;
-      try {
-        await refreshConnectionIndex(entry, path);
-      } catch {
-        // Recorded, so a server that has gone quiet is not refetched at every
-        // turn boundary for as long as it stays down.
-        try { putConnectionListingFailed(entry.id, path); } catch { /* a cache */ }
-      }
-      continue;
-    }
+    // A pinned MCP server is charged its ceiling and never a listing, so
+    // there is nothing here to measure: listing it would only have been a
+    // number nothing reads, fetched at every turn boundary.
+    if (entry.kind !== "openapi") continue;
     if (!indexIsStale(connectionIndex(entry.id, path))
       && mountedToolCount(entry, path) !== null
       && mountedToolBytes(entry, path) !== null) continue;
@@ -163,22 +164,19 @@ export function mountedToolBytes(entry: ConnectionEntry, path?: string): number 
       textBytes: index.textBytes,
     });
   }
-  // A pinned server nobody has listed, or whose listing did not arrive, is
-  // charged the most its allow-list could weigh: a ceiling rather than a
-  // guess, and it keeps the connection mountable meanwhile. A listing that
-  // did arrive is charged what it holds, even when that is nothing.
-  if (!index || index.failed) {
-    const allowed = entry.toolsAllow?.length;
-    if (allowed === undefined) return null;
-    return allowed * (76 + 80 + 400 + MAX_TOOL_INPUT_SCHEMA_BYTES);
-  }
-  const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
-  let bytes = 0;
-  for (const tool of index.tools) {
-    if (allow && !allow.has(tool.name)) continue;
-    bytes += indexedToolBytes(tool, entry.id, entry.name);
-  }
-  return bytes;
+  // A pinned server is charged the most its allow-list could weigh, always,
+  // and never what a listing said.
+  //
+  // eve mounts this connection by asking the server itself, which is a
+  // second fetch of the same endpoint: what was listed here is not what gets
+  // mounted there. A server that answers an empty listing to this side and a
+  // full one to eve would be charged nothing and mount everything, and a
+  // listing taken an hour ago says nothing about the roster eve will be
+  // handed on the next turn. The allow-list bounds how many tools eve may
+  // take; this is what each of them may cost.
+  const allowed = entry.toolsAllow?.length;
+  if (allowed === undefined) return null;
+  return allowed * (76 + 80 + 400 + MAX_TOOL_INPUT_SCHEMA_BYTES);
 }
 
 export type ToolHit = {
