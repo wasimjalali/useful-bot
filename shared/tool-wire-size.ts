@@ -38,6 +38,11 @@ export function toolWireBytes(name: string, description: string, schemaBytes: nu
   return ENVELOPE_BYTES + utf8(name) + utf8(description) + schemaBytes;
 }
 
+/** What a measured OpenAPI connection weighs on the wire, envelopes included. */
+export function specWireBytes(size: SpecSize): number {
+  return size.schemaBytes + size.textBytes + size.operations * ENVELOPE_BYTES;
+}
+
 export function schemaBytesOf(schema: Record<string, unknown> | null): number {
   return schema ? jsonBytes(schema) : 2;
 }
@@ -141,6 +146,14 @@ export type SpecSize = {
   operations: number;
   /** Argument-schema bytes across every operation, resolved. */
   schemaBytes: number;
+  /**
+   * Name and description bytes across every operation. eve puts an
+   * operation's `operationId`, `summary` and `description` into the tool it
+   * builds, and a spec that documents itself properly carries paragraphs of
+   * them: a flat rate per operation undercounted exactly the specs most
+   * likely to be large.
+   */
+  textBytes: number;
 };
 
 export function measureOpenApiSpec(spec: unknown): SpecSize | null {
@@ -150,6 +163,7 @@ export function measureOpenApiSpec(spec: unknown): SpecSize | null {
   const walk: Walk = { root, nodes: 0, truncated: false };
   let operations = 0;
   let schemaBytes = 0;
+  let textBytes = 0;
   for (const item of Object.values(paths)) {
     const path = asRecord(item);
     if (!path) continue;
@@ -159,6 +173,10 @@ export function measureOpenApiSpec(spec: unknown): SpecSize | null {
       const operation = asRecord(value);
       if (!operation) continue;
       operations += 1;
+      for (const field of ["operationId", "summary", "description"]) {
+        const text = operation[field];
+        if (typeof text === "string") textBytes += utf8(text);
+      }
       const parameters = [
         ...shared,
         ...(Array.isArray(operation.parameters) ? operation.parameters : []),
@@ -173,5 +191,5 @@ export function measureOpenApiSpec(spec: unknown): SpecSize | null {
       if (walk.truncated) return null;
     }
   }
-  return walk.truncated ? null : { operations, schemaBytes };
+  return walk.truncated ? null : { operations, schemaBytes, textBytes };
 }

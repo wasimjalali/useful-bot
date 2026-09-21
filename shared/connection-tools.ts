@@ -10,7 +10,7 @@ import {
 } from "./connection-tools-store.ts";
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
 import { listMcpTools, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
-import type { SpecSize } from "./tool-wire-size.ts";
+import { specWireBytes, type SpecSize } from "./tool-wire-size.ts";
 import { EAGER_TOOL_ALLOWANCE, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 import { MAX_TOOL_INPUT_SCHEMA_BYTES } from "./mcp-http.ts";
 
@@ -142,13 +142,18 @@ async function headersFor(entry: ConnectionEntry): Promise<Record<string, string
  * builds from that spec, resolved and written down when it was counted, plus
  * a function envelope and a description an operation for each.
  */
-const OPERATION_DESCRIPTION_BYTES = 200;
-
 export function mountedToolBytes(entry: ConnectionEntry, path?: string): number | null {
   const index = connectionIndex(entry.id, path);
   if (entry.kind === "openapi") {
     if (index?.schemaBytes === undefined || index.operations === undefined) return null;
-    return index.schemaBytes + index.operations * (76 + OPERATION_DESCRIPTION_BYTES);
+    // An index written before the operation text was measured has no figure
+    // for it, and a missing figure is not a zero.
+    if (index.textBytes === undefined) return null;
+    return specWireBytes({
+      operations: index.operations,
+      schemaBytes: index.schemaBytes,
+      textBytes: index.textBytes,
+    });
   }
   // A pinned server nobody has listed yet is charged the most its allow-list
   // could weigh: a ceiling rather than a guess, and it keeps the connection

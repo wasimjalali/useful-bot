@@ -31,7 +31,7 @@ import { connectionSecretService, keychainSet, memoryKeychain, setKeychainDriver
 import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { measureOpenApiSpec } from "../shared/tool-wire-size.ts";
+import { measureOpenApiSpec, specWireBytes } from "../shared/tool-wire-size.ts";
 import {
   MAX_SESSION_TOOLS,
   MAX_SESSION_TOOL_BYTES,
@@ -87,7 +87,7 @@ test("a big server waits to be asked for; a pinned one and an OpenAPI spec do no
   // A spec nobody has counted is not mounted: eve builds its tools from the
   // spec and a size nobody knows is not a small one.
   assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
-  putConnectionOperations("weather", { operations: 12, schemaBytes: 900 });
+  putConnectionOperations("weather", { operations: 12, schemaBytes: 900, textBytes: 0 });
   assert.deepEqual(eagerConnections().map((item) => item.id).sort(), ["excalidraw", "weather"]);
   assert.deepEqual(onDemandConnections().map((item) => item.id), ["example"]);
   // An allow-list is exact; a listing is exact; a row nobody has measured
@@ -185,7 +185,7 @@ test("the mounted set is clamped at the budget, whatever is in the store", () =>
       name: `Spec ${i}`,
       url: `https://api${i}.example.com/openapi.json`,
     }));
-    putConnectionOperations(`spec-${i}`, { operations: 25, schemaBytes: 3_000 });
+    putConnectionOperations(`spec-${i}`, { operations: 25, schemaBytes: 3_000, textBytes: 0 });
   }
   const mounted = eagerConnections();
   const total = mounted.reduce((sum, item) => sum + (mountedToolCount(item) ?? 0), 0);
@@ -474,4 +474,20 @@ test("one enormous array in a spec is walked, not stringified", () => {
   assert.equal(measureOpenApiSpec({
     paths: { "/a": { get: { parameters: [{ name: "x", schema: { enum: past } }] } } },
   }), null);
+});
+
+test("an operation's own words are weighed, not guessed at", () => {
+  // eve puts operationId, summary and description into the tool it builds,
+  // and a spec that documents itself properly carries paragraphs of them.
+  const prose = "x".repeat(800);
+  const documented = measureOpenApiSpec({
+    paths: { "/a": { get: { operationId: "listThings", summary: prose, description: prose } } },
+  });
+  const bare = measureOpenApiSpec({ paths: { "/a": { get: {} } } });
+  assert.equal(documented?.operations, 1);
+  assert.ok(documented!.textBytes >= 1_600, `counted ${documented?.textBytes}`);
+  assert.equal(bare?.textBytes, 0);
+  // And the wire figure carries it, so a well-documented spec is not admitted
+  // on the strength of its small schemas.
+  assert.ok(specWireBytes(documented!) > specWireBytes(bare!) + 1_500);
 });

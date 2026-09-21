@@ -49,6 +49,7 @@ export type ConnectionIndex = {
    */
   operations?: number;
   schemaBytes?: number;
+  textBytes?: number;
 };
 
 export type SessionTools = {
@@ -136,6 +137,9 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
         : {}),
       ...(typeof row.schemaBytes === "number" && Number.isFinite(row.schemaBytes)
         ? { schemaBytes: Math.max(0, Math.trunc(row.schemaBytes)) }
+        : {}),
+      ...(typeof row.textBytes === "number" && Number.isFinite(row.textBytes)
+        ? { textBytes: Math.max(0, Math.trunc(row.textBytes)) }
         : {}),
     };
   }
@@ -269,7 +273,7 @@ export function putConnectionIndex(
  */
 export function putConnectionOperations(
   connectionId: string,
-  size: { operations: number; schemaBytes: number } | null,
+  size: { operations: number; schemaBytes: number; textBytes: number } | null,
   path = connectionToolsPath(),
 ): void {
   updateConnectionToolsStore((store) => {
@@ -279,6 +283,7 @@ export function putConnectionOperations(
       ...(size === null ? {} : {
         operations: Math.max(0, Math.trunc(size.operations)),
         schemaBytes: Math.max(0, Math.trunc(size.schemaBytes)),
+        textBytes: Math.max(0, Math.trunc(size.textBytes)),
       }),
     };
   }, path);

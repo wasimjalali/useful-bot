@@ -30,6 +30,7 @@ import {
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 import { putConnectionIndex, putConnectionOperations } from "./connection-tools-store.ts";
+import { specWireBytes } from "./tool-wire-size.ts";
 import {
   eagerConnections,
   isEagerConnection,
@@ -200,7 +201,8 @@ async function assertToolBudget(
     const size = await measureOpenApiConnection(entry.url, headers).catch(() => null);
     if (size === null) throw new Error("tool_count_unknown");
     adding = size.operations;
-    addingBytes = size.schemaBytes + size.operations * 276;
+    // The same weighing the clamp uses, so the two cannot disagree.
+    addingBytes = specWireBytes(size);
     // Kept, so the mount-time clamp weighs the same spec the same way and the
     // connection does not have to be fetched again on the next turn.
     try { putConnectionOperations(entry.id, size); } catch { /* a cache */ }
