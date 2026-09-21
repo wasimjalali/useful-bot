@@ -657,6 +657,13 @@ struct DevicesView: View {
                     Text(OwnerGate.unavailableCopy)
                         .foregroundStyle(Theme.C.danger)
                 }
+            } footer: {
+                // §11/1.1: never grey alone — while a connect runs on the
+                // re-pair push, say why these rows are inert.
+                if connectBusy {
+                    Text("Finishing the current connection first.")
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
             }
         }
         .confirmationDialog(

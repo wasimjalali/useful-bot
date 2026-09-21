@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 import UsefulBotCore
@@ -31,9 +32,18 @@ final class PairingCoordinator: ObservableObject {
     let store: PairingStore
     let monitor: PathMonitor
 
+    private var monitorLink: AnyCancellable?
+
     init(store: PairingStore, monitor: PathMonitor) {
         self.store = store
         self.monitor = monitor
+        // `PathMonitor` is its own `ObservableObject` but views only hold
+        // the coordinator — without forwarding, `isOnline` flips never
+        // re-render the §11 offline states.
+        monitorLink = monitor.objectWillChange
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.objectWillChange.send() }
+            }
     }
 
     /// The live default: constructs its own store and monitor. Kept separate

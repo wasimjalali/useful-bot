@@ -1074,3 +1074,75 @@ Round 9 verification after fixes:
 
 - iOS `xcodebuild build-for-testing` clean (iPhone 17).
 - `make -C macos test` 307/307 (the four new race tests pass).
+- Pairing gate green on `c8d5a01` at 402pt (all legs) — the
+  coordinator change touches live legs.
+
+Landed as `c8d5a01`. Round 10: fresh reviewer sessions on
+`c8d5a01` (correctness `devin-1dfef3477c0d49b4aabdd568946c394c`,
+security `devin-609a845ca1e64fea96419aed61f64302`, design-a11y
+`devin-5acf867307ab4335938c0bf254da4ae0`). Correctness approved
+zero-finding; design-a11y requested changes on 3 findings.
+
+### PR-2 Round 10
+
+- `PathMonitor` published nothing the UI could hear (design
+  finding 1, high): the coordinator held it as a plain `let`,
+  views observe only the coordinator, so `isOnline` flips never
+  re-rendered — a regain left the pairing screen stuck offline
+  and the bots list never showed/cleared the §11 banner. The
+  coordinator now forwards `monitor.objectWillChange` into its
+  own, so every `coordinator.monitor.isOnline` read is live.
+- Dropped-state accounting (design finding 2): the 60-cap table
+  below is the complete emitted-vs-committed record.
+- Devices lifecycle rows greyed alone during `connectBusy`
+  (design finding 3, low): the section footer now reads
+  "Finishing the current connection first." in `inkMuted` while
+  a connect runs.
+
+#### Shot curation ledger (31 emitted states, 60-cap committed)
+
+The gate emits every state at 375/402/834 plus a11y-XXXL on
+touched screens (~255 PNGs per width run); the §17.5 cap keeps
+60. Committed = both appearances unless listed. Dropped slots,
+with the redundancy that priced them out:
+
+| Emitted state | Committed | Dropped variant(s) — why |
+|---|---|---|
+| bots-empty | both | — |
+| bots-expiring | both | — |
+| bots-load-error | both + xxxl-light | xxxl-dark — banner + retry row identical to light |
+| bots-loading | both | — |
+| bots-offline | both + xxxl-light | xxxl-dark — banner row identical to light |
+| bots-paired | both + xxxl both + 834 both | — (nav-touched screen keeps the full matrix) |
+| bots-repaired | both | — |
+| bots-resigned-in | both + xxxl both | — |
+| bots-runtime-down | both | — |
+| bots-unreachable | both | — |
+| devices-expiring | light | dark — same LabeledContent rows, warning tint is appearance-independent |
+| devices-offline | light | dark — identical banner mechanics to bots-offline (committed both) |
+| devices-paired | both + 834 + xxxl-834 | — |
+| devices-runtime-down | light | dark — banner identical to bots-runtime-down (committed both) |
+| devices-unpair-confirm | both + 834-light | 834-dark — popover chrome is system-drawn, contents identical |
+| devices-unreachable | light | dark — banner identical to bots-unreachable (committed both) |
+| pairing-camera-denied | both + xxxl-light | xxxl-dark — single reason row identical to light |
+| pairing-connect-failed | both | — |
+| pairing-connected | both | — |
+| pairing-connecting | both | — |
+| pairing-credential-invalid | both | — |
+| pairing-empty | light + 375 | dark — scanner-mask + copy only, token-identical to committed dark pairing states |
+| pairing-manual | — | light+dark — superseded by manual-focused/-ready/-failed which show the same form populated |
+| pairing-manual-failed | both | — |
+| pairing-manual-focused | light | dark — focus ring on `accent`, appearance-independent |
+| pairing-manual-ready | both + xxxl-light | xxxl-dark — identical to light |
+| pairing-offline | light | dark — "You're offline" reason identical to signed-out-offline (committed light) / bots-offline (both) |
+| pairing-repair | light + dark-834 | 402-dark — narrow-width re-pair is the 834-dark evidence at compact width |
+| signed-out | both + xxxl-light | xxxl-dark — identical to light |
+| signed-out-error | light | dark — reason line identical mechanics to pairing-offline |
+| signed-out-offline | light | dark — identical to pairing-offline |
+
+Every dropped variant exists in the gate output for the
+round it ran on (uncommitted working set); the committed set
+keeps at least one dark representative of every *distinct
+component* — banner rows, status pills, reason lines, scanner
+mask, popover, focus ring, mono host — so appearance parity is
+evidenced per component, not per screen.
