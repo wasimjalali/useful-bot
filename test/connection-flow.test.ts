@@ -586,3 +586,60 @@ test("a spec this app could not read is not a spec with no operations in it", as
   assert.equal(findConnectionById("spec"), null);
   assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
 });
+
+test("a spec behind a key is counted with the key the owner just pasted", async () => {
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  const { storePath } = paths();
+  // The row does not exist yet, so the credential cannot come from the store.
+  // Without the pasted one the fetch 401s and a valid connect is refused.
+  const seen: string[] = [];
+  setMcpFetch(async (_input, init) => {
+    const key = new Headers(init?.headers).get("x-api-key") ?? "";
+    seen.push(key);
+    if (key !== "sk_test_secret_1") return new Response("no", { status: 401 });
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  const proposal = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+    authKind: "apiKey",
+    authHeader: "X-Api-Key",
+  });
+  await startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK, secret: "sk_test_secret_1" });
+  assert.equal(seen[0], "sk_test_secret_1");
+  assert.equal(findConnectionById("spec")?.id, "spec");
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
+});
+
+test("the budget check never reads a credential the new row does not own yet", async () => {
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  const { storePath } = paths();
+  // An id that is free in the connections store can still have a Keychain
+  // item behind it, from a row that was removed or a card that lost a race.
+  keychainSet(connectionSecretService("spec"), "sk_someone_elses_secret");
+  const seen: string[] = [];
+  setMcpFetch(async (_input, init) => {
+    seen.push(new Headers(init?.headers).get("x-api-key") ?? "");
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  const proposal = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+  });
+  await startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK });
+  // A no-auth card sends no key, whatever is sitting under that id.
+  assert.deepEqual([...new Set(seen)], [""]);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
+});

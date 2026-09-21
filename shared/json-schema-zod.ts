@@ -92,7 +92,9 @@ function convert(node: unknown, depth: number): z.ZodTypeAny | null {
     const required = new Set(
       (Array.isArray(rec.required) ? rec.required : []).filter((item): item is string => typeof item === "string"),
     );
-    const shape: Record<string, z.ZodTypeAny> = {};
+    // Null prototype: the keys are a server's to choose, and `shape.__proto__ = …`
+    // on a plain object sets the prototype instead of a property.
+    const shape: Record<string, z.ZodTypeAny> = Object.create(null) as Record<string, z.ZodTypeAny>;
     for (const [key, value] of Object.entries(properties)) {
       const built = convert(value, depth + 1);
       if (!built) return null;

@@ -128,7 +128,7 @@ async function headersFor(entry: ConnectionEntry): Promise<Record<string, string
  * schemas from the spec and never hands them back, so those are counted at a
  * flat rate rather than pretended to be zero.
  */
-const UNSEEN_SCHEMA_BYTES = 400 + TOOL_WIRE_OVERHEAD_BYTES;
+export const UNSEEN_SCHEMA_BYTES = 400 + TOOL_WIRE_OVERHEAD_BYTES;
 
 export function mountedToolBytes(entry: ConnectionEntry, path?: string): number | null {
   const index = connectionIndex(entry.id, path);

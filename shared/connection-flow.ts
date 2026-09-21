@@ -30,8 +30,7 @@ import {
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 import { putConnectionIndex, putConnectionOperations } from "./connection-tools-store.ts";
-import { connectionHeaders } from "./connection-auth.ts";
-import { isEagerConnection, mountedToolBytes, mountedToolCount } from "./connection-tools.ts";
+import { isEagerConnection, mountedToolBytes, mountedToolCount, UNSEEN_SCHEMA_BYTES } from "./connection-tools.ts";
 import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
 /**
@@ -165,19 +164,16 @@ async function probeToolCount(entry: ConnectionEntry, headers: Record<string, st
  * what this counts.
  */
 /**
- * The headers a spec fetch needs. A spec behind a key was uncountable without
- * them, which used to be cosmetic and now decides whether the connection is
- * mounted at all.
+ * @param headers what the caller legitimately holds for this connect, which
+ * for a spec behind a key is the difference between countable and not. Passed
+ * in rather than read from the Keychain: this runs before the row exists, so
+ * the id it would read under may still belong to a different connection, and
+ * that connection's credential must not be sent to this proposal's host.
  */
-async function specHeaders(entry: ConnectionEntry): Promise<Record<string, string>> {
-  try {
-    return await connectionHeaders(entry);
-  } catch {
-    return {};
-  }
-}
-
-async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
+async function assertToolBudget(
+  entry: ConnectionEntry,
+  headers: Record<string, string> = {},
+): Promise<void> {
   if (!isEagerConnection(entry)) return;
   const others = readConnectionsStore().connections
     .filter((item) => isEagerConnection(item) && item.id !== entry.id && item.url !== entry.url);
@@ -196,12 +192,14 @@ async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
     // Counting it as zero let an unreachable or oversized one through, and
     // eve then mounted its whole operation list on every later turn: the
     // wall this check exists to keep out of reach.
-    adding = await countOpenApiOperations(entry.url, await specHeaders(entry)).catch(() => null);
+    adding = await countOpenApiOperations(entry.url, headers).catch(() => null);
     if (adding === null) throw new Error("tool_count_unknown");
-    addingBytes = adding * 400;
+    // The same rate the clamp uses, overhead included, so the two budgets
+    // cannot disagree about the same spec.
+    addingBytes = adding * UNSEEN_SCHEMA_BYTES;
   } else {
     adding = entry.toolsAllow?.length ?? 0;
-    addingBytes = mountedToolBytes(entry) ?? adding * 400;
+    addingBytes = mountedToolBytes(entry) ?? adding * UNSEEN_SCHEMA_BYTES;
   }
   if (mounted + adding > MOUNTED_TOOL_BUDGET || mountedBytes + addingBytes > MOUNTED_TOOL_BYTE_BUDGET) {
     throw new Error("tool_budget_exceeded");
@@ -339,8 +337,10 @@ export async function startConnectionConfirm(
     // entry that went in.
     // Nothing is written until the budget says there is room: a row and a
     // credential for a connect that is about to be refused would have to be
-    // unwound, and the unwinding is what loses a credential.
-    await assertToolBudget(entry);
+    // unwound, and the unwinding is what loses a credential. The secret the
+    // owner just pasted goes with the check, so a spec behind a key can be
+    // counted at all; it is this card's own, not a row's.
+    await assertToolBudget(entry, authHeaders(proposal.authKind, secret || null, entry.authHeader));
     const outcome = upsertConnection(entry);
     if (!outcome.won) {
       // Another card holds this URL. Nothing of this card's is in the store,

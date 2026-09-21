@@ -302,9 +302,14 @@ export type ActivationOutcome = {
  * that has been through `wrapUntrusted` (184 bytes of preamble and fences).
  * Counting the name, the description and the schema alone undercounted every
  * tool by around 280 bytes, which is most of a budget's headroom over sixty
- * of them.
+ * of them. The rest is the connection name the description is prefixed with
+ * and the label on a passthrough tool's schema hint.
+ *
+ * The schema itself is counted once because it reaches the model once: as
+ * the converted `parameters`, or, when it could not be converted, written
+ * into the description instead.
  */
-export const TOOL_WIRE_OVERHEAD_BYTES = 280;
+export const TOOL_WIRE_OVERHEAD_BYTES = 360;
 
 export function indexedToolBytes(tool: IndexedTool): number {
   return TOOL_WIRE_OVERHEAD_BYTES

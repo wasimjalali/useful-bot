@@ -103,6 +103,11 @@ async function rpc(
       ...headers,
     },
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+    // Never follow one. `assertResolvedPublic` pinned this host, and a
+    // redirect takes the request, its credential header and the SSRF check
+    // somewhere it never looked. Only `authorization` is stripped on a
+    // cross-origin hop; an `X-Api-Key` would go with it.
+    redirect: "error",
     signal,
   });
   if (!res.ok) throw new Error(`mcp_http_${res.status}`);
@@ -272,6 +277,8 @@ export async function countOpenApiOperations(
   try {
     const res = await activeFetch()(target, {
       headers: { accept: "application/json", ...headers },
+      // Same reason as the JSON-RPC call above.
+      redirect: "error",
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return null;
