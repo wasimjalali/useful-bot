@@ -53,9 +53,19 @@ export function schemaBytesOf(schema: Record<string, unknown> | null): number {
  * document cannot run away, and returns null when it cannot tell.
  */
 const METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "options"]);
-const MAX_REF_DEPTH = 6;
-/** A schema this side stops resolving is charged this much and no less. */
-const UNRESOLVED_SCHEMA_BYTES = 4 * 1024;
+/**
+ * How far a `$ref` chain is followed, and how many nodes the whole walk may
+ * visit. Resolution expands: a spec inside the one-megabyte read cap whose
+ * schemas reference each other can describe a tree with more nodes than there
+ * are bytes, so depth alone does not bound the work.
+ *
+ * A walk that hits either bound has not measured the spec, and a number it
+ * cannot stand behind is worse than no number: the caller is told it could
+ * not be measured and refuses the connect, rather than charging a figure the
+ * wire will exceed.
+ */
+const MAX_REF_DEPTH = 12;
+const MAX_NODES = 200_000;
 
 type Json = Record<string, unknown>;
 
@@ -76,26 +86,38 @@ function resolveRef(root: Json, ref: string): unknown {
 }
 
 /**
- * The resolved JSON size of one schema node. Depth-bounded: past the limit a
- * node is charged the ceiling rather than followed, so a `$ref` cycle costs
- * time proportional to the bound and never loops.
+ * The resolved JSON size of one schema node, and whether the walk got all the
+ * way. A cycle, a reference this side cannot follow, or a document too big to
+ * walk marks it truncated, and a truncated walk yields no number at all.
  */
-function resolvedBytes(root: Json, node: unknown, depth: number): number {
-  if (depth > MAX_REF_DEPTH) return UNRESOLVED_SCHEMA_BYTES;
+type Walk = { root: Json; nodes: number; truncated: boolean };
+
+function resolvedBytes(walk: Walk, node: unknown, depth: number): number {
+  if (walk.truncated) return 0;
+  if (++walk.nodes > MAX_NODES || depth > MAX_REF_DEPTH) {
+    walk.truncated = true;
+    return 0;
+  }
   const rec = asRecord(node);
   if (!rec) return jsonBytes(node);
   if (typeof rec.$ref === "string") {
-    const target = resolveRef(root, rec.$ref);
-    if (target === null || target === undefined) return UNRESOLVED_SCHEMA_BYTES;
-    return resolvedBytes(root, target, depth + 1);
+    const target = resolveRef(walk.root, rec.$ref);
+    if (target === null || target === undefined) {
+      // A reference this side cannot follow is a schema it cannot weigh.
+      walk.truncated = true;
+      return 0;
+    }
+    return resolvedBytes(walk, target, depth + 1);
   }
   let total = 2;
   for (const [key, value] of Object.entries(rec)) {
+    if (walk.truncated) return 0;
     total += utf8(key) + 4;
     if (Array.isArray(value)) {
-      total += 2 + value.reduce<number>((sum, item) => sum + resolvedBytes(root, item, depth + 1) + 1, 0);
+      total += 2;
+      for (const item of value) total += resolvedBytes(walk, item, depth + 1) + 1;
     } else if (asRecord(value)) {
-      total += resolvedBytes(root, value, depth + 1);
+      total += resolvedBytes(walk, value, depth + 1);
     } else {
       total += jsonBytes(value);
     }
@@ -113,6 +135,7 @@ export function measureOpenApiSpec(spec: unknown): SpecSize | null {
   const root = asRecord(spec);
   const paths = asRecord(root?.paths);
   if (!root || !paths) return null;
+  const walk: Walk = { root, nodes: 0, truncated: false };
   let operations = 0;
   let schemaBytes = 0;
   for (const item of Object.values(paths)) {
@@ -129,13 +152,14 @@ export function measureOpenApiSpec(spec: unknown): SpecSize | null {
         ...(Array.isArray(operation.parameters) ? operation.parameters : []),
       ];
       for (const parameter of parameters) {
-        schemaBytes += resolvedBytes(root, parameter, 0);
+        schemaBytes += resolvedBytes(walk, parameter, 0);
       }
       const body = asRecord(operation.requestBody);
-      if (body) schemaBytes += resolvedBytes(root, body, 0);
+      if (body) schemaBytes += resolvedBytes(walk, body, 0);
       // eve puts the operation's summary and description in the tool's own
       // description, which the caller adds; only the arguments are here.
+      if (walk.truncated) return null;
     }
   }
-  return { operations, schemaBytes };
+  return walk.truncated ? null : { operations, schemaBytes };
 }

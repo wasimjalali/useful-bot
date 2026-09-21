@@ -423,12 +423,23 @@ test("an OpenAPI spec is weighed by the schemas eve builds from it, refs resolve
   // A spec this app cannot read is not one with nothing in it.
   assert.equal(measureOpenApiSpec({ nope: true }), null);
   assert.equal(measureOpenApiSpec("not a spec"), null);
-  // A cycle is bounded rather than followed.
+  // A cycle cannot be weighed, and a number this side cannot stand behind is
+  // worse than none: the connect is refused rather than charged a guess.
   const cyclic = {
     paths: { "/a": { get: { parameters: [{ schema: { $ref: "#/components/schemas/Loop" } }] } } },
     components: { schemas: { Loop: { items: { $ref: "#/components/schemas/Loop" } } } },
   };
-  assert.ok((measureOpenApiSpec(cyclic)?.schemaBytes ?? 0) > 0);
+  assert.equal(measureOpenApiSpec(cyclic), null);
+  // So is a reference that points at nothing.
+  assert.equal(measureOpenApiSpec({
+    paths: { "/a": { get: { parameters: [{ schema: { $ref: "#/components/schemas/Gone" } }] } } },
+  }), null);
+  // And a document whose resolved shape is bigger than the walk may visit.
+  const wide = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`f${i}`, { $ref: "#/components/schemas/Wide" }]));
+  assert.equal(measureOpenApiSpec({
+    paths: { "/a": { get: { parameters: [{ schema: { $ref: "#/components/schemas/Wide" } }] } } },
+    components: { schemas: { Wide: { properties: wide } } },
+  }), null);
 });
 
 test("a path-level parameter is charged to every operation under it", () => {
