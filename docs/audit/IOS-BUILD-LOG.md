@@ -1248,3 +1248,63 @@ pairing screen unmounting between them throws "No matches found" —
 the faster connect() path surfaced it). All five sites now read
 through `matching(predicate:)`, which evaluates identifier + label
 inside one snapshot.
+
+### PR-2 Rounds 12-14 (heads cae74d2 → 2bf8cfa)
+
+Round 12 ran under the amended rules: the same three reviewer
+sessions were reused (messaged the new head, no fresh cold start).
+
+- Non-credential 403s on the readiness probe collapsed into
+  `.runtimeDown` (correctness 1, low): a tailnet signature mismatch
+  while paired asserted an eve-probe failure that never ran and
+  claimed "settings still work" while every owner route refused.
+  `probeReadiness` now maps `ingress`/`forbidden`/`origin`/`csrf`
+  403s to `.macUnreachable` (spec 7.2) with `diagnostics: .answered`
+  — a refusal proves the chain carried.
+- Readiness banner glyph painted `danger` on every level
+  (design 1, medium): §1.0 reserves `danger` for refused/destructive;
+  the level banner now paints `warning`, agreeing with the Devices
+  statusPill.
+- Devices had no §1.15 Diagnostics group under `macUnreachable`
+  (design 2, medium): added between Expiry and Actions — Resolved /
+  TLS / HTTP `ok`-`bad` pills fed by `ReachabilityDiagnostics`, a new
+  shared-core type classifying the probe's `URLError` layer
+  (DNS → all bad; TLS errors → resolved-ok/TLS-bad/HTTP-bad;
+  not-connected → all bad; other transport → HTTP-bad only;
+  edge refusals → `.answered`).
+- `statusPill` conflated `noNetwork` and `macUnreachable` into
+  "Unreachable" (design 3, low): split — `.noNetwork` reads
+  "Offline", `.macUnreachable` keeps "Unreachable".
+- The resigned-in shot fired before the toolbar mounted (design 4,
+  low): the journey now waits on the Devices gear before capture —
+  and the wait caught a REAL defect the shot had masked: after
+  `signedOut → paired` the roster rendered with no nav bar at all
+  (title and gear absent in the framebuffer shot, not just the a11y
+  tree). Swapping the root's type inside a persistent NavigationStack
+  never mounts the new root's toolbar on iOS 26; an `.id(state)`
+  rebuild made it worse (stack's toolbar and pushes inert). Each
+  auth state now owns its `NavigationStack` subtree — sign-in
+  remounts the roster with full chrome, and sign-out tears down the
+  pushed Devices screen with its stack.
+- `reachabilityDiagnostics` had no coverage (correctness low):
+  the classifier moved to `ReachabilityDiagnostics.classify` in
+  shared core (outside the iOS gate) so `swift test` reaches it —
+  new `ReachabilityDiagnosticsTests` suite, 6 cases green.
+
+Environment note: `next dev` auto-installed `typescript` via yarn
+mid-run while `node_modules/typescript` was absent; the transient
+package.json write poisoned turbopack's compile cache and 500'd
+every route until `web/.next/dev` was cleared and the stack
+restarted. Two unrelated timing-sensitive node tests flaked under
+the concurrent load (`cli-tools` partial-output race, an
+`agent-tools` <1 s elapsed assert) — both green in isolation.
+
+R12 verdicts: security approve, correctness 1 low, design 2 medium +
+2 low. R13 verdicts at cae74d2: all three approve, zero findings
+(design posted as session text, transcribed to the PR). R14 delta
+verdicts at 2bf8cfa (nav-stack fix + classifier move): all three
+approve, zero findings — the first full clean round on the merge
+head. Gates on 2bf8cfa: `make -C macos test` 313/313 (includes the
+new classifier suite), iOS build clean, pairing gate 402 green
+(all legs incl. the resigned-in journey now carrying chrome);
+375/834 re-run on the final head below.
