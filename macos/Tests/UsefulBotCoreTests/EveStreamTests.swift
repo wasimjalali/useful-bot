@@ -589,4 +589,52 @@ import Testing
         projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"))
         #expect(projection.messages.count == 3)
     }
+    /// Only the matching retry used to take the banner down, so a stream that
+    /// sends no `turn.started` left a failure standing over a different
+    /// question that was already running.
+    @Test func aNewMessageTakesTheLastTurnsFailureWithIt() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        #expect(projection.failed)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "something else"))
+        #expect(!projection.failed)
+        #expect(projection.failure == nil)
+        #expect(projection.pending)
+    }
+
+    /// A question ends the turn: the bot is waiting on the owner, not working.
+    /// Counting the row above it as still open left a later retry stacking.
+    @Test func aQuestionClosesTheRowsAboveIt() {
+        let asked = #"""
+        {"type":"input.requested","meta":{"id":"q1"},"data":{"requests":[{"requestId":"r1","kind":"input","prompt":"Which one?"}]}}
+        """#
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "first"))
+        projection.apply(EveStream.parseLine(asked)!)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "second"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"))
+        #expect(projection.messages.filter { $0.role == .user && $0.text == "second" }.count == 1)
+    }
+
+    /// A turn that ended takes its id with it. Left behind, the next turn's
+    /// work looked like somebody else's and stopped counting, which folds a
+    /// turn that had in fact acted.
+    @Test func aFinishedTurnsIdDoesNotOutliveIt() {
+        let requested = #"""
+        {"type":"actions.requested","meta":{"id":"t1"},"data":{"turnId":"turn-2","actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}
+        """#
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s1", turnId: "turn-1"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.completed", id: "done1"))
+        // A second turn the stream did not announce, doing real work.
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "again"))
+        projection.apply(EveStream.parseLine(requested)!)
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "again"))
+        #expect(projection.messages.filter { $0.role == .user && $0.text == "again" }.count == 2)
+    }
+
 }

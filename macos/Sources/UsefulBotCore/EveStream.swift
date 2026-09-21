@@ -575,7 +575,11 @@ public struct StreamProjection: Equatable, Sendable {
     /// What this projection holds, roughly: the message text and the ids it
     /// remembers for dedupe. For the per-bot cache budget, not accounting.
     public var estimatedBytes: Int {
-        messages.reduce(0) { $0 + $1.text.utf8.count + 96 } + seenOrder.count * 48
+        messages.reduce(0) { $0 + $1.text.utf8.count + 96 }
+            + seenOrder.count * 48
+            // A fold leaves the id it replaced pointing at the same row, so
+            // this map grows with retries and not only with rows.
+            + indexById.count * 48
     }
     private var currentAssistantId: String?
     /// Where each message id sits in `messages`, first holder wins, the way
@@ -775,6 +779,12 @@ public struct StreamProjection: Equatable, Sendable {
                 text: text,
                 at: stamp
             ))
+            // A message is a turn starting, so the last one's outcome goes
+            // with it. Only the matching retry used to clear this, which left
+            // a failure banner standing over a different question on a stream
+            // that sends no `turn.started` of its own.
+            failed = false
+            failure = nil
             // More than one user row open at once, which a queued send or a
             // teammate writing into this chat can do, and a failure cannot be
             // pinned on any of them: claim none rather than the wrong one.
@@ -830,8 +840,10 @@ public struct StreamProjection: Equatable, Sendable {
             // text counts as this turn's work; a redelivery of an old block
             // returned above, and letting it through would make an untouched
             // turn look like one that got somewhere.
-            turnProducedWork = true
-            openUserRows = 0
+            if belongsToThisTurn(event) {
+                turnProducedWork = true
+                openUserRows = 0
+            }
             activity = .working
             if let current = currentAssistantId,
                let index = indexById[current] {
@@ -856,8 +868,10 @@ public struct StreamProjection: Equatable, Sendable {
                     activity = .thinking
                     return
                 }
-                turnProducedWork = true
-                openUserRows = 0
+                if belongsToThisTurn(event) {
+                    turnProducedWork = true
+                    openUserRows = 0
+                }
                 if let current = currentAssistantId,
                    let index = indexById[current] {
                     messages[index].text = full
@@ -903,13 +917,22 @@ public struct StreamProjection: Equatable, Sendable {
             turnProducedWork = false
             openUserRows = 0
             carrierIsThisTurn = false
+            // A turn that ended takes its id with it. Left behind, it makes
+            // the next turn's work look like somebody else's and stops it
+            // counting, which is the direction that folds a turn that acted.
+            currentTurnId = nil
         case "action.result", "action.partial":
             if belongsToThisTurn(event) { turnProducedWork = true }
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
             if event.type == "action.result" { activity = .thinking }
         case "input.requested":
-            if belongsToThisTurn(event) { turnProducedWork = true }
+            // A question ends the turn: the bot is waiting on the owner, not
+            // working. So it closes the rows above it, the way an answer does.
+            if belongsToThisTurn(event) {
+                turnProducedWork = true
+                openUserRows = 0
+            }
             for question in EveStream.parseQuestions(event.data) {
                 if let index = questions.firstIndex(where: { $0.id == question.id }) {
                     questions[index] = question
@@ -933,6 +956,7 @@ public struct StreamProjection: Equatable, Sendable {
             turnProducedWork = false
             openUserRows = 0
             carrierIsThisTurn = false
+            currentTurnId = nil
         default:
             break
         }
