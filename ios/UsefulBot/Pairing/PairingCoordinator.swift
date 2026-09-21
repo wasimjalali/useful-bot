@@ -166,6 +166,16 @@ final class PairingCoordinator: ObservableObject {
                 endpointPolicy: TailnetEndpointPolicy()
             )
             let info = try await next.signIn()
+            // The connected pulse is a post-await write like any other:
+            // gate it on the generation or it stomps the `.idle` a
+            // mid-flight unpair/sign-out already landed — leaving the
+            // pairing surface busy forever (the busy gate at the top of
+            // this function then refuses every retry). Stale exits write
+            // nothing: the generation bump already wrote `.idle`.
+            guard store.isCurrent(generation: generation) else {
+                rollbackToken()
+                return
+            }
             // Design 1.1: the success line "Connected to <name>" reads for
             // 600 ms before the root swaps the pairing screen for the Bots
             // list — so `paired` lands after the pause, not on sign-in.

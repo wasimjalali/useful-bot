@@ -139,12 +139,13 @@ struct PairingView: View {
                 // keeps the square as its minimum but grows past it — wider
                 // too, so grown button copy never breaks mid-word — to fit
                 // the copy at accessibility sizes (A.7). On a height under
-                // the full column (~740 pt) it shrinks to its content so
-                // manual entry and the footer stay on screen — the same rule
-                // the scanner cap applies to the live preview.
+                // the full column (~740 pt) — or on the credential-invalid
+                // root, whose extra Unpair tertiary needs the room — it
+                // shrinks to its content so the controls stay on screen —
+                // the same rule the scanner cap applies to the live preview.
                 deniedBlock
                     .padding(16)
-                    .frame(minWidth: side, minHeight: proxy.size.height >= 740 ? side : 0)
+                    .frame(minWidth: side, minHeight: proxy.size.height >= 740 && !isInvalid ? side : 0)
             } else {
                 QRScannerView(paused: connectBusy || isOffline) { scanned in
                     Task { await coordinator.pair(scanned: scanned) }
@@ -341,13 +342,22 @@ private struct ManualPairingForm: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
     @State private var address = ""
     @State private var token = ""
+    @FocusState private var focusedField: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 16) {
             field("Mac address", text: $address, secure: false)
             field("Pairing token", text: $token, secure: true)
             let online = coordinator.monitor.isOnline
-            let connecting = coordinator.phase == .connecting
+            // Busy means connecting *or* the connected hold — a tap mid-hold
+            // races a second pair against the first attempt's retire.
+            let connecting: Bool = {
+                switch coordinator.phase {
+                case .connecting, .connected: return true
+                case .idle, .failed: return false
+                }
+            }()
             let enabled = !address.isEmpty && !token.isEmpty && online && !connecting
             Button {
                 Task { await coordinator.pairManually(host: address, token: token) }
@@ -399,6 +409,7 @@ private struct ManualPairingForm: View {
         }
         .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
         .foregroundStyle(Theme.C.ink)
+        .focused($focusedField, equals: label)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .padding(.horizontal, 14)
@@ -408,8 +419,23 @@ private struct ManualPairingForm: View {
             in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
+            // Focused field: `ink` edge plus a 3 pt ring at 8% — the same
+            // treatment the pushed manual screen's fields get.
+            ZStack {
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                    .strokeBorder(focusedField == label ? Theme.C.ink : Theme.C.borderStrong, lineWidth: 1)
+                if focusedField == label {
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md + 3, style: .continuous)
+                        .strokeBorder(Theme.C.ink.opacity(0.08), lineWidth: 3)
+                        .padding(-4)
+                }
+            }
+        )
+        .animation(
+            reduceMotion
+                ? nil
+                : .timingCurve(0.22, 1, 0.36, 1, duration: DesignTokens.Motion.fast),
+            value: focusedField
         )
     }
 }

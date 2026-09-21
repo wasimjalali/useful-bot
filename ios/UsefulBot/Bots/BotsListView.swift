@@ -35,15 +35,20 @@ struct BotsListView: View {
     @State private var lastFetchAt: Date?
     /// The expiry warning marks itself warned the moment it renders (one-time
     /// per credential); this holds it on screen for the rest of the screen's
-    /// life so the banner doesn't flicker out in the same frame.
-    @State private var expiryBannerShown = false
+    /// life so the banner doesn't flicker out in the same frame. It is keyed
+    /// to the credential's expiry — a re-pair brings a new expiry, and the
+    /// latch must not keep the old credential's banner standing (or suppress
+    /// the new one's once-per-credential warning).
+    @State private var expiryBannerShownFor: Date?
 
 
     var body: some View {
         List {
             if let readiness = coordinator.readiness, readiness != .ready {
                 readinessBanner(readiness)
-            } else if showsExpiryWarning || expiryBannerShown {
+            } else if showsExpiryWarning
+                        || (expiryBannerShownFor != nil
+                            && expiryBannerShownFor == coordinator.store.credentialExpiresAt) {
                 expiryBanner
             }
             Section {
@@ -181,6 +186,8 @@ struct BotsListView: View {
     /// Design spec 1.2's Error row: danger glyph, one muted sentence,
     /// trailing secondary Retry — the cached list stays visible under it.
     private func loadErrorRow(_ copy: String) -> some View {
+        // Secondary recipe (sunken fill + edge stroke), never bare text:
+        // A.7's 44 pt floor needs the hit area to read as a button.
         let retry = Button("Retry") {
             Task {
                 await coordinator.probeReadiness()
@@ -189,7 +196,17 @@ struct BotsListView: View {
         }
         .tokenFont(DesignTokens.FontSize.button, .semibold)
         .foregroundStyle(Theme.C.ink)
-        .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+        .padding(.horizontal, 20)
+        .frame(minHeight: 44)
+        .background(
+            Theme.C.sunken,
+            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
+        )
+        .buttonStyle(PressedScale())
         let text = HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "exclamationmark.circle")
                 .foregroundStyle(Theme.C.danger)
@@ -457,8 +474,8 @@ struct BotsListView: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("expiry-banner")
         .onAppear {
+            expiryBannerShownFor = coordinator.store.credentialExpiresAt
             coordinator.store.markExpiryWarned()
-            expiryBannerShown = true
         }
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)

@@ -889,3 +889,59 @@ Round 6 verification after fixes:
   legs — `testExpiryBanner` Devices→re-pair push verified).
 - iPhone 17 402pt green (run r6n, all legs).
 - iPhone SE 375pt green (run r6n).
+- `npm test` 599/599, `make -C macos test` 303/303 on head `1c482cb`.
+- Shots curated to the §17.5 cap: 60 committed at canonical
+  `<screen>-<state>-<light|dark>` names, every state in both
+  appearances (`pairing-repair` included), plus variant evidence
+  for the §17.1.3 check types (XXXL, 375-class, 834 split-view).
+
+Round 7: fresh reviewer sessions on `1c482cb` (correctness
+`devin-933080ec3fc14555b25e82b411771f6c`, security
+`devin-cc0e96fc5f37489aa56a6a8a18690fc2`, design-a11y
+`devin-444048a49ef9427281974239dd0b7be6`). Verdicts: security
+approves, zero findings; correctness requests changes (3);
+design-a11y requests changes (5). Fixes, all verified below:
+
+- `PairingCoordinator.connect()`: the `phase = .connected` write
+  was the one ungated post-await write — a completed unpair's
+  `.idle` got stomped and the busy gate at the top then refused
+  every retry (permanent wedge). The write is now generation-gated
+  like every other post-await write in the function; stale exits
+  write nothing because the bumpers already landed `.idle`.
+- `BackendClient.reauth(unlessRotatedFrom:)`: the `if let`
+  guard only skipped the mint when the jar had rotated to a
+  *different* cookie — a cleared jar (nil, sign-out landing between
+  send and 401) still minted a session on a pairing the user just
+  signed out. The comparison now covers nil: `sessionCookie !=
+  sentCookie` skips the mint either way.
+- `ManualPairingForm` busy state: `connecting` now covers
+  `.connecting` and `.connected` — the 600 ms connected pulse no
+  longer re-enables the submit button.
+- `BotsListView` expiry banner latch: `expiryBannerShown: Bool`
+  persisted across a re-pair, hiding the warning on the new
+  credential. Replaced with `expiryBannerShownFor: Date?` keyed to
+  `credentialExpiresAt`, with a nil guard.
+- Shot curation evidence: the 60-cap curation had dropped all
+  §17.1.3 variant evidence. The committed set is back to exactly
+  60 and now carries the required variety — `bots-offline` and
+  `bots-load-error` XXXL captures, `pairing-empty` at 375, and
+  `devices-paired`/`pairing-repair` at 834 (the nav-touching
+  split-view) — at the cost of `pairing-manual` (covered by
+  `pairing-manual-focused`/`-ready`) and `bots-loading-dark`
+  (light kept).
+- `PairingView.deniedBlock`: the square-cell `minHeight: side`
+  floor clipped the credential-invalid state's taller copy at
+  compact heights; the floor is exempt when `isInvalid` is the
+  root state.
+- `loadErrorRow` Retry is the §3.4 secondary recipe (sunken fill,
+  edge stroke, PressedScale, 44 pt) instead of a bare text button.
+- `ManualPairingForm` fields carry the same focused-ring overlay
+  as the standalone `ManualPairingView` (ink edge + 8 % ring).
+
+Round 7 verification after fixes (on the next head):
+
+- iOS `xcodebuild build-for-testing` clean (iPhone 17 destination).
+- `make -C macos test` 303/303 on the R7 working tree.
+- Pairing gate green end-to-end on all three widths (run r7a):
+  iPhone 17 402pt, iPhone SE 375pt, iPad Pro 11 834pt.
+- `npm test` 599/599 on the same tree.

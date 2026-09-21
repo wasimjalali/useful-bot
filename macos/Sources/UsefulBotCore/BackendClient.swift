@@ -507,8 +507,11 @@ public actor BackendClient {
     /// cookie. Without this check, N concurrent 401s produce N mints that
     /// retire each other's sessions — the pattern observed as
     /// `POST session 200 → GET status 401` repeating through boot.
+    /// The same comparison covers a cleared jar: a sign-out landing between
+    /// the request's send and its 401 leaves `sessionCookie` nil — minting
+    /// then would create a session on a pairing the user just signed out.
     private func reauth(unlessRotatedFrom sentCookie: String?) async throws {
-        if let sessionCookie, sessionCookie != sentCookie { return }
+        if sessionCookie != sentCookie { return }
         _ = try await ensureSession()
     }
 
@@ -1609,7 +1612,6 @@ public actor BackendClient {
         tailBox: TailBox?
     ) -> AsyncThrowingStream<EveEvent, Error> {
         let base = self.base
-        let session = self.session
         let client = self
         return AsyncThrowingStream { continuation in
             let activity = ActivityBox()
