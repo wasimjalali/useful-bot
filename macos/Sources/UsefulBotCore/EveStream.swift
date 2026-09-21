@@ -724,6 +724,12 @@ public struct StreamProjection: Equatable, Sendable {
             // before the folds: a redelivery is not a retry and must not take
             // a failure banner down with it.
             if let id = event.id, indexById[id] != nil { return }
+            // The message names the turn it belongs to, and it is the only
+            // event that always reaches this projection: a send arms its
+            // stream at its own `message.received`, so the `turn.started`
+            // ahead of it is never applied and the id would stay unknown for
+            // the whole live turn.
+            if let named = event.turnId { currentTurnId = named }
             let text = EveStream.stripThreadPrefix(event.message ?? "")
             // The last turn failed before the bot said anything, and eve threw
             // the message away with it. The same text arriving again is that
@@ -833,6 +839,11 @@ public struct StreamProjection: Equatable, Sendable {
         case "message.appended":
             let delta = event.messageDelta ?? ""
             guard !delta.isEmpty else { return }
+            // Another turn's text is not this turn's reply. A rewind that
+            // re-sends an older block's deltas was taken for the live answer:
+            // it stole the current block, and the rest of this turn's text
+            // then appended to that older row, splitting the reply in two.
+            guard belongsToThisTurn(event) else { return }
             // The first delta of a block this projection already holds names
             // that block: the rest of its deltas follow, and the text is
             // already here.
@@ -847,7 +858,7 @@ public struct StreamProjection: Equatable, Sendable {
                 // still being read past. Whatever the reader sees, the turn
                 // did start answering, so its message is not the app's to
                 // fold away.
-                if belongsToThisTurn(event) { turnProducedWork = true }
+                turnProducedWork = true
                 return
             }
             // Text is arriving: the row is about to be replaced by the reply
@@ -870,6 +881,16 @@ public struct StreamProjection: Equatable, Sendable {
             }
         case "message.completed":
             let full = EveStream.stripThreadPrefix(event.message ?? "")
+            // Another turn's completion rewrites that turn's own row, which is
+            // its text either way, and touches nothing else: ending this
+            // turn's block on it wrote an older answer over the live one.
+            guard belongsToThisTurn(event) else {
+                if !full.isEmpty, let id = event.id, let index = indexById[id] {
+                    messages[index].text = full
+                    if messages[index].at == nil { messages[index].at = stamp }
+                }
+                return
+            }
             replayingMessage = false
             if !full.isEmpty {
                 // The completion is authoritative: a replay of a message
@@ -924,7 +945,7 @@ public struct StreamProjection: Equatable, Sendable {
             // further than that message qualifies, which is the shape that
             // stacked copies. One that reached text, reasoning or a tool call
             // may have left work behind, and its row keeps that work under it.
-            if carrierIsThisTurn, !turnProducedWork,
+            if belongsToThisTurn(event), carrierIsThisTurn, !turnProducedWork,
                let carried = turnUserMessageId, messages.last?.id == carried {
                 discardedUserMessageId = carried
             }

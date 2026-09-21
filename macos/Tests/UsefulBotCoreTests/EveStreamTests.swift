@@ -684,4 +684,79 @@ import Testing
         projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
         #expect(projection.messages.filter { $0.role == .user }.count == 2)
     }
+    // The four below came out of the seventh adversarial pass, which wrote
+    // them to prove what it had found. Three asserted the behaviour that was
+    // wanted and failed; this one asserted the behaviour that was there.
+
+    /// A failure names the turn it belongs to. One journaled with no boundary
+    /// of its own used to claim whatever row was last delivered, and if eve
+    /// kept that message, the next same-text send folded away something the
+    /// session holds.
+    @Test func aFailureFromAnotherTurnClaimsNothingHere() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s1", turnId: "t1"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "session_busy", turnId: "t2"))
+        projection.apply(EveEvent(type: "turn.completed", id: "c1", turnId: "t1"))
+        projection.apply(EveEvent(type: "turn.started", id: "s3", turnId: "t3"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t3"))
+        #expect(projection.messages.count == 2)
+    }
+
+    /// A rewind that re-sends an older block's deltas was taken for the live
+    /// answer: it stole the current block, and the rest of this turn's text
+    /// then appended to that older row.
+    @Test func aReplayedBlockDoesNotSplitTheLiveReply() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "Hello"))
+        projection.apply(EveEvent(type: "message.completed", id: "c1", message: "Hello"))
+        projection.apply(EveEvent(type: "turn.completed", id: "t1"))
+        projection.apply(EveEvent(type: "turn.started", id: "s2", turnId: "t2"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "again", turnId: "t2"))
+        projection.apply(EveEvent(type: "message.appended", id: "d2", messageDelta: "Hi", turnId: "t2"))
+        #expect(projection.activity == .working)
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "Hello", turnId: "t1"))
+        projection.apply(EveEvent(type: "message.completed", id: "c1", message: "Hello", turnId: "t1"))
+        projection.apply(EveEvent(type: "message.appended", id: "d3", messageDelta: " there", turnId: "t2"))
+        let assistantRows = projection.messages.filter { $0.role == .assistant }
+        #expect(assistantRows.count == 2)
+        #expect(assistantRows.last?.id == "d2")
+        #expect(assistantRows.last?.text == "Hi there")
+    }
+
+    /// A send arms its stream at its own `message.received`, so the
+    /// `turn.started` ahead of it never reaches this projection. Without the
+    /// message naming its turn, the id stayed unknown for the whole live turn
+    /// and an older turn's straggler counted as this one's work.
+    @Test func aLiveSendKnowsItsOwnTurn() {
+        var live = StreamProjection()
+        live.beginTurn()
+        live.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: "hi"
+        ), live: true)
+        live.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"), live: true)
+        // A late-flushed result from the turn before, inside the armed window.
+        live.apply(EveEvent(type: "action.result", id: "r1", turnId: "t0"))
+        live.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error", turnId: "t1"), live: true)
+        live.beginTurn()
+        live.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t2"), live: true)
+        #expect(live.messages.count == 1)
+
+        // The same stream replayed, where `turn.started` is present, has always
+        // excluded that straggler. The two must not disagree.
+        var replay = StreamProjection()
+        replay.apply(EveEvent(type: "turn.started", id: "s1", turnId: "t1"))
+        replay.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"))
+        replay.apply(EveEvent(type: "action.result", id: "r1", turnId: "t0"))
+        replay.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error", turnId: "t1"))
+        replay.apply(EveEvent(type: "turn.started", id: "s2", turnId: "t2"))
+        replay.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t2"))
+        #expect(replay.messages.count == 1)
+    }
 }
