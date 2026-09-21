@@ -1305,6 +1305,12 @@ R12 verdicts: security approve, correctness 1 low, design 2 medium +
 verdicts at 2bf8cfa (nav-stack fix + classifier move): all three
 approve, zero findings — the first full clean round on the merge
 head. Gates on 2bf8cfa: `make -C macos test` 313/313 (includes the
-new classifier suite), iOS build clean, pairing gate 402 green
-(all legs incl. the resigned-in journey now carrying chrome);
-375/834 re-run on the final head below.
+new classifier suite), iOS build clean, pairing gate green on all
+three widths — 402, 375 and 834 each passed all 36 legs incl. the
+resigned-in journey now carrying chrome. The 60-shot set was
+re-emitted on the final head (devices-unreachable now shows the
+Diagnostics group; bots-resigned-in shows the nav bar).
+
+MERGED: squash commit `ddb0005` on `main`, PR #106 closed with the
+round record. The phone test credential was rotated after the run;
+the reviewer sessions were slept for the cap.
