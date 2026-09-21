@@ -242,4 +242,154 @@ private final class CallCounter: @unchecked Sendable {
         #expect(WidgetSaveRetry.isRefusal(BackendError.credentialInvalid))
         #expect(!WidgetSaveRetry.isRefusal(BackendError.http(429)))
     }
+
+    /// §6.2: once `signOut()` runs the exchange stays closed — a later
+    /// request's re-auth must refuse rather than mint into the cleared jar.
+    @Test func exchangeStaysClosedAfterSignOut() async throws {
+        let signIns = CallCounter()
+        StubURLProtocol.handler = { [self] request in
+            if request.url?.path == "/api/auth/session", request.httpMethod == "POST" {
+                signIns.bump()
+                let response = HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil,
+                    headerFields: [
+                        "content-type": "application/json",
+                        "set-cookie": "ub_session=abc123; Path=/; HttpOnly; SameSite=Strict",
+                    ])!
+                return (response, Data(#"{"ok":true,"csrfToken":"t"}"#.utf8))
+            }
+            return self.respond(401, #"{"ok":false,"error":"unauthorized"}"#, to: request.url!)
+        }
+        let client = try makeClient()
+        try await client.signIn()
+        await client.signOut()
+        // The drain already consumed the mint's DELETE; signIn count is 1.
+        #expect(signIns.value == 1)
+        do {
+            _ = try await client.shell()
+            Issue.record("expected a thrown BackendError")
+        } catch {
+            #expect(error is BackendError)
+        }
+        // The 401's re-auth hit the closed exchange — no second mint.
+        #expect(signIns.value == 1)
+    }
+
+    /// `signIn()` is the explicit path that re-arms the exchange `signOut`
+    /// closed — signed-out then sign-in works end to end.
+    @Test func signInReopensExchangeAfterSignOut() async throws {
+        StubURLProtocol.handler = { [self] request in
+            if request.url?.path == "/api/auth/session", request.httpMethod == "POST" {
+                let response = HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil,
+                    headerFields: [
+                        "content-type": "application/json",
+                        "set-cookie": "ub_session=abc123; Path=/; HttpOnly; SameSite=Strict",
+                    ])!
+                return (response, Data(#"{"ok":true,"csrfToken":"t"}"#.utf8))
+            }
+            return self.respond(200, #"{"store":{"bots":[]}}"#, to: request.url!)
+        }
+        let client = try makeClient()
+        try await client.signIn()
+        await client.signOut()
+        try await client.signIn()
+        _ = try await client.shell()
+    }
+
+    /// A mint that lands after `signOut()`'s DELETE fired must retire
+    /// itself with ITS OWN cookie and CSRF — the jar's cleared values can
+    /// never satisfy the new session's DELETE. The stub holds the second
+    /// POST open long enough for sign-out to land underneath it.
+    @Test func retireMintedSessionSendsMintedCsrf() async throws {
+        let deletes = CallCounter()
+        let mintedDelete = CallCounter()
+        let mintedCsrf = CallCounter()
+        let posts = CallCounter()
+        StubURLProtocol.handler = { [self] request in
+            let isSession = request.url?.path == "/api/auth/session"
+            if isSession, request.httpMethod == "DELETE" {
+                deletes.bump()
+                if request.value(forHTTPHeaderField: "cookie") == "ub_session=minted-b" {
+                    mintedDelete.bump()
+                    if request.value(forHTTPHeaderField: "x-ub-csrf") == "csrf-b" {
+                        mintedCsrf.bump()
+                    }
+                }
+                return self.respond(200, #"{"ok":true}"#, to: request.url!)
+            }
+            if isSession, request.httpMethod == "POST" {
+                posts.bump()
+                let isSecond = posts.value == 2
+                if isSecond {
+                    // Hold the mint open while the test signs out.
+                    Thread.sleep(forTimeInterval: 0.8)
+                }
+                let cookie = isSecond ? "ub_session=minted-b" : "ub_session=first"
+                let token = isSecond ? "csrf-b" : "csrf-a"
+                let response = HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil,
+                    headerFields: [
+                        "content-type": "application/json",
+                        "set-cookie": "\(cookie); Path=/; HttpOnly; SameSite=Strict",
+                    ])!
+                return (response, Data(#"{"ok":true,"csrfToken":"\#(token)"}"#.utf8))
+            }
+            return self.respond(200, #"{"store":{"bots":[]}}"#, to: request.url!)
+        }
+        let client = try makeClient()
+        try await client.signIn()
+        let mint = Task { try await client.signIn() }
+        // Give the second POST a moment to reach the held handler, then
+        // sign out underneath it — the mint lands after the DELETE.
+        try await Task.sleep(for: .milliseconds(200))
+        await client.signOut()
+        await #expect(throws: BackendError.self) { try await mint.value }
+        #expect(deletes.value == 2) // sign-out's DELETE + the retire
+        #expect(mintedDelete.value == 1)
+        #expect(mintedCsrf.value == 1)
+    }
+
+    /// A 401 that surfaces after a mid-flight sign-out must not mint: the
+    /// epoch and cookie the request observed are gone, so `reauth` is a
+    /// no-op and the caller sees the failure.
+    @Test func reauthSkipsMintAfterMidRequestSignOut() async throws {
+        let signIns = CallCounter()
+        StubURLProtocol.handler = { [self] request in
+            if request.url?.path == "/api/auth/session", request.httpMethod == "POST" {
+                signIns.bump()
+                let response = HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil,
+                    headerFields: [
+                        "content-type": "application/json",
+                        "set-cookie": "ub_session=first; Path=/; HttpOnly; SameSite=Strict",
+                    ])!
+                return (response, Data(#"{"ok":true,"csrfToken":"csrf-a"}"#.utf8))
+            }
+            if request.url?.path == "/api/auth/session" { // DELETE
+                return self.respond(200, #"{"ok":true}"#, to: request.url!)
+            }
+            // The request under test: hold the 401 open so sign-out lands
+            // between send and failure.
+            if request.value(forHTTPHeaderField: "cookie") == "ub_session=first" {
+                Thread.sleep(forTimeInterval: 0.8)
+            }
+            return self.respond(401, #"{"ok":false,"error":"unauthorized"}"#, to: request.url!)
+        }
+        let client = try makeClient()
+        try await client.signIn()
+        let call = Task { try await client.shell() }
+        // Give shell's request a moment to reach the held handler, then
+        // sign out underneath it.
+        try await Task.sleep(for: .milliseconds(200))
+        await client.signOut()
+        do {
+            _ = try await call.value
+            Issue.record("expected a thrown BackendError")
+        } catch {
+            #expect(error is BackendError)
+        }
+        // One mint total — the 401's re-auth saw the moved epoch/cookie.
+        #expect(signIns.value == 1)
+    }
 }

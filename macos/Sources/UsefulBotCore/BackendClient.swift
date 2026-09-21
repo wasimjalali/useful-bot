@@ -446,7 +446,22 @@ public actor BackendClient {
         // own cookie and surface the mint as failed.
         if epoch != signOutEpoch {
             if let cookie = Self.sessionCookie(from: http, url: base) {
-                await retireMintedSession(cookie)
+                // The session being destroyed accepts only its own CSRF —
+                // self.csrf is another session's (or empty after sign-out).
+                // Newer servers echo it in the POST body; older ones answer
+                // it on a read against the minted cookie.
+                var mintedCsrf = ((try? JSONSerialization.jsonObject(with: data))
+                    as? [String: Any])?["csrfToken"] as? String
+                if mintedCsrf == nil {
+                    var probe = URLRequest(url: base.appendingPathComponent("api/auth/session"))
+                    probe.httpShouldHandleCookies = false
+                    probe.setValue(cookie, forHTTPHeaderField: "cookie")
+                    if let (probeData, _) = try? await session.data(for: probe) {
+                        mintedCsrf = ((try? JSONSerialization.jsonObject(with: probeData))
+                            as? [String: Any])?["csrfToken"] as? String
+                    }
+                }
+                await retireMintedSession(cookie, csrf: mintedCsrf)
             }
             throw BackendError.unauthorized
         }
@@ -539,11 +554,13 @@ public actor BackendClient {
     /// could not carry this cookie, so the session would otherwise stay
     /// live server-side to its expiry. Best-effort like sign-out itself:
     /// signed-out is a local state even when this call cannot reach the Mac.
-    private func retireMintedSession(_ cookie: String) async {
+    /// `csrf` must be the minted session's own token — self.csrf belongs to
+    /// whichever session was live before it (or is already cleared).
+    private func retireMintedSession(_ cookie: String, csrf: String?) async {
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "DELETE"
         request.httpShouldHandleCookies = false
-        if !csrf.isEmpty {
+        if let csrf, !csrf.isEmpty {
             request.setValue(csrf, forHTTPHeaderField: "x-ub-csrf")
         }
         request.setValue(cookie, forHTTPHeaderField: "cookie")
@@ -671,11 +688,14 @@ public actor BackendClient {
         var request = request
         request.httpShouldHandleCookies = false
         let sentCookie = sessionCookie
+        // Read at send: a sign-out landing mid-request bumps the epoch, and
+        // a post-await read would return the NEW epoch and look unmoved.
+        let sentEpoch = signOutEpoch
         if let sentCookie {
             request.setValue(sentCookie, forHTTPHeaderField: "cookie")
         }
         let (bytes, response) = try await session.bytes(for: request)
-        return (bytes, response, sentCookie, signOutEpoch)
+        return (bytes, response, sentCookie, sentEpoch)
     }
 
     /// Pull the `ub_session` pair out of a sign-in `Set-Cookie` header.

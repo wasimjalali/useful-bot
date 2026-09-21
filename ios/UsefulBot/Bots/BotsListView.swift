@@ -250,6 +250,7 @@ struct BotsListView: View {
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
+                .accessibilityAddTraits(.isHeader)
                 .fixedSize(horizontal: false, vertical: true)
             Button {
             } label: {

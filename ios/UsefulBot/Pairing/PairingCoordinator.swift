@@ -159,21 +159,30 @@ final class PairingCoordinator: ObservableObject {
                 keychain.deleteToken()
             }
         }
+        // Hoisted so a catch can still retire the mint: a sign-in that
+        // throws after its POST leaves a live session on the dropped
+        // client, and the stale-generation exits below drop it the same
+        // way — either path calls `signOut` before `next` dies.
+        var pendingClient: BackendClient?
         do {
             let next = try BackendClient(
                 base: payload.host.url,
                 tokenStore: keychain,
                 endpointPolicy: TailnetEndpointPolicy()
             )
+            pendingClient = next
             let info = try await next.signIn()
             // The connected pulse is a post-await write like any other:
             // gate it on the generation or it stomps the `.idle` a
             // mid-flight unpair/sign-out already landed — leaving the
             // pairing surface busy forever (the busy gate at the top of
             // this function then refuses every retry). Stale exits write
-            // nothing: the generation bump already wrote `.idle`.
+            // nothing: the generation bump already wrote `.idle`. The mint
+            // still needs its server-side death — `next` is never swapped
+            // in, so its session would otherwise live to expiry.
             guard store.isCurrent(generation: generation) else {
                 rollbackToken()
+                await next.signOut()
                 return
             }
             // Design 1.1: the success line "Connected to <name>" reads for
@@ -187,6 +196,7 @@ final class PairingCoordinator: ObservableObject {
             try await Task.sleep(for: .milliseconds(Int(holdSeconds * 1000)))
             guard store.isCurrent(generation: generation) else {
                 rollbackToken()
+                await next.signOut()
                 return
             }
             // Re-pairing to a different Mac retires the old origin's Keychain
@@ -216,7 +226,10 @@ final class PairingCoordinator: ObservableObject {
         } catch BackendError.deviceTokenMissing {
             // The just-written item could not be read back — the Keychain
             // dropped it. Terminal on iOS the same as a revoked credential.
+            // signOut is a no-op when the mint never landed; when it did,
+            // the dropped client's session still dies server-side.
             rollbackToken()
+            await pendingClient?.signOut()
             guard store.isCurrent(generation: generation) else { return }
             store.markCredentialInvalid()
             phase = .failed(Self.copy(for: BackendError.deviceTokenMissing))
@@ -225,6 +238,7 @@ final class PairingCoordinator: ObservableObject {
             // attempt's write; the incumbent credential is restored and the
             // client, never swapped, still walks the live pairing.
             rollbackToken()
+            await pendingClient?.signOut()
             guard store.isCurrent(generation: generation) else { return }
             phase = .failed(Self.copy(for: error))
         }
@@ -383,6 +397,21 @@ final class PairingCoordinator: ObservableObject {
             // Same terminal verdict as in exchangeSession: the token can no
             // longer be used, so the pairing's only exits are re-pair and
             // unpair — never a permanent "unreachable" banner.
+            guard store.isCurrent(generation: generation) else { return }
+            store.markCredentialInvalid()
+            phase = .idle
+        } catch BackendError.unauthorized {
+            // §8.4: a 401 that survived the single-flight re-auth means the
+            // credential is refused — the same terminal verdict as a
+            // revoked token, not a runtime outage. A sign-out mid-probe
+            // throws this too, but the generation guard swallows it.
+            guard store.isCurrent(generation: generation) else { return }
+            store.markCredentialInvalid()
+            phase = .idle
+        } catch BackendError.forbidden(let code)
+                    where code == "credential_invalid" || code == "not_phone" {
+            // Gate refusals that name the credential: the pairing is dead,
+            // not the runtime.
             guard store.isCurrent(generation: generation) else { return }
             store.markCredentialInvalid()
             phase = .idle

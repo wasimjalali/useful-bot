@@ -1029,3 +1029,48 @@ Round 8 verification after fixes (on the next head):
   iPhone 17 402pt, iPhone SE 375pt, iPad Pro 11 834pt —
   including the new hold/watcher legs, camera-denied XXXL,
   and the unpair-confirm capture.
+
+Landed as `f3a1a73` + `505497b` + `7b00f63`. Round 9: fresh
+reviewer sessions on `7b00f63` (correctness
+`devin-b43080ba332c4419b45ebe56a9dbb76f`, security
+`devin-b03c542528034a58b87c17801d069664`, design-a11y
+`devin-32c578403ccc494da4875b9d1815082d`). All three returned
+request-changes: design 1 low, security 2 low, correctness 5
+(1 medium, 4 low).
+
+### PR-2 Round 9
+
+- `retireMintedSession` sent the cleared/stale `self.csrf`
+  (security finding 1, correctness finding 1): the DELETE
+  deterministically 403s against a session that isn't its own.
+  The retire now carries the MINTED session's `csrfToken` —
+  parsed from the un-consumed POST body, with a read-back
+  against the minted cookie when older servers don't echo it.
+- `connect()` dropped `next` un-retired on stale-generation
+  exits (security 2, correctness 2): both generation-guard
+  exits now `await next.signOut()`, and the catch paths use a
+  hoisted `pendingClient` — a `signIn` that throws after its
+  POST minted still sees its session die server-side.
+- `sendBytes` read `signOutEpoch` after the send (correctness
+  3): captured before the await so the returned epoch is the
+  one the request actually observed.
+- `probeReadiness` mapped any `BackendError` to `runtimeDown`
+  (correctness 4): gate refusals — `.unauthorized`, and
+  `.forbidden("credential_invalid"|"not_phone")` — now land the
+  terminal `credentialInvalid` verdict instead of misreporting
+  a dead credential as a runtime outage; the generation guard
+  still swallows a sign-out mid-probe.
+- Empty-state title "Create your first bot" carries
+  `.isHeader` (design finding): VoiceOver rotor Headings
+  navigation reaches it.
+- Race-machinery coverage (correctness 5): four new tests in
+  `BackendClientAuthTests` — the closed exchange refuses a
+  re-auth after `signOut`, `signIn` re-opens it, the retire
+  DELETE provably carries the minted session's own cookie +
+  CSRF (the stub holds the mint open while sign-out lands),
+  and a mid-flight 401 never mints past a moved epoch.
+
+Round 9 verification after fixes:
+
+- iOS `xcodebuild build-for-testing` clean (iPhone 17).
+- `make -C macos test` 307/307 (the four new race tests pass).
