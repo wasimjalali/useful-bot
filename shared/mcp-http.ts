@@ -22,17 +22,10 @@ export type McpToolInfo = {
    */
   inputSchema: Record<string, unknown> | null;
   /**
-   * What the server's schema weighs, whether or not it was kept. A schema
-   * dropped for being too big is still the one eve mounts, so charging the
-   * budget for the null this side stored would undercount it by megabytes.
+   * What this tool's arguments weigh when this app mounts it: zod's emission
+   * of the schema it kept, which is what goes on the wire.
    */
   inputSchemaBytes: number;
-  /**
-   * The server's description in bytes, before this side clipped it. eve
-   * mounts the whole thing, so charging the clipped copy undercharged every
-   * verbose server, the same way charging a dropped schema as null did.
-   */
-  descriptionBytes: number;
 };
 
 /**
@@ -261,9 +254,6 @@ export async function listMcpTools(
       resourceUri: toolResourceUri(row._meta),
       inputSchema: toolInputSchema(row.inputSchema),
       inputSchemaBytes: mountedSchemaBytes(toolInputSchema(row.inputSchema)),
-      descriptionBytes: typeof row.description === "string"
-        ? Buffer.byteLength(row.description, "utf8")
-        : 0,
     });
     if (out.length >= 200) break;
   }

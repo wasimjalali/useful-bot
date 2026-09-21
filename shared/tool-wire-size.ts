@@ -44,7 +44,11 @@ function jsonBytes(value: unknown): number {
  * is the argument schema's own JSON, which the caller measures or remembers.
  */
 export function toolWireBytes(name: string, description: string, schemaBytes: number): number {
-  return ENVELOPE_BYTES + utf8(name) + utf8(description) + schemaBytes;
+  // Measured as the router sees it: JSON-encoded, so every quote, backslash
+  // and newline in a server's text costs what it costs once escaped, not
+  // what it costs raw.
+  const envelope = JSON.stringify({ type: "function", function: { name, description, parameters: {} } });
+  return utf8(envelope) - 2 + schemaBytes;
 }
 
 /**

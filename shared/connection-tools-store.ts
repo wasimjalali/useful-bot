@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { MAX_SESSION_TOOLS, MAX_SESSION_TOOL_BYTES } from "./policy.ts";
 import { schemaBytesOf, toolWireBytes } from "./tool-wire-size.ts";
 import { wrapUntrusted } from "./untrusted.ts";
+import { rawSchemaHint, toolInputSchema } from "./json-schema-zod.ts";
 
 /**
  * Which of a connection's tools a session has asked for, and what each
@@ -42,8 +43,6 @@ export type IndexedTool = {
    * about twice as large. Kept even when the schema itself was not.
    */
   inputSchemaBytes: number;
-  /** And its description, before this side clipped it to four hundred. */
-  descriptionBytes: number;
 };
 
 export type ConnectionIndex = {
@@ -93,6 +92,10 @@ const MAX_SESSIONS = 100;
  */
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,80}$/;
 
+export function isMountableToolName(name: string): boolean {
+  return TOOL_NAME.test(name);
+}
+
 function sleep(ms: number): void {
   try {
     Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
@@ -133,9 +136,6 @@ function parseTool(raw: unknown): IndexedTool | null {
     inputSchemaBytes: typeof rec.inputSchemaBytes === "number" && Number.isFinite(rec.inputSchemaBytes)
       ? Math.max(0, Math.trunc(rec.inputSchemaBytes))
       : schemaBytesOf(schema),
-    descriptionBytes: typeof rec.descriptionBytes === "number" && Number.isFinite(rec.descriptionBytes)
-      ? Math.max(0, Math.trunc(rec.descriptionBytes))
-      : Buffer.byteLength(description, "utf8"),
   };
 }
 
@@ -375,16 +375,32 @@ export type ActivationOutcome = {
  * converted `parameters`, or, when it could not be converted, written into
  * the description instead.
  */
+/**
+ * The description a tool is mounted with, built in exactly one place so the
+ * mount and the charge are two readings of the same string. The connection's
+ * name, then the server's words inside an untrusted envelope, with the raw
+ * schema written in when it could not be converted. The fence grows to the
+ * longest backtick run in what it wraps, so its size depends on the content;
+ * estimating it from a fixed fence let a server undercount itself by
+ * kilobytes a tool.
+ */
+export function mountedDescription(tool: IndexedTool, connectionId: string, connectionName: string): string {
+  const { passthrough } = toolInputSchema(tool.inputSchema);
+  const words = `${tool.description || tool.name}` + (passthrough ? rawSchemaHint(tool.inputSchema) : "");
+  return `${oneLine(connectionName)}: ${wrapUntrusted(`connection:${connectionId}`, words)}`;
+}
+
+/** A connection's name goes outside the fence, so it must not carry lines. */
+function oneLine(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
 export function indexedToolBytes(tool: IndexedTool, connectionId = "", connectionName = ""): number {
-  // The description as it is actually mounted: the connection's name, then
-  // the server's words inside an untrusted envelope. The server's own
-  // description is charged at its real length, not the clipped copy kept
-  // here, because eve mounts the whole thing.
-  const envelope = `${connectionName}: ${wrapUntrusted(`connection:${connectionId}`, "")}`;
-  const described = Buffer.byteLength(envelope, "utf8") + tool.descriptionBytes;
-  // A schema too big or too odd to convert is written into the description
-  // instead, so it reaches the model either way and is charged either way.
-  return toolWireBytes(mountedToolName(connectionId, tool.name), "", tool.inputSchemaBytes) + described;
+  return toolWireBytes(
+    mountedToolName(connectionId, tool.name),
+    mountedDescription(tool, connectionId, connectionName),
+    tool.inputSchemaBytes,
+  );
 }
 
 /**
@@ -410,12 +426,26 @@ export function activateSessionTools(
         ? indexedToolBytes(tool, connectionId, sessionConnectionNames[connectionId] ?? "")
         : toolWireBytes(name, "", 4 * 1024);
     };
-    const current = store.sessions[sessionId]?.tools ?? [];
+    // A tool the index no longer lists cannot be mounted: its server dropped
+    // it, or renamed it. Held on, it kept charging the session for a tool it
+    // could never call, and ten of them told the model it was holding its
+    // limit while holding nothing it could use. They are shed here.
+    const listed = (name: string): boolean => {
+      const at = name.indexOf("__");
+      if (at <= 0) return false;
+      return store.index[name.slice(0, at)]?.tools.some((item) => item.name === name.slice(at + 2)) ?? false;
+    };
+    const current = (store.sessions[sessionId]?.tools ?? []).filter(listed);
     const held = new Set(current);
     let bytes = current.reduce((total, name) => total + sizeOf(name), 0);
     const refused: string[] = [];
     for (const name of names) {
       if (held.has(name)) continue;
+      // Nothing is recorded for a tool this side could not mount.
+      if (!listed(name)) {
+        refused.push(name);
+        continue;
+      }
       const size = sizeOf(name);
       // Counted as well as capped: forty schemas at the size a server is
       // allowed to publish would clear the router's byte wall on their own.

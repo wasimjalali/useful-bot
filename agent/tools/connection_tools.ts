@@ -3,6 +3,7 @@ import { z } from "zod";
 import { connectionHeaders } from "../../shared/connection-auth.ts";
 import {
   activateSessionTools,
+  mountedDescription,
   mountedToolName,
   readConnectionToolsStore,
 } from "../../shared/connection-tools-store.ts";
@@ -12,7 +13,7 @@ import {
   splitMountedName,
 } from "../../shared/connection-tools.ts";
 import { findConnectionById } from "../../shared/connections-store.ts";
-import { toolInputSchema, rawSchemaHint } from "../../shared/json-schema-zod.ts";
+import { toolInputSchema } from "../../shared/json-schema-zod.ts";
 import { callMcpTool } from "../../shared/mcp-http.ts";
 import { MAX_SESSION_TOOLS } from "../../shared/policy.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -126,21 +127,16 @@ export default defineDynamic({
         if (entry.toolsAllow && !entry.toolsAllow.includes(split.tool)) continue;
         const indexed = store?.index[split.connectionId]?.tools.find((tool) => tool.name === split.tool);
         if (!indexed) continue;
-        const { schema, passthrough } = toolInputSchema(indexed.inputSchema);
+        const { schema } = toolInputSchema(indexed.inputSchema);
         const connectionId = entry.id;
         const connectionName = entry.name;
         const url = entry.url;
         const toolName = split.tool;
         tools[mountedToolName(connectionId, toolName)] = defineTool({
-          // The server wrote every word of this, including the schema, so it
-          // is quoted rather than spoken: a tool description is read by the
-          // model and is as good a place to plant instructions as a result.
-          description: `${connectionName}: `
-            + wrapUntrusted(
-              `connection:${connectionId}`,
-              `${indexed.description || toolName}`
-                + (passthrough ? rawSchemaHint(indexed.inputSchema) : ""),
-            ),
+          // Built by the same function that charged it, so what was weighed
+          // is what is sent. The server wrote every word of it, schema
+          // included, so it is quoted rather than spoken.
+          description: mountedDescription(indexed, connectionId, connectionName),
           inputSchema: schema,
           async execute(input: unknown, toolCtx) {
             // Read the row again rather than closing over it: eve snapshots a

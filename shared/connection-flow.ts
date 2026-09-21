@@ -146,8 +146,7 @@ async function probeToolCount(entry: ConnectionEntry, headers: Record<string, st
             description: tool.description,
             inputSchema: tool.inputSchema,
             inputSchemaBytes: tool.inputSchemaBytes,
-            descriptionBytes: tool.descriptionBytes,
-          })),
+                })),
       );
     } catch {
       // The index is a cache; a write that failed costs one listing later.
@@ -167,9 +166,8 @@ async function probeToolCount(entry: ConnectionEntry, headers: Record<string, st
  * non-retryable `unsupported_parameter`, and eve retires a session that gets
  * one, so the chat is dead for good. Nothing used to look: the count on the
  * card was for the owner to read, and a connect that doubled a bot's tools
- * went through in silence. Most MCP servers now cost nothing here, because
- * their tools wait to be asked for; an OpenAPI spec and a pinned server are
- * what this counts.
+ * went through in silence. An MCP server costs nothing here, because its
+ * tools wait to be asked for; an OpenAPI spec is what this counts.
  */
 /**
  * @param headers what the caller legitimately holds for this connect, which
@@ -187,7 +185,12 @@ async function assertToolBudget(
   // has measured is not mounted, so it costs nothing here: charging it the
   // ceiling made one unmeasurable row refuse every connect that followed,
   // for good, with no way to remove it.
-  const others = eagerConnections().filter((item) => item.id !== entry.id && item.url !== entry.url);
+  // A URL holds one row, so the one sharing this URL is the row this connect
+  // becomes or settles onto, and is not additional. A row sharing only the
+  // id is a different server that stays mounted: two cards for same-named
+  // servers are handed the same id before either connects, and excluding it
+  // admitted a connect while the real total was already over.
+  const others = eagerConnections().filter((item) => item.url !== entry.url);
   const mounted = others.reduce((total, item) => total + (mountedToolCount(item) ?? 0), 0);
   const mountedBytes = others.reduce((total, item) => total + (mountedToolBytes(item) ?? 0), 0);
   let adding: number | null;
@@ -210,11 +213,9 @@ async function assertToolBudget(
     // there for the six hours before anything re-measures it. `probeToolCount`
     // writes it afterwards, under the id the store actually gave this row.
   } else {
-    // An MCP server is never mounted for every turn, so it costs the mounted
-    // budget nothing. What a session picks up from it is weighed as it picks
-    // it up, against its own budget.
-    adding = 0;
-    addingBytes = 0;
+    // Unreachable while only OpenAPI is eager, and kept as a refusal rather
+    // than a zero so a future eager kind cannot pass this check uncounted.
+    throw new Error("tool_count_unknown");
   }
   if (mounted + adding > MOUNTED_TOOL_BUDGET || mountedBytes + addingBytes > MOUNTED_TOOL_BYTE_BUDGET) {
     throw new Error("tool_budget_exceeded");

@@ -3,6 +3,7 @@ import {
   connectionIndex,
   indexIsStale,
   indexedToolBytes,
+  isMountableToolName,
   mountedToolName,
   putConnectionIndex,
   putConnectionListingFailed,
@@ -18,11 +19,11 @@ import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
  * Which connections are mounted for every turn, and how a bot finds the tools
  * of the ones that are not.
  *
- * What the budgets are and are not. eve mounts an eagerly mounted connection
- * by asking the server itself, so what this side measured and what eve puts
- * on the wire are two fetches of the same endpoint and need not agree: those
- * connections are charged a ceiling, never a measurement. A tool taken on
- * demand is built here, from this index, so its charge is exact.
+ * What the budgets are and are not. eve mounts an OpenAPI connection by
+ * fetching the spec itself, so what this side measured and what eve puts on
+ * the wire are two fetches of the same endpoint and need not agree: that
+ * charge is a deliberate over-estimate of a snapshot. A tool taken on demand
+ * is built here, from this index, so its charge is exact.
  *
  * Neither is a defence against a server that deliberately answers one thing
  * to a measurement and another to a mount. The owner approved that server on
@@ -89,44 +90,37 @@ export function onDemandConnections(path?: string): ConnectionEntry[] {
 }
 
 /**
- * How many tool schemas one connection puts in front of the model. An
- * allow-list is exact; otherwise the last listing is the best figure there
- * is, and an unlisted server is assumed to be as big as one can get, which is
- * the number the cap has to survive.
- */
-/**
- * How big a connection is, or null when nothing has measured it.
- *
- * An eager MCP row carries its own allow-list, so its size is exact. The one
- * unknown is an OpenAPI row whose operations were never counted: a row that
- * predates the count, or one written by a path that skipped it. eve mounts
- * that spec's whole operation list, which can be any size, so guessing a
- * modest figure here would admit it and walk the bot into the wall the
- * budget exists to keep out of reach. `ensureMeasured` fills the gap in.
+ * How many tools an OpenAPI connection mounts, or null when nothing has
+ * counted it. A row that predates the count, or one written by a path that
+ * skipped it, is unknown, and guessing a modest figure would admit it into a
+ * wall it can clear. `ensureMeasured` fills the gap in.
  */
 export function mountedToolCount(entry: ConnectionEntry, path?: string): number | null {
   return connectionIndex(entry.id, path)?.operations ?? null;
 }
 
 /**
- * Count an eager OpenAPI connection nobody has measured, once, and write it
- * down. Called from the turn resolver, so a connection that predates the
+ * Measure the OpenAPI connections whose figures are missing or old, and write
+ * them down. Called from the turn resolver, so a connection that predates the
  * count is measured on the next turn instead of staying unmountable.
  */
 export async function ensureMeasured(entries: ConnectionEntry[], path?: string): Promise<void> {
-  for (const entry of entries) {
-    // A pinned MCP server nobody has listed is being charged a ceiling. One
-    // listing replaces that with what it really weighs, and the listing is
-    // what `find_tools` would have fetched anyway.
-    if (entry.kind !== "openapi") continue;
-    if (!indexIsStale(connectionIndex(entry.id, path))
-      && mountedToolCount(entry, path) !== null
-      && mountedToolBytes(entry, path) !== null) continue;
-    // A spec that cannot be counted must not be refetched on every turn: an
-    // eight-second timeout at each turn boundary, forever, for a row that
-    // stays unmounted either way. One attempt per index lifetime is enough;
-    // a spec that comes back is picked up on the next one.
-    if (!indexIsStale(connectionIndex(entry.id, path))) continue;
+  const due = entries.filter((entry) => {
+    if (entry.kind !== "openapi") return false;
+    const index = connectionIndex(entry.id, path);
+    // Missing or old: measure it.
+    if (indexIsStale(index)) return true;
+    // A recent attempt that failed backs off until the index goes stale, or a
+    // spec that cannot be read would be refetched at every turn boundary,
+    // eight seconds a time, for a row that stays unmounted either way.
+    if (index?.failed) return false;
+    // Fresh but incomplete, such as an index written before a figure existed:
+    // measure it now rather than leave it unmounted for six hours.
+    return mountedToolCount(entry, path) === null || mountedToolBytes(entry, path) === null;
+  });
+  // Together, not one after another. This runs at a turn boundary and holds
+  // the first model call of the turn for as long as it takes.
+  await Promise.all(due.map(async (entry) => {
     let size: SpecSize | null = null;
     try {
       size = await measureOpenApiConnection(entry.url, await headersFor(entry));
@@ -138,7 +132,7 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
     } catch {
       // The index is a cache; a write that failed costs one fetch later.
     }
-  }
+  }));
 }
 
 /** Never throws: a measurement is not worth failing a turn boundary over. */
@@ -193,13 +187,16 @@ export async function refreshConnectionIndex(
   const visible = new Set(modelToolNames(listed));
   const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
   const tools: IndexedTool[] = listed
+    // Screened before it is kept or returned, not only when the store is next
+    // read: a name the upstream would refuse was handed to the model as
+    // callable, activated, and then silently never mounted.
+    .filter((tool) => isMountableToolName(tool.name))
     .filter((tool) => visible.has(tool.name) && (!allow || allow.has(tool.name)))
     .map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
       inputSchemaBytes: tool.inputSchemaBytes,
-      descriptionBytes: tool.descriptionBytes,
     }));
   putConnectionIndex(entry.id, tools, storePath);
   return tools;

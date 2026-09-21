@@ -73,14 +73,11 @@ function definitionFor(entry: ConnectionEntry) {
 }
 
 /**
- * Only the connections that are worth mounting for every turn.
- *
- * eve owns OpenAPI spec parsing and those are few, so they stay. So does an
- * MCP server the owner pinned to a handful of tools: two schemas cost nothing
- * and a bot should not have to go looking before it can draw. A server that
- * publishes its whole catalogue waits to be asked, through `find_tools` in
- * `agent/tools/connection_tools.ts`, which mounts what it hands over under
- * the same `<connectionId>__<toolName>` names this would have.
+ * Only OpenAPI connections are mounted for every turn: eve owns spec parsing
+ * and there is no other way to reach one. Every MCP server waits to be asked,
+ * through `find_tools` in `agent/tools/connection_tools.ts`, which mounts what
+ * it hands over under the same `<connectionId>__<toolName>` names this would
+ * have used.
  */
 export default defineDynamic({
   events: {

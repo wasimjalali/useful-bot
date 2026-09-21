@@ -9,11 +9,13 @@ import {
   activateSessionTools,
   connectionIndex,
   indexedToolBytes,
+  mountedDescription,
   mountedToolName,
   putConnectionIndex,
   putConnectionOperations,
   readConnectionToolsStore,
   sessionTools,
+  updateConnectionToolsStore,
 } from "../shared/connection-tools-store.ts";
 import {
   eagerConnections,
@@ -131,8 +133,8 @@ test("the byte budget clamps a roster the count alone would admit", () => {
       toolsAllow: ["one", "two"],
     }));
     putConnectionIndex(`fat-${i}`, [
-      { name: "one", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length, descriptionBytes: 0 },
-      { name: "two", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length, descriptionBytes: 0 },
+      { name: "one", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length },
+      { name: "two", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length },
     ]);
   }
   const mounted = eagerConnections();
@@ -209,7 +211,6 @@ test("a session picks up tools up to its limit and is told when it is holding th
     description: "",
     inputSchema: null,
     inputSchemaBytes: 2,
-    descriptionBytes: 0,
   })));
   const names = Array.from({ length: MAX_SESSION_TOOLS + 3 }, (_, i) => mountedToolName("example", `tool_${i}`));
   const first = activateSessionTools("s1", names.slice(0, 2));
@@ -238,7 +239,6 @@ test("a session holding heavy schemas is stopped by bytes, long before the count
     description: "",
     inputSchema: fat,
     inputSchemaBytes: JSON.stringify(fat).length,
-    descriptionBytes: 0,
   })));
   const names = Array.from({ length: MAX_SESSION_TOOLS }, (_, i) => mountedToolName("example", `tool_${i}`));
   const outcome = activateSessionTools("s1", names);
@@ -261,8 +261,8 @@ test("a mounted name splits back into the connection and the tool", () => {
 });
 
 test("scoring puts a whole-word name match first", () => {
-  const send = { name: "send_message", description: "", inputSchema: null, inputSchemaBytes: 2, descriptionBytes: 0 };
-  const prose = { name: "post_note", description: "send a message somewhere", inputSchema: null, inputSchemaBytes: 2, descriptionBytes: 0 };
+  const send = { name: "send_message", description: "", inputSchema: null, inputSchemaBytes: 2 };
+  const prose = { name: "post_note", description: "send a message somewhere", inputSchema: null, inputSchemaBytes: 2 };
   assert.ok(scoreTool("send message", send, "Example") > scoreTool("send message", prose, "Example"));
   assert.equal(scoreTool("nothing alike", send, "Example"), 0);
 });
@@ -490,4 +490,116 @@ test("a schema too big to keep still says what the arguments are", async () => {
   assert.ok(!JSON.stringify(kept?.inputSchema).includes("pppp"));
   // And the charge is still the real size of what the server sent.
   assert.ok((kept?.inputSchemaBytes ?? 0) > 0);
+});
+
+test("the turn boundary measures its specs together, not one after another", async () => {
+  paths();
+  const specs = Array.from({ length: 4 }, (_, i) => upsertConnection(entry({
+    id: `spec-${i}`,
+    kind: "openapi",
+    name: `Spec ${i}`,
+    url: `https://api${i}.example.com/openapi.json`,
+  })).entry);
+  let inFlight = 0;
+  let peak = 0;
+  setMcpFetch((async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    inFlight -= 1;
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  await ensureMeasured(specs);
+  // Serial would have peaked at one, holding the turn for every spec in turn.
+  assert.equal(peak, 4);
+});
+
+test("a fresh index missing a figure is measured now, not in six hours", async () => {
+  paths();
+  const spec = upsertConnection(entry({
+    id: "weather",
+    kind: "openapi",
+    name: "Weather",
+    url: "https://api.example.com/openapi.json",
+  })).entry;
+  // An index an older build wrote, before the operation text was measured.
+  updateConnectionToolsStore((store) => {
+    store.index.weather = { fetchedAt: new Date().toISOString(), tools: [], operations: 3, schemaBytes: 90 };
+  });
+  assert.equal(mountedToolBytes(spec), null);
+  let fetched = 0;
+  setMcpFetch((async () => {
+    fetched += 1;
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  await ensureMeasured([spec]);
+  assert.equal(fetched, 1);
+  assert.notEqual(mountedToolBytes(spec), null);
+});
+
+test("a session sheds tools its index no longer lists, and is not charged for them", () => {
+  paths();
+  putConnectionIndex("example", Array.from({ length: 12 }, (_, i) => ({
+    name: `tool_${i}`,
+    description: "",
+    inputSchema: null,
+    inputSchemaBytes: 2,
+  })));
+  const names = Array.from({ length: 12 }, (_, i) => mountedToolName("example", `tool_${i}`));
+  assert.equal(activateSessionTools("s1", names).tools.length, 12);
+  // The server drops ten of them on its next listing.
+  putConnectionIndex("example", [
+    { name: "tool_0", description: "", inputSchema: null, inputSchemaBytes: 2 },
+    { name: "tool_1", description: "", inputSchema: null, inputSchemaBytes: 2 },
+  ]);
+  // Held on, they charged four kilobytes apiece for tools that could never be
+  // called, and ten of them told the model it was at its limit holding none.
+  const after = activateSessionTools("s1", [mountedToolName("example", "tool_1")]);
+  assert.deepEqual(after.tools, [mountedToolName("example", "tool_0"), mountedToolName("example", "tool_1")]);
+  // And a name the index never listed is refused rather than recorded.
+  const ghost = activateSessionTools("s1", [mountedToolName("example", "never_listed")]);
+  assert.deepEqual(ghost.refused, [mountedToolName("example", "never_listed")]);
+});
+
+test("a name the upstream would refuse is never handed to the model", async () => {
+  paths();
+  upsertConnection(entry());
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [
+      { name: "files.read", description: "read a file" },
+      { name: "read_file", description: "read a file" },
+    ] } }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch);
+  const hits = await searchConnectionTools("read file", 5);
+  assert.deepEqual(hits.map((hit) => hit.tool), ["read_file"]);
+});
+
+test("what is charged is exactly what is mounted, fence and escaping included", () => {
+  // A backtick run in the server's text grows the untrusted fence, and every
+  // quote and newline costs more once JSON-encoded. Estimating either from a
+  // fixed fence and raw bytes let a server undercount itself by kilobytes.
+  const nasty = {
+    name: "odd",
+    description: `${"`".repeat(900)} "quoted" \\ ${"\n".repeat(200)}`,
+    inputSchema: null,
+    inputSchemaBytes: 2,
+  };
+  const described = mountedDescription(nasty, "example", "Example");
+  const onTheWire = Buffer.byteLength(JSON.stringify({
+    type: "function",
+    function: { name: "example__odd", description: described, parameters: {} },
+  }), "utf8");
+  assert.equal(indexedToolBytes(nasty, "example", "Example"), onTheWire);
+  // And a connection name cannot carry a line break outside the fence.
+  assert.ok(!mountedDescription(nasty, "example", "Evil\nName").startsWith("Evil\n"));
 });
