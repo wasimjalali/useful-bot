@@ -47,6 +47,10 @@ struct UsefulBotApp: App {
                     }
                 }
             } else {
+                // The stack must rebuild when the auth state flips: swapping
+                // the root's type inside a persistent stack leaves its nav
+                // bar (title, Devices gear) unmounted, and sign-out must not
+                // leave a pushed Devices screen above the new root.
                 NavigationStack {
                     Group {
                         switch coordinator.store.state {
@@ -59,6 +63,7 @@ struct UsefulBotApp: App {
                         }
                     }
                 }
+                .id(coordinator.store.state)
             }
         }
         .environmentObject(coordinator)
