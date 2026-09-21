@@ -37,6 +37,9 @@ export function setOauthFetch(next: FetchFn | null): void {
   injectedFetch = next;
 }
 
+/** The deadline every call in this file carries. */
+const OAUTH_TIMEOUT_MS = 8_000;
+
 function activeFetch(): FetchFn {
   return injectedFetch ?? fetch;
 }
@@ -175,6 +178,11 @@ async function registerClient(
 ): Promise<{ clientId: string; clientSecret: string | null }> {
   const res = await activeFetch()(await assertResolvedPublic(registrationEndpoint), {
     method: "POST",
+    // Every other call here carries a deadline; these three did not, and a
+    // token endpoint that never answers holds a tool call, a tool search and
+    // a turn boundary open behind it.
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    redirect: "error",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({
       client_name: name.slice(0, 80),
@@ -256,6 +264,8 @@ export async function completeMcpOAuth(input: {
   });
   const res = await activeFetch()(await assertResolvedPublic(pending.tokenEndpoint), {
     method: "POST",
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    redirect: "error",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body,
   });
@@ -286,6 +296,8 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
   });
   const res = await activeFetch()(await assertResolvedPublic(bundle.tokenEndpoint), {
     method: "POST",
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    redirect: "error",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body,
   });

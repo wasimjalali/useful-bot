@@ -146,6 +146,7 @@ async function probeToolCount(entry: ConnectionEntry, headers: Record<string, st
             description: tool.description,
             inputSchema: tool.inputSchema,
             inputSchemaBytes: tool.inputSchemaBytes,
+            descriptionBytes: tool.descriptionBytes,
           })),
       );
     } catch {
@@ -453,6 +454,13 @@ export async function completeConnectionOAuth(
   // a refusal would drop a usable token bundle and cost the owner the whole
   // sign-in with no way to retry it. The mount-time clamp is what covers a
   // connect that landed while the browser was open.
+  const bearer = { authorization: `Bearer ${bundle.accessToken}` };
+  // After the exchange, because a spec behind this very sign-in cannot be
+  // read without the token, but still before anything is written. Refusing
+  // after the row and the credential were committed left a connection that
+  // never mounts, that the owner is told is connected, and that nothing can
+  // remove: a spec that became readable later would even mount itself.
+  await assertToolBudget(entry, bearer);
   const outcome = upsertConnection(entry);
   if (!outcome.won) {
     // Another card connected this server between the check above and this
@@ -464,11 +472,6 @@ export async function completeConnectionOAuth(
   }
   const stored = outcome.entry;
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
-  const bearer = { authorization: `Bearer ${bundle.accessToken}` };
-  // Now the token exists, so a spec that was behind this sign-in can be read.
-  // A refusal here does spend the code, which is the lesser of the two: the
-  // alternative is a server that can never be connected at all.
-  await assertToolBudget(stored, bearer);
   const toolCount = await probeToolCount(stored, bearer);
   markConnected(pending.proposalId, stored, toolCount, opts.now ?? Date.now(), storePath);
   return { proposalId: pending.proposalId };

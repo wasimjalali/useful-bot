@@ -95,7 +95,7 @@ test("a big server waits to be asked for; a pinned one and an OpenAPI spec do no
   // working connection over a missing measurement is the worse mistake.
   assert.equal(mountedToolCount(pinned), 2);
   assert.equal(mountedToolCount(big), null);
-  putConnectionIndex("example", [{ name: "one", description: "", inputSchema: null, inputSchemaBytes: 2 }]);
+  putConnectionIndex("example", [{ name: "one", description: "", inputSchema: null, inputSchemaBytes: 2, descriptionBytes: 0 }]);
   assert.equal(mountedToolCount(big), 1);
   // eve builds an OpenAPI connection's tools from the spec and never hands
   // them back, so the count taken at connect time is what weighs it.
@@ -208,8 +208,8 @@ test("the byte budget clamps a roster the count alone would admit", () => {
       toolsAllow: ["one", "two"],
     }));
     putConnectionIndex(`fat-${i}`, [
-      { name: "one", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length },
-      { name: "two", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length },
+      { name: "one", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length, descriptionBytes: 0 },
+      { name: "two", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length, descriptionBytes: 0 },
     ]);
   }
   const mounted = eagerConnections();
@@ -275,6 +275,7 @@ test("a session picks up tools up to its limit and is told when it is holding th
     description: "",
     inputSchema: null,
     inputSchemaBytes: 2,
+    descriptionBytes: 0,
   })));
   const names = Array.from({ length: MAX_SESSION_TOOLS + 3 }, (_, i) => mountedToolName("example", `tool_${i}`));
   const first = activateSessionTools("s1", names.slice(0, 2));
@@ -303,6 +304,7 @@ test("a session holding heavy schemas is stopped by bytes, long before the count
     description: "",
     inputSchema: fat,
     inputSchemaBytes: JSON.stringify(fat).length,
+    descriptionBytes: 0,
   })));
   const names = Array.from({ length: MAX_SESSION_TOOLS }, (_, i) => mountedToolName("example", `tool_${i}`));
   const outcome = activateSessionTools("s1", names);
@@ -325,8 +327,8 @@ test("a mounted name splits back into the connection and the tool", () => {
 });
 
 test("scoring puts a whole-word name match first", () => {
-  const send = { name: "send_message", description: "", inputSchema: null, inputSchemaBytes: 2 };
-  const prose = { name: "post_note", description: "send a message somewhere", inputSchema: null, inputSchemaBytes: 2 };
+  const send = { name: "send_message", description: "", inputSchema: null, inputSchemaBytes: 2, descriptionBytes: 0 };
+  const prose = { name: "post_note", description: "send a message somewhere", inputSchema: null, inputSchemaBytes: 2, descriptionBytes: 0 };
   assert.ok(scoreTool("send message", send, "Example") > scoreTool("send message", prose, "Example"));
   assert.equal(scoreTool("nothing alike", send, "Example"), 0);
 });
@@ -490,4 +492,68 @@ test("an operation's own words are weighed, not guessed at", () => {
   // And the wire figure carries it, so a well-documented spec is not admitted
   // on the strength of its small schemas.
   assert.ok(specWireBytes(documented!) > specWireBytes(bare!) + 1_500);
+});
+
+test("a pinned server that has gone quiet is listed once, not at every turn", async () => {
+  paths();
+  const pinned = upsertConnection(entry({
+    id: "excalidraw",
+    name: "Excalidraw",
+    url: "https://mcp.excalidraw.com/mcp",
+    toolsAllow: ["read_me", "create_view"],
+  })).entry;
+  let tries = 0;
+  setMcpFetch((async () => {
+    tries += 1;
+    return new Response("no", { status: 503 });
+  }) as typeof fetch);
+  await ensureMeasured([pinned]);
+  await ensureMeasured([pinned]);
+  await ensureMeasured([pinned]);
+  // Fifteen seconds at every turn boundary, for as long as it stays down, is
+  // what the recorded attempt prevents.
+  assert.equal(tries, 1);
+  // It is still mounted meanwhile, at the ceiling its allow-list could weigh,
+  // rather than dropped for want of a listing.
+  assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
+  assert.ok((mountedToolBytes(pinned) ?? 0) > 8_000);
+});
+
+test("a listing that came back empty is not a listing that never arrived", async () => {
+  paths();
+  const pinned = upsertConnection(entry({
+    id: "excalidraw",
+    name: "Excalidraw",
+    url: "https://mcp.excalidraw.com/mcp",
+    toolsAllow: ["read_me", "create_view"],
+  })).entry;
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+    const result = body.method === "initialize" ? {} : { tools: [] };
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  await ensureMeasured([pinned]);
+  // A server that answered and offers nothing weighs nothing, and must not
+  // sit on most of the budget over a bookkeeping artefact.
+  assert.equal(mountedToolBytes(pinned), 0);
+  assert.equal(mountedToolCount(pinned), 2);
+});
+
+test("a server's own description is charged at the length eve mounts", () => {
+  paths();
+  const long = "d".repeat(4_000);
+  putConnectionIndex("example", [{
+    name: "one",
+    // What this side kept, clipped to four hundred.
+    description: long.slice(0, 400),
+    inputSchema: null,
+    inputSchemaBytes: 2,
+    // What the server actually sent, which is what eve mounts.
+    descriptionBytes: long.length,
+  }]);
+  const row = entry({ toolsAllow: ["one"] });
+  upsertConnection(row);
+  assert.ok((mountedToolBytes(row) ?? 0) > 4_000, `charged ${mountedToolBytes(row)}`);
 });

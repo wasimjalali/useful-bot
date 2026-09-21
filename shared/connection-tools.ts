@@ -5,6 +5,7 @@ import {
   indexedToolBytes,
   mountedToolName,
   putConnectionIndex,
+  putConnectionListingFailed,
   putConnectionOperations,
   type IndexedTool,
 } from "./connection-tools-store.ts";
@@ -83,7 +84,7 @@ export function mountedToolCount(entry: ConnectionEntry, path?: string): number 
   if (entry.toolsAllow) return entry.toolsAllow.length;
   const index = connectionIndex(entry.id, path);
   if (index?.operations !== undefined) return index.operations;
-  if (index && index.tools.length > 0) return index.tools.length;
+  if (index && !index.failed) return index.tools.length;
   return null;
 }
 
@@ -98,15 +99,22 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
     // listing replaces that with what it really weighs, and the listing is
     // what `find_tools` would have fetched anyway.
     if (entry.kind === "mcp") {
-      if (connectionIndex(entry.id, path)) continue;
+      // Re-listed when the last one is old, not only when there is none: a
+      // server that grows after it was connected would otherwise keep the
+      // charge it had on the day, while eve mounts the larger set.
+      if (!indexIsStale(connectionIndex(entry.id, path))) continue;
       try {
         await refreshConnectionIndex(entry, path);
       } catch {
-        // Unreachable now is not unreachable for good; the ceiling holds.
+        // Recorded, so a server that has gone quiet is not refetched at every
+        // turn boundary for as long as it stays down.
+        try { putConnectionListingFailed(entry.id, path); } catch { /* a cache */ }
       }
       continue;
     }
-    if (mountedToolCount(entry, path) !== null && mountedToolBytes(entry, path) !== null) continue;
+    if (!indexIsStale(connectionIndex(entry.id, path))
+      && mountedToolCount(entry, path) !== null
+      && mountedToolBytes(entry, path) !== null) continue;
     // A spec that cannot be counted must not be refetched on every turn: an
     // eight-second timeout at each turn boundary, forever, for a row that
     // stays unmounted either way. One attempt per index lifetime is enough;
@@ -155,10 +163,11 @@ export function mountedToolBytes(entry: ConnectionEntry, path?: string): number 
       textBytes: index.textBytes,
     });
   }
-  // A pinned server nobody has listed yet is charged the most its allow-list
-  // could weigh: a ceiling rather than a guess, and it keeps the connection
-  // mountable meanwhile. `ensureMeasured` replaces it with the truth.
-  if (!index || index.tools.length === 0) {
+  // A pinned server nobody has listed, or whose listing did not arrive, is
+  // charged the most its allow-list could weigh: a ceiling rather than a
+  // guess, and it keeps the connection mountable meanwhile. A listing that
+  // did arrive is charged what it holds, even when that is nothing.
+  if (!index || index.failed) {
     const allowed = entry.toolsAllow?.length;
     if (allowed === undefined) return null;
     return allowed * (76 + 80 + 400 + MAX_TOOL_INPUT_SCHEMA_BYTES);
@@ -201,6 +210,7 @@ export async function refreshConnectionIndex(
       description: tool.description,
       inputSchema: tool.inputSchema,
       inputSchemaBytes: tool.inputSchemaBytes,
+      descriptionBytes: tool.descriptionBytes,
     }));
   putConnectionIndex(entry.id, tools, storePath);
   return tools;

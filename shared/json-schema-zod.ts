@@ -23,9 +23,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function described(schema: z.ZodTypeAny, node: Record<string, unknown>): z.ZodTypeAny {
-  const text = typeof node.description === "string" ? node.description.slice(0, 400) : "";
-  return text ? schema.describe(text) : schema;
+/**
+ * A server's own prose about a field does not travel with the converted
+ * schema. The tool's description is fenced as untrusted; `parameters` is not,
+ * and there is nowhere inside a JSON Schema to fence a string. A passthrough
+ * tool still carries the whole raw schema, descriptions and all, inside the
+ * fence, so nothing is lost where it can be quoted.
+ */
+function described(schema: z.ZodTypeAny, _node: Record<string, unknown>): z.ZodTypeAny {
+  return schema;
 }
 
 function enumSchema(values: unknown[]): z.ZodTypeAny | null {

@@ -37,6 +37,8 @@ export type IndexedTool = {
   inputSchema: Record<string, unknown> | null;
   /** The server's schema in bytes, kept even when the schema itself was not. */
   inputSchemaBytes: number;
+  /** And its description, before this side clipped it to four hundred. */
+  descriptionBytes: number;
 };
 
 export type ConnectionIndex = {
@@ -50,6 +52,12 @@ export type ConnectionIndex = {
   operations?: number;
   schemaBytes?: number;
   textBytes?: number;
+  /**
+   * The listing was attempted and did not arrive. Kept apart from a listing
+   * that came back empty: one is a server this side cannot weigh, the other
+   * is a server that weighs nothing.
+   */
+  failed?: boolean;
 };
 
 export type SessionTools = {
@@ -113,6 +121,9 @@ function parseTool(raw: unknown): IndexedTool | null {
     inputSchemaBytes: typeof rec.inputSchemaBytes === "number" && Number.isFinite(rec.inputSchemaBytes)
       ? Math.max(0, Math.trunc(rec.inputSchemaBytes))
       : schemaBytesOf(schema),
+    descriptionBytes: typeof rec.descriptionBytes === "number" && Number.isFinite(rec.descriptionBytes)
+      ? Math.max(0, Math.trunc(rec.descriptionBytes))
+      : Buffer.byteLength(description, "utf8"),
   };
 }
 
@@ -141,6 +152,7 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
       ...(typeof row.textBytes === "number" && Number.isFinite(row.textBytes)
         ? { textBytes: Math.max(0, Math.trunc(row.textBytes)) }
         : {}),
+      ...(row.failed === true ? { failed: true } : {}),
     };
   }
   const sessions = rec.sessions && typeof rec.sessions === "object"
@@ -267,6 +279,20 @@ export function putConnectionIndex(
 }
 
 /**
+ * Record that a listing was tried and did not arrive, so a server that has
+ * gone quiet is not refetched at every turn boundary, fifteen seconds at a
+ * time, for as long as it stays down.
+ */
+export function putConnectionListingFailed(
+  connectionId: string,
+  path = connectionToolsPath(),
+): void {
+  updateConnectionToolsStore((store) => {
+    store.index[connectionId] = { fetchedAt: new Date().toISOString(), tools: [], failed: true };
+  }, path);
+}
+
+/**
  * Remember how big an OpenAPI connection is, since its tools are eve's.
  * `null` records the attempt without a figure, which is what keeps a spec
  * that cannot be read from being refetched at every turn boundary.
@@ -280,7 +306,9 @@ export function putConnectionOperations(
     store.index[connectionId] = {
       fetchedAt: new Date().toISOString(),
       tools: [],
-      ...(size === null ? {} : {
+      // A measurement that did not arrive records the attempt and says so,
+      // rather than reading back later as a connection of no size.
+      ...(size === null ? { failed: true } : {
         operations: Math.max(0, Math.trunc(size.operations)),
         schemaBytes: Math.max(0, Math.trunc(size.schemaBytes)),
         textBytes: Math.max(0, Math.trunc(size.textBytes)),
@@ -331,9 +359,14 @@ export type ActivationOutcome = {
  */
 export function indexedToolBytes(tool: IndexedTool, connectionId = "", connectionName = ""): number {
   // The description as it is actually mounted: the connection's name, then
-  // the server's words inside an untrusted envelope.
-  const described = `${connectionName}: ${wrapUntrusted(`connection:${connectionId}`, tool.description)}`;
-  return toolWireBytes(mountedToolName(connectionId, tool.name), described, tool.inputSchemaBytes);
+  // the server's words inside an untrusted envelope. The server's own
+  // description is charged at its real length, not the clipped copy kept
+  // here, because eve mounts the whole thing.
+  const envelope = `${connectionName}: ${wrapUntrusted(`connection:${connectionId}`, "")}`;
+  const described = Buffer.byteLength(envelope, "utf8") + tool.descriptionBytes;
+  // A schema too big or too odd to convert is written into the description
+  // instead, so it reaches the model either way and is charged either way.
+  return toolWireBytes(mountedToolName(connectionId, tool.name), "", tool.inputSchemaBytes) + described;
 }
 
 /**
@@ -346,6 +379,7 @@ export function activateSessionTools(
   sessionId: string,
   names: string[],
   path = connectionToolsPath(),
+  sessionConnectionNames: Record<string, string> = {},
 ): ActivationOutcome {
   return updateConnectionToolsStore((store) => {
     const sizeOf = (name: string): number => {
@@ -353,7 +387,10 @@ export function activateSessionTools(
       if (at <= 0) return 200;
       const connectionId = name.slice(0, at);
       const tool = store.index[connectionId]?.tools.find((item) => item.name === name.slice(at + 2));
-      return tool ? indexedToolBytes(tool, connectionId) : toolWireBytes(name, "", 4 * 1024);
+      // The connection's own name is part of every description it mounts.
+      return tool
+        ? indexedToolBytes(tool, connectionId, sessionConnectionNames[connectionId] ?? "")
+        : toolWireBytes(name, "", 4 * 1024);
     };
     const current = store.sessions[sessionId]?.tools ?? [];
     const held = new Set(current);

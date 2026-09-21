@@ -78,7 +78,14 @@ export default defineDynamic({
             if (hits.length === 0) {
               return { status: "ok", found: 0, tools: [], note: "No connected server has a tool like that." };
             }
-            const outcome = activateSessionTools(id, hits.map((hit) => hit.name));
+            const outcome = activateSessionTools(
+              id,
+              hits.map((hit) => hit.name),
+              undefined,
+              // Every mounted description carries its connection's name, so
+              // the charge has to carry it too.
+              Object.fromEntries(hits.map((hit) => [hit.connectionId, hit.connectionName])),
+            );
             const held = outcome.tools.length;
             return {
               status: "ok",

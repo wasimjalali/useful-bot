@@ -26,6 +26,12 @@ export type McpToolInfo = {
    * budget for the null this side stored would undercount it by megabytes.
    */
   inputSchemaBytes: number;
+  /**
+   * The server's description in bytes, before this side clipped it. eve
+   * mounts the whole thing, so charging the clipped copy undercharged every
+   * verbose server, the same way charging a dropped schema as null did.
+   */
+  descriptionBytes: number;
 };
 
 /**
@@ -194,6 +200,9 @@ export async function listMcpTools(
       resourceUri: toolResourceUri(row._meta),
       inputSchema: toolInputSchema(row.inputSchema),
       inputSchemaBytes: schemaBytesOf(asRecord(row.inputSchema)),
+      descriptionBytes: typeof row.description === "string"
+        ? Buffer.byteLength(row.description, "utf8")
+        : 0,
     });
     if (out.length >= 200) break;
   }
