@@ -13,6 +13,8 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { MAX_SESSION_TOOLS, MAX_SESSION_TOOL_BYTES } from "./policy.ts";
+import { schemaBytesOf, toolWireBytes } from "./tool-wire-size.ts";
+import { wrapUntrusted } from "./untrusted.ts";
 
 /**
  * Which of a connection's tools a session has asked for, and what each
@@ -33,17 +35,20 @@ export type IndexedTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown> | null;
+  /** The server's schema in bytes, kept even when the schema itself was not. */
+  inputSchemaBytes: number;
 };
 
 export type ConnectionIndex = {
   fetchedAt: string;
   tools: IndexedTool[];
   /**
-   * An OpenAPI connection's operation count. eve turns the spec into tools
-   * itself and this side never sees them, so the count taken at connect time
-   * is all there is to weigh it by later.
+   * An OpenAPI connection's operation count and the argument-schema bytes
+   * eve builds from its spec. eve turns the spec into tools itself and this
+   * side never sees them, so these are what it is weighed by later.
    */
   operations?: number;
+  schemaBytes?: number;
 };
 
 export type SessionTools = {
@@ -99,10 +104,14 @@ function parseTool(raw: unknown): IndexedTool | null {
   const schema = rec.inputSchema && typeof rec.inputSchema === "object" && !Array.isArray(rec.inputSchema)
     ? rec.inputSchema as Record<string, unknown>
     : null;
+  const description = typeof rec.description === "string" ? rec.description.slice(0, 400) : "";
   return {
     name: rec.name,
-    description: typeof rec.description === "string" ? rec.description.slice(0, 400) : "",
+    description,
     inputSchema: schema,
+    inputSchemaBytes: typeof rec.inputSchemaBytes === "number" && Number.isFinite(rec.inputSchemaBytes)
+      ? Math.max(0, Math.trunc(rec.inputSchemaBytes))
+      : schemaBytesOf(schema),
   };
 }
 
@@ -124,6 +133,9 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
       tools,
       ...(typeof row.operations === "number" && Number.isFinite(row.operations)
         ? { operations: Math.max(0, Math.trunc(row.operations)) }
+        : {}),
+      ...(typeof row.schemaBytes === "number" && Number.isFinite(row.schemaBytes)
+        ? { schemaBytes: Math.max(0, Math.trunc(row.schemaBytes)) }
         : {}),
     };
   }
@@ -257,14 +269,17 @@ export function putConnectionIndex(
  */
 export function putConnectionOperations(
   connectionId: string,
-  operations: number | null,
+  size: { operations: number; schemaBytes: number } | null,
   path = connectionToolsPath(),
 ): void {
   updateConnectionToolsStore((store) => {
     store.index[connectionId] = {
       fetchedAt: new Date().toISOString(),
       tools: [],
-      ...(operations === null ? {} : { operations: Math.max(0, Math.trunc(operations)) }),
+      ...(size === null ? {} : {
+        operations: Math.max(0, Math.trunc(size.operations)),
+        schemaBytes: Math.max(0, Math.trunc(size.schemaBytes)),
+      }),
     };
   }, path);
 }
@@ -300,22 +315,20 @@ export type ActivationOutcome = {
  * The router weighs `JSON.stringify(tools)`, where each entry carries its
  * `{"type":"function","function":{…}}` envelope (~96 bytes) and a description
  * that has been through `wrapUntrusted` (184 bytes of preamble and fences).
- * Counting the name, the description and the schema alone undercounted every
- * tool by around 280 bytes, which is most of a budget's headroom over sixty
- * of them. The rest is the connection name the description is prefixed with
- * and the label on a passthrough tool's schema hint.
+ * The name, the description and the schema alone undercounted every tool: the
+ * router weighs `JSON.stringify(tools)` in UTF-8, where each entry carries a
+ * function envelope and a description that has been through `wrapUntrusted`,
+ * and `String.length` counts UTF-16 units rather than bytes.
  *
- * The schema itself is counted once because it reaches the model once: as
- * the converted `parameters`, or, when it could not be converted, written
- * into the description instead.
+ * The schema is counted once because it reaches the model once: as the
+ * converted `parameters`, or, when it could not be converted, written into
+ * the description instead.
  */
-export const TOOL_WIRE_OVERHEAD_BYTES = 360;
-
-export function indexedToolBytes(tool: IndexedTool): number {
-  return TOOL_WIRE_OVERHEAD_BYTES
-    + tool.name.length
-    + tool.description.length
-    + (tool.inputSchema ? JSON.stringify(tool.inputSchema).length : 200);
+export function indexedToolBytes(tool: IndexedTool, connectionId = "", connectionName = ""): number {
+  // The description as it is actually mounted: the connection's name, then
+  // the server's words inside an untrusted envelope.
+  const described = `${connectionName}: ${wrapUntrusted(`connection:${connectionId}`, tool.description)}`;
+  return toolWireBytes(mountedToolName(connectionId, tool.name), described, tool.inputSchemaBytes);
 }
 
 /**
@@ -333,8 +346,9 @@ export function activateSessionTools(
     const sizeOf = (name: string): number => {
       const at = name.indexOf("__");
       if (at <= 0) return 200;
-      const tool = store.index[name.slice(0, at)]?.tools.find((item) => item.name === name.slice(at + 2));
-      return tool ? indexedToolBytes(tool) : TOOL_WIRE_OVERHEAD_BYTES + 200;
+      const connectionId = name.slice(0, at);
+      const tool = store.index[connectionId]?.tools.find((item) => item.name === name.slice(at + 2));
+      return tool ? indexedToolBytes(tool, connectionId) : toolWireBytes(name, "", 4 * 1024);
     };
     const current = store.sessions[sessionId]?.tools ?? [];
     const held = new Set(current);

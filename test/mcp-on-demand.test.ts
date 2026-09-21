@@ -8,6 +8,7 @@ import { mcpToolGate, mcpToolRisk } from "../agent/lib/connector-risk.ts";
 import {
   activateSessionTools,
   connectionIndex,
+  indexedToolBytes,
   mountedToolName,
   putConnectionIndex,
   putConnectionOperations,
@@ -30,7 +31,13 @@ import { connectionSecretService, keychainSet, memoryKeychain, setKeychainDriver
 import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { MAX_SESSION_TOOLS, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "../shared/policy.ts";
+import { measureOpenApiSpec } from "../shared/tool-wire-size.ts";
+import {
+  MAX_SESSION_TOOLS,
+  MAX_SESSION_TOOL_BYTES,
+  MOUNTED_TOOL_BUDGET,
+  MOUNTED_TOOL_BYTE_BUDGET,
+} from "../shared/policy.ts";
 
 function paths(): void {
   const dir = mkdtempSync(join(tmpdir(), "ub-ctools-"));
@@ -80,7 +87,7 @@ test("a big server waits to be asked for; a pinned one and an OpenAPI spec do no
   // A spec nobody has counted is not mounted: eve builds its tools from the
   // spec and a size nobody knows is not a small one.
   assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
-  putConnectionOperations("weather", 12);
+  putConnectionOperations("weather", { operations: 12, schemaBytes: 900 });
   assert.deepEqual(eagerConnections().map((item) => item.id).sort(), ["excalidraw", "weather"]);
   assert.deepEqual(onDemandConnections().map((item) => item.id), ["example"]);
   // An allow-list is exact; a listing is exact; a row nobody has measured
@@ -88,7 +95,7 @@ test("a big server waits to be asked for; a pinned one and an OpenAPI spec do no
   // working connection over a missing measurement is the worse mistake.
   assert.equal(mountedToolCount(pinned), 2);
   assert.equal(mountedToolCount(big), null);
-  putConnectionIndex("example", [{ name: "one", description: "", inputSchema: null }]);
+  putConnectionIndex("example", [{ name: "one", description: "", inputSchema: null, inputSchemaBytes: 2 }]);
   assert.equal(mountedToolCount(big), 1);
   // eve builds an OpenAPI connection's tools from the spec and never hands
   // them back, so the count taken at connect time is what weighs it.
@@ -178,7 +185,7 @@ test("the mounted set is clamped at the budget, whatever is in the store", () =>
       name: `Spec ${i}`,
       url: `https://api${i}.example.com/openapi.json`,
     }));
-    putConnectionOperations(`spec-${i}`, 25);
+    putConnectionOperations(`spec-${i}`, { operations: 25, schemaBytes: 3_000 });
   }
   const mounted = eagerConnections();
   const total = mounted.reduce((sum, item) => sum + (mountedToolCount(item) ?? 0), 0);
@@ -201,8 +208,8 @@ test("the byte budget clamps a roster the count alone would admit", () => {
       toolsAllow: ["one", "two"],
     }));
     putConnectionIndex(`fat-${i}`, [
-      { name: "one", description: "", inputSchema: fat },
-      { name: "two", description: "", inputSchema: fat },
+      { name: "one", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length },
+      { name: "two", description: "", inputSchema: fat, inputSchemaBytes: JSON.stringify(fat).length },
     ]);
   }
   const mounted = eagerConnections();
@@ -262,6 +269,13 @@ test("an allow-list still applies to what a search may hand over", async () => {
 
 test("a session picks up tools up to its limit and is told when it is holding them", () => {
   paths();
+  // Small tools, so the count is what bites rather than the byte budget.
+  putConnectionIndex("example", Array.from({ length: MAX_SESSION_TOOLS + 3 }, (_, i) => ({
+    name: `tool_${i}`,
+    description: "",
+    inputSchema: null,
+    inputSchemaBytes: 2,
+  })));
   const names = Array.from({ length: MAX_SESSION_TOOLS + 3 }, (_, i) => mountedToolName("example", `tool_${i}`));
   const first = activateSessionTools("s1", names.slice(0, 2));
   assert.deepEqual(first.tools, names.slice(0, 2));
@@ -277,6 +291,30 @@ test("a session picks up tools up to its limit and is told when it is holding th
   assert.equal(Object.keys(readConnectionToolsStore().sessions).length, 1);
 });
 
+test("a session holding heavy schemas is stopped by bytes, long before the count", () => {
+  paths();
+  // One 3 KB schema apiece: thirteen of them clear the session byte budget
+  // while the count budget would have allowed forty.
+  const fat = { type: "object", properties: Object.fromEntries(
+    Array.from({ length: 60 }, (_, i) => [`field_${i}`, { type: "string", description: "x".repeat(40) }]),
+  ) };
+  putConnectionIndex("example", Array.from({ length: MAX_SESSION_TOOLS }, (_, i) => ({
+    name: `tool_${i}`,
+    description: "",
+    inputSchema: fat,
+    inputSchemaBytes: JSON.stringify(fat).length,
+  })));
+  const names = Array.from({ length: MAX_SESSION_TOOLS }, (_, i) => mountedToolName("example", `tool_${i}`));
+  const outcome = activateSessionTools("s1", names);
+  assert.ok(outcome.tools.length < MAX_SESSION_TOOLS, `took all ${outcome.tools.length}`);
+  assert.ok(outcome.refused.length > 0);
+  const bytes = outcome.tools.reduce((sum, name) => {
+    const tool = connectionIndex("example")?.tools.find((item) => item.name === name.split("__")[1]);
+    return sum + (tool ? indexedToolBytes(tool, "example") : 0);
+  }, 0);
+  assert.ok(bytes <= MAX_SESSION_TOOL_BYTES, `held ${bytes} bytes`);
+});
+
 test("a mounted name splits back into the connection and the tool", () => {
   assert.deepEqual(splitMountedName("example__send_message"), { connectionId: "example", tool: "send_message" });
   // A tool whose own name carries the separator still belongs to the first part.
@@ -287,8 +325,8 @@ test("a mounted name splits back into the connection and the tool", () => {
 });
 
 test("scoring puts a whole-word name match first", () => {
-  const send = { name: "send_message", description: "", inputSchema: null };
-  const prose = { name: "post_note", description: "send a message somewhere", inputSchema: null };
+  const send = { name: "send_message", description: "", inputSchema: null, inputSchemaBytes: 2 };
+  const prose = { name: "post_note", description: "send a message somewhere", inputSchema: null, inputSchemaBytes: 2 };
   assert.ok(scoreTool("send message", send, "Example") > scoreTool("send message", prose, "Example"));
   assert.equal(scoreTool("nothing alike", send, "Example"), 0);
 });
@@ -353,4 +391,58 @@ test("a server's schema becomes the tool's contract, or a passthrough with the r
   assert.deepEqual(free.schema.parse({ anything: 1 }), { anything: 1 });
   // The converted schema is a zod schema, the same kind `defineTool` takes.
   assert.ok(converted.schema instanceof z.ZodType);
+});
+
+test("an OpenAPI spec is weighed by the schemas eve builds from it, refs resolved", () => {
+  // eve builds one tool per operation from the spec's own parameters and
+  // requestBody, resolving $ref as it goes, so a schema shared by forty
+  // operations is emitted forty times. A flat rate per operation missed that
+  // by a factor of five and let an ordinary spec through both budgets.
+  const shared = {
+    type: "object",
+    properties: Object.fromEntries(
+      Array.from({ length: 30 }, (_, i) => [`field_${i}`, { type: "string", description: "y".repeat(30) }]),
+    ),
+  };
+  const operation = {
+    parameters: [{ name: "id", in: "path", schema: { $ref: "#/components/schemas/Id" } }],
+    requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/Big" } } } },
+  };
+  const spec = {
+    paths: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`/p${i}`, { post: operation }])),
+    components: { schemas: { Id: { type: "string" }, Big: shared } },
+  };
+  const measured = measureOpenApiSpec(spec);
+  assert.equal(measured?.operations, 12);
+  // The shared schema counts once per operation, not once in the document.
+  const onceOnTheWire = JSON.stringify(shared).length;
+  assert.ok(
+    measured!.schemaBytes > onceOnTheWire * 10,
+    `counted ${measured?.schemaBytes} for twelve copies of ${onceOnTheWire}`,
+  );
+  // A spec this app cannot read is not one with nothing in it.
+  assert.equal(measureOpenApiSpec({ nope: true }), null);
+  assert.equal(measureOpenApiSpec("not a spec"), null);
+  // A cycle is bounded rather than followed.
+  const cyclic = {
+    paths: { "/a": { get: { parameters: [{ schema: { $ref: "#/components/schemas/Loop" } }] } } },
+    components: { schemas: { Loop: { items: { $ref: "#/components/schemas/Loop" } } } },
+  };
+  assert.ok((measureOpenApiSpec(cyclic)?.schemaBytes ?? 0) > 0);
+});
+
+test("a path-level parameter is charged to every operation under it", () => {
+  const spec = {
+    paths: {
+      "/a": {
+        parameters: [{ name: "tenant", in: "query", schema: { type: "string" } }],
+        get: {},
+        delete: {},
+      },
+    },
+  };
+  const measured = measureOpenApiSpec(spec);
+  assert.equal(measured?.operations, 2);
+  const one = measureOpenApiSpec({ paths: { "/a": { parameters: spec.paths["/a"].parameters, get: {} } } });
+  assert.ok(measured!.schemaBytes > one!.schemaBytes);
 });

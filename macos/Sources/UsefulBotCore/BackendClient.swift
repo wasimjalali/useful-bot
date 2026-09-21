@@ -96,7 +96,7 @@ public enum BackendError: Error, LocalizedError, Equatable {
         case "proposal_mismatch":
             return "That proposal no longer matches this app."
         case "tool_budget_exceeded":
-            return "This would give your bots more tools than a turn can carry. Disconnect a server first."
+            return "This would give your bots more tools than a turn can carry, so it was not connected."
         case "tool_count_unknown":
             return "That service's tool list could not be read, so it was not connected. Try again."
         case "target_missing":

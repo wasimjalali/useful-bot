@@ -21,7 +21,7 @@ function storePathOf(): string {
 import { listHandoffs, queueHandoff } from "../shared/handoffs.ts";
 import { memoryKeychain, setKeychainDriver, connectionSecretService, keychainGet, keychainSet } from "../shared/keychain.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { connectionIndex } from "../shared/connection-tools-store.ts";
+import { connectionIndex, putConnectionOperations } from "../shared/connection-tools-store.ts";
 import { MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
 import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
 import { writeShell } from "../shared/shell-io.ts";
@@ -508,7 +508,8 @@ test("a connect that would overrun the mounted tool budget is refused before any
   setKeychainDriver(mem);
   const { storePath } = paths();
   // An OpenAPI spec mounts every operation for every turn. One that fills the
-  // budget leaves no room for the next.
+  // budget leaves no room for the next. It has to be measured to be mounted,
+  // and only what is mounted is charged.
   const big = Array.from({ length: MOUNTED_TOOL_BUDGET }, (_, i) => [`/p${i}`, { get: {} }]);
   setMcpFetch(async () => new Response(JSON.stringify({ paths: Object.fromEntries(big) }), {
     headers: { "content-type": "application/json" },
@@ -524,6 +525,7 @@ test("a connect that would overrun the mounted tool budget is refused before any
     toolsAllow: null,
     createdAt: new Date().toISOString(),
   });
+  putConnectionOperations("huge", { operations: MOUNTED_TOOL_BUDGET, schemaBytes: 1_000 });
   const proposal = seedCard({
     connectionId: "second",
     connectionKind: "openapi",

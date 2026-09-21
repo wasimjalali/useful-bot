@@ -73,6 +73,10 @@ test("the tools the agent ships fit under the router's schema cap with headroom"
  * Room left for the agent's own tool schemas and eve's. They are not measured
  * here because eve builds the request; what is checked is that the two
  * budgets this app does control cannot fill the wall on their own.
+ *
+ * Both budgets are now weighed in wire bytes rather than at a rate, so this
+ * sum is the real one: `MOUNTED_TOOL_BYTE_BUDGET` counts an MCP tool by the
+ * bytes it emits and an OpenAPI spec by the schemas eve resolves from it.
  */
 const AGENT_SCHEMA_BYTES = 40 * 1024;
 

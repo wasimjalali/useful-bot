@@ -1,4 +1,5 @@
 import { assertConnectionUrl, assertResolvedPublic } from "./connection-url.ts";
+import { measureOpenApiSpec, schemaBytesOf, type SpecSize } from "./tool-wire-size.ts";
 
 /**
  * Tiny Streamable HTTP JSON-RPC client for listing tools and reading UI
@@ -19,6 +20,12 @@ export type McpToolInfo = {
    * guessing at argument names.
    */
   inputSchema: Record<string, unknown> | null;
+  /**
+   * What the server's schema weighs, whether or not it was kept. A schema
+   * dropped for being too big is still the one eve mounts, so charging the
+   * budget for the null this side stored would undercount it by megabytes.
+   */
+  inputSchemaBytes: number;
 };
 
 /**
@@ -186,6 +193,7 @@ export async function listMcpTools(
       appCallable: toolAppCallable(row._meta),
       resourceUri: toolResourceUri(row._meta),
       inputSchema: toolInputSchema(row.inputSchema),
+      inputSchemaBytes: schemaBytesOf(asRecord(row.inputSchema)),
     });
     if (out.length >= 200) break;
   }
@@ -269,10 +277,15 @@ export async function callMcpTool(
   return rec;
 }
 
-export async function countOpenApiOperations(
+/**
+ * How big an OpenAPI connection is: its operation count and the argument
+ * schema bytes eve will build from it, resolved the way eve resolves them.
+ * Null when the spec could not be read or is not one.
+ */
+export async function measureOpenApiConnection(
   specUrl: string,
   headers: Record<string, string> = {},
-): Promise<number | null> {
+): Promise<SpecSize | null> {
   const target = await assertResolvedPublic(specUrl);
   try {
     const res = await activeFetch()(target, {
@@ -284,17 +297,16 @@ export async function countOpenApiOperations(
     if (!res.ok) return null;
     const body = await res.text();
     if (body.length > 1_000_000) return null;
-    const json = JSON.parse(body) as { paths?: Record<string, Record<string, unknown>> };
-    const paths = json.paths ?? {};
-    let n = 0;
-    for (const path of Object.values(paths)) {
-      if (!path || typeof path !== "object") continue;
-      for (const method of Object.keys(path)) {
-        if (["get", "post", "put", "patch", "delete", "head", "options"].includes(method.toLowerCase())) n++;
-      }
-    }
-    return n;
+    return measureOpenApiSpec(JSON.parse(body));
   } catch {
     return null;
   }
+}
+
+/** Just the operation count, for callers that only show a number. */
+export async function countOpenApiOperations(
+  specUrl: string,
+  headers: Record<string, string> = {},
+): Promise<number | null> {
+  return (await measureOpenApiConnection(specUrl, headers))?.operations ?? null;
 }

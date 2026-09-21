@@ -6,12 +6,13 @@ import {
   mountedToolName,
   putConnectionIndex,
   putConnectionOperations,
-  TOOL_WIRE_OVERHEAD_BYTES,
   type IndexedTool,
 } from "./connection-tools-store.ts";
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
-import { countOpenApiOperations, listMcpTools, modelToolNames } from "./mcp-http.ts";
+import { listMcpTools, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
+import type { SpecSize } from "./tool-wire-size.ts";
 import { EAGER_TOOL_ALLOWANCE, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
+import { MAX_TOOL_INPUT_SCHEMA_BYTES } from "./mcp-http.ts";
 
 /**
  * Which connections are mounted for every turn, and how a bot finds the tools
@@ -93,20 +94,32 @@ export function mountedToolCount(entry: ConnectionEntry, path?: string): number 
  */
 export async function ensureMeasured(entries: ConnectionEntry[], path?: string): Promise<void> {
   for (const entry of entries) {
-    if (entry.kind !== "openapi" || mountedToolCount(entry, path) !== null) continue;
+    // A pinned MCP server nobody has listed is being charged a ceiling. One
+    // listing replaces that with what it really weighs, and the listing is
+    // what `find_tools` would have fetched anyway.
+    if (entry.kind === "mcp") {
+      if (connectionIndex(entry.id, path)) continue;
+      try {
+        await refreshConnectionIndex(entry, path);
+      } catch {
+        // Unreachable now is not unreachable for good; the ceiling holds.
+      }
+      continue;
+    }
+    if (mountedToolCount(entry, path) !== null && mountedToolBytes(entry, path) !== null) continue;
     // A spec that cannot be counted must not be refetched on every turn: an
     // eight-second timeout at each turn boundary, forever, for a row that
     // stays unmounted either way. One attempt per index lifetime is enough;
     // a spec that comes back is picked up on the next one.
     if (!indexIsStale(connectionIndex(entry.id, path))) continue;
-    let operations: number | null = null;
+    let size: SpecSize | null = null;
     try {
-      operations = await countOpenApiOperations(entry.url, await headersFor(entry));
+      size = await measureOpenApiConnection(entry.url, await headersFor(entry));
     } catch {
-      operations = null;
+      size = null;
     }
     try {
-      putConnectionOperations(entry.id, operations, path);
+      putConnectionOperations(entry.id, size, path);
     } catch {
       // The index is a cache; a write that failed costs one fetch later.
     }
@@ -123,24 +136,33 @@ async function headersFor(entry: ConnectionEntry): Promise<Record<string, string
 }
 
 /**
- * How many bytes of argument schema one connection puts in front of the
- * model, as far as this side can see. eve generates an OpenAPI connection's
- * schemas from the spec and never hands them back, so those are counted at a
- * flat rate rather than pretended to be zero.
+ * What one connection weighs on the wire, or null when nothing has measured
+ * it. For an MCP server that is its listing, each tool weighed the way the
+ * router weighs it. For an OpenAPI spec it is the argument-schema bytes eve
+ * builds from that spec, resolved and written down when it was counted, plus
+ * a function envelope and a description an operation for each.
  */
-export const UNSEEN_SCHEMA_BYTES = 400 + TOOL_WIRE_OVERHEAD_BYTES;
+const OPERATION_DESCRIPTION_BYTES = 200;
 
 export function mountedToolBytes(entry: ConnectionEntry, path?: string): number | null {
   const index = connectionIndex(entry.id, path);
+  if (entry.kind === "openapi") {
+    if (index?.schemaBytes === undefined || index.operations === undefined) return null;
+    return index.schemaBytes + index.operations * (76 + OPERATION_DESCRIPTION_BYTES);
+  }
+  // A pinned server nobody has listed yet is charged the most its allow-list
+  // could weigh: a ceiling rather than a guess, and it keeps the connection
+  // mountable meanwhile. `ensureMeasured` replaces it with the truth.
   if (!index || index.tools.length === 0) {
-    const count = mountedToolCount(entry, path);
-    return count === null ? null : count * UNSEEN_SCHEMA_BYTES;
+    const allowed = entry.toolsAllow?.length;
+    if (allowed === undefined) return null;
+    return allowed * (76 + 80 + 400 + MAX_TOOL_INPUT_SCHEMA_BYTES);
   }
   const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
   let bytes = 0;
   for (const tool of index.tools) {
     if (allow && !allow.has(tool.name)) continue;
-    bytes += indexedToolBytes(tool);
+    bytes += indexedToolBytes(tool, entry.id, entry.name);
   }
   return bytes;
 }
@@ -173,6 +195,7 @@ export async function refreshConnectionIndex(
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      inputSchemaBytes: tool.inputSchemaBytes,
     }));
   putConnectionIndex(entry.id, tools, storePath);
   return tools;
@@ -229,9 +252,14 @@ export async function searchConnectionTools(
   storePath?: string,
 ): Promise<ToolHit[]> {
   const entries = onDemandConnections(connectionsPath);
+  // Together, not one after another: each refresh is bounded at fifteen
+  // seconds, and an owner with several servers that have gone quiet was
+  // waiting that long for each of them before the search answered.
+  const listings = await Promise.all(
+    entries.map(async (entry) => [entry, await ensureConnectionIndex(entry, storePath)] as const),
+  );
   const hits: Array<ToolHit & { score: number }> = [];
-  for (const entry of entries) {
-    const tools = await ensureConnectionIndex(entry, storePath);
+  for (const [entry, tools] of listings) {
     for (const tool of tools) {
       const score = scoreTool(query, tool, entry.name);
       if (score <= 0) continue;

@@ -19,7 +19,7 @@ import {
 import { connectionSecretService, keychainSet } from "./keychain.ts";
 import { listHandoffs, queueHandoff } from "./handoffs.ts";
 import { wrapUntrusted } from "./untrusted.ts";
-import { countOpenApiOperations, listMcpTools, modelToolNames } from "./mcp-http.ts";
+import { listMcpTools, MAX_TOOL_INPUT_SCHEMA_BYTES, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
 import {
   completeMcpOAuth,
   dropOauthPending,
@@ -30,7 +30,12 @@ import {
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 import { putConnectionIndex, putConnectionOperations } from "./connection-tools-store.ts";
-import { isEagerConnection, mountedToolBytes, mountedToolCount, UNSEEN_SCHEMA_BYTES } from "./connection-tools.ts";
+import {
+  eagerConnections,
+  isEagerConnection,
+  mountedToolBytes,
+  mountedToolCount,
+} from "./connection-tools.ts";
 import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
 /**
@@ -118,14 +123,14 @@ function queueResume(card: Stored, storePath: string, connectionId = card.connec
 async function probeToolCount(entry: ConnectionEntry, headers: Record<string, string> = {}): Promise<number | null> {
   try {
     if (entry.kind === "openapi") {
-      const operations = await countOpenApiOperations(entry.url, headers);
+      const size = await measureOpenApiConnection(entry.url, headers);
       // Written down because eve builds this connection's tools from the spec
       // and never hands them back: this is the only figure the mount-time
       // clamp has to weigh it by.
-      if (operations !== null) {
-        try { putConnectionOperations(entry.id, operations); } catch { /* a cache */ }
+      if (size !== null) {
+        try { putConnectionOperations(entry.id, size); } catch { /* a cache */ }
       }
-      return operations;
+      return size?.operations ?? null;
     }
     const tools = await listMcpTools(entry.url, headers);
     const visible = new Set(modelToolNames(tools));
@@ -139,6 +144,7 @@ async function probeToolCount(entry: ConnectionEntry, headers: Record<string, st
             name: tool.name,
             description: tool.description,
             inputSchema: tool.inputSchema,
+            inputSchemaBytes: tool.inputSchemaBytes,
           })),
       );
     } catch {
@@ -175,31 +181,34 @@ async function assertToolBudget(
   headers: Record<string, string> = {},
 ): Promise<void> {
   if (!isEagerConnection(entry)) return;
-  const others = readConnectionsStore().connections
-    .filter((item) => isEagerConnection(item) && item.id !== entry.id && item.url !== entry.url);
-  // A row nobody has measured counts against the budget at the ceiling a
-  // connect may take: it cannot be shown to fit, so it is not treated as if
-  // it did. The turn resolver measures such a row and writes the figure down.
-  const mounted = others.reduce((total, item) => total + (mountedToolCount(item) ?? MOUNTED_TOOL_BUDGET), 0);
-  const mountedBytes = others.reduce(
-    (total, item) => total + (mountedToolBytes(item) ?? MOUNTED_TOOL_BYTE_BUDGET),
-    0,
-  );
+  // What is actually mounted, which is what reaches the wall. A row nobody
+  // has measured is not mounted, so it costs nothing here: charging it the
+  // ceiling made one unmeasurable row refuse every connect that followed,
+  // for good, with no way to remove it.
+  const others = eagerConnections().filter((item) => item.id !== entry.id && item.url !== entry.url);
+  const mounted = others.reduce((total, item) => total + (mountedToolCount(item) ?? 0), 0);
+  const mountedBytes = others.reduce((total, item) => total + (mountedToolBytes(item) ?? 0), 0);
   let adding: number | null;
   let addingBytes: number;
   if (entry.kind === "openapi") {
     // A spec this app could not read is not a spec with no operations in it.
     // Counting it as zero let an unreachable or oversized one through, and
     // eve then mounted its whole operation list on every later turn: the
-    // wall this check exists to keep out of reach.
-    adding = await countOpenApiOperations(entry.url, headers).catch(() => null);
-    if (adding === null) throw new Error("tool_count_unknown");
-    // The same rate the clamp uses, overhead included, so the two budgets
-    // cannot disagree about the same spec.
-    addingBytes = adding * UNSEEN_SCHEMA_BYTES;
+    // wall this check exists to keep out of reach. Measured, not rated: an
+    // ordinary operation carries kilobytes of schema, so a flat rate per
+    // operation cleared this budget and the router's by a factor of five.
+    const size = await measureOpenApiConnection(entry.url, headers).catch(() => null);
+    if (size === null) throw new Error("tool_count_unknown");
+    adding = size.operations;
+    addingBytes = size.schemaBytes + size.operations * 276;
+    // Kept, so the mount-time clamp weighs the same spec the same way and the
+    // connection does not have to be fetched again on the next turn.
+    try { putConnectionOperations(entry.id, size); } catch { /* a cache */ }
   } else {
     adding = entry.toolsAllow?.length ?? 0;
-    addingBytes = mountedToolBytes(entry) ?? adding * UNSEEN_SCHEMA_BYTES;
+    // The listing is not in the index yet on a first connect, so this is the
+    // one place the ceiling is the honest answer.
+    addingBytes = mountedToolBytes(entry) ?? adding * MAX_TOOL_INPUT_SCHEMA_BYTES;
   }
   if (mounted + adding > MOUNTED_TOOL_BUDGET || mountedBytes + addingBytes > MOUNTED_TOOL_BYTE_BUDGET) {
     throw new Error("tool_budget_exceeded");
@@ -394,10 +403,7 @@ export async function completeConnectionOAuth(
     markConnected(pendingPeek.proposalId, settled, null, opts.now ?? Date.now(), storePath);
     return { proposalId: pendingPeek.proposalId };
   }
-  // Before the code is exchanged: an authorization code is single use, so a
-  // refusal after it is spent costs the owner the whole browser sign-in with
-  // no way to retry it.
-  await assertToolBudget({
+  const provisional: ConnectionEntry = {
     id: proposal.connectionId,
     kind: proposal.connectionKind,
     name: proposal.name,
@@ -407,7 +413,22 @@ export async function completeConnectionOAuth(
     authHeader: null,
     toolsAllow: null,
     createdAt: new Date(opts.now ?? Date.now()).toISOString(),
-  });
+  };
+  // Refuse before the exchange only when the refusal is certain without a
+  // credential: an authorization code is single use, so a refusal after it is
+  // spent costs the owner the whole sign-in. It cannot be the only check,
+  // because an OpenAPI spec behind this very sign-in answers 401 until the
+  // token exists, and refusing on that made such a server unconnectable.
+  try {
+    await assertToolBudget(provisional);
+  } catch (err) {
+    if ((err as Error).message !== "tool_count_unknown") {
+      // Nothing of this sign-in is worth keeping: the verifier and the client
+      // secret would otherwise sit on disk with nothing pointing at them.
+      dropOauthPending(state);
+      throw err;
+    }
+  }
   const { bundle, pending } = await completeMcpOAuth({ code, state });
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");
@@ -441,7 +462,12 @@ export async function completeConnectionOAuth(
   }
   const stored = outcome.entry;
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
-  const toolCount = await probeToolCount(stored, { authorization: `Bearer ${bundle.accessToken}` });
+  const bearer = { authorization: `Bearer ${bundle.accessToken}` };
+  // Now the token exists, so a spec that was behind this sign-in can be read.
+  // A refusal here does spend the code, which is the lesser of the two: the
+  // alternative is a server that can never be connected at all.
+  await assertToolBudget(stored, bearer);
+  const toolCount = await probeToolCount(stored, bearer);
   markConnected(pending.proposalId, stored, toolCount, opts.now ?? Date.now(), storePath);
   return { proposalId: pending.proposalId };
 }
