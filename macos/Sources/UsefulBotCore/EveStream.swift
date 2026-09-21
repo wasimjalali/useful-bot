@@ -583,12 +583,30 @@ public struct StreamProjection: Equatable, Sendable {
     /// up, and a scan of the whole history per delta is what ten bots
     /// streaming into long chats were paying on the main actor.
     private var indexById: [String: Int] = [:]
+    /// The user row the turn in flight carried, while nothing has been said
+    /// back. Named so a failure can tell which row went down with it.
+    private var turnUserMessageId: String?
+    /// The user row of a failed turn, while it is still the last thing in the
+    /// transcript. eve rolls a failed turn's session back to what it held
+    /// before the send, so that row names a message the bot does not have:
+    /// sending the same text again is a retry of it, not a second question.
+    private var discardedUserMessageId: String?
 
     public init() {}
 
     private mutating func appendMessage(_ message: ChatMessage) {
         if indexById[message.id] == nil { indexById[message.id] = messages.count }
         messages.append(message)
+    }
+
+    /// Give the last row the echo's identity without moving it, so a message
+    /// this projection already shows folds into the row it names.
+    private mutating func adoptLastUserRow(id: String?, text: String, at: Date?) {
+        guard let id, let last = messages.last else { return }
+        // The id it leaves behind goes with the row it named.
+        if indexById[last.id] == messages.count - 1 { indexById[last.id] = nil }
+        if indexById[id] == nil { indexById[id] = messages.count - 1 }
+        messages[messages.count - 1] = ChatMessage(id: id, role: .user, text: text, at: at)
     }
 
     /// A turn is starting from this app.
@@ -650,22 +668,28 @@ public struct StreamProjection: Equatable, Sendable {
             activity = .thinking
         case "message.received":
             let text = EveStream.stripThreadPrefix(event.message ?? "")
+            // The last turn failed before the bot said anything, and eve threw
+            // the message away with it. The same text arriving again is that
+            // message being sent a second time, so it rewrites the row that is
+            // already on screen. Without this, eight minutes of a provider
+            // outage left the one question standing six times over, under a
+            // single failure banner, none of it in the session.
+            if let discarded = discardedUserMessageId,
+               let last = messages.last, last.id == discarded, last.text == text {
+                adoptLastUserRow(id: event.id, text: text, at: stamp ?? last.at)
+                turnUserMessageId = event.id ?? last.id
+                discardedUserMessageId = nil
+                pending = true
+                activity = .thinking
+                return
+            }
             // Only the optimistic row this app synthesised for the send is
             // folded into the authoritative echo; a legitimate repeat of the
             // same text still appends as its own turn.
             if let last = messages.last, last.role == .user, last.text == text,
                last.id.hasPrefix(EveStream.optimisticUserPrefix) {
-                if let id = event.id {
-                    // The optimistic id leaves with the row it named.
-                    if indexById[last.id] == messages.count - 1 { indexById[last.id] = nil }
-                    if indexById[id] == nil { indexById[id] = messages.count - 1 }
-                    messages[messages.count - 1] = ChatMessage(
-                        id: id,
-                        role: .user,
-                        text: text,
-                        at: stamp ?? last.at
-                    )
-                }
+                adoptLastUserRow(id: event.id, text: text, at: stamp ?? last.at)
+                if let id = event.id { turnUserMessageId = id }
                 pending = true
                 activity = .thinking
                 return
@@ -674,12 +698,17 @@ public struct StreamProjection: Equatable, Sendable {
             // second turn. The id cache above is bounded, so this is the check
             // that survives a session longer than the cache.
             if let id = event.id, indexById[id] != nil { return }
+            let userId = event.id ?? "u-\(messages.count)"
             appendMessage(ChatMessage(
-                id: event.id ?? "u-\(messages.count)",
+                id: userId,
                 role: .user,
                 text: text,
                 at: stamp
             ))
+            // A different message is a new question: the failed row stays put
+            // as the record of an attempt, and nothing folds into it again.
+            turnUserMessageId = userId
+            discardedUserMessageId = nil
             pending = true
             activity = .thinking
         case "reasoning.appended", "reasoning.completed":
@@ -775,6 +804,15 @@ public struct StreamProjection: Equatable, Sendable {
                 detail: event.message ?? ""
             )
             currentAssistantId = nil
+            // The owner's message went down with the turn: eve stores the
+            // session as it stood before the send. Only a turn that said
+            // nothing back qualifies, which is also the only shape that
+            // stacked copies. A turn cut off part way through an answer keeps
+            // its input, and its row has the half-answer under it.
+            if let carried = turnUserMessageId, messages.last?.id == carried {
+                discardedUserMessageId = carried
+            }
+            turnUserMessageId = nil
         case "action.result", "action.partial":
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
@@ -794,6 +832,12 @@ public struct StreamProjection: Equatable, Sendable {
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
             pending = false
             currentAssistantId = nil
+            // The turn is over without failing, so its message is the
+            // session's to keep. `discardedUserMessageId` is not cleared here:
+            // `session.waiting` follows a failure too, and the fold already
+            // requires the discarded row to still be the last one, which any
+            // answer pushes it out of.
+            turnUserMessageId = nil
         default:
             break
         }

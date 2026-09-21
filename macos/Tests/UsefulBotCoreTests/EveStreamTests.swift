@@ -334,4 +334,71 @@ import Testing
         #expect(projection.messages[0].id == "evt-user")
         #expect(projection.messages[0].text == typed)
     }
+
+    /// The provider was down for eight minutes and the same question stood in
+    /// the transcript six times over, under one failure banner. eve had none
+    /// of them: a turn that fails takes the owner's message with it, so every
+    /// resend was the first copy the session had ever seen.
+    @Test func resendingAMessageAFailedTurnThrewAwayRewritesItsRow() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "2", message: "upstream_protocol_error"))
+
+        projection.apply(EveEvent(type: "turn.started", id: "3"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages[0].id == "u2")
+        #expect(projection.messages[0].role == .user)
+
+        // A third attempt folds into the same row, and the row the owner sees
+        // is the one the session will answer.
+        projection.apply(EveEvent(type: "turn.failed", id: "4", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "hi"))
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages[0].id == "u3")
+    }
+
+    /// The send path inserts its own row before the echo arrives, so the fold
+    /// has to survive the optimistic hop as well as a replay.
+    @Test func aRetryFromTheComposerFoldsThroughItsOptimisticRow() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"), live: true)
+        projection.apply(EveEvent(type: "turn.failed", id: "2", message: "circuit_open"), live: true)
+
+        projection.beginTurn()
+        projection.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: "hi"
+        ), live: true)
+        #expect(projection.messages.count == 1)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"), live: true)
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages[0].id == "u2")
+    }
+
+    /// Only the message the failed turn threw away folds. A turn that failed
+    /// after the bot had started answering keeps its input, and a repeat of
+    /// text the bot already answered is a second question, not a retry.
+    @Test func onlyTheDiscardedMessageFolds() {
+        var answered = StreamProjection()
+        answered.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        answered.apply(EveEvent(type: "message.completed", id: "a1", message: "Hello"))
+        answered.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(answered.messages.count == 3)
+
+        var cutOff = StreamProjection()
+        cutOff.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        cutOff.apply(EveEvent(type: "message.appended", id: "a1", messageDelta: "Half an ans"))
+        cutOff.apply(EveEvent(type: "turn.failed", id: "2", message: "ended without a finish reason"))
+        cutOff.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(cutOff.messages.count == 3)
+
+        var edited = StreamProjection()
+        edited.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        edited.apply(EveEvent(type: "turn.failed", id: "2", message: "upstream_protocol_error"))
+        edited.apply(EveEvent(type: "message.received", id: "u2", message: "hi again"))
+        #expect(edited.messages.count == 2)
+    }
 }
