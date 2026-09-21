@@ -114,7 +114,7 @@ export const MOUNTED_TOOL_BUDGET = 60;
  * sees them, which is the other half of why the count budget is as low as it
  * is.
  */
-export const MOUNTED_TOOL_BYTE_BUDGET = 40 * 1024;
+export const MOUNTED_TOOL_BYTE_BUDGET = 24 * 1024;
 /**
  * Tools one session may pick up on demand. Past this the model is told to
  * work with what it has rather than quietly walking the turn into the wall.

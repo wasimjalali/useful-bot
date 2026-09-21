@@ -46,12 +46,39 @@ export const MAX_TOOL_INPUT_SCHEMA_BYTES = 4 * 1024;
 function toolInputSchema(raw: unknown): Record<string, unknown> | null {
   const rec = asRecord(raw);
   if (!rec) return null;
+  let bytes: number;
   try {
-    if (Buffer.byteLength(JSON.stringify(rec), "utf8") > MAX_TOOL_INPUT_SCHEMA_BYTES) return null;
+    bytes = Buffer.byteLength(JSON.stringify(rec), "utf8");
   } catch {
     return null;
   }
-  return rec;
+  if (bytes <= MAX_TOOL_INPUT_SCHEMA_BYTES) return rec;
+  // Too big to keep whole. Dropping it outright left the model a tool with
+  // no argument contract at all: it guessed, the server refused, and the
+  // step was spent. What is kept is the shape without the prose: property
+  // names, their types and which are required.
+  return trimSchema(rec);
+}
+
+function trimSchema(rec: Record<string, unknown>): Record<string, unknown> | null {
+  const properties = asRecord(rec.properties);
+  if (!properties) return null;
+  const trimmed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(properties)) {
+    const field = asRecord(value);
+    const type = field?.type;
+    trimmed[key] = typeof type === "string" || Array.isArray(type) ? { type } : {};
+    // Room for the object and `required` that wrap this map.
+    if (Buffer.byteLength(JSON.stringify(trimmed), "utf8") > MAX_TOOL_INPUT_SCHEMA_BYTES - 512) {
+      delete trimmed[key];
+      break;
+    }
+  }
+  if (Object.keys(trimmed).length === 0) return null;
+  const required = Array.isArray(rec.required)
+    ? rec.required.filter((item): item is string => typeof item === "string" && item in trimmed)
+    : [];
+  return { type: "object", properties: trimmed, ...(required.length ? { required } : {}) };
 }
 
 export type McpResource = {

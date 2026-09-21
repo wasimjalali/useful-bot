@@ -216,7 +216,10 @@ export async function ensureConnectionIndex(
     return await refreshConnectionIndex(entry, storePath);
   } catch {
     // A server that is down must not take the search down with it: what was
-    // listed last time is still the best answer available.
+    // listed last time is still the best answer available. The attempt is
+    // recorded so the next search does not wait fifteen seconds for the same
+    // silence, and the stale listing is kept beside it.
+    try { putConnectionListingFailed(entry.id, storePath); } catch { /* a cache */ }
     return current?.tools ?? [];
   }
 }

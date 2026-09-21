@@ -300,7 +300,13 @@ export function putConnectionListingFailed(
   path = connectionToolsPath(),
 ): void {
   updateConnectionToolsStore((store) => {
-    store.index[connectionId] = { fetchedAt: new Date().toISOString(), tools: [], failed: true };
+    // What was listed last time is still the best answer a search has, so the
+    // attempt is recorded beside it rather than in place of it.
+    store.index[connectionId] = {
+      fetchedAt: new Date().toISOString(),
+      tools: store.index[connectionId]?.tools ?? [],
+      failed: true,
+    };
   }, path);
 }
 

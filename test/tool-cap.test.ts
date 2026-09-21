@@ -70,22 +70,42 @@ test("the tools the agent ships fit under the router's schema cap with headroom"
 });
 
 /**
- * Room left for the agent's own tool schemas and eve's. They are not measured
- * here because eve builds the request; what is checked is that the two
- * budgets this app does control cannot fill the wall on their own.
- *
- * Both budgets are now weighed in wire bytes rather than at a rate, so this
- * sum is the real one: `MOUNTED_TOOL_BYTE_BUDGET` counts an MCP tool by the
- * bytes it emits and an OpenAPI spec by the schemas eve resolves from it.
+ * Room left for eve's own default tools, which it builds and this side never
+ * sees. The agent's own are measured below rather than guessed at: the count
+ * test measures what it counts, and a byte test resting on a constant would
+ * have stayed green while the thing it asserts stopped being true.
  */
-const AGENT_SCHEMA_BYTES = 40 * 1024;
+const EVE_DEFAULT_SCHEMA_BYTES = 24 * 1024;
 
-test("the tool budgets fit under the router's byte cap too", () => {
+/** What this agent's own tools weigh on the wire, asked of zod. */
+async function agentSchemaBytes(): Promise<number> {
+  const { z } = await import("zod");
+  let total = 0;
+  for (const name of readdirSync(join(ROOT, "agent/tools")).filter((item) => item.endsWith(".ts"))) {
+    const mod = await import(join(ROOT, "agent/tools", name)) as {
+      default?: { inputSchema?: unknown; description?: string };
+    };
+    const schema = mod.default?.inputSchema;
+    // A dynamic tool file has no static schema; its tools are budgeted by
+    // MAX_SESSION_TOOL_BYTES instead.
+    if (!schema) continue;
+    const json = z.toJSONSchema(schema as Parameters<typeof z.toJSONSchema>[0], { io: "input" });
+    total += Buffer.byteLength(JSON.stringify(json), "utf8")
+      + 76
+      + name.length
+      + Buffer.byteLength(mod.default?.description ?? "", "utf8");
+  }
+  return total;
+}
+
+test("the tool budgets fit under the router's byte cap too", async () => {
   // The router refuses on bytes as well as on count, with the same
   // non-retryable error, and the same retired session behind it.
-  const worst = MOUNTED_TOOL_BYTE_BUDGET + MAX_SESSION_TOOL_BYTES + AGENT_SCHEMA_BYTES;
+  const agent = await agentSchemaBytes();
+  assert.ok(agent > 8_000, `only measured ${agent} bytes of agent tool schema; the walk is broken`);
+  const worst = MOUNTED_TOOL_BYTE_BUDGET + MAX_SESSION_TOOL_BYTES + agent + EVE_DEFAULT_SCHEMA_BYTES;
   assert.ok(
     worst <= MAX_TOOL_SCHEMA_BYTES,
-    `MOUNTED_TOOL_BYTE_BUDGET=${MOUNTED_TOOL_BYTE_BUDGET} plus MAX_SESSION_TOOL_BYTES=${MAX_SESSION_TOOL_BYTES} plus ${AGENT_SCHEMA_BYTES} for the agent's own is ${worst}, past MAX_TOOL_SCHEMA_BYTES=${MAX_TOOL_SCHEMA_BYTES}. Lower a budget in shared/policy.ts`,
+    `MOUNTED_TOOL_BYTE_BUDGET=${MOUNTED_TOOL_BYTE_BUDGET} plus MAX_SESSION_TOOL_BYTES=${MAX_SESSION_TOOL_BYTES} plus ${agent} measured for this agent's tools plus ${EVE_DEFAULT_SCHEMA_BYTES} for eve's is ${worst}, past MAX_TOOL_SCHEMA_BYTES=${MAX_TOOL_SCHEMA_BYTES}. Lower a budget in shared/policy.ts`,
   );
 });

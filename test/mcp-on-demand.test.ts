@@ -110,10 +110,12 @@ test("the mounted set is clamped at the budget, whatever is in the store", () =>
   }
   const mounted = eagerConnections();
   const total = mounted.reduce((sum, item) => sum + (mountedToolCount(item) ?? 0), 0);
+  const bytes = mounted.reduce((sum, item) => sum + (mountedToolBytes(item) ?? 0), 0);
   assert.ok(total <= MOUNTED_TOOL_BUDGET, `mounted ${total} tools, past ${MOUNTED_TOOL_BUDGET}`);
-  assert.equal(mounted.length, 2);
+  assert.ok(bytes <= MOUNTED_TOOL_BYTE_BUDGET, `mounted ${bytes} bytes, past ${MOUNTED_TOOL_BYTE_BUDGET}`);
+  assert.ok(mounted.length > 0 && mounted.length < 6, `mounted ${mounted.length} of six`);
   // In the order they were connected, so the set is stable turn to turn.
-  assert.deepEqual(mounted.map((item) => item.id), ["spec-0", "spec-1"]);
+  assert.deepEqual(mounted.map((item) => item.id), ["spec-0"].slice(0, mounted.length));
 });
 
 test("the byte budget clamps a roster the count alone would admit", () => {
@@ -449,4 +451,43 @@ test("an MCP server costs the mounted budget nothing at all", async () => {
   await ensureMeasured([pinned]);
   await ensureMeasured([pinned]);
   assert.equal(listed, 0);
+});
+
+test("a schema too big to keep still says what the arguments are", async () => {
+  paths();
+  upsertConnection(entry());
+  const huge = {
+    type: "object",
+    properties: Object.fromEntries(
+      Array.from({ length: 400 }, (_, i) => [`field_${i}`, {
+        type: "string",
+        description: "p".repeat(200),
+      }]),
+    ),
+    required: ["field_0"],
+  };
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [
+      { name: "heavy", description: "Takes a lot of fields", inputSchema: huge },
+    ] } }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch);
+  await searchConnectionTools("heavy", 3);
+  const kept = connectionIndex("example")?.tools[0];
+  // Dropped outright, the model got a passthrough with no contract at all:
+  // it guessed, the server refused, and the step was spent.
+  assert.ok(kept?.inputSchema, "kept nothing");
+  const properties = kept?.inputSchema?.properties as Record<string, unknown>;
+  assert.ok(Object.keys(properties).length > 5, "kept too few fields");
+  assert.deepEqual(properties.field_0, { type: "string" });
+  // The prose is what was dropped, not the shape.
+  assert.ok(JSON.stringify(kept?.inputSchema).length <= 4 * 1024);
+  assert.ok(!JSON.stringify(kept?.inputSchema).includes("pppp"));
+  // And the charge is still the real size of what the server sent.
+  assert.ok((kept?.inputSchemaBytes ?? 0) > 0);
 });

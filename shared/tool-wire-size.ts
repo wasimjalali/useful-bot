@@ -10,8 +10,17 @@
  *
  * So both sides are weighed the way the router weighs them:
  * `Buffer.byteLength(JSON.stringify(tool))`, in UTF-8, including the function
- * envelope. Where the real schema cannot be seen, the number here is an upper
- * bound and says so, never a guess downward.
+ * envelope.
+ *
+ * A tool this app mounts itself is weighed exactly, by asking zod to emit
+ * what it will send. An OpenAPI connection cannot be: eve builds those tools
+ * from the spec and never hands them back, and its emission is bigger than
+ * the spec text it came from. The parameters of each operation get an object
+ * wrapper, an `additionalProperties` and often a `$schema`; an operation with
+ * no `operationId` gets a name derived from its path that the spec never
+ * spelled out; and the same re-emission that runs about twice the raw bytes
+ * for an MCP schema runs on these too. So a spec is charged a deliberate
+ * over-estimate, and it is called that rather than called exact.
  */
 
 /** `{"type":"function","function":{"name":…,"description":…,"parameters":…}}`. */
@@ -38,9 +47,20 @@ export function toolWireBytes(name: string, description: string, schemaBytes: nu
   return ENVELOPE_BYTES + utf8(name) + utf8(description) + schemaBytes;
 }
 
-/** What a measured OpenAPI connection weighs on the wire, envelopes included. */
+/**
+ * What a measured OpenAPI connection is charged: its resolved schema text at
+ * the rate eve's re-emission runs, its operation text, and per operation an
+ * envelope plus the wrapper and synthesised name the spec does not carry.
+ * An over-estimate on purpose, because the alternative is a figure the wire
+ * beats and a chat that dies for it.
+ */
+const SPEC_EMISSION_RATE = 2.5;
+const PER_OPERATION_OVERHEAD = ENVELOPE_BYTES + 120;
+
 export function specWireBytes(size: SpecSize): number {
-  return size.schemaBytes + size.textBytes + size.operations * ENVELOPE_BYTES;
+  return Math.ceil(size.schemaBytes * SPEC_EMISSION_RATE)
+    + size.textBytes
+    + size.operations * PER_OPERATION_OVERHEAD;
 }
 
 export function schemaBytesOf(schema: Record<string, unknown> | null): number {

@@ -83,8 +83,11 @@ export default defineDynamic({
               hits.map((hit) => hit.name),
               undefined,
               // Every mounted description carries its connection's name, so
-              // the charge has to carry it too.
-              Object.fromEntries(hits.map((hit) => [hit.connectionId, hit.connectionName])),
+              // the charge has to carry it too, for what this session already
+              // holds as well as for what it is taking now.
+              Object.fromEntries(
+                onDemandConnections().map((item) => [item.id, item.name]),
+              ),
             );
             const held = outcome.tools.length;
             return {
@@ -157,12 +160,11 @@ export default defineDynamic({
             // gated like a connector call: this app runs it itself, so the
             // card is this app's to show.
             //
-            // The risk comes from the tool's own name, and the name is the
-            // server's to choose. In Auto that is a ladder for convenience,
-            // and it trusts the server the owner connected: a tool called
-            // `list_items` that deletes would run without a card. Read only
-            // is not a convenience, it is the posture where the owner said
-            // nothing may act, so no name gets a bot past it.
+            // The posture decides, and nothing the server named does. A
+            // Composio slug is Composio's to write, so a read verb in one
+            // says something; an MCP server names its own tools, so a
+            // `list_items` that deletes would have read as a read. The name
+            // only labels the card.
             const permission = sessionPermission(toolCtx);
             const risk = mcpToolRisk(toolName);
             const gate = mcpToolGate(permission);

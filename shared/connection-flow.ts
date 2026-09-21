@@ -452,11 +452,7 @@ export async function completeConnectionOAuth(
     createdAt: new Date(opts.now ?? Date.now()).toISOString(),
   };
   // Same last word as the confirm path: only the store's lock can see a row
-  // that landed for this URL while the browser had the sign-in open. The
-  // budget is not weighed again here: the code has been exchanged by now, so
-  // a refusal would drop a usable token bundle and cost the owner the whole
-  // sign-in with no way to retry it. The mount-time clamp is what covers a
-  // connect that landed while the browser was open.
+  // that landed for this URL while the browser had the sign-in open.
   const bearer = { authorization: `Bearer ${bundle.accessToken}` };
   // After the exchange, because a spec behind this very sign-in cannot be
   // read without the token, but still before anything is written. Refusing
