@@ -1820,6 +1820,7 @@ public actor BackendClient {
                                 continue
                             }
                             event.index = index
+                            event.sessionId = sessionId
                             if markHistory, let tail { event.historyRemaining = tail - index }
                             if !armed {
                                 if event.type == "message.received",

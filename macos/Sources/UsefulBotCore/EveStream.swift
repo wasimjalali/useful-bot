@@ -307,6 +307,11 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     /// reader rather than decoded: eve's `startIndex` counts events from zero,
     /// so `index + 1` is where a later read resumes without replaying history.
     public var index: Int?
+    /// The session `index` counts in, stamped with it. eve counts every
+    /// session from zero, so a position means nothing without the session
+    /// it was read from, and a projection outlives a session: a send that
+    /// lands on a retired one posts the same message to a fresh session.
+    public var sessionId: String?
     /// How many recorded events were still ahead of this one when the read
     /// connected: positive inside the history, zero on its last event, below
     /// zero for an event that happened after. Nil when the server did not say
@@ -330,6 +335,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
         turnId = try? data?.decodeIfPresent(String.self, forKey: .turnId)
         self.data = try? c.decodeIfPresent(JSONValue.self, forKey: .data)
         index = nil
+        sessionId = nil
     }
 
     public init(
@@ -340,7 +346,8 @@ public struct EveEvent: Decodable, Equatable, Sendable {
         messageDelta: String? = nil,
         turnId: String? = nil,
         data: JSONValue? = nil,
-        index: Int? = nil
+        index: Int? = nil,
+        sessionId: String? = nil
     ) {
         self.type = type
         self.id = id
@@ -350,6 +357,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
         self.turnId = turnId
         self.data = data
         self.index = index
+        self.sessionId = sessionId
     }
 }
 
@@ -601,6 +609,21 @@ public struct StreamProjection: Equatable, Sendable {
     /// its echo armed left nothing of its turn here, and the follower brings
     /// that turn in after the resend has painted its own.
     private var newestTurnStart: Int?
+    /// The session whose journal `rowJournal` and `newestTurnStart` are
+    /// read in, and where its positions start in the projection's own count.
+    /// eve counts every session from zero, and this projection outlives a
+    /// session: a send that lands on a retired one posts the same message to
+    /// a fresh session, and so does the retry a broken history gets. Read
+    /// raw, the fresh session's first turn sat before the old session's
+    /// newest and was taken for backfill: its echo went to the top, the
+    /// optimistic row was never adopted, and the working row never cleared.
+    /// So a session's positions are shifted past everything the projection
+    /// has placed, and a later session reads as later.
+    private var journalSession: String?
+    private var journalBase = 0
+    /// The highest position placed so far, in the projection's count: where
+    /// the next session's positions start after.
+    private var journalTop: Int?
     /// What one turn has done so far, kept apart from what the projection
     /// shows: which row it carried, whether it got anywhere, whether it is
     /// over. Everything its failure needs to know in order to fold a retry.
@@ -869,6 +892,21 @@ public struct StreamProjection: Equatable, Sendable {
         newestTurnStart = max(newestTurnStart ?? index, index)
     }
 
+    /// An event's journal position in the projection's own count, so that
+    /// positions from two sessions never meet raw. The first position from
+    /// another session starts that session past the highest one placed;
+    /// nothing else moves, and a stream that names no session reads as one.
+    private mutating func journalPosition(of event: EveEvent) -> Int? {
+        guard let index = event.index else { return nil }
+        if event.sessionId != journalSession {
+            journalSession = event.sessionId
+            journalBase = journalTop.map { $0 + 1 } ?? 0
+        }
+        let position = journalBase + index
+        journalTop = max(journalTop ?? position, position)
+        return position
+    }
+
     /// A message eve filed under a turn this projection has stepped off,
     /// arriving after the next turn's message. It goes under the rows that
     /// turn owns, where a replay puts it, and is that turn's to answer or to
@@ -943,12 +981,16 @@ public struct StreamProjection: Equatable, Sendable {
     }
 
     public mutating func apply(_ event: EveEvent, live: Bool = false) {
+        var event = event
         // Dedupe every identified event, matching the web's seenIds contract;
         // a replayed chunk id must not append its delta twice.
         if let id = event.id {
             if seen.contains(id) { return }
             remember(id)
         }
+        // Every journal comparison below reads this, so it is the one place a
+        // session's positions are put in the projection's count.
+        event.index = journalPosition(of: event)
         // A server stamp wins; otherwise a turn that is happening now is
         // stamped from the client clock, while a replay of old history is not
         // (the durable events already carry their own times).
@@ -1000,6 +1042,14 @@ public struct StreamProjection: Equatable, Sendable {
                     guard currentTurnId == nil else { break }
                     turn = TurnRecord()
                     noteTurnStart(event.index)
+                    // A turn beginning is every open turn ending, the same
+                    // as at a message. Left open, a turn stepped off with its
+                    // start still owed was resumed by that start after this
+                    // turn had begun and ended, and a rewound start wiped
+                    // the banner of the turn that had actually failed.
+                    for (id, open) in turns where !open.ended && !open.superseded {
+                        turns[id]?.superseded = true
+                    }
                 }
                 currentTurnId = named
             } else {
@@ -1282,6 +1332,9 @@ public struct StreamProjection: Equatable, Sendable {
                 // follower brought the failure only after the next turn's
                 // message. That next turn is the live one, so no banner. But
                 // eve still threw this turn's message away, and its row goes.
+                // And a session that failed is retired whichever turn it
+                // failed on, so a question card goes down here as below.
+                if event.type == "session.failed" { questions = [] }
                 guard var stepped = turns[id] else { break }
                 stepped.ended = true
                 turns[id] = stepped
@@ -1327,6 +1380,12 @@ public struct StreamProjection: Equatable, Sendable {
             record.producedWork = true
             record.openUserRows = 0
             store(record, for: owner)
+            // A question journaled before the newest turn began is not open:
+            // eve waits on a question, and the message that began that turn
+            // is what answered it. A backfilled turn's question came up as a
+            // card on the turn that followed it. Without positions the
+            // question shows until its `input.resolved` arrives, as before.
+            if let index = event.index, let newest = newestTurnStart, index < newest { break }
             for question in EveStream.parseQuestions(event.data) {
                 if let index = questions.firstIndex(where: { $0.id == question.id }) {
                     questions[index] = question

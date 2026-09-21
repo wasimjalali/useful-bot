@@ -216,4 +216,63 @@ import Testing
         #expect(p.failed)
         #expect(p.messages.map(\.id) == ["u1", "u1b"])
     }
+
+    /// A fresh turn's start ends every open turn, the way a message does.
+    /// A turn stepped off with its start still owed was left open by the
+    /// start alone, so its late start resumed it after the next turn had
+    /// begun and failed, and took that turn's banner down with it.
+    @Test func aFreshTurnsStartSupersedesTheTurnSteppedOffBeforeIt() {
+        var p = StreamProjection()
+        p.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"))
+        p.beginTurn()
+        p.apply(EveEvent(type: "message.received", id: "local", message: "next"), live: true)
+        // t2 begins with its start, then its message names the turn already
+        // in flight, so the message's supersede pass never runs.
+        p.apply(EveEvent(type: "turn.started", id: "s2", turnId: "t2"))
+        p.apply(EveEvent(type: "message.received", id: "u2", message: "next", turnId: "t2"))
+        p.apply(EveEvent(type: "turn.failed", id: "f2", message: "upstream_protocol_error", turnId: "t2"))
+        #expect(p.failed)
+        #expect(!p.pending)
+        // t1's start arrives late: t1 is over, and t2's banner stays.
+        p.apply(EveEvent(type: "turn.started", id: "s1", turnId: "t1"))
+        #expect(p.failed)
+        #expect(!p.pending)
+    }
+
+    /// A backfilled turn's question was answered or dropped with it, and
+    /// must not come up as a live card on the turn that followed.
+    @Test func aBackfilledTurnsQuestionIsNotALiveCard() {
+        var p = StreamProjection()
+        p.apply(EveEvent(type: "message.received", id: "u1", message: "next", turnId: "t1", index: 5))
+        p.apply(EveEvent(type: "message.completed", id: "a1", message: "second answer", turnId: "t1", index: 6))
+        p.apply(EveEvent(type: "turn.completed", id: "c1", turnId: "t1", index: 7))
+        p.apply(EveEvent(type: "message.received", id: "u0", message: "hi", turnId: "t0", index: 1))
+        let asked = #"""
+        {"type":"input.requested","meta":{"id":"q0"},"data":{"turnId":"t0","requests":[{"requestId":"r0","kind":"question","prompt":"Which one?"}]}}
+        """#
+        var question = EveStream.parseLine(asked)!
+        question.index = 2
+        p.apply(question)
+        #expect(p.questions.isEmpty)
+        #expect(p.messages.map(\.id) == ["u0", "u1", "a1"])
+    }
+
+    /// `session.failed` retires the session whichever turn it is filed
+    /// under, so a question card goes down on a stepped-off turn's failure
+    /// too: left up, its answer went into the fresh session.
+    @Test func aSteppedOffTurnsSessionFailureTakesTheCardDown() {
+        var p = StreamProjection()
+        p.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"))
+        let asked = #"""
+        {"type":"input.requested","meta":{"id":"q1"},"data":{"turnId":"t1","requests":[{"requestId":"r1","kind":"question","prompt":"Which one?"}]}}
+        """#
+        p.apply(EveStream.parseLine(asked)!)
+        #expect(p.questions.map(\.id) == ["r1"])
+        p.apply(EveEvent(type: "message.received", id: "u2", message: "next", turnId: "t2"))
+        #expect(p.questions.map(\.id) == ["r1"])
+        p.apply(EveEvent(type: "session.failed", id: "x1", message: "session retired", turnId: "t1"))
+        #expect(p.questions.isEmpty)
+        #expect(p.pending)
+        #expect(!p.failed)
+    }
 }
