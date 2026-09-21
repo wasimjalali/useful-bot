@@ -3,6 +3,7 @@ import { z } from "zod";
 import { connectionHeaders } from "../../shared/connection-auth.ts";
 import {
   activateSessionTools,
+  indexedToolBytes,
   mountedDescription,
   mountedToolName,
   readConnectionToolsStore,
@@ -15,7 +16,7 @@ import {
 import { findConnectionById } from "../../shared/connections-store.ts";
 import { toolInputSchema } from "../../shared/json-schema-zod.ts";
 import { callMcpTool } from "../../shared/mcp-http.ts";
-import { MAX_SESSION_TOOLS } from "../../shared/policy.ts";
+import { MAX_SESSION_TOOL_BYTES, MAX_SESSION_TOOLS } from "../../shared/policy.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { mcpToolGate, mcpToolRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
@@ -117,6 +118,13 @@ export default defineDynamic({
       // A caller with no session (an eval, a test) gets `find_tools` and
       // nothing else: there is no session to record an activation against,
       // and one shared key would mount one caller's tools in another's.
+      //
+      // Weighed again here, against the index as it is now: the charge at
+      // activation was for the listing then, and a server that republished
+      // fatter schemas since would otherwise walk the mounted set past the
+      // router's byte wall with no call from the model at all.
+      let mountedCount = 0;
+      let mountedBytes = 0;
       for (const name of store?.sessions[sessionId]?.tools ?? []) {
         const split = splitMountedName(name);
         if (!split) continue;
@@ -127,6 +135,10 @@ export default defineDynamic({
         if (entry.toolsAllow && !entry.toolsAllow.includes(split.tool)) continue;
         const indexed = store?.index[split.connectionId]?.tools.find((tool) => tool.name === split.tool);
         if (!indexed) continue;
+        const weight = indexedToolBytes(indexed, entry.id, entry.name);
+        if (mountedCount + 1 > MAX_SESSION_TOOLS || mountedBytes + weight > MAX_SESSION_TOOL_BYTES) continue;
+        mountedCount += 1;
+        mountedBytes += weight;
         const { schema } = toolInputSchema(indexed.inputSchema);
         const connectionId = entry.id;
         const connectionName = entry.name;
@@ -237,8 +249,12 @@ export default defineDynamic({
               // The server's words, never the headers that reached it: a
               // server can echo the credential it was sent back in an error.
               let message = err instanceof Error ? err.message : "failed";
+              // Each part of a value too, so `Bearer <token>` is caught when
+              // only the token comes back.
               for (const value of Object.values(headers)) {
-                if (value.length >= 8) message = message.split(value).join("[redacted]");
+                for (const part of [value, ...value.split(/\s+/)]) {
+                  if (part.length >= 8) message = message.split(part).join("[redacted]");
+                }
               }
               message = message.slice(0, 300);
               return {

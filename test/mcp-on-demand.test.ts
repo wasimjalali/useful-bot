@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { mcpToolGate, mcpToolRisk } from "../agent/lib/connector-risk.ts";
+import connectionTools from "../agent/tools/connection_tools.ts";
 import {
   activateSessionTools,
   connectionIndex,
@@ -689,4 +690,30 @@ test("a search honours an allow-list narrowed after the listing was cached", asy
   upsertConnection(entry({ toolsAllow: ["read_item"] }));
   const hits = await searchConnectionTools("read", 5);
   assert.deepEqual(hits.map((hit) => hit.tool), ["read_item"]);
+});
+
+test("the mount re-weighs held tools against the index as it is now", async () => {
+  paths();
+  upsertConnection(entry());
+  const lean = (i: number) => ({ name: `tool_${i}`, description: "", inputSchema: null, inputSchemaBytes: 2 });
+  putConnectionIndex("example", Array.from({ length: 20 }, (_, i) => lean(i)));
+  const names = Array.from({ length: 20 }, (_, i) => mountedToolName("example", `tool_${i}`));
+  assert.equal(activateSessionTools("s1", names).tools.length, 20);
+  const resolve = (connectionTools as unknown as {
+    events: { "step.started": (event: unknown, ctx: unknown) => Promise<Record<string, unknown> | null> };
+  }).events["step.started"];
+  const before = await resolve({}, { session: { id: "s1" } });
+  assert.equal(Object.keys(before ?? {}).filter((key) => key.includes("__")).length, 20);
+  // The server republishes the same names with schemas at the keep limit.
+  // Charged at activation they were lean; mounted as they are now, twenty of
+  // them would be past the session's byte cap.
+  putConnectionIndex("example", Array.from({ length: 20 }, (_, i) => ({ ...lean(i), inputSchemaBytes: 4_000 })));
+  const after = await resolve({}, { session: { id: "s1" } });
+  const mounted = Object.keys(after ?? {}).filter((key) => key.includes("__"));
+  assert.ok(mounted.length < 20, `mounted ${mounted.length}`);
+  const weighed = mounted.reduce((sum, key) => {
+    const tool = connectionIndex("example")!.tools.find((item) => mountedToolName("example", item.name) === key)!;
+    return sum + indexedToolBytes(tool, "example", "Example");
+  }, 0);
+  assert.ok(weighed <= MAX_SESSION_TOOL_BYTES, `weighed ${weighed}`);
 });
