@@ -12,7 +12,33 @@ export type McpToolInfo = {
   /** The server listed "app" itself. A tool with no visibility is not one. */
   appCallable: boolean;
   resourceUri: string | null;
+  /**
+   * The server's own JSON Schema for the tool's arguments, or null when it
+   * sent none or one too big to keep. A tool mounted on demand is presented
+   * to the model from this, so a listing that dropped it left the model
+   * guessing at argument names.
+   */
+  inputSchema: Record<string, unknown> | null;
 };
+
+/**
+ * How much of one tool's argument schema is worth keeping. A server is free
+ * to send a schema of any size and the index holds one per tool; past this
+ * the wrapper falls back to a passthrough object and puts the shape in its
+ * description instead.
+ */
+export const MAX_TOOL_INPUT_SCHEMA_BYTES = 8 * 1024;
+
+function toolInputSchema(raw: unknown): Record<string, unknown> | null {
+  const rec = asRecord(raw);
+  if (!rec) return null;
+  try {
+    if (Buffer.byteLength(JSON.stringify(rec), "utf8") > MAX_TOOL_INPUT_SCHEMA_BYTES) return null;
+  } catch {
+    return null;
+  }
+  return rec;
+}
 
 export type McpResource = {
   uri: string;
@@ -119,10 +145,19 @@ function toolResourceUri(meta: unknown): string | null {
   return null;
 }
 
+/**
+ * How long a listing or a resource read may take, end to end. Both make two
+ * round trips, so the deadline is shared across them rather than restarted
+ * per call: a server that answers `initialize` and then stops still ends.
+ * Without it an unresponsive server held the connect card, the widget host
+ * and the turn that asked open for as long as the socket stayed up.
+ */
+export const MCP_READ_TIMEOUT_MS = 15_000;
+
 export async function listMcpTools(
   url: string,
   headers: Record<string, string> = {},
-  signal?: AbortSignal,
+  signal: AbortSignal = AbortSignal.timeout(MCP_READ_TIMEOUT_MS),
 ): Promise<McpToolInfo[]> {
   const init = await rpc(url, "initialize", {
     protocolVersion: "2025-03-26",
@@ -145,6 +180,7 @@ export async function listMcpTools(
       visibility: toolVisibility(row._meta),
       appCallable: toolAppCallable(row._meta),
       resourceUri: toolResourceUri(row._meta),
+      inputSchema: toolInputSchema(row.inputSchema),
     });
     if (out.length >= 200) break;
   }
@@ -159,17 +195,18 @@ export async function readMcpResource(
   url: string,
   uri: string,
   headers: Record<string, string> = {},
+  signal: AbortSignal = AbortSignal.timeout(MCP_READ_TIMEOUT_MS),
 ): Promise<McpResource> {
   if (!uri.startsWith("ui://") && !uri.startsWith("https://")) throw new Error("mcp_resource_uri");
   const init = await rpc(url, "initialize", {
     protocolVersion: "2025-03-26",
     capabilities: {},
     clientInfo: { name: "useful-bot", version: "0.0.0" },
-  }, headers, 1);
+  }, headers, 1, signal);
   const sessionHeaders = init.sessionId
     ? { ...headers, "mcp-session-id": init.sessionId }
     : headers;
-  const read = await rpc(url, "resources/read", { uri }, sessionHeaders, 3);
+  const read = await rpc(url, "resources/read", { uri }, sessionHeaders, 3, signal);
   const rec = asRecord(read.result);
   const contents = Array.isArray(rec?.contents) ? rec.contents : [];
   const first = asRecord(contents[0]);

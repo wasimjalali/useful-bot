@@ -3,41 +3,9 @@ import {
   defineMcpClientConnection,
   defineOpenAPIConnection,
 } from "eve/connections";
-import {
-  isAuthHeaderName,
-  readConnectionsStore,
-  type ConnectionEntry,
-} from "../../shared/connections-store.ts";
-import { connectionSecretService, keychainGet, keychainSet } from "../../shared/keychain.ts";
-import { refreshMcpOAuth, type OAuthTokenBundle } from "../../shared/mcp-oauth.ts";
-
-function parseBundle(raw: string | null): OAuthTokenBundle | null {
-  if (!raw) return null;
-  try {
-    const rec = JSON.parse(raw) as OAuthTokenBundle;
-    if (!rec || typeof rec.accessToken !== "string") return null;
-    return rec;
-  } catch {
-    return null;
-  }
-}
-
-async function bearerFromKeychain(id: string): Promise<{ token: string; expiresAt?: number }> {
-  const raw = keychainGet(connectionSecretService(id));
-  if (!raw) throw new Error(`connection_secret_missing:${id}`);
-  return { token: raw };
-}
-
-async function oauthToken(entry: ConnectionEntry): Promise<{ token: string; expiresAt?: number }> {
-  const service = connectionSecretService(entry.id);
-  let bundle = parseBundle(keychainGet(service));
-  if (!bundle) throw new Error(`connection_secret_missing:${entry.id}`);
-  if (bundle.expiresAt && bundle.expiresAt < Date.now() + 30_000 && bundle.refreshToken) {
-    bundle = await refreshMcpOAuth(bundle);
-    keychainSet(service, JSON.stringify(bundle));
-  }
-  return { token: bundle.accessToken, expiresAt: bundle.expiresAt ?? undefined };
-}
+import { isAuthHeaderName, type ConnectionEntry } from "../../shared/connections-store.ts";
+import { bearerFromKeychain, oauthToken } from "../../shared/connection-auth.ts";
+import { eagerConnections } from "../../shared/connection-tools.ts";
 
 function definitionFor(entry: ConnectionEntry) {
   const tools = entry.toolsAllow ? { allow: entry.toolsAllow } : undefined;
@@ -103,12 +71,22 @@ function definitionFor(entry: ConnectionEntry) {
   });
 }
 
+/**
+ * Only the connections that are worth mounting for every turn.
+ *
+ * eve owns OpenAPI spec parsing and those are few, so they stay. So does an
+ * MCP server the owner pinned to a handful of tools: two schemas cost nothing
+ * and a bot should not have to go looking before it can draw. A server that
+ * publishes its whole catalogue waits to be asked, through `find_tools` in
+ * `agent/tools/connection_tools.ts`, which mounts what it hands over under
+ * the same `<connectionId>__<toolName>` names this would have.
+ */
 export default defineDynamic({
   events: {
     "turn.started": async () => {
-      const store = readConnectionsStore();
-      if (store.connections.length === 0) return null;
-      return Object.fromEntries(store.connections.map((entry) => [entry.id, definitionFor(entry)]));
+      const entries = eagerConnections();
+      if (entries.length === 0) return null;
+      return Object.fromEntries(entries.map((entry) => [entry.id, definitionFor(entry)]));
     },
   },
 });

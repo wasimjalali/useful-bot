@@ -277,7 +277,7 @@ export async function PUT(request: Request) {
           "proposal_missing", "proposal_settled", "already_connected", "proposal_expired",
           "authorize_in_flight", "secret_invalid", "oauth_no_as", "oauth_no_dcr",
           "oauth_register", "url_invalid", "url_http", "url_host", "url_protocol", "url_credentials",
-          "url_resolved", "url_resolve",
+          "url_resolved", "url_resolve", "tool_budget_exceeded",
         ]);
         return NextResponse.json({ ok: false, error: known.has(code) ? code : "connect_failed" }, { status: 400 });
       }

@@ -95,6 +95,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "That proposal has expired."
         case "proposal_mismatch":
             return "That proposal no longer matches this app."
+        case "tool_budget_exceeded":
+            return "This would give your bots more tools than a turn can carry. Disconnect a server first."
         case "target_missing":
             return "The target bot no longer exists."
         case "fanout_empty":

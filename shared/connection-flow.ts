@@ -28,6 +28,9 @@ import {
 } from "./mcp-oauth.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
+import { putConnectionIndex } from "./connection-tools-store.ts";
+import { eagerConnections, isEagerConnection, mountedToolCount } from "./connection-tools.ts";
+import { MOUNTED_TOOL_BUDGET } from "./policy.ts";
 
 /**
  * Connect-server card. Confirm writes the registry (and Keychain, and OAuth).
@@ -106,14 +109,63 @@ function queueResume(card: Stored, storePath: string, connectionId = card.connec
   return true;
 }
 
+/**
+ * How many tools a connection has, for the card. For an MCP server this also
+ * writes the listing to the index `find_tools` searches, so the first search
+ * after a connect answers from disk instead of going back to the server.
+ */
 async function probeToolCount(entry: ConnectionEntry, headers: Record<string, string> = {}): Promise<number | null> {
   try {
     if (entry.kind === "openapi") return await countOpenApiOperations(entry.url);
     const tools = await listMcpTools(entry.url, headers);
-    const names = entry.toolsAllow ?? modelToolNames(tools);
+    const visible = new Set(modelToolNames(tools));
+    const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
+    try {
+      putConnectionIndex(
+        entry.id,
+        tools
+          .filter((tool) => visible.has(tool.name) && (!allow || allow.has(tool.name)))
+          .map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          })),
+      );
+    } catch {
+      // The index is a cache; a write that failed costs one listing later.
+    }
+    const names = entry.toolsAllow ?? [...visible];
     return names.length;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Refuse a connect that would take the tools mounted on every turn past the
+ * budget, before any row or credential is written.
+ *
+ * The router refuses a turn carrying more than `MAX_TOOL_SCHEMAS` with a
+ * non-retryable `unsupported_parameter`, and eve retires a session that gets
+ * one, so the chat is dead for good. Nothing used to look: the count on the
+ * card was for the owner to read, and a connect that doubled a bot's tools
+ * went through in silence. Most MCP servers now cost nothing here, because
+ * their tools wait to be asked for; an OpenAPI spec and a pinned server are
+ * what this counts.
+ */
+async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
+  if (!isEagerConnection(entry)) return;
+  const mounted = eagerConnections()
+    .filter((item) => item.id !== entry.id && item.url !== entry.url)
+    .reduce((total, item) => total + mountedToolCount(item), 0);
+  const adding = entry.kind === "openapi"
+    ? (await countOpenApiOperations(entry.url).catch(() => null) ?? 0)
+    : (entry.toolsAllow?.length ?? 0);
+  if (mounted + adding > MOUNTED_TOOL_BUDGET) {
+    const err = new Error("tool_budget_exceeded") as Error & { mounted: number; adding: number };
+    err.mounted = mounted;
+    err.adding = adding;
+    throw err;
   }
 }
 
@@ -246,6 +298,10 @@ export async function startConnectionConfirm(
     // this URL, or the same row under a free id when this card's id turned out
     // to be a different server's. Everything below reads `stored`, never the
     // entry that went in.
+    // Nothing is written until the budget says there is room: a row and a
+    // credential for a connect that is about to be refused would have to be
+    // unwound, and the unwinding is what loses a credential.
+    await assertToolBudget(entry);
     const outcome = upsertConnection(entry);
     if (!outcome.won) {
       // Another card holds this URL. Nothing of this card's is in the store,
@@ -317,6 +373,7 @@ export async function completeConnectionOAuth(
   };
   // Same last word as the confirm path: only the store's lock can see a row
   // that landed for this URL while the browser had the sign-in open.
+  await assertToolBudget(entry);
   const outcome = upsertConnection(entry);
   if (!outcome.won) {
     // Another card connected this server between the check above and this

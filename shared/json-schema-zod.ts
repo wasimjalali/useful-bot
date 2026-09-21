@@ -1,0 +1,152 @@
+import { z } from "zod";
+
+/**
+ * A JSON Schema to a zod schema, for the subset MCP servers actually send.
+ *
+ * eve hands a tool's `inputSchema` to the model as the argument contract, so
+ * a wrapper around someone else's tool has to present the server's own schema
+ * rather than an opaque object. Anything outside the subset falls back to a
+ * passthrough object with the raw schema written into the description, which
+ * keeps the call possible instead of refusing it: the server validates the
+ * arguments either way, and an unusable tool is worse than a loose one.
+ *
+ * Covered: object with properties and required, string (with enum, format
+ * left alone), number, integer, boolean, array with items, null, const, a
+ * union of types, anyOf/oneOf, and a nullable member in either.
+ */
+
+const MAX_DEPTH = 8;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function described(schema: z.ZodTypeAny, node: Record<string, unknown>): z.ZodTypeAny {
+  const text = typeof node.description === "string" ? node.description.slice(0, 400) : "";
+  return text ? schema.describe(text) : schema;
+}
+
+function enumSchema(values: unknown[]): z.ZodTypeAny | null {
+  const strings = values.filter((item): item is string => typeof item === "string");
+  if (strings.length !== values.length || strings.length === 0) return null;
+  // A single-value enum is still an enum, and z.enum needs a non-empty tuple.
+  return z.enum(strings as [string, ...string[]]);
+}
+
+function primitive(type: string): z.ZodTypeAny | null {
+  if (type === "string") return z.string();
+  if (type === "number") return z.number();
+  if (type === "integer") return z.number().int();
+  if (type === "boolean") return z.boolean();
+  if (type === "null") return z.null();
+  return null;
+}
+
+function convert(node: unknown, depth: number): z.ZodTypeAny | null {
+  if (depth > MAX_DEPTH) return null;
+  const rec = asRecord(node);
+  if (!rec) return null;
+
+  if ("const" in rec) {
+    const value = rec.const;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      return described(z.literal(value), rec);
+    }
+    return null;
+  }
+
+  const branches = Array.isArray(rec.anyOf) ? rec.anyOf : Array.isArray(rec.oneOf) ? rec.oneOf : null;
+  if (branches) {
+    const parts = branches.map((branch) => convert(branch, depth + 1));
+    if (parts.some((part) => part === null) || parts.length < 2) return null;
+    const list = parts as z.ZodTypeAny[];
+    return described(z.union([list[0], list[1], ...list.slice(2)]), rec);
+  }
+
+  if (Array.isArray(rec.enum)) {
+    const built = enumSchema(rec.enum);
+    return built ? described(built, rec) : null;
+  }
+
+  // `type: ["string", "null"]` is how a nullable field usually arrives.
+  if (Array.isArray(rec.type)) {
+    const names = rec.type.filter((item): item is string => typeof item === "string");
+    if (names.length !== rec.type.length || names.length === 0) return null;
+    const nullable = names.includes("null");
+    const rest = names.filter((name) => name !== "null");
+    if (rest.length === 0) return described(z.null(), rec);
+    const parts = rest.map((name) => convert({ ...rec, type: name }, depth + 1));
+    if (parts.some((part) => part === null)) return null;
+    const list = parts as z.ZodTypeAny[];
+    const built = list.length === 1 ? list[0] : z.union([list[0], list[1], ...list.slice(2)]);
+    return described(nullable ? built.nullable() : built, rec);
+  }
+
+  const type = typeof rec.type === "string" ? rec.type : null;
+  if (type === "object" || (!type && asRecord(rec.properties))) {
+    const properties = asRecord(rec.properties) ?? {};
+    const required = new Set(
+      (Array.isArray(rec.required) ? rec.required : []).filter((item): item is string => typeof item === "string"),
+    );
+    const shape: Record<string, z.ZodTypeAny> = {};
+    for (const [key, value] of Object.entries(properties)) {
+      const built = convert(value, depth + 1);
+      if (!built) return null;
+      shape[key] = required.has(key) ? built : built.optional();
+    }
+    // No properties at all is a free-form object, not an empty one.
+    if (Object.keys(shape).length === 0) return described(z.record(z.string(), z.unknown()), rec);
+    return described(z.object(shape), rec);
+  }
+
+  if (type === "array") {
+    const items = convert(rec.items, depth + 1);
+    if (!items) return null;
+    return described(z.array(items), rec);
+  }
+
+  if (type) {
+    const built = primitive(type);
+    return built ? described(built, rec) : null;
+  }
+
+  return null;
+}
+
+export type ToolInputSchema = {
+  schema: z.ZodTypeAny;
+  /** True when the schema could not be converted and the raw one is the contract. */
+  passthrough: boolean;
+};
+
+/**
+ * The zod schema a mounted tool presents, and whether it is the server's own
+ * shape or the passthrough fallback. The fallback carries the raw schema in
+ * its description so the model still knows what the server expects.
+ */
+export function toolInputSchema(raw: Record<string, unknown> | null): ToolInputSchema {
+  const built = raw ? convert(raw, 0) : null;
+  if (built) {
+    // eve calls tools with an object; a schema that is not one cannot be an
+    // argument list whatever it validates.
+    if (built instanceof z.ZodObject || built instanceof z.ZodRecord) {
+      return { schema: built, passthrough: false };
+    }
+  }
+  return { schema: z.record(z.string(), z.unknown()), passthrough: true };
+}
+
+/** What to append to a passthrough tool's description, or "" when there is nothing to say. */
+export function rawSchemaHint(raw: Record<string, unknown> | null): string {
+  if (!raw) return "";
+  let text: string;
+  try {
+    text = JSON.stringify(raw);
+  } catch {
+    return "";
+  }
+  if (text.length > 2000) return "";
+  return `\nArguments (JSON Schema): ${text}`;
+}
