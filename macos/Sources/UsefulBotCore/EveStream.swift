@@ -1040,7 +1040,12 @@ public struct StreamProjection: Equatable, Sendable {
                     // eve runs one turn at a time, and the next real one
                     // names itself in its message anyway.
                     guard currentTurnId == nil else { break }
-                    turn = TurnRecord()
+                    // Nothing is named yet, so what the anonymous record
+                    // holds is this turn's: a send that died before its echo
+                    // armed leaves its optimistic claim there, and the
+                    // follower then brings this start ahead of the echo.
+                    // Reset, the claim was gone, its failure could fold
+                    // nothing, and the retry stacked.
                     noteTurnStart(event.index)
                     // A turn beginning is every open turn ending, the same
                     // as at a message. Left open, a turn stepped off with its
