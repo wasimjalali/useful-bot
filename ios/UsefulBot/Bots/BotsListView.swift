@@ -367,7 +367,10 @@ struct BotsListView: View {
         let text = HStack(alignment: .top, spacing: 12) {
             Image(systemName: glyph)
                 .font(Theme.font(DesignTokens.FontSize.emptyBody, .regular))
-                .foregroundStyle(Theme.C.danger)
+                // §7.2 levels are degraded, not destructive — `warning`
+                // matches the Devices statusPill; `danger` is reserved for
+                // refused/destructive (§1.0 shared states).
+                .foregroundStyle(Theme.C.warning)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -490,7 +493,7 @@ struct BotsListView: View {
                 )
             }
             return ("wifi.slash", "You're offline", "Showing cached data.")
-        case .macUnreachable(let lastSeen, _):
+        case .macUnreachable(let lastSeen, _, _):
             if let lastSeen {
                 return (
                     "desktopcomputer",
@@ -538,10 +541,10 @@ struct BotsListView: View {
     }()
 }
 
-/// Devices (spec 6.2's sign-out home, pushed per design spec 1.15; the full
-/// 1.15 anatomy — Diagnostics group included — lands in PR-6): the paired
-/// Mac's name, host and status, the two expiry clocks, "Sign out on this
-/// phone" (class C) and "Unpair" (class A, confirm sheet then biometric).
+/// Devices (spec 6.2's sign-out home, pushed per design spec 1.15): the
+/// paired Mac's name, host and status, the two expiry clocks, the
+/// Diagnostics group under macUnreachable, "Sign out on this phone"
+/// (class C) and "Unpair" (class A, confirm sheet then biometric).
 struct DevicesView: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(\.dismiss) private var dismiss
@@ -632,6 +635,19 @@ struct DevicesView: View {
                 groupHeader("Expiry")
             }
             .foregroundStyle(Theme.C.ink)
+
+            // §1.15 item 3: under macUnreachable the Diagnostics group
+            // shows which layer dropped the probe — DNS, TLS, then HTTP.
+            if case .macUnreachable(_, _, let diag) = coordinator.readiness {
+                Section {
+                    diagRow("Resolved", diag.resolved)
+                    diagRow("TLS", diag.tls)
+                    diagRow("HTTP status", diag.httpStatus)
+                } header: {
+                    groupHeader("Diagnostics")
+                }
+                .foregroundStyle(Theme.C.ink)
+            }
 
             Section {
                 Button("Sign out on this phone") {
@@ -733,7 +749,11 @@ struct DevicesView: View {
         switch coordinator.readiness {
         case .ready:
             (text, foreground, background) = ("Connected", Theme.C.success, Theme.C.successSoft)
-        case .noNetwork, .macUnreachable:
+        case .noNetwork:
+            // §7.2 honest copy: the phone's own path is down — pointing at
+            // the Mac would send the user the wrong way.
+            (text, foreground, background) = ("Offline", Theme.C.warning, Theme.C.warningSoft)
+        case .macUnreachable:
             (text, foreground, background) = ("Unreachable", Theme.C.warning, Theme.C.warningSoft)
         case .runtimeDown:
             (text, foreground, background) = ("Runtime down", Theme.C.warning, Theme.C.warningSoft)
@@ -748,6 +768,20 @@ struct DevicesView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(background, in: Capsule())
+    }
+
+    /// A §1.15 Diagnostics row: the layer name and an ok/bad pill in the
+    /// status vocabulary (success/warning soft — degradation, never
+    /// destructive).
+    private func diagRow(_ label: String, _ verdict: ReachabilityDiagnostics.Verdict) -> some View {
+        LabeledContent(label) {
+            Text(verdict == .ok ? "ok" : "bad")
+                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                .foregroundStyle(verdict == .ok ? Theme.C.success : Theme.C.warning)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(verdict == .ok ? Theme.C.successSoft : Theme.C.warningSoft, in: Capsule())
+        }
     }
 
     /// Inside the one-time seven-day warning window (spec 11) — the same

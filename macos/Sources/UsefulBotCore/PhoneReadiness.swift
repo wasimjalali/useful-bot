@@ -3,6 +3,29 @@ import Foundation
 import Network
 import Combine
 
+/// The §1.15 Diagnostics rows for `macUnreachable`: did the host resolve,
+/// did TLS land, did HTTP answer at all (a refused response still counts —
+/// it proves the edge is live). Verdicts are coarse because the ladder's
+/// own state is coarse.
+public struct ReachabilityDiagnostics: Sendable, Equatable {
+    public enum Verdict: String, Sendable, Equatable {
+        case ok, bad
+    }
+    public var resolved: Verdict
+    public var tls: Verdict
+    public var httpStatus: Verdict
+
+    public init(resolved: Verdict, tls: Verdict, httpStatus: Verdict) {
+        self.resolved = resolved
+        self.tls = tls
+        self.httpStatus = httpStatus
+    }
+
+    /// An edge refusal (403 of any code) proves all three layers carried
+    /// the request.
+    public static let answered = ReachabilityDiagnostics(resolved: .ok, tls: .ok, httpStatus: .ok)
+}
+
 /// The §7.2 readiness ladder: what the app is allowed to say is wrong, in the
 /// order the checks run. `providerDown` is deliberately absent — it surfaces
 /// as a turn error, not a level.
@@ -11,8 +34,9 @@ public enum MacReadiness: Sendable, Equatable {
     case noNetwork
     /// The path is up but `/api/status` timed out or failed TLS/DNS — Mac
     /// asleep, off tailnet, Serve stopped, MagicDNS off all land here with
-    /// the same honest copy.
-    case macUnreachable(lastSeen: Date?, detail: String?)
+    /// the same honest copy. `diagnostics` feeds the Devices sheet's
+    /// §1.15 rows.
+    case macUnreachable(lastSeen: Date?, detail: String?, diagnostics: ReachabilityDiagnostics)
     /// Status answered but its eve probe failed: management screens stay
     /// usable, chat is down.
     case runtimeDown

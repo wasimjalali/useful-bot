@@ -251,6 +251,10 @@ final class ShotsUITests: XCTestCase {
 
         tapButton(app, "signed-out-sign-in")
         XCTAssertTrue(waitForBotsRoot(app, timeout: 15))
+        // The roster mounts before the toolbar rebuild finishes — an
+        // immediate shot can miss the nav chrome entirely. Wait on the
+        // Devices gear so the chrome is in the evidence.
+        XCTAssertTrue(app.buttons["Devices"].waitForExistence(timeout: 10))
         shot("bots-resigned-in-\(s)", app)
     }
 
