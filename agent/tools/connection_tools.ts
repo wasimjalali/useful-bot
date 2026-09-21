@@ -45,7 +45,7 @@ const MAX_HITS = 8;
 /**
  * The card shows every argument the hash binds, so there is no clipped
  * preview: a call whose arguments would not fit is refused and the model
- * asked to shorten it. Reads never reach the card.
+ * asked to shorten it.
  */
 const CARD_ARGS_MAX = 4000;
 
