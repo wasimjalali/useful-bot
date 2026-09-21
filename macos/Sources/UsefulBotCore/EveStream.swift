@@ -667,6 +667,11 @@ public struct StreamProjection: Equatable, Sendable {
         openUserRows = 0
         carrierIsThisTurn = false
         currentTurnId = nil
+        // A send that was stopped, or whose POST never landed, leaves a claim
+        // on a row this turn did not put there. (The row itself stays, and an
+        // immediate resend of the same text still folds into it through the
+        // optimistic branch below, as it always has.)
+        turnUserMessageId = nil
     }
 
     /// Dedupe identity with a bounded FIFO: the oldest remembered id is
@@ -709,6 +714,12 @@ public struct StreamProjection: Equatable, Sendable {
             searchHits = []
             activity = .thinking
         case "message.received":
+            // A message this projection already holds is a redelivery of it,
+            // not a turn. The id cache above is bounded, so this is the check
+            // that survives a session longer than the cache, and it comes
+            // before the folds: a redelivery is not a retry and must not take
+            // a failure banner down with it.
+            if let id = event.id, indexById[id] != nil { return }
             let text = EveStream.stripThreadPrefix(event.message ?? "")
             // The last turn failed before the bot said anything, and eve threw
             // the message away with it. The same text arriving again is that
@@ -722,7 +733,7 @@ public struct StreamProjection: Equatable, Sendable {
                 // Without an id there is nothing to adopt: the row already
                 // reads right, so the marker stays armed and the echo that
                 // does carry one folds into it rather than beside it.
-                if let id = event.id, indexById[id] == nil {
+                if let id = event.id {
                     adoptLastUserRow(id: id, text: text, at: stamp ?? last.at)
                     turnUserMessageId = id
                     discardedUserMessageId = nil
@@ -746,7 +757,7 @@ public struct StreamProjection: Equatable, Sendable {
             // same text still appends as its own turn.
             if let last = messages.last, last.role == .user, last.text == text,
                last.id.hasPrefix(EveStream.optimisticUserPrefix) {
-                if let id = event.id, indexById[id] == nil {
+                if let id = event.id {
                     // Only re-point a claim that named this row: a nil slot
                     // means two rows are open and neither may be claimed.
                     if turnUserMessageId == last.id { turnUserMessageId = id }
@@ -757,10 +768,6 @@ public struct StreamProjection: Equatable, Sendable {
                 activity = .thinking
                 return
             }
-            // A message this projection already holds is a replay of it, not a
-            // second turn. The id cache above is bounded, so this is the check
-            // that survives a session longer than the cache.
-            if let id = event.id, indexById[id] != nil { return }
             let userId = event.id ?? "u-\(messages.count)"
             appendMessage(ChatMessage(
                 id: userId,
@@ -824,6 +831,7 @@ public struct StreamProjection: Equatable, Sendable {
             // returned above, and letting it through would make an untouched
             // turn look like one that got somewhere.
             turnProducedWork = true
+            openUserRows = 0
             activity = .working
             if let current = currentAssistantId,
                let index = indexById[current] {
@@ -849,6 +857,7 @@ public struct StreamProjection: Equatable, Sendable {
                     return
                 }
                 turnProducedWork = true
+                openUserRows = 0
                 if let current = currentAssistantId,
                    let index = indexById[current] {
                     messages[index].text = full

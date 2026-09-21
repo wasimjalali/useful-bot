@@ -562,4 +562,31 @@ import Testing
         projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"), live: true)
         #expect(projection.messages.count == 3)
     }
+    /// A redelivery is not a retry: it must not take the failure banner down
+    /// or mark a turn as running.
+    @Test func aRedeliveredMessageLeavesTheBannerUp() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        #expect(projection.messages.count == 1)
+        #expect(projection.failed)
+        #expect(!projection.pending)
+    }
+
+    /// An answer closes the exchange above it. Without that, a stream that
+    /// sends no turn terminals counted every user row it ever saw as open and
+    /// never folded again.
+    @Test func anAnswerClosesTheRowsAboveIt() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "first"))
+        projection.apply(EveEvent(type: "message.completed", id: "a1", message: "Hello"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "second"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"))
+        #expect(projection.messages.count == 3)
+    }
 }
