@@ -17,6 +17,10 @@ import { toolInputSchema, rawSchemaHint } from "../../shared/json-schema-zod.ts"
 import { callMcpTool } from "../../shared/mcp-http.ts";
 import { MAX_SESSION_TOOLS } from "../../shared/policy.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { connectorGate, mcpToolRisk } from "../lib/connector-risk.ts";
+import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
+import { getApprovalStore } from "../lib/write.ts";
+import { sessionPermission } from "../lib/permission.ts";
 
 /**
  * The tools of connected MCP servers, mounted only once a bot has asked for
@@ -38,6 +42,12 @@ import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 const RESULT_MAX_BYTES = 24 * 1024;
 const MAX_HITS = 8;
+/**
+ * The card shows every argument the hash binds, so there is no clipped
+ * preview: a call whose arguments would not fit is refused and the model
+ * asked to shorten it. Reads never reach the card.
+ */
+const CARD_ARGS_MAX = 4000;
 
 export default defineDynamic({
   events: {
@@ -104,17 +114,56 @@ export default defineDynamic({
           description: `${connectionName}: ${indexed.description || toolName}`
             + (passthrough ? rawSchemaHint(indexed.inputSchema) : ""),
           inputSchema: schema,
-          async execute(input: unknown) {
+          async execute(input: unknown, toolCtx) {
             const entry = findConnectionById(connectionId);
             // The owner can disconnect a server mid-turn; the tool goes with it.
             if (!entry || entry.url !== url) {
               return { status: "blocked", error: "connection_gone", connection: connectionId };
             }
+            // Someone else's tool doing something on the owner's behalf is
+            // gated like a connector call, not like a read: this app runs it
+            // itself, so the card is this app's to show. The risk comes from
+            // the tool's own name, which is all any of us has to go on.
+            const permission = sessionPermission(toolCtx);
+            const risk = mcpToolRisk(toolName);
+            const gate = connectorGate(risk, permission);
+            if (gate === "refuse") return { status: "blocked", error: "workspace_read_only", risk };
+            const args = input && typeof input === "object" && !Array.isArray(input)
+              ? input as Record<string, unknown>
+              : {};
+            const argsText = JSON.stringify(args, null, 1);
+            if (gate === "ask" && argsText.length > CARD_ARGS_MAX) {
+              return { status: "blocked", error: "arguments_too_long_for_approval", max: CARD_ARGS_MAX };
+            }
+            const hash = actionSha256({
+              tool: "connection",
+              canonicalArgs: JSON.stringify({ connection: connectionId, tool: toolName, arguments: args }),
+              cwd: "",
+              targetRevision: null,
+              backend: "mcp",
+              toolVersion: "1",
+            });
+            const approvals = getApprovalStore();
+            const rec = approvals.request({
+              ...approvalActor(toolCtx),
+              tool: "connection",
+              actionSha256: hash,
+              preview: `${connectionName} · ${toolName}${risk === "destructive" ? " (destructive)" : ""}`
+                + (argsText === "{}" ? "" : `\n${argsText}`),
+            });
+            if (gate === "run") {
+              approvals.decide(rec.id, "approve", hash);
+            } else {
+              await waitUntilNotPending(approvals, rec.id);
+              // A read-only switch while the card sat open refuses; a widened
+              // one is not spent on this call.
+              if (sessionPermission(toolCtx) !== permission) {
+                return { status: "blocked", error: "permission_changed" };
+              }
+            }
+            return executeIfApproved(approvals, rec.id, hash, async () => {
             try {
               const headers = await connectionHeaders(entry);
-              const args = input && typeof input === "object" && !Array.isArray(input)
-                ? input as Record<string, unknown>
-                : {};
               const raw = await callMcpTool(url, toolName, args, headers);
               let text = JSON.stringify(raw);
               let truncated = false;
@@ -137,6 +186,7 @@ export default defineDynamic({
                 error: wrapUntrusted(`connection:${connectionId}/${toolName} error`, message),
               };
             }
+            });
           },
         });
       }
