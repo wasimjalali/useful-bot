@@ -211,3 +211,25 @@ test("a full-screen reply that lands after the reader left full screen does not 
   assert.equal(host.iframe.style.height, "480px");
   assert.deepEqual(host.toApp.find((msg) => msg.id === 1)?.result, { mode: "inline" });
 });
+
+test("a mobile host reports the caller's width and height", () => {
+  const record: WidgetRecord = {
+    id: "callid8888",
+    connectionId: "excalidraw",
+    toolName: "excalidraw__create_view",
+    resourceUri: "ui://excalidraw/mcp-app.html",
+    arguments: {},
+    result: null,
+    createdAt: new Date().toISOString(),
+  };
+  const html = renderWidgetHost(record, "<html><body>app</body></html>", [], {
+    platform: "mobile",
+    width: 390,
+    height: 640,
+  });
+  assert.match(html, /platform: "mobile"/);
+  assert.match(html, /width: 390/);
+  assert.match(html, /height: 640px/);
+  const desktop = renderWidgetHost(record, "<html><body>app</body></html>", []);
+  assert.match(desktop, /platform: "desktop"/);
+});

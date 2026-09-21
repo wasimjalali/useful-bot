@@ -15,7 +15,15 @@ export async function GET(
   if (!record) {
     return new Response("missing", { status: 404, headers: { "cache-control": "no-store" } });
   }
-  const { html } = await htmlForWidget(record);
+  const url = new URL(request.url);
+  const platform = url.searchParams.get("platform") === "mobile" ? "mobile" as const : "desktop" as const;
+  const width = Number(url.searchParams.get("width"));
+  const height = Number(url.searchParams.get("height"));
+  const { html } = await htmlForWidget(record, {
+    platform,
+    width: Number.isFinite(width) && width > 0 ? width : undefined,
+    height: Number.isFinite(height) && height > 0 ? height : undefined,
+  });
   return new Response(html, {
     status: 200,
     headers: {

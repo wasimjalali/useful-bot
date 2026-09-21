@@ -7,29 +7,32 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     case providers
     case computer
     case usage
-    case updates
+        case updates
+        case devices
 
-    var id: String { rawValue }
+        var id: String { rawValue }
 
-    var label: String {
-        switch self {
-        case .general: return "General"
-        case .providers: return "Providers"
-        case .computer: return "Computer"
-        case .usage: return "Usage"
-        case .updates: return "Updates"
+        var label: String {
+            switch self {
+            case .general: return "General"
+            case .providers: return "Providers"
+            case .computer: return "Computer"
+            case .usage: return "Usage"
+            case .updates: return "Updates"
+            case .devices: return "Devices"
+            }
         }
-    }
 
-    var icon: String {
-        switch self {
-        case .general: return "gearshape"
-        case .providers: return "server.rack"
-        case .computer: return "desktopcomputer"
-        case .usage: return "chart.bar"
-        case .updates: return "arrow.triangle.2.circlepath"
+        var icon: String {
+            switch self {
+            case .general: return "gearshape"
+            case .providers: return "server.rack"
+            case .computer: return "desktopcomputer"
+            case .usage: return "chart.bar"
+            case .updates: return "arrow.triangle.2.circlepath"
+            case .devices: return "iphone"
+            }
         }
-    }
 }
 
 /// `.settings-modal`: a 200pt nav rail and the scrolling pane, 860x640.
@@ -191,6 +194,7 @@ struct AppSettingsView: View {
                 case .computer: computerPane
                 case .usage: usagePane
                 case .updates: updatesPane
+                case .devices: DevicesPaneView()
                 }
             }
             .padding(EdgeInsets(top: 20, leading: 24, bottom: 28, trailing: 24))

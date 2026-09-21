@@ -69,7 +69,7 @@ struct UsefulBotApp: App {
         // The accent is monochrome: `accent` token (#171717/#EDEDED) so
         // carets, selection and the back chevron never leak system blue.
         .tint(Theme.C.accent)
-        .preferredColorScheme(Self.testAppearance)
+        .preferredColorScheme(Self.testAppearance ?? AppAppearance(rawValue: UserDefaults.standard.string(forKey: AppAppearance.storageKey) ?? "")?.colorScheme)
         .task {
             await coordinator.bootstrap()
             booted = true

@@ -12,6 +12,7 @@
 		05CEA14DCD5FE3D019E1A536 /* UsefulBotCore in Frameworks */ = {isa = PBXBuildFile; productRef = C842D28FEA6A87BC346C54C7 /* UsefulBotCore */; };
 		0D807184D54B3A4E8DCA7060 /* ShotsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42914F98A112ED46A87DF48E /* ShotsUITests.swift */; };
 		0D848BE696D7BD18090F2910 /* WorkspaceChipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016F78EB71D7C69784486E5F /* WorkspaceChipTests.swift */; };
+		0E85F4466BBD45555664DD07 /* ImageNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D0514E4CC57D28C8DCA4EF3 /* ImageNormalizer.swift */; };
 		0F1C4196CEB8E2352EBD69BB /* LiveWidgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4528F55DB8E712F0893B8F4E /* LiveWidgetTests.swift */; };
 		1A161520CA67F8BC0E83DA89 /* RoutinesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B8EB2C8AC1E732D122D2F71 /* RoutinesTests.swift */; };
 		1DD76242B558DE8DA80D0661 /* EveStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96F46766784E6C034A5F8BF0 /* EveStreamTests.swift */; };
@@ -49,10 +50,12 @@
 		8B34806F5409ABF297FBD4FA /* FacePaletteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 193B76981F0CF359F174577D /* FacePaletteTests.swift */; };
 		8E3C082D6E8B09D2F45CFDE8 /* ComposerGroupsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B096BC5D9E305EC16107F16 /* ComposerGroupsTests.swift */; };
 		8E791631EB5D7D93318B19CB /* ShellActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07197A4CAD586DE7A712252E /* ShellActionsTests.swift */; };
+		91682CA5701B2BF964DC328C /* PhoneSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E03EA82E0A7108DEDAC2DE4 /* PhoneSettingsView.swift */; };
 		91CC20A5D339D22390F81FC2 /* ProposalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D7BA5376E9A8410E80570E2 /* ProposalTests.swift */; };
 		9B2DACA27AE719C0900E98AF /* PairingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2038C48C36638F9C5DD48BE6 /* PairingUITests.swift */; };
 		A3D56D482B23C2565733040F /* Controls.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2513F2F237B32CE0B27429C /* Controls.swift */; };
 		A6F1DB039D8F29DE5E688053 /* OwnerQuestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93B9C50D5F0380E3160525D6 /* OwnerQuestionTests.swift */; };
+		A9FD27D850FF55D086AF5E83 /* PhoneWidgetSlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFBA1823903BD24FCEC30BDF /* PhoneWidgetSlot.swift */; };
 		B1CF78CC18FE925D7A235FB5 /* PhoneRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 210B275268585E3D462C0128 /* PhoneRecoveryTests.swift */; };
 		B90657ABD139BB92CCA93689 /* ChatMarkdownCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66D3AC6B0657C51DE79133F7 /* ChatMarkdownCacheTests.swift */; };
 		BCB75129FB21C8436CEFC57D /* StreamCursorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B2AD5085F7E98001FBAE72A /* StreamCursorTests.swift */; };
@@ -98,6 +101,7 @@
 		42914F98A112ED46A87DF48E /* ShotsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShotsUITests.swift; sourceTree = "<group>"; };
 		4528F55DB8E712F0893B8F4E /* LiveWidgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveWidgetTests.swift; sourceTree = "<group>"; };
 		47DBF669F7EA2B6C0A10AD53 /* PairingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingCoordinator.swift; sourceTree = "<group>"; };
+		4D0514E4CC57D28C8DCA4EF3 /* ImageNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageNormalizer.swift; sourceTree = "<group>"; };
 		4F5CB624D11994498B203A47 /* BrandMotionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandMotionTests.swift; sourceTree = "<group>"; };
 		57DCF9B9D313EB02E52056B4 /* CacheBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheBudgetTests.swift; sourceTree = "<group>"; };
 		5D0F64F40FC57FAA56E54573 /* BackendClientAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendClientAuthTests.swift; sourceTree = "<group>"; };
@@ -115,6 +119,7 @@
 		8030AB15F7C59425FE44AAFF /* TranscriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptTests.swift; sourceTree = "<group>"; };
 		82645DA38BC9B585A8E2A7FC /* ChatAttributionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAttributionTests.swift; sourceTree = "<group>"; };
 		842799F016D25C99A87DD578 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		8E03EA82E0A7108DEDAC2DE4 /* PhoneSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsView.swift; sourceTree = "<group>"; };
 		92591A8F0E2BAFA835830E4E /* RetryGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryGateTests.swift; sourceTree = "<group>"; };
 		93B9C50D5F0380E3160525D6 /* OwnerQuestionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerQuestionTests.swift; sourceTree = "<group>"; };
 		96F46766784E6C034A5F8BF0 /* EveStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EveStreamTests.swift; sourceTree = "<group>"; };
@@ -138,6 +143,7 @@
 		DD620EA2CE7E26A33157C554 /* AttachmentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentsTests.swift; sourceTree = "<group>"; };
 		E414B038F3A164D6A6CA3C41 /* ChatScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatScreen.swift; sourceTree = "<group>"; };
 		E8DB1A1F01CE66B401B1D6EA /* RetryTargetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RetryTargetTests.swift; sourceTree = "<group>"; };
+		EFBA1823903BD24FCEC30BDF /* PhoneWidgetSlot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneWidgetSlot.swift; sourceTree = "<group>"; };
 		F455E95659CEC09FA3763BBA /* ManualPairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualPairingView.swift; sourceTree = "<group>"; };
 		F4EAECAE1ACA3C57A46C316D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -171,6 +177,8 @@
 				D671554B9AB45AAF3855C45C /* Pairing */,
 				385446E33E9913C0B095381F /* Platform */,
 				14F81F8B0F2BC5AECEDCE0FC /* Resources */,
+				BB628A823CB78898E25A6BAC /* Settings */,
+				8C22155700B67C31B85F0890 /* Widgets */,
 			);
 			path = UsefulBot;
 			sourceTree = "<group>";
@@ -198,6 +206,7 @@
 			children = (
 				29F4DA2B5AAA287CB6843C96 /* ApprovalCardView.swift */,
 				E414B038F3A164D6A6CA3C41 /* ChatScreen.swift */,
+				4D0514E4CC57D28C8DCA4EF3 /* ImageNormalizer.swift */,
 				31ECB3276F49042A4543B4B7 /* PhoneCache.swift */,
 				B87D525360D497A483D21776 /* PhoneModel.swift */,
 			);
@@ -224,6 +233,14 @@
 				9AB3B8253F8D6E231B61D256 /* OwnerGate.swift */,
 			);
 			path = Platform;
+			sourceTree = "<group>";
+		};
+		8C22155700B67C31B85F0890 /* Widgets */ = {
+			isa = PBXGroup;
+			children = (
+				EFBA1823903BD24FCEC30BDF /* PhoneWidgetSlot.swift */,
+			);
+			path = Widgets;
 			sourceTree = "<group>";
 		};
 		929F46719D12CBE0F279A7C9 /* UsefulBotCoreTests */ = {
@@ -293,6 +310,14 @@
 				929F46719D12CBE0F279A7C9 /* UsefulBotCoreTests */,
 			);
 			path = Tests;
+			sourceTree = "<group>";
+		};
+		BB628A823CB78898E25A6BAC /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				8E03EA82E0A7108DEDAC2DE4 /* PhoneSettingsView.swift */,
+			);
+			path = Settings;
 			sourceTree = "<group>";
 		};
 		D21106AB64359997C56DCAE1 /* Bots */ = {
@@ -453,6 +478,7 @@
 				F7972AFFE2C14CABB8B51B00 /* BotsListView.swift in Sources */,
 				004E8A226442C94799469A82 /* ChatScreen.swift in Sources */,
 				A3D56D482B23C2565733040F /* Controls.swift in Sources */,
+				0E85F4466BBD45555664DD07 /* ImageNormalizer.swift in Sources */,
 				EF3C04AE1C6D7C7424A1A28D /* ManualPairingView.swift in Sources */,
 				46025487537EF7F50D4D5D8D /* NativeTheme.swift in Sources */,
 				57560800BA765ED93FE15A77 /* OwnerGate.swift in Sources */,
@@ -460,6 +486,8 @@
 				252E45789FEAE6D1BD4F23DA /* PairingView.swift in Sources */,
 				34564D85CB18B871308C2F43 /* PhoneCache.swift in Sources */,
 				64079312172A6AF49DC2FA04 /* PhoneModel.swift in Sources */,
+				91682CA5701B2BF964DC328C /* PhoneSettingsView.swift in Sources */,
+				A9FD27D850FF55D086AF5E83 /* PhoneWidgetSlot.swift in Sources */,
 				4F983D248F550C4BCC01FA22 /* QRScannerView.swift in Sources */,
 				69A5D5681F526B8D2CB2561D /* SignedOutView.swift in Sources */,
 				E858B1204AD1AAE3361F9BF5 /* UsefulBotApp.swift in Sources */,
@@ -542,7 +570,7 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Useful Bot";
-				INFOPLIST_KEY_NSCameraUsageDescription = "The camera is used only to scan the pairing code shown on your Mac.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "The camera scans the pairing code on your Mac and can attach a photo to a message.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms it's you before a message to a full-access bot, or before a sensitive change.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -570,7 +598,7 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Useful Bot";
-				INFOPLIST_KEY_NSCameraUsageDescription = "The camera is used only to scan the pairing code shown on your Mac.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "The camera scans the pairing code on your Mac and can attach a photo to a message.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID confirms it's you before a message to a full-access bot, or before a sensitive change.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;

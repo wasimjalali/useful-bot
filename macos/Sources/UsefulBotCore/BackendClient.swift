@@ -792,6 +792,29 @@ public actor BackendClient {
         return decoded.approvals
     }
 
+    /// The widget host page, fetched by the signed-in client and loaded
+    /// outside WebKit. `platform=mobile` plus the row size (S12).
+    public func widgetHTML(id: String, width: Int, height: Int) async throws -> String {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/connections/widget/\(Self.pathComponent(id))"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "platform", value: "mobile"),
+                URLQueryItem(name: "width", value: String(max(1, width))),
+                URLQueryItem(name: "height", value: String(max(1, height))),
+            ]
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        try Self.expectOK(data, response)
+        guard let html = String(data: data, encoding: .utf8), !html.isEmpty else {
+            throw BackendError.decoding
+        }
+        return html
+    }
+
     /// Approve or deny one pending action; the hash must match the row.
     public func decideApproval(id: String, decision: ApprovalDecision, hash: String) async throws {
         let (data, response) = try await perform { client, token in

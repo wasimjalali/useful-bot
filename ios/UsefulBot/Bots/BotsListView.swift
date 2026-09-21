@@ -142,6 +142,17 @@ struct BotsListView: View {
                 .fixedSize()
             }
             ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    PhoneSettingsView()
+                } label: {
+                    Image(systemName: "person.crop.circle")
+                        .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                        .foregroundStyle(Theme.C.ink)
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("Settings")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("New bot") { showCreate = true }
                     Button("New group") { showGroup = true }

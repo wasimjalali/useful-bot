@@ -13,6 +13,7 @@ final class PhoneModel {
     private(set) var workingBotIds: Set<String> = []
     private(set) var approvals: [ApprovalCard] = []
     private(set) var proposalsByBot: [String: [Proposal]] = [:]
+    private(set) var attachments: [Attachment] = []
     var safariURL: URL?
     private(set) var chats: [String: OpenChat] = [:]
     var draft = ""
@@ -203,7 +204,8 @@ final class PhoneModel {
     }
 
     func canSend(_ text: String, readiness: MacReadiness?) -> Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && blockedReason(readiness) == nil
+        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return (hasText || !attachments.isEmpty) && blockedReason(readiness) == nil
     }
 
     var sendBlockReason: String? {
@@ -761,7 +763,9 @@ final class PhoneModel {
             guard current(generation) else { return }
             adopt(fresh)
             let pointer = bot(botId)?.sessionId
-            let sessionId = try await post(botId: botId, sessionId: pointer, message: text)
+        let files = attachments
+        attachments = []
+        let sessionId = try await post(botId: botId, sessionId: pointer, message: text, images: files)
             guard current(generation) else { return }
             try await client.touchChat(
                 botId: botId,
@@ -833,14 +837,62 @@ final class PhoneModel {
         }
     }
 
-    private func post(botId: String, sessionId: String?, message: String) async throws -> String {
+    private func post(botId: String, sessionId: String?, message: String, images: [Attachment] = []) async throws -> String {
         guard let client else { throw BackendError.deviceTokenMissing }
         do {
-            return try await client.send(botId: botId, sessionId: sessionId, message: message)
+            return try await client.send(botId: botId, sessionId: sessionId, message: message, images: images)
         } catch BackendError.http(503) {
             try await Task.sleep(for: .seconds(1))
-            return try await client.send(botId: botId, sessionId: sessionId, message: message)
+            return try await client.send(botId: botId, sessionId: sessionId, message: message, images: images)
         }
+    }
+
+    func addPhoto(_ data: Data) async {
+        guard attachments.count < Attachments.maxFiles else {
+            actionError = "Five files is the limit."
+            return
+        }
+        guard let jpeg = ImageNormalizer.jpeg(from: data), let client else {
+            actionError = "That photo could not be prepared."
+            return
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("photo-\(UUID().uuidString).jpg")
+        do {
+            try jpeg.write(to: url, options: .completeFileProtection)
+            let uploaded = try await client.uploadAttachment(fileURL: url, mimeType: "image/jpeg")
+            try? FileManager.default.removeItem(at: url)
+            attachments.append(uploaded)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            actionError = (error as? LocalizedError)?.errorDescription ?? "That photo was not attached."
+        }
+    }
+
+    func addTextFile(_ data: Data, name: String) async {
+        guard data.count <= Attachments.textMax else {
+            actionError = "Text files have to be 64 KB or smaller."
+            return
+        }
+        guard attachments.count < Attachments.maxFiles, let client else { return }
+        let safe: String
+        do { safe = try Attachments.safeName(name) } catch {
+            actionError = "That file cannot be attached."
+            return
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(safe)
+        do {
+            try data.write(to: url, options: .completeFileProtection)
+            let uploaded = try await client.uploadAttachment(fileURL: url, mimeType: "text/plain")
+            try? FileManager.default.removeItem(at: url)
+            attachments.append(uploaded)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            actionError = (error as? LocalizedError)?.errorDescription ?? "That file was not attached."
+        }
+    }
+
+    func removeAttachment(_ id: String) {
+        attachments.removeAll { $0.id == id }
     }
 
     private func still(_ botId: String, _ token: Int, _ generation: Int) -> Bool {

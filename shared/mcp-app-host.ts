@@ -53,7 +53,31 @@ function withCsp(html: string, domains: string[]): string {
   return `${meta}${html}`;
 }
 
-export function renderWidgetHost(record: WidgetRecord, appHtml: string, cspDomains: string[]): string {
+export type WidgetHostLayout = {
+  platform?: "desktop" | "mobile";
+  width?: number;
+  height?: number;
+};
+
+function hostLayout(options?: WidgetHostLayout): { platform: "desktop" | "mobile"; width: number; height: number } {
+  const platform = options?.platform === "mobile" ? "mobile" : "desktop";
+  const width = clampDimension(options?.width, platform === "mobile" ? 390 : 720, 200, 1200);
+  const height = clampDimension(options?.height, 480, 120, 1600);
+  return { platform, width, height };
+}
+
+function clampDimension(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (value == null || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+export function renderWidgetHost(
+  record: WidgetRecord,
+  appHtml: string,
+  cspDomains: string[],
+  options?: WidgetHostLayout,
+): string {
+  const layout = hostLayout(options);
   const payload = jsonScript({
     id: record.id,
     toolName: record.toolName,
@@ -68,7 +92,7 @@ export function renderWidgetHost(record: WidgetRecord, appHtml: string, cspDomai
 <meta http-equiv="Content-Security-Policy" content="${cspFor(cspDomains)}">
 <style>
   html, body { margin: 0; background: #fff; overflow: hidden; }
-  iframe { display: block; width: 100%; height: 480px; border: 0; background: #fff; }
+  iframe { display: block; width: 100%; height: ${layout.height}px; border: 0; background: #fff; }
 </style>
 </head>
 <body>
@@ -79,7 +103,7 @@ const iframe = document.getElementById("app");
 iframe.srcdoc = ${jsonScript(framed)};
 const host = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ubHost;
 let displayMode = "inline";
-let inlineHeight = 480;
+let inlineHeight = ${layout.height};
 // Bumped whenever the native side changes the mode on its own, so a reply
 // to an older request cannot undo it.
 let modeEpoch = 0;
@@ -144,8 +168,8 @@ window.addEventListener("message", (event) => {
         theme: "light",
         displayMode: displayMode,
         availableDisplayModes: host ? ["inline", "fullscreen"] : ["inline"],
-        platform: "desktop",
-        containerDimensions: { width: 720, height: containerHeight() },
+        platform: "${layout.platform}",
+        containerDimensions: { width: ${layout.width}, height: containerHeight() },
         toolInfo: { tool: { name: payload.toolName, inputSchema: { type: "object" } } }
       }
     });
@@ -204,11 +228,14 @@ window.addEventListener("message", (event) => {
 </html>`;
 }
 
-export async function htmlForWidget(record: WidgetRecord): Promise<{ html: string; mimeType: string }> {
+export async function htmlForWidget(
+  record: WidgetRecord,
+  options?: WidgetHostLayout,
+): Promise<{ html: string; mimeType: string }> {
   const entry = findConnectionById(record.connectionId);
   const resourceUri = record.resourceUri ?? "ui://excalidraw/mcp-app.html";
   if (!entry || entry.kind !== "mcp") {
-    return { html: renderWidgetHost(record, emptyCanvas(record), []), mimeType: "text/html; charset=utf-8" };
+    return { html: renderWidgetHost(record, emptyCanvas(record), [], options), mimeType: "text/html; charset=utf-8" };
   }
   try {
     const resource = await readMcpResource(entry.url, resourceUri);
@@ -217,11 +244,11 @@ export async function htmlForWidget(record: WidgetRecord): Promise<{ html: strin
       ...(resource.csp?.connectDomains ?? []),
     ];
     return {
-      html: renderWidgetHost(record, resource.text, domains),
+      html: renderWidgetHost(record, resource.text, domains, options),
       mimeType: "text/html; charset=utf-8",
     };
   } catch {
-    return { html: renderWidgetHost(record, emptyCanvas(record), []), mimeType: "text/html; charset=utf-8" };
+    return { html: renderWidgetHost(record, emptyCanvas(record), [], options), mimeType: "text/html; charset=utf-8" };
   }
 }
 

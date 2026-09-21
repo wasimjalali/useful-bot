@@ -1,4 +1,6 @@
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 import UsefulBotCore
 
 struct BotFace: View {
@@ -39,6 +41,8 @@ struct ChatScreen: View {
     @State private var showModel = false
     @State private var showPermission = false
     @State private var showFolder = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var showFiles = false
     @State private var pinnedToBottom = true
 
     private var bot: ShellBot? { phone.bot(botId) }
@@ -97,6 +101,16 @@ struct ChatScreen: View {
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityAddTraits(.isHeader)
+                }
+            }
+        }
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.plainText, .text]) { result in
+            guard case .success(let url) = result else { return }
+            Task {
+                let started = url.startAccessingSecurityScopedResource()
+                defer { if started { url.stopAccessingSecurityScopedResource() } }
+                if let data = try? Data(contentsOf: url) {
+                    await phone.addTextFile(data, name: url.lastPathComponent)
                 }
             }
         }
@@ -168,7 +182,9 @@ struct ChatScreen: View {
     @ViewBuilder
     private func bubble(_ row: TranscriptRow) -> some View {
         let confirming = chat?.confirmingId == row.id
-        if row.kind == .user {
+        if row.kind == .widget {
+            PhoneWidgetSlot(widgetId: row.text)
+        } else if row.kind == .user {
             HStack {
                 Spacer(minLength: 48)
                 UserBubble(text: row.text)
@@ -287,11 +303,48 @@ struct ChatScreen: View {
                 mentionList
             }
             VStack(alignment: .leading, spacing: 8) {
+                if !phone.attachments.isEmpty {
+                    ForEach(phone.attachments) { file in
+                        HStack {
+                            Text(file.name)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.ink)
+                                .lineLimit(1)
+                            Spacer()
+                            Button("Remove") { phone.removeAttachment(file.id) }
+                                .frame(minHeight: 44)
+                        }
+                    }
+                }
                 TextField(bot.map { "Message \($0.name)" } ?? "Message", text: draftBinding, axis: .vertical)
                     .lineLimit(1...6)
                     .tokenFont(DesignTokens.FontSize.chatBody, .regular)
                     .foregroundStyle(Theme.C.ink)
                 HStack(spacing: 8) {
+                    PhotosPicker(selection: $photoItem, matching: .images) {
+                        Image(systemName: "plus")
+                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                            .foregroundStyle(Theme.C.ink)
+                            .frame(width: 36, height: 36)
+                            .background(Theme.C.sunken, in: Circle())
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Add to message")
+                    .onChange(of: photoItem) { _, item in
+                        Task {
+                            if let data = try? await item?.loadTransferable(type: Data.self) {
+                                await phone.addPhoto(data)
+                            }
+                            photoItem = nil
+                        }
+                    }
+                    Button { showFiles = true } label: {
+                        Image(systemName: "doc")
+                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                            .foregroundStyle(Theme.C.ink)
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Add a text file")
                     Button { showModel = true } label: {
                         Text(phone.composer?.modelLabel.isEmpty == false ? phone.composer!.modelLabel : "Model")
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)

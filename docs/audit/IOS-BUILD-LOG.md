@@ -1427,6 +1427,35 @@ is renamed. `peekShell` is used so the lookup does not write the shell.
 elsewhere" state. Node tests for provenance, compare-and-set, and pump
 coalescing passed on Node v24.11.1.
 
+### PR-5, PR-6, PR-7, PR-8 (code on ios/pr-3, simulator deferred)
+
+- PR-5: widget host HTML takes `platform`, `width`, and `height` (S12). The
+  phone fetches that page itself and loads it in a non-persistent web view.
+  Navigation off `about:` is cancelled, including the paired host and local
+  addresses. Photos are drawn down to a JPEG under the attachment cap,
+  including HEIC through `UIImage`. Text files stop at 64 KB.
+- PR-6: phone settings cover appearance, routines, memory, usage, and
+  connectors. Adding a routine is class A. The macOS settings pane gains
+  Devices: Show pairing QR reads the Keychain item and hides it after 60
+  seconds. Rotate and revoke are named as `scripts/setup-local.mjs` flags and
+  are not launched by the app, because the installed app does not contain
+  that script and a guessed path would touch the login Keychain.
+- PR-7: appearance follows the device setting already stored for the Mac's
+  picker. Search, reduce-motion working labels, and offline send reasons were
+  already in the chat core. A full VoiceOver and Dynamic Type audit is a
+  simulator pass.
+- PR-8: this log is the hardening record that can be written without the
+  simulator. The closing PR is the simulator, screenshot, biometric, and
+  long-chat measurement pass for every row in the table above plus the ones
+  below.
+
+| Commit | Section | Cloud session |
+|--------|---------|----------------|
+| PR-5 commit | attachments and widgets | Widget shot, attachment round trip, WebKit memory note, proof that a widget navigation to the paired host is cancelled |
+| PR-6 commit | management and Devices | Settings shots, Devices QR shot with the token cropped out of any publication, routine create behind Face ID |
+| PR-7 commit | polish | XXXL and Reduce Motion shots already required above, repeated on these screens |
+| PR-8 | closing PR | Run every row in this table. Do not treat an earlier "red" as skipped. |
+
 The follow-up commit on `ios/pr-3` finishes the PR-3 list (pinned, sections,
 unassigned, hidden, rename, move, new chat, delete) and the PR-4 ask surface
 (proposal confirm and dismiss, owner questions, Safari sheet for a connect
