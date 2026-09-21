@@ -580,6 +580,9 @@ public struct StreamProjection: Equatable, Sendable {
             // A fold leaves the id it replaced pointing at the same row, so
             // this map grows with retries and not only with rows.
             + indexById.count * 48
+            // A stepped-off turn's record, its id held twice: in the map and
+            // in the eviction order.
+            + turns.count * 128
     }
     private var currentAssistantId: String?
     /// Where each message id sits in `messages`, first holder wins, the way
@@ -587,34 +590,60 @@ public struct StreamProjection: Equatable, Sendable {
     /// up, and a scan of the whole history per delta is what ten bots
     /// streaming into long chats were paying on the main actor.
     private var indexById: [String: Int] = [:]
-    /// The user row the turn in flight carried, while nothing has been said
-    /// back. Named so a failure can tell which row went down with it. Nil when
-    /// more than one user row is open at once and the answer would be a guess.
+    /// What one turn has done so far, kept apart from what the projection
+    /// shows: which row it carried, whether it got anywhere, whether it is
+    /// over. Everything its failure needs to know in order to fold a retry.
     ///
-    /// One slot, not one per `turnId`: `message.received` is not guaranteed to
-    /// name its turn, so interleaved turns are handled by refusing to claim a
-    /// row rather than by claiming the wrong one.
-    private var turnUserMessageId: String?
-    /// User rows since the last turn boundary. Two or more mean a failure
-    /// cannot be pinned on any of them, and a third must not look like a
-    /// fresh start.
-    private var openUserRows = 0
-    /// Whether the turn in flight got further than the owner's message: text,
-    /// reasoning, a tool call, a question. A turn that did none of that leaves
-    /// the session exactly as it found it. One that reached a tool call can
-    /// leave the call behind, which is the shape `historyBroken` names, so its
-    /// message is not the app's to fold away.
-    private var turnProducedWork = false
-    /// Whether the message the carrier names arrived in the turn that is
-    /// failing now. A turn refused before its own echo (`session_busy`, an
-    /// open circuit) would otherwise be read as having thrown away a message
-    /// an earlier turn had already delivered.
-    private var carrierIsThisTurn = false
+    /// One record per turn, not one slot for the turn in flight, because a
+    /// turn's boundary events do not arrive in journal order. A send's armed
+    /// stream skips its own `turn.started`, so the follower delivers it late,
+    /// mid-turn; a follower that rewinds past the bounded id cache delivers
+    /// it twice; and a failure can land after the owner has resent and the
+    /// next turn's message is on screen. A slot reset by every boundary lost
+    /// the carried row on each of those orderings, and the retry stacked.
+    private struct TurnRecord: Equatable {
+        /// The user row this turn carried, while nothing has been said back.
+        /// Nil when more than one row is open at once and the answer would be
+        /// a guess.
+        var carriedUserMessageId: String?
+        /// User rows since the turn began, or since the bot last answered or
+        /// asked. Two or more mean a failure cannot be pinned on any of them,
+        /// and a third must not look like a fresh start.
+        var openUserRows = 0
+        /// Whether the turn got further than the owner's message: text,
+        /// reasoning, a tool call, a question. A turn that did none of that
+        /// leaves the session exactly as it found it. One that reached a tool
+        /// call can leave the call behind, which is the shape `historyBroken`
+        /// names, so its message is not the app's to fold away.
+        var producedWork = false
+        /// Whether a message arrived in this turn at all. A turn refused
+        /// before its own echo (`session_busy`, an open circuit) would
+        /// otherwise be read as having thrown away a message an earlier turn
+        /// had already delivered.
+        var sawMessage = false
+        /// Whether a terminal has been applied for it. Any boundary event
+        /// arriving after that is a replay, and acts on nothing.
+        var ended = false
+
+        /// Nothing has happened in it yet.
+        var isBlank: Bool { self == TurnRecord() }
+    }
+    /// The turn in flight. Named by `currentTurnId` when the stream tags its
+    /// events; anonymous when it does not, which is how the projection read
+    /// before turn ids were looked at.
+    private var turn = TurnRecord()
     /// The turn these events say they belong to, when they say. A follower
     /// that rewinds past the bounded id cache replays an older turn's
     /// reasoning, tool calls and questions; they carry that turn's id, which
     /// is how work that is long over stops counting as this turn's.
     private var currentTurnId: String?
+    /// Every tagged turn this projection has stepped off, over or not, by id.
+    /// A late terminal finds its turn here, and a straggler start for a turn
+    /// that is over is recognised as one. Bounded, oldest forgotten first: a
+    /// straggler older than that reads as it did before, which is no worse.
+    private var turns: [String: TurnRecord] = [:]
+    private var turnOrder: [String] = []
+    private static let turnCap = 256
     /// The user row of a failed turn, while it is still the last thing in the
     /// transcript. eve rolls a failed turn's session back to what it held
     /// before the send, so that row names a message the bot does not have:
@@ -634,6 +663,101 @@ public struct StreamProjection: Equatable, Sendable {
     private mutating func appendMessage(_ message: ChatMessage) {
         if indexById[message.id] == nil { indexById[message.id] = messages.count }
         messages.append(message)
+    }
+
+    /// Step off the turn in flight. A tagged turn keeps its record, because
+    /// its end can still arrive late, or its start again; an untagged one has
+    /// nothing it could be found by.
+    private mutating func leaveCurrentTurn() {
+        if let id = currentTurnId { stash(id, turn) }
+        currentTurnId = nil
+        turn = TurnRecord()
+    }
+
+    private mutating func stash(_ id: String, _ record: TurnRecord) {
+        if turns.updateValue(record, forKey: id) == nil {
+            turnOrder.append(id)
+            if turnOrder.count > Self.turnCap {
+                turns[turnOrder.removeFirst()] = nil
+            }
+        }
+    }
+
+    private mutating func unstash(_ id: String) -> TurnRecord? {
+        guard let record = turns.removeValue(forKey: id) else { return nil }
+        turnOrder.removeAll { $0 == id }
+        return record
+    }
+
+    private enum BoundaryOwner {
+        case current
+        case steppedOff(String)
+        case ignored
+    }
+
+    /// Which turn a terminal speaks for. Untagged, it is the turn in flight,
+    /// as it always was. Tagged, it can name the turn in flight; a turn this
+    /// projection stepped off, whose end is arriving late; a turn that is
+    /// already over, which a rewind re-sends and which changes nothing; or
+    /// another turn while this one runs, the same rewind, the same nothing.
+    private mutating func boundaryOwner(of event: EveEvent) -> BoundaryOwner {
+        guard let named = event.turnId, named != currentTurnId else { return .current }
+        if let known = turns[named] {
+            if known.ended { return .ignored }
+            // Nothing has begun since the projection stepped off it, so it is
+            // the turn in flight after all; only its start went unseen.
+            if currentTurnId == nil, turn.isBlank, let stepped = unstash(named) {
+                turn = stepped
+                currentTurnId = named
+                return .current
+            }
+            return .steppedOff(named)
+        }
+        if currentTurnId != nil { return .ignored }
+        // A turn named only by its end: the stream started mid-way, or its
+        // message came untagged. What the record holds so far is its.
+        currentTurnId = named
+        return .current
+    }
+
+    /// Whether an event is the turn getting further than the owner's message,
+    /// the same reading the turn in flight gets in `apply`.
+    private static func isWork(_ event: EveEvent) -> Bool {
+        switch event.type {
+        case "reasoning.appended", "reasoning.completed", "actions.requested",
+             "action.result", "action.partial", "input.requested":
+            return true
+        case "message.appended":
+            return !(event.messageDelta ?? "").isEmpty
+        case "message.completed":
+            return !(event.message ?? "").isEmpty
+        default:
+            return false
+        }
+    }
+
+    /// A turn failed, and eve stores the session as it stood before its
+    /// message: the owner's row names something the bot does not have. Only
+    /// a turn that got no further than that message qualifies, which is the
+    /// shape that stacked copies. One that reached text, reasoning or a tool
+    /// call may have left work behind, and its row keeps that work under it.
+    ///
+    /// When the failure is on time the row is still the last thing on
+    /// screen, and the same text arriving next rewrites it. When it is late
+    /// the owner has resent already and the retry sits right under the row;
+    /// then the row goes now, and its id keeps pointing at the retry, the way
+    /// a fold leaves it, so a redelivery of the failed message still lands
+    /// nowhere.
+    private mutating func discardMessage(of record: TurnRecord) {
+        guard record.sawMessage, !record.producedWork,
+              let carried = record.carriedUserMessageId,
+              let index = indexById[carried], messages[index].id == carried else { return }
+        if index == messages.count - 1 {
+            discardedUserMessageId = carried
+        } else if messages[index + 1].role == .user, messages[index + 1].text == messages[index].text {
+            messages.remove(at: index)
+            for (id, held) in indexById where held > index { indexById[id] = held - 1 }
+        }
     }
 
     /// Give the last row the echo's identity without moving it, so a message
@@ -667,15 +791,13 @@ public struct StreamProjection: Equatable, Sendable {
         // the card stayed up, greyed out, until the reply finished.
         questions = []
         replayingMessage = false
-        turnProducedWork = false
-        openUserRows = 0
-        carrierIsThisTurn = false
-        currentTurnId = nil
-        // A send that was stopped, or whose POST never landed, leaves a claim
-        // on a row this turn did not put there. (The row itself stays, and an
-        // immediate resend of the same text still folds into it through the
-        // optimistic branch below, as it always has.)
-        turnUserMessageId = nil
+        // The turn that was in flight is not this one, so its claim on a row
+        // is not this turn's either. Its record is kept rather than dropped:
+        // its failure can still arrive after this send's message, and has to
+        // find the row it carried. (The row itself stays, and an immediate
+        // resend of the same text still folds into it through the optimistic
+        // branch below, as it always has.)
+        leaveCurrentTurn()
     }
 
     /// Dedupe identity with a bounded FIFO: the oldest remembered id is
@@ -704,19 +826,47 @@ public struct StreamProjection: Equatable, Sendable {
         // stamped from the client clock, while a replay of old history is not
         // (the durable events already carry their own times).
         let stamp = TranscriptBlocks.date(fromISO8601: event.metaAt) ?? (live ? Date() : nil)
+        // Work for a turn this projection has stepped off (its send's stream
+        // dropped, and the follower is bringing the rest of it in under the
+        // next turn's message) is still that turn's work. Its failure, when
+        // it comes, then keeps its row rather than folding it.
+        if let named = event.turnId, named != currentTurnId,
+           var stepped = turns[named], !stepped.ended, Self.isWork(event) {
+            stepped.producedWork = true
+            turns[named] = stepped
+        }
         switch event.type {
         case "turn.started":
-            // Another turn's start, while this one is in flight, is a
-            // follower that rewound past the id cache. Taken for real it made
-            // that turn the current one, and the rest of this turn's reply was
-            // gated out as somebody else's. eve runs one turn at a time, and
-            // the next real one names itself in its message anyway.
-            guard belongsToThisTurn(event) else { break }
+            if let named = event.turnId {
+                // The start of the turn already in flight, arriving late (a
+                // send's armed stream skips it and the follower brings it
+                // after the echo) or again (a rewind). The turn began when
+                // its message did; resetting it here threw away the row it
+                // carried, and its failure then had nothing to fold.
+                if named == currentTurnId { break }
+                if let known = turns[named] {
+                    // A turn that is over does not start again: taken for
+                    // real, a rewound start of the turn before wiped the
+                    // banner of the one that had actually failed. A turn
+                    // stepped off before its start arrived is still running
+                    // only if nothing else has begun since.
+                    guard !known.ended, currentTurnId == nil, turn.isBlank else { break }
+                    turn = unstash(named) ?? TurnRecord()
+                } else {
+                    // Another turn's start, while this one is in flight, is
+                    // a follower that rewound past the id cache. Taken for
+                    // real it made that turn the current one, and the rest
+                    // of this turn's reply was gated out as somebody else's.
+                    // eve runs one turn at a time, and the next real one
+                    // names itself in its message anyway.
+                    guard currentTurnId == nil else { break }
+                    turn = TurnRecord()
+                }
+                currentTurnId = named
+            } else {
+                leaveCurrentTurn()
+            }
             replayingMessage = false
-            turnProducedWork = false
-            openUserRows = 0
-            carrierIsThisTurn = false
-            currentTurnId = event.turnId
             pending = true
             failed = false
             failure = nil
@@ -735,7 +885,18 @@ public struct StreamProjection: Equatable, Sendable {
             // stream at its own `message.received`, so the `turn.started`
             // ahead of it is never applied and the id would stay unknown for
             // the whole live turn.
-            if let named = event.turnId { currentTurnId = named }
+            if let named = event.turnId, named != currentTurnId {
+                // eve runs one turn at a time, so a message for another turn
+                // means the one in flight is over and its end went unseen;
+                // its record waits for that end. From no turn at all, what
+                // the record holds so far is this turn's: a send claims its
+                // optimistic row before the echo names the turn. A record
+                // stepped off earlier under this name is taken back only
+                // when there is nothing of this turn's to lose.
+                if currentTurnId != nil { leaveCurrentTurn() }
+                if let stepped = unstash(named), turn.isBlank { turn = stepped }
+                currentTurnId = named
+            }
             let text = EveStream.stripThreadPrefix(event.message ?? "")
             // The last turn failed before the bot said anything, and eve threw
             // the message away with it. The same text arriving again is that
@@ -751,19 +912,19 @@ public struct StreamProjection: Equatable, Sendable {
                 // does carry one folds into it rather than beside it.
                 if let id = event.id {
                     adoptLastUserRow(id: id, text: text, at: stamp ?? last.at)
-                    turnUserMessageId = id
+                    turn.carriedUserMessageId = id
                     discardedUserMessageId = nil
                 } else {
-                    turnUserMessageId = last.id
+                    turn.carriedUserMessageId = last.id
                 }
                 // The row is this turn's again, and nothing else is open.
-                openUserRows = 1
-                carrierIsThisTurn = true
+                turn.openUserRows = 1
+                turn.sawMessage = true
                 // This attempt supersedes the one that failed, the way
                 // `turn.started` supersedes it on a stream that sends one.
                 failed = false
                 failure = nil
-                turnProducedWork = false
+                turn.producedWork = false
                 pending = true
                 activity = .thinking
                 return
@@ -776,10 +937,10 @@ public struct StreamProjection: Equatable, Sendable {
                 if let id = event.id {
                     // Only re-point a claim that named this row: a nil slot
                     // means two rows are open and neither may be claimed.
-                    if turnUserMessageId == last.id { turnUserMessageId = id }
+                    if turn.carriedUserMessageId == last.id { turn.carriedUserMessageId = id }
                     adoptLastUserRow(id: id, text: text, at: stamp ?? last.at)
                 }
-                carrierIsThisTurn = true
+                turn.sawMessage = true
                 pending = true
                 activity = .thinking
                 return
@@ -800,10 +961,10 @@ public struct StreamProjection: Equatable, Sendable {
             // More than one user row open at once, which a queued send or a
             // teammate writing into this chat can do, and a failure cannot be
             // pinned on any of them: claim none rather than the wrong one.
-            openUserRows += 1
-            turnUserMessageId = openUserRows == 1 ? userId : nil
-            carrierIsThisTurn = true
-            turnProducedWork = false
+            turn.openUserRows += 1
+            turn.carriedUserMessageId = turn.openUserRows == 1 ? userId : nil
+            turn.sawMessage = true
+            turn.producedWork = false
             // A different message is a new question: the failed row stays put
             // as the record of an attempt, and nothing folds into it again.
             discardedUserMessageId = nil
@@ -812,7 +973,7 @@ public struct StreamProjection: Equatable, Sendable {
         case "reasoning.appended", "reasoning.completed":
             guard belongsToThisTurn(event) else { break }
             activity = .thinking
-            turnProducedWork = true
+            turn.producedWork = true
         case "actions.requested":
             // An older turn's call, replayed by a follower that rewound past
             // the bounded id cache, is not what this turn is doing and not a
@@ -820,7 +981,7 @@ public struct StreamProjection: Equatable, Sendable {
             // putting that turn's tool name in the working row and its widget
             // on screen.
             guard belongsToThisTurn(event) else { break }
-            turnProducedWork = true
+            turn.producedWork = true
             if let name = EveStream.requestedToolName(event.data) {
                 activity = .tool(name, detail: EveStream.requestedToolDetail(event.data))
             }
@@ -864,7 +1025,7 @@ public struct StreamProjection: Equatable, Sendable {
                 // still being read past. Whatever the reader sees, the turn
                 // did start answering, so its message is not the app's to
                 // fold away.
-                turnProducedWork = true
+                turn.producedWork = true
                 return
             }
             // Text is arriving: the row is about to be replaced by the reply
@@ -873,8 +1034,8 @@ public struct StreamProjection: Equatable, Sendable {
             // returned above, and letting it through would make an untouched
             // turn look like one that got somewhere.
             if belongsToThisTurn(event) {
-                turnProducedWork = true
-                openUserRows = 0
+                turn.producedWork = true
+                turn.openUserRows = 0
             }
             activity = .working
             if let current = currentAssistantId,
@@ -911,8 +1072,8 @@ public struct StreamProjection: Equatable, Sendable {
                     return
                 }
                 if belongsToThisTurn(event) {
-                    turnProducedWork = true
-                    openUserRows = 0
+                    turn.producedWork = true
+                    turn.openUserRows = 0
                 }
                 if let current = currentAssistantId,
                    let index = indexById[current] {
@@ -933,44 +1094,49 @@ public struct StreamProjection: Equatable, Sendable {
             // stale bubble.
             currentAssistantId = nil
         case "turn.failed", "session.failed":
-            // Another turn's failure, replayed mid-turn, neither ends this one
-            // nor bannered it, and must not wipe the claim this turn's own
-            // failure needs to fold its retry.
-            guard belongsToThisTurn(event) else { break }
-            // eve retires a session that failed, and the next message opens a
-            // fresh one with none of this history. A question card left up
-            // would send its option label into that empty session, where it
-            // answers nothing. A failed turn alone keeps the card: the session
-            // lives on, so the label still lands beside the question.
-            if event.type == "session.failed" { questions = [] }
-            pending = false
-            failed = true
-            failure = TurnFailure(
-                code: event.data?["code"]?.stringValue ?? event.type,
-                detail: event.message ?? ""
-            )
-            currentAssistantId = nil
-            // The owner's message went down with the turn: eve stores the
-            // session as it stood before the send. Only a turn that got no
-            // further than that message qualifies, which is the shape that
-            // stacked copies. One that reached text, reasoning or a tool call
-            // may have left work behind, and its row keeps that work under it.
-            if carrierIsThisTurn, !turnProducedWork,
-               let carried = turnUserMessageId, messages.last?.id == carried {
-                discardedUserMessageId = carried
+            switch boundaryOwner(of: event) {
+            case .ignored:
+                // Another turn's failure, replayed mid-turn, neither ends
+                // this one nor banners it, and must not wipe the claim this
+                // turn's own failure needs to fold its retry.
+                break
+            case .steppedOff(let id):
+                // The failure of a turn the owner has already resent past:
+                // its stream dropped, eve failed it server-side, and the
+                // follower brought the failure only after the next turn's
+                // message. That next turn is the live one, so no banner. But
+                // eve still threw this turn's message away, and its row goes.
+                guard var stepped = turns[id] else { break }
+                stepped.ended = true
+                turns[id] = stepped
+                discardMessage(of: stepped)
+            case .current:
+                // eve retires a session that failed, and the next message
+                // opens a fresh one with none of this history. A question
+                // card left up would send its option label into that empty
+                // session, where it answers nothing. A failed turn alone
+                // keeps the card: the session lives on, so the label still
+                // lands beside the question.
+                if event.type == "session.failed" { questions = [] }
+                pending = false
+                failed = true
+                failure = TurnFailure(
+                    code: event.data?["code"]?.stringValue ?? event.type,
+                    detail: event.message ?? ""
+                )
+                currentAssistantId = nil
+                discardMessage(of: turn)
+                // A turn that ended takes its id with it. Left behind, it
+                // makes the next turn's work look like somebody else's and
+                // stops it counting, which is the direction that folds a
+                // turn that acted.
+                turn.ended = true
+                leaveCurrentTurn()
             }
-            turnUserMessageId = nil
-            turnProducedWork = false
-            openUserRows = 0
-            carrierIsThisTurn = false
-            // A turn that ended takes its id with it. Left behind, it makes
-            // the next turn's work look like somebody else's and stops it
-            // counting, which is the direction that folds a turn that acted.
-            currentTurnId = nil
         case "action.result", "action.partial":
             // Another turn's results are not this turn's chips.
             guard belongsToThisTurn(event) else { break }
-            turnProducedWork = true
+            turn.producedWork = true
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
             if event.type == "action.result" { activity = .thinking }
@@ -980,8 +1146,8 @@ public struct StreamProjection: Equatable, Sendable {
             guard belongsToThisTurn(event) else { break }
             // A question ends the turn: the bot is waiting on the owner, not
             // working. So it closes the rows above it, the way an answer does.
-            turnProducedWork = true
-            openUserRows = 0
+            turn.producedWork = true
+            turn.openUserRows = 0
             for question in EveStream.parseQuestions(event.data) {
                 if let index = questions.firstIndex(where: { $0.id == question.id }) {
                     questions[index] = question
@@ -994,24 +1160,34 @@ public struct StreamProjection: Equatable, Sendable {
                 .compactMap { $0["requestId"]?.stringValue })
             questions.removeAll { resolved.contains($0.id) }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
-            // The same for another turn's end: this turn is still running.
-            guard belongsToThisTurn(event) else { break }
-            // A turn that carried a message and ended without failing kept
-            // it, so a row still armed from an earlier failure (a fold whose
-            // echo had no id to adopt) names a message the session now holds.
-            if carrierIsThisTurn, event.type != "session.waiting" { discardedUserMessageId = nil }
-            pending = false
-            currentAssistantId = nil
-            // The turn is over without failing, so its message is the
-            // session's to keep. `discardedUserMessageId` is not cleared here:
-            // `session.waiting` follows a failure too, and the fold already
-            // requires the discarded row to still be the last one, which any
-            // answer pushes it out of.
-            turnUserMessageId = nil
-            turnProducedWork = false
-            openUserRows = 0
-            carrierIsThisTurn = false
-            currentTurnId = nil
+            switch boundaryOwner(of: event) {
+            case .ignored:
+                // The same for another turn's end: this turn is still running.
+                break
+            case .steppedOff(let id):
+                // A stepped-off turn ending without failing kept its message,
+                // so a marker still on the row it carried names a message the
+                // session holds.
+                guard var stepped = turns[id] else { break }
+                stepped.ended = true
+                turns[id] = stepped
+                if let carried = stepped.carriedUserMessageId, discardedUserMessageId == carried {
+                    discardedUserMessageId = nil
+                }
+            case .current:
+                // A turn that carried a message and ended without failing
+                // kept it, so a row still armed from an earlier failure (a
+                // fold whose echo had no id to adopt) names a message the
+                // session now holds. Not on `session.waiting`: it follows a
+                // failure too, and the fold already requires the discarded
+                // row to still be the last one, which any answer pushes it
+                // out of.
+                if turn.sawMessage, event.type != "session.waiting" { discardedUserMessageId = nil }
+                pending = false
+                currentAssistantId = nil
+                turn.ended = true
+                leaveCurrentTurn()
+            }
         default:
             break
         }
