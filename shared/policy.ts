@@ -116,13 +116,6 @@ export const MOUNTED_TOOL_BUDGET = 60;
  */
 export const MOUNTED_TOOL_BYTE_BUDGET = 40 * 1024;
 /**
- * A connection whose own allow-list is this short stays mounted for every
- * turn: two tools cost nothing against the budget, and making the bot go
- * looking for them first would put a round trip in front of every drawing.
- * Anything larger waits to be asked for.
- */
-export const EAGER_TOOL_ALLOWANCE = 8;
-/**
  * Tools one session may pick up on demand. Past this the model is told to
  * work with what it has rather than quietly walking the turn into the wall.
  */

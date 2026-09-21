@@ -174,12 +174,13 @@ exports it to excalidraw.com in the browser. The app's own tool calls go
 through `POST /api/connections/widget/[id]/call`, limited to tools the server
 marks for its app. The web UI does not port this card.
 
-A server's tools are not all mounted for every turn. An OpenAPI spec is, and
-so is an MCP server the owner pinned to a handful of tools (Excalidraw's two,
-so a drawing needs no lookup first). Anything larger waits: `find_tools`
+No MCP server's tools are mounted for every turn. An OpenAPI connection is,
+because eve owns spec parsing and there is no other way to reach one. Every
+MCP server waits, Excalidraw included: `find_tools`
 searches the cached listings in `~/.useful-bot/connection-tools.json` and
 records what it handed over, and a `step.started` resolver mounts those under
 `<connectionId>__<toolName>` for the next model call, inside the same turn.
+So a drawing costs one lookup first, once per chat.
 A tool it mounts is gated by the posture alone, not by the tool's name: Read
 only refuses, Auto asks, Full access runs. A Composio slug is Composio's to
 write, so reading a verb off it says something; an MCP server writes its own

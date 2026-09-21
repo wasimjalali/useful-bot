@@ -164,3 +164,24 @@ export function rawSchemaHint(raw: Record<string, unknown> | null): string {
   if (text.length > 2000) return "";
   return `\nArguments (JSON Schema): ${text}`;
 }
+
+/**
+ * What this tool's `parameters` weigh on the wire, measured by asking zod to
+ * emit them. The server's own JSON is not that number: zod re-emits, adding
+ * a `$schema` key, an `additionalProperties` per object and an `anyOf` for
+ * every union, which came to about twice the raw bytes on an ordinary
+ * schema. A passthrough tool carries the raw schema in its description
+ * instead, so that is charged in its place.
+ */
+export function mountedSchemaBytes(raw: Record<string, unknown> | null): number {
+  const { schema, passthrough } = toolInputSchema(raw);
+  let bytes = 0;
+  try {
+    bytes = Buffer.byteLength(JSON.stringify(z.toJSONSchema(schema, { io: "input" })), "utf8");
+  } catch {
+    // An emission this side cannot take is one it cannot weigh either; the
+    // raw schema doubled is the nearest honest figure.
+    bytes = raw ? Buffer.byteLength(JSON.stringify(raw), "utf8") * 2 : 64;
+  }
+  return bytes + (passthrough ? Buffer.byteLength(rawSchemaHint(raw), "utf8") : 0);
+}

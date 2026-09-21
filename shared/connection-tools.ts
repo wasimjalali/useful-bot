@@ -12,8 +12,7 @@ import {
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
 import { listMcpTools, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
 import { specWireBytes, type SpecSize } from "./tool-wire-size.ts";
-import { EAGER_TOOL_ALLOWANCE, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
-import { MAX_TOOL_INPUT_SCHEMA_BYTES } from "./mcp-http.ts";
+import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
 /**
  * Which connections are mounted for every turn, and how a bot finds the tools
@@ -37,9 +36,23 @@ import { MAX_TOOL_INPUT_SCHEMA_BYTES } from "./mcp-http.ts";
  * be asked for by name.
  */
 
+/**
+ * Only an OpenAPI connection is mounted for every turn, and only because eve
+ * owns spec parsing and there is no other way to reach one.
+ *
+ * A pinned MCP server used to be mounted too, on the grounds that two tools
+ * cost nothing and a bot should not have to look them up before it can draw.
+ * There was no honest number to charge it. eve mounts an MCP connection by
+ * asking the server itself and passes its names, descriptions and schemas
+ * through with no cap, so nothing measured here bounds what goes on the wire:
+ * a server pinned to eight tools could put a hundred kilobytes in front of
+ * the model and be charged thirty-seven. A tool taken on demand is built
+ * here, from this index, so its size is known before it is mounted. That is
+ * the whole reason to prefer it, and it applies to two tools as much as two
+ * hundred.
+ */
 export function isEagerConnection(entry: ConnectionEntry): boolean {
-  if (entry.kind === "openapi") return true;
-  return entry.toolsAllow !== null && entry.toolsAllow.length <= EAGER_TOOL_ALLOWANCE;
+  return entry.kind === "openapi";
 }
 
 /**
@@ -92,11 +105,7 @@ export function onDemandConnections(path?: string): ConnectionEntry[] {
  * budget exists to keep out of reach. `ensureMeasured` fills the gap in.
  */
 export function mountedToolCount(entry: ConnectionEntry, path?: string): number | null {
-  if (entry.toolsAllow) return entry.toolsAllow.length;
-  const index = connectionIndex(entry.id, path);
-  if (index?.operations !== undefined) return index.operations;
-  if (index && !index.failed) return index.tools.length;
-  return null;
+  return connectionIndex(entry.id, path)?.operations ?? null;
 }
 
 /**
@@ -109,9 +118,6 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
     // A pinned MCP server nobody has listed is being charged a ceiling. One
     // listing replaces that with what it really weighs, and the listing is
     // what `find_tools` would have fetched anyway.
-    // A pinned MCP server is charged its ceiling and never a listing, so
-    // there is nothing here to measure: listing it would only have been a
-    // number nothing reads, fetched at every turn boundary.
     if (entry.kind !== "openapi") continue;
     if (!indexIsStale(connectionIndex(entry.id, path))
       && mountedToolCount(entry, path) !== null
@@ -153,30 +159,15 @@ async function headersFor(entry: ConnectionEntry): Promise<Record<string, string
  */
 export function mountedToolBytes(entry: ConnectionEntry, path?: string): number | null {
   const index = connectionIndex(entry.id, path);
-  if (entry.kind === "openapi") {
-    if (index?.schemaBytes === undefined || index.operations === undefined) return null;
-    // An index written before the operation text was measured has no figure
-    // for it, and a missing figure is not a zero.
-    if (index.textBytes === undefined) return null;
-    return specWireBytes({
-      operations: index.operations,
-      schemaBytes: index.schemaBytes,
-      textBytes: index.textBytes,
-    });
-  }
-  // A pinned server is charged the most its allow-list could weigh, always,
-  // and never what a listing said.
-  //
-  // eve mounts this connection by asking the server itself, which is a
-  // second fetch of the same endpoint: what was listed here is not what gets
-  // mounted there. A server that answers an empty listing to this side and a
-  // full one to eve would be charged nothing and mount everything, and a
-  // listing taken an hour ago says nothing about the roster eve will be
-  // handed on the next turn. The allow-list bounds how many tools eve may
-  // take; this is what each of them may cost.
-  const allowed = entry.toolsAllow?.length;
-  if (allowed === undefined) return null;
-  return allowed * (76 + 80 + 400 + MAX_TOOL_INPUT_SCHEMA_BYTES);
+  if (index?.schemaBytes === undefined || index.operations === undefined) return null;
+  // An index written before the operation text was measured has no figure
+  // for it, and a missing figure is not a zero.
+  if (index.textBytes === undefined) return null;
+  return specWireBytes({
+    operations: index.operations,
+    schemaBytes: index.schemaBytes,
+    textBytes: index.textBytes,
+  });
 }
 
 export type ToolHit = {

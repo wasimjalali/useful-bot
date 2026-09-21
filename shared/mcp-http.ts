@@ -1,5 +1,6 @@
 import { assertConnectionUrl, assertResolvedPublic } from "./connection-url.ts";
-import { measureOpenApiSpec, schemaBytesOf, type SpecSize } from "./tool-wire-size.ts";
+import { measureOpenApiSpec, type SpecSize } from "./tool-wire-size.ts";
+import { mountedSchemaBytes } from "./json-schema-zod.ts";
 
 /**
  * Tiny Streamable HTTP JSON-RPC client for listing tools and reading UI
@@ -199,7 +200,7 @@ export async function listMcpTools(
       appCallable: toolAppCallable(row._meta),
       resourceUri: toolResourceUri(row._meta),
       inputSchema: toolInputSchema(row.inputSchema),
-      inputSchemaBytes: schemaBytesOf(asRecord(row.inputSchema)),
+      inputSchemaBytes: mountedSchemaBytes(toolInputSchema(row.inputSchema)),
       descriptionBytes: typeof row.description === "string"
         ? Buffer.byteLength(row.description, "utf8")
         : 0,

@@ -35,7 +35,12 @@ export type IndexedTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown> | null;
-  /** The server's schema in bytes, kept even when the schema itself was not. */
+  /**
+   * What this tool's arguments weigh on the wire: zod's emission of the
+   * converted schema, or the raw schema written into the description when it
+   * could not be converted. Not the server's own JSON, which zod re-emits
+   * about twice as large. Kept even when the schema itself was not.
+   */
   inputSchemaBytes: number;
   /** And its description, before this side clipped it to four hundred. */
   descriptionBytes: number;
@@ -79,6 +84,13 @@ const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 export const INDEX_TTL_MS = 6 * 60 * 60 * 1000;
 /** Sessions kept. The oldest go first; a dropped one just re-asks. */
 const MAX_SESSIONS = 100;
+/**
+ * A tool this app can actually mount. The charset is the upstream's, not a
+ * guess: a name with a dot or a space in it is refused by the model provider
+ * with the same non-retryable error the budgets exist to avoid, so a server
+ * that namespaces its tools that way has them dropped here rather than
+ * mounted into a turn that cannot run.
+ */
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,80}$/;
 
 function sleep(ms: number): void {

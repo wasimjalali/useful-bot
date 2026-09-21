@@ -66,7 +66,7 @@ test.afterEach(() => {
   setConnectionLookup(null);
 });
 
-test("a big server waits to be asked for; a pinned one and an OpenAPI spec do not", () => {
+test("every MCP server waits to be asked for; an OpenAPI spec does not", () => {
   paths();
   const big = upsertConnection(entry()).entry;
   const pinned = upsertConnection(entry({
@@ -81,97 +81,18 @@ test("a big server waits to be asked for; a pinned one and an OpenAPI spec do no
     name: "Weather",
     url: "https://api.example.com/openapi.json",
   })).entry;
+  // Nothing MCP is mounted for every turn, however short its allow-list.
   assert.equal(isEagerConnection(big), false);
-  assert.equal(isEagerConnection(pinned), true);
+  assert.equal(isEagerConnection(pinned), false);
   assert.equal(isEagerConnection(spec), true);
-  // A spec nobody has counted is not mounted: eve builds its tools from the
-  // spec and a size nobody knows is not a small one.
-  assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
+  // And a spec nobody has counted is not mounted either: eve builds its
+  // tools from it, and a size nobody knows is not a small one.
+  assert.deepEqual(eagerConnections().map((item) => item.id), []);
   putConnectionOperations("weather", { operations: 12, schemaBytes: 900, textBytes: 0 });
-  assert.deepEqual(eagerConnections().map((item) => item.id).sort(), ["excalidraw", "weather"]);
-  assert.deepEqual(onDemandConnections().map((item) => item.id), ["example"]);
-  // An allow-list is exact; a listing is exact; a row nobody has measured
-  // gets a modest figure rather than the worst case, because unmounting a
-  // working connection over a missing measurement is the worse mistake.
-  assert.equal(mountedToolCount(pinned), 2);
-  assert.equal(mountedToolCount(big), null);
-  putConnectionIndex("example", [{ name: "one", description: "", inputSchema: null, inputSchemaBytes: 2, descriptionBytes: 0 }]);
-  assert.equal(mountedToolCount(big), 1);
-  // eve builds an OpenAPI connection's tools from the spec and never hands
-  // them back, so the count taken at connect time is what weighs it.
-  assert.equal(mountedToolCount(spec), 12);
-});
-
-test("a spec that predates the count is measured once and mountable after", async () => {
-  paths();
-  const spec = upsertConnection(entry({
-    id: "weather",
-    kind: "openapi",
-    name: "Weather",
-    url: "https://api.example.com/openapi.json",
-  })).entry;
-  assert.equal(mountedToolCount(spec), null);
-  assert.deepEqual(eagerConnections().map((item) => item.id), []);
-  let fetched = 0;
-  setMcpFetch((async () => {
-    fetched += 1;
-    return new Response(JSON.stringify({ paths: { "/a": { get: {} }, "/b": { get: {}, post: {} } } }), {
-      headers: { "content-type": "application/json" },
-    });
-  }) as typeof fetch);
-  await ensureMeasured([spec]);
-  assert.equal(mountedToolCount(spec), 3);
   assert.deepEqual(eagerConnections().map((item) => item.id), ["weather"]);
-  // Measured once, not on every turn.
-  await ensureMeasured([spec]);
-  assert.equal(fetched, 1);
-});
-
-test("a spec that cannot be read is not refetched at every turn boundary", async () => {
-  paths();
-  const spec = upsertConnection(entry({
-    id: "weather",
-    kind: "openapi",
-    name: "Weather",
-    url: "https://api.example.com/openapi.json",
-  })).entry;
-  let fetched = 0;
-  setMcpFetch((async () => {
-    fetched += 1;
-    return new Response("nope", { status: 502 });
-  }) as typeof fetch);
-  await ensureMeasured([spec]);
-  await ensureMeasured([spec]);
-  await ensureMeasured([spec]);
-  // Eight seconds at every turn boundary, forever, for a row that stays
-  // unmounted either way, is the thing the attempt record prevents.
-  assert.equal(fetched, 1);
-  assert.equal(mountedToolCount(spec), null);
-  assert.deepEqual(eagerConnections().map((item) => item.id), []);
-});
-
-test("a spec behind a key is counted with the key", async () => {
-  paths();
-  setKeychainDriver(memoryKeychain());
-  keychainSet(connectionSecretService("weather"), "sk_spec_secret_value");
-  const spec = upsertConnection(entry({
-    id: "weather",
-    kind: "openapi",
-    name: "Weather",
-    url: "https://api.example.com/openapi.json",
-    authKind: "bearer",
-  })).entry;
-  let seen = "";
-  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
-    seen = new Headers(init?.headers).get("authorization") ?? "";
-    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
-      headers: { "content-type": "application/json" },
-    });
-  }) as typeof fetch);
-  await ensureMeasured([spec]);
-  assert.equal(seen, "Bearer sk_spec_secret_value");
-  assert.equal(mountedToolCount(spec), 1);
-  setKeychainDriver(null);
+  assert.deepEqual(onDemandConnections().map((item) => item.id).sort(), ["example", "excalidraw"]);
+  assert.equal(mountedToolCount(spec), 12);
+  assert.equal(mountedToolCount(pinned), null);
 });
 
 test("the mounted set is clamped at the budget, whatever is in the store", () => {
@@ -259,12 +180,23 @@ test("find_tools' search ranks a name match over prose and reads the cached list
   assert.deepEqual(schema, { type: "object", properties: { text: { type: "string" } }, required: ["text"] });
 });
 
-test("an allow-list still applies to what a search may hand over", async () => {
+test("an allow-list narrows what a search may hand over", async () => {
   paths();
   upsertConnection(entry({ toolsAllow: ["read_me"] }));
-  // Pinned, so it is mounted for every turn and never searched.
-  assert.deepEqual(onDemandConnections().map((item) => item.id), []);
-  assert.deepEqual(await searchConnectionTools("read", 3), []);
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [
+      { name: "read_me", description: "How to use this server" },
+      { name: "delete_everything", description: "Not on the owner's list" },
+    ] } }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch);
+  const hits = await searchConnectionTools("read me", 5);
+  assert.deepEqual(hits.map((hit) => hit.tool), ["read_me"]);
 });
 
 test("a session picks up tools up to its limit and is told when it is holding them", () => {
@@ -494,7 +426,7 @@ test("an operation's own words are weighed, not guessed at", () => {
   assert.ok(specWireBytes(documented!) > specWireBytes(bare!) + 1_500);
 });
 
-test("a pinned server is charged its ceiling, whatever it answers", async () => {
+test("an MCP server costs the mounted budget nothing at all", async () => {
   paths();
   const pinned = upsertConnection(entry({
     id: "excalidraw",
@@ -502,29 +434,19 @@ test("a pinned server is charged its ceiling, whatever it answers", async () => 
     url: "https://mcp.excalidraw.com/mcp",
     toolsAllow: ["read_me", "create_view"],
   })).entry;
-  const ceiling = mountedToolBytes(pinned);
-  assert.ok((ceiling ?? 0) > 8_000, `charged ${ceiling}`);
-
-  // eve mounts this connection by asking the server itself, so a listing
-  // taken here says nothing about the roster eve will be handed. A server
-  // that answers empty to this side and full to eve would otherwise be
-  // charged nothing and mount everything.
+  // However short its allow-list. eve would ask the server itself and pass
+  // its schemas through uncapped, so there is no number this side could
+  // charge; what a session picks up is weighed as it picks it up instead.
+  assert.equal(isEagerConnection(pinned), false);
+  assert.equal(mountedToolBytes(pinned), null);
+  assert.deepEqual(eagerConnections().map((item) => item.id), []);
+  // And nothing lists it at a turn boundary, because nothing mounts it.
   let listed = 0;
-  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+  setMcpFetch((async () => {
     listed += 1;
-    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
-    const result = body.method === "initialize" ? {} : { tools: [] };
-    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), {
-      headers: { "content-type": "application/json" },
-    });
+    return new Response("no", { status: 503 });
   }) as typeof fetch);
-  putConnectionIndex("excalidraw", []);
-  assert.equal(mountedToolBytes(pinned), ceiling);
-  assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
-
-  // And nothing lists it at a turn boundary, because nothing reads the answer.
   await ensureMeasured([pinned]);
   await ensureMeasured([pinned]);
   assert.equal(listed, 0);
 });
-

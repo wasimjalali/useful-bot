@@ -19,7 +19,7 @@ import {
 import { connectionSecretService, keychainSet } from "./keychain.ts";
 import { listHandoffs, queueHandoff } from "./handoffs.ts";
 import { wrapUntrusted } from "./untrusted.ts";
-import { listMcpTools, MAX_TOOL_INPUT_SCHEMA_BYTES, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
+import { listMcpTools, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
 import {
   completeMcpOAuth,
   dropOauthPending,
@@ -204,14 +204,17 @@ async function assertToolBudget(
     adding = size.operations;
     // The same weighing the clamp uses, so the two cannot disagree.
     addingBytes = specWireBytes(size);
-    // Kept, so the mount-time clamp weighs the same spec the same way and the
-    // connection does not have to be fetched again on the next turn.
-    try { putConnectionOperations(entry.id, size); } catch { /* a cache */ }
+    // Not written here. This runs before the row exists, and two cards for
+    // same-named servers are handed the same id before either connects, so a
+    // measurement stamped now can land on another connection's index and sit
+    // there for the six hours before anything re-measures it. `probeToolCount`
+    // writes it afterwards, under the id the store actually gave this row.
   } else {
-    adding = entry.toolsAllow?.length ?? 0;
-    // The listing is not in the index yet on a first connect, so this is the
-    // one place the ceiling is the honest answer.
-    addingBytes = mountedToolBytes(entry) ?? adding * MAX_TOOL_INPUT_SCHEMA_BYTES;
+    // An MCP server is never mounted for every turn, so it costs the mounted
+    // budget nothing. What a session picks up from it is weighed as it picks
+    // it up, against its own budget.
+    adding = 0;
+    addingBytes = 0;
   }
   if (mounted + adding > MOUNTED_TOOL_BUDGET || mountedBytes + addingBytes > MOUNTED_TOOL_BYTE_BUDGET) {
     throw new Error("tool_budget_exceeded");

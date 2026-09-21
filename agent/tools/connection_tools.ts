@@ -174,6 +174,12 @@ export default defineDynamic({
             if (gate === "ask" && argsText.length > CARD_ARGS_MAX) {
               return { status: "blocked", error: "arguments_too_long_for_approval", max: CARD_ARGS_MAX };
             }
+            // Bounded even when no card is shown: the record is written
+            // either way, and a run-gated call with a megabyte of arguments
+            // would be rewritten into the store on every later approval.
+            const previewArgs = argsText.length > CARD_ARGS_MAX
+              ? `${argsText.slice(0, CARD_ARGS_MAX)}…`
+              : argsText;
             const hash = actionSha256({
               tool: "connection",
               canonicalArgs: JSON.stringify({ connection: connectionId, tool: toolName, arguments: args }),
@@ -188,7 +194,7 @@ export default defineDynamic({
               tool: "connection",
               actionSha256: hash,
               preview: `${connectionName} · ${toolName}${risk === "destructive" ? " (destructive)" : ""}`
-                + (argsText === "{}" ? "" : `\n${argsText}`),
+                + (previewArgs === "{}" ? "" : `\n${previewArgs}`),
             });
             if (gate === "run") {
               approvals.decide(rec.id, "approve", hash);
