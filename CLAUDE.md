@@ -23,10 +23,12 @@ When a change touches more than one surface, do the macOS work first and complet
 ## Change management
 
 Adversarial review runs through SWE-2 in the Devin CLI, at the tier the diff calls for
-(`devin -p --model swe-2-max|high|medium --permission-mode auto --prompt-file <file>`).
+(`devin -p --model swe-2-max|high|medium --permission-mode smart --prompt-file <file>`).
 Not Muse Spark or GLM in opencode, not `/code-review`, not parallel Opus subagents. Check
 out the branch under review first: the reviewer reads the files, and a diff against code
-that is not in the tree wastes the pass. Never accept a bare empty array, ask for the list
+that is not in the tree wastes the pass. Use `smart`, not `auto`: `auto` approves read-only
+tools only, so the reviewer asks to run the tests, gets no answer in print mode and gives up
+mid-pass. Never accept a bare empty array, ask for the list
 of what it dismissed and why. A clean pass counts as the PR review: fix what it finds,
 review again, then merge, rebuild the app and install it from local `main`.
 
