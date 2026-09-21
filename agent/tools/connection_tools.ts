@@ -115,9 +115,13 @@ export default defineDynamic({
             + (passthrough ? rawSchemaHint(indexed.inputSchema) : ""),
           inputSchema: schema,
           async execute(input: unknown, toolCtx) {
-            const entry = findConnectionById(connectionId);
+            // Read the row again rather than closing over it: eve snapshots a
+            // callback's closure when the call is made, and the owner can
+            // change or disconnect a server in between. Only strings are
+            // captured here, which is also what the durable closure allows.
+            const live = findConnectionById(connectionId);
             // The owner can disconnect a server mid-turn; the tool goes with it.
-            if (!entry || entry.url !== url) {
+            if (!live || live.url !== url) {
               return { status: "blocked", error: "connection_gone", connection: connectionId };
             }
             // Someone else's tool doing something on the owner's behalf is
@@ -163,7 +167,7 @@ export default defineDynamic({
             }
             return executeIfApproved(approvals, rec.id, hash, async () => {
             try {
-              const headers = await connectionHeaders(entry);
+              const headers = await connectionHeaders(live);
               const raw = await callMcpTool(url, toolName, args, headers);
               let text = JSON.stringify(raw);
               let truncated = false;
