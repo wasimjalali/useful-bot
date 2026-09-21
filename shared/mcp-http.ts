@@ -264,11 +264,14 @@ export async function callMcpTool(
   return rec;
 }
 
-export async function countOpenApiOperations(specUrl: string): Promise<number | null> {
+export async function countOpenApiOperations(
+  specUrl: string,
+  headers: Record<string, string> = {},
+): Promise<number | null> {
   const target = await assertResolvedPublic(specUrl);
   try {
     const res = await activeFetch()(target, {
-      headers: { accept: "application/json" },
+      headers: { accept: "application/json", ...headers },
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return null;

@@ -2,9 +2,11 @@ import { connectionHeaders } from "./connection-auth.ts";
 import {
   connectionIndex,
   indexIsStale,
+  indexedToolBytes,
   mountedToolName,
   putConnectionIndex,
   putConnectionOperations,
+  TOOL_WIRE_OVERHEAD_BYTES,
   type IndexedTool,
 } from "./connection-tools-store.ts";
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
@@ -92,12 +94,31 @@ export function mountedToolCount(entry: ConnectionEntry, path?: string): number 
 export async function ensureMeasured(entries: ConnectionEntry[], path?: string): Promise<void> {
   for (const entry of entries) {
     if (entry.kind !== "openapi" || mountedToolCount(entry, path) !== null) continue;
+    // A spec that cannot be counted must not be refetched on every turn: an
+    // eight-second timeout at each turn boundary, forever, for a row that
+    // stays unmounted either way. One attempt per index lifetime is enough;
+    // a spec that comes back is picked up on the next one.
+    if (!indexIsStale(connectionIndex(entry.id, path))) continue;
+    let operations: number | null = null;
     try {
-      const operations = await countOpenApiOperations(entry.url);
-      if (operations !== null) putConnectionOperations(entry.id, operations, path);
+      operations = await countOpenApiOperations(entry.url, await headersFor(entry));
     } catch {
-      // Unreachable now is not unreachable for good; the next turn tries again.
+      operations = null;
     }
+    try {
+      putConnectionOperations(entry.id, operations, path);
+    } catch {
+      // The index is a cache; a write that failed costs one fetch later.
+    }
+  }
+}
+
+/** Never throws: a measurement is not worth failing a turn boundary over. */
+async function headersFor(entry: ConnectionEntry): Promise<Record<string, string>> {
+  try {
+    return await connectionHeaders(entry);
+  } catch {
+    return {};
   }
 }
 
@@ -107,7 +128,7 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
  * schemas from the spec and never hands them back, so those are counted at a
  * flat rate rather than pretended to be zero.
  */
-const UNSEEN_SCHEMA_BYTES = 400;
+const UNSEEN_SCHEMA_BYTES = 400 + TOOL_WIRE_OVERHEAD_BYTES;
 
 export function mountedToolBytes(entry: ConnectionEntry, path?: string): number | null {
   const index = connectionIndex(entry.id, path);
@@ -119,10 +140,7 @@ export function mountedToolBytes(entry: ConnectionEntry, path?: string): number 
   let bytes = 0;
   for (const tool of index.tools) {
     if (allow && !allow.has(tool.name)) continue;
-    bytes += tool.inputSchema
-      ? JSON.stringify(tool.inputSchema).length
-      : UNSEEN_SCHEMA_BYTES;
-    bytes += tool.name.length + tool.description.length;
+    bytes += indexedToolBytes(tool);
   }
   return bytes;
 }

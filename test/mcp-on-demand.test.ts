@@ -26,6 +26,7 @@ import {
   splitMountedName,
 } from "../shared/connection-tools.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
+import { connectionSecretService, keychainSet, memoryKeychain, setKeychainDriver } from "../shared/keychain.ts";
 import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
@@ -117,6 +118,53 @@ test("a spec that predates the count is measured once and mountable after", asyn
   // Measured once, not on every turn.
   await ensureMeasured([spec]);
   assert.equal(fetched, 1);
+});
+
+test("a spec that cannot be read is not refetched at every turn boundary", async () => {
+  paths();
+  const spec = upsertConnection(entry({
+    id: "weather",
+    kind: "openapi",
+    name: "Weather",
+    url: "https://api.example.com/openapi.json",
+  })).entry;
+  let fetched = 0;
+  setMcpFetch((async () => {
+    fetched += 1;
+    return new Response("nope", { status: 502 });
+  }) as typeof fetch);
+  await ensureMeasured([spec]);
+  await ensureMeasured([spec]);
+  await ensureMeasured([spec]);
+  // Eight seconds at every turn boundary, forever, for a row that stays
+  // unmounted either way, is the thing the attempt record prevents.
+  assert.equal(fetched, 1);
+  assert.equal(mountedToolCount(spec), null);
+  assert.deepEqual(eagerConnections().map((item) => item.id), []);
+});
+
+test("a spec behind a key is counted with the key", async () => {
+  paths();
+  setKeychainDriver(memoryKeychain());
+  keychainSet(connectionSecretService("weather"), "sk_spec_secret_value");
+  const spec = upsertConnection(entry({
+    id: "weather",
+    kind: "openapi",
+    name: "Weather",
+    url: "https://api.example.com/openapi.json",
+    authKind: "bearer",
+  })).entry;
+  let seen = "";
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    seen = new Headers(init?.headers).get("authorization") ?? "";
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  await ensureMeasured([spec]);
+  assert.equal(seen, "Bearer sk_spec_secret_value");
+  assert.equal(mountedToolCount(spec), 1);
+  setKeychainDriver(null);
 });
 
 test("the mounted set is clamped at the budget, whatever is in the store", () => {

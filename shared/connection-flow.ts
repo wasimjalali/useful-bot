@@ -30,6 +30,7 @@ import {
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
 import { putConnectionIndex, putConnectionOperations } from "./connection-tools-store.ts";
+import { connectionHeaders } from "./connection-auth.ts";
 import { isEagerConnection, mountedToolBytes, mountedToolCount } from "./connection-tools.ts";
 import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
@@ -118,7 +119,7 @@ function queueResume(card: Stored, storePath: string, connectionId = card.connec
 async function probeToolCount(entry: ConnectionEntry, headers: Record<string, string> = {}): Promise<number | null> {
   try {
     if (entry.kind === "openapi") {
-      const operations = await countOpenApiOperations(entry.url);
+      const operations = await countOpenApiOperations(entry.url, headers);
       // Written down because eve builds this connection's tools from the spec
       // and never hands them back: this is the only figure the mount-time
       // clamp has to weigh it by.
@@ -163,6 +164,19 @@ async function probeToolCount(entry: ConnectionEntry, headers: Record<string, st
  * their tools wait to be asked for; an OpenAPI spec and a pinned server are
  * what this counts.
  */
+/**
+ * The headers a spec fetch needs. A spec behind a key was uncountable without
+ * them, which used to be cosmetic and now decides whether the connection is
+ * mounted at all.
+ */
+async function specHeaders(entry: ConnectionEntry): Promise<Record<string, string>> {
+  try {
+    return await connectionHeaders(entry);
+  } catch {
+    return {};
+  }
+}
+
 async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
   if (!isEagerConnection(entry)) return;
   const others = readConnectionsStore().connections
@@ -182,7 +196,7 @@ async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
     // Counting it as zero let an unreachable or oversized one through, and
     // eve then mounted its whole operation list on every later turn: the
     // wall this check exists to keep out of reach.
-    adding = await countOpenApiOperations(entry.url).catch(() => null);
+    adding = await countOpenApiOperations(entry.url, await specHeaders(entry)).catch(() => null);
     if (adding === null) throw new Error("tool_count_unknown");
     addingBytes = adding * 400;
   } else {
@@ -411,8 +425,11 @@ export async function completeConnectionOAuth(
     createdAt: new Date(opts.now ?? Date.now()).toISOString(),
   };
   // Same last word as the confirm path: only the store's lock can see a row
-  // that landed for this URL while the browser had the sign-in open.
-  await assertToolBudget(entry);
+  // that landed for this URL while the browser had the sign-in open. The
+  // budget is not weighed again here: the code has been exchanged by now, so
+  // a refusal would drop a usable token bundle and cost the owner the whole
+  // sign-in with no way to retry it. The mount-time clamp is what covers a
+  // connect that landed while the browser was open.
   const outcome = upsertConnection(entry);
   if (!outcome.won) {
     // Another card connected this server between the check above and this

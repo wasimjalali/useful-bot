@@ -250,17 +250,21 @@ export function putConnectionIndex(
   }, path);
 }
 
-/** Remember how big an OpenAPI connection is, since its tools are eve's. */
+/**
+ * Remember how big an OpenAPI connection is, since its tools are eve's.
+ * `null` records the attempt without a figure, which is what keeps a spec
+ * that cannot be read from being refetched at every turn boundary.
+ */
 export function putConnectionOperations(
   connectionId: string,
-  operations: number,
+  operations: number | null,
   path = connectionToolsPath(),
 ): void {
   updateConnectionToolsStore((store) => {
     store.index[connectionId] = {
       fetchedAt: new Date().toISOString(),
       tools: [],
-      operations: Math.max(0, Math.trunc(operations)),
+      ...(operations === null ? {} : { operations: Math.max(0, Math.trunc(operations)) }),
     };
   }, path);
 }
@@ -290,9 +294,21 @@ export type ActivationOutcome = {
   refused: string[];
 };
 
-/** What one tool costs the session's byte budget, as far as the index shows. */
+/**
+ * What one tool costs on the wire, not just in this index.
+ *
+ * The router weighs `JSON.stringify(tools)`, where each entry carries its
+ * `{"type":"function","function":{…}}` envelope (~96 bytes) and a description
+ * that has been through `wrapUntrusted` (184 bytes of preamble and fences).
+ * Counting the name, the description and the schema alone undercounted every
+ * tool by around 280 bytes, which is most of a budget's headroom over sixty
+ * of them.
+ */
+export const TOOL_WIRE_OVERHEAD_BYTES = 280;
+
 export function indexedToolBytes(tool: IndexedTool): number {
-  return tool.name.length
+  return TOOL_WIRE_OVERHEAD_BYTES
+    + tool.name.length
     + tool.description.length
     + (tool.inputSchema ? JSON.stringify(tool.inputSchema).length : 200);
 }
@@ -313,7 +329,7 @@ export function activateSessionTools(
       const at = name.indexOf("__");
       if (at <= 0) return 200;
       const tool = store.index[name.slice(0, at)]?.tools.find((item) => item.name === name.slice(at + 2));
-      return tool ? indexedToolBytes(tool) : 200;
+      return tool ? indexedToolBytes(tool) : TOOL_WIRE_OVERHEAD_BYTES + 200;
     };
     const current = store.sessions[sessionId]?.tools ?? [];
     const held = new Set(current);
