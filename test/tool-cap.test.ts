@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MAX_SESSION_TOOLS, MAX_TOOL_SCHEMAS, MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
+import {
+  MAX_SESSION_TOOLS,
+  MAX_SESSION_TOOL_BYTES,
+  MAX_TOOL_SCHEMAS,
+  MAX_TOOL_SCHEMA_BYTES,
+  MOUNTED_TOOL_BUDGET,
+  MOUNTED_TOOL_BYTE_BUDGET,
+} from "../shared/policy.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
@@ -59,5 +66,22 @@ test("the tools the agent ships fit under the router's schema cap with headroom"
   assert.ok(
     worst <= MAX_TOOL_SCHEMAS,
     `agent ships ${count} tool schemas; with MOUNTED_TOOL_BUDGET=${MOUNTED_TOOL_BUDGET}, MAX_SESSION_TOOLS=${MAX_SESSION_TOOLS} and ${SESSION_TOOL_HEADROOM} headroom that is ${worst}, past MAX_TOOL_SCHEMAS=${MAX_TOOL_SCHEMAS}. Lower a budget in shared/policy.ts`,
+  );
+});
+
+/**
+ * Room left for the agent's own tool schemas and eve's. They are not measured
+ * here because eve builds the request; what is checked is that the two
+ * budgets this app does control cannot fill the wall on their own.
+ */
+const AGENT_SCHEMA_BYTES = 40 * 1024;
+
+test("the tool budgets fit under the router's byte cap too", () => {
+  // The router refuses on bytes as well as on count, with the same
+  // non-retryable error, and the same retired session behind it.
+  const worst = MOUNTED_TOOL_BYTE_BUDGET + MAX_SESSION_TOOL_BYTES + AGENT_SCHEMA_BYTES;
+  assert.ok(
+    worst <= MAX_TOOL_SCHEMA_BYTES,
+    `MOUNTED_TOOL_BYTE_BUDGET=${MOUNTED_TOOL_BYTE_BUDGET} plus MAX_SESSION_TOOL_BYTES=${MAX_SESSION_TOOL_BYTES} plus ${AGENT_SCHEMA_BYTES} for the agent's own is ${worst}, past MAX_TOOL_SCHEMA_BYTES=${MAX_TOOL_SCHEMA_BYTES}. Lower a budget in shared/policy.ts`,
   );
 });

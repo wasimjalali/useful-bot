@@ -114,7 +114,7 @@ export const MOUNTED_TOOL_BUDGET = 60;
  * sees them, which is the other half of why the count budget is as low as it
  * is.
  */
-export const MOUNTED_TOOL_BYTE_BUDGET = 48 * 1024;
+export const MOUNTED_TOOL_BYTE_BUDGET = 40 * 1024;
 /**
  * A connection whose own allow-list is this short stays mounted for every
  * turn: two tools cost nothing against the budget, and making the bot go
@@ -127,6 +127,12 @@ export const EAGER_TOOL_ALLOWANCE = 8;
  * work with what it has rather than quietly walking the turn into the wall.
  */
 export const MAX_SESSION_TOOLS = 40;
+/**
+ * And in bytes, for the same reason the mounted set has one: forty schemas
+ * at the size a server is allowed to publish would clear the router's byte
+ * wall on their own, and that refusal retires the session.
+ */
+export const MAX_SESSION_TOOL_BYTES = 40 * 1024;
 
 export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".env",

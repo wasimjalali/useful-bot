@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { MAX_SESSION_TOOLS } from "./policy.ts";
+import { MAX_SESSION_TOOLS, MAX_SESSION_TOOL_BYTES } from "./policy.ts";
 
 /**
  * Which of a connection's tools a session has asked for, and what each
@@ -290,6 +290,13 @@ export type ActivationOutcome = {
   refused: string[];
 };
 
+/** What one tool costs the session's byte budget, as far as the index shows. */
+export function indexedToolBytes(tool: IndexedTool): number {
+  return tool.name.length
+    + tool.description.length
+    + (tool.inputSchema ? JSON.stringify(tool.inputSchema).length : 200);
+}
+
 /**
  * Record that a session may use these tools from now on. The cap is here
  * rather than at the wall the router puts up: past it the model is told it is
@@ -302,16 +309,27 @@ export function activateSessionTools(
   path = connectionToolsPath(),
 ): ActivationOutcome {
   return updateConnectionToolsStore((store) => {
+    const sizeOf = (name: string): number => {
+      const at = name.indexOf("__");
+      if (at <= 0) return 200;
+      const tool = store.index[name.slice(0, at)]?.tools.find((item) => item.name === name.slice(at + 2));
+      return tool ? indexedToolBytes(tool) : 200;
+    };
     const current = store.sessions[sessionId]?.tools ?? [];
     const held = new Set(current);
+    let bytes = current.reduce((total, name) => total + sizeOf(name), 0);
     const refused: string[] = [];
     for (const name of names) {
       if (held.has(name)) continue;
-      if (held.size >= MAX_SESSION_TOOLS) {
+      const size = sizeOf(name);
+      // Counted as well as capped: forty schemas at the size a server is
+      // allowed to publish would clear the router's byte wall on their own.
+      if (held.size >= MAX_SESSION_TOOLS || bytes + size > MAX_SESSION_TOOL_BYTES) {
         refused.push(name);
         continue;
       }
       held.add(name);
+      bytes += size;
       current.push(name);
     }
     store.sessions[sessionId] = { updatedAt: new Date().toISOString(), tools: current };

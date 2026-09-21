@@ -180,16 +180,18 @@ so a drawing needs no lookup first). Anything larger waits: `find_tools`
 searches the cached listings in `~/.useful-bot/connection-tools.json` and
 records what it handed over, and a `step.started` resolver mounts those under
 `<connectionId>__<toolName>` for the next model call, inside the same turn.
-A tool it mounts is gated the way a connector call is: a read runs, a write or
-a destructive action asks in Auto and runs in Full access, and Read only
-refuses both.
+A tool it mounts is gated by the posture alone, not by the tool's name: Read
+only refuses, Auto asks, Full access runs. A Composio slug is Composio's to
+write, so reading a verb off it says something; an MCP server writes its own
+tool names, so a `list_items` that deletes would have read as a read.
 
-Three bounds keep the router's `MAX_TOOL_SCHEMAS` wall out of reach, because
-a turn that hits it is refused with a non-retryable error and eve retires the
-session. A connect that would take the eagerly mounted total past
-`MOUNTED_TOOL_BUDGET` is refused before a row or a credential is written; one
-session may pick up `MAX_SESSION_TOOLS`; the agent's own tools and eve's make
-up the rest.
+Budgets keep the router's walls out of reach, because a turn that hits one is
+refused with a non-retryable error and eve retires the session. The router
+counts schemas and bytes, so both are budgeted, on the connect (which is
+refused before a row or a credential is written), on the mounted set (clamped
+every turn, whatever is in the store) and on what one session may pick up.
+`test/tool-cap.test.ts` does the arithmetic, so lowering a wall or adding an
+agent tool trips CI rather than a live turn.
 
 ## Brand assets
 

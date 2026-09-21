@@ -5,7 +5,8 @@ import {
 } from "eve/connections";
 import { isAuthHeaderName, type ConnectionEntry } from "../../shared/connections-store.ts";
 import { bearerFromKeychain, oauthToken } from "../../shared/connection-auth.ts";
-import { eagerConnections } from "../../shared/connection-tools.ts";
+import { eagerConnections, ensureMeasured, isEagerConnection } from "../../shared/connection-tools.ts";
+import { readConnectionsStore } from "../../shared/connections-store.ts";
 
 function definitionFor(entry: ConnectionEntry) {
   const tools = entry.toolsAllow ? { allow: entry.toolsAllow } : undefined;
@@ -84,6 +85,10 @@ function definitionFor(entry: ConnectionEntry) {
 export default defineDynamic({
   events: {
     "turn.started": async () => {
+      // A row nobody has measured is not mounted, so this is what keeps one
+      // that predates the count from staying off for good: count it once,
+      // write it down, and it is mountable from here on.
+      await ensureMeasured(readConnectionsStore().connections.filter(isEagerConnection));
       const entries = eagerConnections();
       if (entries.length === 0) return null;
       return Object.fromEntries(entries.map((entry) => [entry.id, definitionFor(entry)]));

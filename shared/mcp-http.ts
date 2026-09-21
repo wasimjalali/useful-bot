@@ -27,7 +27,7 @@ export type McpToolInfo = {
  * the wrapper falls back to a passthrough object and puts the shape in its
  * description instead.
  */
-export const MAX_TOOL_INPUT_SCHEMA_BYTES = 8 * 1024;
+export const MAX_TOOL_INPUT_SCHEMA_BYTES = 4 * 1024;
 
 function toolInputSchema(raw: unknown): Record<string, unknown> | null {
   const rec = asRecord(raw);

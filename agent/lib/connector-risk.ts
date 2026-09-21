@@ -103,13 +103,14 @@ export function connectorGate(risk: ConnectorRisk, permission: ConnectorPermissi
 /**
  * Whether one MCP tool runs, asks, or is refused.
  *
- * The connector ladder with one difference: the risk is read off a name the
- * server chose, so in Auto it trusts the server the owner connected, and a
- * tool called `list_items` that deletes would run without a card. Read only
- * is not a convenience posture: it is the owner saying nothing may act, and
- * no name gets a bot past it.
+ * Not the connector ladder. A Composio slug is written by Composio, so
+ * reading a verb off it says something; an MCP server writes its own tool
+ * names, so it does not. A tool called `list_items` that deletes would have
+ * read as a read and run with no card. Nothing a server names gets to decide
+ * whether the owner is asked: Read only refuses, Auto asks, and Full access
+ * is the posture that asks nothing. `mcpToolRisk` still labels the card.
  */
-export function mcpToolGate(toolName: string, permission: ConnectorPermission): "run" | "ask" | "refuse" {
+export function mcpToolGate(permission: ConnectorPermission): "run" | "ask" | "refuse" {
   if (permission === "read_only") return "refuse";
-  return connectorGate(mcpToolRisk(toolName), permission);
+  return permission === "full_access" ? "run" : "ask";
 }

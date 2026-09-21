@@ -4,10 +4,11 @@ import {
   indexIsStale,
   mountedToolName,
   putConnectionIndex,
+  putConnectionOperations,
   type IndexedTool,
 } from "./connection-tools-store.ts";
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
-import { listMcpTools, modelToolNames } from "./mcp-http.ts";
+import { countOpenApiOperations, listMcpTools, modelToolNames } from "./mcp-http.ts";
 import { EAGER_TOOL_ALLOWANCE, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
 /**
@@ -45,6 +46,8 @@ export function eagerConnections(path?: string, storePath?: string): ConnectionE
   for (const entry of all) {
     const count = mountedToolCount(entry, storePath);
     const size = mountedToolBytes(entry, storePath);
+    // A size nobody knows is not a small one.
+    if (count === null || size === null) continue;
     if (tools + count > MOUNTED_TOOL_BUDGET || bytes + size > MOUNTED_TOOL_BYTE_BUDGET) continue;
     tools += count;
     bytes += size;
@@ -64,20 +67,38 @@ export function onDemandConnections(path?: string): ConnectionEntry[] {
  * the number the cap has to survive.
  */
 /**
- * What a row nobody has measured is assumed to be worth. Modest on purpose:
- * this figure is only used by the clamp, which is a backstop, and assuming
- * the worst there would unmount a connection that has been working for weeks
- * just because nothing had written its size down yet. The connect-time check
- * is where an unknown size fails closed.
+ * How big a connection is, or null when nothing has measured it.
+ *
+ * An eager MCP row carries its own allow-list, so its size is exact. The one
+ * unknown is an OpenAPI row whose operations were never counted: a row that
+ * predates the count, or one written by a path that skipped it. eve mounts
+ * that spec's whole operation list, which can be any size, so guessing a
+ * modest figure here would admit it and walk the bot into the wall the
+ * budget exists to keep out of reach. `ensureMeasured` fills the gap in.
  */
-const UNMEASURED_TOOLS = 20;
-
-export function mountedToolCount(entry: ConnectionEntry, path?: string): number {
+export function mountedToolCount(entry: ConnectionEntry, path?: string): number | null {
   if (entry.toolsAllow) return entry.toolsAllow.length;
   const index = connectionIndex(entry.id, path);
   if (index?.operations !== undefined) return index.operations;
   if (index && index.tools.length > 0) return index.tools.length;
-  return UNMEASURED_TOOLS;
+  return null;
+}
+
+/**
+ * Count an eager OpenAPI connection nobody has measured, once, and write it
+ * down. Called from the turn resolver, so a connection that predates the
+ * count is measured on the next turn instead of staying unmountable.
+ */
+export async function ensureMeasured(entries: ConnectionEntry[], path?: string): Promise<void> {
+  for (const entry of entries) {
+    if (entry.kind !== "openapi" || mountedToolCount(entry, path) !== null) continue;
+    try {
+      const operations = await countOpenApiOperations(entry.url);
+      if (operations !== null) putConnectionOperations(entry.id, operations, path);
+    } catch {
+      // Unreachable now is not unreachable for good; the next turn tries again.
+    }
+  }
 }
 
 /**
@@ -88,9 +109,12 @@ export function mountedToolCount(entry: ConnectionEntry, path?: string): number 
  */
 const UNSEEN_SCHEMA_BYTES = 400;
 
-export function mountedToolBytes(entry: ConnectionEntry, path?: string): number {
+export function mountedToolBytes(entry: ConnectionEntry, path?: string): number | null {
   const index = connectionIndex(entry.id, path);
-  if (!index || index.tools.length === 0) return mountedToolCount(entry, path) * UNSEEN_SCHEMA_BYTES;
+  if (!index || index.tools.length === 0) {
+    const count = mountedToolCount(entry, path);
+    return count === null ? null : count * UNSEEN_SCHEMA_BYTES;
+  }
   const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
   let bytes = 0;
   for (const tool of index.tools) {

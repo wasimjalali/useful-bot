@@ -111,6 +111,9 @@ export default defineDynamic({
         if (!split) continue;
         const entry = findConnectionById(split.connectionId);
         if (!entry || entry.kind !== "mcp") continue;
+        // The owner can narrow a server's allow-list after a session picked
+        // a tool up; the activation does not outlive the permission.
+        if (entry.toolsAllow && !entry.toolsAllow.includes(split.tool)) continue;
         const indexed = store?.index[split.connectionId]?.tools.find((tool) => tool.name === split.tool);
         if (!indexed) continue;
         const { schema, passthrough } = toolInputSchema(indexed.inputSchema);
@@ -119,8 +122,15 @@ export default defineDynamic({
         const url = entry.url;
         const toolName = split.tool;
         tools[mountedToolName(connectionId, toolName)] = defineTool({
-          description: `${connectionName}: ${indexed.description || toolName}`
-            + (passthrough ? rawSchemaHint(indexed.inputSchema) : ""),
+          // The server wrote every word of this, including the schema, so it
+          // is quoted rather than spoken: a tool description is read by the
+          // model and is as good a place to plant instructions as a result.
+          description: `${connectionName}: `
+            + wrapUntrusted(
+              `connection:${connectionId}`,
+              `${indexed.description || toolName}`
+                + (passthrough ? rawSchemaHint(indexed.inputSchema) : ""),
+            ),
           inputSchema: schema,
           async execute(input: unknown, toolCtx) {
             // Read the row again rather than closing over it: eve snapshots a
@@ -128,9 +138,13 @@ export default defineDynamic({
             // change or disconnect a server in between. Only strings are
             // captured here, which is also what the durable closure allows.
             const live = findConnectionById(connectionId);
-            // The owner can disconnect a server mid-turn; the tool goes with it.
+            // The owner can disconnect a server, or narrow what it may do,
+            // between the step that mounted this and the call.
             if (!live || live.url !== url) {
               return { status: "blocked", error: "connection_gone", connection: connectionId };
+            }
+            if (live.toolsAllow && !live.toolsAllow.includes(toolName)) {
+              return { status: "blocked", error: "tool_not_allowed", connection: connectionId };
             }
             // Someone else's tool doing something on the owner's behalf is
             // gated like a connector call: this app runs it itself, so the
@@ -144,7 +158,7 @@ export default defineDynamic({
             // nothing may act, so no name gets a bot past it.
             const permission = sessionPermission(toolCtx);
             const risk = mcpToolRisk(toolName);
-            const gate = mcpToolGate(toolName, permission);
+            const gate = mcpToolGate(permission);
             if (gate === "refuse") return { status: "blocked", error: "workspace_read_only", risk };
             const args = input && typeof input === "object" && !Array.isArray(input)
               ? input as Record<string, unknown>

@@ -167,8 +167,14 @@ async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
   if (!isEagerConnection(entry)) return;
   const others = readConnectionsStore().connections
     .filter((item) => isEagerConnection(item) && item.id !== entry.id && item.url !== entry.url);
-  const mounted = others.reduce((total, item) => total + mountedToolCount(item), 0);
-  const mountedBytes = others.reduce((total, item) => total + mountedToolBytes(item), 0);
+  // A row nobody has measured counts against the budget at the ceiling a
+  // connect may take: it cannot be shown to fit, so it is not treated as if
+  // it did. The turn resolver measures such a row and writes the figure down.
+  const mounted = others.reduce((total, item) => total + (mountedToolCount(item) ?? MOUNTED_TOOL_BUDGET), 0);
+  const mountedBytes = others.reduce(
+    (total, item) => total + (mountedToolBytes(item) ?? MOUNTED_TOOL_BYTE_BUDGET),
+    0,
+  );
   let adding: number | null;
   let addingBytes: number;
   if (entry.kind === "openapi") {
@@ -181,7 +187,7 @@ async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
     addingBytes = adding * 400;
   } else {
     adding = entry.toolsAllow?.length ?? 0;
-    addingBytes = mountedToolBytes(entry);
+    addingBytes = mountedToolBytes(entry) ?? adding * 400;
   }
   if (mounted + adding > MOUNTED_TOOL_BUDGET || mountedBytes + addingBytes > MOUNTED_TOOL_BYTE_BUDGET) {
     throw new Error("tool_budget_exceeded");

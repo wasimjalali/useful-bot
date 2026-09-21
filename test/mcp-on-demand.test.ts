@@ -16,6 +16,7 @@ import {
 } from "../shared/connection-tools-store.ts";
 import {
   eagerConnections,
+  ensureMeasured,
   isEagerConnection,
   mountedToolBytes,
   mountedToolCount,
@@ -75,19 +76,47 @@ test("a big server waits to be asked for; a pinned one and an OpenAPI spec do no
   assert.equal(isEagerConnection(big), false);
   assert.equal(isEagerConnection(pinned), true);
   assert.equal(isEagerConnection(spec), true);
+  // A spec nobody has counted is not mounted: eve builds its tools from the
+  // spec and a size nobody knows is not a small one.
+  assert.deepEqual(eagerConnections().map((item) => item.id), ["excalidraw"]);
+  putConnectionOperations("weather", 12);
   assert.deepEqual(eagerConnections().map((item) => item.id).sort(), ["excalidraw", "weather"]);
   assert.deepEqual(onDemandConnections().map((item) => item.id), ["example"]);
   // An allow-list is exact; a listing is exact; a row nobody has measured
   // gets a modest figure rather than the worst case, because unmounting a
   // working connection over a missing measurement is the worse mistake.
   assert.equal(mountedToolCount(pinned), 2);
-  assert.equal(mountedToolCount(big), 20);
+  assert.equal(mountedToolCount(big), null);
   putConnectionIndex("example", [{ name: "one", description: "", inputSchema: null }]);
   assert.equal(mountedToolCount(big), 1);
   // eve builds an OpenAPI connection's tools from the spec and never hands
   // them back, so the count taken at connect time is what weighs it.
-  putConnectionOperations("weather", 12);
   assert.equal(mountedToolCount(spec), 12);
+});
+
+test("a spec that predates the count is measured once and mountable after", async () => {
+  paths();
+  const spec = upsertConnection(entry({
+    id: "weather",
+    kind: "openapi",
+    name: "Weather",
+    url: "https://api.example.com/openapi.json",
+  })).entry;
+  assert.equal(mountedToolCount(spec), null);
+  assert.deepEqual(eagerConnections().map((item) => item.id), []);
+  let fetched = 0;
+  setMcpFetch((async () => {
+    fetched += 1;
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} }, "/b": { get: {}, post: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  await ensureMeasured([spec]);
+  assert.equal(mountedToolCount(spec), 3);
+  assert.deepEqual(eagerConnections().map((item) => item.id), ["weather"]);
+  // Measured once, not on every turn.
+  await ensureMeasured([spec]);
+  assert.equal(fetched, 1);
 });
 
 test("the mounted set is clamped at the budget, whatever is in the store", () => {
@@ -104,7 +133,7 @@ test("the mounted set is clamped at the budget, whatever is in the store", () =>
     putConnectionOperations(`spec-${i}`, 25);
   }
   const mounted = eagerConnections();
-  const total = mounted.reduce((sum, item) => sum + mountedToolCount(item), 0);
+  const total = mounted.reduce((sum, item) => sum + (mountedToolCount(item) ?? 0), 0);
   assert.ok(total <= MOUNTED_TOOL_BUDGET, `mounted ${total} tools, past ${MOUNTED_TOOL_BUDGET}`);
   assert.equal(mounted.length, 2);
   // In the order they were connected, so the set is stable turn to turn.
@@ -131,7 +160,7 @@ test("the byte budget clamps a roster the count alone would admit", () => {
   const mounted = eagerConnections();
   // Twelve tools is well inside the count budget; their schemas are not.
   assert.ok(mounted.length < 6, `mounted all ${mounted.length}`);
-  const bytes = mounted.reduce((sum, item) => sum + mountedToolBytes(item), 0);
+  const bytes = mounted.reduce((sum, item) => sum + (mountedToolBytes(item) ?? 0), 0);
   assert.ok(bytes <= MOUNTED_TOOL_BYTE_BUDGET, `mounted ${bytes} bytes`);
 });
 
@@ -226,17 +255,16 @@ test("an MCP tool's risk comes from its own name, with no toolkit to strip", () 
   assert.equal(mcpToolRisk(""), "write");
 });
 
-test("read only refuses an MCP tool however its server named it", () => {
-  // The name is the server's to choose, so it must not be what gets a bot
-  // past the posture where the owner said nothing may act.
-  assert.equal(mcpToolGate("list_channels", "read_only"), "refuse");
-  assert.equal(mcpToolGate("delete_everything", "read_only"), "refuse");
-  // Auto keeps the ladder: a read runs, a write asks.
-  assert.equal(mcpToolGate("list_channels", "auto"), "run");
-  assert.equal(mcpToolGate("send_message", "auto"), "ask");
-  assert.equal(mcpToolGate("delete_file", "auto"), "ask");
-  // Full access is the posture that asks nothing.
-  assert.equal(mcpToolGate("delete_file", "full_access"), "run");
+test("no name a server chose decides whether the owner is asked", () => {
+  // A Composio slug is Composio's; an MCP server writes its own tool names,
+  // so `list_items` might delete. The posture decides, not the name.
+  assert.equal(mcpToolGate("read_only"), "refuse");
+  assert.equal(mcpToolGate("auto"), "ask");
+  assert.equal(mcpToolGate("full_access"), "run");
+  // No grant at all behaves as auto, the way every other gate here does.
+  assert.equal(mcpToolGate(null), "ask");
+  // The name still labels the card.
+  assert.equal(mcpToolRisk("delete_file"), "destructive");
 });
 
 test("a server's schema becomes the tool's contract, or a passthrough with the raw one", () => {
