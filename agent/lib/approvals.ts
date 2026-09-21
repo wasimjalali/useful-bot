@@ -64,6 +64,9 @@ export type ApprovalTool =
   | "create_routine"
   | "update_routine"
   | "connector"
+  // One tool of a connected MCP server, run by this app rather than by eve:
+  // the tools it mounts on demand are its own to gate.
+  | "connection"
   | "install_cli";
 export type ApprovalDecision = "approve" | "deny";
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "consumed";

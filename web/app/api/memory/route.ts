@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { MemoryStore } from "../../../../agent/lib/memory.ts";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,7 @@ function memoryStore(): MemoryStore {
 }
 
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const botId = new URL(request.url).searchParams.get("botId")?.trim() ?? "";
   if (!botId) return NextResponse.json({ ok: true, notes: [] });

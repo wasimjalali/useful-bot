@@ -35,7 +35,10 @@ export const CALLER_LIMITS = {
   // are unchanged: they are the spend guard, and the owner sets them in
   // Settings.
   desktop: { aliases: ["workhorse"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
-  phone: { aliases: ["workhorse"], search: true, rpm: 4, requests24h: 40, input24h: 400_000, output24h: 40_000 },
+  // The phone profile is the owner's own phone, with the desktop budget
+  // verbatim (spec S1): there is one owner inference budget, and which device
+  // sent the turn does not change it.
+  phone: { aliases: ["workhorse"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
   reviewer: { aliases: ["reviewer"], search: false, rpm: 4, requests24h: 20, input24h: 300_000, output24h: 80_000 },
   eval: { aliases: ["workhorse", "reviewer"], search: true, rpm: 12, requests24h: 80, input24h: 1_000_000, output24h: 160_000 },
   ops: { aliases: [], search: false, rpm: 30, requests24h: 0, input24h: 0, output24h: 0 },
@@ -94,6 +97,38 @@ export const MAX_MESSAGE_COUNT = 4_096;
  */
 export const MAX_TOOL_SCHEMAS = 300;
 export const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
+
+/**
+ * The cap above is a wall, not a budget: the router refuses a turn past it
+ * with a non-retryable `unsupported_parameter`, and eve retires a session
+ * that gets one, so the chat is dead for good. Nothing may be allowed to walk
+ * a bot into it. These three keep the running total well underneath.
+ *
+ * `MOUNTED_TOOL_BUDGET` is what a connect may take the eagerly mounted total
+ * to. The rest of the headroom is for the agent's own tools, eve's, and the
+ * tools a session picks up mid-turn.
+ */
+export const MOUNTED_TOOL_BUDGET = 60;
+/**
+ * And the same budget in bytes, because the router refuses a turn on schema
+ * bytes too, with the same non-retryable error. Only what this app can
+ * measure is counted: the argument schemas a connected MCP server published.
+ * eve generates an OpenAPI connection's schemas itself and this side never
+ * sees them, which is the other half of why the count budget is as low as it
+ * is.
+ */
+export const MOUNTED_TOOL_BYTE_BUDGET = 24 * 1024;
+/**
+ * Tools one session may pick up on demand. Past this the model is told to
+ * work with what it has rather than quietly walking the turn into the wall.
+ */
+export const MAX_SESSION_TOOLS = 40;
+/**
+ * And in bytes, for the same reason the mounted set has one: forty schemas
+ * at the size a server is allowed to publish would clear the router's byte
+ * wall on their own, and that refusal retires the session.
+ */
+export const MAX_SESSION_TOOL_BYTES = 40 * 1024;
 
 export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".env",

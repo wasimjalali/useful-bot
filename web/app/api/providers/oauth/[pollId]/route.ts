@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../../lib/desktop-gate";
 import { errorCode, rateLimited } from "../../../../../lib/api-guard";
 import { syncProviderModels } from "../../../../../lib/sync-models";
 import {
@@ -70,7 +70,7 @@ function payload(store: ProviderStore) {
 
 /** Completing the flow writes the credential, so the poll is a POST with the CSRF header like every other write. */
 export async function POST(request: Request, context: { params: Promise<{ pollId: string }> }) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {
@@ -100,7 +100,7 @@ export async function POST(request: Request, context: { params: Promise<{ pollId
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ pollId: string }> }) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

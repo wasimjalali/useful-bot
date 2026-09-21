@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
 import { deleteRoutine, readRoutine, updateRoutine } from "../../../../../shared/routines-store.ts";
 
 export const runtime = "nodejs";
 
-type Gate = Awaited<ReturnType<typeof requireDesktop>>;
+type Gate = Awaited<ReturnType<typeof requireOwner>>;
 
 /** Desktop session, matching origin and a matching CSRF token, or a response. */
 async function guard(request: Request): Promise<NextResponse | Extract<Gate, { session: unknown }>> {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { executeConnectorTool, toolkitOf, FEATURED_TOOLKITS } from "../../shared/composio.ts";
+import { executeConnectorTool, toolkitHint, toolkitOf } from "../../shared/composio.ts";
 import { readConnectorsStore } from "../../shared/connectors-store.ts";
 import { sessionPermission } from "../lib/permission.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -89,12 +89,9 @@ export default defineTool({
 });
 
 function hintToolkit(tool: string): string {
-  // A hint only, never a lookup that throws: the known toolkit prefix when
-  // the slug starts with one, else the lowercased slug without its last
-  // action word.
+  // A hint only, never a lookup that throws.
   try {
-    const fallback = tool.toLowerCase().split("_").slice(0, -1).join("_");
-    return toolkitOf(tool, FEATURED_TOOLKITS) ?? (fallback || "unknown");
+    return toolkitHint(tool);
   } catch {
     return "unknown";
   }

@@ -11,6 +11,7 @@ import {
   allocateConnectionId,
   findConnectionByUrl,
   isAuthHeaderName,
+  readConnectionsStore,
   upsertConnection,
   type ConnectionAuthKind,
   type ConnectionEntry,
@@ -18,7 +19,7 @@ import {
 import { connectionSecretService, keychainSet } from "./keychain.ts";
 import { listHandoffs, queueHandoff } from "./handoffs.ts";
 import { wrapUntrusted } from "./untrusted.ts";
-import { countOpenApiOperations, listMcpTools, modelToolNames } from "./mcp-http.ts";
+import { listMcpTools, measureOpenApiConnection, modelToolNames } from "./mcp-http.ts";
 import {
   completeMcpOAuth,
   dropOauthPending,
@@ -28,6 +29,16 @@ import {
 } from "./mcp-oauth.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
+import { putConnectionIndex, putConnectionOperations } from "./connection-tools-store.ts";
+import { specWireBytes } from "./tool-wire-size.ts";
+import {
+  eagerConnections,
+  isEagerConnection,
+  mountedToolBytes,
+  mountedToolCount,
+  specNamesFit,
+} from "./connection-tools.ts";
+import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
 /**
  * Connect-server card. Confirm writes the registry (and Keychain, and OAuth).
@@ -106,14 +117,116 @@ function queueResume(card: Stored, storePath: string, connectionId = card.connec
   return true;
 }
 
+/**
+ * How many tools a connection has, for the card. For an MCP server this also
+ * writes the listing to the index `find_tools` searches, so the first search
+ * after a connect answers from disk instead of going back to the server.
+ */
 async function probeToolCount(entry: ConnectionEntry, headers: Record<string, string> = {}): Promise<number | null> {
   try {
-    if (entry.kind === "openapi") return await countOpenApiOperations(entry.url);
+    if (entry.kind === "openapi") {
+      const size = await measureOpenApiConnection(entry.url, headers);
+      // Written down because eve builds this connection's tools from the spec
+      // and never hands them back: this is the only figure the mount-time
+      // clamp has to weigh it by.
+      if (size !== null) {
+        try { putConnectionOperations(entry.id, size); } catch { /* a cache */ }
+      }
+      return size?.operations ?? null;
+    }
     const tools = await listMcpTools(entry.url, headers);
-    const names = entry.toolsAllow ?? modelToolNames(tools);
+    const visible = new Set(modelToolNames(tools));
+    const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
+    try {
+      putConnectionIndex(
+        entry.id,
+        tools
+          .filter((tool) => visible.has(tool.name) && (!allow || allow.has(tool.name)))
+          .map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            inputSchemaBytes: tool.inputSchemaBytes,
+                })),
+      );
+    } catch {
+      // The index is a cache; a write that failed costs one listing later.
+    }
+    const names = entry.toolsAllow ?? [...visible];
     return names.length;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Refuse a connect that would take the tools mounted on every turn past the
+ * budget, before any row or credential is written.
+ *
+ * The router refuses a turn carrying more than `MAX_TOOL_SCHEMAS` with a
+ * non-retryable `unsupported_parameter`, and eve retires a session that gets
+ * one, so the chat is dead for good. Nothing used to look: the count on the
+ * card was for the owner to read, and a connect that doubled a bot's tools
+ * went through in silence. An MCP server costs nothing here, because its
+ * tools wait to be asked for; an OpenAPI spec is what this counts.
+ */
+/**
+ * @param headers what the caller legitimately holds for this connect, which
+ * for a spec behind a key is the difference between countable and not. Passed
+ * in rather than read from the Keychain: this runs before the row exists, so
+ * the id it would read under may still belong to a different connection, and
+ * that connection's credential must not be sent to this proposal's host.
+ */
+async function assertToolBudget(
+  entry: ConnectionEntry,
+  headers: Record<string, string> = {},
+): Promise<void> {
+  if (!isEagerConnection(entry)) return;
+  // What is actually mounted, which is what reaches the wall. A row nobody
+  // has measured is not mounted, so it costs nothing here: charging it the
+  // ceiling made one unmeasurable row refuse every connect that followed,
+  // for good, with no way to remove it.
+  // A URL holds one row, so the one sharing this URL is the row this connect
+  // becomes or settles onto, and is not additional. A row sharing only the
+  // id is a different server that stays mounted: two cards for same-named
+  // servers are handed the same id before either connects, and excluding it
+  // admitted a connect while the real total was already over.
+  const others = eagerConnections().filter((item) => item.url !== entry.url);
+  const mounted = others.reduce((total, item) => total + (mountedToolCount(item) ?? 0), 0);
+  const mountedBytes = others.reduce((total, item) => total + (mountedToolBytes(item) ?? 0), 0);
+  let adding: number | null;
+  let addingBytes: number;
+  if (entry.kind === "openapi") {
+    // A spec this app could not read is not a spec with no operations in it.
+    // Counting it as zero let an unreachable or oversized one through, and
+    // eve then mounted its whole operation list on every later turn: the
+    // wall this check exists to keep out of reach. Measured, not rated: an
+    // ordinary operation carries kilobytes of schema, so a flat rate per
+    // operation cleared this budget and the router's by a factor of five.
+    const size = await measureOpenApiConnection(entry.url, headers).catch(() => null);
+    if (size === null) throw new Error("tool_count_unknown");
+    // A name the provider refuses retires every session it is mounted in.
+    // Checked against the longest id the store could give this row: an id
+    // another server holds is reassigned `<first sixty>-<n>`, up to three
+    // longer, and a check against the shorter one admitted a row the mount
+    // then skipped for good.
+    const longestId = "x".repeat(Math.max(entry.id.length, Math.min(entry.id.length, 60) + 3));
+    if (!specNamesFit(longestId, size.longestName)) throw new Error("tool_name_too_long");
+    adding = size.operations;
+    // The same weighing the clamp uses, so the two cannot disagree.
+    addingBytes = specWireBytes(size);
+    // Not written here. This runs before the row exists, and two cards for
+    // same-named servers are handed the same id before either connects, so a
+    // measurement stamped now can land on another connection's index and sit
+    // there for the six hours before anything re-measures it. `probeToolCount`
+    // writes it afterwards, under the id the store actually gave this row.
+  } else {
+    // Unreachable while only OpenAPI is eager, and kept as a refusal rather
+    // than a zero so a future eager kind cannot pass this check uncounted.
+    throw new Error("tool_count_unknown");
+  }
+  if (mounted + adding > MOUNTED_TOOL_BUDGET || mountedBytes + addingBytes > MOUNTED_TOOL_BYTE_BUDGET) {
+    throw new Error("tool_budget_exceeded");
   }
 }
 
@@ -246,6 +359,12 @@ export async function startConnectionConfirm(
     // this URL, or the same row under a free id when this card's id turned out
     // to be a different server's. Everything below reads `stored`, never the
     // entry that went in.
+    // Nothing is written until the budget says there is room: a row and a
+    // credential for a connect that is about to be refused would have to be
+    // unwound, and the unwinding is what loses a credential. The secret the
+    // owner just pasted goes with the check, so a spec behind a key can be
+    // counted at all; it is this card's own, not a row's.
+    await assertToolBudget(entry, authHeaders(proposal.authKind, secret || null, entry.authHeader));
     const outcome = upsertConnection(entry);
     if (!outcome.won) {
       // Another card holds this URL. Nothing of this card's is in the store,
@@ -299,6 +418,32 @@ export async function completeConnectionOAuth(
     markConnected(pendingPeek.proposalId, settled, null, opts.now ?? Date.now(), storePath);
     return { proposalId: pendingPeek.proposalId };
   }
+  const provisional: ConnectionEntry = {
+    id: proposal.connectionId,
+    kind: proposal.connectionKind,
+    name: proposal.name,
+    url: assertConnectionUrl(proposal.url),
+    description: proposal.description || `${proposal.name} MCP server`,
+    authKind: "oauth",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(opts.now ?? Date.now()).toISOString(),
+  };
+  // Refuse before the exchange only when the refusal is certain without a
+  // credential: an authorization code is single use, so a refusal after it is
+  // spent costs the owner the whole sign-in. It cannot be the only check,
+  // because an OpenAPI spec behind this very sign-in answers 401 until the
+  // token exists, and refusing on that made such a server unconnectable.
+  try {
+    await assertToolBudget(provisional);
+  } catch (err) {
+    if ((err as Error).message !== "tool_count_unknown") {
+      // Nothing of this sign-in is worth keeping: the verifier and the client
+      // secret would otherwise sit on disk with nothing pointing at them.
+      dropOauthPending(state);
+      throw err;
+    }
+  }
   const { bundle, pending } = await completeMcpOAuth({ code, state });
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");
@@ -317,6 +462,13 @@ export async function completeConnectionOAuth(
   };
   // Same last word as the confirm path: only the store's lock can see a row
   // that landed for this URL while the browser had the sign-in open.
+  const bearer = { authorization: `Bearer ${bundle.accessToken}` };
+  // After the exchange, because a spec behind this very sign-in cannot be
+  // read without the token, but still before anything is written. Refusing
+  // after the row and the credential were committed left a connection that
+  // never mounts, that the owner is told is connected, and that nothing can
+  // remove: a spec that became readable later would even mount itself.
+  await assertToolBudget(entry, bearer);
   const outcome = upsertConnection(entry);
   if (!outcome.won) {
     // Another card connected this server between the check above and this
@@ -328,7 +480,7 @@ export async function completeConnectionOAuth(
   }
   const stored = outcome.entry;
   keychainSet(connectionSecretService(stored.id), JSON.stringify(bundle));
-  const toolCount = await probeToolCount(stored, { authorization: `Bearer ${bundle.accessToken}` });
+  const toolCount = await probeToolCount(stored, bearer);
   markConnected(pending.proposalId, stored, toolCount, opts.now ?? Date.now(), storePath);
   return { proposalId: pending.proposalId };
 }

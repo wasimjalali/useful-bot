@@ -174,6 +174,26 @@ exports it to excalidraw.com in the browser. The app's own tool calls go
 through `POST /api/connections/widget/[id]/call`, limited to tools the server
 marks for its app. The web UI does not port this card.
 
+No MCP server's tools are mounted for every turn. An OpenAPI connection is,
+because eve owns spec parsing and there is no other way to reach one. Every
+MCP server waits, Excalidraw included: `find_tools`
+searches the cached listings in `~/.useful-bot/connection-tools.json` and
+records what it handed over, and a `step.started` resolver mounts those under
+`<connectionId>__<toolName>` for the next model call, inside the same turn.
+So a drawing costs one lookup first, once per chat.
+A tool it mounts is gated by the posture alone, not by the tool's name: Read
+only refuses, Auto asks, Full access runs. A Composio slug is Composio's to
+write, so reading a verb off it says something; an MCP server writes its own
+tool names, so a `list_items` that deletes would have read as a read.
+
+Budgets keep the router's walls out of reach, because a turn that hits one is
+refused with a non-retryable error and eve retires the session. The router
+counts schemas and bytes, so both are budgeted, on the connect (which is
+refused before a row or a credential is written), on the mounted set (clamped
+every turn, whatever is in the store) and on what one session may pick up.
+`test/tool-cap.test.ts` does the arithmetic, so lowering a wall or adding an
+agent tool trips CI rather than a live turn.
+
 ## Brand assets
 
 The approved mascot package, usage guidelines and visual comparison are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).

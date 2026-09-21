@@ -104,7 +104,7 @@ Severity is the auditor's. The verdict column is the orchestrator's after readin
 | S-SHARED-07 | Spark | low | bug | shared/composio-catalogue.ts:42 | Catalogue memo ignores its path | confirmed, tests only in practice | Spark | mergeable | #50 |
 | S-SHARED-08 | Spark | high | reliability | scripts/service.mjs:178 | Web channel token minted once, expires after 12h | confirmed | GLM | mergeable | #49 |
 | S-SHARED-09 | Spark | high | data | scripts/setup-local.mjs:70 | --rotate moves the config away before any key is written | confirmed | Spark | mergeable | #50 |
-| S-SHARED-10 | Spark | low | bug | shared/composio.ts:409 | disconnectConnector lists only 100 accounts | confirmed, needs over 100 connected accounts; not patched this round | | | |
+| S-SHARED-10 | Spark | low | bug | shared/composio.ts:409 | disconnectConnector lists only 100 accounts | confirmed | Spark | fixed: walks the cursor, bounded at 40 pages | #112 |
 | S-SHARED-11 | Spark | medium | reliability | scripts/verify.mjs:92 | opencode case certifies a stale results file | partial: dev tooling, documented as needing --live; not patched | | | |
 | G-WEB-01 | GLM | high | bug | web/lib/agent-exec.ts:309 | Routines and handoffs run without the bot persona | confirmed: runEveTurn never applies threadPrefix; only a session that already carries it from a UI turn keeps the role | GLM | rework: the new roster read was unguarded (Spark review, one hunk) | #49 |
 | G-WEB-02 | GLM | medium | ux | web/components/app-settings-dialog.tsx:394 | Usage meter observed-only, mislabelled | dup of S-WEB-03 and S-WEB-04 | | | |
@@ -243,7 +243,7 @@ router, #60 macOS (plus the plant_read revert and this section), all squash-merg
 | S-WEB-05 | Spark | medium | reliability | web/app/api/usage/route.ts:36 | Usage route opens a sqlite store per request | partial: handles are released on GC, still wasteful | Spark | mergeable | #57 |
 | S-WEB-06 | Spark | low | reliability | web/app/api/attachments/route.ts:15 | Attachments POST has no rate limit | confirmed | Spark | mergeable | #57 |
 | S-AGENT-01 | Spark | medium | bug | agent/tools/rail_action.ts:47 | rail_action resolves names without an ambiguity check | confirmed | Spark | rework: the hint named railAction (Spark review) | #59 |
-| S-AGENT-02 | Spark | low | ux | agent/tools/connector_execute.ts:41 | not_connected hint truncates multi-word toolkits | confirmed | Spark | rework: the throw path in composio.ts kept the truncation (Spark review) | #59 |
+| S-AGENT-02 | Spark | low | ux | agent/tools/connector_execute.ts:41 | not_connected hint truncates multi-word toolkits | confirmed | Spark | fixed: one `toolkitHint` on both paths, resolved against the cached catalogue's 1,544 slugs | #112 |
 | S-AGENT-03 | Spark | medium | reliability | agent/lib/memory.ts:146 | MemoryStore opens SQLite per call and never closes it | partial: released on GC | GLM | rework: the shared store pinned its first root (Spark review) | #59 |
 | S-AGENT-04 | Spark | high | reliability | router/src/index.ts:545 | Client disconnect leaves the reservation charged | false: the spec keeps reservations on aborted requests by design | | | |
 | S-AGENT-05 | Spark | high | reliability | router/src/circuit.ts:63 | One overrun disables the alias permanently | false: the spec blocks the alias on an overrun by design | | | |

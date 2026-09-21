@@ -65,11 +65,25 @@ export function connectorVerb(toolSlug: string, toolkit: string | null = null): 
 }
 
 export function connectorRisk(toolSlug: string, toolkit: string | null = null): ConnectorRisk {
-  const action = connectorAction(toolSlug, toolkit);
+  return actionRisk(connectorAction(toolSlug, toolkit));
+}
+
+/**
+ * The risk of an action already split into words. An MCP server names its
+ * tools whole (`list_channels`, `delete_message`) with no toolkit prefix to
+ * strip, so the caller splits and this classes it: taking the first segment
+ * for a toolkit would read `LIST_CHANNELS` as a write.
+ */
+export function actionRisk(action: string[]): ConnectorRisk {
   if (action.length === 0) return "write";
   if (action.some((word) => DESTRUCTIVE_WORDS.has(word))) return "destructive";
   if (READ_VERBS.has(action[0] ?? "")) return "read";
   return "write";
+}
+
+/** The risk of one MCP tool, from its own name. */
+export function mcpToolRisk(toolName: string): ConnectorRisk {
+  return actionRisk(toolName.trim().toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean));
 }
 
 export type ConnectorPermission = "read_only" | "auto" | "full_access" | null;
@@ -82,6 +96,21 @@ export type ConnectorPermission = "read_only" | "auto" | "full_access" | null;
  */
 export function connectorGate(risk: ConnectorRisk, permission: ConnectorPermission): "run" | "ask" | "refuse" {
   if (risk === "read") return "run";
+  if (permission === "read_only") return "refuse";
+  return permission === "full_access" ? "run" : "ask";
+}
+
+/**
+ * Whether one MCP tool runs, asks, or is refused.
+ *
+ * Not the connector ladder. A Composio slug is written by Composio, so
+ * reading a verb off it says something; an MCP server writes its own tool
+ * names, so it does not. A tool called `list_items` that deletes would have
+ * read as a read and run with no card. Nothing a server names gets to decide
+ * whether the owner is asked: Read only refuses, Auto asks, and Full access
+ * is the posture that asks nothing. `mcpToolRisk` still labels the card.
+ */
+export function mcpToolGate(permission: ConnectorPermission): "run" | "ask" | "refuse" {
   if (permission === "read_only") return "refuse";
   return permission === "full_access" ? "run" : "ask";
 }

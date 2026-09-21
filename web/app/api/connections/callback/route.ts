@@ -1,5 +1,6 @@
 import { completeConnectionOAuth } from "../../../../../shared/connection-flow.ts";
 import { requestIsLoopback } from "../../../../../shared/origin.ts";
+import { runtimeConfig } from "../../../../lib/auth";
 
 export const runtime = "nodejs";
 
@@ -38,8 +39,28 @@ function html(ok: boolean, detail: string, status = 200) {
   });
 }
 
+/**
+ * The OAuth return lands on loopback for the desktop, or through Serve for
+ * a phone-driven flow (S6). Under Next the handler's request.url is always
+ * built as proto://<bind-host>:<port>/<path> — the original tailnet origin
+ * never reaches it, so the loopback branch is what actually admits the
+ * proxied return (the same request-URL drift spec §4.2 records for
+ * x-forwarded-*). The tailnet comparison stays as the rule for any stack
+ * that preserves the request URL; on this one it can never fire.
+ */
+function callbackOriginAllowed(requestUrl: string): boolean {
+  if (requestIsLoopback(requestUrl)) return true;
+  const tailnet = runtimeConfig()?.tailnet;
+  if (!tailnet || runtimeConfig()?.phoneEnabled !== true) return false;
+  try {
+    return new URL(requestUrl).origin === tailnet.httpsOrigin;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET(request: Request) {
-  if (!requestIsLoopback(request.url)) {
+  if (!callbackOriginAllowed(request.url)) {
     return html(false, "The sign-in could not finish. You can close this tab and use Reopen.", 403);
   }
   const url = new URL(request.url);

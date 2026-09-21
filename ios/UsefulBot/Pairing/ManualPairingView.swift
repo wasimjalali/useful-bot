@@ -5,6 +5,8 @@ import UsefulBotCore
 /// field, masked token field, Connect disabled until both hold text. The
 /// endpoint validation and the request itself are PR-2; this is the anatomy.
 struct ManualPairingView: View {
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(\.dismiss) private var dismiss
     @State private var address = ""
     @State private var token = ""
     @FocusState private var focusedField: String?
@@ -33,6 +35,11 @@ struct ManualPairingView: View {
         .background(Theme.C.surface)
         .navigationTitle("Enter manually")
         .navigationBarTitleDisplayMode(.inline)
+        // Pairing succeeded underneath the sheet: close it; the root swap to
+        // the Bots list happens on the state change.
+        .onChange(of: coordinator.store.state) { _, state in
+            if state == .paired { dismiss() }
+        }
     }
 
     private func field(
@@ -47,6 +54,10 @@ struct ManualPairingView: View {
         return Group {
             if secure {
                 SecureField(label, text: text, prompt: prompt)
+                    // A pairing token is one-shot, not a login password —
+                    // oneTimeCode keeps Keychain from offering "Save
+                    // Password?" (and AutoFill from offering credentials).
+                    .textContentType(.oneTimeCode)
             } else {
                 TextField(label, text: text, prompt: prompt)
                     .keyboardType(keyboard)
@@ -84,28 +95,62 @@ struct ManualPairingView: View {
     }
 
     private var connectButton: some View {
-        let ready = !address.isEmpty && !token.isEmpty
+        let filled = !address.isEmpty && !token.isEmpty
+        let online = coordinator.monitor.isOnline
+        // Busy means connecting *or* the connected hold — a tap mid-hold
+        // would race a second pair against the first attempt's retire.
+        let connecting: Bool = {
+            switch coordinator.phase {
+            case .connecting, .connected: return true
+            case .idle, .failed: return false
+            }
+        }()
+        let enabled = filled && online && !connecting
         return VStack(spacing: 8) {
-            Button {} label: {
-                Text("Connect")
+            Button {
+                Task { await coordinator.pairManually(host: address, token: token) }
+            } label: {
+                Text(connecting ? "Connecting" : "Connect")
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
-                    .foregroundStyle(ready ? Theme.C.brandInk : Theme.C.inkFaint)
+                    .foregroundStyle(enabled ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 50)
             }
-            .disabled(!ready)
+            .disabled(!enabled)
             .buttonStyle(PressedScale(
-                fill: ready ? Theme.C.brand : Theme.C.sunken,
-                pressedFill: ready ? Theme.C.accentStrong : Theme.C.sunken,
-                shadowed: ready
+                fill: enabled ? Theme.C.brand : Theme.C.sunken,
+                pressedFill: enabled ? Theme.C.accentStrong : Theme.C.sunken,
+                shadowed: enabled
             ))
-            if !ready {
-                Text("Enter the Mac address and pairing token.")
+            .accessibilityIdentifier("manual-connect")
+            .ubFocusRing()
+            // A failed attempt's message sits in the reason slot under the
+            // button — inline, never a floating overlay that could paint
+            // over the control (design spec 1.1's error row is a `danger`
+            // status line). The error reason rides the coordinator's phase
+            // so this line and the pairing screen's status line never
+            // disagree.
+            if case .failed(let message) = coordinator.phase {
+                Text(message)
+                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
+                    .foregroundStyle(Theme.C.danger)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !enabled {
+                // Disabled-with-reason (design spec 1.1): inkMuted, never
+                // danger — nothing failed.
+                Text(reason(online: online, connecting: connecting, filled: filled))
                     .tokenFont(DesignTokens.FontSize.attachError, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private func reason(online: Bool, connecting: Bool, filled: Bool) -> String {
+        if connecting { return "Connecting to your Mac" }
+        if !online { return "You're offline" }
+        return "Enter the Mac address and pairing token."
     }
 }
 
