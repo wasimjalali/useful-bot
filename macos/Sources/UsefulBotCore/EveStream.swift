@@ -589,6 +589,18 @@ public struct StreamProjection: Equatable, Sendable {
     /// up, and a scan of the whole history per delta is what ten bots
     /// streaming into long chats were paying on the main actor.
     private var indexById: [String: Int] = [:]
+    /// The journal position of the event that made each row, in step with
+    /// `messages`. Nil for a row the journal has not placed yet: the send's
+    /// own optimistic row, or any row from a stream that carries no
+    /// positions. It is what puts a backfilled turn's row above the rows of
+    /// the turns that came after it.
+    private var rowJournal: [Int?] = []
+    /// Where the newest tagged turn this projection knows began in the
+    /// journal. An unknown turn whose event sits before it is not the next
+    /// turn but an older one arriving late: a send whose stream died before
+    /// its echo armed left nothing of its turn here, and the follower brings
+    /// that turn in after the resend has painted its own.
+    private var newestTurnStart: Int?
     /// What one turn has done so far, kept apart from what the projection
     /// shows: which row it carried, whether it got anywhere, whether it is
     /// over. Everything its failure needs to know in order to fold a retry.
@@ -672,24 +684,38 @@ public struct StreamProjection: Equatable, Sendable {
         return "\(prefix)-\(minted)"
     }
 
-    private mutating func appendMessage(_ message: ChatMessage) {
+    private mutating func appendMessage(_ message: ChatMessage, journal: Int?) {
         if indexById[message.id] == nil { indexById[message.id] = messages.count }
         messages.append(message)
+        rowJournal.append(journal)
     }
 
     /// Put a turn's row under the last row that turn owns. For the turn in
     /// flight that is the end of the transcript, as it always was; for a
     /// turn stepped off, it is the place a replay would have put the row,
-    /// above the next turn's message. Nothing known to sit under: the end.
-    private mutating func insertMessage(_ message: ChatMessage, under anchor: String?) {
-        guard let anchor, let held = indexById[anchor], held < messages.count - 1 else {
-            appendMessage(message)
+    /// above the next turn's message. A turn with no row yet goes where its
+    /// journal position says: ahead of the first row a later event made,
+    /// which is where the replay would have put it too. Nothing known to sit
+    /// under and no position: the end.
+    private mutating func insertMessage(_ message: ChatMessage, under anchor: String?, journal: Int?) {
+        let at: Int
+        if let anchor, let held = indexById[anchor] {
+            at = held + 1
+        } else if let journal {
+            // A row the journal has not placed is the send's own optimistic
+            // row, which is later than anything the journal already holds.
+            at = rowJournal.firstIndex { $0.map { $0 > journal } ?? true } ?? messages.count
+        } else {
+            at = messages.count
+        }
+        guard at < messages.count else {
+            appendMessage(message, journal: journal)
             return
         }
-        let at = held + 1
         for (id, index) in indexById where index >= at { indexById[id] = index + 1 }
         if indexById[message.id] == nil { indexById[message.id] = at }
         messages.insert(message, at: at)
+        rowJournal.insert(journal, at: at)
     }
 
     /// Step off the turn in flight. A tagged turn keeps its record, because
@@ -745,6 +771,7 @@ public struct StreamProjection: Equatable, Sendable {
         // A turn named only by its end: the stream started mid-way, or its
         // message came untagged. What the record holds so far is its.
         currentTurnId = named
+        noteTurnStart(event.index)
         return .current
     }
 
@@ -819,8 +846,27 @@ public struct StreamProjection: Equatable, Sendable {
             discardedUserMessageId = carried
         } else if messages[index + 1].role == .user, messages[index + 1].text == messages[index].text {
             messages.remove(at: index)
+            rowJournal.remove(at: index)
             for (id, held) in indexById where held > index { indexById[id] = held - 1 }
         }
+    }
+
+    /// Whether an event names a turn this projection never recorded that
+    /// sits in the journal before the newest turn it knows. That is not the
+    /// next turn but an older one arriving late, and it must neither unseat
+    /// the turn in flight nor end it. A stream without positions cannot tell
+    /// the two apart, and reads as it always did.
+    private func isBackfill(_ event: EveEvent) -> Bool {
+        guard let named = event.turnId, named != currentTurnId, turns[named] == nil,
+              let index = event.index, let newest = newestTurnStart else { return false }
+        return index < newest
+    }
+
+    /// A tagged turn has become known as the newest: where it began is what
+    /// an older turn's backfill is measured against.
+    private mutating func noteTurnStart(_ index: Int?) {
+        guard let index else { return }
+        newestTurnStart = max(newestTurnStart ?? index, index)
     }
 
     /// A message eve filed under a turn this projection has stepped off,
@@ -831,20 +877,26 @@ public struct StreamProjection: Equatable, Sendable {
     private mutating func lateUserRow(_ event: EveEvent, text: String, at stamp: Date?, for id: String) {
         guard var stepped = turns[id] else { return }
         let userId = event.id ?? mintId("u")
-        insertMessage(ChatMessage(id: userId, role: .user, text: text, at: stamp), under: stepped.lastRowId)
+        insertMessage(
+            ChatMessage(id: userId, role: .user, text: text, at: stamp),
+            under: stepped.lastRowId,
+            journal: event.index
+        )
         Self.claimUserRow(userId, on: &stepped)
         turns[id] = stepped
     }
 
     /// Give the last row the echo's identity without moving it, so a message
     /// this projection already shows folds into the row it names.
-    private mutating func adoptLastUserRow(id: String, text: String, at: Date?) {
+    private mutating func adoptLastUserRow(id: String, text: String, at: Date?, journal: Int?) {
         guard !messages.isEmpty else { return }
         // The id it leaves behind keeps pointing here. The durable stream can
         // redeliver that event once the bounded id cache has evicted it, and
         // this mapping is then the only thing that still recognises it.
         if indexById[id] == nil { indexById[id] = messages.count - 1 }
         messages[messages.count - 1] = ChatMessage(id: id, role: .user, text: text, at: at)
+        // The echo is where the journal placed the row the app put up early.
+        if let journal { rowJournal[messages.count - 1] = journal }
     }
 
     /// A turn is starting from this app.
@@ -901,6 +953,16 @@ public struct StreamProjection: Equatable, Sendable {
         // stamped from the client clock, while a replay of old history is not
         // (the durable events already carry their own times).
         let stamp = TranscriptBlocks.date(fromISO8601: event.metaAt) ?? (live ? Date() : nil)
+        // A turn this projection never recorded, arriving from before the
+        // newest turn it knows. Taken for the next turn it stepped off the
+        // live one, appended its rows under the live rows where a replay
+        // puts them above, and its end then cleared the working row while the
+        // live turn's end was still owed. It is a turn the next one has
+        // passed, so it gets the record such a turn keeps: its rows go where
+        // the journal says, and its end is its own.
+        if isBackfill(event), let named = event.turnId {
+            stash(named, TurnRecord(superseded: true))
+        }
         // Work for a turn this projection has stepped off (its send's stream
         // dropped, and the follower is bringing the rest of it in under the
         // next turn's message) is still that turn's work. Its failure, when
@@ -937,6 +999,7 @@ public struct StreamProjection: Equatable, Sendable {
                     // names itself in its message anyway.
                     guard currentTurnId == nil else { break }
                     turn = TurnRecord()
+                    noteTurnStart(event.index)
                 }
                 currentTurnId = named
             } else {
@@ -968,12 +1031,14 @@ public struct StreamProjection: Equatable, Sendable {
                     // A message eve filed under a turn this projection has
                     // stepped off, arriving late. A send's own echo, still
                     // under the optimistic row it answers, means that turn is
-                    // the one in flight after all and the row is its. Anything
-                    // else goes under the rows that turn already owns, and the
-                    // turn in flight keeps the projection: taking it away
-                    // gated out the rest of the live reply as somebody
-                    // else's.
-                    let ownEcho = currentTurnId == nil && !turn.isBlank
+                    // the one in flight after all and the row is its. Not a
+                    // turn another turn's message has passed: eve runs one
+                    // turn at a time, so its echo cannot be this send's.
+                    // Anything else goes under the rows that turn already
+                    // owns, and the turn in flight keeps the projection:
+                    // taking it away gated out the rest of the live reply as
+                    // somebody else's.
+                    let ownEcho = currentTurnId == nil && !turn.isBlank && !known.superseded
                         && messages.last.map {
                             $0.role == .user && $0.text == text && $0.id.hasPrefix(EveStream.optimisticUserPrefix)
                         } == true
@@ -998,6 +1063,7 @@ public struct StreamProjection: Equatable, Sendable {
                     turns[id]?.superseded = true
                 }
                 currentTurnId = named
+                noteTurnStart(event.index)
             }
             // The last turn failed before the bot said anything, and eve threw
             // the message away with it. The same text arriving again is that
@@ -1012,7 +1078,7 @@ public struct StreamProjection: Equatable, Sendable {
                 // reads right, so the marker stays armed and the echo that
                 // does carry one folds into it rather than beside it.
                 if let id = event.id {
-                    adoptLastUserRow(id: id, text: text, at: stamp ?? last.at)
+                    adoptLastUserRow(id: id, text: text, at: stamp ?? last.at, journal: event.index)
                     turn.carriedUserMessageId = id
                     discardedUserMessageId = nil
                 } else {
@@ -1040,7 +1106,7 @@ public struct StreamProjection: Equatable, Sendable {
                     // Only re-point a claim that named this row: a nil slot
                     // means two rows are open and neither may be claimed.
                     if turn.carriedUserMessageId == last.id { turn.carriedUserMessageId = id }
-                    adoptLastUserRow(id: id, text: text, at: stamp ?? last.at)
+                    adoptLastUserRow(id: id, text: text, at: stamp ?? last.at, journal: event.index)
                     turn.lastRowId = id
                 }
                 turn.sawMessage = true
@@ -1054,7 +1120,7 @@ public struct StreamProjection: Equatable, Sendable {
                 role: .user,
                 text: text,
                 at: stamp
-            ))
+            ), journal: event.index)
             // A message is a turn starting, so the last one's outcome goes
             // with it. Only the matching retry used to clear this, which left
             // a failure banner standing over a different question on a stream
@@ -1148,7 +1214,11 @@ public struct StreamProjection: Equatable, Sendable {
             } else {
                 let id = event.id ?? mintId("a")
                 record.assistantId = id
-                insertMessage(ChatMessage(id: id, role: .assistant, text: delta, at: stamp), under: record.lastRowId)
+                insertMessage(
+                    ChatMessage(id: id, role: .assistant, text: delta, at: stamp),
+                    under: record.lastRowId,
+                    journal: event.index
+                )
                 record.lastRowId = id
             }
         case "message.completed":
@@ -1188,7 +1258,11 @@ public struct StreamProjection: Equatable, Sendable {
                     if messages[index].at == nil { messages[index].at = stamp }
                 } else {
                     let id = event.id ?? mintId("a")
-                    insertMessage(ChatMessage(id: id, role: .assistant, text: full, at: stamp), under: record.lastRowId)
+                    insertMessage(
+                        ChatMessage(id: id, role: .assistant, text: full, at: stamp),
+                        under: record.lastRowId,
+                        journal: event.index
+                    )
                     record.lastRowId = id
                 }
             }
