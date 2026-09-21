@@ -68,9 +68,10 @@ public enum ShellActions {
         petname: String?,
         label: String,
         description: String,
-        sectionId: String?
+        sectionId: String?,
+        preserveSelection: Bool = false
     ) -> [String: Any] {
-        [
+        var action: [String: Any] = [
             "type": "createBot",
             "name": name,
             "petname": petname ?? name,
@@ -78,18 +79,33 @@ public enum ShellActions {
             "description": description,
             "sectionId": sectionId ?? NSNull(),
         ]
+        if preserveSelection { action["preserveSelection"] = true }
+        return action
     }
 
     public static func createGroup(
         name: String,
         memberIds: [String],
-        sectionId: String? = nil
+        sectionId: String? = nil,
+        preserveSelection: Bool = false
     ) -> [String: Any] {
-        [
+        var action: [String: Any] = [
             "type": "createGroup",
             "name": name,
             "memberIds": memberIds,
             "sectionId": sectionId ?? NSNull(),
+        ]
+        if preserveSelection { action["preserveSelection"] = true }
+        return action
+    }
+
+    /// `preserveSelection` keeps the other client's selected bot. The phone
+    /// always passes true. The Mac does not call this helper.
+    public static func newChat(botId: String, preserveSelection: Bool) -> [String: Any] {
+        [
+            "type": "newChat",
+            "botId": botId,
+            "preserveSelection": preserveSelection,
         ]
     }
 

@@ -9,11 +9,17 @@ identifiers, no tailnet addresses, no device names.
 
 | Metric | Total |
 |--------|-------|
-| PRs merged | 1/8 |
+| PRs merged | 2/8 |
 | Total wall time | ~6.1 h (PR-1 session) |
 | Review rounds | 6 |
 | Findings (blocker/high/medium/low) | 1/6/14/27 |
 | Token spend | not exposed |
+
+The header counters for wall time, rounds and findings were written at the
+PR-1 merge and were not rolled forward when PR-2 merged. They still describe
+PR-1 only. PR-2's rounds live in its entry; this session does not reconstruct
+them into the header. PRs merged is corrected to 2/8 because `ddb0005` is on
+main.
 
 ## Environment record (spec 17.0)
 
@@ -1314,3 +1320,83 @@ Diagnostics group; bots-resigned-in shows the nav bar).
 MERGED: squash commit `ddb0005` on `main`, PR #106 closed with the
 round record. The phone test credential was rotated after the run;
 the reviewer sessions were slept for the cap.
+
+## PR-3 - Chat core (P2)
+
+- Lead: Grok 4.7 in Cursor, local worktree
+- Started: 2026-09-21T18:43Z
+- Branch: `ios/pr-3` at `9c041a2` (origin/main). No PR-3 code existed; this
+  entry is the skeleton written before implementation.
+- Worktree: `/Users/wasimjalali/Desktop/useful-bot-ios`. The main checkout is
+  not used.
+
+### Local environment (spec 17.0, owner's Mac)
+
+Recorded at start. The cloud record above stays as history; this is the
+machine that builds PR-3.
+
+- Host: owner's Mac, Apple Silicon, macOS 26 (darwin 25.6.0)
+- Xcode: `xcodebuild` is not available. `xcode-select` points at Command Line
+  Tools. A package receipt for Xcode 26.6 exists, and `/Applications/Xcode.app`
+  does not. Simulator destination is therefore not yet recorded. Gate stays
+  red until a real `xcodebuild -version` and `xcrun simctl list devices
+  available` can be written here. Not skipped.
+- Swift (Command Line Tools): 6.3.3 (swiftlang-6.3.3.1.3)
+- Node: v24.11.1 at `/usr/local/bin/node` (the version `scripts/service.mjs`
+  accepts). The shell default on PATH is v22.23.1 and is not used for the
+  stack.
+- XcodeGen: not installed at start.
+
+### Scope (plan, before code)
+
+Spec 17.2 P2: bots list with device-local selection, transcript (durable and
+live merge, day dividers, markdown, folding, working row, search chips),
+composer send and cancel with the §8.4 confirming state, cursor protocol
+(§8.3), poll loop, dark mode. Server S11 (`touchChat` compare-and-set) and
+S14 (pump coalescing). Performance baselines on the long fixture chat.
+
+Design spec screens: 1.2 Bots list (full anatomy), 1.3 Chat including the
+composer, model and effort sheet, permission chip, folder chip (read-only),
+mention list, confirming and conflict states. Approval cards, attachments
+and widgets stay in PR-4 and PR-5. Class B (the composer's lock on a
+`full_access` bot) lands with the composer, because an ungated send would
+violate §4.4; class A stays with the cards in PR-4. Assumption recorded
+under Surprises once the code exists.
+
+Search field on the bots list opens the spec §9.1 search (name, label,
+description, section, recent titles). The PR-7 pass still owns the
+accessibility audit of that sheet.
+
+### Checkpoint (code on the branch, not merged)
+
+Xcode.app is not on this Mac (`xcode-select` is Command Line Tools; a receipt
+for Xcode 26.6 remains). `xcodebuild` and the simulator gate are **red**.
+Not skipped. `swift test` cannot load the `Testing` module from the Command
+Line Tools, so the macOS test gate is red for the same reason. `swift build`
+of the macOS package (the library, not the tests) completed with no errors.
+
+Implemented and unit-tested without the simulator:
+
+- S11: `touchChat` compare-and-set. Absent `expectedSessionId` keeps the Mac's
+  unconditional write. Present, including null, 409s with `sessionId` when it
+  does not match. `test/shell-store.test.ts` covers match, mismatch, and null.
+- S14: `CoalescedPump` allows one running pump and one waiter. A third caller
+  is `coalesced`. The tick returns `{ coalesced: true }` only when both the
+  handoff and routine pumps refuse another chain. `test/pump-coalesce.test.ts`.
+- `newChat`, `createBot` and `createGroup` take `preserveSelection`. The phone
+  sends it so those writes do not move the Mac's selected bot. The Mac omits
+  it, so its behavior is unchanged. Assumption: the existing actions wrote
+  `selectedBotId`, which would fail the PR-3 two-client gate.
+- Class B (one Face ID check per foreground activation) is in the composer.
+  Class A confirm is used only for a permission escalation. Approval cards
+  stay in PR-4. Assumption recorded because an ungated `full_access` send
+  would violate §4.4.
+- Phone model: device-local selection, poll compare-before-assign, replay
+  collected then published once, confirming state that reads the tail and
+  does not resend.
+
+Node for the tests: v24.11.1 at `/usr/local/bin/node`. XcodeGen 2.46.0.
+`xcodegen generate` run twice; the second run did not change the project.
+
+Not done: simulator build, screenshots, the long-fixture baseline numbers,
+the live Test Bot round trip, review, merge. Those wait on Xcode.

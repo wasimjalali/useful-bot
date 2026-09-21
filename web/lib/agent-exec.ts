@@ -36,6 +36,7 @@ import { peekShell, readShell, shellWasReseeded, updateShell } from "../../share
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import type { ShellBot } from "../../shared/shell-store.ts";
+import { CoalescedPump } from "./pump-coalesce.ts";
 
 /**
  * Handoff delivery. The sending agent tool only writes a queue record, so a
@@ -128,11 +129,20 @@ function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
  * not hold across the two routes (the durable store claim was the only guard).
  * Found live on 2026-09-17: five routines running, tick reported none.
  */
+type HandoffPumpResult = {
+  delivered: Array<{ id: string; to: string }>;
+  failed: Array<{ id: string; error: string }>;
+  queued: number;
+};
+
 interface PumpState {
   inflight: Set<string>;
   routinesInflight: Set<string>;
   pumpQueue: Promise<unknown>;
   routineQueue: Promise<unknown>;
+  /** S14. Held on the process global so tick and wake share one slot. */
+  handoffPump?: CoalescedPump<HandoffPumpResult>;
+  routinePump?: CoalescedPump<RoutinePumpResult>;
 }
 const PUMP_STATE_KEY = Symbol.for("useful-bot.agent-exec.pump-state");
 const pumpState: PumpState = ((globalThis as Record<symbol, unknown>)[PUMP_STATE_KEY] ??= {
@@ -607,14 +617,18 @@ export function handoffWorkingBotIds(): string[] {
 // must not hold up a handoff to another. The batch size is the bound on how
 // many eve deliveries this pump holds open (the tick caps it at four).
 
-export function pumpHandoffs(limit = 2): Promise<{
-  delivered: Array<{ id: string; to: string }>;
-  failed: Array<{ id: string; error: string }>;
-  queued: number;
-}> {
-  const run = pumpState.pumpQueue.then(() => pumpOnce(limit), () => pumpOnce(limit));
-  pumpState.pumpQueue = run.then(() => undefined, () => undefined);
-  return run;
+export function pumpHandoffs(limit = 2): Promise<HandoffPumpResult> {
+  return scheduleHandoffPump(limit).promise;
+}
+
+/** S14: the tick learns whether this call started work or joined a full slot. */
+export function scheduleHandoffPump(limit = 2): { coalesced: boolean; promise: Promise<HandoffPumpResult> } {
+  return handoffPump().schedule(limit);
+}
+
+function handoffPump(): CoalescedPump<HandoffPumpResult> {
+  pumpState.handoffPump ??= new CoalescedPump((limit) => pumpOnce(limit));
+  return pumpState.handoffPump;
 }
 
 /**
@@ -1020,12 +1034,17 @@ export type RoutinePumpResult = {
 const MAX_ACTIVE_ROUTINES = 4;
 
 export function pumpRoutines(limit = 2): Promise<RoutinePumpResult> {
-  const run = pumpState.routineQueue.then(
-    () => pumpRoutinesOnce(limit),
-    () => pumpRoutinesOnce(limit),
-  );
-  pumpState.routineQueue = run.then(() => undefined, () => undefined);
-  return run;
+  return scheduleRoutinePump(limit).promise;
+}
+
+/** S14, same slot rule as the handoff pump. */
+export function scheduleRoutinePump(limit = 2): { coalesced: boolean; promise: Promise<RoutinePumpResult> } {
+  return routinePump().schedule(limit);
+}
+
+function routinePump(): CoalescedPump<RoutinePumpResult> {
+  pumpState.routinePump ??= new CoalescedPump((limit) => Promise.resolve(pumpRoutinesOnce(limit)));
+  return pumpState.routinePump;
 }
 
 /**

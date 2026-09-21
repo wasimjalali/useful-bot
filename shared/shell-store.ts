@@ -128,6 +128,8 @@ export type ShellAction =
       description?: string;
       sectionId?: string | null;
       kind?: BotKind;
+      /** Phone sets this so creating a bot does not move the Mac's selection. */
+      preserveSelection?: boolean;
     }
   | {
       type: "createGroup";
@@ -136,6 +138,7 @@ export type ShellAction =
       label?: string;
       description?: string;
       sectionId?: string | null;
+      preserveSelection?: boolean;
     }
   | { type: "createSection"; name: string }
   | { type: "renameBot"; botId: string; name: string }
@@ -159,11 +162,36 @@ export type ShellAction =
     }
   | { type: "setPermission"; botId: string; permission: WorkspacePermission }
   | { type: "sendToBot"; botId: string; message: string; sourceBotId?: string | null }
-  | { type: "touchChat"; botId: string; preview: string; sessionId?: string | null }
-  | { type: "newChat"; botId?: string }
+  | {
+      type: "touchChat";
+      botId: string;
+      preview: string;
+      sessionId?: string | null;
+      /**
+       * Compare-and-set (S11). Absent means the caller is not racing, which is
+       * the macOS client in v1. Present, including null, must match the stored
+       * pointer or the action fails with `SessionConflict`.
+       */
+      expectedSessionId?: string | null;
+    }
+  | { type: "newChat"; botId?: string; preserveSelection?: boolean }
   | { type: "clearThread"; botId: string }
   | { type: "openRecent"; recentId: string }
   | { type: "toggleSection"; sectionId: string };
+
+/**
+ * `touchChat` lost the compare-and-set. `sessionId` is the pointer the store
+ * holds now, null when the bot has none. The route answers 409 with both.
+ */
+export class SessionConflict extends Error {
+  readonly sessionId: string | null;
+
+  constructor(sessionId: string | null) {
+    super("session_conflict");
+    this.name = "SessionConflict";
+    this.sessionId = sessionId;
+  }
+}
 
 export function nowIso(at = new Date()): string {
   return at.toISOString();
@@ -599,7 +627,11 @@ export function applyShellAction(
         workspace: null,
       };
       return {
-        store: { ...store, selectedBotId: id, bots: [bot, ...store.bots] },
+        store: {
+          ...store,
+          selectedBotId: action.preserveSelection ? store.selectedBotId : id,
+          bots: [bot, ...store.bots],
+        },
         createdId: id,
       };
     }
@@ -635,7 +667,11 @@ export function applyShellAction(
         workspace: null,
       };
       return {
-        store: { ...store, selectedBotId: id, bots: [group, ...store.bots] },
+        store: {
+          ...store,
+          selectedBotId: action.preserveSelection ? store.selectedBotId : id,
+          bots: [group, ...store.bots],
+        },
         createdId: id,
       };
     }
@@ -869,6 +905,15 @@ export function applyShellAction(
     }
     case "touchChat": {
       const preview = clip(action.preview, PREVIEW_MAX);
+      const current = store.bots.find((bot) => bot.id === action.botId);
+      if (!current) throw new Error("shell_bot_missing");
+      // Present, including null: the phone always sends it. Absent: the Mac
+      // does not, and must keep today's unconditional write.
+      if (Object.prototype.hasOwnProperty.call(action, "expectedSessionId")) {
+        const expected = action.expectedSessionId ?? null;
+        const stored = current.sessionId ?? null;
+        if (expected !== stored) throw new SessionConflict(stored);
+      }
       return {
         store: {
           ...store,
@@ -891,10 +936,12 @@ export function applyShellAction(
       const recents = pushRecent(store, bot, stamp);
       // "New chat" clears the bot row, but the bot's agent transcript is the
       // durable handoff log and is cleared separately.
+      // The phone passes preserveSelection so this write cannot move the
+      // Mac's selected bot. Absent stays the Mac's behavior.
       return {
         store: {
           ...store,
-          selectedBotId: botId,
+          selectedBotId: action.preserveSelection ? store.selectedBotId : botId,
           recents,
           bots: store.bots.map((item) => (
             item.id === botId ? touch(item, stamp, { sessionId: null, lastPreview: "", lastAt: null }) : item

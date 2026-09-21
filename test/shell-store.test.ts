@@ -7,6 +7,7 @@ import { defaultFaceFor, isAvatarColor, isAvatarShape } from "../shared/bot-face
 import {
   applyShellAction,
   DEFAULT_BOT_ID,
+  SessionConflict,
   parseShell,
   pinnedBots,
   searchBots,
@@ -356,4 +357,74 @@ test("setPermission is the bot's own setting, mirrored onto an attached folder",
     bots: seedStore().bots.map((bot) => ({ ...bot, permission: undefined, workspace: { path: "/tmp/p", permission: "read_only" } })),
   });
   assert.equal(legacy.bots[0].permission, "read_only");
+});
+
+test("touchChat compare-and-set rejects a stale expected session", () => {
+  let store = seedStore();
+  store = applyShellAction(store, {
+    type: "touchChat",
+    botId: DEFAULT_BOT_ID,
+    preview: "first",
+    sessionId: "sess-a",
+  }).store;
+  assert.equal(store.bots[0].sessionId, "sess-a");
+  // Absent expectedSessionId is the Mac: the write still lands.
+  store = applyShellAction(store, {
+    type: "touchChat",
+    botId: DEFAULT_BOT_ID,
+    preview: "mac",
+    sessionId: "sess-b",
+  }).store;
+  assert.equal(store.bots[0].sessionId, "sess-b");
+  assert.throws(
+    () => applyShellAction(store, {
+      type: "touchChat",
+      botId: DEFAULT_BOT_ID,
+      preview: "phone",
+      sessionId: "sess-c",
+      expectedSessionId: "sess-a",
+    }),
+    (error: unknown) => error instanceof SessionConflict && error.sessionId === "sess-b",
+  );
+  assert.equal(store.bots[0].sessionId, "sess-b");
+  store = applyShellAction(store, {
+    type: "touchChat",
+    botId: DEFAULT_BOT_ID,
+    preview: "phone",
+    sessionId: "sess-c",
+    expectedSessionId: "sess-b",
+  }).store;
+  assert.equal(store.bots[0].sessionId, "sess-c");
+  // Creating a session expects the pointer to be empty.
+  assert.throws(
+    () => applyShellAction(store, {
+      type: "touchChat",
+      botId: DEFAULT_BOT_ID,
+      preview: "fork",
+      sessionId: "sess-d",
+      expectedSessionId: null,
+    }),
+    (error: unknown) => error instanceof SessionConflict && error.sessionId === "sess-c",
+  );
+});
+
+test("newChat can keep the other client's selection", () => {
+  let store = seedStore();
+  const created = applyShellAction(store, {
+    type: "createBot",
+    name: "Other",
+    petname: "Other",
+    label: "Other",
+    description: "",
+    sectionId: null,
+  });
+  store = created.store;
+  const other = created.createdId!;
+  store = applyShellAction(store, { type: "select", botId: DEFAULT_BOT_ID }).store;
+  store = applyShellAction(store, { type: "newChat", botId: other }).store;
+  assert.equal(store.selectedBotId, other);
+  store = applyShellAction(store, { type: "select", botId: DEFAULT_BOT_ID }).store;
+  store = applyShellAction(store, { type: "newChat", botId: other, preserveSelection: true }).store;
+  assert.equal(store.selectedBotId, DEFAULT_BOT_ID);
+  assert.equal(store.bots.find((bot) => bot.id === other)?.sessionId ?? null, null);
 });

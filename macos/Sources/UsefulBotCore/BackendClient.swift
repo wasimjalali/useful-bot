@@ -33,6 +33,9 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case streamInterrupted
     /// The turn carried an image and the selected model is text-only.
     case modelNoVision
+    /// `touchChat` lost the compare-and-set (S11). The associated value is
+    /// the pointer the server holds now, nil when the bot has none.
+    case sessionConflict(String?)
 
     public var errorDescription: String? {
         switch self {
@@ -84,6 +87,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The connection dropped before the reply finished."
         case .modelNoVision:
             return "This model can't see images. Pick one that can from the model menu."
+        case .sessionConflict:
+            return "Your Mac moved this conversation."
         }
     }
 
@@ -169,6 +174,10 @@ private struct SendResponse: Decodable { let sessionId: String? }
 /// the one value the proxy relays, `session_not_active`.
 private struct EveErrorResponse: Decodable { let code: String?; let error: String? }
 private struct ShellErrorResponse: Decodable { let error: String? }
+private struct SessionConflictBody: Decodable {
+    let error: String?
+    let sessionId: String?
+}
 private struct ProvidersResponse: Decodable {
     let composer: ComposerState?
     let providers: [ProviderPublic]?
@@ -1342,23 +1351,50 @@ public actor BackendClient {
         return sid
     }
 
+    /// Whether `touchChat` carries the S11 compare-and-set field.
+    public enum ExpectedSession: Sendable {
+        /// Omitted. The server keeps an unconditional write. The Mac uses this.
+        case absent
+        /// Sent, including nil. Must match the stored pointer or the server
+        /// answers 409 `session_conflict`. The phone always uses this.
+        case pointer(String?)
+    }
+
     /// Persist the session pointer and preview for a bot, the same shell
     /// action the web client sends after a turn starts. Without it a poll
     /// would read back a null session and the next send would start a new one.
+    /// The Mac omits `expectedSessionId`. The phone passes `.pointer`.
     public func touchChat(botId: String, preview: String, sessionId: String) async throws {
+        try await touchChat(botId: botId, preview: preview, sessionId: sessionId, expected: .absent)
+    }
+
+    public func touchChat(
+        botId: String,
+        preview: String,
+        sessionId: String?,
+        expected: ExpectedSession
+    ) async throws {
         let (data, response) = try await perform { client, token in
-            let action: [String: Any] = [
+            var action: [String: Any] = [
                 "type": "touchChat",
                 "botId": botId,
                 "preview": preview,
-                "sessionId": sessionId,
+                "sessionId": sessionId ?? NSNull(),
             ]
+            if case .pointer(let expectedId) = expected {
+                action["expectedSessionId"] = expectedId ?? NSNull()
+            }
             var request = URLRequest(url: client.base.appendingPathComponent("api/shell"))
             request.httpMethod = "PUT"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             request.httpBody = try JSONSerialization.data(withJSONObject: ["action": action])
             return request
+        }
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let conflict = try? JSONDecoder().decode(SessionConflictBody.self, from: data),
+           conflict.error == "session_conflict" {
+            throw BackendError.sessionConflict(conflict.sessionId)
         }
         try Self.expectShellOK(data, response)
         // A 200 body can still carry {ok:false,error}; never treat that as a

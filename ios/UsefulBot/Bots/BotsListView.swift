@@ -20,15 +20,17 @@ extension DynamicTypeSize {
 /// states, and the entry to Devices where sign-out and unpair live.
 struct BotsListView: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(PhoneModel.self) private var phone
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var bots: [ShellBot] = []
+    @State private var showSearch = false
+    @State private var showCreate = false
+    @State private var newBotName = ""
     /// `loaded` means a roster fetch has *succeeded* at least once — a failed
     /// first load shows the error row, never "Create your first bot".
-    @State private var loaded = false
-    /// The last non-readiness fetch failure, rendered as the spec 1.2 Error
-    /// row (inline line + Retry); cleared by the next successful fetch.
-    @State private var loadError: String?
+    private var loaded: Bool { phone.loaded }
+    private var loadError: String? { phone.loadError }
+    private var bots: [ShellBot] { phone.shell?.bots ?? [] }
     @State private var showDevices = false
     /// When `/api/shell` last answered — the "cached N min ago" the offline
     /// banner quotes.
@@ -52,6 +54,24 @@ struct BotsListView: View {
                 expiryBanner
             }
             Section {
+                Button {
+                    showSearch = true
+                } label: {
+                    Text("Search")
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                        .foregroundStyle(Theme.C.inkFaintText)
+                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .background(Theme.C.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                                .strokeBorder(Theme.C.edge, lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .accessibilityLabel("Search")
                 if let loadError {
                     loadErrorRow(loadError)
                 }
@@ -61,12 +81,39 @@ struct BotsListView: View {
                     // A failed fetch never asserts an empty roster.
                     if loadError == nil { emptyState }
                 } else {
-                    ForEach(bots) { bot in
-                        Text(bot.name)
-                            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                            .foregroundStyle(Theme.C.ink)
+                    ForEach(bots.filter { !$0.hidden }) { bot in
+                        Button {
+                            phone.select(bot.id)
+                        } label: {
+                            HStack(spacing: 12) {
+                                BotFace(bot: bot, size: 40)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(bot.name)
+                                        .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                                        .foregroundStyle(Theme.C.ink)
+                                    if bot.label != bot.name && !bot.label.isEmpty {
+                                        Text(phone.workingBotIds.contains(bot.id) && reduceMotion ? "\(bot.label) · Working" : bot.label)
+                                            .tokenFont(DesignTokens.FontSize.phoneRailLabel, .regular)
+                                            .foregroundStyle(Theme.C.inkMuted)
+                                    }
+                                }
+                                Spacer()
+                            }
                             .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
-                            .listRowBackground(Color.clear)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(Color.clear)
+                        .accessibilityLabel(phone.workingBotIds.contains(bot.id) ? "\(bot.name), working" : bot.name)
+                        .accessibilityHint("double-tap to open")
+                        .swipeActions(edge: .leading) {
+                            Button(bot.pinned ? "Unpin" : "Pin") {
+                                Task { await phone.pin(bot.id, !bot.pinned) }
+                            }
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button("Hide") { Task { await phone.hide(bot.id, true) } }
+                                .tint(Theme.C.sunken)
+                        }
                     }
                 }
             }
@@ -100,6 +147,18 @@ struct BotsListView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    showCreate = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                        .foregroundStyle(Theme.C.ink)
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("New bot")
+                .ubFocusRing()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
                     showDevices = true
                 } label: {
                     Image(systemName: "gearshape")
@@ -129,60 +188,66 @@ struct BotsListView: View {
         .navigationDestination(isPresented: $showDevices) {
             DevicesView()
         }
+        .navigationDestination(isPresented: chatPresented) {
+            if let id = phone.selectedBotId, UIDevice.current.userInterfaceIdiom != .pad {
+                ChatScreen(botId: id)
+            }
+        }
+        .sheet(isPresented: $showSearch) {
+            NavigationStack {
+                List {
+                    TextField("Search", text: searchBinding)
+                    ForEach(phone.searchHits()) { bot in
+                        Button(bot.name) {
+                            showSearch = false
+                            phone.select(bot.id)
+                        }
+                        .frame(minHeight: 44)
+                    }
+                }
+                .navigationTitle("Search")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .sheet(isPresented: $showCreate) {
+            NavigationStack {
+                Form {
+                    TextField("Name", text: $newBotName)
+                    Button("Create") {
+                        let name = newBotName
+                        newBotName = ""
+                        showCreate = false
+                        Task { await phone.createBot(name: name) }
+                    }
+                    .disabled(newBotName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .frame(minHeight: 44)
+                }
+                .navigationTitle("New bot")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDetents([.medium])
+        }
+    }
+
+    private var searchBinding: Binding<String> {
+        Binding(get: { phone.searchQuery }, set: { phone.searchQuery = $0 })
+    }
+
+    private var chatPresented: Binding<Bool> {
+        Binding(
+            get: { phone.selectedBotId != nil && UIDevice.current.userInterfaceIdiom != .pad },
+            set: { if !$0 { phone.clearSelection() } }
+        )
     }
 
     private func refresh() async {
-        // UI-test seams for the §11 states a live stack cannot produce on
-        // cue: HANG holds the skeleton, EMPTY forces the empty state.
-        // Neither is ever set outside the test harness.
-        if ProcessInfo.processInfo.environment["UB_HANG_SHELL"] == "1" {
+        phone.attach(coordinator)
+        if ProcessInfo.processInfo.environment["UB_HANG_SHELL"] != "1" {
+            await phone.refresh()
+            if phone.loaded { lastFetchAt = Date() }
+        } else {
             try? await Task.sleep(for: .seconds(120))
-            return
         }
-        if ProcessInfo.processInfo.environment["UB_EMPTY_SHELL"] == "1" {
-            bots = []
-            loaded = true
-            return
-        }
-        // Same class of seam: FAIL makes the roster fetch error while the
-        // Mac stays reachable, so the 1.2 Error row (not the empty state)
-        // is what the visual gate records.
-        if ProcessInfo.processInfo.environment["UB_FAIL_SHELL"] == "1" {
-            loadError = Self.loadErrorCopy(for: BackendError.http(500))
-            return
-        }
-        // A response stamped with an older generation is dropped before it
-        // touches the model (spec 8.1): an unpair or a cross-Mac re-pair
-        // landing mid-fetch must not repopulate the list it just wiped.
-        let generation = coordinator.store.dataGeneration
-        do {
-            let shell = try await coordinator.client?.shell()
-            guard coordinator.store.isCurrent(generation: generation) else { return }
-            bots = shell?.bots.filter { $0.kind == "bot" } ?? []
-            lastFetchAt = Date()
-            loadError = nil
-            loaded = true
-        } catch BackendError.credentialInvalid, BackendError.deviceTokenMissing {
-            guard coordinator.store.isCurrent(generation: generation) else { return }
-            coordinator.store.markCredentialInvalid()
-            coordinator.phase = .idle
-        } catch {
-            // A fetch failure can mean the Mac went quiet — probe so the
-            // banner tells that story — but whatever the level, the failure
-            // itself is the spec 1.2 Error row, never the empty state.
-            await coordinator.probeReadiness()
-            guard coordinator.store.isCurrent(generation: generation) else { return }
-            loadError = Self.loadErrorCopy(for: error)
-        }
-    }
-
-    /// Spec 1.2 Error: the server's typed copy when it sent one, else a
-    /// plain sentence — readiness failures are already told by the banner.
-    private static func loadErrorCopy(for error: Error) -> String {
-        if let backend = error as? BackendError {
-            return backend.localizedDescription
-        }
-        return "Could not load your bots."
     }
 
     /// Design spec 1.2's Error row: danger glyph, one muted sentence,
@@ -245,7 +310,7 @@ struct BotsListView: View {
     /// the designed create sheet (1.7) is PR-6 scope, so until it lands the
     /// control is disabled-with-reason rather than minting an unnamed bot.
     private var emptyState: some View {
-        let newBotEnabled = false
+        let newBotEnabled = coordinator.readiness == .ready || coordinator.readiness == nil
         return VStack(alignment: .leading, spacing: 12) {
             Text("Create your first bot")
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
@@ -254,23 +319,20 @@ struct BotsListView: View {
                 .accessibilityAddTraits(.isHeader)
                 .fixedSize(horizontal: false, vertical: true)
             Button {
+                showCreate = true
             } label: {
                 Text("New bot")
                     .tokenFont(DesignTokens.FontSize.button, .semibold)
                     .foregroundStyle(newBotEnabled ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 50)
             }
-            .disabled(true)
+            .disabled(!newBotEnabled)
             .buttonStyle(PressedScale(
                 fill: newBotEnabled ? Theme.C.brand : Theme.C.sunken,
                 pressedFill: newBotEnabled ? Theme.C.accentStrong : Theme.C.sunken,
                 shadowed: newBotEnabled
             ))
             .ubFocusRing()
-            Text("Bot creation arrives with the chat update.")
-                .tokenFont(DesignTokens.FontSize.attachError, .regular)
-                .foregroundStyle(Theme.C.inkMuted)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 48)

@@ -4,6 +4,7 @@ import UsefulBotCore
 @main
 struct UsefulBotApp: App {
     @StateObject private var coordinator = PairingCoordinator()
+    @State private var phone = PhoneModel()
     @Environment(\.scenePhase) private var scenePhase
     @State private var booted = false
 
@@ -35,15 +36,16 @@ struct UsefulBotApp: App {
                 NavigationSplitView {
                     BotsListView()
                 } detail: {
-                    // Sidebar destinations (Devices, and its pushed re-pair)
-                    // land in the detail column — it needs its own stack or
-                    // nested pushes silently go nowhere and carry no chrome.
                     NavigationStack {
-                        Text("Select a bot")
-                            .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
-                            .foregroundStyle(Theme.C.inkMuted)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Theme.C.canvas)
+                        if let id = phone.selectedBotId {
+                            ChatScreen(botId: id)
+                        } else {
+                            Text("Select a bot")
+                                .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(Theme.C.canvas)
+                        }
                     }
                 }
             } else {
@@ -63,6 +65,7 @@ struct UsefulBotApp: App {
             }
         }
         .environmentObject(coordinator)
+        .environment(phone)
         // The accent is monochrome: `accent` token (#171717/#EDEDED) so
         // carets, selection and the back chevron never leak system blue.
         .tint(Theme.C.accent)
@@ -74,6 +77,8 @@ struct UsefulBotApp: App {
         // Spec 8.5: returning to active runs one resync — a status probe
         // plus the shell re-fetch the Bots list drives off `resyncAt`.
         .onChange(of: scenePhase) { _, phase in
+            phone.attach(coordinator)
+            phone.setForeground(phase == .active)
             if phase == .active {
                 Task { await coordinator.sceneBecameActive() }
             }

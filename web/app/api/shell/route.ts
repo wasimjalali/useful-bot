@@ -17,7 +17,7 @@ import { deliverFirstBrief, fanOut, syncSessionWorkspace } from "../../../lib/ag
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
-import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { applyShellAction, isGrantableRootPath, SessionConflict, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
@@ -459,6 +459,15 @@ export async function PUT(request: Request) {
     }
     return NextResponse.json({ ok: true, store: next, queued, detachError });
   } catch (err) {
+    if (err instanceof SessionConflict) {
+      if (claimed) {
+        try { reopenProposal(claimed.id); } catch { /* best effort */ }
+      }
+      return NextResponse.json(
+        { ok: false, error: "session_conflict", sessionId: err.sessionId },
+        { status: 409 },
+      );
+    }
     const guarded = apiError(err);
     if (guarded) return guarded;
     // Applying the action failed after the claim; give the card back so the

@@ -5,8 +5,8 @@ import { rateLimited } from "../../../../lib/api-guard";
 import {
   agentsEnabled,
   handoffsInFlight,
-  pumpHandoffs,
-  pumpRoutines,
+  scheduleHandoffPump,
+  scheduleRoutinePump,
   routinesInFlight,
   backgroundWorkingBotIds,
   sweepOrphanStateIfDue,
@@ -90,10 +90,13 @@ export async function POST(request: Request) {
   // Delivery can take up to two minutes. Answer now and let the pump run in the
   // background: the UI poll would otherwise stay blocked and stop scheduling
   // ticks, and queue state is durable anyway.
-  void pumpHandoffs(limit).catch(() => undefined);
-  // Routines share the tick so the owner needs nothing running but the app.
-  // Both pumps are single-flight, so a fast poll cannot stack work.
-  void pumpRoutines(limit).catch(() => undefined);
+  // S14: one running pump and at most one waiting. A tick that finds both
+  // slots full does not start a third chain.
+  const handoffs = scheduleHandoffPump(limit);
+  const routines = scheduleRoutinePump(limit);
+  const coalesced = handoffs.coalesced && routines.coalesced;
+  void handoffs.promise.catch(() => undefined);
+  void routines.promise.catch(() => undefined);
   // Connect cards share the tick too: the owner's sign-in finishes in a
   // browser tab, and this is what notices it and wakes the bot.
   void pumpConnects().catch(() => undefined);
@@ -102,7 +105,8 @@ export async function POST(request: Request) {
   return NextResponse.json({
     ok: true,
     enabled: agentsEnabled(),
-    started: true,
+    started: !coalesced,
+    coalesced,
     swept: swept.length,
     inFlight: handoffsInFlight(),
     workingBotIds: backgroundWorkingBotIds(),
