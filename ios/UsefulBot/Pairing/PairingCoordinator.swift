@@ -445,6 +445,13 @@ final class PairingCoordinator: ObservableObject {
             guard store.isCurrent(generation: generation) else { return }
             store.markCredentialInvalid()
             phase = .idle
+        } catch BackendError.forbidden(let code) {
+            // Any other 403 (`ingress`, `forbidden`, `origin`, `csrf`) is an
+            // edge refusal — the request was refused before the app could
+            // answer, so §7.2's reachability level applies, not runtimeDown
+            // (its copy asserts an eve-probe failure that never ran).
+            guard store.isCurrent(generation: generation) else { return }
+            readiness = .macUnreachable(lastSeen: lastContact, detail: code)
         } catch {
             guard store.isCurrent(generation: generation) else { return }
             if case BackendError.http(429) = error {
