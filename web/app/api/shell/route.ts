@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { lstatSync, realpathSync } from "node:fs";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
+import { runtimeConfig } from "../../../lib/auth";
 import {
   appendAgentEvent,
   claimProposal,
@@ -22,7 +23,7 @@ import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   try {
     return NextResponse.json({ ok: true, store: readShell() });
@@ -124,16 +125,20 @@ function detachBot(botId: string): string | null {
 }
 
 /**
- * Where Composio sends the browser back after the hosted sign-in. Fixed to
- * the loopback origin the service binds, never derived from the request.
+ * Where Composio sends the browser back after the hosted sign-in (S6): a
+ * phone session gets the configured tailnet origin so the return lands back
+ * through Serve; desktop keeps the loopback origin. Never derived from the
+ * request.
  */
-function connectCallbackUrl(): string {
-  const base = process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
+function connectCallbackUrl(profile: string): string {
+  const tailnet = profile === "phone" ? runtimeConfig()?.tailnet : null;
+  const base = tailnet?.httpsOrigin || process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
   return new URL("/api/connectors/callback", base).toString();
 }
 
-function serverCallbackUrl(): string {
-  const base = process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
+function serverCallbackUrl(profile: string): string {
+  const tailnet = profile === "phone" ? runtimeConfig()?.tailnet : null;
+  const base = tailnet?.httpsOrigin || process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
   return new URL("/api/connections/callback", base).toString();
 }
 
@@ -207,7 +212,7 @@ function noteProposal(
 }
 
 export async function PUT(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {
@@ -245,7 +250,7 @@ export async function PUT(request: Request) {
       if (rateLimited(`connectors:${gate.session.callerId}`, 60)) {
         return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
       }
-      const { redirectUrl } = await startConnectAuthorize(body.proposalId, connectCallbackUrl());
+      const { redirectUrl } = await startConnectAuthorize(body.proposalId, connectCallbackUrl(gate.session.profile));
       // Re-read after the network call: the snapshot from before it could
       // rewind a roster edit the app applied meanwhile.
       return NextResponse.json({ ok: true, store: readShell(), queued: 0, redirectUrl });
@@ -268,7 +273,7 @@ export async function PUT(request: Request) {
       try {
         const { redirectUrl, redirectHost } = await startConnectionConfirm(body.proposalId, {
           secret,
-          callbackUrl: serverCallbackUrl(),
+          callbackUrl: serverCallbackUrl(gate.session.profile),
         });
         return NextResponse.json({ ok: true, store: readShell(), queued: 0, redirectUrl, redirectHost });
       } catch (err) {
@@ -298,6 +303,12 @@ export async function PUT(request: Request) {
           return NextResponse.json({ ok: false, error: "fanout_empty" }, { status: 400 });
         }
       }
+    }
+
+    // The one server-side phone ban (decision F2/S5): a phone session may
+    // read the workspace grant but never change it.
+    if (body.action?.type === "setWorkspace" && gate.session.profile === "phone") {
+      return NextResponse.json({ ok: false, error: "phone_forbidden_action" }, { status: 403 });
     }
 
     // A folder grant is an owner decision, but the path still has to be real

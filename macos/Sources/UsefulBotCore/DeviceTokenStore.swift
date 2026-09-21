@@ -9,6 +9,22 @@ public protocol DeviceTokenStore: Sendable {
     func token() throws -> String
 }
 
+/// A value pinned in memory. Pairing validates a candidate token through it
+/// before the credential is written to the shared Keychain item — an
+/// unvalidated write would let an in-flight re-auth on the live client mint
+/// against it and burn a healthy pairing.
+public struct InMemoryDeviceTokenStore: DeviceTokenStore {
+    private let value: String
+
+    public init(_ value: String) {
+        self.value = value
+    }
+
+    public func token() throws -> String {
+        value
+    }
+}
+
 #if os(macOS)
 /// The desktop token source: `/usr/bin/security find-generic-password` with
 /// the bounded wait the app has always used, so a locked Keychain cannot stall

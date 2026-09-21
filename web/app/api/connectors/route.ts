@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
+import { runtimeConfig } from "../../../lib/auth";
 import {
   clearConnectorsKey,
   publicConnectors,
@@ -25,17 +26,20 @@ function csrfOk(request: Request, gate: { session: { csrf: string } }): boolean 
 }
 
 /**
- * Where Composio sends the browser back. Fixed to the loopback origin the
- * service binds, never derived from the request, so a crafted Host header
- * cannot point the OAuth redirect anywhere else.
+ * Where Composio sends the browser back (S6). A phone session gets the
+ * configured tailnet origin so the return lands back through Serve; desktop
+ * keeps the loopback origin the service binds. Never derived from the
+ * request, so a crafted Host header cannot point the OAuth redirect anywhere
+ * else.
  */
-function callbackUrl(): string {
-  const base = process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
+function callbackUrl(profile: string): string {
+  const tailnet = profile === "phone" ? runtimeConfig()?.tailnet : null;
+  const base = tailnet?.httpsOrigin || process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
   return new URL("/api/connectors/callback", base).toString();
 }
 
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   // The dialog polls this while an OAuth tab is open; every call is one or
   // two Composio requests, so it gets the same bucket as the writes.
@@ -70,7 +74,7 @@ export async function GET(request: Request) {
 }
 
 export async function PUT(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   if (!csrfOk(request, gate)) return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   if (rateLimited(`connectors:${gate.session.callerId}`, 60)) {
@@ -95,7 +99,7 @@ export async function PUT(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   if (!csrfOk(request, gate)) return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   if (rateLimited(`connectors:${gate.session.callerId}`, 60)) {
@@ -106,7 +110,7 @@ export async function POST(request: Request) {
     if (typeof body.toolkit !== "string" || !body.toolkit) {
       return NextResponse.json({ ok: false, error: "toolkit_required" }, { status: 400 });
     }
-    const result = await authorizeConnector(body.toolkit, callbackUrl());
+    const result = await authorizeConnector(body.toolkit, callbackUrl(gate.session.profile));
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     const guarded = apiError(err);
@@ -116,7 +120,7 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   if (!csrfOk(request, gate)) return NextResponse.json({ ok: false, error: "csrf" }, { status: 403 });
   if (rateLimited(`connectors:${gate.session.callerId}`, 60)) {

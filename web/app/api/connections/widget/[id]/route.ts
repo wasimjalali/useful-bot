@@ -1,4 +1,4 @@
-import { isGateError, requireDesktop } from "../../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../../lib/desktop-gate";
 import { htmlForWidget } from "../../../../../../shared/mcp-app-host.ts";
 import { readWidget } from "../../../../../../shared/widgets-store.ts";
 
@@ -8,7 +8,7 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const { id } = await context.params;
   const record = readWidget(id);
