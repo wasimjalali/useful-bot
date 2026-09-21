@@ -637,4 +637,51 @@ import Testing
         #expect(projection.messages.filter { $0.role == .user && $0.text == "again" }.count == 2)
     }
 
+    /// A follower that rewinds past the bounded id cache replays an older
+    /// turn's events. They were counting as neither work nor an open row, and
+    /// still putting that turn's tool in the working row, its drawing on
+    /// screen, its chips under the transcript and its question card back up.
+    @Test func anOlderTurnsEventsDoNotResurfaceOnThisOne() {
+        let requested = #"""
+        {"type":"actions.requested","meta":{"id":"t1"},"data":{"turnId":"turn-1","actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}
+        """#
+        let asked = #"""
+        {"type":"input.requested","meta":{"id":"q1"},"data":{"turnId":"turn-1","requests":[{"requestId":"r1","kind":"input","prompt":"Which one?"}]}}
+        """#
+        let found = #"""
+        {"type":"action.result","meta":{"id":"h1"},"data":{"turnId":"turn-1","results":[{"title":"Old","url":"https://example.com","snippet":"stale"}]}}
+        """#
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s2", turnId: "turn-2"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveStream.parseLine(requested)!)
+        projection.apply(EveStream.parseLine(asked)!)
+        projection.apply(EveStream.parseLine(found)!)
+        #expect(projection.widgets.isEmpty)
+        #expect(projection.questions.isEmpty)
+        #expect(projection.searchHits.isEmpty)
+        #expect(projection.activity == .thinking)
+        // And this turn still reached nothing, so its message folds.
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 1)
+    }
+
+    /// A delta this turn owns, dropped because a replayed block is still being
+    /// read past, still means the turn started answering.
+    @Test func aDeltaDroppedByAReplayStillCountsAsWork() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "message.appended", id: "a1", messageDelta: "Half"))
+        // The follower rewinds and re-sends that block's first delta, which
+        // this projection recognises and starts reading past.
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.appended", id: "a1", messageDelta: "Half"))
+        projection.apply(EveEvent(type: "message.appended", id: "a2", messageDelta: " an answer"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.filter { $0.role == .user }.count == 2)
+    }
 }

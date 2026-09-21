@@ -798,10 +798,17 @@ public struct StreamProjection: Equatable, Sendable {
             pending = true
             activity = .thinking
         case "reasoning.appended", "reasoning.completed":
+            guard belongsToThisTurn(event) else { break }
             activity = .thinking
-            if belongsToThisTurn(event) { turnProducedWork = true }
+            turnProducedWork = true
         case "actions.requested":
-            if belongsToThisTurn(event) { turnProducedWork = true }
+            // An older turn's call, replayed by a follower that rewound past
+            // the bounded id cache, is not what this turn is doing and not a
+            // drawing this turn made. It counted as neither, but it was still
+            // putting that turn's tool name in the working row and its widget
+            // on screen.
+            guard belongsToThisTurn(event) else { break }
+            turnProducedWork = true
             if let name = EveStream.requestedToolName(event.data) {
                 activity = .tool(name, detail: EveStream.requestedToolDetail(event.data))
             }
@@ -816,6 +823,7 @@ public struct StreamProjection: Equatable, Sendable {
                 }
             }
         case "action.input.appended":
+            guard belongsToThisTurn(event) else { break }
             if let name = event.data?["toolName"]?.stringValue, !name.isEmpty {
                 // A late input delta must not wipe the detail the validated
                 // call already gave this same tool.
@@ -834,7 +842,14 @@ public struct StreamProjection: Equatable, Sendable {
                 activity = .working
                 return
             }
-            if replayingMessage { return }
+            if replayingMessage {
+                // A delta this turn owns, dropped because a replayed block is
+                // still being read past. Whatever the reader sees, the turn
+                // did start answering, so its message is not the app's to
+                // fold away.
+                if belongsToThisTurn(event) { turnProducedWork = true }
+                return
+            }
             // Text is arriving: the row is about to be replaced by the reply
             // itself, so it must not still claim a tool is running. Only new
             // text counts as this turn's work; a redelivery of an old block
@@ -922,17 +937,20 @@ public struct StreamProjection: Equatable, Sendable {
             // counting, which is the direction that folds a turn that acted.
             currentTurnId = nil
         case "action.result", "action.partial":
-            if belongsToThisTurn(event) { turnProducedWork = true }
+            // Another turn's results are not this turn's chips.
+            guard belongsToThisTurn(event) else { break }
+            turnProducedWork = true
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
             if event.type == "action.result" { activity = .thinking }
         case "input.requested":
+            // A question an older turn asked and the owner has already
+            // answered must not come back as a live card on this one.
+            guard belongsToThisTurn(event) else { break }
             // A question ends the turn: the bot is waiting on the owner, not
             // working. So it closes the rows above it, the way an answer does.
-            if belongsToThisTurn(event) {
-                turnProducedWork = true
-                openUserRows = 0
-            }
+            turnProducedWork = true
+            openUserRows = 0
             for question in EveStream.parseQuestions(event.data) {
                 if let index = questions.firstIndex(where: { $0.id == question.id }) {
                     questions[index] = question
