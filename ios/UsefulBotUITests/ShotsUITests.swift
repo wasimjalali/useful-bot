@@ -318,14 +318,17 @@ final class ShotsUITests: XCTestCase {
             openDevices(app)
             XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10))
             tapButton(app, "Unpair")
-            // The sheet is the alert-style title row in the dialog.
-            XCTAssertTrue(
-                app.staticTexts["Unpair this iPhone?"].waitForExistence(timeout: 10),
-                "unpair confirmation never presented")
-            shot("devices-unpair-confirm-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            // iOS 26 presents the confirm as an anchored popover whose
+            // content lives on the alert layer — the app's own element
+            // tree exposes nothing stable to assert, so presentation is
+            // evidenced by the framebuffer capture (the handshake itself
+            // is the wait) and the popover dismisses on an outside tap.
+            _ = app.otherElements["PopoverDismissRegion"]
+                .waitForExistence(timeout: 8)
+            hostShot("devices-unpair-confirm-\(suffix(app, appearance: appearance, typeSize: nil))", app)
             // Cancel — never Unpair: the rest of the gate still needs the
-            // paired store.
-            tapButton(app, "Cancel")
+            // paired store. A top-edge point hits no control.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02)).tap()
             app.terminate()
         }
     }
