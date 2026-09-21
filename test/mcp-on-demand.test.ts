@@ -457,3 +457,21 @@ test("a path-level parameter is charged to every operation under it", () => {
   const one = measureOpenApiSpec({ paths: { "/a": { parameters: spec.paths["/a"].parameters, get: {} } } });
   assert.ok(measured!.schemaBytes > one!.schemaBytes);
 });
+
+test("one enormous array in a spec is walked, not stringified", () => {
+  // A subtree handed to `JSON.stringify` is unbounded work the node count
+  // cannot see, and a document can hold a great many of them.
+  const huge = Array.from({ length: 50_000 }, (_, i) => `value-${i}`);
+  const started = Date.now();
+  const measured = measureOpenApiSpec({
+    paths: { "/a": { get: { parameters: [{ name: "x", schema: { enum: huge } }] } } },
+  });
+  // Fifty thousand entries is inside the node budget, so it is measured.
+  assert.ok((measured?.schemaBytes ?? 0) > 0);
+  assert.ok(Date.now() - started < 5_000, "took too long to walk");
+  // Past the budget it is not measured at all, rather than guessed at.
+  const past = Array.from({ length: 250_000 }, (_, i) => i);
+  assert.equal(measureOpenApiSpec({
+    paths: { "/a": { get: { parameters: [{ name: "x", schema: { enum: past } }] } } },
+  }), null);
+});

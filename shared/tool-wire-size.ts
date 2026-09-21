@@ -92,14 +92,31 @@ function resolveRef(root: Json, ref: string): unknown {
  */
 type Walk = { root: Json; nodes: number; truncated: boolean };
 
+function scalarBytes(value: unknown): number {
+  if (typeof value === "string") return utf8(value) + 2;
+  if (typeof value === "number" || typeof value === "boolean") return String(value).length;
+  return 4;
+}
+
 function resolvedBytes(walk: Walk, node: unknown, depth: number): number {
   if (walk.truncated) return 0;
   if (++walk.nodes > MAX_NODES || depth > MAX_REF_DEPTH) {
     walk.truncated = true;
     return 0;
   }
+  // Every aggregate is walked, never stringified: one `JSON.stringify` of a
+  // subtree is unbounded work that the node count cannot see, and a document
+  // can hold a great many of them.
+  if (Array.isArray(node)) {
+    let total = 2;
+    for (const item of node) {
+      if (walk.truncated) return 0;
+      total += resolvedBytes(walk, item, depth + 1) + 1;
+    }
+    return total;
+  }
   const rec = asRecord(node);
-  if (!rec) return jsonBytes(node);
+  if (!rec) return scalarBytes(node);
   if (typeof rec.$ref === "string") {
     const target = resolveRef(walk.root, rec.$ref);
     if (target === null || target === undefined) {
@@ -113,14 +130,9 @@ function resolvedBytes(walk: Walk, node: unknown, depth: number): number {
   for (const [key, value] of Object.entries(rec)) {
     if (walk.truncated) return 0;
     total += utf8(key) + 4;
-    if (Array.isArray(value)) {
-      total += 2;
-      for (const item of value) total += resolvedBytes(walk, item, depth + 1) + 1;
-    } else if (asRecord(value)) {
-      total += resolvedBytes(walk, value, depth + 1);
-    } else {
-      total += jsonBytes(value);
-    }
+    total += Array.isArray(value) || asRecord(value)
+      ? resolvedBytes(walk, value, depth + 1)
+      : scalarBytes(value);
   }
   return total;
 }
