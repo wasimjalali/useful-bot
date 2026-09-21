@@ -98,6 +98,38 @@ export const MAX_MESSAGE_COUNT = 4_096;
 export const MAX_TOOL_SCHEMAS = 300;
 export const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
 
+/**
+ * The cap above is a wall, not a budget: the router refuses a turn past it
+ * with a non-retryable `unsupported_parameter`, and eve retires a session
+ * that gets one, so the chat is dead for good. Nothing may be allowed to walk
+ * a bot into it. These three keep the running total well underneath.
+ *
+ * `MOUNTED_TOOL_BUDGET` is what a connect may take the eagerly mounted total
+ * to. The rest of the headroom is for the agent's own tools, eve's, and the
+ * tools a session picks up mid-turn.
+ */
+export const MOUNTED_TOOL_BUDGET = 60;
+/**
+ * And the same budget in bytes, because the router refuses a turn on schema
+ * bytes too, with the same non-retryable error. Only what this app can
+ * measure is counted: the argument schemas a connected MCP server published.
+ * eve generates an OpenAPI connection's schemas itself and this side never
+ * sees them, which is the other half of why the count budget is as low as it
+ * is.
+ */
+export const MOUNTED_TOOL_BYTE_BUDGET = 24 * 1024;
+/**
+ * Tools one session may pick up on demand. Past this the model is told to
+ * work with what it has rather than quietly walking the turn into the wall.
+ */
+export const MAX_SESSION_TOOLS = 40;
+/**
+ * And in bytes, for the same reason the mounted set has one: forty schemas
+ * at the size a server is allowed to publish would clear the router's byte
+ * wall on their own, and that refusal retires the session.
+ */
+export const MAX_SESSION_TOOL_BYTES = 40 * 1024;
+
 export const FORBIDDEN_PATH_SUBSTRINGS = [
   ".env",
   "secrets",
