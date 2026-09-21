@@ -759,4 +759,40 @@ import Testing
         replay.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t2"))
         #expect(replay.messages.count == 1)
     }
+    /// A drawing arrives on the turn that asked for it, and the turn gate
+    /// must not stand between them. The send's armed stream never carries
+    /// `turn.started`, so the only thing naming the turn is the message.
+    @Test func aDrawingOnThisTurnReachesTheTranscript() {
+        let drawn = #"""
+        {"type":"actions.requested","meta":{"id":"w1"},"data":{"turnId":"turn-9","actions":[{"callId":"call_00_excalidraw_one","kind":"tool-call","toolName":"excalidraw__create_view","input":{"elements":[]}}]}}
+        """#
+        var live = StreamProjection()
+        live.beginTurn()
+        live.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: "draw me a box"
+        ), live: true)
+        live.apply(EveEvent(type: "message.received", id: "u1", message: "draw me a box", turnId: "turn-9"), live: true)
+        live.apply(EveStream.parseLine(drawn)!, live: true)
+        #expect(live.widgets.count == 1)
+        #expect(live.widgets.first?.connectionId == "excalidraw")
+        #expect(live.widgets.first?.toolName == "excalidraw__create_view")
+
+        // And on a replay, where `turn.started` is the thing that names it.
+        var replay = StreamProjection()
+        replay.apply(EveEvent(type: "turn.started", id: "s1", turnId: "turn-9"))
+        replay.apply(EveEvent(type: "message.received", id: "u1", message: "draw me a box", turnId: "turn-9"))
+        replay.apply(EveStream.parseLine(drawn)!)
+        #expect(replay.widgets.count == 1)
+
+        // A stream that tags nothing at all still draws, the way it always did.
+        let untagged = #"""
+        {"type":"actions.requested","meta":{"id":"w2"},"data":{"actions":[{"callId":"call_00_excalidraw_two","kind":"tool-call","toolName":"excalidraw__create_view","input":{"elements":[]}}]}}
+        """#
+        var plain = StreamProjection()
+        plain.apply(EveEvent(type: "message.received", id: "u1", message: "draw me a box"))
+        plain.apply(EveStream.parseLine(untagged)!)
+        #expect(plain.widgets.count == 1)
+    }
 }
