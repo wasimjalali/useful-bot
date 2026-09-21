@@ -11,6 +11,7 @@ final class PhoneModel {
     private(set) var loadError: String?
     private(set) var selectedBotId: String?
     private(set) var workingBotIds: Set<String> = []
+    private(set) var approvals: [ApprovalCard] = []
     private(set) var chats: [String: OpenChat] = [:]
     var draft = ""
     var composer: ComposerState?
@@ -28,6 +29,16 @@ final class PhoneModel {
     private var foreground = false
     private let defaults = UserDefaults.standard
     private static let selectionKey = "phone.selectedBotId"
+
+    struct ApprovalCard: Identifiable, Equatable {
+        var item: ApprovalItem
+        var phase: Phase
+        var id: String { item.id }
+
+        enum Phase: Equatable {
+            case pending, approving, approved, denied, resolved, changed, expired
+        }
+    }
 
     struct OpenChat: Equatable {
         var durable: [AgentEvent] = []
@@ -111,6 +122,44 @@ final class PhoneModel {
         await loadShell()
         await refreshComposer()
         await tick()
+        await loadApprovals()
+    }
+
+    func approvals(for botId: String) -> [ApprovalCard] {
+        let session = bot(botId)?.sessionId
+        return approvals.filter { card in
+            if !card.item.botId.isEmpty { return card.item.botId == botId }
+            if let session, !card.item.sessionId.isEmpty { return card.item.sessionId == session }
+            return false
+        }
+    }
+
+    func decide(_ card: ApprovalCard, approve: Bool) async {
+        guard card.phase == .pending || card.phase == .changed else { return }
+        if approve {
+            if let reason = await biometrics.confirm() {
+                passcodeMessage = reason
+                return
+            }
+        }
+        guard let client else { return }
+        setApproval(card.id, .approving)
+        do {
+            try await client.decideApproval(
+                id: card.item.id,
+                decision: approve ? .approve : .deny,
+                hash: card.item.actionSha256
+            )
+            setApproval(card.id, approve ? .approved : .denied)
+        } catch BackendError.approvalChanged {
+            setApproval(card.id, .changed)
+            await loadApprovals()
+        } catch BackendError.approvalResolved {
+            setApproval(card.id, .resolved)
+        } catch {
+            setApproval(card.id, .pending)
+            actionError = (error as? LocalizedError)?.errorDescription
+        }
     }
 
     func select(_ id: String) {
@@ -355,6 +404,40 @@ final class PhoneModel {
         if let next = try? await client.composer(), next != composer {
             composer = next
         }
+    }
+
+    private func loadApprovals() async {
+        guard let client else { return }
+        let generation = pairing?.dataGeneration ?? 0
+        guard let next = try? await client.approvals() else { return }
+        guard current(generation) else { return }
+        var merged: [ApprovalCard] = []
+        for item in next {
+            let expired = item.expiresAt > 0 && Date().timeIntervalSince1970 * 1000 >= item.expiresAt
+            if var card = approvals.first(where: { $0.id == item.id }) {
+                if card.item.actionSha256 != item.actionSha256 && card.phase == .pending {
+                    card.phase = .changed
+                } else if expired && card.phase == .pending {
+                    card.phase = .expired
+                }
+                card.item = item
+                merged.append(card)
+            } else {
+                merged.append(ApprovalCard(item: item, phase: expired ? .expired : .pending))
+            }
+        }
+        for old in approvals where !merged.contains(where: { $0.id == old.id }) {
+            switch old.phase {
+            case .approved, .denied, .resolved: merged.append(old)
+            default: break
+            }
+        }
+        if merged != approvals { approvals = merged }
+    }
+
+    private func setApproval(_ id: String, _ phase: ApprovalCard.Phase) {
+        guard let index = approvals.firstIndex(where: { $0.id == id }) else { return }
+        approvals[index].phase = phase
     }
 
     private func tick() async {

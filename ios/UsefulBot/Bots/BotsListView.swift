@@ -23,6 +23,7 @@ struct BotsListView: View {
     @Environment(PhoneModel.self) private var phone
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var showApprovals = false
     @State private var showSearch = false
     @State private var showCreate = false
     @State private var newBotName = ""
@@ -54,6 +55,27 @@ struct BotsListView: View {
                 expiryBanner
             }
             Section {
+                if !phone.approvals.isEmpty {
+                    Button {
+                        showApprovals = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "checkmark.shield")
+                                .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                                .foregroundStyle(Theme.C.warning)
+                            Text("Approvals")
+                                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                                .foregroundStyle(Theme.C.ink)
+                            Spacer()
+                            Text("\(phone.approvals.filter { $0.phase == .pending || $0.phase == .changed }.count) waiting")
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                                .foregroundStyle(Theme.C.warning)
+                        }
+                        .frame(minHeight: 60)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                }
                 Button {
                     showSearch = true
                 } label: {
@@ -185,6 +207,9 @@ struct BotsListView: View {
         }
         // Devices is a push (design spec 1.15), not a sheet — the nav stack
         // gives it the back chevron.
+        .navigationDestination(isPresented: $showApprovals) {
+            PendingApprovalsView()
+        }
         .navigationDestination(isPresented: $showDevices) {
             DevicesView()
         }

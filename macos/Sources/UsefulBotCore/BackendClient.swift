@@ -36,6 +36,10 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// `touchChat` lost the compare-and-set (S11). The associated value is
     /// the pointer the server holds now, nil when the bot has none.
     case sessionConflict(String?)
+    /// The approval was expired or decided somewhere else (404).
+    case approvalResolved
+    /// The card's hash no longer matches what the server holds.
+    case approvalChanged
 
     public var errorDescription: String? {
         switch self {
@@ -89,6 +93,10 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "This model can't see images. Pick one that can from the model menu."
         case .sessionConflict:
             return "Your Mac moved this conversation."
+        case .approvalResolved:
+            return "Resolved on your Mac"
+        case .approvalChanged:
+            return "This request changed. Check it again."
         }
     }
 
@@ -796,6 +804,17 @@ public actor BackendClient {
                 "actionSha256": hash,
             ])
             return request
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let code = Self.errorCode(data) ?? ""
+            if http.statusCode == 404
+                || code.hasPrefix("approval_not_found")
+                || code.hasPrefix("approval_not_pending") {
+                throw BackendError.approvalResolved
+            }
+            if code == "approval_hash_mismatch" {
+                throw BackendError.approvalChanged
+            }
         }
         try Self.expectOK(data, response)
     }

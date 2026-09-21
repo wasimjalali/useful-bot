@@ -70,6 +70,7 @@ export async function approvedWrite(input: {
     toolCallId: input.toolCallId,
     tool: "write_file",
     actionSha256: hash,
+    cwd: root,
     // The content is what the owner is actually authorising, so it goes on
     // the card after the path; without it they would be approving a bare
     // filename. The hash still binds the full text.

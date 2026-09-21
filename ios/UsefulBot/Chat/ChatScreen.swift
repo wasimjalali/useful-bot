@@ -50,6 +50,13 @@ struct ChatScreen: View {
                 readinessStrip(readiness)
             }
             transcript
+            ForEach(phone.approvals(for: botId)) { card in
+                ApprovalCardView(card: card) { approve in
+                    Task { await phone.decide(card, approve: approve) }
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
             if phone.conflictNote {
                 Text("Your Mac moved this conversation")
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)

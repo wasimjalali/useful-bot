@@ -141,6 +141,7 @@ export default defineTool({
       tool: "bash",
       actionSha256: hash,
       preview: risk ? `${input.command}\n${risk}` : input.command,
+      cwd: root,
     });
     if (!askOwner) {
       store.decide(rec.id, "approve", hash);

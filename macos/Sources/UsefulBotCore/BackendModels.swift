@@ -377,6 +377,14 @@ public struct ApprovalItem: Codable, Identifiable, Equatable, Sendable {
     public let actionSha256: String
     public let preview: String
     public let tool: String
+    /// Snapshotted when the card was raised (S10). Empty on older servers.
+    public let botId: String
+    public let botName: String
+    public let sessionId: String
+    public let cwd: String
+    /// Milliseconds since epoch, as the server stores them.
+    public let createdAt: Double
+    public let expiresAt: Double
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -384,16 +392,46 @@ public struct ApprovalItem: Codable, Identifiable, Equatable, Sendable {
         actionSha256 = (try? c.decode(String.self, forKey: .actionSha256)) ?? ""
         preview = (try? c.decode(String.self, forKey: .preview)) ?? ""
         tool = (try? c.decode(String.self, forKey: .tool)) ?? ""
+        botId = (try? c.decodeIfPresent(String.self, forKey: .botId)) ?? ""
+        botName = (try? c.decodeIfPresent(String.self, forKey: .botName)) ?? ""
+        sessionId = (try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""
+        cwd = (try? c.decodeIfPresent(String.self, forKey: .cwd)) ?? ""
+        createdAt = (try? c.decodeIfPresent(Double.self, forKey: .createdAt)) ?? 0
+        expiresAt = (try? c.decodeIfPresent(Double.self, forKey: .expiresAt)) ?? 0
     }
 
-    public init(id: String, actionSha256: String, preview: String, tool: String) {
+    public init(
+        id: String,
+        actionSha256: String,
+        preview: String,
+        tool: String,
+        botId: String = "",
+        botName: String = "",
+        sessionId: String = "",
+        cwd: String = "",
+        createdAt: Double = 0,
+        expiresAt: Double = 0
+    ) {
         self.id = id
         self.actionSha256 = actionSha256
         self.preview = preview
         self.tool = tool
+        self.botId = botId
+        self.botName = botName
+        self.sessionId = sessionId
+        self.cwd = cwd
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt
     }
 
-    enum CodingKeys: String, CodingKey { case id, actionSha256, preview, tool }
+    public var asksLabel: String {
+        let name = botName.isEmpty ? "This bot" : botName
+        return "\(name) asks"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, actionSha256, preview, tool, botId, botName, sessionId, cwd, createdAt, expiresAt
+    }
 }
 
 /// `/api/providers` row, mirrored from `ProviderPublic`. Legacy shape, kept so

@@ -1,4 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { peekShell } from "../../shared/shell-io.ts";
 import {
   closeSync,
   existsSync,
@@ -93,12 +94,38 @@ export interface StoredApproval {
   status: ApprovalStatus;
   /** Boot epoch of the process that requested the action. */
   epoch?: string;
+  /**
+   * Snapshotted when the card is raised (S10). Empty on records written
+   * before provenance existed. Never rewritten after insert.
+   */
+  botId?: string;
+  botName?: string;
+  cwd?: string;
 }
 
 export type PendingApproval = Pick<
   StoredApproval,
-  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt"
->;
+  "id" | "tool" | "preview" | "actionSha256" | "createdAt" | "expiresAt" | "sessionId"
+> & {
+  botId: string;
+  botName: string;
+  cwd: string;
+};
+
+/** Bot name and directory as they are at raise time. `peekShell` does not write. */
+export function approvalProvenance(sessionId: string, cwd?: string): {
+  botId: string;
+  botName: string;
+  cwd: string;
+} {
+  const shell = peekShell();
+  const bot = shell?.bots.find((item) => item.sessionId === sessionId);
+  return {
+    botId: bot?.id ?? "",
+    botName: bot?.name ?? "",
+    cwd: cwd ?? bot?.workspace?.path ?? "",
+  };
+}
 
 /** The subset of an eve ToolContext an approval record needs for attribution. */
 export interface ApprovalActorContext {
@@ -202,11 +229,14 @@ export class ApprovalStore {
     tool: ApprovalTool;
     actionSha256: string;
     preview: string;
+    /** Working directory the owner is approving. Omitted uses the bot's folder. */
+    cwd?: string;
   }): StoredApproval {
     return this.locked(() => {
       this.load();
       this.seq += 1;
       const createdAt = this.now();
+      const provenance = approvalProvenance(input.sessionId, input.cwd);
       const record: StoredApproval = {
         id: this.persistPath
           ? `apr_${randomUUID().replaceAll("-", "").slice(0, 16)}`
@@ -221,6 +251,9 @@ export class ApprovalStore {
         expiresAt: createdAt + POLICY_APPROVAL_TTL_MS,
         status: "pending",
         epoch: this.epoch,
+        botId: provenance.botId,
+        botName: provenance.botName,
+        cwd: provenance.cwd,
       };
       this.records.set(record.id, record);
       this.persist();
@@ -312,6 +345,10 @@ export class ApprovalStore {
             actionSha256: record.actionSha256,
             createdAt: record.createdAt,
             expiresAt: record.expiresAt,
+            sessionId: record.sessionId,
+            botId: record.botId ?? "",
+            botName: record.botName ?? "",
+            cwd: record.cwd ?? "",
           });
         }
       }

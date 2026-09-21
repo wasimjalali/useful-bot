@@ -46,7 +46,9 @@ export async function POST(
     }
     // The id is a debugging aid echoed from the URL, not internal state; the
     // errorCode gate still replaces any fs or parse error with the fallback.
-    const status = code.startsWith("approval_not_found") ? 404 : 400;
+    const status = code.startsWith("approval_not_found") || code.startsWith("approval_not_pending")
+      ? 404
+      : 400;
     return NextResponse.json({ ok: false, error: code }, { status });
   }
 }
