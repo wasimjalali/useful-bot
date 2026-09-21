@@ -175,15 +175,25 @@ async function main() {
     });
 
     // phoneEnabled off (S9 mint-side): a phone credential must not mint a
-    // session every gated route would kill the next request anyway. Tailnet
-    // cannot classify at all with it off, so the check rides loopback — the
-    // same request the dev path uses.
+    // session every gated route would kill the next request anyway. The
+    // tailnet record survives the flip, so the same verdict answers over
+    // the enrolled signature too — never a bare `ingress` refusal the
+    // phone could mistake for a runtime outage.
     writeConfig(path.join(work, "config"), { phoneEnabled: false });
     await new Promise((r) => setTimeout(r, 50));
     await call("auth.post-phone-disabled", {
       method: "POST", url: SESSION,
       headers: { ...loopback, authorization: `Bearer ${PHONE_TOKEN}` },
       note: "S9 at mint: while phoneEnabled is false a phone credential gets credential_invalid — the same verdict the routes answer.",
+    });
+    await call("auth.post-phone-disabled-tailnet", {
+      method: "POST", url: SESSION,
+      headers: tailnetHeaders({ authorization: `Bearer ${PHONE_TOKEN}` }),
+      note: "Mint-side over tailnet while disabled: still credential_invalid, because the enrolled signature keeps the request class tailnet.",
+    });
+    await call("status.phone-disabled-tailnet", {
+      url: STATUS, headers: tailnetHeaders({ cookie: cookieHeader(phone.setCookie) }),
+      note: "Use-side over tailnet while disabled: the gate answers 401 credential_invalid — the phone lands on its §4.8 terminal, not runtimeDown.",
     });
     writeConfig(path.join(work, "config"));
     await new Promise((r) => setTimeout(r, 50));

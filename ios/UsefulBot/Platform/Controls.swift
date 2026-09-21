@@ -85,19 +85,23 @@ private struct ScaledTokenFont: ViewModifier {
 
 /// §1.0 Focus-visible: a 2 pt `accent` ring offset 2 pt with `Radius.xs`
 /// corners, drawn only while the control holds keyboard focus (external
-/// keyboard / Full Keyboard Access) — `.isFocused` stays false for touch,
-/// so taps never see it.
+/// keyboard / Full Keyboard Access) — focus never lands on touch, so taps
+/// never see it. The `\.isFocused` environment reads the nearest focusable
+/// ANCESTOR, which a plain overlay can never satisfy; `.focused` binds the
+/// wrapped control's own focus instead.
 private struct FocusRing: ViewModifier {
-    @Environment(\.isFocused) private var isFocused
+    @FocusState private var focused: Bool
 
     func body(content: Content) -> some View {
-        content.overlay {
-            if isFocused {
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
-                    .strokeBorder(Theme.C.accent, lineWidth: 2)
-                    .padding(-4)
+        content
+            .focused($focused)
+            .overlay {
+                if focused {
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                        .strokeBorder(Theme.C.accent, lineWidth: 2)
+                        .padding(-4)
+                }
             }
-        }
     }
 }
 

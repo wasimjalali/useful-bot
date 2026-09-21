@@ -1106,43 +1106,114 @@ touched screens (~255 PNGs per width run); the §17.5 cap keeps
 60. Committed = both appearances unless listed. Dropped slots,
 with the redundancy that priced them out:
 
-| Emitted state | Committed | Dropped variant(s) — why |
+Width suffixes: `-375`/`-834` are the non-default widths;
+`-xxxl` is the a11y-XXXL override at that width. "375/834
+pair" = the light and dark captures at both non-default
+widths. Variant lists are exact for the runs that produced
+them.
+
+| Emitted state | Committed | Dropped emitted variants — why |
 |---|---|---|
-| bots-empty | both | — |
-| bots-expiring | both | — |
-| bots-load-error | both + xxxl-light | xxxl-dark — banner + retry row identical to light |
-| bots-loading | both | — |
-| bots-offline | both + xxxl-light | xxxl-dark — banner row identical to light |
-| bots-paired | both + xxxl both + 834 both | — (nav-touched screen keeps the full matrix) |
-| bots-repaired | both | — |
-| bots-resigned-in | both + xxxl both | — |
-| bots-runtime-down | both | — |
-| bots-unreachable | both | — |
-| devices-expiring | light | dark — same LabeledContent rows, warning tint is appearance-independent |
-| devices-offline | light | dark — identical banner mechanics to bots-offline (committed both) |
-| devices-paired | both + 834 + xxxl-834 | — |
-| devices-runtime-down | light | dark — banner identical to bots-runtime-down (committed both) |
-| devices-unpair-confirm | both + 834-light | 834-dark — popover chrome is system-drawn, contents identical |
-| devices-unreachable | light | dark — banner identical to bots-unreachable (committed both) |
-| pairing-camera-denied | both + xxxl-light | xxxl-dark — single reason row identical to light |
-| pairing-connect-failed | both | — |
-| pairing-connected | both | — |
-| pairing-connecting | both | — |
-| pairing-credential-invalid | both | — |
-| pairing-empty | light + 375 | dark — scanner-mask + copy only, token-identical to committed dark pairing states |
-| pairing-manual | — | light+dark — superseded by manual-focused/-ready/-failed which show the same form populated |
-| pairing-manual-failed | both | — |
-| pairing-manual-focused | light | dark — focus ring on `accent`, appearance-independent |
-| pairing-manual-ready | both + xxxl-light | xxxl-dark — identical to light |
-| pairing-offline | light | dark — "You're offline" reason identical to signed-out-offline (committed light) / bots-offline (both) |
-| pairing-repair | light + dark-834 | 402-dark — narrow-width re-pair is the 834-dark evidence at compact width |
-| signed-out | both + xxxl-light | xxxl-dark — identical to light |
-| signed-out-error | light | dark — reason line identical mechanics to pairing-offline |
-| signed-out-offline | light | dark — identical to pairing-offline |
+| bots-empty | light, dark | 375/834 pair — list reflow covered by devices rows |
+| bots-expiring | light, dark | 375/834 pair — banner mechanics identical to bots-offline |
+| bots-load-error | light, dark, light-xxxl | 375/834 pair; xxxl-dark + xxxl-375/834 — banner + Retry identical to light |
+| bots-loading | light, dark | 375/834 pair — skeleton geometry identical to bots-empty |
+| bots-offline | light, dark, light-xxxl | 375/834 pair; light-xxxl-375/834 — banner identical at every width |
+| bots-paired | light, dark | 375/834 pair; xxxl all — roster rows are text on canvas; iPad nav covered by devices-paired-light-834 |
+| bots-repaired | light, dark | 375/834 pair — bots-paired + banner, both committed separately |
+| bots-resigned-in | light, dark | 375/834 pair; xxxl all — banner identical to bots-offline |
+| bots-runtime-down | light, dark | 375/834 pair — banner identical to bots-offline |
+| bots-unreachable | light, dark | 375/834 pair — banner identical to bots-offline |
+| devices-expiring | light | dark + 375/834 pair — LabeledContent rows; warning tint is appearance-independent |
+| devices-offline | light | dark + 375/834 pair — banner identical to bots-offline (committed both) |
+| devices-paired | light, dark, light-834 | 375 pair; dark-834; xxxl all — 834-light covers iPad nav evidence |
+| devices-runtime-down | light | dark + 375/834 pair — banner identical to bots-runtime-down (committed both) |
+| devices-unpair-confirm | light, dark, light-834 | 375 pair; dark-834 — popover chrome is system-drawn, contents identical |
+| devices-unreachable | light | dark + 375/834 pair — banner identical to bots-unreachable (committed both) |
+| pairing-camera-denied | light, dark, light-xxxl | 375/834 pair; xxxl-dark + xxxl-375/834 — one reason row identical to light |
+| pairing-connect-failed | light, dark | 375/834 pair — error row identical to pairing-offline |
+| pairing-connected | light, dark | 375/834 pair; xxxl all — success row identical to pairing-connecting |
+| pairing-connecting | light, dark | 375/834 pair — spinner row identical across states |
+| pairing-credential-invalid | light, dark | 375/834 pair — banner identical to other credential states |
+| pairing-empty | light, dark, light-375 | dark-375; 834 pair; xxxl all — first screen keeps both appearances + narrow width |
+| pairing-manual | — | all — superseded by manual-focused/-ready/-failed (same form populated) |
+| pairing-manual-failed | light, dark | 375/834 pair — error row identical to manual-ready |
+| pairing-manual-focused | light | dark + 375/834 pair; xxxl all — focus ring on `accent` is appearance-independent |
+| pairing-manual-ready | light, dark, light-xxxl | 375/834 pair; xxxl-dark + xxxl-375/834 — filled form identical to light |
+| pairing-offline | light | dark + 375/834 pair — "You're offline" identical to signed-out-offline/bots-offline |
+| pairing-repair | light, dark-834 | dark-402; 375 pair; light-834 — iPad push evidenced in dark at 834 |
+| signed-out | light, dark, light-xxxl | 375/834 pair; xxxl-dark + xxxl-375/834 — copy + button identical to pairing-empty |
+| signed-out-error | light | dark + 375/834 pair — reason line identical mechanics to pairing-offline |
+| signed-out-offline | light | dark + 375/834 pair — identical to pairing-offline |
 
 Every dropped variant exists in the gate output for the
 round it ran on (uncommitted working set); the committed set
 keeps at least one dark representative of every *distinct
 component* — banner rows, status pills, reason lines, scanner
 mask, popover, focus ring, mono host — so appearance parity is
-evidenced per component, not per screen.
+evidenced per component, not per screen. Round 11 moved
+`pairing-empty` to light+dark (the first screen had no dark
+evidence); `devices-paired-light-834-xxxl` was the slot freed.
+
+### PR-2 Round 11
+
+Seven findings; correctness asked changes on three, security
+approved clean, design-a11y asked changes on four.
+
+- `readiness` went stale on path transitions (correctness 1,
+  high): a drop while `.ready` left the bots list banner-free
+  and a regain under `.noNetwork` left the banner standing —
+  the level only moved when a probe happened to run. The
+  coordinator now subscribes `monitor.$isOnline` (drop-first,
+  so the init value can't fire): a fall demotes the level to
+  `.noNetwork` at once, a regain re-derives it through
+  `probeReadiness()` — and only while `paired`, since the
+  pairing surfaces read `monitor.isOnline` directly.
+- `--revoke-phone` answered the wrong terminal over tailnet
+  (correctness 2, high): `classifyIngress` consulted
+  `config.tailnet` only while `phoneEnabled` held, so the
+  enrolled signature the record still carries classified
+  `unknown` → 403 `ingress` — a refusal the phone cannot tell
+  from a runtime outage. Classification now reads the record
+  unconditionally (it survives the flip; only authorization
+  is keyed on `phoneEnabled`), so the gate/session routes
+  reach `phoneDisabled()` and answer `credential_invalid` —
+  the §4.8 terminal — on mint and use alike. Two new contract
+  cases pin both (`auth.post-phone-disabled-tailnet`,
+  `status.phone-disabled-tailnet`), plus an ingress unit test.
+- `connect()` wrote the candidate to the Keychain before
+  validation (correctness 3, high): a same-origin re-pair
+  leaves `dataGeneration` untouched, so in the write→sign-in
+  window an in-flight re-auth on the *live* client minted
+  against the unvalidated token — a 401 then walked
+  `markCredentialInvalid` on a healthy pairing. The sign-in
+  now validates through `InMemoryDeviceTokenStore`
+  (new in `DeviceTokenStore.swift`, shared with macOS) and the
+  shared item is written only on success; the incumbent still
+  rides `rollbackToken()`, now exercised only on post-write
+  stale exits, and a store failure retires the mint and
+  restores the incumbent before reporting
+  `.failed("The token could not be stored in the Keychain.")`.
+- Bot rows floated on a `.secondary` list fill (design 1,
+  medium): the committed shots showed the seam against canvas.
+  Rows now carry `.listRowBackground(Color.clear)`.
+- `.focusRing()` drew nothing at every call site (design 2,
+  high): the modifier read `\.isFocused`, the env key filled
+  by the nearest focusable ancestor — dead state, so §1.0's
+  2 pt `accent` ring never rendered. Rewritten on `@FocusState`
+  + `.focused($focused)`; the ring is real now.
+- Three symbols broke A.1's one-weight rule (design 3, low):
+  `.medium` on the Devices gear, the expiring-banner glyph and
+  the Devices key glyph — all now `.regular`.
+- The shot ledger overclaimed (design 4, medium): the R10
+  table asserted committed variants the 60-cap set does not
+  hold (`bots-paired`/`bots-resigned-in` at 834/xxxl, among
+  others). Regenerated mechanically by diffing the emitted
+  `/tmp/ub-shots/` set (canonicalized, `-402` stripped) against
+  the committed dir — the table is now exact.
+
+Gates re-run on this head: `npm test` 602/602 (599 + the two
+contract assertions + the ingress case), `swift test` 307/307,
+iOS `build-for-testing` clean, pairing gate re-run on all
+three widths after the commit (connect ordering and the
+monitor-driven level are pairing-gate territory).

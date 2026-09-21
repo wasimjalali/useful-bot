@@ -66,6 +66,7 @@ struct BotsListView: View {
                             .tokenFont(DesignTokens.FontSize.chatName, .semibold)
                             .foregroundStyle(Theme.C.ink)
                             .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
+                            .listRowBackground(Color.clear)
                     }
                 }
             }
@@ -102,7 +103,7 @@ struct BotsListView: View {
                     showDevices = true
                 } label: {
                     Image(systemName: "gearshape")
-                        .font(Theme.font(DesignTokens.FontSize.chatBody, .medium))
+                        .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
                         .foregroundStyle(Theme.C.ink)
                         .frame(minWidth: 44, minHeight: 44)
                 }
@@ -365,7 +366,7 @@ struct BotsListView: View {
         .ubFocusRing()
         let text = HStack(alignment: .top, spacing: 12) {
             Image(systemName: glyph)
-                .font(Theme.font(DesignTokens.FontSize.emptyBody, .medium))
+                .font(Theme.font(DesignTokens.FontSize.emptyBody, .regular))
                 .foregroundStyle(Theme.C.danger)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {
@@ -438,7 +439,7 @@ struct BotsListView: View {
         )
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: "key")
-                .font(Theme.font(DesignTokens.FontSize.emptyBody, .medium))
+                .font(Theme.font(DesignTokens.FontSize.emptyBody, .regular))
                 .foregroundStyle(Theme.C.ink)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {

@@ -127,3 +127,16 @@ test("auth.post-phone-disabled: S9 — a disabled phone credential never mints",
   assert.equal(response.json?.error, "credential_invalid");
   assert.equal(response.setCookie, false);
 });
+
+test("auth.post-phone-disabled-tailnet: same verdict over the enrolled tailnet", () => {
+  const { response } = fixture("auth.post-phone-disabled-tailnet");
+  assert.equal(response.status, 401);
+  assert.equal(response.json?.error, "credential_invalid");
+  assert.equal(response.setCookie, false);
+});
+
+test("status.phone-disabled-tailnet: the gate answers credential_invalid over tailnet", () => {
+  const { response } = fixture("status.phone-disabled-tailnet");
+  assert.equal(response.status, 401);
+  assert.equal(response.json?.error, "credential_invalid");
+});

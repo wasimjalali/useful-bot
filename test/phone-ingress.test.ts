@@ -245,6 +245,28 @@ test("phoneEnabled false with any proxy header is unknown", () => {
   });
 });
 
+// `--revoke-phone` flips phoneEnabled but keeps the tailnet record, so a
+// revoked phone's requests still prove the enrolled signature. They classify
+// `tailnet` — the auth layer's phoneDisabled check then answers
+// credential_invalid (§4.8) instead of an ingress refusal the phone reads as
+// runtimeDown.
+test("phoneEnabled false with the tailnet record still classifies tailnet", () => {
+  const dir = tailnetConfigDir({ phoneEnabled: false, credentials: [credentialRow()] });
+  withFixture(join(dir, "config.json"), () => {
+    assert.equal(
+      classifyIngress(new Request(URL_LOOPBACK, { headers: tailnetHeaders() })),
+      "tailnet",
+    );
+    // A signature that does not match stays fail-closed.
+    assert.equal(
+      classifyIngress(new Request(URL_LOOPBACK, {
+        headers: tailnetHeaders({ "tailscale-user-login": "someone-else@tailnet.example" }),
+      })),
+      "unknown",
+    );
+  });
+});
+
 test("a request URL off loopback with no proxy headers is unknown", () => {
   withFixture(null, () => {
     assert.equal(classifyIngress(new Request("http://192.168.1.10:4320/api/x")), "unknown");

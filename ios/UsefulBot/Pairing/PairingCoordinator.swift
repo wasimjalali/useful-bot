@@ -33,6 +33,7 @@ final class PairingCoordinator: ObservableObject {
     let monitor: PathMonitor
 
     private var monitorLink: AnyCancellable?
+    private var monitorLevelLink: AnyCancellable?
 
     init(store: PairingStore, monitor: PathMonitor) {
         self.store = store
@@ -44,6 +45,25 @@ final class PairingCoordinator: ObservableObject {
             .sink { [weak self] _ in
                 Task { @MainActor in self?.objectWillChange.send() }
             }
+        // §7.2: the path state is itself a readiness input — a drop demotes
+        // the level at once, a regain re-derives it, or the banner would
+        // only ever show whatever the last probe left.
+        monitorLevelLink = monitor.$isOnline
+            .dropFirst()
+            .sink { [weak self] online in
+                Task { @MainActor in self?.monitorDidFlip(online: online) }
+            }
+    }
+
+    /// Pairing screens read `monitor.isOnline` directly; the level drives
+    /// the paired surfaces' §11 banner.
+    private func monitorDidFlip(online: Bool) {
+        guard store.state == .paired else { return }
+        if online {
+            Task { await probeReadiness() }
+        } else {
+            readiness = .noNetwork
+        }
     }
 
     /// The live default: constructs its own store and monitor. Kept separate
@@ -147,20 +167,18 @@ final class PairingCoordinator: ObservableObject {
         // late answer must not repopulate a wiped or superseded pairing.
         let generation = store.dataGeneration
         let keychain = PhoneKeychainStore(account: payload.host)
-        // A same-host re-pair overwrites the Keychain item in place before
-        // any server contact; keep the incumbent so a transient failure
-        // cannot burn a working credential.
+        // A same-host re-pair holds the incumbent until the candidate
+        // validates: the sign-in runs against an in-memory store so the
+        // shared Keychain item is never unvalidated — an in-flight re-auth
+        // on the live client reading it mid-attempt would mint against a
+        // token nobody has proved and burn a healthy pairing on refusal.
         let incumbent = payload.host.value == store.pairedOrigin ? try? keychain.token() : nil
-        do {
-            try keychain.store(token: payload.token)
-        } catch {
-            phase = .failed("The token could not be stored in the Keychain.")
-            return
-        }
         /// Roll back only this attempt's write: the item is touched iff the
         /// live value is still ours (a concurrent attempt's overwrite is not
         /// ours to delete), and the incumbent it replaced goes back — except
         /// after an unpair, where the credential must die, not come back.
+        /// Only callable post-write; before the store call the item still
+        /// holds the incumbent (or nothing), so the guard exits.
         func rollbackToken() {
             guard (try? keychain.token()) == payload.token else { return }
             if let incumbent, store.state != .unpaired {
@@ -177,7 +195,7 @@ final class PairingCoordinator: ObservableObject {
         do {
             let next = try BackendClient(
                 base: payload.host.url,
-                tokenStore: keychain,
+                tokenStore: InMemoryDeviceTokenStore(payload.token),
                 endpointPolicy: TailnetEndpointPolicy()
             )
             pendingClient = next
@@ -191,8 +209,20 @@ final class PairingCoordinator: ObservableObject {
             // still needs its server-side death — `next` is never swapped
             // in, so its session would otherwise live to expiry.
             guard store.isCurrent(generation: generation) else {
-                rollbackToken()
                 await next.signOut()
+                return
+            }
+            // The credential proved out — now it takes over the Keychain
+            // item (the in-memory store stays on `next`; value-identical).
+            do {
+                try keychain.store(token: payload.token)
+            } catch {
+                await next.signOut()
+                if let incumbent, store.state != .unpaired {
+                    try? keychain.store(token: incumbent)
+                }
+                guard store.isCurrent(generation: generation) else { return }
+                phase = .failed("The token could not be stored in the Keychain.")
                 return
             }
             // Design 1.1: the success line "Connected to <name>" reads for
@@ -233,20 +263,10 @@ final class PairingCoordinator: ObservableObject {
             // behind or the busy-gated rows (Devices' sign-out/unpair) read
             // it as a still-running connect.
             phase = .idle
-        } catch BackendError.deviceTokenMissing {
-            // The just-written item could not be read back — the Keychain
-            // dropped it. Terminal on iOS the same as a revoked credential.
-            // signOut is a no-op when the mint never landed; when it did,
-            // the dropped client's session still dies server-side.
-            rollbackToken()
-            await pendingClient?.signOut()
-            guard store.isCurrent(generation: generation) else { return }
-            store.markCredentialInvalid()
-            phase = .failed(Self.copy(for: BackendError.deviceTokenMissing))
         } catch {
-            // A failed sign-in leaves no usable token behind — but only this
-            // attempt's write; the incumbent credential is restored and the
-            // client, never swapped, still walks the live pairing.
+            // A failed sign-in never touched the Keychain — the incumbent
+            // credential still stands (rollbackToken is a no-op pre-write),
+            // and the client, never swapped, still walks the live pairing.
             rollbackToken()
             await pendingClient?.signOut()
             guard store.isCurrent(generation: generation) else { return }

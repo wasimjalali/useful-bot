@@ -179,7 +179,12 @@ export function classifyIngress(request: Request): IngressClass {
   }
   if (hasConflict(request)) return "unknown";
   const config = runtimeConfig();
-  const tailnet = config?.phoneEnabled === true ? config.tailnet : null;
+  // The tailnet record persists after `--revoke-phone` (only phoneEnabled
+  // flips), so a revoked phone's requests still carry the enrolled tailnet
+  // signature. Classify them `tailnet` even while phoneEnabled is false —
+  // the auth layer then answers `credential_invalid` (§4.8) rather than an
+  // ingress refusal the phone cannot tell from a runtime outage.
+  const tailnet = config?.tailnet ?? null;
   if (!tailnet) return "unknown";
   const login = request.headers.get("tailscale-user-login")?.trim() ?? "";
   if (login !== tailnet.userLogin) return "unknown";
