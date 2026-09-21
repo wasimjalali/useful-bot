@@ -56,6 +56,8 @@ export type ConnectionIndex = {
   operations?: number;
   schemaBytes?: number;
   textBytes?: number;
+  /** The longest tool name eve builds from the spec, unprefixed. */
+  longestName?: number;
   /**
    * The listing was attempted and did not arrive. Kept apart from a listing
    * that came back empty: one is a server this side cannot weigh, the other
@@ -172,6 +174,9 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
         : {}),
       ...(typeof row.textBytes === "number" && Number.isFinite(row.textBytes)
         ? { textBytes: Math.max(0, Math.trunc(row.textBytes)) }
+        : {}),
+      ...(typeof row.longestName === "number" && Number.isFinite(row.longestName)
+        ? { longestName: Math.max(0, Math.trunc(row.longestName)) }
         : {}),
       ...(row.failed === true ? { failed: true } : {}),
     };
@@ -329,7 +334,7 @@ export function putConnectionListingFailed(
  */
 export function putConnectionOperations(
   connectionId: string,
-  size: { operations: number; schemaBytes: number; textBytes: number } | null,
+  size: { operations: number; schemaBytes: number; textBytes: number; longestName: number } | null,
   path = connectionToolsPath(),
 ): void {
   updateConnectionToolsStore((store) => {
@@ -346,10 +351,12 @@ export function putConnectionOperations(
         ...(last?.operations !== undefined ? { operations: last.operations } : {}),
         ...(last?.schemaBytes !== undefined ? { schemaBytes: last.schemaBytes } : {}),
         ...(last?.textBytes !== undefined ? { textBytes: last.textBytes } : {}),
+        ...(last?.longestName !== undefined ? { longestName: last.longestName } : {}),
       } : {
         operations: Math.max(0, Math.trunc(size.operations)),
         schemaBytes: Math.max(0, Math.trunc(size.schemaBytes)),
         textBytes: Math.max(0, Math.trunc(size.textBytes)),
+        longestName: Math.max(0, Math.trunc(size.longestName)),
       }),
     };
   }, path);

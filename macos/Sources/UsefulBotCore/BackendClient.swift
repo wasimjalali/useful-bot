@@ -97,6 +97,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "That proposal no longer matches this app."
         case "tool_budget_exceeded":
             return "This would give your bots more tools than a turn can carry, so it was not connected."
+        case "tool_name_too_long":
+            return "That service names its tools longer than a model accepts, so it was not connected."
         case "tool_count_unknown":
             return "That service's tool list could not be read, so it was not connected. Try again."
         case "target_missing":

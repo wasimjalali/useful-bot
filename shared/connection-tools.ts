@@ -77,6 +77,8 @@ export function eagerConnections(path?: string, storePath?: string): ConnectionE
     const size = mountedToolBytes(entry, storePath);
     // A size nobody knows is not a small one.
     if (count === null || size === null) continue;
+    // Nor is a name nobody has checked a short one.
+    if (!specNamesFit(entry.id, connectionIndex(entry.id, storePath)?.longestName)) continue;
     if (tools + count > MOUNTED_TOOL_BUDGET || bytes + size > MOUNTED_TOOL_BYTE_BUDGET) continue;
     tools += count;
     bytes += size;
@@ -87,6 +89,15 @@ export function eagerConnections(path?: string, storePath?: string): ConnectionE
 
 export function onDemandConnections(path?: string): ConnectionEntry[] {
   return readConnectionsStore(path).connections.filter((entry) => !isEagerConnection(entry));
+}
+
+/**
+ * Whether every tool name eve builds from a spec still fits the provider's
+ * sixty-four once `<connectionId>__` is in front of it. An unknown length does
+ * not fit.
+ */
+export function specNamesFit(connectionId: string, longestName: number | undefined): boolean {
+  return longestName !== undefined && connectionId.length + 2 + longestName <= 64;
 }
 
 /**
@@ -116,7 +127,9 @@ export async function ensureMeasured(entries: ConnectionEntry[], path?: string):
     if (index?.failed) return false;
     // Fresh but incomplete, such as an index written before a figure existed:
     // measure it now rather than leave it unmounted for six hours.
-    return mountedToolCount(entry, path) === null || mountedToolBytes(entry, path) === null;
+    return mountedToolCount(entry, path) === null
+      || mountedToolBytes(entry, path) === null
+      || index?.longestName === undefined;
   });
   // Together, not one after another. This runs at a turn boundary and holds
   // the first model call of the turn for as long as it takes.

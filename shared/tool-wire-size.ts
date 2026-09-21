@@ -61,7 +61,7 @@ export function toolWireBytes(name: string, description: string, schemaBytes: nu
 const SPEC_EMISSION_RATE = 2.5;
 const PER_OPERATION_OVERHEAD = ENVELOPE_BYTES + 120;
 
-export function specWireBytes(size: SpecSize): number {
+export function specWireBytes(size: Omit<SpecSize, "longestName">): number {
   return Math.ceil(size.schemaBytes * SPEC_EMISSION_RATE)
     + size.textBytes
     + size.operations * PER_OPERATION_OVERHEAD;
@@ -183,7 +183,53 @@ export type SpecSize = {
    * likely to be large.
    */
   textBytes: number;
+  /**
+   * The longest tool name eve builds from this spec, before it puts
+   * `<connection>__` in front. eve cuts a name to sixty-four and prefixes it
+   * without checking again, and the provider refuses a longer one with an
+   * error that retires the session, so the prefixed length has to be checked
+   * here, where the connection id is known.
+   */
+  longestName: number;
 };
+
+/**
+ * The names eve gives a spec's operations, the way it gives them:
+ * `openapi-operations.js` in eve 0.54.3. Only the lengths matter here.
+ */
+export function longestOperationName(spec: unknown): number | null {
+  const paths = asRecord(asRecord(spec)?.paths);
+  if (!paths) return null;
+  const sanitize = (text: string) => text
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "")
+    .slice(0, 64);
+  const taken = new Set<string>();
+  let longest = 0;
+  for (const [route, item] of Object.entries(paths)) {
+    const path = asRecord(item);
+    if (!path) continue;
+    for (const method of EVE_METHODS) {
+      const operation = asRecord(path[method]);
+      if (!operation) continue;
+      let name = typeof operation.operationId === "string" && operation.operationId.length > 0
+        ? sanitize(operation.operationId)
+        : "";
+      if (!name) {
+        name = sanitize(`${method}_${route.replace(/[{}]/g, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`);
+      }
+      // A clash takes a suffix, which is where a name can pass sixty-four.
+      let unique = name;
+      for (let n = 2; taken.has(unique); n += 1) unique = `${name}_${n}`;
+      taken.add(unique);
+      longest = Math.max(longest, unique.length);
+    }
+  }
+  return longest;
+}
+
+/** eve's own order and spelling: a key it does not match is not a tool. */
+const EVE_METHODS = ["get", "put", "post", "delete", "patch", "head", "options"];
 
 /**
  * Measure a spec, falling back to its own text when the walk cannot finish.
@@ -205,8 +251,9 @@ export function measureOpenApiSpecText(text: string): SpecSize | null {
   const exact = measureOpenApiSpec(spec);
   if (exact) return exact;
   const operations = countOperations(spec);
-  if (operations === null) return null;
-  return { operations, schemaBytes: utf8(text), textBytes: 0 };
+  const longestName = longestOperationName(spec);
+  if (operations === null || longestName === null) return null;
+  return { operations, schemaBytes: utf8(text), textBytes: 0, longestName };
 }
 
 function countOperations(spec: unknown): number | null {
@@ -258,5 +305,7 @@ export function measureOpenApiSpec(spec: unknown): SpecSize | null {
       if (walk.truncated) return null;
     }
   }
-  return walk.truncated ? null : { operations, schemaBytes, textBytes };
+  if (walk.truncated) return null;
+  const longestName = longestOperationName(spec);
+  return longestName === null ? null : { operations, schemaBytes, textBytes, longestName };
 }

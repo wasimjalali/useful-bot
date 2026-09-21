@@ -525,7 +525,7 @@ test("a connect that would overrun the mounted tool budget is refused before any
     toolsAllow: null,
     createdAt: new Date().toISOString(),
   });
-  putConnectionOperations("huge", { operations: MOUNTED_TOOL_BUDGET, schemaBytes: 1_000, textBytes: 0 });
+  putConnectionOperations("huge", { operations: MOUNTED_TOOL_BUDGET, schemaBytes: 1_000, textBytes: 0, longestName: 20 });
   const proposal = seedCard({
     connectionId: "second",
     connectionKind: "openapi",

@@ -27,6 +27,7 @@ import {
   onDemandConnections,
   scoreTool,
   searchConnectionTools,
+  specNamesFit,
   splitMountedName,
 } from "../shared/connection-tools.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
@@ -34,7 +35,7 @@ import { connectionSecretService, keychainSet, memoryKeychain, setKeychainDriver
 import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { measureOpenApiSpec, measureOpenApiSpecText, specWireBytes } from "../shared/tool-wire-size.ts";
+import { longestOperationName, measureOpenApiSpec, measureOpenApiSpecText, specWireBytes } from "../shared/tool-wire-size.ts";
 import {
   MAX_SESSION_TOOLS,
   MAX_SESSION_TOOL_BYTES,
@@ -91,7 +92,7 @@ test("every MCP server waits to be asked for; an OpenAPI spec does not", () => {
   // And a spec nobody has counted is not mounted either: eve builds its
   // tools from it, and a size nobody knows is not a small one.
   assert.deepEqual(eagerConnections().map((item) => item.id), []);
-  putConnectionOperations("weather", { operations: 12, schemaBytes: 900, textBytes: 0 });
+  putConnectionOperations("weather", { operations: 12, schemaBytes: 900, textBytes: 0, longestName: 20 });
   assert.deepEqual(eagerConnections().map((item) => item.id), ["weather"]);
   assert.deepEqual(onDemandConnections().map((item) => item.id).sort(), ["example", "excalidraw"]);
   assert.equal(mountedToolCount(spec), 12);
@@ -109,7 +110,7 @@ test("the mounted set is clamped at the budget, whatever is in the store", () =>
       name: `Spec ${i}`,
       url: `https://api${i}.example.com/openapi.json`,
     }));
-    putConnectionOperations(`spec-${i}`, { operations: 25, schemaBytes: 3_000, textBytes: 0 });
+    putConnectionOperations(`spec-${i}`, { operations: 25, schemaBytes: 3_000, textBytes: 0, longestName: 20 });
   }
   const mounted = eagerConnections();
   const total = mounted.reduce((sum, item) => sum + (mountedToolCount(item) ?? 0), 0);
@@ -667,7 +668,7 @@ test("a measurement that times out keeps the figures it already had", () => {
   paths();
   const spec = entry({ id: "weather", kind: "openapi", url: "https://api.example.com/openapi.json" });
   upsertConnection(spec);
-  putConnectionOperations("weather", { operations: 12, schemaBytes: 900, textBytes: 40 });
+  putConnectionOperations("weather", { operations: 12, schemaBytes: 900, textBytes: 40, longestName: 20 });
   const before = mountedToolBytes(spec);
   putConnectionOperations("weather", null);
   // Still mounted on the figures it was admitted with, and the failure is
@@ -716,4 +717,28 @@ test("the mount re-weighs held tools against the index as it is now", async () =
     return sum + indexedToolBytes(tool, "example", "Example");
   }, 0);
   assert.ok(weighed <= MAX_SESSION_TOOL_BYTES, `weighed ${weighed}`);
+});
+
+test("a spec whose prefixed tool names pass sixty-four is never mounted", () => {
+  paths();
+  // eve's names: sanitized, cut to 64, then suffixed on a clash.
+  const spec = {
+    paths: {
+      "/a": { get: { operationId: "admin.users.list" } },
+      "/b/{id}": { post: {} },
+      "/c": { get: { operationId: "admin.users.list" } },
+    },
+  };
+  assert.equal(longestOperationName(spec), "admin_users_list_2".length);
+  assert.equal(measureOpenApiSpec(spec)?.longestName, "admin_users_list_2".length);
+  assert.equal(longestOperationName({ paths: { "/x": { get: { operationId: "y".repeat(90) } } } }), 64);
+  assert.equal(specNamesFit("weather", 55), true);
+  assert.equal(specNamesFit("weather", 56), false);
+  assert.equal(specNamesFit("weather", undefined), false);
+  const spec2 = entry({ id: "weather", kind: "openapi", url: "https://api.example.com/openapi.json" });
+  upsertConnection(spec2);
+  putConnectionOperations("weather", { operations: 3, schemaBytes: 100, textBytes: 0, longestName: 60 });
+  assert.deepEqual(eagerConnections().map((item) => item.id), []);
+  putConnectionOperations("weather", { operations: 3, schemaBytes: 100, textBytes: 0, longestName: 20 });
+  assert.deepEqual(eagerConnections().map((item) => item.id), ["weather"]);
 });

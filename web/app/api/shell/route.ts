@@ -278,6 +278,7 @@ export async function PUT(request: Request) {
           "authorize_in_flight", "secret_invalid", "oauth_no_as", "oauth_no_dcr",
           "oauth_register", "url_invalid", "url_http", "url_host", "url_protocol", "url_credentials",
           "url_resolved", "url_resolve", "tool_budget_exceeded", "tool_count_unknown",
+          "tool_name_too_long",
         ]);
         return NextResponse.json({ ok: false, error: known.has(code) ? code : "connect_failed" }, { status: 400 });
       }

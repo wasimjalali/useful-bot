@@ -36,6 +36,7 @@ import {
   isEagerConnection,
   mountedToolBytes,
   mountedToolCount,
+  specNamesFit,
 } from "./connection-tools.ts";
 import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
@@ -204,6 +205,8 @@ async function assertToolBudget(
     // operation cleared this budget and the router's by a factor of five.
     const size = await measureOpenApiConnection(entry.url, headers).catch(() => null);
     if (size === null) throw new Error("tool_count_unknown");
+    // A name the provider refuses retires every session it is mounted in.
+    if (!specNamesFit(entry.id, size.longestName)) throw new Error("tool_name_too_long");
     adding = size.operations;
     // The same weighing the clamp uses, so the two cannot disagree.
     addingBytes = specWireBytes(size);
