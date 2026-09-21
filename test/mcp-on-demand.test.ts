@@ -4,18 +4,20 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { mcpToolRisk } from "../agent/lib/connector-risk.ts";
+import { mcpToolGate, mcpToolRisk } from "../agent/lib/connector-risk.ts";
 import {
   activateSessionTools,
   connectionIndex,
   mountedToolName,
   putConnectionIndex,
+  putConnectionOperations,
   readConnectionToolsStore,
   sessionTools,
 } from "../shared/connection-tools-store.ts";
 import {
   eagerConnections,
   isEagerConnection,
+  mountedToolBytes,
   mountedToolCount,
   onDemandConnections,
   scoreTool,
@@ -26,7 +28,7 @@ import { setConnectionLookup } from "../shared/connection-url.ts";
 import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { MAX_SESSION_TOOLS } from "../shared/policy.ts";
+import { MAX_SESSION_TOOLS, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "../shared/policy.ts";
 
 function paths(): void {
   const dir = mkdtempSync(join(tmpdir(), "ub-ctools-"));
@@ -75,12 +77,62 @@ test("a big server waits to be asked for; a pinned one and an OpenAPI spec do no
   assert.equal(isEagerConnection(spec), true);
   assert.deepEqual(eagerConnections().map((item) => item.id).sort(), ["excalidraw", "weather"]);
   assert.deepEqual(onDemandConnections().map((item) => item.id), ["example"]);
-  // An allow-list is exact; a server nobody has listed is assumed to be as
-  // big as one can get, which is the number the budget has to survive.
+  // An allow-list is exact; a listing is exact; a row nobody has measured
+  // gets a modest figure rather than the worst case, because unmounting a
+  // working connection over a missing measurement is the worse mistake.
   assert.equal(mountedToolCount(pinned), 2);
-  assert.equal(mountedToolCount(big), 200);
+  assert.equal(mountedToolCount(big), 20);
   putConnectionIndex("example", [{ name: "one", description: "", inputSchema: null }]);
   assert.equal(mountedToolCount(big), 1);
+  // eve builds an OpenAPI connection's tools from the spec and never hands
+  // them back, so the count taken at connect time is what weighs it.
+  putConnectionOperations("weather", 12);
+  assert.equal(mountedToolCount(spec), 12);
+});
+
+test("the mounted set is clamped at the budget, whatever is in the store", () => {
+  paths();
+  // Rows can be over budget for reasons the connect check never saw: they
+  // were connected before it existed, or written by another path.
+  for (let i = 0; i < 6; i++) {
+    upsertConnection(entry({
+      id: `spec-${i}`,
+      kind: "openapi",
+      name: `Spec ${i}`,
+      url: `https://api${i}.example.com/openapi.json`,
+    }));
+    putConnectionOperations(`spec-${i}`, 25);
+  }
+  const mounted = eagerConnections();
+  const total = mounted.reduce((sum, item) => sum + mountedToolCount(item), 0);
+  assert.ok(total <= MOUNTED_TOOL_BUDGET, `mounted ${total} tools, past ${MOUNTED_TOOL_BUDGET}`);
+  assert.equal(mounted.length, 2);
+  // In the order they were connected, so the set is stable turn to turn.
+  assert.deepEqual(mounted.map((item) => item.id), ["spec-0", "spec-1"]);
+});
+
+test("the byte budget clamps a roster the count alone would admit", () => {
+  paths();
+  const fat = { type: "object", properties: Object.fromEntries(
+    Array.from({ length: 40 }, (_, i) => [`field_${i}`, { type: "string", description: "x".repeat(200) }]),
+  ) };
+  for (let i = 0; i < 6; i++) {
+    upsertConnection(entry({
+      id: `fat-${i}`,
+      name: `Fat ${i}`,
+      url: `https://fat${i}.example.com/mcp`,
+      toolsAllow: ["one", "two"],
+    }));
+    putConnectionIndex(`fat-${i}`, [
+      { name: "one", description: "", inputSchema: fat },
+      { name: "two", description: "", inputSchema: fat },
+    ]);
+  }
+  const mounted = eagerConnections();
+  // Twelve tools is well inside the count budget; their schemas are not.
+  assert.ok(mounted.length < 6, `mounted all ${mounted.length}`);
+  const bytes = mounted.reduce((sum, item) => sum + mountedToolBytes(item), 0);
+  assert.ok(bytes <= MOUNTED_TOOL_BYTE_BUDGET, `mounted ${bytes} bytes`);
 });
 
 test("find_tools' search ranks a name match over prose and reads the cached listing", async () => {
@@ -172,6 +224,19 @@ test("an MCP tool's risk comes from its own name, with no toolkit to strip", () 
   assert.equal(mcpToolRisk("delete_file"), "destructive");
   assert.equal(mcpToolRisk("list_and_purge"), "destructive");
   assert.equal(mcpToolRisk(""), "write");
+});
+
+test("read only refuses an MCP tool however its server named it", () => {
+  // The name is the server's to choose, so it must not be what gets a bot
+  // past the posture where the owner said nothing may act.
+  assert.equal(mcpToolGate("list_channels", "read_only"), "refuse");
+  assert.equal(mcpToolGate("delete_everything", "read_only"), "refuse");
+  // Auto keeps the ladder: a read runs, a write asks.
+  assert.equal(mcpToolGate("list_channels", "auto"), "run");
+  assert.equal(mcpToolGate("send_message", "auto"), "ask");
+  assert.equal(mcpToolGate("delete_file", "auto"), "ask");
+  // Full access is the posture that asks nothing.
+  assert.equal(mcpToolGate("delete_file", "full_access"), "run");
 });
 
 test("a server's schema becomes the tool's contract, or a passthrough with the raw one", () => {

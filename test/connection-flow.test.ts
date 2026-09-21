@@ -565,3 +565,24 @@ test("an MCP server whose tools wait to be asked for costs nothing at connect ti
   assert.equal(connectionIndex("example")?.tools.length, 2);
   assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
 });
+
+test("a spec this app could not read is not a spec with no operations in it", async () => {
+  const { storePath } = paths();
+  // An unreachable or oversized spec used to count as zero operations and
+  // sail through the budget; eve then mounted its whole operation list on
+  // every later turn.
+  setMcpFetch(async () => new Response("nope", { status: 502 }));
+  const proposal = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+  });
+  await assert.rejects(
+    () => startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK }),
+    /tool_count_unknown/,
+  );
+  assert.equal(findConnectionById("spec"), null);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
+});

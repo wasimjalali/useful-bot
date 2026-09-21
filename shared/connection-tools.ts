@@ -8,7 +8,7 @@ import {
 } from "./connection-tools-store.ts";
 import { readConnectionsStore, type ConnectionEntry } from "./connections-store.ts";
 import { listMcpTools, modelToolNames } from "./mcp-http.ts";
-import { EAGER_TOOL_ALLOWANCE } from "./policy.ts";
+import { EAGER_TOOL_ALLOWANCE, MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
 /**
  * Which connections are mounted for every turn, and how a bot finds the tools
@@ -26,8 +26,31 @@ export function isEagerConnection(entry: ConnectionEntry): boolean {
   return entry.toolsAllow !== null && entry.toolsAllow.length <= EAGER_TOOL_ALLOWANCE;
 }
 
-export function eagerConnections(path?: string): ConnectionEntry[] {
-  return readConnectionsStore(path).connections.filter(isEagerConnection);
+/**
+ * The connections mounted for this turn, in the order they were connected,
+ * stopping at the budget.
+ *
+ * The connect-time check is not enough on its own: rows connected before that
+ * check existed, or written by any path that does not go through it, would
+ * still put a list in front of the model that the router refuses with a
+ * non-retryable error. Clamping here means the model never sees one, whatever
+ * is in the store. A connection left out is not lost; it comes back as soon
+ * as the ones ahead of it are disconnected.
+ */
+export function eagerConnections(path?: string, storePath?: string): ConnectionEntry[] {
+  const all = readConnectionsStore(path).connections.filter(isEagerConnection);
+  const out: ConnectionEntry[] = [];
+  let tools = 0;
+  let bytes = 0;
+  for (const entry of all) {
+    const count = mountedToolCount(entry, storePath);
+    const size = mountedToolBytes(entry, storePath);
+    if (tools + count > MOUNTED_TOOL_BUDGET || bytes + size > MOUNTED_TOOL_BYTE_BUDGET) continue;
+    tools += count;
+    bytes += size;
+    out.push(entry);
+  }
+  return out;
 }
 
 export function onDemandConnections(path?: string): ConnectionEntry[] {
@@ -40,11 +63,44 @@ export function onDemandConnections(path?: string): ConnectionEntry[] {
  * is, and an unlisted server is assumed to be as big as one can get, which is
  * the number the cap has to survive.
  */
+/**
+ * What a row nobody has measured is assumed to be worth. Modest on purpose:
+ * this figure is only used by the clamp, which is a backstop, and assuming
+ * the worst there would unmount a connection that has been working for weeks
+ * just because nothing had written its size down yet. The connect-time check
+ * is where an unknown size fails closed.
+ */
+const UNMEASURED_TOOLS = 20;
+
 export function mountedToolCount(entry: ConnectionEntry, path?: string): number {
   if (entry.toolsAllow) return entry.toolsAllow.length;
   const index = connectionIndex(entry.id, path);
-  if (index) return index.tools.length;
-  return 200;
+  if (index?.operations !== undefined) return index.operations;
+  if (index && index.tools.length > 0) return index.tools.length;
+  return UNMEASURED_TOOLS;
+}
+
+/**
+ * How many bytes of argument schema one connection puts in front of the
+ * model, as far as this side can see. eve generates an OpenAPI connection's
+ * schemas from the spec and never hands them back, so those are counted at a
+ * flat rate rather than pretended to be zero.
+ */
+const UNSEEN_SCHEMA_BYTES = 400;
+
+export function mountedToolBytes(entry: ConnectionEntry, path?: string): number {
+  const index = connectionIndex(entry.id, path);
+  if (!index || index.tools.length === 0) return mountedToolCount(entry, path) * UNSEEN_SCHEMA_BYTES;
+  const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
+  let bytes = 0;
+  for (const tool of index.tools) {
+    if (allow && !allow.has(tool.name)) continue;
+    bytes += tool.inputSchema
+      ? JSON.stringify(tool.inputSchema).length
+      : UNSEEN_SCHEMA_BYTES;
+    bytes += tool.name.length + tool.description.length;
+  }
+  return bytes;
 }
 
 export type ToolHit = {

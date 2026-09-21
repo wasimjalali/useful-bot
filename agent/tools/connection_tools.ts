@@ -3,9 +3,8 @@ import { z } from "zod";
 import { connectionHeaders } from "../../shared/connection-auth.ts";
 import {
   activateSessionTools,
-  connectionIndex,
   mountedToolName,
-  sessionTools,
+  readConnectionToolsStore,
 } from "../../shared/connection-tools-store.ts";
 import {
   onDemandConnections,
@@ -17,7 +16,7 @@ import { toolInputSchema, rawSchemaHint } from "../../shared/json-schema-zod.ts"
 import { callMcpTool } from "../../shared/mcp-http.ts";
 import { MAX_SESSION_TOOLS } from "../../shared/policy.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
-import { connectorGate, mcpToolRisk } from "../lib/connector-risk.ts";
+import { mcpToolGate, mcpToolRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { sessionPermission } from "../lib/permission.ts";
@@ -56,6 +55,9 @@ export default defineDynamic({
       // Nothing to look through: no `find_tools` either, rather than a tool
       // that can only ever answer "no connections".
       if (onDemandConnections().length === 0) return null;
+      // One read for the whole step. Looking each tool up on its own meant a
+      // parse of the whole file per mounted tool, per model call.
+      const store = sessionId ? readConnectionToolsStore() : null;
       // `unknown` because eve's own resolver signature is: each `defineTool`
       // call below is checked on its own, and one Record cannot hold two
       // tools whose input schemas differ.
@@ -71,6 +73,7 @@ export default defineDynamic({
           }),
           async execute(input, toolCtx) {
             const id = toolCtx.session?.id ?? "";
+            if (!id) return { status: "blocked", error: "no_session" };
             const hits = await searchConnectionTools(input.query, MAX_HITS);
             if (hits.length === 0) {
               return { status: "ok", found: 0, tools: [], note: "No connected server has a tool like that." };
@@ -86,7 +89,9 @@ export default defineDynamic({
                 .map((hit) => ({
                   name: hit.name,
                   app: hit.connectionName,
-                  description: hit.description,
+                  // The server wrote this, so it is quoted rather than
+                  // spoken: a listing is a place to plant instructions.
+                  description: wrapUntrusted(`connection:${hit.connectionId}`, hit.description),
                 })),
               ...(outcome.refused.length
                 ? {
@@ -98,12 +103,15 @@ export default defineDynamic({
           },
         }),
       };
-      for (const name of sessionTools(sessionId)) {
+      // A caller with no session (an eval, a test) gets `find_tools` and
+      // nothing else: there is no session to record an activation against,
+      // and one shared key would mount one caller's tools in another's.
+      for (const name of store?.sessions[sessionId]?.tools ?? []) {
         const split = splitMountedName(name);
         if (!split) continue;
         const entry = findConnectionById(split.connectionId);
         if (!entry || entry.kind !== "mcp") continue;
-        const indexed = connectionIndex(split.connectionId)?.tools.find((tool) => tool.name === split.tool);
+        const indexed = store?.index[split.connectionId]?.tools.find((tool) => tool.name === split.tool);
         if (!indexed) continue;
         const { schema, passthrough } = toolInputSchema(indexed.inputSchema);
         const connectionId = entry.id;
@@ -125,12 +133,18 @@ export default defineDynamic({
               return { status: "blocked", error: "connection_gone", connection: connectionId };
             }
             // Someone else's tool doing something on the owner's behalf is
-            // gated like a connector call, not like a read: this app runs it
-            // itself, so the card is this app's to show. The risk comes from
-            // the tool's own name, which is all any of us has to go on.
+            // gated like a connector call: this app runs it itself, so the
+            // card is this app's to show.
+            //
+            // The risk comes from the tool's own name, and the name is the
+            // server's to choose. In Auto that is a ladder for convenience,
+            // and it trusts the server the owner connected: a tool called
+            // `list_items` that deletes would run without a card. Read only
+            // is not a convenience, it is the posture where the owner said
+            // nothing may act, so no name gets a bot past it.
             const permission = sessionPermission(toolCtx);
             const risk = mcpToolRisk(toolName);
-            const gate = connectorGate(risk, permission);
+            const gate = mcpToolGate(toolName, permission);
             if (gate === "refuse") return { status: "blocked", error: "workspace_read_only", risk };
             const args = input && typeof input === "object" && !Array.isArray(input)
               ? input as Record<string, unknown>

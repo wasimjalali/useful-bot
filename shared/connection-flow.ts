@@ -11,6 +11,7 @@ import {
   allocateConnectionId,
   findConnectionByUrl,
   isAuthHeaderName,
+  readConnectionsStore,
   upsertConnection,
   type ConnectionAuthKind,
   type ConnectionEntry,
@@ -28,9 +29,9 @@ import {
 } from "./mcp-oauth.ts";
 import { readShell } from "./shell-io.ts";
 import { DEFAULT_BOT_ID } from "./shell-store.ts";
-import { putConnectionIndex } from "./connection-tools-store.ts";
-import { eagerConnections, isEagerConnection, mountedToolCount } from "./connection-tools.ts";
-import { MOUNTED_TOOL_BUDGET } from "./policy.ts";
+import { putConnectionIndex, putConnectionOperations } from "./connection-tools-store.ts";
+import { isEagerConnection, mountedToolBytes, mountedToolCount } from "./connection-tools.ts";
+import { MOUNTED_TOOL_BUDGET, MOUNTED_TOOL_BYTE_BUDGET } from "./policy.ts";
 
 /**
  * Connect-server card. Confirm writes the registry (and Keychain, and OAuth).
@@ -116,7 +117,16 @@ function queueResume(card: Stored, storePath: string, connectionId = card.connec
  */
 async function probeToolCount(entry: ConnectionEntry, headers: Record<string, string> = {}): Promise<number | null> {
   try {
-    if (entry.kind === "openapi") return await countOpenApiOperations(entry.url);
+    if (entry.kind === "openapi") {
+      const operations = await countOpenApiOperations(entry.url);
+      // Written down because eve builds this connection's tools from the spec
+      // and never hands them back: this is the only figure the mount-time
+      // clamp has to weigh it by.
+      if (operations !== null) {
+        try { putConnectionOperations(entry.id, operations); } catch { /* a cache */ }
+      }
+      return operations;
+    }
     const tools = await listMcpTools(entry.url, headers);
     const visible = new Set(modelToolNames(tools));
     const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
@@ -155,17 +165,26 @@ async function probeToolCount(entry: ConnectionEntry, headers: Record<string, st
  */
 async function assertToolBudget(entry: ConnectionEntry): Promise<void> {
   if (!isEagerConnection(entry)) return;
-  const mounted = eagerConnections()
-    .filter((item) => item.id !== entry.id && item.url !== entry.url)
-    .reduce((total, item) => total + mountedToolCount(item), 0);
-  const adding = entry.kind === "openapi"
-    ? (await countOpenApiOperations(entry.url).catch(() => null) ?? 0)
-    : (entry.toolsAllow?.length ?? 0);
-  if (mounted + adding > MOUNTED_TOOL_BUDGET) {
-    const err = new Error("tool_budget_exceeded") as Error & { mounted: number; adding: number };
-    err.mounted = mounted;
-    err.adding = adding;
-    throw err;
+  const others = readConnectionsStore().connections
+    .filter((item) => isEagerConnection(item) && item.id !== entry.id && item.url !== entry.url);
+  const mounted = others.reduce((total, item) => total + mountedToolCount(item), 0);
+  const mountedBytes = others.reduce((total, item) => total + mountedToolBytes(item), 0);
+  let adding: number | null;
+  let addingBytes: number;
+  if (entry.kind === "openapi") {
+    // A spec this app could not read is not a spec with no operations in it.
+    // Counting it as zero let an unreachable or oversized one through, and
+    // eve then mounted its whole operation list on every later turn: the
+    // wall this check exists to keep out of reach.
+    adding = await countOpenApiOperations(entry.url).catch(() => null);
+    if (adding === null) throw new Error("tool_count_unknown");
+    addingBytes = adding * 400;
+  } else {
+    adding = entry.toolsAllow?.length ?? 0;
+    addingBytes = mountedToolBytes(entry);
+  }
+  if (mounted + adding > MOUNTED_TOOL_BUDGET || mountedBytes + addingBytes > MOUNTED_TOOL_BYTE_BUDGET) {
+    throw new Error("tool_budget_exceeded");
   }
 }
 
@@ -355,6 +374,20 @@ export async function completeConnectionOAuth(
     markConnected(pendingPeek.proposalId, settled, null, opts.now ?? Date.now(), storePath);
     return { proposalId: pendingPeek.proposalId };
   }
+  // Before the code is exchanged: an authorization code is single use, so a
+  // refusal after it is spent costs the owner the whole browser sign-in with
+  // no way to retry it.
+  await assertToolBudget({
+    id: proposal.connectionId,
+    kind: proposal.connectionKind,
+    name: proposal.name,
+    url: assertConnectionUrl(proposal.url),
+    description: proposal.description || `${proposal.name} MCP server`,
+    authKind: "oauth",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date(opts.now ?? Date.now()).toISOString(),
+  });
   const { bundle, pending } = await completeMcpOAuth({ code, state });
   if (pending.proposalId !== pendingPeek.proposalId || pending.connectionId !== pendingPeek.connectionId) {
     throw new Error("oauth_state");

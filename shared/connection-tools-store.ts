@@ -38,6 +38,12 @@ export type IndexedTool = {
 export type ConnectionIndex = {
   fetchedAt: string;
   tools: IndexedTool[];
+  /**
+   * An OpenAPI connection's operation count. eve turns the spec into tools
+   * itself and this side never sees them, so the count taken at connect time
+   * is all there is to weigh it by later.
+   */
+  operations?: number;
 };
 
 export type SessionTools = {
@@ -116,6 +122,9 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
     store.index[id] = {
       fetchedAt: typeof row.fetchedAt === "string" ? row.fetchedAt : new Date(0).toISOString(),
       tools,
+      ...(typeof row.operations === "number" && Number.isFinite(row.operations)
+        ? { operations: Math.max(0, Math.trunc(row.operations)) }
+        : {}),
     };
   }
   const sessions = rec.sessions && typeof rec.sessions === "object"
@@ -135,15 +144,19 @@ export function parseConnectionToolsStore(raw: unknown): ConnectionToolsStore {
   return store;
 }
 
+/**
+ * A read never moves the file aside, even when it cannot parse it. Reads run
+ * off the lock, on every step and once per mounted tool, so a reader that
+ * quarantined a file another process was halfway through writing would wipe
+ * the index and every session's activations mid-turn. This is a cache: an
+ * unreadable one is empty, and the writer under the lock is what sets a
+ * genuinely corrupt file aside.
+ */
 export function readConnectionToolsStore(path = connectionToolsPath()): ConnectionToolsStore {
   if (!existsSync(path)) return emptyConnectionToolsStore();
   try {
     return parseConnectionToolsStore(JSON.parse(readFileSync(path, "utf8")));
   } catch {
-    // A file this app cannot read is a cache, not a record: it is set aside
-    // and rebuilt rather than taking the turn down with it.
-    const bak = `${path}.invalid.${Date.now()}`;
-    try { renameSync(path, bak); } catch { /* ignore */ }
     return emptyConnectionToolsStore();
   }
 }
@@ -188,6 +201,17 @@ export function updateConnectionToolsStore<T>(
   try {
     const existed = existsSync(path);
     const store = readConnectionToolsStore(path);
+    // Under the lock nothing else is writing, so a file that still will not
+    // parse is corrupt rather than half-written, and this is where it is set
+    // aside.
+    if (existed && JSON.stringify(store) === JSON.stringify(emptyConnectionToolsStore())) {
+      try {
+        const raw = readFileSync(path, "utf8");
+        parseConnectionToolsStore(JSON.parse(raw));
+      } catch {
+        try { renameSync(path, `${path}.invalid.${Date.now()}`); } catch { /* ignore */ }
+      }
+    }
     const before = JSON.stringify(store);
     const result = fn(store);
     pruneSessions(store);
@@ -222,6 +246,21 @@ export function putConnectionIndex(
     store.index[connectionId] = {
       fetchedAt: new Date().toISOString(),
       tools: tools.slice(0, 200),
+    };
+  }, path);
+}
+
+/** Remember how big an OpenAPI connection is, since its tools are eve's. */
+export function putConnectionOperations(
+  connectionId: string,
+  operations: number,
+  path = connectionToolsPath(),
+): void {
+  updateConnectionToolsStore((store) => {
+    store.index[connectionId] = {
+      fetchedAt: new Date().toISOString(),
+      tools: [],
+      operations: Math.max(0, Math.trunc(operations)),
     };
   }, path);
 }

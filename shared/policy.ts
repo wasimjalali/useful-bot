@@ -105,7 +105,16 @@ export const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
  * to. The rest of the headroom is for the agent's own tools, eve's, and the
  * tools a session picks up mid-turn.
  */
-export const MOUNTED_TOOL_BUDGET = 150;
+export const MOUNTED_TOOL_BUDGET = 60;
+/**
+ * And the same budget in bytes, because the router refuses a turn on schema
+ * bytes too, with the same non-retryable error. Only what this app can
+ * measure is counted: the argument schemas a connected MCP server published.
+ * eve generates an OpenAPI connection's schemas itself and this side never
+ * sees them, which is the other half of why the count budget is as low as it
+ * is.
+ */
+export const MOUNTED_TOOL_BYTE_BUDGET = 48 * 1024;
 /**
  * A connection whose own allow-list is this short stays mounted for every
  * turn: two tools cost nothing against the budget, and making the bot go

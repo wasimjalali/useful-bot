@@ -65,12 +65,9 @@ function convert(node: unknown, depth: number): z.ZodTypeAny | null {
     return described(z.union([list[0], list[1], ...list.slice(2)]), rec);
   }
 
-  if (Array.isArray(rec.enum)) {
-    const built = enumSchema(rec.enum);
-    return built ? described(built, rec) : null;
-  }
-
-  // `type: ["string", "null"]` is how a nullable field usually arrives.
+  // Read before the plain enum below: `{type: ["string","null"], enum: [...]}`
+  // is a nullable enum, and taking the enum on its own dropped the null the
+  // server accepts.
   if (Array.isArray(rec.type)) {
     const names = rec.type.filter((item): item is string => typeof item === "string");
     if (names.length !== rec.type.length || names.length === 0) return null;
@@ -82,6 +79,11 @@ function convert(node: unknown, depth: number): z.ZodTypeAny | null {
     const list = parts as z.ZodTypeAny[];
     const built = list.length === 1 ? list[0] : z.union([list[0], list[1], ...list.slice(2)]);
     return described(nullable ? built.nullable() : built, rec);
+  }
+
+  if (Array.isArray(rec.enum)) {
+    const built = enumSchema(rec.enum);
+    return built ? described(built, rec) : null;
   }
 
   const type = typeof rec.type === "string" ? rec.type : null;
@@ -98,7 +100,11 @@ function convert(node: unknown, depth: number): z.ZodTypeAny | null {
     }
     // No properties at all is a free-form object, not an empty one.
     if (Object.keys(shape).length === 0) return described(z.record(z.string(), z.unknown()), rec);
-    return described(z.object(shape), rec);
+    // Passthrough, not strip: the server is the only validator here, and an
+    // argument silently dropped on the way out is worse than one the server
+    // refuses. The same reason the constraints below (`minimum`, `pattern`,
+    // `format`) are left to it rather than half-enforced here.
+    return described(z.object(shape).passthrough(), rec);
   }
 
   if (type === "array") {

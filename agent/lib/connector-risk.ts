@@ -99,3 +99,17 @@ export function connectorGate(risk: ConnectorRisk, permission: ConnectorPermissi
   if (permission === "read_only") return "refuse";
   return permission === "full_access" ? "run" : "ask";
 }
+
+/**
+ * Whether one MCP tool runs, asks, or is refused.
+ *
+ * The connector ladder with one difference: the risk is read off a name the
+ * server chose, so in Auto it trusts the server the owner connected, and a
+ * tool called `list_items` that deletes would run without a card. Read only
+ * is not a convenience posture: it is the owner saying nothing may act, and
+ * no name gets a bot past it.
+ */
+export function mcpToolGate(toolName: string, permission: ConnectorPermission): "run" | "ask" | "refuse" {
+  if (permission === "read_only") return "refuse";
+  return connectorGate(mcpToolRisk(toolName), permission);
+}
