@@ -22,10 +22,15 @@ When a change touches more than one surface, do the macOS work first and complet
 
 ## Change management
 
-Adversarial review runs through Muse Spark in opencode
-(`opencode run -m opencode-go/muse-spark-1.3-contributor --variant max`), not through
-`/code-review` and not through parallel Opus subagents. A clean Spark pass counts as the PR
-review: fix what it finds, then merge, rebuild the app and install it from local `main`.
+Adversarial review runs through SWE-2 in the Devin CLI, at the tier the diff calls for
+(`devin -p --model swe-2-max|high|medium --permission-mode auto --prompt-file <file>`).
+Not Muse Spark or GLM in opencode, not `/code-review`, not parallel Opus subagents. Check
+out the branch under review first: the reviewer reads the files, and a diff against code
+that is not in the tree wastes the pass. Never accept a bare empty array, ask for the list
+of what it dismissed and why. A clean pass counts as the PR review: fix what it finds,
+review again, then merge, rebuild the app and install it from local `main`.
+
+This arrangement expires on 2026-10-15; ask Wasim what to move to rather than falling back.
 
 ## Verification
 
