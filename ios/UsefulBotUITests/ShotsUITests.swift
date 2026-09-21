@@ -130,7 +130,7 @@ final class ShotsUITests: XCTestCase {
     /// transient snapshot miss fakes it).
     @discardableResult
     private func waitForBotsRoot(_ app: XCUIApplication, timeout: TimeInterval = 15) -> Bool {
-        app.staticTexts["Useful Bot"].waitForExistence(timeout: timeout)
+        app.descendants(matching: .any)["bots-list"].waitForExistence(timeout: timeout)
     }
 
     /// Opens the pushed Devices screen and waits for its own nav bar.
@@ -212,7 +212,7 @@ final class ShotsUITests: XCTestCase {
             // the tap no-opped and the token needs retyping.
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
-                if app.staticTexts["Useful Bot"].exists { return }
+                if app.descendants(matching: .any)["bots-list"].exists { return }
                 if status.exists, !status.label.isEmpty,
                    status.label != "Point the camera at the code on your Mac" { return }
                 usleep(300_000)
@@ -447,6 +447,9 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 waitForBotsRoot(app, timeout: 40),
                 "paired root never appeared — terminating would bank unpaired")
+            // cfprefsd's disk flush is async past persist()'s ack; the gate's
+            // wait_banked holds the leg's end until `paired` is on disk, so
+            // the revoke leg can never migrate the launch-time `unpaired`.
             app.terminate()
         }
     }
@@ -503,6 +506,7 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 waitForBotsRoot(app, timeout: 40),
                 "paired root never appeared — terminating would bank unpaired")
+            // Same banked-state hold as the standard leg above.
             app.terminate()
         }
     }
@@ -722,6 +726,9 @@ final class ShotsUITests: XCTestCase {
                       "app was not left signedOut")
         tapButton(app, "signed-out-sign-in")
         XCTAssertTrue(waitForBotsRoot(app, timeout: 30), "re-sign-in never reached the Bots list")
+        // The gate's wait_banked holds after this leg until `paired` is on
+        // disk — the runtime-down leg would otherwise risk migrating the
+        // launch-time `signedOut` (observed once on the 402 run).
         app.terminate()
     }
 }

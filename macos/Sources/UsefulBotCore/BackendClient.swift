@@ -356,12 +356,32 @@ public actor BackendClient {
         public let credentialExpiresAt: Date?
     }
 
+    /// Bootstrap's exchange rides the same single flight as a 401-triggered
+    /// re-auth: without it, a request racing the launch exchange mints a
+    /// second session, `destroySession` retires the first one's cookie, and
+    /// the client ends up holding dead state through the next call.
+    public func ensureSession() async throws -> SessionInfo {
+        if let task = reauthTask { return try await task.value }
+        let task = Task { try await signIn() }
+        reauthTask = task
+        defer { reauthTask = nil }
+        return try await task.value
+    }
+
     @discardableResult
     public func signIn() async throws -> SessionInfo {
         // Read the credential off the actor executor: a token store can block
         // behind a Keychain prompt and must not stall other requests.
+        // The item can report a transient miss for a beat while the keybag
+        // settles around install/launch — look once more before declaring
+        // the §4.8 terminal absence.
         let token = try await Task.detached { [tokenStore] in
-            try tokenStore.token()
+            do {
+                return try tokenStore.token()
+            } catch BackendError.deviceTokenMissing {
+                try? await Task.sleep(for: .milliseconds(150))
+                return try tokenStore.token()
+            }
         }.value
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "POST"
@@ -477,16 +497,19 @@ public actor BackendClient {
 
     /// §4.3.3/§8.5: re-auth is single-flight across requests and streams —
     /// a burst of 401s shares one sign-in instead of stampeding the
-    /// rate-limited endpoint.
-    private func reauth() async throws {
-        if let task = reauthTask {
-            _ = try await task.value
-            return
-        }
-        let task = Task { try await signIn() }
-        reauthTask = task
-        defer { reauthTask = nil }
-        _ = try await task.value
+    /// rate-limited endpoint. `ensureSession` owns the shared task so a
+    /// launch-time exchange joins the same flight.
+    ///
+    /// `sentCookie` is the cookie the failed request carried. When a
+    /// parallel 401 already re-minted, the jar holds a session that
+    /// postdates the failure — minting again would destroy *that* session
+    /// (every mint runs destroySession) and hand the retry another dead
+    /// cookie. Without this check, N concurrent 401s produce N mints that
+    /// retire each other's sessions — the pattern observed as
+    /// `POST session 200 → GET status 401` repeating through boot.
+    private func reauth(unlessRotatedFrom sentCookie: String?) async throws {
+        if let sessionCookie, sessionCookie != sentCookie { return }
+        _ = try await ensureSession()
     }
 
     /// Pull the `{ok:false,error:"code"}` code out of a small error body.
@@ -526,6 +549,7 @@ public actor BackendClient {
     /// and retry it. Without this a server restart leaves the app broken until
     /// relaunch.
     private func perform(_ build: (BackendClient, String) throws -> URLRequest) async throws -> (Data, URLResponse) {
+        let sentCookie = sessionCookie
         var result = try await send(try build(self, csrf))
         if let http = result.1 as? HTTPURLResponse {
 #if os(iOS)
@@ -533,13 +557,13 @@ public actor BackendClient {
             // immediate `credential_invalid` does not even retry); a 403 is
             // never a re-auth trigger and keeps its code.
             if http.statusCode == 401, Self.errorCode(result.0) != "credential_invalid" {
-                try await reauth()
+                try await reauth(unlessRotatedFrom: sentCookie)
                 // Rebuild with the fresh token, not the one from the failed try.
                 result = try await send(try build(self, csrf))
             }
 #else
             if http.statusCode == 401 || http.statusCode == 403 {
-                try await reauth()
+                try await reauth(unlessRotatedFrom: sentCookie)
                 // Rebuild with the fresh token, not the one from the failed try.
                 result = try await send(try build(self, csrf))
             }
@@ -560,14 +584,19 @@ public actor BackendClient {
         return try await session.data(for: request)
     }
 
-    /// `send(_:)` for the byte-stream variant the event pipe uses.
-    private func sendBytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+    /// `send(_:)` for the byte-stream variant the event pipe uses. The
+    /// third return is the cookie actually attached — the 401 handler
+    /// compares it against the jar to detect a rotation that already
+    /// happened between send and failure (`reauth(unlessRotatedFrom:)`).
+    private func sendBytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse, String?) {
         var request = request
         request.httpShouldHandleCookies = false
-        if let sessionCookie {
-            request.setValue(sessionCookie, forHTTPHeaderField: "cookie")
+        let sentCookie = sessionCookie
+        if let sentCookie {
+            request.setValue(sentCookie, forHTTPHeaderField: "cookie")
         }
-        return try await session.bytes(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
+        return (bytes, response, sentCookie)
     }
 
     /// Pull the `ub_session` pair out of a sign-in `Set-Cookie` header.
@@ -1604,7 +1633,7 @@ public actor BackendClient {
                         guard let url = components?.url else { throw BackendError.decoding }
                         var request = URLRequest(url: url)
                         request.timeoutInterval = 180
-                        let (bytes, response) = try await sendBytes(request)
+                        let (bytes, response, sentCookie) = try await sendBytes(request)
                         activity.touch()
                         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 #if os(iOS)
@@ -1615,7 +1644,7 @@ public actor BackendClient {
                             let code = try await Self.errorCode(bytes)
                             activity.touch()
                             if code != "credential_invalid" {
-                                try await client.reauth()
+                                try await client.reauth(unlessRotatedFrom: sentCookie)
                                 activity.touch()
                                 continue
                             }
@@ -1636,7 +1665,7 @@ public actor BackendClient {
                         if (status == 401 || status == 403), attempt == 0 {
                             // The session rotated (server restart); sign in and
                             // rebuild the stream once.
-                            try await client.reauth()
+                            try await client.reauth(unlessRotatedFrom: sentCookie)
                             activity.touch()
                             continue
                         }

@@ -35,11 +35,16 @@ struct UsefulBotApp: App {
                 NavigationSplitView {
                     BotsListView()
                 } detail: {
-                    Text("Select a bot")
-                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Theme.C.canvas)
+                    // Sidebar destinations (Devices, and its pushed re-pair)
+                    // land in the detail column — it needs its own stack or
+                    // nested pushes silently go nowhere and carry no chrome.
+                    NavigationStack {
+                        Text("Select a bot")
+                            .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Theme.C.canvas)
+                    }
                 }
             } else {
                 NavigationStack {

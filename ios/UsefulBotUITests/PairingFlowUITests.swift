@@ -162,7 +162,7 @@ final class PairingFlowUITests: XCTestCase {
             // the tap no-opped and the token needs retyping.
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
-                if app.staticTexts["Useful Bot"].exists { return }
+                if app.descendants(matching: .any)["bots-list"].exists { return }
                 if status.exists, !status.label.isEmpty,
                    status.label != "Point the camera at the code on your Mac" { return }
                 usleep(300_000)
@@ -191,7 +191,7 @@ final class PairingFlowUITests: XCTestCase {
             dismissSystemAlerts(app)
             shot("pairing-connected")
         }
-        XCTAssertTrue(app.staticTexts["Useful Bot"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["bots-list"].waitForExistence(timeout: 30))
         dismissSystemAlerts(app)
         shot("bots-paired")
 
@@ -219,7 +219,7 @@ final class PairingFlowUITests: XCTestCase {
 
         // Sign in again (class C) → back to the Bots list.
         tapButton(app, "signed-out-sign-in")
-        XCTAssertTrue(app.staticTexts["Useful Bot"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["bots-list"].waitForExistence(timeout: 30))
         dismissSystemAlerts(app)
         shot("bots-resigned-in")
     }
@@ -246,7 +246,7 @@ final class PairingFlowUITests: XCTestCase {
         launch(app, reset: false)
         XCTAssertTrue(app.staticTexts["Pair again"].waitForExistence(timeout: 30))
         pairThroughManualEntry(app, pair)
-        XCTAssertTrue(app.staticTexts["Useful Bot"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.descendants(matching: .any)["bots-list"].waitForExistence(timeout: 30))
         dismissSystemAlerts(app)
         shot("bots-repaired")
     }

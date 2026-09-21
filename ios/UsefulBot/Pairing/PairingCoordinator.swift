@@ -199,6 +199,10 @@ final class PairingCoordinator: ObservableObject {
             // The mounted Bots list re-fetches off resyncAt (§8.5); a re-pair
             // to a different Mac is exactly when its roster is stale.
             resyncAt = Date()
+            // The hold is spent and the pairing landed: leave .connected
+            // behind or the busy-gated rows (Devices' sign-out/unpair) read
+            // it as a still-running connect.
+            phase = .idle
         } catch BackendError.deviceTokenMissing {
             // The just-written item could not be read back — the Keychain
             // dropped it. Terminal on iOS the same as a revoked credential.
@@ -224,7 +228,11 @@ final class PairingCoordinator: ObservableObject {
         // the generation — a late 200 must not re-mark the store `.paired`.
         let generation = store.dataGeneration
         do {
-            let info = try await client.signIn()
+            // ensureSession, not a bare signIn: a request racing this
+            // exchange (a status probe off `.active`) joins the in-flight
+            // mint instead of POSTing a second session that retires the
+            // first one's cookie out from under it.
+            let info = try await client.ensureSession()
             guard store.isCurrent(generation: generation) else { return }
             store.markSignedIn(
                 sessionExpiresAt: info.expiresAt,
@@ -281,11 +289,11 @@ final class PairingCoordinator: ObservableObject {
     /// Sign in from `signedOut` (class C — no biometric, spec 4.4).
     func signIn() async {
         phase = .connecting
+        // No .connected pulse here — that phase exists to close a pushed
+        // re-pair and hold the pairing screen's success line, neither of
+        // which applies on the signed-out surface; defer lands it on idle.
         defer { if case .connecting = phase { phase = .idle } }
         await exchangeSession()
-        if store.state == .paired {
-            phase = .connected(store.pairedName ?? "")
-        }
     }
 
     // MARK: - Sign out / unpair

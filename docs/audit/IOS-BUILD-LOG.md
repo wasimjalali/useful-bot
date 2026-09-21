@@ -812,3 +812,80 @@ Round 5 verification after fixes:
 - `npm test` 599/599 (cli-tools env precondition restored),
   `macos/test.sh` 303/303.
 - Shots: 231 committed under docs/audit/ios-shots/PR-2/.
+
+Round 6: fresh reviewer sessions on `d656742` (correctness
+`devin-d8cee3b3ab7d4fbaa98df519fa636978`, security
+`devin-3263d05ca2c94152829ae8bc18905362`, design-a11y
+`devin-17896d811d33481cb619e09576e6108e`). All three requested changes —
+7 findings (correctness 3, security 1, design-a11y 3). Fixed in `128cfb9`
+plus the gate-hardening commit that follows it:
+
+- Lifecycle writes are generation-gated (correctness 1): `signOut()` bumps
+  `dataGeneration` the way `unpair()` already did — a sign-in whose
+  exchange was still in flight can no longer re-land `.paired` after the
+  user's sign-out committed. Pinned by a PhonePairingTests unit test.
+- Re-pair resync (correctness 2): a successful `connect()` stamps
+  `resyncAt`, so a mounted Bots list re-fetches after a different-Mac
+  re-pair; `refresh()` also generation-gates stale `shell()` responses and
+  stale errors against `dataGeneration`.
+- §8.4 backoff on 429 (correctness 3): `probeReadiness()` treats a 429 as
+  "the Mac answered" — `lastContact` stamps, the level is untouched, one
+  re-probe runs a window later and never reschedules itself.
+- Pushed re-pair nav (design 1): re-pairing from Devices pushes the flow
+  inside the stack with a real back affordance; Unpair / Sign-out /
+  Re-pair rows disable while a connect is in flight.
+- Connected-shot hold (design 3): `UB_HOLD_CONNECTED` takes seconds; the
+  legs hold 15 s and capture inside a 1.5 s alert window so the success
+  line survives to the shot; `testExpiryBanner` captures the pushed
+  re-pair surface too.
+- The security finding and the remaining design item shipped in the same
+  `128cfb9` file list (SignedOutView copy row, connected-leg asserts).
+
+Round 6 gate debugging (three distinct root causes found and fixed):
+
+- Session-mint storm (two layers): (a) `sceneBecameActive`/`probeReadiness`
+  could fire `status()` while the launch `exchangeSession` was still
+  minting — the 401 raced `reauth()` into a *second* mint, and the server's
+  `destroySession` retired the first one's cookie mid-flight; a transient
+  SecItem miss inside the same path then banked `credentialInvalid`.
+  `BackendClient.ensureSession()` gives bootstrap and re-auths one shared
+  flight, plus a 150 ms retry on the keychain read. (b) Deeper, found on
+  the iPad leg: single-flight alone does not stop *sequential* mints — N
+  probes fired before the first mint lands each 401, each re-auths after
+  the prior mint completes, and each mint destroys the session a sibling
+  request just adopted (`mint 200 → status 401` repeating in the web log,
+  one caller's post-reauth 401 eventually banking `credentialInvalid`).
+  `reauth(unlessRotatedFrom:)` fixes it: the 401 handler snapshots the
+  cookie the failed request carried and skips the mint when the jar has
+  already rotated past it.
+- cfprefsd flush race: `persist()` returns on the daemon's ack but the
+  plist's disk write is async, and each leg's reinstall migrates whatever
+  file exists at that instant. Two observed corruptions: `unpaired`
+  carried into the revoke leg (testB opened on the fresh-pairing screen)
+  and `signedOut` carried into the runtime-down leg. Sleeps were a guess —
+  the fix is `wait_banked <state>` in the gate, which polls the live
+  container's plist with PlistBuddy until the expected `pairing.state` is
+  on disk before the next leg installs. (An in-test equivalent was tried
+  first and removed: iOS test bundles have no `Process`, and the runner's
+  host-fs view doesn't reach `~/Library` — host-side polling is the only
+  deterministic place.)
+- Stale-gate contamination: orphaned `ios-pairing-gate.sh` processes
+  (reparented to launchd after their launcher shells died) kept executing
+  leg sequences — one's `start_eve` fired mid-`testExpiryBanner` on a
+  later run and its `--revoke-phone` window cut across another's legs.
+  `pkill -f ios-pairing-gate.sh` + `pkill -f 'xcodebuild.*only-testing'`
+  now precede every launch.
+- iPad detail-column push dead-end: `NavigationSplitView`'s detail column
+  held a bare `Text`, so `DevicesView`'s `.navigationDestination` had no
+  stack to push into — "Re-pair from your Mac" rendered but the pairing
+  flow never presented (iPad-only; the phone path uses one
+  `NavigationStack`). The detail column now wraps its placeholder in a
+  `NavigationStack`, so sidebar destinations and their nested pushes
+  carry nav chrome (and the back affordance the leg asserts).
+
+Round 6 verification after fixes:
+
+- Pairing gate green end-to-end on iPad Pro 11 834pt (run r6m, all 13
+  legs — `testExpiryBanner` Devices→re-pair push verified).
+- iPhone 17 402pt green (run r6n, all legs).
+- iPhone SE 375pt green (run r6n).

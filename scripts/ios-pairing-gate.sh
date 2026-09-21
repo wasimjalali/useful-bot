@@ -122,6 +122,27 @@ leg() {
     test
 }
 
+# cfprefsd acks persist() before its async plist flush lands, and the next
+# leg's reinstall migrates whatever the file holds at that moment (observed:
+# `unpaired` carried into the revoke leg, `signedOut` into the runtime-down
+# leg). Hold the boundary until the banked state is on disk; the newest
+# container plist is the live install's (the UUID moves on every reinstall).
+wait_banked() {
+  local expected="$1" udid deadline plist state
+  udid=$(sim_udid)
+  deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    plist=$(ls -t "$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Containers/Data/Application/"*/Library/Preferences/com.usefulbot.app.plist 2>/dev/null | head -1 || true)
+    if [ -n "$plist" ] \
+      && [ "$(/usr/libexec/PlistBuddy -c 'Print :pairing.state' "$plist" 2>/dev/null)" = "$expected" ]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "wait_banked: pairing.state never reached '$expected'" >&2
+  return 1
+}
+
 cleanup() {
   rm -f "$PAIR_FILE" "$REVOKED_FLAG" "$WEB_DOWN_FLAG" "$EVE_DOWN_FLAG" "$STUB_UP_FLAG"
   [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null || true
@@ -216,12 +237,15 @@ leg testA_PairAndSessionLifecycle
 # The 600 ms "Connected to <name>" success line needs UB_HOLD_CONNECTED to
 # hold it still for the visual gate; pairs fresh, so it wants a live token.
 leg testConnectedPairScreen ShotsUITests
+wait_banked paired
 leg testConnectedPairScreenAccessibility ShotsUITests
+wait_banked paired
 
 # Between legs: revoke. Relaunched, the stored token is a terminal 401.
 "$NODE" scripts/setup-local.mjs --revoke-phone >/dev/null
 touch "$REVOKED_FLAG"
 leg testB_RevokedCredentialInvalidates
+wait_banked credentialInvalid
 leg testCredentialInvalidDark ShotsUITests
 rm -f "$REVOKED_FLAG"
 
@@ -229,6 +253,7 @@ rm -f "$REVOKED_FLAG"
 "$NODE" scripts/setup-local.mjs --rotate-phone >/dev/null
 payload > "$PAIR_FILE"
 leg testC_RePairAfterRotation
+wait_banked paired
 leg testRepairedDark ShotsUITests
 
 # Loading/empty list states: env seams hold or empty the roster fetch; the
@@ -244,9 +269,13 @@ leg testExpiryBanner ShotsUITests
 # Visual-gate legs while the pairing + payload are still live: the paired
 # journey (Bots, Devices, sign out, sign in) in dark and at XXXL.
 leg testJourneyLight ShotsUITests
+wait_banked paired
 leg testJourneyDark ShotsUITests
+wait_banked paired
 leg testJourneyAccessibilityLight ShotsUITests
+wait_banked paired
 leg testJourneyAccessibilityDark ShotsUITests
+wait_banked paired
 
 # Readiness banners: the paired app is left on the sim from the journeys.
 # No network first (UB_OFFLINE pins the monitor), then web down for "Your
@@ -257,8 +286,10 @@ leg testOfflineBanner ShotsUITests
 stop_web
 leg testMacUnreachableBanner ShotsUITests
 leg testSignedOutStates ShotsUITests
+wait_banked signedOut
 start_web
 leg testResignIn ShotsUITests
+wait_banked paired
 stop_eve
 leg testRuntimeDownBanner ShotsUITests
 start_eve

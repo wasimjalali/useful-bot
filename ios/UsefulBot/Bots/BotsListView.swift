@@ -69,6 +69,9 @@ struct BotsListView: View {
         .scrollContentBackground(.hidden)
         // Lists sit on canvas, one tone under surfaces (design spec 1.0).
         .background(Theme.C.canvas)
+        // The paired root's own marker: "Useful Bot" staticText alone is
+        // ambiguous — the pairing badge carries it as an accessibility label.
+        .accessibilityIdentifier("bots-list")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
