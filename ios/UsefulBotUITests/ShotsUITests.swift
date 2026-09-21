@@ -262,17 +262,72 @@ final class ShotsUITests: XCTestCase {
     /// Revoked credential → idle + invalid copy. Driven as a gate leg right
     /// after `setup-local.mjs --revoke-phone`, while the stored token is a
     /// live 401. The light variant is captured by PairingFlowUITests.
-    func testCredentialInvalidDark() throws {
+    /// XCTest screenshots censor `isSecureTextEntry` content — the field
+    /// renders masked bullets fine (a `simctl io` framebuffer capture shows
+    /// them), so filled-token states capture host-side: `shot()` writes the
+    /// censored PNG + attachment, `.hold-<name>` asks the gate's watcher to
+    /// overwrite the PNG with a framebuffer capture, `.done-<name>`
+    /// releases the test. Without the watcher the XCTest file stands.
+    private func hostShot(
+        _ name: String,
+        _ app: XCUIApplication,
+        alertsWindow: TimeInterval = 5
+    ) {
+        shot(name, app, alertsWindow: alertsWindow)
+        let dir = URL(fileURLWithPath: "/tmp/ub-shots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? Data().write(to: dir.appendingPathComponent(".hold-" + name))
+        let done = dir.appendingPathComponent(".done-" + name)
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline, !FileManager.default.fileExists(atPath: done.path) {
+            usleep(300_000)
+        }
+        try? FileManager.default.removeItem(at: done)
+    }
+
+    /// The revoked pairing screen — both appearances inside the gate's
+    /// revoked window.
+    func testCredentialInvalid() throws {
         guard FileManager.default.contents(atPath: "/tmp/ub-pair-revoked") != nil else {
             throw XCTSkip("/tmp/ub-pair-revoked missing — only valid inside the gate's revoked window")
         }
-        let app = XCUIApplication()
-        launch(app, appearance: "dark")
-        XCTAssertTrue(app.staticTexts[
-            "This pairing was revoked or expired. Scan a new code from your Mac."
-        ].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["Pair again"].exists)
-        shot("pairing-credential-invalid-\(suffix(app, appearance: "dark", typeSize: nil))", app)
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance)
+            XCTAssertTrue(app.staticTexts[
+                "This pairing was revoked or expired. Scan a new code from your Mac."
+            ].waitForExistence(timeout: 15))
+            XCTAssertTrue(app.staticTexts["Pair again"].exists)
+            shot("pairing-credential-invalid-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            app.terminate()
+        }
+    }
+
+    /// The Unpair confirm (design 1.15, spec 4.4 class A): the
+    /// confirmationDialog stands in for the spec's FloatingSheet until that
+    /// component lands — the substitution is recorded in the build log and
+    /// this capture evidences the shipped control.
+    func testUnpairConfirm() throws {
+        guard FileManager.default.contents(atPath: pairFilePath) != nil else {
+            throw XCTSkip("\(pairFilePath) missing — drive this test through scripts/ios-pairing-gate.sh")
+        }
+        for appearance in ["light", "dark"] {
+            let app = XCUIApplication()
+            launch(app, appearance: appearance)
+            XCTAssertTrue(waitForBotsRoot(app))
+            openDevices(app)
+            XCTAssertTrue(app.navigationBars["Devices"].waitForExistence(timeout: 10))
+            tapButton(app, "Unpair")
+            // The sheet is the alert-style title row in the dialog.
+            XCTAssertTrue(
+                app.staticTexts["Unpair this iPhone?"].waitForExistence(timeout: 10),
+                "unpair confirmation never presented")
+            shot("devices-unpair-confirm-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            // Cancel — never Unpair: the rest of the gate still needs the
+            // paired store.
+            tapButton(app, "Cancel")
+            app.terminate()
+        }
     }
 
     /// Mac unreachable readiness banner: the gate kills the web service
@@ -377,7 +432,10 @@ final class ShotsUITests: XCTestCase {
                 usleep(300_000)
             }
             XCTAssertTrue(status.exists)
-            shot("pairing-connect-failed-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            hostShot(
+                "pairing-connect-failed-\(suffix(app, appearance: appearance, typeSize: nil))",
+                app
+            )
             app.terminate()
         }
     }
@@ -436,8 +494,10 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
                           "success line expired before the shot — hold too short")
             pinToTop(app)
-            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: nil))", app,
-                 alertsWindow: 1.5)
+            hostShot(
+                "pairing-connected-\(suffix(app, appearance: appearance, typeSize: nil))",
+                app, alertsWindow: 1.5
+            )
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
             // Wait for the positive paired-root signal (its nav bar): a
@@ -497,8 +557,10 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
                           "success line expired before the shot — hold too short")
             pinToTop(app)
-            shot("pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))", app,
-                 alertsWindow: 1.5)
+            hostShot(
+                "pairing-connected-\(suffix(app, appearance: appearance, typeSize: "xxxl"))",
+                app, alertsWindow: 1.5
+            )
             // markPaired lands only after the hold; terminating mid-hold
             // would leave the store unpaired for the revoke/testB legs.
             // Same reasoning as testConnectedPairScreen: assert the paired
@@ -529,7 +591,10 @@ final class ShotsUITests: XCTestCase {
             XCTAssertTrue(
                 app.staticTexts["Connecting to your Mac"].waitForExistence(timeout: 15),
                 "connecting copy never appeared")
-            shot("pairing-connecting-\(suffix(app, appearance: appearance, typeSize: nil))", app)
+            hostShot(
+                "pairing-connecting-\(suffix(app, appearance: appearance, typeSize: nil))",
+                app
+            )
             app.terminate()
         }
     }

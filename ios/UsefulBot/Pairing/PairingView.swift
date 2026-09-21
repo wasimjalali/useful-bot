@@ -199,6 +199,7 @@ struct PairingView: View {
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                     .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
+            .ubFocusRing()
         }
     }
 
@@ -217,7 +218,9 @@ struct PairingView: View {
 
     private var statusCopy: (String, Color) {
         if isOffline {
-            return ("You're offline", Theme.C.danger)
+            // Offline is a Disabled state, not a failure — the status line
+            // stays inkMuted; `danger` belongs to the Error row alone.
+            return ("You're offline", Theme.C.inkMuted)
         }
         switch coordinator.phase {
         case .connecting:
@@ -294,6 +297,7 @@ struct PairingView: View {
                 .buttonStyle(PressedScale())
                 .disabled(!manualEnabled)
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+                .ubFocusRing()
                 if !manualEnabled {
                     // Design spec 1.1: disabled with the reason, in inkMuted.
                     // During the connected hold the status line already says
@@ -325,6 +329,7 @@ struct PairingView: View {
                 // it (the coordinator's generation guard is the backstop).
                 .disabled(connectBusy)
                 .frame(minHeight: 44)
+                .ubFocusRing()
                 if gateUnavailable {
                     Text(OwnerGate.unavailableCopy)
                         .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
@@ -374,6 +379,7 @@ private struct ManualPairingForm: View {
                 shadowed: enabled
             ))
             .accessibilityIdentifier("manual-connect")
+            .ubFocusRing()
             if !enabled {
                 // Disabled-with-reason (design spec 1.1): the reason sits
                 // under the button in inkMuted, never danger — nothing failed.

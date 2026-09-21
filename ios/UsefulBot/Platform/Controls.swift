@@ -83,10 +83,47 @@ private struct ScaledTokenFont: ViewModifier {
     }
 }
 
+/// §1.0 Focus-visible: a 2 pt `accent` ring offset 2 pt with `Radius.xs`
+/// corners, drawn only while the control holds keyboard focus (external
+/// keyboard / Full Keyboard Access) — `.isFocused` stays false for touch,
+/// so taps never see it.
+private struct FocusRing: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            if isFocused {
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                    .strokeBorder(Theme.C.accent, lineWidth: 2)
+                    .padding(-4)
+            }
+        }
+    }
+}
+
 extension View {
+    /// The keyboard-focus ring (§1.0 Focus-visible baseline). Buttons are
+    /// already focusable; plain views need `.focusable()` first.
+    func ubFocusRing() -> some View {
+        modifier(FocusRing())
+    }
+
     /// The token's font, scaled by Dynamic Type. Text uses this; fixed-point
     /// chrome uses `Theme.font` directly.
     func tokenFont(_ size: CGFloat, _ token: FontWeightToken) -> some View {
         modifier(ScaledTokenFont(size: size, weight: Theme.weight(token)))
+    }
+
+    /// One level off the page: a whisper of an edge and the spec's `lift`
+    /// shadow (§4.3: 0.5/1 @4% + 3/16 @8%) for bubbles, pinned/approval/
+    /// status cards and banners — the macOS `cardLift` recipe, ported
+    /// (SwiftUI radius reads half the CSS blur).
+    func cardLift(cornerRadius: CGFloat) -> some View {
+        overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
+        )
+        .shadow(color: Theme.C.shadow.opacity(0.04), radius: 0.5, x: 0, y: 0.5)
+        .shadow(color: Theme.C.shadow.opacity(0.08), radius: 8, x: 0, y: 3)
     }
 }

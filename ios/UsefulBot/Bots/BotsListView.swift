@@ -107,6 +107,7 @@ struct BotsListView: View {
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .accessibilityLabel("Devices")
+                .ubFocusRing()
             }
         }
         .task {
@@ -207,6 +208,7 @@ struct BotsListView: View {
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
         .buttonStyle(PressedScale())
+        .ubFocusRing()
         let text = HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "exclamationmark.circle")
                 .foregroundStyle(Theme.C.danger)
@@ -262,6 +264,7 @@ struct BotsListView: View {
                 pressedFill: newBotEnabled ? Theme.C.accentStrong : Theme.C.sunken,
                 shadowed: newBotEnabled
             ))
+            .ubFocusRing()
             Text("Bot creation arrives with the chat update.")
                 .tokenFont(DesignTokens.FontSize.attachError, .regular)
                 .foregroundStyle(Theme.C.inkMuted)
@@ -358,6 +361,7 @@ struct BotsListView: View {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
+        .ubFocusRing()
         let text = HStack(alignment: .top, spacing: 12) {
             Image(systemName: glyph)
                 .font(Theme.font(DesignTokens.FontSize.emptyBody, .medium))
@@ -396,16 +400,9 @@ struct BotsListView: View {
             Theme.C.surface,
             in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                .strokeBorder(Theme.C.edge, lineWidth: 1)
-        )
-        .shadow(
-            color: Theme.shadow(DesignTokens.Shadow.sm),
-            radius: Theme.radius(DesignTokens.Shadow.sm),
-            x: 0,
-            y: DesignTokens.Shadow.sm.y
-        )
+        // Lifted card per §4.3: `lift` shadow (two-component), not the
+        // button's `sm`.
+        .cardLift(cornerRadius: DesignTokens.Radius.md)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("readiness-banner")
         .listRowSeparator(.hidden)
@@ -461,16 +458,7 @@ struct BotsListView: View {
             Theme.C.surface,
             in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                .strokeBorder(Theme.C.edge, lineWidth: 1)
-        )
-        .shadow(
-            color: Theme.shadow(DesignTokens.Shadow.sm),
-            radius: Theme.radius(DesignTokens.Shadow.sm),
-            x: 0,
-            y: DesignTokens.Shadow.sm.y
-        )
+        .cardLift(cornerRadius: DesignTokens.Radius.md)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("expiry-banner")
         .onAppear {
@@ -518,6 +506,15 @@ struct BotsListView: View {
                 "exclamationmark.triangle",
                 "Agent runtime is down on your Mac",
                 "Settings still work. Chats are paused."
+            )
+        case .unsupportedVersion:
+            // S15's "says so": the Mac answered but speaks an apiVersion
+            // this build doesn't know — honest copy, not the pinned
+            // unreachable/runtime-down lines it would falsify.
+            return (
+                "exclamationmark.triangle",
+                "Your Mac runs an unsupported version",
+                "Update Useful Bot on your Mac."
             )
         case .ready:
             return ("", "", "")
@@ -626,6 +623,7 @@ struct DevicesView: View {
                             Text("Re-pair from your Mac")
                         }
                         .disabled(connectBusy)
+                        .ubFocusRing()
                     }
                 }
             } header: {
@@ -642,6 +640,7 @@ struct DevicesView: View {
                 }
                 .foregroundStyle(Theme.C.ink)
                 .disabled(connectBusy)
+                .ubFocusRing()
                 Button {
                     // Class A: the spec's confirm sheet explains the purge,
                     // then the biometric prompt runs (the gate is the final
@@ -652,6 +651,7 @@ struct DevicesView: View {
                         .foregroundStyle(Theme.C.danger)
                 }
                 .disabled(connectBusy)
+                .ubFocusRing()
                 if gateUnavailable {
                     Text(OwnerGate.unavailableCopy)
                         .foregroundStyle(Theme.C.danger)
@@ -728,6 +728,8 @@ struct DevicesView: View {
             (text, foreground, background) = ("Unreachable", Theme.C.warning, Theme.C.warningSoft)
         case .runtimeDown:
             (text, foreground, background) = ("Runtime down", Theme.C.warning, Theme.C.warningSoft)
+        case .unsupportedVersion:
+            (text, foreground, background) = ("Unsupported version", Theme.C.warning, Theme.C.warningSoft)
         case nil:
             (text, foreground, background) = ("Checking", Theme.C.inkMuted, Theme.C.sunken)
         }

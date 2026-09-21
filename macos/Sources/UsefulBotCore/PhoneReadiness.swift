@@ -16,6 +16,10 @@ public enum MacReadiness: Sendable, Equatable {
     /// Status answered but its eve probe failed: management screens stay
     /// usable, chat is down.
     case runtimeDown
+    /// Status answered but its `apiVersion` is absent or unknown (S15):
+    /// the phone refuses to operate against a protocol it does not speak
+    /// and says so — the runtime is up, the version is not ours.
+    case unsupportedVersion
     /// Status ok, apiVersion known — everything enabled per §4.4.
     case ready
 }

@@ -40,19 +40,6 @@ struct ManualPairingView: View {
         .onChange(of: coordinator.store.state) { _, state in
             if state == .paired { dismiss() }
         }
-        // The error reason rides the coordinator's phase so the inline error
-        // and the pairing screen's status line never disagree.
-        .overlay(alignment: .bottom) {
-            if case .failed(let message) = coordinator.phase {
-                Text(message)
-                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
-                    .foregroundStyle(Theme.C.danger)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                    .padding(.bottom, 4)
-            }
-        }
     }
 
     private func field(
@@ -135,7 +122,20 @@ struct ManualPairingView: View {
                 shadowed: enabled
             ))
             .accessibilityIdentifier("manual-connect")
-            if !enabled {
+            .ubFocusRing()
+            // A failed attempt's message sits in the reason slot under the
+            // button — inline, never a floating overlay that could paint
+            // over the control (design spec 1.1's error row is a `danger`
+            // status line). The error reason rides the coordinator's phase
+            // so this line and the pairing screen's status line never
+            // disagree.
+            if case .failed(let message) = coordinator.phase {
+                Text(message)
+                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
+                    .foregroundStyle(Theme.C.danger)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !enabled {
                 // Disabled-with-reason (design spec 1.1): inkMuted, never
                 // danger — nothing failed.
                 Text(reason(online: online, connecting: connecting, filled: filled))

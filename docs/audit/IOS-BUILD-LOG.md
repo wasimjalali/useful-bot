@@ -945,3 +945,87 @@ Round 7 verification after fixes (on the next head):
 - Pairing gate green end-to-end on all three widths (run r7a):
   iPhone 17 402pt, iPhone SE 375pt, iPad Pro 11 834pt.
 - `npm test` 599/599 on the same tree.
+
+Landed as `7d4ce3e`. Round 8: fresh reviewer sessions on
+`7d4ce3e` (correctness `devin-9930f2937d5b43d29959825be4730aa6`,
+security `devin-922b4b925d8d4300adf7d19d1e3ddeaa`, design-a11y
+`devin-8fc5b5a087c94c9ba8569bb085c27b0d`). All three returned
+request-changes — security 1 finding, correctness 2,
+design-a11y 9. Design findings 1–7 fixed in code or evidence;
+finding 8 (focus ring) implemented; finding 9 deferred with the
+substitution recorded below.
+
+### PR-2 Round 8
+
+- `BackendClient` sign-out race matrix closed (security): a
+  stale request's re-auth, or an armed retry racing `signOut`,
+  could mint a session into the jar sign-out had just cleared.
+  New protocol: `signOutEpoch` bumps once per `signOut`;
+  `exchangeClosed` latches at the top of `signOut`/`unpair` and
+  stays latched until `reopenExchange()` (called by the
+  explicit `exchangeSession()`) or `signIn()`; `signOut()`
+  drains `reauthTask` before the epoch bump and DELETE so an
+  in-flight mint can't ride under it; `performSignIn()`
+  snapshots the epoch at entry and retires a minted cookie when
+  the epoch moved mid-flight; `reauth(unlessRotatedFrom:
+  signedOutSince:)` skips minting when the cookie or epoch no
+  longer matches what the caller sent.
+- Coordinator ordering (correctness): `signOut()`/`unpair()`
+  now flip the store transition (generation bump) before
+  `await client?.signOut()`, so a stale task observing the
+  store can't re-enter `ensureSession` through the old state;
+  `probeReadiness` opens with `guard store.state == .paired`.
+- Unknown `apiVersion` refused per S15/§19 (correctness):
+  `MacReadiness` gains `.unsupportedVersion`; `probeReadiness`
+  maps an unrecognised `apiVersion` to it ("Your Mac runs an
+  unsupported version" banner + "Unsupported version" pill)
+  instead of silently treating the stack as unreachable.
+  BackendErrors now map to `.runtimeDown` (status answered,
+  probe failed) while transport errors keep `.macUnreachable`,
+  and `lastContact` stamps before the version guard.
+- Manual pairing pushed-screen `.failed` slot restored
+  (design 1): the denied-inline form already rendered the
+  inline error; the pushed `ManualPairingView` now shows the
+  same copy under Connect.
+- Offline status-line copy uses `inkMuted` (design 3): §1.1
+  pins the status line to inkMuted; `danger` was leaking in for
+  the offline copy.
+- Banners carry the §4.3 `lift` shadow (design 4): `.cardLift`
+  on the readiness/expiry banner cards.
+- Focus-visible ring implemented (design 8): `ubFocusRing()` —
+  2 pt `accent` stroke, 2 pt offset, `Radius.xs` corners,
+  gated on `isFocused` — applied to 15 button sites across
+  Pairing, Manual, SignedOut and Bots/Devices.
+- SecureField evidence path (design 2): XCTest screenshots
+  censor `isSecureTextEntry` content — the field renders masked
+  bullets on device but the PNG ships blank. Verified by
+  experiment: a `simctl io` framebuffer capture of the same
+  composed state shows 18 masked bullets, so this is a capture
+  limitation, not a rendering bug. Filled-token states
+  (`pairing-manual-ready`, `-connect-failed`, `-connected`,
+  `-connecting`) now capture host-side: the test writes a
+  `.hold-<name>` sentinel and waits for `.done-<name>`; a
+  watcher in `ios-pairing-gate.sh` answers with a
+  `simctl io <udid> screenshot` that overwrites the censored
+  PNG. Without the watcher the XCTest file stands as fallback.
+- Evidence coverage (design 5–7, 9): `pairing-credential-
+  invalid` now iterates both appearances; `pairing-camera-
+  denied` gains the XXXL pass; `bots-loading-dark` returns to
+  the committed set; new legs capture `pairing-manual-failed-*`
+  (a refused loopback port against a 43-A token), `devices-
+  unpair-confirm-*` (the Unpair confirmationDialog), and
+  `pairing-manual-ready` XXXL. Unpair's confirm rides the
+  shipped `confirmationDialog` — the spec's FloatingSheet
+  component isn't built yet; recorded here as the substitution
+  and evidenced rather than left uncaptured.
+
+Round 8 verification after fixes (on the next head):
+
+- iOS `xcodebuild build-for-testing` clean (iPhone 17
+  destination).
+- `make -C macos test` 303/303 on the R8 working tree.
+- `npm test` 599/599 on the same tree.
+- Pairing gate green end-to-end on all three widths (run r8a):
+  iPhone 17 402pt, iPhone SE 375pt, iPad Pro 11 834pt —
+  including the new hold/watcher legs, camera-denied XXXL,
+  and the unpair-confirm capture.

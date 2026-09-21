@@ -267,6 +267,16 @@ public actor BackendClient {
     private var sessionCookie: String?
     /// The one in-flight re-authentication; concurrent 401s share it.
     private var reauthTask: Task<SessionInfo, Error>?
+    /// Bumped once per `signOut()`. A request that was already in flight
+    /// when the owner signed out compares its snapshot against this before
+    /// re-authing or writing the jar: a mint that lands after the clear is
+    /// retired, not kept.
+    private var signOutEpoch = 0
+    /// §6.2: once sign-out/unpair begins the exchange stays closed until an
+    /// explicit sign-in re-opens it (`reopenExchange`, `signIn`) — a stale
+    /// request's re-auth or an armed retry must never mint into the jar a
+    /// sign-out just cleared.
+    private var exchangeClosed = false
 
     public init(
         base: URL = URL(string: "http://127.0.0.1:4320")!,
@@ -361,15 +371,38 @@ public actor BackendClient {
     /// second session, `destroySession` retires the first one's cookie, and
     /// the client ends up holding dead state through the next call.
     public func ensureSession() async throws -> SessionInfo {
+        if exchangeClosed { throw BackendError.unauthorized }
         if let task = reauthTask { return try await task.value }
-        let task = Task { try await signIn() }
+        let task = Task { try await performSignIn() }
         reauthTask = task
         defer { reauthTask = nil }
         return try await task.value
     }
 
+    /// Re-open the session exchange `signOut()` closed. Called only by the
+    /// coordinator's explicit sign-in path — a request's silent re-auth
+    /// never re-opens it.
+    public func reopenExchange() {
+        exchangeClosed = false
+    }
+
     @discardableResult
     public func signIn() async throws -> SessionInfo {
+        // An explicit sign-in re-opens the exchange a `signOut()` closed;
+        // the epoch check inside `performSignIn` still retires a mint that
+        // predates the latest wipe.
+        exchangeClosed = false
+        return try await performSignIn()
+    }
+
+    /// The session mint shared by `signIn` and `ensureSession`. The flight
+    /// path goes through `performSignIn` so a queued re-auth task cannot
+    /// re-open an exchange a concurrent `signOut` just closed.
+    private func performSignIn() async throws -> SessionInfo {
+        // Snapshot the sign-out epoch before the credential read: any
+        // signOut() that lands while this mint is in flight retires its
+        // session instead of letting it repopulate the cleared jar.
+        let epoch = signOutEpoch
         // Read the credential off the actor executor: a token store can block
         // behind a Keychain prompt and must not stall other requests.
         // The item can report a transient miss for a beat while the keybag
@@ -406,6 +439,16 @@ public actor BackendClient {
 #else
             throw http.statusCode == 401 ? BackendError.unauthorized : BackendError.http(http.statusCode)
 #endif
+        }
+        // A sign-out that landed mid-mint already fired its DELETE without
+        // this cookie — the session it just created would live server-side
+        // to its expiry while the UI reads signed-out. Retire it with its
+        // own cookie and surface the mint as failed.
+        if epoch != signOutEpoch {
+            if let cookie = Self.sessionCookie(from: http, url: base) {
+                await retireMintedSession(cookie)
+            }
+            throw BackendError.unauthorized
         }
         if let cookie = Self.sessionCookie(from: http, url: base) {
             sessionCookie = cookie
@@ -469,6 +512,18 @@ public actor BackendClient {
     /// tell the server with a best-effort DELETE — the call must work offline
     /// because signed-out is a local state first.
     public func signOut() async {
+        // Quiesce before wipe: closing the exchange stops a request issued
+        // after this point from minting, and the drain below waits out a
+        // mint already in flight so its cookie rides the DELETE (the
+        // server destroys the session it just made). A mint that lands
+        // too late to drain — a direct signIn still suspended in the
+        // network — retires itself in its write path instead of
+        // repopulating the jar.
+        exchangeClosed = true
+        while let task = reauthTask {
+            _ = try? await task.value
+        }
+        signOutEpoch &+= 1
         var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
         request.httpMethod = "DELETE"
         if !csrf.isEmpty {
@@ -478,6 +533,21 @@ public actor BackendClient {
         csrf = ""
         sessionCookie = nil
         session.configuration.httpCookieStorage?.removeCookies(since: .distantPast)
+    }
+
+    /// Retire a session minted after `signOut()`'s DELETE fired — the DELETE
+    /// could not carry this cookie, so the session would otherwise stay
+    /// live server-side to its expiry. Best-effort like sign-out itself:
+    /// signed-out is a local state even when this call cannot reach the Mac.
+    private func retireMintedSession(_ cookie: String) async {
+        var request = URLRequest(url: base.appendingPathComponent("api/auth/session"))
+        request.httpMethod = "DELETE"
+        request.httpShouldHandleCookies = false
+        if !csrf.isEmpty {
+            request.setValue(csrf, forHTTPHeaderField: "x-ub-csrf")
+        }
+        request.setValue(cookie, forHTTPHeaderField: "cookie")
+        _ = try? await session.data(for: request)
     }
 
     /// Maps the `security` CLI exit status to a specific Keychain failure.
@@ -510,8 +580,12 @@ public actor BackendClient {
     /// The same comparison covers a cleared jar: a sign-out landing between
     /// the request's send and its 401 leaves `sessionCookie` nil — minting
     /// then would create a session on a pairing the user just signed out.
-    private func reauth(unlessRotatedFrom sentCookie: String?) async throws {
-        if sessionCookie != sentCookie { return }
+    /// `sentEpoch` is the sign-out epoch the failed request observed: a bump
+    /// since the send means this request predates the sign-out even when the
+    /// cookie compare still passes (cleared-jar `nil == nil` included), so
+    /// the mint is skipped.
+    private func reauth(unlessRotatedFrom sentCookie: String?, signedOutSince sentEpoch: Int) async throws {
+        if sessionCookie != sentCookie || signOutEpoch != sentEpoch { return }
         _ = try await ensureSession()
     }
 
@@ -553,6 +627,7 @@ public actor BackendClient {
     /// relaunch.
     private func perform(_ build: (BackendClient, String) throws -> URLRequest) async throws -> (Data, URLResponse) {
         let sentCookie = sessionCookie
+        let sentEpoch = signOutEpoch
         var result = try await send(try build(self, csrf))
         if let http = result.1 as? HTTPURLResponse {
 #if os(iOS)
@@ -560,13 +635,13 @@ public actor BackendClient {
             // immediate `credential_invalid` does not even retry); a 403 is
             // never a re-auth trigger and keeps its code.
             if http.statusCode == 401, Self.errorCode(result.0) != "credential_invalid" {
-                try await reauth(unlessRotatedFrom: sentCookie)
+                try await reauth(unlessRotatedFrom: sentCookie, signedOutSince: sentEpoch)
                 // Rebuild with the fresh token, not the one from the failed try.
                 result = try await send(try build(self, csrf))
             }
 #else
             if http.statusCode == 401 || http.statusCode == 403 {
-                try await reauth(unlessRotatedFrom: sentCookie)
+                try await reauth(unlessRotatedFrom: sentCookie, signedOutSince: sentEpoch)
                 // Rebuild with the fresh token, not the one from the failed try.
                 result = try await send(try build(self, csrf))
             }
@@ -588,10 +663,11 @@ public actor BackendClient {
     }
 
     /// `send(_:)` for the byte-stream variant the event pipe uses. The
-    /// third return is the cookie actually attached — the 401 handler
-    /// compares it against the jar to detect a rotation that already
-    /// happened between send and failure (`reauth(unlessRotatedFrom:)`).
-    private func sendBytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse, String?) {
+    /// third return is the cookie actually attached and the fourth the
+    /// sign-out epoch at send — the 401 handler compares both against the
+    /// jar to detect a rotation or sign-out that already happened between
+    /// send and failure (`reauth(unlessRotatedFrom:signedOutSince:)`).
+    private func sendBytes(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse, String?, Int) {
         var request = request
         request.httpShouldHandleCookies = false
         let sentCookie = sessionCookie
@@ -599,7 +675,7 @@ public actor BackendClient {
             request.setValue(sentCookie, forHTTPHeaderField: "cookie")
         }
         let (bytes, response) = try await session.bytes(for: request)
-        return (bytes, response, sentCookie)
+        return (bytes, response, sentCookie, signOutEpoch)
     }
 
     /// Pull the `ub_session` pair out of a sign-in `Set-Cookie` header.
@@ -1635,7 +1711,7 @@ public actor BackendClient {
                         guard let url = components?.url else { throw BackendError.decoding }
                         var request = URLRequest(url: url)
                         request.timeoutInterval = 180
-                        let (bytes, response, sentCookie) = try await sendBytes(request)
+                        let (bytes, response, sentCookie, sentEpoch) = try await sendBytes(request)
                         activity.touch()
                         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 #if os(iOS)
@@ -1646,7 +1722,7 @@ public actor BackendClient {
                             let code = try await Self.errorCode(bytes)
                             activity.touch()
                             if code != "credential_invalid" {
-                                try await client.reauth(unlessRotatedFrom: sentCookie)
+                                try await client.reauth(unlessRotatedFrom: sentCookie, signedOutSince: sentEpoch)
                                 activity.touch()
                                 continue
                             }
@@ -1667,7 +1743,7 @@ public actor BackendClient {
                         if (status == 401 || status == 403), attempt == 0 {
                             // The session rotated (server restart); sign in and
                             // rebuild the stream once.
-                            try await client.reauth(unlessRotatedFrom: sentCookie)
+                            try await client.reauth(unlessRotatedFrom: sentCookie, signedOutSince: sentEpoch)
                             activity.touch()
                             continue
                         }

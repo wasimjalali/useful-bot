@@ -143,8 +143,35 @@ wait_banked() {
   return 1
 }
 
+# XCTest screenshots censor `isSecureTextEntry` content — the masked
+# bullets render fine on device but never reach the PNG. Legs that
+# evidence a filled Pairing token field drop a `.hold-<name>` sentinel
+# once the state is composed and wait for `.done-<name>`; this watcher
+# answers with a `simctl io` framebuffer capture, which is what the
+# committed evidence ships.
+WATCHER_PID=""
+start_secure_watcher() {
+  local udid
+  udid=$(sim_udid)
+  (
+    while :; do
+      for h in /tmp/ub-shots/.hold-*; do
+        [ -e "$h" ] || continue
+        name="${h##*/.hold-}"
+        xcrun simctl io "$udid" screenshot "/tmp/ub-shots/$name.png" >/dev/null 2>&1
+        touch "/tmp/ub-shots/.done-$name"
+        rm -f "$h"
+      done
+      sleep 0.25
+    done
+  ) &
+  WATCHER_PID=$!
+}
+
 cleanup() {
   rm -f "$PAIR_FILE" "$REVOKED_FLAG" "$WEB_DOWN_FLAG" "$EVE_DOWN_FLAG" "$STUB_UP_FLAG"
+  [ -n "$WATCHER_PID" ] && kill "$WATCHER_PID" 2>/dev/null || true
+  rm -f /tmp/ub-shots/.hold-* /tmp/ub-shots/.done-* 2>/dev/null || true
   [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null || true
   [ -n "$EVE_KILLED" ] && start_eve || true
 }
@@ -232,6 +259,7 @@ fi
 
 # Leg A: pair, sign out, sign in — against the live credential.
 payload > "$PAIR_FILE"
+start_secure_watcher
 leg testA_PairAndSessionLifecycle
 
 # The 600 ms "Connected to <name>" success line needs UB_HOLD_CONNECTED to
@@ -246,7 +274,7 @@ wait_banked paired
 touch "$REVOKED_FLAG"
 leg testB_RevokedCredentialInvalidates
 wait_banked credentialInvalid
-leg testCredentialInvalidDark ShotsUITests
+leg testCredentialInvalid ShotsUITests
 rm -f "$REVOKED_FLAG"
 
 # Rotate mints a fresh token (and re-enables phone access); leg C re-pairs it.
@@ -271,6 +299,9 @@ leg testExpiryBanner ShotsUITests
 leg testJourneyLight ShotsUITests
 wait_banked paired
 leg testJourneyDark ShotsUITests
+wait_banked paired
+# The Unpair confirm evidences while the app is still paired.
+leg testUnpairConfirm ShotsUITests
 wait_banked paired
 leg testJourneyAccessibilityLight ShotsUITests
 wait_banked paired
@@ -315,6 +346,15 @@ leg testPairingAccessibilityLight PairingUITests
 leg testPairingAccessibilityDark PairingUITests
 leg testPairingCameraDeniedLight PairingUITests
 leg testPairingCameraDeniedDark PairingUITests
+leg testPairingCameraDeniedAccessibilityLight PairingUITests
+leg testPairingCameraDeniedAccessibilityDark PairingUITests
+
+# Filled-token states capture through the framebuffer watcher (XCTest
+# censors secure-field content): manual-ready, manual-failed on the
+# pushed screen, at standard and XXXL sizes.
+leg testManualReadyHold PairingUITests
+leg testManualReadyHoldAccessibility PairingUITests
+leg testManualFailedHold PairingUITests
 
 rm -f "$PAIR_FILE"
 

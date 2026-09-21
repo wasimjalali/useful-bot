@@ -63,6 +63,7 @@ struct SignedOutView: View {
                 ))
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
                 .accessibilityIdentifier("signed-out-sign-in")
+                .ubFocusRing()
                 // Disabled reason sits directly under the control it
                 // disables (the §1.0 recipe), not above the button stack.
                 reasonLine
@@ -95,6 +96,7 @@ struct SignedOutView: View {
                 .disabled(isSigningIn)
                 .buttonStyle(PressedScale())
                 .frame(minHeight: DesignTokens.Space.phoneHitTarget)
+                .ubFocusRing()
                 if gateUnavailable {
                     Text(OwnerGate.unavailableCopy)
                         .tokenFont(DesignTokens.FontSize.emptyBody, .regular)

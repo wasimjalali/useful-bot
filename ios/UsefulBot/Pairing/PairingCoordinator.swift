@@ -234,6 +234,10 @@ final class PairingCoordinator: ObservableObject {
     /// `signedOut`, and on foreground when the level dropped below ready.
     func exchangeSession() async {
         guard let client else { return }
+        // Reached only on explicit sign-in intent (bootstrap while paired,
+        // the Sign-in button): re-open the exchange a `signOut()` closed —
+        // a request's silent re-auth never does (§6.2).
+        await client.reopenExchange()
         // An unpair/sign-out landing while the exchange is in flight bumps
         // the generation — a late 200 must not re-mark the store `.paired`.
         let generation = store.dataGeneration
@@ -311,23 +315,32 @@ final class PairingCoordinator: ObservableObject {
     /// Sign out (class C): the jar clears locally whether or not the DELETE
     /// reaches the Mac — the state must work offline.
     func signOut() async {
-        await client?.signOut()
+        // The store transition lands before the network await: its
+        // generation bump retires every in-flight exchange/probe write —
+        // under the old order a `markCredentialInvalid` racing the await
+        // flipped `paired → credentialInvalid` mid-sign-out and the
+        // paired-guard inside `store.signOut()` then silently no-oped.
         store.signOut()
         readiness = nil
         // A `.failed` left by a failed probe/re-auth is not part of signing
         // out; the signed-out screen would read it as a fresh error.
         phase = .idle
+        await client?.signOut()
     }
 
     /// Unpair (class A — the caller has already run the biometric gate):
     /// purge token, cookies, caches and drafts, bump `dataGeneration`.
+    /// Same ordering as signOut: the store write (and its generation bump)
+    /// precedes the client's drain-and-DELETE so nothing in flight can
+    /// repopulate state the wipe just cleared.
     func unpair() async {
-        await client?.signOut()
-        if let originValue = store.pairedOrigin,
+        let originValue = store.pairedOrigin
+        store.unpair()
+        if let originValue,
            let keychain = PhoneKeychainStore(storedOrigin: originValue) {
             keychain.deleteToken()
         }
-        store.unpair()
+        await client?.signOut()
         client = nil
         readiness = nil
         phase = .idle
@@ -342,6 +355,11 @@ final class PairingCoordinator: ObservableObject {
     }
 
     private func probeReadiness(reschedule429: Bool) async {
+        // §6.2: signed-out exchanges nothing until Sign in — and the armed
+        // 60 s re-probe below re-enters through this same guard, so a timer
+        // surviving the sign-out cannot mint a session behind the
+        // Signed-out screen.
+        guard store.state == .paired else { return }
         guard monitor.isOnline else {
             readiness = .noNetwork
             return
@@ -351,13 +369,15 @@ final class PairingCoordinator: ObservableObject {
         do {
             let status = try await client.status()
             guard store.isCurrent(generation: generation) else { return }
+            lastContact = Date()
             // S15: absent or malformed apiVersion is not a version the
-            // client knows — fail closed, never silently ready.
+            // client knows — fail closed, never silently ready. The Mac
+            // demonstrably answered, so this is a version refusal, not a
+            // reachability or runtime failure (§7.2).
             guard let version = status.apiVersion, APIVersion.known.contains(version) else {
-                readiness = .runtimeDown
+                readiness = .unsupportedVersion
                 return
             }
-            lastContact = Date()
             readiness = status.eve == "available" ? .ready : .runtimeDown
         } catch BackendError.credentialInvalid, BackendError.deviceTokenMissing {
             // Same terminal verdict as in exchangeSession: the token can no
@@ -385,7 +405,16 @@ final class PairingCoordinator: ObservableObject {
                 }
                 return
             }
-            readiness = .macUnreachable(lastSeen: lastContact, detail: String(describing: error))
+            // §7.2 draws the line at "status answered": a typed BackendError
+            // (non-2xx, decode) means the Mac answered and its runtime is
+            // the failure — `macUnreachable` is for a probe the Mac could
+            // not answer at all (timeout, TLS, DNS).
+            if error is BackendError {
+                lastContact = Date()
+                readiness = .runtimeDown
+            } else {
+                readiness = .macUnreachable(lastSeen: lastContact, detail: String(describing: error))
+            }
         }
     }
 
