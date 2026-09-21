@@ -317,9 +317,21 @@ PROCEDURE
 11. Open the PR (title "feat(ios): PR-<N> <phase title>", body: plan, gates with evidence
     levels, screenshot index, measurements, surprises). Push.
 12. Review loop (spec 17.1.4 and 17.5): create one reviewer session per role from Prompt 6
-    (correctness, security, and design-a11y when UI changed) pointing at the PR. Wait for their
-    GitHub reviews. Fix every finding, push, and start a new round with fresh reviewer
-    sessions. Exit only when one full round returns zero findings from every role and any
+    (correctness and security at max effort; design-a11y at normal effort — its checks are
+    spec-table mechanical) pointing at the PR, plus a devin_review pass where available.
+    Wait for their GitHub reviews (or session reports, which you transcribe to the PR).
+    Severity gates the loop: blocker/high/medium findings request changes and are fixed
+    before the next round; low findings are recorded, batched, and fixed in one cleanup
+    commit before merge — a round of lows alone does not restart the loop. Reviewer
+    sessions are reused across rounds of the same PR (message them the new head); fresh
+    reviewers start with each new PR — this also keeps the SWE-2 concurrency cap free.
+    Re-verify scoped to the round's diff: re-run only the gates the changed surface
+    exercises (a web/lib change needs no iOS gate; a cosmetic Swift change needs its shots
+    leg, not three widths; connect/auth changes do need the full pairing gate). Pairing
+    gate widths run in parallel ONLY once the script isolates per-run state (ports,
+    config, /tmp paths); against the shared 4320/4321 stack they stay sequential — the
+    lifecycle legs mutate the config every run shares. Exit when one full round returns
+    zero blocker/high/medium findings from every role, all lows are fixed, and any
     repository reviewer is green. Record rounds and findings per role in the build log.
 13. Merge: gh pr merge --squash. Complete the build-log entry (spec 17.4 fields, including
     session ids and ACU spend if the platform shows it). Commit the log and checklist to main
@@ -349,8 +361,9 @@ SPECIFICATIONS
 ## Prompt 6 - reviewer session (created by the lead, one per role)
 
 ```
-You are SWE-2 at max effort acting as an independent adversarial reviewer of pull request
-#<PR> in this repository, role: <correctness | security | design-a11y>. You did not write this
+You are SWE-2 acting as an independent adversarial reviewer of pull request
+#<PR> in this repository, role: <correctness | security | design-a11y>. Correctness and
+security run at max effort; design-a11y runs at normal effort. You did not write this
 code. Your job is to find real problems, not to approve.
 
 Read docs/spec/IOS-APP-SPEC.md (sections 4, 5, 8, 11, 17.1 and the appendices at minimum, and
@@ -370,9 +383,13 @@ Your lens:
 
 Verify against the code, not the description. Run the tests if you doubt a claim. Post exactly
 one GitHub review on the PR: "Request changes" with numbered findings (file, line, what is
-wrong, evidence, severity blocker/high/medium/low, the fix), or "Approve" with the sentence
-"Zero findings in role <role>" when you have genuinely found nothing. A finding without evidence
-is a guess; do not post it. Do not edit code. Do not ask the author or the owner anything.
+wrong, evidence, severity, the fix), or "Approve" with the sentence "Zero findings in role
+<role>" when nothing at blocker/high/medium is found. Severity gates the loop: request
+changes on blocker, high and medium; report low findings under a separate "Low findings
+(non-blocking)" heading — the lead batches them into one cleanup commit before merge and
+they do not start a new round alone. An Approve may still carry that list. A finding
+without evidence is a guess; do not post it. Do not edit code. Do not ask the author or
+the owner anything.
 ```
 
 ---

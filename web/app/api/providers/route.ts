@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { syncProviderModels } from "../../../lib/sync-models";
 import { isEffortId, isSpeedId } from "../../../../shared/models.ts";
@@ -80,7 +80,7 @@ function payload(store: ProviderStore) {
 }
 
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   if (rateLimited(`providers:${gate.session.callerId}`, 60)) {
     return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
@@ -91,7 +91,7 @@ export async function GET(request: Request) {
 }
 
 export async function PUT(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {
@@ -179,7 +179,7 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

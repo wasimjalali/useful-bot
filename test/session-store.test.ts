@@ -16,6 +16,7 @@ test("browser sessions persist across store instances", () => {
     profile: "desktop",
     csrf: "csrf-a",
     expiresAt: Date.now() + 60_000,
+    credentialId: null,
   }, path);
   const found = getBrowserSession("tok-a", path);
   assert.equal(found?.profile, "desktop");
@@ -31,6 +32,7 @@ test("expired browser sessions are not returned", () => {
     profile: "desktop",
     csrf: "csrf-old",
     expiresAt: Date.now() - 1,
+    credentialId: null,
   }, path);
   assert.equal(getBrowserSession("tok-old", path), null);
 });

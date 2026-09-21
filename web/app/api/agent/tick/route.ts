@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { isGateError, originAllowed, requireDesktop } from "../../../../lib/desktop-gate";
+import { isGateError, originAllowed, requireOwner } from "../../../../lib/desktop-gate";
 import { rateLimited } from "../../../../lib/api-guard";
 import {
   agentsEnabled,
@@ -41,7 +41,7 @@ async function authorised(request: Request): Promise<boolean> {
   // caller that omits Origin must prove itself with the session CSRF token.
   const origin = request.headers.get("origin");
   if (origin && !originAllowed(request)) return false;
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return false;
   if (!origin) {
     const csrf = request.headers.get("x-ub-csrf");

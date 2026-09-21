@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../../lib/desktop-gate";
 import { errorCode, rateLimited } from "../../../../../lib/api-guard";
 import { agentsEnabled, startRoutineNow } from "../../../../../lib/agent-exec";
 import { readRoutine } from "../../../../../../shared/routines-store.ts";
@@ -19,7 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!agentsEnabled()) {
     return NextResponse.json({ ok: false, error: "agent_credential_missing" }, { status: 503 });
   }
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {
