@@ -205,8 +205,20 @@ export default defineDynamic({
               }
             }
             return executeIfApproved(approvals, rec.id, hash, async () => {
+            // Read again after the wait: a card can sit open for minutes, and
+            // an owner who repointed or narrowed the connection meanwhile
+            // must not have the call go to the old endpoint with its
+            // credential. The permission is re-checked above for the same
+            // reason.
+            const current = findConnectionById(connectionId);
+            if (!current || current.url !== url) {
+              return { status: "blocked", error: "connection_gone", connection: connectionId };
+            }
+            if (current.toolsAllow && !current.toolsAllow.includes(toolName)) {
+              return { status: "blocked", error: "tool_not_allowed", connection: connectionId };
+            }
             try {
-              const headers = await connectionHeaders(live);
+              const headers = await connectionHeaders(current);
               const raw = await callMcpTool(url, toolName, args, headers);
               let text = JSON.stringify(raw);
               let truncated = false;

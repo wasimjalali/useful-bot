@@ -33,7 +33,7 @@ import { connectionSecretService, keychainSet, memoryKeychain, setKeychainDriver
 import { upsertConnection, type ConnectionEntry } from "../shared/connections-store.ts";
 import { toolInputSchema, rawSchemaHint } from "../shared/json-schema-zod.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
-import { measureOpenApiSpec, specWireBytes } from "../shared/tool-wire-size.ts";
+import { measureOpenApiSpec, measureOpenApiSpecText, specWireBytes } from "../shared/tool-wire-size.ts";
 import {
   MAX_SESSION_TOOLS,
   MAX_SESSION_TOOL_BYTES,
@@ -602,4 +602,52 @@ test("what is charged is exactly what is mounted, fence and escaping included", 
   assert.equal(indexedToolBytes(nasty, "example", "Example"), onTheWire);
   // And a connection name cannot carry a line break outside the fence.
   assert.ok(!mountedDescription(nasty, "example", "Evil\nName").startsWith("Evil\n"));
+});
+
+test("the name the provider validates is the mounted one, not the tool's own", async () => {
+  paths();
+  // A long connection id and a tool name that passes on its own still make a
+  // mounted name past sixty-four, which the provider refuses non-retryably.
+  upsertConnection(entry({ id: "a-rather-long-connection-identifier" }));
+  setMcpFetch((async (_input: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+    if (body.method === "initialize") {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { tools: [
+      { name: "short_read", description: "read" },
+      { name: "a_tool_name_that_is_fine_alone_but_long", description: "read" },
+      { name: "x".repeat(90), description: "read" },
+    ] } }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch);
+  const hits = await searchConnectionTools("read", 5);
+  assert.deepEqual(hits.map((hit) => hit.tool), ["short_read"]);
+  assert.ok(hits.every((hit) => hit.name.length <= 64));
+});
+
+test("a recursive spec is weighed from its own text instead of refused forever", () => {
+  // `Node` with `children: Node[]` is ordinary, and refusing it as
+  // unmeasurable made the service permanently unconnectable.
+  const spec = JSON.stringify({
+    paths: { "/tree": { get: { parameters: [{ name: "n", schema: { $ref: "#/components/schemas/Node" } }] } } },
+    components: { schemas: { Node: { type: "object", properties: { children: { type: "array", items: { $ref: "#/components/schemas/Node" } } } } } },
+  });
+  const measured = measureOpenApiSpecText(spec);
+  assert.equal(measured?.operations, 1);
+  // The spec's own text, charged at the emission rate by specWireBytes.
+  assert.equal(measured?.schemaBytes, Buffer.byteLength(spec, "utf8"));
+  assert.ok(specWireBytes(measured!) > Buffer.byteLength(spec, "utf8"));
+  // Text that is not a spec at all still has no number.
+  assert.equal(measureOpenApiSpecText("not json"), null);
+  assert.equal(measureOpenApiSpecText(JSON.stringify({ nope: true })), null);
+});
+
+test("a string is charged at what it costs once escaped", () => {
+  // A newline is two bytes on the wire and a control character six.
+  const escaped = measureOpenApiSpec({
+    paths: { "/a": { get: { summary: "\n".repeat(100) + "\u0001".repeat(100) } } },
+  });
+  assert.ok((escaped?.textBytes ?? 0) >= 100 * 2 + 100 * 6, `counted ${escaped?.textBytes}`);
 });

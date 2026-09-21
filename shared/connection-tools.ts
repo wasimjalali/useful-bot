@@ -190,7 +190,7 @@ export async function refreshConnectionIndex(
     // Screened before it is kept or returned, not only when the store is next
     // read: a name the upstream would refuse was handed to the model as
     // callable, activated, and then silently never mounted.
-    .filter((tool) => isMountableToolName(tool.name))
+    .filter((tool) => isMountableToolName(entry.id, tool.name))
     .filter((tool) => visible.has(tool.name) && (!allow || allow.has(tool.name)))
     .map((tool) => ({
       name: tool.name,

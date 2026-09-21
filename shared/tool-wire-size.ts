@@ -121,8 +121,13 @@ function resolveRef(root: Json, ref: string): unknown {
  */
 type Walk = { root: Json; nodes: number; truncated: boolean };
 
+/** A string as the router weighs it: JSON-encoded, quotes and escapes included. */
+function jsonString(value: string): number {
+  return utf8(JSON.stringify(value));
+}
+
 function scalarBytes(value: unknown): number {
-  if (typeof value === "string") return utf8(value) + 2;
+  if (typeof value === "string") return jsonString(value);
   if (typeof value === "number" || typeof value === "boolean") return String(value).length;
   return 4;
 }
@@ -158,7 +163,7 @@ function resolvedBytes(walk: Walk, node: unknown, depth: number): number {
   let total = 2;
   for (const [key, value] of Object.entries(rec)) {
     if (walk.truncated) return 0;
-    total += utf8(key) + 4;
+    total += jsonString(key) + 2;
     total += Array.isArray(value) || asRecord(value)
       ? resolvedBytes(walk, value, depth + 1)
       : scalarBytes(value);
@@ -180,6 +185,42 @@ export type SpecSize = {
   textBytes: number;
 };
 
+/**
+ * Measure a spec, falling back to its own text when the walk cannot finish.
+ *
+ * A recursive schema (`Node` with `children: Node[]`) is common in real
+ * documents, and refusing every one of them as unmeasurable made those
+ * services permanently unconnectable, and on the OAuth path only after the
+ * single-use code was spent. When the walk stops short, the spec's own text
+ * at the emission rate is charged instead: an over-estimate of anything eve
+ * can build from that text, and a real number the budget can refuse on.
+ */
+export function measureOpenApiSpecText(text: string): SpecSize | null {
+  let spec: unknown;
+  try {
+    spec = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const exact = measureOpenApiSpec(spec);
+  if (exact) return exact;
+  const operations = countOperations(spec);
+  if (operations === null) return null;
+  return { operations, schemaBytes: utf8(text), textBytes: 0 };
+}
+
+function countOperations(spec: unknown): number | null {
+  const paths = asRecord(asRecord(spec)?.paths);
+  if (!paths) return null;
+  let operations = 0;
+  for (const item of Object.values(paths)) {
+    const path = asRecord(item);
+    if (!path) continue;
+    for (const method of Object.keys(path)) if (METHODS.has(method.toLowerCase())) operations += 1;
+  }
+  return operations;
+}
+
 export function measureOpenApiSpec(spec: unknown): SpecSize | null {
   const root = asRecord(spec);
   const paths = asRecord(root?.paths);
@@ -199,7 +240,9 @@ export function measureOpenApiSpec(spec: unknown): SpecSize | null {
       operations += 1;
       for (const field of ["operationId", "summary", "description"]) {
         const text = operation[field];
-        if (typeof text === "string") textBytes += utf8(text);
+        // Escaped, the way it reaches the router: a quote or a newline costs
+        // two bytes there and a control character six.
+        if (typeof text === "string") textBytes += jsonString(text);
       }
       const parameters = [
         ...shared,

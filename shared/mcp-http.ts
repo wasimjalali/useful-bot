@@ -1,5 +1,5 @@
 import { assertConnectionUrl, assertResolvedPublic } from "./connection-url.ts";
-import { measureOpenApiSpec, type SpecSize } from "./tool-wire-size.ts";
+import { measureOpenApiSpecText, type SpecSize } from "./tool-wire-size.ts";
 import { mountedSchemaBytes } from "./json-schema-zod.ts";
 
 /**
@@ -245,9 +245,11 @@ export async function listMcpTools(
   const out: McpToolInfo[] = [];
   for (const item of tools) {
     const row = asRecord(item);
-    if (!row || typeof row.name !== "string") continue;
+    // Skipped rather than clipped: a clipped name is one the server never
+    // published, and calling it fails at the server instead of here.
+    if (!row || typeof row.name !== "string" || row.name.length > 80) continue;
     out.push({
-      name: row.name.slice(0, 80),
+      name: row.name,
       description: typeof row.description === "string" ? row.description.slice(0, 400) : "",
       visibility: toolVisibility(row._meta),
       appCallable: toolAppCallable(row._meta),
@@ -358,16 +360,10 @@ export async function measureOpenApiConnection(
     // Bounded while reading: the old check ran after the whole thing was
     // already in memory, which is the part that hurts.
     const body = await boundedText(res, MAX_SPEC_BODY_BYTES);
-    return measureOpenApiSpec(JSON.parse(body));
+    return measureOpenApiSpecText(body);
   } catch {
     return null;
   }
 }
 
-/** Just the operation count, for callers that only show a number. */
-export async function countOpenApiOperations(
-  specUrl: string,
-  headers: Record<string, string> = {},
-): Promise<number | null> {
-  return (await measureOpenApiConnection(specUrl, headers))?.operations ?? null;
-}
+

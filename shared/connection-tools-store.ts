@@ -92,8 +92,17 @@ const MAX_SESSIONS = 100;
  */
 const TOOL_NAME = /^[a-zA-Z0-9_-]{1,80}$/;
 
-export function isMountableToolName(name: string): boolean {
-  return TOOL_NAME.test(name);
+/**
+ * The provider validates the mounted name, `<connectionId>__<toolName>`, not
+ * the tool's own, against `^[a-zA-Z0-9_-]{1,64}$`. A connection id may run to
+ * sixty-four characters and a tool name to eighty, so a tool that passed a
+ * screen of its own name could still be refused on the wire, non-retryably,
+ * with the session retired behind it.
+ */
+const MOUNTED_NAME_MAX = 64;
+
+export function isMountableToolName(connectionId: string, name: string): boolean {
+  return TOOL_NAME.test(name) && mountedToolName(connectionId, name).length <= MOUNTED_NAME_MAX;
 }
 
 function sleep(ms: number): void {
