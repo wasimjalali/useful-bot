@@ -174,6 +174,23 @@ exports it to excalidraw.com in the browser. The app's own tool calls go
 through `POST /api/connections/widget/[id]/call`, limited to tools the server
 marks for its app. The web UI does not port this card.
 
+A server's tools are not all mounted for every turn. An OpenAPI spec is, and
+so is an MCP server the owner pinned to a handful of tools (Excalidraw's two,
+so a drawing needs no lookup first). Anything larger waits: `find_tools`
+searches the cached listings in `~/.useful-bot/connection-tools.json` and
+records what it handed over, and a `step.started` resolver mounts those under
+`<connectionId>__<toolName>` for the next model call, inside the same turn.
+A tool it mounts is gated the way a connector call is: a read runs, a write or
+a destructive action asks in Auto and runs in Full access, and Read only
+refuses both.
+
+Three bounds keep the router's `MAX_TOOL_SCHEMAS` wall out of reach, because
+a turn that hits it is refused with a non-retryable error and eve retires the
+session. A connect that would take the eagerly mounted total past
+`MOUNTED_TOOL_BUDGET` is refused before a row or a credential is written; one
+session may pick up `MAX_SESSION_TOOLS`; the agent's own tools and eve's make
+up the rest.
+
 ## Brand assets
 
 The approved mascot package, usage guidelines and visual comparison are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).
