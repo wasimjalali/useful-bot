@@ -189,7 +189,6 @@ final class ShotsUITests: XCTestCase {
 
     private func pairThroughManualEntry(_ app: XCUIApplication, _ pair: Pairing) {
         type(app, app.textFields["Mac address"], pair.host)
-        let status = app.staticTexts["pairing-status"]
         // The SecureField type can drop silently when a system alert steals
         // first responder (the disabled Connect button is the only readable
         // tell), and a coordinate tap on a disabled button no-ops without an
@@ -209,12 +208,17 @@ final class ShotsUITests: XCTestCase {
             dismissKeyboard(app)
             tapButton(app, "Connect")
             // A real tap moves the status line off idle; if it never did
-            // the tap no-opped and the token needs retyping.
+            // the tap no-opped and the token needs retyping. Read it
+            // through a matching() query — identifier and label evaluate in
+            // one snapshot, so the pairing screen unmounting on the Bots
+            // push can't throw a stale-snapshot between exists and label.
+            let moved = app.staticTexts.matching(NSPredicate(
+                format: "identifier == 'pairing-status' AND label.length > 0 AND label != %@",
+                "Point the camera at the code on your Mac")).firstMatch
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
                 if app.descendants(matching: .any)["bots-list"].exists { return }
-                if status.exists, !status.label.isEmpty,
-                   status.label != "Point the camera at the code on your Mac" { return }
+                if moved.exists { return }
                 usleep(300_000)
             }
         }
@@ -422,19 +426,19 @@ final class ShotsUITests: XCTestCase {
             app.buttons["manual-connect"].tap()
             // The failure copy differs per failure mode; poll the status
             // label until it leaves idle/connecting, then shoot the error.
-            let status = app.staticTexts["pairing-status"]
+            // The denied state suppresses the idle line to "" — that is
+            // idle, not a result; keep polling past it. matching() keeps
+            // identifier and label in one snapshot so the read can't throw
+            // stale mid-navigation.
+            let settled = app.staticTexts.matching(NSPredicate(
+                format: "identifier == 'pairing-status' AND label.length > 0 AND label != %@ AND label != %@",
+                "Connecting to your Mac",
+                "Point the camera at the code on your Mac")).firstMatch
             let deadline = Date().addingTimeInterval(20)
-            while Date() < deadline {
-                if status.exists {
-                    let label = status.label
-                    // The denied state suppresses the idle line to "" —
-                    // that is idle, not a result; keep polling past it.
-                    if !label.isEmpty, label != "Connecting to your Mac",
-                       label != "Point the camera at the code on your Mac" { break }
-                }
+            while Date() < deadline, !settled.exists {
                 usleep(300_000)
             }
-            XCTAssertTrue(status.exists)
+            XCTAssertTrue(settled.exists)
             hostShot(
                 "pairing-connect-failed-\(suffix(app, appearance: appearance, typeSize: nil))",
                 app
@@ -478,23 +482,20 @@ final class ShotsUITests: XCTestCase {
             // outlast the hold and shoot the Bots list instead. Manual
             // pairing names the Mac by its host (PairingPayload falls back
             // to host when the QR name is absent), so match the prefix.
-            let status = app.staticTexts["pairing-status"]
+            let connected = app.staticTexts.matching(NSPredicate(
+                format: "identifier == 'pairing-status' AND label BEGINSWITH %@",
+                "Connected to ")).firstMatch
             let deadline = Date().addingTimeInterval(15)
-            var connectedSeen = false
-            while Date() < deadline {
-                if status.exists, status.label.hasPrefix("Connected to ") {
-                    connectedSeen = true
-                    break
-                }
+            while Date() < deadline, !connected.exists {
                 usleep(250_000)
             }
-            if !connectedSeen {
-                XCTFail("success line never appeared; status='\(status.exists ? status.label : "<none>")'")
+            if !connected.exists {
+                XCTFail("success line never appeared")
                 shot("pairing-connected-debug-\(suffix(app, appearance: appearance, typeSize: nil))", app)
                 app.terminate()
                 continue
             }
-            XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
+            XCTAssertTrue(connected.exists,
                           "success line expired before the shot — hold too short")
             pinToTop(app)
             hostShot(
@@ -541,23 +542,20 @@ final class ShotsUITests: XCTestCase {
             }
             dismissKeyboard(app)
             tapButton(app, "Connect")
-            let status = app.staticTexts["pairing-status"]
+            let connected = app.staticTexts.matching(NSPredicate(
+                format: "identifier == 'pairing-status' AND label BEGINSWITH %@",
+                "Connected to ")).firstMatch
             let deadline = Date().addingTimeInterval(15)
-            var connectedSeen = false
-            while Date() < deadline {
-                if status.exists, status.label.hasPrefix("Connected to ") {
-                    connectedSeen = true
-                    break
-                }
+            while Date() < deadline, !connected.exists {
                 usleep(250_000)
             }
-            if !connectedSeen {
-                XCTFail("success line never appeared; status='\(status.exists ? status.label : "<none>")'")
+            if !connected.exists {
+                XCTFail("success line never appeared")
                 shot("pairing-connected-debug-\(suffix(app, appearance: appearance, typeSize: "xxxl"))", app)
                 app.terminate()
                 continue
             }
-            XCTAssertTrue(status.exists && status.label.hasPrefix("Connected to "),
+            XCTAssertTrue(connected.exists,
                           "success line expired before the shot — hold too short")
             pinToTop(app)
             hostShot(

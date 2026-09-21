@@ -139,7 +139,6 @@ final class PairingFlowUITests: XCTestCase {
 
     private func pairThroughManualEntry(_ app: XCUIApplication, _ pair: Pairing) {
         type(app, app.textFields["Mac address"], pair.host)
-        let status = app.staticTexts["pairing-status"]
         // The SecureField type can drop silently when a system alert steals
         // first responder (the disabled Connect button is the only readable
         // tell), and a coordinate tap on a disabled button no-ops without an
@@ -159,12 +158,17 @@ final class PairingFlowUITests: XCTestCase {
             dismissKeyboard(app)
             tapButton(app, "Connect")
             // A real tap moves the status line off idle; if it never did
-            // the tap no-opped and the token needs retyping.
+            // the tap no-opped and the token needs retyping. Read it
+            // through a matching() query — identifier and label evaluate in
+            // one snapshot, so the pairing screen unmounting on the Bots
+            // push can't throw a stale-snapshot between exists and label.
+            let moved = app.staticTexts.matching(NSPredicate(
+                format: "identifier == 'pairing-status' AND label.length > 0 AND label != %@",
+                "Point the camera at the code on your Mac")).firstMatch
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
                 if app.descendants(matching: .any)["bots-list"].exists { return }
-                if status.exists, !status.label.isEmpty,
-                   status.label != "Point the camera at the code on your Mac" { return }
+                if moved.exists { return }
                 usleep(300_000)
             }
         }
@@ -186,8 +190,13 @@ final class PairingFlowUITests: XCTestCase {
         // polls slower than that, so shoot it opportunistically and assert
         // on the Bots list it navigates to. Manual pairing names the Mac by
         // host (PairingPayload falls back when the QR name is absent).
-        let status = app.staticTexts["pairing-status"]
-        if status.waitForExistence(timeout: 1), status.label.hasPrefix("Connected to ") {
+        // matching() snapshot-evaluates identifier+label atomically — the
+        // 600 ms connected hold can lapse mid-read and .label would throw
+        // stale once the Bots list pushes in.
+        let connected = app.staticTexts.matching(NSPredicate(
+            format: "identifier == 'pairing-status' AND label BEGINSWITH %@",
+            "Connected to ")).firstMatch
+        if connected.waitForExistence(timeout: 1) {
             dismissSystemAlerts(app)
             shot("pairing-connected")
         }
