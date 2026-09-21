@@ -706,6 +706,12 @@ public struct StreamProjection: Equatable, Sendable {
         let stamp = TranscriptBlocks.date(fromISO8601: event.metaAt) ?? (live ? Date() : nil)
         switch event.type {
         case "turn.started":
+            // Another turn's start, while this one is in flight, is a
+            // follower that rewound past the id cache. Taken for real it made
+            // that turn the current one, and the rest of this turn's reply was
+            // gated out as somebody else's. eve runs one turn at a time, and
+            // the next real one names itself in its message anyway.
+            guard belongsToThisTurn(event) else { break }
             replayingMessage = false
             turnProducedWork = false
             openUserRows = 0
@@ -927,6 +933,10 @@ public struct StreamProjection: Equatable, Sendable {
             // stale bubble.
             currentAssistantId = nil
         case "turn.failed", "session.failed":
+            // Another turn's failure, replayed mid-turn, neither ends this one
+            // nor bannered it, and must not wipe the claim this turn's own
+            // failure needs to fold its retry.
+            guard belongsToThisTurn(event) else { break }
             // eve retires a session that failed, and the next message opens a
             // fresh one with none of this history. A question card left up
             // would send its option label into that empty session, where it
@@ -945,7 +955,7 @@ public struct StreamProjection: Equatable, Sendable {
             // further than that message qualifies, which is the shape that
             // stacked copies. One that reached text, reasoning or a tool call
             // may have left work behind, and its row keeps that work under it.
-            if belongsToThisTurn(event), carrierIsThisTurn, !turnProducedWork,
+            if carrierIsThisTurn, !turnProducedWork,
                let carried = turnUserMessageId, messages.last?.id == carried {
                 discardedUserMessageId = carried
             }
@@ -984,6 +994,12 @@ public struct StreamProjection: Equatable, Sendable {
                 .compactMap { $0["requestId"]?.stringValue })
             questions.removeAll { resolved.contains($0.id) }
         case "turn.completed", "turn.cancelled", "session.waiting", "session.completed":
+            // The same for another turn's end: this turn is still running.
+            guard belongsToThisTurn(event) else { break }
+            // A turn that carried a message and ended without failing kept
+            // it, so a row still armed from an earlier failure (a fold whose
+            // echo had no id to adopt) names a message the session now holds.
+            if carrierIsThisTurn, event.type != "session.waiting" { discardedUserMessageId = nil }
             pending = false
             currentAssistantId = nil
             // The turn is over without failing, so its message is the
