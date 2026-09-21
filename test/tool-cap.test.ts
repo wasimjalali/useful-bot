@@ -2,17 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MAX_TOOL_SCHEMAS } from "../shared/policy.ts";
+import { MAX_SESSION_TOOLS, MAX_TOOL_SCHEMAS, MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 
 /**
- * Room kept under the cap for tools that only exist per session: eve's
- * connection tools, whatever a future eve default adds, and a few more
- * authored ones. The point is that a single added tool trips this test in CI,
- * never a live turn at the router.
+ * Room for whatever a future eve default adds and a few more authored tools.
+ * The connection tools have their own budgets now and are counted below; the
+ * point is still that a single added tool trips this test in CI, never a live
+ * turn at the router.
  */
-const SESSION_TOOL_HEADROOM = 32;
+const SESSION_TOOL_HEADROOM = 16;
 
 /**
  * eve advertises its default tools on every turn unless a same-named file
@@ -50,8 +50,14 @@ test("the tools the agent ships fit under the router's schema cap with headroom"
   // before the model was called. This is the test that was missing.
   const count = shippedToolCount();
   assert.ok(count >= 33, `expected at least the 33 tools shipped on 2026-09-15, counted ${count}`);
+  // The connect budget and the per-session limit are what stop a bot walking
+  // into the cap, so the arithmetic that says they are enough is checked
+  // here rather than asserted in a comment: every connection a connect will
+  // admit, plus every tool a session may pick up, plus everything the agent
+  // ships, has to fit.
+  const worst = count + MOUNTED_TOOL_BUDGET + MAX_SESSION_TOOLS + SESSION_TOOL_HEADROOM;
   assert.ok(
-    count + SESSION_TOOL_HEADROOM <= MAX_TOOL_SCHEMAS,
-    `agent ships ${count} tool schemas; with ${SESSION_TOOL_HEADROOM} headroom for per-session tools that exceeds MAX_TOOL_SCHEMAS=${MAX_TOOL_SCHEMAS}. Raise the cap in shared/policy.ts`,
+    worst <= MAX_TOOL_SCHEMAS,
+    `agent ships ${count} tool schemas; with MOUNTED_TOOL_BUDGET=${MOUNTED_TOOL_BUDGET}, MAX_SESSION_TOOLS=${MAX_SESSION_TOOLS} and ${SESSION_TOOL_HEADROOM} headroom that is ${worst}, past MAX_TOOL_SCHEMAS=${MAX_TOOL_SCHEMAS}. Lower a budget in shared/policy.ts`,
   );
 });
