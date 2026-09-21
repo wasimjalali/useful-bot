@@ -4,6 +4,7 @@ import UsefulBotCore
 
 struct ApprovalCardView: View {
     let card: PhoneModel.ApprovalCard
+    var blockedReason: String? = nil
     var onDecide: (Bool) -> Void
 
     var body: some View {
@@ -47,14 +48,14 @@ struct ApprovalCardView: View {
             }
             if !card.item.cwd.isEmpty {
                 Text(card.item.cwd)
-                    .font(.system(size: 13, design: .monospaced))
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular, design: .monospaced)
                     .foregroundStyle(Theme.C.inkMuted)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             ScrollView {
                 Text(card.item.preview)
-                    .font(.system(size: 13, design: .monospaced))
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular, design: .monospaced)
                     .foregroundStyle(Theme.C.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -71,14 +72,27 @@ struct ApprovalCardView: View {
                 Button("Deny") { onDecide(false) }
                     .buttonStyle(PressedScale())
                     .frame(maxWidth: .infinity, minHeight: 44)
-                    .disabled(card.phase == .approving)
+                    .disabled(actionsBlocked)
                 Button(card.phase == .approving ? "Approving" : "Approve") { onDecide(true) }
-                    .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong, shadowed: true))
-                    .foregroundStyle(Theme.C.brandInk)
+                    .buttonStyle(PressedScale(
+                        fill: actionsBlocked ? Theme.C.sunken : Theme.C.brand,
+                        pressedFill: actionsBlocked ? Theme.C.sunken : Theme.C.accentStrong,
+                        shadowed: !actionsBlocked
+                    ))
+                    .foregroundStyle(actionsBlocked ? Theme.C.inkFaint : Theme.C.brandInk)
                     .frame(maxWidth: .infinity, minHeight: 44)
-                    .disabled(card.phase == .approving)
+                    .disabled(actionsBlocked)
+            }
+            if let blockedReason {
+                Text(blockedReason)
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
             }
         }
+    }
+
+    private var actionsBlocked: Bool {
+        card.phase == .approving || blockedReason != nil
     }
 
     private func statusLine(_ title: String, color: Color) -> some View {
@@ -132,6 +146,7 @@ struct PendingApprovalsView: View {
 
 struct ProposalCardView: View {
     let proposal: Proposal
+    var blockedReason: String? = nil
     var onDecide: (Bool) -> Void
 
     var body: some View {
@@ -150,10 +165,17 @@ struct ProposalCardView: View {
             HStack(spacing: 8) {
                 Button("Dismiss") { onDecide(false) }
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .disabled(blockedReason != nil)
                 if proposal.kind != .unknown {
                     Button("Confirm") { onDecide(true) }
                         .frame(maxWidth: .infinity, minHeight: 44)
+                        .disabled(blockedReason != nil)
                 }
+            }
+            if let blockedReason {
+                Text(blockedReason)
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
             }
         }
         .padding(14)
@@ -185,6 +207,7 @@ struct ProposalCardView: View {
 
 struct QuestionCardView: View {
     let question: OwnerQuestion
+    var blockedReason: String? = nil
     var onPick: (OwnerQuestion.Option) -> Void
 
     var body: some View {
@@ -195,6 +218,12 @@ struct QuestionCardView: View {
             ForEach(question.options) { option in
                 Button(option.label) { onPick(option) }
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .disabled(blockedReason != nil)
+            }
+            if let blockedReason {
+                Text(blockedReason)
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
             }
         }
         .padding(14)

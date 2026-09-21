@@ -44,7 +44,12 @@ struct DevicesPaneView: View {
             return
         }
         let host = readHost() ?? "https://your-mac"
-        let payload = #"{"v":1,"host":"\#(host)","token":"\#(token)","name":"Mac"}"#
+        let body: [String: Any] = ["v": 1, "host": host, "token": token, "name": "Mac"]
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let payload = String(data: data, encoding: .utf8) else {
+            status = "The code could not be drawn."
+            return
+        }
         image = qr(payload)
         showing = image != nil
         status = showing ? "Point the phone at this code." : "The code could not be drawn."

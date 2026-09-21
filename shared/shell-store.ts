@@ -176,7 +176,7 @@ export type ShellAction =
     }
   | { type: "newChat"; botId?: string; preserveSelection?: boolean }
   | { type: "clearThread"; botId: string }
-  | { type: "openRecent"; recentId: string }
+  | { type: "openRecent"; recentId: string; preserveSelection?: boolean }
   | { type: "toggleSection"; sectionId: string };
 
 /**
@@ -965,7 +965,8 @@ export function applyShellAction(
         },
       };
     }
-    case "openRecent": {      const recent = store.recents.find((item) => item.id === action.recentId);
+    case "openRecent": {
+      const recent = store.recents.find((item) => item.id === action.recentId);
       if (!recent) throw new Error("shell_recent_missing");
       const bot = store.bots.find((item) => item.id === recent.botId);
       if (!bot) {
@@ -978,7 +979,8 @@ export function applyShellAction(
       return {
         store: {
           ...store,
-          selectedBotId: bot.id,
+          // The phone passes preserveSelection so Continue cannot move the Mac's selected bot.
+          selectedBotId: action.preserveSelection ? store.selectedBotId : bot.id,
           recents,
           bots: store.bots.map((item) => (
             item.id === bot.id

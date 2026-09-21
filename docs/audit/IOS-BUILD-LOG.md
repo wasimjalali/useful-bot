@@ -1465,3 +1465,10 @@ redirect). Approve, delete, proposal confirm, and a permission raise use
 Simulator checks for that commit, same closing PR: shots of the sectioned
 bots list, the proposal card, the owner-question card, and the Safari sheet,
 light and dark. No new measured numbers until that session.
+
+Adversarial review of `ios/pr-3` (local sub-agents, not a Devin session) is
+green on the code that does not need a simulator. Correctness, security, and
+design each returned no remaining critical or high findings after the fixes
+on this branch. Shell-store tests passed, including `openRecent` keeping the
+other client's selection. The macOS package builds. Simulator, screenshots,
+biometrics, and long-chat numbers stay in the closing PR.

@@ -34,6 +34,7 @@ struct BotsListView: View {
     @State private var groupMembers: Set<String> = []
     @State private var renameTarget: ShellBot?
     @State private var renameText = ""
+    @State private var deleteTarget: ShellBot?
     /// `loaded` means a roster fetch has *succeeded* at least once — a failed
     /// first load shows the error row, never "Create your first bot".
     private var loaded: Bool { phone.loaded }
@@ -89,7 +90,7 @@ struct BotsListView: View {
                     Text("Search")
                         .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                         .foregroundStyle(Theme.C.inkFaintText)
-                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .padding(.horizontal, 12)
                         .background(Theme.C.surface)
                         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
@@ -154,9 +155,16 @@ struct BotsListView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    if let reason = createsBlocked {
+                        Button(reason) {}
+                            .disabled(true)
+                    }
                     Button("New bot") { showCreate = true }
+                        .disabled(createsBlocked != nil)
                     Button("New group") { showGroup = true }
+                        .disabled(createsBlocked != nil)
                     Button("New section") { showSection = true }
+                        .disabled(createsBlocked != nil)
                 } label: {
                     Image(systemName: "plus")
                         .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
@@ -164,6 +172,7 @@ struct BotsListView: View {
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .accessibilityLabel("New")
+                .accessibilityHint(createsBlocked ?? "New bot, group, or section")
                 .ubFocusRing()
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -205,6 +214,24 @@ struct BotsListView: View {
                 ChatScreen(botId: id)
             }
         }
+        .confirmationDialog(
+            "Delete \(deleteTarget?.name ?? "this bot")?",
+            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete bot", role: .destructive) {
+                if let id = deleteTarget?.id {
+                    deleteTarget = nil
+                    Task { await phone.deleteBot(id) }
+                }
+            }
+            Button("Cancel", role: .cancel) { deleteTarget = nil }
+        } message: {
+            Text("This removes the bot from your Mac.")
+        }
+        .sheet(isPresented: Binding(get: { phone.pastRecent != nil }, set: { if !$0 { phone.pastRecent = nil } })) {
+            PastConversationView()
+        }
         .sheet(isPresented: $showSearch) {
             NavigationStack {
                 List {
@@ -213,6 +240,20 @@ struct BotsListView: View {
                         Button(bot.name) {
                             showSearch = false
                             phone.select(bot.id)
+                        }
+                        .frame(minHeight: 44)
+                    }
+                    ForEach(phone.matchingRecents()) { recent in
+                        Button {
+                            showSearch = false
+                            Task { await phone.openPast(recent) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(recent.title)
+                                Text("Past conversation")
+                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                    .foregroundStyle(Theme.C.inkMuted)
+                            }
                         }
                         .frame(minHeight: 44)
                     }
@@ -231,8 +272,13 @@ struct BotsListView: View {
                         showCreate = false
                         Task { await phone.createBot(name: name) }
                     }
-                    .disabled(newBotName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(createsBlocked != nil || newBotName.trimmingCharacters(in: .whitespaces).isEmpty)
                     .frame(minHeight: 44)
+                    if let reason = createsBlocked {
+                        Text(reason)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
                 }
                 .navigationTitle("New bot")
                 .navigationBarTitleDisplayMode(.inline)
@@ -249,7 +295,13 @@ struct BotsListView: View {
                         showSection = false
                         Task { await phone.createSection(name: name) }
                     }
-                    .disabled(newSectionName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(createsBlocked != nil || newSectionName.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .frame(minHeight: 44)
+                    if let reason = createsBlocked {
+                        Text(reason)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
                 }
                 .navigationTitle("New section")
                 .navigationBarTitleDisplayMode(.inline)
@@ -285,7 +337,18 @@ struct BotsListView: View {
                         showGroup = false
                         Task { await phone.createGroup(name: name, memberIds: members) }
                     }
-                    .disabled(newGroupName.trimmingCharacters(in: .whitespaces).isEmpty || groupMembers.count < 2)
+                    .disabled(createsBlocked != nil || newGroupName.trimmingCharacters(in: .whitespaces).isEmpty || groupMembers.count < 2)
+                    .frame(minHeight: 44)
+                    .accessibilityHint(createsBlocked ?? (groupMembers.count < 2 ? "Pick at least two members" : ""))
+                    if let reason = createsBlocked {
+                        Text(reason)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    } else if groupMembers.count < 2 {
+                        Text("Pick at least two members")
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
                 }
                 .navigationTitle("New group")
                 .navigationBarTitleDisplayMode(.inline)
@@ -301,13 +364,23 @@ struct BotsListView: View {
                         renameTarget = nil
                         Task { await phone.rename(bot.id, name) }
                     }
-                    .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(createsBlocked != nil || renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .frame(minHeight: 44)
+                    if let reason = createsBlocked {
+                        Text(reason)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
                 }
                 .navigationTitle("Rename")
                 .navigationBarTitleDisplayMode(.inline)
             }
             .presentationDetents([.medium])
         }
+    }
+
+    private var createsBlocked: String? {
+        phone.mutationBlocked(coordinator.readiness)
     }
 
     private var searchBinding: Binding<String> {
@@ -401,27 +474,44 @@ struct BotsListView: View {
         .buttonStyle(.plain)
         .listRowBackground(Color.clear)
         .accessibilityLabel(phone.workingBotIds.contains(bot.id) ? "\(bot.name), working" : bot.name)
+        .accessibilityHint(createsBlocked ?? "")
         .swipeActions(edge: .leading) {
-            Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }
+            if createsBlocked == nil {
+                Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }
+            }
         }
         .swipeActions(edge: .trailing) {
-            Button("Hide") { Task { await phone.hide(bot.id, !bot.hidden) } }
+            if createsBlocked == nil {
+                Button("Hide") { Task { await phone.hide(bot.id, !bot.hidden) } }
+            }
         }
         .contextMenu {
+            if let reason = createsBlocked {
+                Button(reason) {}
+                    .disabled(true)
+            }
             Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }
+                .disabled(createsBlocked != nil)
             Button("Rename") {
                 renameText = bot.name
                 renameTarget = bot
             }
+            .disabled(createsBlocked != nil)
             Menu("Move to section") {
                 Button("Unassigned") { Task { await phone.move(bot.id, sectionId: nil) } }
+                    .disabled(createsBlocked != nil)
                 ForEach(shell.sections) { section in
                     Button(section.name) { Task { await phone.move(bot.id, sectionId: section.id) } }
+                        .disabled(createsBlocked != nil)
                 }
             }
+            .disabled(createsBlocked != nil)
             Button("New chat") { Task { await phone.newChat(bot.id) } }
+                .disabled(createsBlocked != nil)
             Button("Hide") { Task { await phone.hide(bot.id, true) } }
-            Button("Delete", role: .destructive) { Task { await phone.deleteBot(bot.id) } }
+                .disabled(createsBlocked != nil)
+            Button("Delete", role: .destructive) { deleteTarget = bot }
+                .disabled(createsBlocked != nil)
         }
     }
 
@@ -495,7 +585,7 @@ struct BotsListView: View {
     /// the designed create sheet (1.7) is PR-6 scope, so until it lands the
     /// control is disabled-with-reason rather than minting an unnamed bot.
     private var emptyState: some View {
-        let newBotEnabled = coordinator.readiness == .ready || coordinator.readiness == nil
+        let newBotEnabled = createsBlocked == nil
         return VStack(alignment: .leading, spacing: 12) {
             Text("Create your first bot")
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
@@ -518,6 +608,11 @@ struct BotsListView: View {
                 shadowed: newBotEnabled
             ))
             .ubFocusRing()
+            if let reason = createsBlocked {
+                Text(reason)
+                    .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 48)
@@ -1038,5 +1133,54 @@ struct DevicesView: View {
               expiry.timeIntervalSinceNow > 0,
               expiry.timeIntervalSinceNow <= 7 * 86_400 else { return false }
         return true
+    }
+}
+
+/// A past conversation opened from search. Read-only until Continue, which is
+/// class A and switches the bot onto that session.
+struct PastConversationView: View {
+    @Environment(PhoneModel.self) private var phone
+    @EnvironmentObject private var coordinator: PairingCoordinator
+
+    private var blocked: String? {
+        if phone.pastRecent?.sessionId == nil { return "This conversation cannot be continued." }
+        return phone.mutationBlocked(coordinator.readiness)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if phone.pastRows.isEmpty {
+                    Text(phone.actionError ?? "Nothing in this conversation yet.")
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                ForEach(phone.pastRows) { row in
+                    Text(row.text)
+                        .tokenFont(DesignTokens.FontSize.chatBody, .regular)
+                        .foregroundStyle(Theme.C.ink)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
+            }
+            .navigationTitle(phone.pastRecent?.title ?? "Past conversation")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let blocked {
+                        Text(blocked)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
+                    Button("Continue") {
+                        Task { await phone.continuePast() }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .disabled(blocked != nil)
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.vertical, 8)
+                .background(Theme.C.surface)
+            }
+        }
     }
 }

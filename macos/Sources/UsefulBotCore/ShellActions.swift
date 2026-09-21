@@ -59,8 +59,10 @@ public enum ShellActions {
         ["type": "setPermission", "botId": botId, "permission": permission]
     }
 
-    public static func openRecent(recentId: String) -> [String: Any] {
-        ["type": "openRecent", "recentId": recentId]
+    public static func openRecent(recentId: String, preserveSelection: Bool = false) -> [String: Any] {
+        var action: [String: Any] = ["type": "openRecent", "recentId": recentId]
+        if preserveSelection { action["preserveSelection"] = true }
+        return action
     }
 
     public static func createBot(

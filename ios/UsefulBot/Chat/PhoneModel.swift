@@ -49,7 +49,11 @@ final class PhoneModel {
         var cursor: StreamCursor?
         var updating = false
         var confirmingId: String?
+        var confirmingText: String?
         var failedText: String?
+        /// A catch-up read that stopped before the advertised tail. The cursor
+        /// was not moved. The next open tries again.
+        var catchUpIncomplete = false
         var sessionEnded = false
         var error: String?
         var windowStart: String?
@@ -172,6 +176,7 @@ final class PhoneModel {
 
     func select(_ id: String) {
         guard bot(id) != nil || shell == nil else { return }
+        if id != selectedBotId { conflictNote = false }
         selectedBotId = id
         defaults.set(id, forKey: Self.selectionKey)
         draft = cache?.loadDraft(id) ?? ""
@@ -203,9 +208,24 @@ final class PhoneModel {
         }
     }
 
+    /// A Mac write that is not a chat send. Nil readiness is still connecting,
+    /// so the control stays disabled with a reason until the probe lands.
+    func mutationBlocked(_ readiness: MacReadiness?) -> String? {
+        switch readiness {
+        case .ready:
+            return sendBlockReason
+        case nil:
+            return sendBlockReason ?? "Connecting to your Mac"
+        default:
+            return blockedReason(readiness)
+        }
+    }
+
     func canSend(_ text: String, readiness: MacReadiness?) -> Bool {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (hasText || !attachments.isEmpty) && blockedReason(readiness) == nil
+        let confirming = selectedBotId.flatMap { chats[$0]?.confirmingText } != nil
+        let working = selectedBotId.flatMap { chats[$0]?.showWorking } == true
+        return (hasText || !attachments.isEmpty) && mutationBlocked(readiness) == nil && !sending && !confirming && !working
     }
 
     var sendBlockReason: String? {
@@ -214,11 +234,15 @@ final class PhoneModel {
         return nil
     }
 
+    private(set) var sending = false
+
     func send(_ text: String, readiness: MacReadiness?) {
         let body = text
         guard canSend(body, readiness: readiness), let id = selectedBotId, let bot = bot(id) else { return }
+        sending = true
         if bot.isFullAccess {
             Task {
+                defer { sending = false }
                 if let reason = await biometrics.unlockForActivation() {
                     passcodeMessage = reason
                     return
@@ -228,7 +252,10 @@ final class PhoneModel {
             }
             return
         }
-        Task { await deliver(body, botId: id) }
+        Task {
+            defer { sending = false }
+            await deliver(body, botId: id)
+        }
     }
 
     func retrySend(readiness: MacReadiness?) {
@@ -248,6 +275,15 @@ final class PhoneModel {
     }
 
     func newChat(_ id: String) async {
+        switch await OwnerGate.evaluate(reason: "Start a new chat") {
+        case .approved:
+            break
+        case .unavailable:
+            passcodeMessage = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
         guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
         do {
@@ -259,9 +295,53 @@ final class PhoneModel {
             chat.cursor = nil
             chat.failedText = nil
             chat.confirmingId = nil
+            chat.confirmingText = nil
+            chat.catchUpIncomplete = false
             chat.sessionEnded = false
             chat.showWorking = false
             chats[id] = chat
+        } catch {
+            actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
+        }
+    }
+
+    var pastRecent: ShellRecent?
+    private(set) var pastRows: [TranscriptRow] = []
+
+    func openPast(_ recent: ShellRecent) async {
+        pastRecent = recent
+        pastRows = []
+        guard let session = recent.sessionId, let client else { return }
+        var assembly = ReplayAssembly(StreamProjection())
+        do {
+            for try await event in client.stream(sessionId: session, startIndex: 0, untilTail: true, markHistory: true) {
+                assembly.collect { $0.apply(event, live: false) }
+            }
+        } catch {
+            actionError = (error as? LocalizedError)?.errorDescription ?? "This conversation could not be opened."
+            return
+        }
+        assembly.publish()
+        pastRows = Transcript.merge(events: [], messages: assembly.state.messages)
+    }
+
+    func continuePast() async {
+        guard let recent = pastRecent else { return }
+        switch await OwnerGate.evaluate(reason: "Continue this conversation") {
+        case .approved:
+            break
+        case .unavailable:
+            passcodeMessage = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
+        guard let client else { return }
+        do {
+            let next = try await client.shellAction(ShellActions.openRecent(recentId: recent.id, preserveSelection: true))
+            adopt(next)
+            pastRecent = nil
+            select(recent.botId)
         } catch {
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
@@ -430,6 +510,15 @@ final class PhoneModel {
         guard let client else { return }
         if let next = try? await client.updateComposer(modelId: modelId, effort: effort, speed: speed) {
             if next != composer { composer = next }
+        }
+    }
+
+    func matchingRecents() -> [ShellRecent] {
+        guard let shell else { return [] }
+        let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+        return shell.recents.filter { recent in
+            [recent.title, recent.preview].joined(separator: " ").lowercased().contains(needle)
         }
     }
 
@@ -611,7 +700,6 @@ final class PhoneModel {
             cache?.saveEvents(id, events)
             let session = bot(id)?.sessionId
             if chat.cursor?.sessionId != session {
-                chat.projection = StreamProjection()
                 chat.cursor = nil
                 chat.showWorking = false
             }
@@ -623,6 +711,7 @@ final class PhoneModel {
                 chat.updating = false
                 chats[id] = chat
             }
+            conflictNote = false
         } catch {
             guard current(generation) else { return }
             chat = chats[id] ?? chat
@@ -639,16 +728,18 @@ final class PhoneModel {
 
     /// Cold replays from index 0 and publishes once. A warm resume reads from
     /// the cursor. An incomplete read does not move the cursor.
-    private func replay(botId: String, sessionId: String, cold: Bool) async {
+    private func replay(botId: String, sessionId: String, cold: Bool, followLive: Bool = true, persistCursor: Bool = true) async {
         guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
         var chat = chats[botId] ?? OpenChat()
         chat.streamGeneration += 1
         let token = chat.streamGeneration
-        let resumeAt = cold ? 0 : (chat.cursor?.resumeIndex ?? 0)
+        let mismatched = chat.cursor.map { $0.sessionId != sessionId } ?? true
+        let fromStart = cold || mismatched
+        let resumeAt = fromStart ? 0 : (chat.cursor?.resumeIndex ?? 0)
         chats[botId] = chat
         var seed = chat.projection
-        if chat.cursor.map({ $0.sessionId != sessionId }) ?? false {
+        if fromStart {
             var fresh = StreamProjection()
             if let last = seed.messages.last, last.id.hasPrefix(EveStream.optimisticUserPrefix) {
                 fresh.apply(EveEvent(type: "message.received", id: last.id, message: last.text), live: true)
@@ -691,8 +782,12 @@ final class PhoneModel {
         chat = chats[botId] ?? chat
         chat.projection = assembly.state
         chat.updating = false
+        chat.catchUpIncomplete = !judged.claimsComplete
+        if !judged.claimsComplete {
+            chat.error = "This chat is still catching up."
+        }
         chat.showWorking = chat.projection.pending && judged.claimsComplete
-        if case .complete(let end) = judged {
+        if case .complete(let end) = judged, persistCursor {
             var cursor = chat.cursor ?? StreamCursor(sessionId: sessionId, generation: 1)
             if cursor.sessionId != sessionId {
                 cursor = cursor.advancedGeneration(sessionId: sessionId)
@@ -701,8 +796,14 @@ final class PhoneModel {
             chat.cursor = cursor
             cache?.saveCursor(cursor)
         }
+        if persistCursor {
+            resolveConfirming(&chat)
+        }
+        if judged.claimsComplete, chat.error == "This chat is still catching up." {
+            chat.error = nil
+        }
         chats[botId] = chat
-        if judged.claimsComplete {
+        if followLive, judged.claimsComplete {
             await follow(botId: botId, sessionId: sessionId, token: token)
         }
     }
@@ -748,39 +849,62 @@ final class PhoneModel {
         guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
         passcodeMessage = nil
+        let files = attachments
+        let formatted = Attachments.formatMessage(text, files: files)
+        let echo = Attachments.echoedMessage(formatted, images: files)
         var chat = chats[botId] ?? OpenChat()
+        let priorProjection = chat.projection
         let localId = "\(EveStream.optimisticUserPrefix)\(UUID().uuidString)"
         chat.projection.beginTurn()
-        chat.projection.apply(EveEvent(type: "message.received", id: localId, message: text), live: true)
+        chat.projection.apply(EveEvent(type: "message.received", id: localId, message: echo), live: true)
         chat.confirmingId = nil
+        chat.confirmingText = nil
         chat.failedText = nil
         chat.showWorking = true
         chats[botId] = chat
         let snapshot = draft
         updateDraft(ComposerDraft.remainder(snapshot, afterSending: text))
+        var postedSession: String?
         do {
             let fresh = try await client.shell()
-            guard current(generation) else { return }
+            guard current(generation) else {
+                dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                return
+            }
             adopt(fresh)
             let pointer = bot(botId)?.sessionId
-        let files = attachments
-        attachments = []
-        let sessionId = try await post(botId: botId, sessionId: pointer, message: text, images: files)
-            guard current(generation) else { return }
+            let sessionId = try await post(botId: botId, sessionId: pointer, message: formatted, images: files)
+            postedSession = sessionId
+            attachments = []
+            guard current(generation) else {
+                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: false)
+                return
+            }
             try await client.touchChat(
                 botId: botId,
-                preview: text,
+                preview: formatted,
                 sessionId: sessionId,
                 expected: .pointer(pointer)
             )
-            guard current(generation) else { return }
+            guard current(generation) else {
+                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: true)
+                return
+            }
+            conflictNote = false
             if var currentShell = shell, let index = currentShell.bots.firstIndex(where: { $0.id == botId }) {
                 currentShell.bots[index].sessionId = sessionId
                 shell = currentShell
             }
             await replay(botId: botId, sessionId: sessionId, cold: chats[botId]?.cursor?.sessionId != sessionId)
         } catch let error as BackendError {
-            guard current(generation) else { return }
+            guard current(generation) else {
+                if postedSession != nil {
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false)
+                } else {
+                    dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                }
+                return
+            }
             switch error {
             case .sessionConflict(let currentPointer):
                 conflictNote = true
@@ -788,8 +912,28 @@ final class PhoneModel {
                     currentShell.bots[index].sessionId = currentPointer
                     shell = currentShell
                 }
-                if let currentPointer {
-                    await replay(botId: botId, sessionId: currentPointer, cold: true)
+                if let posted = postedSession {
+                    var claimed = false
+                    do {
+                        try await client.touchChat(
+                            botId: botId,
+                            preview: formatted,
+                            sessionId: posted,
+                            expected: .pointer(currentPointer)
+                        )
+                        claimed = true
+                        conflictNote = false
+                    } catch {}
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: posted, claimSession: claimed)
+                } else {
+                    var stuck = chats[botId] ?? OpenChat()
+                    stuck.projection = priorProjection
+                    stuck.showWorking = false
+                    stuck.confirmingId = nil
+                    stuck.confirmingText = nil
+                    stuck.failedText = text
+                    chats[botId] = stuck
+                    updateDraft(snapshot)
                 }
             case .sessionEnded:
                 var chat = chats[botId] ?? OpenChat()
@@ -797,43 +941,113 @@ final class PhoneModel {
                 chat.showWorking = false
                 chats[botId] = chat
             default:
-                await lost(text, botId: botId, error: error)
+                await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession)
             }
         } catch let url as URLError where url.code == .timedOut || url.code == .networkConnectionLost {
-            await lost(text, botId: botId, error: url)
+            guard current(generation) else {
+                if postedSession != nil {
+                    await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, claimSession: false)
+                } else {
+                    dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                }
+                return
+            }
+            await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession)
         } catch {
-            await lost(text, botId: botId, error: error)
+            guard current(generation) else {
+                if postedSession != nil {
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false)
+                } else {
+                    dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                }
+                return
+            }
+            await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession)
         }
     }
 
-    /// The POST response never came back. Read the tail. Do not send again.
-    private func lost(_ text: String, botId: String, error: Error) async {
+    /// The POST response never came back, or a later step failed after the
+    /// message was accepted. Read that session. Do not send again.
+    private func lost(_ draftText: String, needle: String, botId: String, error: Error, sessionId: String?, claimSession: Bool = true) async {
         var chat = chats[botId] ?? OpenChat()
         chat.confirmingId = chat.projection.messages.last(where: { $0.id.hasPrefix(EveStream.optimisticUserPrefix) })?.id
+        chat.confirmingText = needle
         chat.showWorking = false
         chats[botId] = chat
-        if let session = bot(botId)?.sessionId {
-            await replay(botId: botId, sessionId: session, cold: false)
+        let session = sessionId ?? bot(botId)?.sessionId
+        var followSession: String?
+        if let session {
+            if claimSession, sessionId != nil, var currentShell = shell, let index = currentShell.bots.firstIndex(where: { $0.id == botId }) {
+                currentShell.bots[index].sessionId = session
+                shell = currentShell
+            }
+            if claimSession { followSession = session }
+            await replay(
+                botId: botId,
+                sessionId: session,
+                cold: chats[botId]?.cursor?.sessionId != session,
+                followLive: false,
+                persistCursor: claimSession
+            )
         }
         chat = chats[botId] ?? chat
-        if chat.projection.messages.contains(where: { $0.role == .user && $0.text == text && !$0.id.hasPrefix(EveStream.optimisticUserPrefix) }) {
+        let echoed = chat.projection.messages.contains {
+            $0.role == .user && $0.text == needle && !$0.id.hasPrefix(EveStream.optimisticUserPrefix)
+        }
+        if !claimSession {
+            chat.showWorking = false
             chat.confirmingId = nil
+            chat.confirmingText = nil
+            chat.failedText = draftText
+            chat.error = (error as? LocalizedError)?.errorDescription ?? "Your Mac moved this conversation"
+            if !echoed { updateDraft(draftText) }
+        } else if echoed {
+            chat.confirmingId = nil
+            chat.confirmingText = nil
             chat.failedText = nil
+        } else if chat.catchUpIncomplete {
+            chat.confirmingId = nil
+            chat.confirmingText = nil
+            chat.failedText = draftText
+            chat.error = "This chat is still catching up."
+            updateDraft(draftText)
         } else {
             chat.confirmingId = nil
-            chat.failedText = text
+            chat.confirmingText = nil
+            chat.failedText = draftText
             chat.error = (error as? LocalizedError)?.errorDescription
-            updateDraft(text)
+            updateDraft(draftText)
         }
         chats[botId] = chat
+        if let followSession, !chat.catchUpIncomplete, chat.projection.pending, let token = chats[botId]?.streamGeneration {
+            await follow(botId: botId, sessionId: followSession, token: token)
+        }
+    }
+
+    /// Pairing changed after the composer was cleared but before the turn was accepted.
+    private func dropUnsent(_ botId: String, prior: StreamProjection, draft snapshot: String) {
+        var chat = chats[botId] ?? OpenChat()
+        chat.projection = prior
+        chat.showWorking = false
+        chat.confirmingId = nil
+        chat.confirmingText = nil
+        chats[botId] = chat
+        updateDraft(snapshot)
+    }
+
+    private struct InterruptedSend: LocalizedError {
+        var errorDescription: String? { "This send was interrupted." }
     }
 
     private func resolveConfirming(_ chat: inout OpenChat) {
-        guard chat.confirmingId != nil || chat.failedText != nil else { return }
-        if chat.projection.messages.contains(where: {
-            $0.role == .user && !$0.id.hasPrefix(EveStream.optimisticUserPrefix)
-        }) {
+        guard let needle = chat.confirmingText else { return }
+        let echoed = chat.projection.messages.contains {
+            $0.role == .user && $0.text == needle && !$0.id.hasPrefix(EveStream.optimisticUserPrefix)
+        }
+        if echoed {
             chat.confirmingId = nil
+            chat.confirmingText = nil
+            chat.failedText = nil
         }
     }
 
@@ -866,6 +1080,27 @@ final class PhoneModel {
             try? FileManager.default.removeItem(at: url)
             actionError = (error as? LocalizedError)?.errorDescription ?? "That photo was not attached."
         }
+    }
+
+    func addTextFile(url: URL) async {
+        let data: Data
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            guard let chunk = try handle.read(upToCount: Attachments.textMax + 1) else {
+                actionError = "That file was not attached."
+                return
+            }
+            guard chunk.count <= Attachments.textMax else {
+                actionError = "Text files have to be 64 KB or smaller."
+                return
+            }
+            data = chunk
+        } catch {
+            actionError = "That file was not attached."
+            return
+        }
+        await addTextFile(data, name: url.lastPathComponent)
     }
 
     func addTextFile(_ data: Data, name: String) async {

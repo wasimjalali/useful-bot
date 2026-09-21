@@ -52,13 +52,15 @@ struct PressedScale: ButtonStyle {
 private struct ScaledTokenFont: ViewModifier {
     @ScaledMetric private var size: CGFloat
     private let weight: Font.Weight
+    private let design: Font.Design
 
-    init(size: CGFloat, weight: Font.Weight) {
+    init(size: CGFloat, weight: Font.Weight, design: Font.Design = .default) {
         // Each token rides the text style nearest its point size: body-scale
         // on a 28 pt title overscales it past 3x at accessibilityXXXL, while
         // larger styles' curves grow more gently, matching the web tokens.
         _size = ScaledMetric(wrappedValue: size, relativeTo: Self.style(for: size))
         self.weight = weight
+        self.design = design
     }
 
     // Style sizes are 11/12/13/15/16/17/20/22/28/34; the nearest style for a
@@ -79,7 +81,7 @@ private struct ScaledTokenFont: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.font(.system(size: size, weight: weight))
+        content.font(.system(size: size, weight: weight, design: design))
     }
 }
 
@@ -114,8 +116,8 @@ extension View {
 
     /// The token's font, scaled by Dynamic Type. Text uses this; fixed-point
     /// chrome uses `Theme.font` directly.
-    func tokenFont(_ size: CGFloat, _ token: FontWeightToken) -> some View {
-        modifier(ScaledTokenFont(size: size, weight: Theme.weight(token)))
+    func tokenFont(_ size: CGFloat, _ token: FontWeightToken, design: Font.Design = .default) -> some View {
+        modifier(ScaledTokenFont(size: size, weight: Theme.weight(token), design: design))
     }
 
     /// One level off the page: a whisper of an edge and the spec's `lift`

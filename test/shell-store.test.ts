@@ -427,4 +427,12 @@ test("newChat can keep the other client's selection", () => {
   store = applyShellAction(store, { type: "newChat", botId: other, preserveSelection: true }).store;
   assert.equal(store.selectedBotId, DEFAULT_BOT_ID);
   assert.equal(store.bots.find((bot) => bot.id === other)?.sessionId ?? null, null);
+  store = applyShellAction(store, { type: "setSession", botId: other, sessionId: "sess-kept" }).store;
+  store = applyShellAction(store, { type: "touchChat", botId: other, preview: "earlier" }).store;
+  store = applyShellAction(store, { type: "newChat", botId: other, preserveSelection: true }).store;
+  const recent = store.recents.find((item) => item.botId === other);
+  assert.ok(recent);
+  store = applyShellAction(store, { type: "openRecent", recentId: recent!.id, preserveSelection: true }).store;
+  assert.equal(store.selectedBotId, DEFAULT_BOT_ID);
+  assert.equal(store.bots.find((bot) => bot.id === other)?.sessionId, "sess-kept");
 });

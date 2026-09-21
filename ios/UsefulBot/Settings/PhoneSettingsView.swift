@@ -59,7 +59,12 @@ struct PhoneSettingsView: View {
                         Task { await addRoutine(bot.id) }
                     }
                     .frame(minHeight: 44)
-                    .disabled(routineName.isEmpty || routineInstruction.isEmpty)
+                    .disabled(routineBlocked != nil || routineName.isEmpty || routineInstruction.isEmpty)
+                    if let reason = routineBlocked {
+                        Text(reason)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
                 }
                 Section("Memory") {
                     if notes.isEmpty {
@@ -111,6 +116,10 @@ struct PhoneSettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+    }
+
+    private var routineBlocked: String? {
+        phone.mutationBlocked(coordinator.readiness)
     }
 
     private func load() async {
