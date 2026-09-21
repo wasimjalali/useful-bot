@@ -213,7 +213,7 @@ final class ShotsUITests: XCTestCase {
             // one snapshot, so the pairing screen unmounting on the Bots
             // push can't throw a stale-snapshot between exists and label.
             let moved = app.staticTexts.matching(NSPredicate(
-                format: "identifier == 'pairing-status' AND label.length > 0 AND label != %@",
+                format: "identifier == 'pairing-status' AND label != '' AND label != %@",
                 "Point the camera at the code on your Mac")).firstMatch
             let deadline = Date().addingTimeInterval(12)
             while Date() < deadline {
@@ -431,7 +431,7 @@ final class ShotsUITests: XCTestCase {
             // identifier and label in one snapshot so the read can't throw
             // stale mid-navigation.
             let settled = app.staticTexts.matching(NSPredicate(
-                format: "identifier == 'pairing-status' AND label.length > 0 AND label != %@ AND label != %@",
+                format: "identifier == 'pairing-status' AND label != '' AND label != %@ AND label != %@",
                 "Connecting to your Mac",
                 "Point the camera at the code on your Mac")).firstMatch
             let deadline = Date().addingTimeInterval(20)

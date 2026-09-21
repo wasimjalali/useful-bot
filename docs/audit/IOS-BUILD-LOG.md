@@ -1217,3 +1217,34 @@ contract assertions + the ingress case), `swift test` 307/307,
 iOS `build-for-testing` clean, pairing gate re-run on all
 three widths after the commit (connect ordering and the
 monitor-driven level are pairing-gate territory).
+
+#### Process amendment (owner-directed, mid-round-12)
+
+The owner asked why PR-2's loop is slow (~24 h wall) and approved a
+speed pass over the review protocol, applied to REVIEW-PROMPTS.md so
+PR-3+ inherit it:
+
+- Severity gates rounds: blocker/high/medium request changes; lows
+  batch into one pre-merge cleanup commit instead of spending a round
+  each.
+- Reviewer sessions are reused across rounds of a PR (fresh per PR) —
+  kills the per-round cold start and the 5-session cap churn.
+- Gate re-runs scope to the round's touched surface; pairing-gate
+  widths parallelize only after the script gains per-run stack
+  isolation (ports/config/tmp paths) — the shared 4320/4321 stack's
+  lifecycle legs mutate config every run shares, so R12 stays
+  sequential.
+- design-a11y reviewers run normal effort; correctness/security stay
+  max. A devin_review pass rides each round where available.
+
+Merge strategy asked and answered: keep per-PR squash merges to main.
+The chain touches shared core (macos/Sources, web/lib) that concurrent
+desktop work also touches — an integration branch would concentrate
+every iOS↔desktop conflict into one final ungated merge.
+
+Also fixed while R12 reviewers ran: the UI helpers' status reads were
+a stale-snapshot race (`exists` then `label` snapshots twice; the
+pairing screen unmounting between them throws "No matches found" —
+the faster connect() path surfaced it). All five sites now read
+through `matching(predicate:)`, which evaluates identifier + label
+inside one snapshot.
