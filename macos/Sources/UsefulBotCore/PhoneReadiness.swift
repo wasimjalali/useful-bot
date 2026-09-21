@@ -1,12 +1,9 @@
-#if os(iOS)
 import Foundation
-import Network
-import Combine
 
 /// The §1.15 Diagnostics rows for `macUnreachable`: did the host resolve,
 /// did TLS land, did HTTP answer at all (a refused response still counts —
 /// it proves the edge is live). Verdicts are coarse because the ladder's
-/// own state is coarse.
+/// own state is coarse. Shared so the classifier is covered by `swift test`.
 public struct ReachabilityDiagnostics: Sendable, Equatable {
     public enum Verdict: String, Sendable, Equatable {
         case ok, bad
@@ -24,7 +21,36 @@ public struct ReachabilityDiagnostics: Sendable, Equatable {
     /// An edge refusal (403 of any code) proves all three layers carried
     /// the request.
     public static let answered = ReachabilityDiagnostics(resolved: .ok, tls: .ok, httpStatus: .ok)
+
+    /// Split a transport error onto the Diagnostics rows — a failure at
+    /// each layer leaves the lower pills bad as well.
+    public static func classify(_ error: Error) -> ReachabilityDiagnostics {
+        guard let code = (error as? URLError)?.code else {
+            return .init(resolved: .ok, tls: .ok, httpStatus: .bad)
+        }
+        switch code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return .init(resolved: .bad, tls: .bad, httpStatus: .bad)
+        case .secureConnectionFailed, .serverCertificateHasBadDate,
+             .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid, .clientCertificateRejected,
+             .appTransportSecurityRequiresSecureConnection:
+            return .init(resolved: .ok, tls: .bad, httpStatus: .bad)
+        case .notConnectedToInternet:
+            // A race against the monitor's own demotion — nothing ran.
+            return .init(resolved: .bad, tls: .bad, httpStatus: .bad)
+        default:
+            // timedOut / cannotConnectToHost / networkConnectionLost: the
+            // name resolved and TLS isn't implicated, but no HTTP status
+            // ever came back.
+            return .init(resolved: .ok, tls: .ok, httpStatus: .bad)
+        }
+    }
 }
+
+#if os(iOS)
+import Network
+import Combine
 
 /// The §7.2 readiness ladder: what the app is allowed to say is wrong, in the
 /// order the checks run. `providerDown` is deliberately absent — it surfaces

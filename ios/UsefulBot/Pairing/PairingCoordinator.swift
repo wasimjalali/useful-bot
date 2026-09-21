@@ -484,33 +484,8 @@ final class PairingCoordinator: ObservableObject {
                 readiness = .macUnreachable(
                     lastSeen: lastContact,
                     detail: String(describing: error),
-                    diagnostics: Self.reachabilityDiagnostics(for: error))
+                    diagnostics: ReachabilityDiagnostics.classify(error))
             }
-        }
-    }
-
-    /// Split the transport error onto the §1.15 Diagnostics rows — a
-    /// failure at each layer leaves the lower pills bad as well.
-    private static func reachabilityDiagnostics(for error: Error) -> ReachabilityDiagnostics {
-        guard let code = (error as? URLError)?.code else {
-            return .init(resolved: .ok, tls: .ok, httpStatus: .bad)
-        }
-        switch code {
-        case .cannotFindHost, .dnsLookupFailed:
-            return .init(resolved: .bad, tls: .bad, httpStatus: .bad)
-        case .secureConnectionFailed, .serverCertificateHasBadDate,
-             .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
-             .serverCertificateNotYetValid, .clientCertificateRejected,
-             .appTransportSecurityRequiresSecureConnection:
-            return .init(resolved: .ok, tls: .bad, httpStatus: .bad)
-        case .notConnectedToInternet:
-            // A race against the monitor's own demotion — nothing ran.
-            return .init(resolved: .bad, tls: .bad, httpStatus: .bad)
-        default:
-            // timedOut / cannotConnectToHost / networkConnectionLost: the
-            // name resolved and TLS isn't implicated, but no HTTP status
-            // ever came back.
-            return .init(resolved: .ok, tls: .ok, httpStatus: .bad)
         }
     }
 

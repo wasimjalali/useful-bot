@@ -160,6 +160,57 @@ import Testing
     }
 }
 
+/// §1.15 Diagnostics: the reachability classifier maps each transport
+/// layer's failure to its pills — a failure leaves the lower rows bad too.
+@Suite struct ReachabilityDiagnosticsTests {
+
+    private static func urlError(_ code: URLError.Code) -> URLError {
+        URLError(code)
+    }
+
+    @Test func dnsFailureMarksAllThreeBad() {
+        for code: URLError.Code in [.cannotFindHost, .dnsLookupFailed] {
+            let d = ReachabilityDiagnostics.classify(Self.urlError(code))
+            #expect(d == .init(resolved: .bad, tls: .bad, httpStatus: .bad))
+        }
+    }
+
+    @Test func tlsFailureLeavesResolvedOk() {
+        for code: URLError.Code in [
+            .secureConnectionFailed, .serverCertificateHasBadDate,
+            .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+            .serverCertificateNotYetValid, .clientCertificateRejected,
+            .appTransportSecurityRequiresSecureConnection,
+        ] {
+            let d = ReachabilityDiagnostics.classify(Self.urlError(code))
+            #expect(d == .init(resolved: .ok, tls: .bad, httpStatus: .bad))
+        }
+    }
+
+    @Test func notConnectedMarksAllBad() {
+        let d = ReachabilityDiagnostics.classify(Self.urlError(.notConnectedToInternet))
+        #expect(d == .init(resolved: .bad, tls: .bad, httpStatus: .bad))
+    }
+
+    @Test func unansweredTransportLeavesUpperLayersOk() {
+        for code: URLError.Code in [.timedOut, .cannotConnectToHost, .networkConnectionLost] {
+            let d = ReachabilityDiagnostics.classify(Self.urlError(code))
+            #expect(d == .init(resolved: .ok, tls: .ok, httpStatus: .bad))
+        }
+    }
+
+    @Test func nonURLErrorMarksOnlyHTTPBad() {
+        struct Odd: Error {}
+        let d = ReachabilityDiagnostics.classify(Odd())
+        #expect(d == .init(resolved: .ok, tls: .ok, httpStatus: .bad))
+    }
+
+    @Test func answeredConstantIsAllOk() {
+        #expect(ReachabilityDiagnostics.answered
+            == .init(resolved: .ok, tls: .ok, httpStatus: .ok))
+    }
+}
+
 #if os(iOS)
 /// §4.8 lifecycle: the only legal edges are unpaired→paired→signedOut,
 /// anything→credentialInvalid, and →unpaired from anywhere. Data purges on
