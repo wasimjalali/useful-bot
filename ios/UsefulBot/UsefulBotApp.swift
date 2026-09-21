@@ -47,23 +47,19 @@ struct UsefulBotApp: App {
                     }
                 }
             } else {
-                // The stack must rebuild when the auth state flips: swapping
-                // the root's type inside a persistent stack leaves its nav
-                // bar (title, Devices gear) unmounted, and sign-out must not
-                // leave a pushed Devices screen above the new root.
-                NavigationStack {
-                    Group {
-                        switch coordinator.store.state {
-                        case .paired:
-                            BotsListView()
-                        case .signedOut:
-                            SignedOutView()
-                        case .unpaired, .credentialInvalid:
-                            PairingView()
-                        }
-                    }
+                // Each auth state owns its stack. Swapping the root's type
+                // inside one persistent NavigationStack leaves the new
+                // root's toolbar unmounted (the roster re-renders with no
+                // title or Devices gear after sign-in) and would leave a
+                // pushed Devices screen above a signed-out root.
+                switch coordinator.store.state {
+                case .paired:
+                    NavigationStack { BotsListView() }
+                case .signedOut:
+                    NavigationStack { SignedOutView() }
+                case .unpaired, .credentialInvalid:
+                    NavigationStack { PairingView() }
                 }
-                .id(coordinator.store.state)
             }
         }
         .environmentObject(coordinator)
