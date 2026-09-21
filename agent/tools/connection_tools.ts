@@ -217,8 +217,9 @@ export default defineDynamic({
             if (current.toolsAllow && !current.toolsAllow.includes(toolName)) {
               return { status: "blocked", error: "tool_not_allowed", connection: connectionId };
             }
+            let headers: Record<string, string> = {};
             try {
-              const headers = await connectionHeaders(current);
+              headers = await connectionHeaders(current);
               const raw = await callMcpTool(url, toolName, args, headers);
               let text = JSON.stringify(raw);
               let truncated = false;
@@ -233,8 +234,13 @@ export default defineDynamic({
                 result: wrapUntrusted(`connection:${connectionId}/${toolName}`, text),
               };
             } catch (err) {
-              // The server's words, never the headers that reached it.
-              const message = err instanceof Error ? err.message.slice(0, 300) : "failed";
+              // The server's words, never the headers that reached it: a
+              // server can echo the credential it was sent back in an error.
+              let message = err instanceof Error ? err.message : "failed";
+              for (const value of Object.values(headers)) {
+                if (value.length >= 8) message = message.split(value).join("[redacted]");
+              }
+              message = message.slice(0, 300);
               return {
                 status: "error",
                 tool: toolName,

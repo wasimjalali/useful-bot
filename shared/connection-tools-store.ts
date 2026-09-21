@@ -294,7 +294,10 @@ export function putConnectionIndex(
   updateConnectionToolsStore((store) => {
     store.index[connectionId] = {
       fetchedAt: new Date().toISOString(),
-      tools: tools.slice(0, 200),
+      // Screened here, the one writer every path goes through: a name whose
+      // mounted form the provider refuses would be found, activated and
+      // mounted, and the refusal retires the session.
+      tools: tools.filter((tool) => isMountableToolName(connectionId, tool.name)).slice(0, 200),
     };
   }, path);
 }
@@ -330,12 +333,20 @@ export function putConnectionOperations(
   path = connectionToolsPath(),
 ): void {
   updateConnectionToolsStore((store) => {
+    const last = store.index[connectionId];
     store.index[connectionId] = {
       fetchedAt: new Date().toISOString(),
       tools: [],
       // A measurement that did not arrive records the attempt and says so,
-      // rather than reading back later as a connection of no size.
-      ...(size === null ? { failed: true } : {
+      // rather than reading back later as a connection of no size. The last
+      // figures stay beside it: they were admitted under the budget, and
+      // dropping them on one timeout unmounted the connection for six hours.
+      ...(size === null ? {
+        failed: true,
+        ...(last?.operations !== undefined ? { operations: last.operations } : {}),
+        ...(last?.schemaBytes !== undefined ? { schemaBytes: last.schemaBytes } : {}),
+        ...(last?.textBytes !== undefined ? { textBytes: last.textBytes } : {}),
+      } : {
         operations: Math.max(0, Math.trunc(size.operations)),
         schemaBytes: Math.max(0, Math.trunc(size.schemaBytes)),
         textBytes: Math.max(0, Math.trunc(size.textBytes)),

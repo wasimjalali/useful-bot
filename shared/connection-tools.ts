@@ -264,7 +264,11 @@ export async function searchConnectionTools(
   );
   const hits: Array<ToolHit & { score: number }> = [];
   for (const [entry, tools] of listings) {
+    // The listing can be hours old; an allow-list the owner narrowed since
+    // applies now, or the tool is found, charged and then never mounted.
+    const allow = entry.toolsAllow ? new Set(entry.toolsAllow) : null;
     for (const tool of tools) {
+      if (allow && !allow.has(tool.name)) continue;
       const score = scoreTool(query, tool, entry.name);
       if (score <= 0) continue;
       hits.push({

@@ -651,3 +651,42 @@ test("a string is charged at what it costs once escaped", () => {
   });
   assert.ok((escaped?.textBytes ?? 0) >= 100 * 2 + 100 * 6, `counted ${escaped?.textBytes}`);
 });
+
+test("every index writer screens the mounted name, the connect probe included", () => {
+  paths();
+  const id = "a-rather-long-connection-identifier";
+  putConnectionIndex(id, [
+    { name: "short_read", description: "", inputSchema: null, inputSchemaBytes: 2 },
+    { name: "a_tool_name_that_is_fine_alone_but_long", description: "", inputSchema: null, inputSchemaBytes: 2 },
+  ]);
+  assert.deepEqual(connectionIndex(id)?.tools.map((tool) => tool.name), ["short_read"]);
+});
+
+test("a measurement that times out keeps the figures it already had", () => {
+  paths();
+  const spec = entry({ id: "weather", kind: "openapi", url: "https://api.example.com/openapi.json" });
+  upsertConnection(spec);
+  putConnectionOperations("weather", { operations: 12, schemaBytes: 900, textBytes: 40 });
+  const before = mountedToolBytes(spec);
+  putConnectionOperations("weather", null);
+  // Still mounted on the figures it was admitted with, and the failure is
+  // recorded so the next turn boundary does not refetch it.
+  assert.equal(connectionIndex("weather")?.failed, true);
+  assert.equal(mountedToolBytes(spec), before);
+  assert.deepEqual(eagerConnections().map((item) => item.id), ["weather"]);
+  // A first measurement that fails still has no figure.
+  putConnectionOperations("fresh", null);
+  assert.equal(connectionIndex("fresh")?.operations, undefined);
+});
+
+test("a search honours an allow-list narrowed after the listing was cached", async () => {
+  paths();
+  upsertConnection(entry());
+  putConnectionIndex("example", [
+    { name: "read_item", description: "read", inputSchema: null, inputSchemaBytes: 2 },
+    { name: "read_other", description: "read", inputSchema: null, inputSchemaBytes: 2 },
+  ]);
+  upsertConnection(entry({ toolsAllow: ["read_item"] }));
+  const hits = await searchConnectionTools("read", 5);
+  assert.deepEqual(hits.map((hit) => hit.tool), ["read_item"]);
+});
