@@ -1157,10 +1157,19 @@ public struct StreamProjection: Equatable, Sendable {
             // same text still appends as its own turn.
             if let last = messages.last, last.role == .user, last.text == text,
                last.id.hasPrefix(EveStream.optimisticUserPrefix) {
-                if let id = event.id {
+                if turn.openUserRows == 0 {
+                    // Nothing claims the row this turn is folding into: a send
+                    // that died before its echo left it, and its claim went
+                    // with the turn `beginTurn` stepped off. The row is this
+                    // turn's now, so it claims it; unclaimed, its failure had
+                    // nothing to discard and the next retry stacked.
+                    Self.claimUserRow(event.id ?? last.id, on: &turn)
+                } else if let id = event.id, turn.carriedUserMessageId == last.id {
                     // Only re-point a claim that named this row: a nil slot
                     // means two rows are open and neither may be claimed.
-                    if turn.carriedUserMessageId == last.id { turn.carriedUserMessageId = id }
+                    turn.carriedUserMessageId = id
+                }
+                if let id = event.id {
                     adoptLastUserRow(id: id, text: text, at: stamp ?? last.at, journal: event.index)
                     turn.lastRowId = id
                 }
