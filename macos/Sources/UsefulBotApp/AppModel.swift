@@ -2710,6 +2710,13 @@ final class AppModel: ObservableObject {
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 if let fenceId, generation != (self.chatGenerations[fenceId] ?? 0) { return }
                 let switched = next.selectedBotId != self.selectedBotId
+                // A recent that swaps the bot's session pointer displaces a
+                // session this app will not read again; its turn ids go too.
+                for bot in next.bots {
+                    if let old = self.store?.bots.first(where: { $0.id == bot.id })?.sessionId, old != bot.sessionId {
+                        self.forgetTurnIds(of: old)
+                    }
+                }
                 self.applyStore(next)
                 self.saveError = nil
                 if !switched {
