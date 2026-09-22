@@ -272,6 +272,14 @@ import Testing
         #expect(projection.failure?.reason
             == "This chat's last step was cut off and can't continue. Retry sends your message in a fresh chat.")
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_protocol_error").historyBroken == false)
+        // A step cut off after parallel calls: eve names them in the plural.
+        let several = TurnFailure(
+            code: "Error",
+            detail: "Tool results are missing for tool calls call_f4a896f3be994d86ab8eb970, call_b33d7f0f42d745379710ef40, call_004."
+        )
+        #expect(several.historyBroken == true)
+        #expect(several.reason
+            == "This chat's last step was cut off and can't continue. Retry sends your message in a fresh chat.")
     }
 
     @Test func aFailedTurnSaysWhy() {

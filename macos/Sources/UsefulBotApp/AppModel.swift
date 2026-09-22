@@ -1008,6 +1008,7 @@ final class AppModel: ObservableObject {
             for botId in moved {
                 backgroundProjections[botId] = nil
                 transcriptCache[botId] = nil
+                forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
             }
             // Only a real change is published. Every view observes this whole
             // model, so assigning an identical store redrew the window, and
@@ -2627,6 +2628,7 @@ final class AppModel: ObservableObject {
         transcriptCache[botId] = nil
         sendErrors[botId] = nil
         unsentDrafts[botId] = nil
+        forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
         let running = inflightSessions[botId]
         cancelSend(for: botId)
         if let running, !running.isEmpty {
@@ -2664,6 +2666,7 @@ final class AppModel: ObservableObject {
             do {
                 let cleared = try await self.client.shellAction(ShellActions.clearThread(botId: id))
                 guard generation == (self.chatGenerations[id] ?? 0) else { return }
+                self.forgetTurnIds(of: self.store?.bots.first { $0.id == id }?.sessionId)
                 self.applyStore(cleared)
             } catch {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."

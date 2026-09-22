@@ -167,8 +167,14 @@ public struct TurnFailure: Equatable, Sendable {
     /// cut off mid-call), and every later turn is refused before any model
     /// runs. Nothing sent to this session can succeed again; only a fresh
     /// session can.
+    /// One orphaned call reads "Tool result is missing for tool call"; a
+    /// step cut off after several parallel calls reads "Tool results are
+    /// missing for tool calls". Drive Admin sat on the second for a day:
+    /// unrecognised, its Retry resent into the same session and the bare
+    /// banner came straight back.
     public var historyBroken: Bool {
-        "\(code) \(detail)".lowercased().contains("tool result is missing")
+        let haystack = "\(code) \(detail)".lowercased()
+        return haystack.contains("tool result is missing") || haystack.contains("tool results are missing")
     }
 
     /// Whether the router has stopped calling the provider for a moment. Only
