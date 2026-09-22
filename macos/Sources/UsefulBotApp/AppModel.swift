@@ -326,6 +326,11 @@ final class AppModel: ObservableObject {
     /// first layout is the finished one and `defaultScrollAnchor(.bottom)`
     /// puts it on the newest turn with nothing to animate.
     @Published private(set) var transcriptReady = false
+    /// True while the rows on screen are the ones this chat was left with,
+    /// put back on a switch before the reload confirms them. The transcript
+    /// may land on those without waiting for the replay; nothing re-renders
+    /// on it, so it is not published.
+    private(set) var restoredFromCache = false
     /// Per-bot fence for New Chat / Open Recent. A global counter aborted
     /// background sends on every other bot.
     private var chatGenerations: [String: Int] = [:]
@@ -575,6 +580,7 @@ final class AppModel: ObservableObject {
             markWorking(botId, sendTasks[botId] != nil)
             durableEvents = transcriptCache[botId]?.events ?? []
             rebuildTranscript()
+            restoredFromCache = !transcript.isEmpty
         } else if let cached = transcriptCache[botId] {
             // A chat already opened this session comes back with its rows on
             // screen while the reload confirms them. The events come too: a
@@ -583,6 +589,7 @@ final class AppModel: ObservableObject {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             durableEvents = cached.events
+            restoredFromCache = !cached.rows.isEmpty
         }
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
@@ -2610,10 +2617,12 @@ final class AppModel: ObservableObject {
             markWorking(id, sendTasks[id] != nil)
             durableEvents = transcriptCache[id]?.events ?? []
             rebuildTranscript()
+            restoredFromCache = !transcript.isEmpty
         } else if let cached = transcriptCache[id] {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             durableEvents = cached.events
+            restoredFromCache = !cached.rows.isEmpty
         }
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
@@ -2849,6 +2858,7 @@ final class AppModel: ObservableObject {
         pendingPublish?.cancel()
         pendingPublish = nil
         transcriptReady = false
+        restoredFromCache = false
         // A switch to a shorter chat also shrinks the hidden count, and the
         // re-anchor must not chase a block of the chat just left.
         windowExpandedFrom = nil
