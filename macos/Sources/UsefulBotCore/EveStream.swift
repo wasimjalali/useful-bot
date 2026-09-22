@@ -167,8 +167,14 @@ public struct TurnFailure: Equatable, Sendable {
     /// cut off mid-call), and every later turn is refused before any model
     /// runs. Nothing sent to this session can succeed again; only a fresh
     /// session can.
+    /// One orphaned call reads "Tool result is missing for tool call"; a
+    /// step cut off after several parallel calls reads "Tool results are
+    /// missing for tool calls". Drive Admin sat on the second for a day:
+    /// unrecognised, its Retry resent into the same session and the bare
+    /// banner came straight back.
     public var historyBroken: Bool {
-        "\(code) \(detail)".lowercased().contains("tool result is missing")
+        let haystack = "\(code) \(detail)".lowercased()
+        return haystack.contains("tool result is missing") || haystack.contains("tool results are missing")
     }
 
     /// Whether the router has stopped calling the provider for a moment. Only
@@ -644,11 +650,15 @@ public struct StreamProjection: Equatable, Sendable {
         /// asked. Two or more mean a failure cannot be pinned on any of them,
         /// and a third must not look like a fresh start.
         var openUserRows = 0
-        /// Whether the turn got further than the owner's message: text,
-        /// reasoning, a tool call, a question. A turn that did none of that
-        /// leaves the session exactly as it found it. One that reached a tool
-        /// call can leave the call behind, which is the shape `historyBroken`
-        /// names, so its message is not the app's to fold away.
+        /// Whether the turn got further than the owner's message: text, a
+        /// tool call, a question. A turn that did none of that leaves the
+        /// session exactly as it found it. One that reached a tool call can
+        /// leave the call behind, which is the shape `historyBroken` names,
+        /// so its message is not the app's to fold away. Reasoning is not
+        /// work: it leaves no row, and eve rolls a turn that failed on
+        /// reasoning alone back to before its message, the same as one that
+        /// never answered. A turn that reasoned, failed and was resent left
+        /// the question standing twice with nothing between.
         var producedWork = false
         /// Whether a message arrived in this turn at all. A turn refused
         /// before its own echo (`session_busy`, an open circuit) would
@@ -837,8 +847,7 @@ public struct StreamProjection: Equatable, Sendable {
     /// the same reading the turn in flight gets in `apply`.
     private static func isWork(_ event: EveEvent) -> Bool {
         switch event.type {
-        case "reasoning.appended", "reasoning.completed", "actions.requested",
-             "action.result", "action.partial", "input.requested":
+        case "actions.requested", "action.result", "action.partial", "input.requested":
             return true
         case "message.appended":
             return !(event.messageDelta ?? "").isEmpty
@@ -852,8 +861,8 @@ public struct StreamProjection: Equatable, Sendable {
     /// A turn failed, and eve stores the session as it stood before its
     /// message: the owner's row names something the bot does not have. Only
     /// a turn that got no further than that message qualifies, which is the
-    /// shape that stacked copies. One that reached text, reasoning or a tool
-    /// call may have left work behind, and its row keeps that work under it.
+    /// shape that stacked copies. One that reached text or a tool call may
+    /// have left work behind, and its row keeps that work under it.
     ///
     /// When the failure is on time the row is still the last thing on
     /// screen, and the same text arriving next rewrites it. When it is late
@@ -1198,9 +1207,10 @@ public struct StreamProjection: Equatable, Sendable {
             pending = true
             activity = .thinking
         case "reasoning.appended", "reasoning.completed":
+            // Thinking shows in the working row and nowhere else, so a turn
+            // that fails here leaves nothing under its message: not work.
             guard case .current = turnOwner(of: event) else { break }
             activity = .thinking
-            turn.producedWork = true
         case "actions.requested":
             // An older turn's call, replayed by a follower that rewound past
             // the bounded id cache, is not what this turn is doing and not a

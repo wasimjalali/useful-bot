@@ -476,6 +476,19 @@ struct ChatView: View {
                 // is shorter than the window and SwiftUI had already placed.
                 .onChange(of: model.sendTick) { holdingReplyAnchor = false }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
+                // The failure banner sits above this scroll view, so it takes
+                // its height off the top of the viewport. The content kept its
+                // offset from the top and slid down by that much, which put
+                // the failed message half under the composer. A reader at the
+                // newest turn is kept there; one reading history is not moved.
+                .onChange(of: model.threadError) { before, after in
+                    guard (before == nil) != (after == nil), pinnedToBottom, !holdingReplyAnchor else { return }
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
                 // The reader asked for earlier messages. Those mount above
                 // the row they were reading, and the scroll offset stays
                 // where it was, which would now be the top of the new rows;

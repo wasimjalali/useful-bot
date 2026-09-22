@@ -287,6 +287,14 @@ final class AppModel: ObservableObject {
             seenTurnIds[sessionId, default: []].insert(turnId)
         }
     }
+    /// A session a bot's pointer has moved off (retired by eve, or replaced
+    /// by a fresh-session retry) is never read again, so its turn ids go
+    /// with it. Kept, every rotation left a set behind for the app's life.
+    private func forgetTurnIds(of sessionId: String?) {
+        guard let sessionId, !sessionId.isEmpty else { return }
+        seenTurnIds[sessionId] = nil
+        localTurnIds[sessionId] = nil
+    }
     /// One handoff pump at a time; a slow server must not stack ticks.
     private var tickInFlight = false
     /// Consecutive unauthorized polls, surfaced after the second failure.
@@ -1000,6 +1008,7 @@ final class AppModel: ObservableObject {
             for botId in moved {
                 backgroundProjections[botId] = nil
                 transcriptCache[botId] = nil
+                forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
             }
             // Only a real change is published. Every view observes this whole
             // model, so assigning an identical store redrew the window, and
@@ -1693,6 +1702,7 @@ final class AppModel: ObservableObject {
     /// `updateSession`, which overwrites the stale one either way.
     private func dropSession(botId: String) async {
         if var current = store, let index = current.bots.firstIndex(where: { $0.id == botId }) {
+            forgetTurnIds(of: current.bots[index].sessionId)
             current.bots[index].sessionId = nil
             store = current
         }
@@ -1704,6 +1714,9 @@ final class AppModel: ObservableObject {
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
         // Persist even if the owner has switched away: the turn is still
         // running on this bot, and coming back needs the live session pointer.
+        if current.bots[index].sessionId != sessionId {
+            forgetTurnIds(of: current.bots[index].sessionId)
+        }
         current.bots[index].sessionId = sessionId
         // The optimistic rail preview must match the server's clip; the full
         // text still goes to touchChat for the stored copy.
@@ -2615,6 +2628,7 @@ final class AppModel: ObservableObject {
         transcriptCache[botId] = nil
         sendErrors[botId] = nil
         unsentDrafts[botId] = nil
+        forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
         let running = inflightSessions[botId]
         cancelSend(for: botId)
         if let running, !running.isEmpty {
@@ -2652,6 +2666,7 @@ final class AppModel: ObservableObject {
             do {
                 let cleared = try await self.client.shellAction(ShellActions.clearThread(botId: id))
                 guard generation == (self.chatGenerations[id] ?? 0) else { return }
+                self.forgetTurnIds(of: self.store?.bots.first { $0.id == id }?.sessionId)
                 self.applyStore(cleared)
             } catch {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."
