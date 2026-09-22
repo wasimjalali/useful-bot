@@ -821,6 +821,8 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
     public let name: String
     public let logo: String?
     public let noAuth: Bool
+    /// Connect needs the owner's own OAuth app: Composio has none for it.
+    public let ownApp: Bool
     public let connected: Bool
     public let accountId: String?
     public let status: String?
@@ -833,23 +835,69 @@ public struct ConnectorToolkit: Codable, Identifiable, Equatable, Sendable {
         name = (try? c.decode(String.self, forKey: .name)) ?? slug
         logo = try? c.decodeIfPresent(String.self, forKey: .logo)
         noAuth = (try? c.decode(Bool.self, forKey: .noAuth)) ?? false
+        ownApp = (try? c.decode(Bool.self, forKey: .ownApp)) ?? false
         connected = (try? c.decode(Bool.self, forKey: .connected)) ?? false
         accountId = try? c.decodeIfPresent(String.self, forKey: .accountId)
         status = try? c.decodeIfPresent(String.self, forKey: .status)
     }
 
-    public init(slug: String, name: String, logo: String?, noAuth: Bool, connected: Bool, accountId: String?, status: String?) {
+    public init(slug: String, name: String, logo: String?, noAuth: Bool, ownApp: Bool = false, connected: Bool, accountId: String?, status: String?) {
         self.slug = slug
         self.name = name
         self.logo = logo
         self.noAuth = noAuth
+        self.ownApp = ownApp
         self.connected = connected
         self.accountId = accountId
         self.status = status
     }
 
     enum CodingKeys: String, CodingKey {
-        case slug, name, logo, noAuth, connected, accountId, status
+        case slug, name, logo, noAuth, ownApp, connected, accountId, status
+    }
+}
+
+/// One credential the owner's own OAuth app supplies (client id, secret, ...).
+public struct OwnAppField: Codable, Identifiable, Equatable, Sendable {
+    public let name: String
+    public let label: String
+    public let description: String
+    /// Typed hidden.
+    public let secret: Bool
+
+    public var id: String { name }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        label = (try? c.decode(String.self, forKey: .label)) ?? name
+        description = (try? c.decode(String.self, forKey: .description)) ?? ""
+        secret = (try? c.decode(Bool.self, forKey: .secret)) ?? false
+    }
+
+    public init(name: String, label: String, description: String = "", secret: Bool) {
+        self.name = name
+        self.label = label
+        self.description = description
+        self.secret = secret
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, label, description, secret
+    }
+}
+
+/// `/api/connectors/own-app` payload: what an app needs from the owner's own
+/// OAuth app, and the redirect URI to register with the provider.
+public struct OwnAppForm: Codable, Equatable, Sendable {
+    public let toolkit: String
+    public let fields: [OwnAppField]
+    public let redirectUri: String
+
+    public init(toolkit: String, fields: [OwnAppField], redirectUri: String) {
+        self.toolkit = toolkit
+        self.fields = fields
+        self.redirectUri = redirectUri
     }
 }
 

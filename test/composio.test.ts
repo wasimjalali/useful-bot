@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { catalogueReady, resetCatalogueMemo } from "../shared/composio-catalogue.ts";
+import { catalogueReady, needsOwnApp, resetCatalogueMemo } from "../shared/composio-catalogue.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readConnectorsStore, setConnectedToolkits, setConnectorsKey, updateConnectorsStore } from "../shared/connectors-store.ts";
 import {
   authorizeConnector,
+  connectOwnApp,
   connectorsSession,
+  describeOwnApp,
+  isNoManagedAuth,
   disconnectConnector,
   executeConnectorTool,
   forgetConnected,
@@ -50,6 +53,16 @@ interface StubState {
   accounts: Record<string, Array<{ id: string; toolkit?: { slug: string } }>>;
   executeThrows: unknown;
   directTools: Array<{ slug: string; description?: string; inputParameters?: Record<string, unknown>; toolkit?: { slug: string } }>;
+  /** Thrown by the next session.authorize, once. */
+  authorizeThrows: unknown;
+  /** What toolkits.get answers, by slug. */
+  toolkitInfo: Record<string, Awaited<ReturnType<ComposioLike["toolkits"]["get"]>>>;
+  /** The raw toolkit list the catalogue build reads its auth flags from. */
+  rawToolkits: Array<{ slug: string; no_auth?: boolean; auth_schemes?: string[]; composio_managed_auth_schemes?: string[] }>;
+  authConfigsListed: Array<{ id: string; name: string; isComposioManaged?: boolean }>;
+  authConfigsCreated: Array<{ toolkit: string; options: Record<string, unknown> }>;
+  authConfigsDeleted: string[];
+  authConfigCreateThrows: unknown;
 }
 
 function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: (key: string) => ComposioLike } {
@@ -67,6 +80,13 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
     accounts: {},
     executeThrows: null,
     directTools: [],
+    authorizeThrows: null,
+    toolkitInfo: {},
+    rawToolkits: [],
+    authConfigsListed: [],
+    authConfigsCreated: [],
+    authConfigsDeleted: [],
+    authConfigCreateThrows: null,
     ...overrides,
   };
   let counter = 0;
@@ -74,6 +94,11 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
     sessionId: id,
     async authorize(toolkit, options) {
       state.authorized.push({ toolkit, callbackUrl: options?.callbackUrl });
+      if (state.authorizeThrows) {
+        const err = state.authorizeThrows;
+        state.authorizeThrows = null;
+        throw err;
+      }
       return { id: `ca_${toolkit}`, redirectUrl: `https://connect.composio.dev/${toolkit}` };
     },
     async toolkits(options) {
@@ -133,6 +158,43 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
         return {};
       },
     },
+    toolkits: {
+      async get(slug) {
+        const info = state.toolkitInfo[slug];
+        if (!info) throw Object.assign(new Error("not found"), { status: 404 });
+        return info;
+      },
+    },
+    authConfigs: {
+      async list() {
+        return { items: state.authConfigsListed };
+      },
+      async create(toolkit, options) {
+        if (state.authConfigCreateThrows) {
+          const err = state.authConfigCreateThrows;
+          state.authConfigCreateThrows = null;
+          throw err;
+        }
+        state.authConfigsCreated.push({ toolkit, options });
+        return { id: `ac_${toolkit}` };
+      },
+      async delete(id) {
+        state.authConfigsDeleted.push(id);
+        return {};
+      },
+    },
+    client: {
+      toolkits: {
+        async list(query) {
+          // Paged like Composio: the cursor is the offset of the next page.
+          const offset = query.cursor ? Number(query.cursor) : 0;
+          const limit = query.limit ?? 100;
+          const items = state.rawToolkits.slice(offset, offset + limit);
+          const next = offset + limit < state.rawToolkits.length ? String(offset + limit) : null;
+          return { items, next_cursor: next };
+        },
+      },
+    },
     tools: {
       async getRawComposioTools() {
         return state.directTools;
@@ -141,6 +203,40 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
   });
   return { state, factory };
 }
+
+/** Composio's refusal when it has no OAuth app for a toolkit, as the SDK throws it. */
+function noManagedAuth(toolkit: string): Error {
+  return Object.assign(new Error(`400 no managed auth for ${toolkit}`), {
+    status: 400,
+    error: {
+      error: {
+        message: `Composio does not manage auth for toolkit ${toolkit} and no auth config without required fields is available.`,
+        code: 4308,
+        slug: "ToolRouterV2_NoManagedAuth",
+        status: 400,
+      },
+    },
+  });
+}
+
+const TIKTOK_INFO = {
+  slug: "tiktok",
+  composioManagedAuthSchemes: [],
+  authConfigDetails: [
+    {
+      mode: "OAUTH2",
+      fields: {
+        authConfigCreation: {
+          required: [
+            { name: "client_id", displayName: "Client id", description: "Client id of the app" },
+            { name: "client_secret", displayName: "Client secret", description: "Client secret of the app" },
+            { name: "oauth_redirect_uri", displayName: "Redirect URI" },
+          ],
+        },
+      },
+    },
+  ],
+};
 
 test.afterEach(() => setComposioFactory(null));
 
@@ -337,6 +433,126 @@ test("authorize returns the redirect and refuses a bad slug", async () => {
   await assert.rejects(() => authorizeConnector("Gmail!", "http://x", path), /toolkit_invalid/);
 });
 
+test("an app Composio has no OAuth app for is reported as needing the owner's own", async () => {
+  const { state, factory } = stub({ authorizeThrows: noManagedAuth("tiktok") });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  await assert.rejects(() => authorizeConnector("tiktok", "http://127.0.0.1:4320/api/connectors/callback", path), /connector_needs_own_app/);
+  assert.equal(state.authorized.length, 1);
+  // Any other refusal keeps its own shape, so the route's fallback code applies.
+  state.authorizeThrows = Object.assign(new Error("boom"), { status: 500 });
+  await assert.rejects(() => authorizeConnector("tiktok", "http://x", path), /boom/);
+  assert.equal(isNoManagedAuth(noManagedAuth("x")), true);
+  assert.equal(isNoManagedAuth(Object.assign(new Error("x"), { status: 400, error: { error: { code: 301 } } })), false);
+  assert.equal(isNoManagedAuth(new Error("connector_needs_own_app")), false);
+});
+
+test("the own-app form lists Composio's required fields, hides the redirect field and marks secrets", async () => {
+  const { factory } = stub({ toolkitInfo: { tiktok: TIKTOK_INFO } });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  const form = await describeOwnApp("tiktok", path);
+  assert.equal(form.authScheme, "OAUTH2");
+  assert.equal(form.redirectUri, "https://backend.composio.dev/api/v3/toolkits/auth/callback");
+  assert.deepEqual(form.fields, [
+    { name: "client_id", label: "Client id", description: "Client id of the app", secret: false },
+    { name: "client_secret", label: "Client secret", description: "Client secret of the app", secret: true },
+  ]);
+  await assert.rejects(() => describeOwnApp("Tik Tok", path), /toolkit_invalid/);
+  // An app with no OAuth scheme to bring cannot take an own app.
+  await assert.rejects(
+    () => connectOwnApp("tiktok_ads", { client_id: "a" }, "http://x", path),
+    /not found/,
+  );
+});
+
+test("connecting with an own app creates a tool-router config with the redirect uri, replaces this app's earlier one, and authorizes", async () => {
+  const { state, factory } = stub({
+    toolkitInfo: { tiktok: TIKTOK_INFO },
+    authConfigsListed: [
+      { id: "ac_old", name: "Useful Bot", isComposioManaged: false },
+      { id: "ac_theirs", name: "Their dashboard config", isComposioManaged: false },
+      { id: "ac_managed", name: "Useful Bot", isComposioManaged: true },
+    ],
+  });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  const result = await connectOwnApp(
+    "tiktok",
+    { client_id: " id-1 ", client_secret: "s3cret" },
+    "http://127.0.0.1:4320/api/connectors/callback",
+    path,
+  );
+  assert.equal(result.redirectUrl, "https://connect.composio.dev/tiktok");
+  assert.deepEqual(state.authConfigsDeleted, ["ac_old"]);
+  assert.deepEqual(state.authConfigsCreated, [
+    {
+      toolkit: "tiktok",
+      options: {
+        type: "use_custom_auth",
+        authScheme: "OAUTH2",
+        name: "Useful Bot",
+        isEnabledForToolRouter: true,
+        credentials: {
+          client_id: "id-1",
+          client_secret: "s3cret",
+          oauth_redirect_uri: "https://backend.composio.dev/api/v3/toolkits/auth/callback",
+        },
+      },
+    },
+  ]);
+  assert.equal(state.authorized.at(-1)?.callbackUrl, "http://127.0.0.1:4320/api/connectors/callback");
+});
+
+test("an own-app connect refuses missing, extra, empty or oversized credentials before touching Composio", async () => {
+  const { state, factory } = stub({ toolkitInfo: { tiktok: TIKTOK_INFO } });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  const cases: Array<Record<string, unknown>> = [
+    { client_id: "a" },
+    { client_id: "a", client_secret: "b", scopes: "c" },
+    { client_id: "a", client_secret: "" },
+    { client_id: "a", client_secret: 7 },
+    { client_id: "a", client_secret: "x".repeat(4097) },
+    { client_id: "a", client_secret: "b", oauth_redirect_uri: "https://evil.example" },
+  ];
+  for (const credentials of cases) {
+    await assert.rejects(() => connectOwnApp("tiktok", credentials, "http://x", path), /own_app_fields/);
+  }
+  assert.equal(state.authConfigsCreated.length, 0);
+  assert.equal(state.authorized.length, 0);
+  // Composio's own refusal of the credentials gets a code the dialog can name.
+  state.authConfigCreateThrows = Object.assign(new Error("400"), {
+    status: 400,
+    error: { error: { code: 301, slug: "Auth_Config_ValidationError", message: "Missing required field" } },
+  });
+  await assert.rejects(() => connectOwnApp("tiktok", { client_id: "a", client_secret: "b" }, "http://x", path), /own_app_rejected/);
+});
+
+test("the catalogue records which apps need the owner's own OAuth app", async () => {
+  const tiktok: ToolkitItem = { slug: "tiktok", name: "Tiktok", isNoAuth: false, logo: undefined };
+  const shopify: ToolkitItem = { slug: "shopify", name: "Shopify", isNoAuth: false, logo: undefined };
+  const { factory } = stub({
+    toolkitItems: [GMAIL, tiktok, shopify, SLACK],
+    rawToolkits: [
+      { slug: "gmail", auth_schemes: ["OAUTH2"], composio_managed_auth_schemes: ["OAUTH2"] },
+      { slug: "TIKTOK", auth_schemes: ["OAUTH2"], composio_managed_auth_schemes: [] },
+      { slug: "shopify", auth_schemes: ["API_KEY", "OAUTH2"], composio_managed_auth_schemes: [] },
+      { slug: "slack", auth_schemes: ["OAUTH2"], composio_managed_auth_schemes: ["OAUTH2"] },
+    ],
+  });
+  setComposioFactory(factory);
+  const path = tmpPath();
+  await listConnectorToolkits({}, path);
+  await catalogueReady();
+  const page = await listConnectorToolkits({ limit: 10 }, path);
+  const flags = Object.fromEntries(page.rows.map((row) => [row.slug, row.ownApp]));
+  assert.deepEqual(flags, { gmail: false, slack: false, shopify: false, tiktok: true });
+  assert.equal(needsOwnApp({ no_auth: true, auth_schemes: ["OAUTH2"] }), false);
+  assert.equal(needsOwnApp({ auth_schemes: [], composio_managed_auth_schemes: [] }), false);
+  assert.equal(needsOwnApp({ auth_schemes: ["OAUTH1"], composio_managed_auth_schemes: [] }), true);
+});
+
 test("disconnect proves ownership by listing, deletes, and drops the cache entry", async () => {
   const path = tmpPath();
   const userId = readConnectorsStore(path).userId;
@@ -380,7 +596,7 @@ test("a tool's app is named from the cached catalogue, multi-word slugs included
   const path = tmpPath();
   const cataloguePath = process.env.UB_CATALOGUE_PATH as string;
   writeFileSync(cataloguePath, JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     fetchedAt: new Date().toISOString(),
     items: [
       { slug: "zoho_mail", name: "Zoho Mail", isNoAuth: false },

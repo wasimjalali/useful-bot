@@ -135,6 +135,16 @@ from the rail, paste a Composio API key once, then Connect an app: the hosted
 sign-in opens in the browser and the row turns Connected when Composio reports
 the account active. Disconnect revokes it.
 
+Composio runs the OAuth app for most apps, and an app that takes an API key
+asks for it on the hosted page. A few dozen apps (TikTok, X, Spotify) have no
+Composio app at all: their row says "Needs your own app", and Connect opens a
+form for the credentials of an app you register in that provider's developer
+portal, with the redirect URI to register there. The form asks for whatever
+Composio lists as required for that app (X also wants an application bearer
+token). The credentials go to Composio as an auth config named "Useful Bot",
+flagged for the Tool Router, and are kept nowhere on this Mac; connecting
+again replaces that config.
+
 The key lives in `~/.useful-bot/connectors.json` (mode 0600) with the Tool
 Router session id and a cache of connected apps. App tokens themselves stay in
 Composio's cloud, keyed to a random user id this app generates once. The app

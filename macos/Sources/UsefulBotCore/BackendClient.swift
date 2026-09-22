@@ -1033,10 +1033,46 @@ public actor BackendClient {
         _ = try await connectorsWrite(method: "DELETE", body: ["accountId": accountId])
     }
 
+    /// What one app needs from the owner's own OAuth app, for an app Composio
+    /// has no app of its own for.
+    public func connectorOwnAppForm(slug: String) async throws -> OwnAppForm {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/connectors/own-app"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "toolkit", value: slug)]
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let decoded = try? JSONDecoder().decode(ConnectorsErrorResponse.self, from: data)
+            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "own_app_unavailable", typed: BackendError.provider)
+        }
+        guard let decoded = try? JSONDecoder().decode(OwnAppForm.self, from: data) else {
+            throw BackendError.decoding
+        }
+        return decoded
+    }
+
+    /// Hands the owner's own OAuth app credentials to Composio and starts the
+    /// sign-in; returns the page to open. The credentials travel once and are
+    /// kept nowhere on this side.
+    public func connectOwnApp(slug: String, credentials: [String: String]) async throws -> String {
+        let data = try await connectorsWrite(
+            path: "api/connectors/own-app", method: "POST", body: ["toolkit": slug, "credentials": credentials]
+        )
+        guard let decoded = try? JSONDecoder().decode(ConnectorAuthorizeResponse.self, from: data),
+              let url = decoded.redirectUrl, !url.isEmpty else {
+            throw BackendError.decoding
+        }
+        return url
+    }
+
     @discardableResult
-    private func connectorsWrite(method: String, body: [String: Any]) async throws -> Data {
+    private func connectorsWrite(path: String = "api/connectors", method: String, body: [String: Any]) async throws -> Data {
         let (data, response) = try await perform { client, token in
-            var request = URLRequest(url: client.base.appendingPathComponent("api/connectors"))
+            var request = URLRequest(url: client.base.appendingPathComponent(path))
             request.httpMethod = method
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
-import { runtimeConfig } from "../../../lib/auth";
+import { connectorsCallbackUrl } from "../../../lib/connectors-callback";
 import {
   clearConnectorsKey,
   publicConnectors,
@@ -23,19 +23,6 @@ export const runtime = "nodejs";
 function csrfOk(request: Request, gate: { session: { csrf: string } }): boolean {
   const csrf = request.headers.get("x-ub-csrf");
   return Boolean(csrf && csrf === gate.session.csrf);
-}
-
-/**
- * Where Composio sends the browser back (S6). A phone session gets the
- * configured tailnet origin so the return lands back through Serve; desktop
- * keeps the loopback origin the service binds. Never derived from the
- * request, so a crafted Host header cannot point the OAuth redirect anywhere
- * else.
- */
-function callbackUrl(profile: string): string {
-  const tailnet = profile === "phone" ? runtimeConfig()?.tailnet : null;
-  const base = tailnet?.httpsOrigin || process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
-  return new URL("/api/connectors/callback", base).toString();
 }
 
 export async function GET(request: Request) {
@@ -110,7 +97,7 @@ export async function POST(request: Request) {
     if (typeof body.toolkit !== "string" || !body.toolkit) {
       return NextResponse.json({ ok: false, error: "toolkit_required" }, { status: 400 });
     }
-    const result = await authorizeConnector(body.toolkit, callbackUrl(gate.session.profile));
+    const result = await authorizeConnector(body.toolkit, connectorsCallbackUrl(gate.session.profile));
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     const guarded = apiError(err);

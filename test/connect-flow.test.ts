@@ -72,6 +72,29 @@ function stubComposio(items: Item[], toolCount = 3) {
         return {};
       },
     },
+    toolkits: {
+      async get(slug) {
+        return { slug };
+      },
+    },
+    authConfigs: {
+      async list() {
+        return { items: [] };
+      },
+      async create() {
+        return { id: "ac_stub" };
+      },
+      async delete() {
+        return {};
+      },
+    },
+    client: {
+      toolkits: {
+        async list() {
+          return { items: [] };
+        },
+      },
+    },
     tools: {
       async getRawComposioTools() {
         if (state.countThrows) throw new Error("boom");

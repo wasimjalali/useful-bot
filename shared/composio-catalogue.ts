@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { ComposioSessionLike } from "./composio.ts";
+import type { ComposioLike, ComposioSessionLike } from "./composio.ts";
 
 /**
  * Composio's toolkit catalogue, about a thousand rows, cached on disk for a
@@ -11,6 +11,13 @@ import type { ComposioSessionLike } from "./composio.ts";
  * The first open after the cache is missing or stale gets the popular set
  * at once while the walk runs in the background; the next request sees the
  * full catalogue.
+ *
+ * Each row also records whether Composio runs the app's OAuth sign-in for
+ * us. The session listing does not say, so a second walk over the plain
+ * toolkit endpoint fills it in: an app whose only sign-in is OAuth and whose
+ * OAuth Composio does not manage needs the owner's own developer app before
+ * Connect can work (TikTok, X, Spotify). The dialog says so up front instead
+ * of failing on the click.
  */
 
 export interface CatalogueItem {
@@ -18,10 +25,12 @@ export interface CatalogueItem {
   name: string;
   isNoAuth: boolean;
   logo?: string | undefined;
+  /** Connect needs the owner's own OAuth app: Composio has none for it. */
+  ownApp?: boolean | undefined;
 }
 
 interface CatalogueFile {
-  schemaVersion: 1;
+  schemaVersion: 2;
   fetchedAt: string;
   items: CatalogueItem[];
 }
@@ -46,7 +55,7 @@ function load(path: string): { fetchedAt: number; items: CatalogueItem[] } | nul
   if (!existsSync(path)) return null;
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<CatalogueFile>;
-    if (raw.schemaVersion !== 1 || !Array.isArray(raw.items) || typeof raw.fetchedAt !== "string") return null;
+    if (raw.schemaVersion !== 2 || !Array.isArray(raw.items) || typeof raw.fetchedAt !== "string") return null;
     const items = raw.items.filter(
       (item): item is CatalogueItem =>
         !!item && typeof item === "object" && typeof item.slug === "string" && typeof item.name === "string",
@@ -63,13 +72,45 @@ function save(items: CatalogueItem[], path: string): void {
   const fetchedAt = new Date().toISOString();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
-  const file: CatalogueFile = { schemaVersion: 1, fetchedAt, items };
+  const file: CatalogueFile = { schemaVersion: 2, fetchedAt, items };
   writeFileSync(tmp, `${JSON.stringify(file)}\n`, { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, path);
   memo.set(path, { fetchedAt: Date.parse(fetchedAt), items });
 }
 
-async function build(session: ComposioSessionLike, path: string): Promise<void> {
+/**
+ * Whether an app's sign-in needs the owner's own OAuth app. True only when
+ * every scheme the app offers is OAuth and Composio manages none of them;
+ * an app that also takes an API key (Shopify) is left to the click, where
+ * Composio's own answer decides.
+ */
+export function needsOwnApp(item: {
+  no_auth?: boolean | undefined;
+  auth_schemes?: string[] | undefined;
+  composio_managed_auth_schemes?: string[] | undefined;
+}): boolean {
+  const schemes = item.auth_schemes ?? [];
+  return (
+    item.no_auth !== true &&
+    schemes.length > 0 &&
+    schemes.every((scheme) => scheme.startsWith("OAUTH")) &&
+    (item.composio_managed_auth_schemes ?? []).length === 0
+  );
+}
+
+async function ownAppSlugs(client: ComposioLike): Promise<Set<string>> {
+  const slugs = new Set<string>();
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const batch = await client.client.toolkits.list({ limit: 100, ...(cursor ? { cursor } : {}) });
+    for (const item of batch.items) if (needsOwnApp(item)) slugs.add(item.slug.toLowerCase());
+    cursor = batch.next_cursor ?? undefined;
+    if (!cursor || batch.items.length === 0) break;
+  }
+  return slugs;
+}
+
+async function build(session: ComposioSessionLike, client: ComposioLike, path: string): Promise<void> {
   const items: CatalogueItem[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
@@ -83,7 +124,12 @@ async function build(session: ComposioSessionLike, path: string): Promise<void> 
     cursor = batch.cursor;
     if (!cursor || batch.items.length === 0) break;
   }
-  if (items.length > 0) save(items, path);
+  if (items.length === 0) return;
+  // A failed flag walk fails the build: a cache with every flag missing
+  // would send owners to a Connect that cannot work, for a day.
+  const own = await ownAppSlugs(client);
+  for (const item of items) item.ownApp = own.has(item.slug.toLowerCase());
+  save(items, path);
 }
 
 /**
@@ -93,12 +139,13 @@ async function build(session: ComposioSessionLike, path: string): Promise<void> 
  */
 export function readCatalogue(
   session: ComposioSessionLike,
+  client: ComposioLike,
   path = cataloguePath(),
-): Array<{ slug: string; name: string; isNoAuth: boolean; logo?: string | undefined }> | null {
+): CatalogueItem[] | null {
   const current = load(path);
   const stale = !current || Date.now() - current.fetchedAt > TTL_MS;
   if (stale && !building.has(path)) {
-    const pending = build(session, path)
+    const pending = build(session, client, path)
       .catch(() => undefined)
       .finally(() => {
         building.delete(path);

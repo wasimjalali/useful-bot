@@ -45,6 +45,25 @@ import Testing
         #expect(row.id == "notion")
     }
 
+    @Test func decodesTheOwnAppFlagAndForm() throws {
+        let payload = try decode(#"{"hasKey":true,"toolkits":[{"slug":"tiktok","name":"Tiktok","ownApp":true},{"slug":"gmail"}]}"#)
+        #expect(payload.toolkits[0].ownApp)
+        #expect(!payload.toolkits[1].ownApp)
+
+        let form = try JSONDecoder().decode(OwnAppForm.self, from: Data("""
+        {"ok":true,"toolkit":"tiktok","authScheme":"OAUTH2",
+         "redirectUri":"https://backend.composio.dev/api/v3/toolkits/auth/callback",
+         "fields":[{"name":"client_id","label":"Client id","description":"Client id of the app","secret":false},
+                   {"name":"client_secret","label":"Client secret","secret":true}]}
+        """.utf8))
+        #expect(form.toolkit == "tiktok")
+        #expect(form.redirectUri.hasPrefix("https://backend.composio.dev/"))
+        #expect(form.fields.map(\.id) == ["client_id", "client_secret"])
+        #expect(!form.fields[0].secret)
+        #expect(form.fields[1].secret)
+        #expect(form.fields[1].description == "")
+    }
+
     @Test func keyNeverDecodesIntoThePayload() throws {
         // A server bug that leaked the key would still not reach any field the
         // dialog renders: the payload has no place for it.

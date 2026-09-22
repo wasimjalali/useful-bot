@@ -25,9 +25,29 @@ export interface ConnectorToolkit {
   name: string;
   logo: string | null;
   noAuth: boolean;
+  /** Connect needs the owner's own OAuth app; see composio-catalogue.ts. */
+  ownApp: boolean;
   connected: boolean;
   accountId: string | null;
   status: string | null;
+}
+
+/** One credential the owner's own app supplies (client id, client secret, ...). */
+export interface OwnAppField {
+  name: string;
+  label: string;
+  description: string;
+  /** Rendered as a password field. */
+  secret: boolean;
+}
+
+/** What the dialog needs to collect an app's own OAuth credentials. */
+export interface OwnAppForm {
+  toolkit: string;
+  authScheme: string;
+  fields: OwnAppField[];
+  /** The redirect URI the owner registers in the provider's developer portal. */
+  redirectUri: string;
 }
 
 export interface ConnectorSearchHit {
@@ -84,6 +104,50 @@ export interface ComposioLike {
       nextCursor?: string | null | undefined;
     }>;
     delete(id: string): Promise<unknown>;
+  };
+  toolkits: {
+    get(slug: string): Promise<{
+      slug: string;
+      composioManagedAuthSchemes?: string[] | undefined;
+      authConfigDetails?: Array<{
+        mode: string;
+        fields?: {
+          authConfigCreation?: {
+            required?: Array<{ name: string; displayName?: string; description?: string }> | undefined;
+          } | undefined;
+        } | undefined;
+      }> | undefined;
+    }>;
+  };
+  authConfigs: {
+    list(query: { toolkit?: string; limit?: number }): Promise<{
+      items: Array<{ id: string; name: string; isComposioManaged?: boolean | undefined }>;
+    }>;
+    create(
+      toolkit: string,
+      options: {
+        type: "use_custom_auth";
+        authScheme: string;
+        name: string;
+        isEnabledForToolRouter: boolean;
+        credentials: Record<string, string>;
+      },
+    ): Promise<{ id: string }>;
+    delete(id: string): Promise<unknown>;
+  };
+  /** The raw REST client under the SDK: the plain toolkit list carries the auth flags. */
+  client: {
+    toolkits: {
+      list(query: { limit?: number; cursor?: string }): Promise<{
+        items: Array<{
+          slug: string;
+          no_auth?: boolean | undefined;
+          auth_schemes?: string[] | undefined;
+          composio_managed_auth_schemes?: string[] | undefined;
+        }>;
+        next_cursor?: string | null | undefined;
+      }>;
+    };
   };
   tools: {
     getRawComposioTools(params: { toolkits?: string[]; search?: string; limit?: number }): Promise<
@@ -176,6 +240,16 @@ export const SESSION_CONFIG = {
 } as const;
 
 /**
+ * Where Composio's hosted sign-in sends the provider back when the owner's
+ * own OAuth app is in use. The owner registers it in the provider's developer
+ * portal; it is fixed by Composio, not by this app.
+ */
+export const OWN_APP_REDIRECT_URI = "https://backend.composio.dev/api/v3/toolkits/auth/callback";
+
+/** The name this app gives the auth configs it creates, so it can find them again. */
+const OWN_APP_CONFIG_NAME = "Useful Bot";
+
+/**
  * The connected toolkit a tool slug belongs to, or null. Toolkit slugs can
  * carry underscores (microsoft_teams), so the match is longest-first and on a
  * whole segment: GMAIL_SEND_EMAIL -> gmail, MICROSOFT_TEAMS_SEND -> microsoft_teams,
@@ -204,6 +278,34 @@ export function toolkitHint(toolSlug: string, path = cataloguePath()): string {
   const match = (known ? toolkitOf(toolSlug, known) : null) ?? toolkitOf(toolSlug, FEATURED_TOOLKITS);
   if (match) return match;
   return toolSlug.toLowerCase().split("_").slice(0, -1).join("_") || "unknown";
+}
+
+/**
+ * Composio's own error record, wherever the SDK put it. A refused request
+ * carries `{ error: { code, slug, message } }` under `error`; older paths
+ * put the same record one level up.
+ */
+function composioError(err: unknown): { code?: unknown; slug?: unknown } | null {
+  const rec = err as { error?: { error?: unknown } | null } | null;
+  if (!rec || typeof rec !== "object" || !rec.error || typeof rec.error !== "object") return null;
+  const inner = (rec.error as { error?: unknown }).error;
+  const body = inner && typeof inner === "object" ? inner : rec.error;
+  return body as { code?: unknown; slug?: unknown };
+}
+
+/**
+ * Composio has no OAuth app of its own for this toolkit and the project has
+ * no usable auth config: the owner has to bring their own developer app.
+ */
+export function isNoManagedAuth(err: unknown): boolean {
+  const body = composioError(err);
+  return Boolean(body && (body.code === 4308 || body.slug === "ToolRouterV2_NoManagedAuth"));
+}
+
+/** Composio refused the credentials an auth config was created with. */
+export function isAuthConfigRejected(err: unknown): boolean {
+  const body = composioError(err);
+  return Boolean(body && body.slug === "Auth_Config_ValidationError");
 }
 
 /** Composio answered 401: the stored key is not one it knows. */
@@ -334,10 +436,10 @@ export async function listConnectorToolkits(
   return withSession(path, async (session) => {
     const rows = new Map<string, ConnectorToolkit>();
     for (const row of await connectedRows(session, path)) rows.set(row.slug, row);
-    const add = (items: ToolkitItem[]) => {
+    const add = (items: Array<ToolkitItem & { ownApp?: boolean | undefined }>) => {
       for (const item of items) if (!rows.has(item.slug)) rows.set(item.slug, toRow(item));
     };
-    const catalogue = readCatalogue(session);
+    const catalogue = readCatalogue(session, factory(requireKey(readConnectorsStore(path))));
     if (catalogue) {
       add(catalogue);
     } else {
@@ -389,7 +491,7 @@ function score(row: ConnectorToolkit, search: string): number {
   return base + (row.connected ? 5 : 0) + (FEATURED_TOOLKITS.includes(row.slug) ? 2 : 0);
 }
 
-function toRow(item: ToolkitItem): ConnectorToolkit {
+function toRow(item: ToolkitItem & { ownApp?: boolean | undefined }): ConnectorToolkit {
   const account = item.connection?.connectedAccount;
   const connected = item.connection?.isActive === true && account?.status === "ACTIVE";
   return {
@@ -397,13 +499,19 @@ function toRow(item: ToolkitItem): ConnectorToolkit {
     name: item.name,
     logo: item.logo ?? null,
     noAuth: item.isNoAuth,
+    ownApp: item.ownApp === true,
     connected,
     accountId: account?.id ?? null,
     status: account?.status ?? null,
   };
 }
 
-/** Starts the hosted OAuth flow. The URL goes to the browser, never the model. */
+/**
+ * Starts the hosted OAuth flow. The URL goes to the browser, never the model.
+ * An app Composio has no OAuth app for is reported as `connector_needs_own_app`
+ * so the dialog can ask for the owner's own credentials instead of saying
+ * only that it failed.
+ */
 export async function authorizeConnector(
   toolkit: string,
   callbackUrl: string,
@@ -411,11 +519,94 @@ export async function authorizeConnector(
 ): Promise<{ redirectUrl: string; accountId: string }> {
   if (!isToolkitSlug(toolkit)) throw new Error("toolkit_invalid");
   return withSession(path, async (session) => {
-    const request = await session.authorize(toolkit, { callbackUrl });
+    let request: Awaited<ReturnType<ComposioSessionLike["authorize"]>>;
+    try {
+      request = await session.authorize(toolkit, { callbackUrl });
+    } catch (err) {
+      if (isNoManagedAuth(err)) throw new Error("connector_needs_own_app");
+      throw err;
+    }
     if (!request.redirectUrl) throw new Error("authorize_no_redirect");
     forgetConnected();
     return { redirectUrl: request.redirectUrl, accountId: request.id };
   });
+}
+
+/** Field names that hold a credential and are typed hidden. */
+const SECRET_FIELD = /secret|token|password|key/i;
+/** Composio's own callback field; this app sets it, the owner never types it. */
+const REDIRECT_FIELD = "oauth_redirect_uri";
+const OWN_APP_VALUE_MAX = 4096;
+
+/**
+ * The credentials an app needs from the owner's own OAuth app, read from
+ * Composio's description of the toolkit: TikTok wants a client id and
+ * secret, X wants those and an application bearer token. The OAuth2 scheme
+ * is preferred when the app offers more than one.
+ */
+export async function describeOwnApp(toolkit: string, path = connectorsPath()): Promise<OwnAppForm> {
+  if (!isToolkitSlug(toolkit)) throw new Error("toolkit_invalid");
+  const client = factory(requireKey(readConnectorsStore(path)));
+  const info = await client.toolkits.get(toolkit);
+  const details = info.authConfigDetails ?? [];
+  const scheme = details.find((item) => item.mode === "OAUTH2") ?? details.find((item) => item.mode.startsWith("OAUTH"));
+  if (!scheme) throw new Error("own_app_unsupported");
+  const fields: OwnAppField[] = (scheme.fields?.authConfigCreation?.required ?? [])
+    .filter((field) => field.name !== REDIRECT_FIELD)
+    .map((field) => ({
+      name: field.name,
+      label: field.displayName || field.name,
+      description: field.description ?? "",
+      secret: SECRET_FIELD.test(`${field.name} ${field.displayName ?? ""}`),
+    }));
+  if (fields.length === 0) throw new Error("own_app_unsupported");
+  return { toolkit, authScheme: scheme.mode, fields, redirectUri: OWN_APP_REDIRECT_URI };
+}
+
+/**
+ * Registers the owner's own OAuth app with Composio and starts the sign-in.
+ * The credentials go straight to Composio and are never written here. Only
+ * the fields Composio asked for are accepted, every one of them, so a typo
+ * in a field name cannot slip through as an extra credential. An earlier
+ * config this app created for the same toolkit is replaced, so a retry after
+ * a wrong secret does not leave Composio choosing between two.
+ */
+export async function connectOwnApp(
+  toolkit: string,
+  credentials: Record<string, unknown>,
+  callbackUrl: string,
+  path = connectorsPath(),
+): Promise<{ redirectUrl: string; accountId: string }> {
+  const form = await describeOwnApp(toolkit, path);
+  const wanted = new Set(form.fields.map((field) => field.name));
+  const clean: Record<string, string> = {};
+  for (const [name, value] of Object.entries(credentials)) {
+    if (!wanted.has(name)) throw new Error("own_app_fields");
+    if (typeof value !== "string" || !value.trim() || value.length > OWN_APP_VALUE_MAX) throw new Error("own_app_fields");
+    clean[name] = value.trim();
+  }
+  for (const name of wanted) if (!(name in clean)) throw new Error("own_app_fields");
+  if (form.authScheme.startsWith("OAUTH")) clean[REDIRECT_FIELD] = OWN_APP_REDIRECT_URI;
+  const client = factory(requireKey(readConnectorsStore(path)));
+  const existing = await client.authConfigs.list({ toolkit, limit: 50 });
+  for (const item of existing.items) {
+    if (item.isComposioManaged !== true && item.name === OWN_APP_CONFIG_NAME) await client.authConfigs.delete(item.id);
+  }
+  try {
+    // Tool Router sessions only see a config flagged for them; without the
+    // flag Composio still answers "no managed auth" after the config exists.
+    await client.authConfigs.create(toolkit, {
+      type: "use_custom_auth",
+      authScheme: form.authScheme,
+      name: OWN_APP_CONFIG_NAME,
+      isEnabledForToolRouter: true,
+      credentials: clean,
+    });
+  } catch (err) {
+    if (isAuthConfigRejected(err)) throw new Error("own_app_rejected");
+    throw err;
+  }
+  return authorizeConnector(toolkit, callbackUrl, path);
 }
 
 /**

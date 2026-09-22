@@ -133,6 +133,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var connectorBusy: String?
     @Published private(set) var connectorPending: String?
     @Published private(set) var connectorTimedOut: String?
+    /// The own-app form open under one row: Composio has no OAuth app for
+    /// that connector, so the owner supplies their own.
+    @Published private(set) var connectorOwnApp: OwnAppForm?
     /// The dialog's live search, so a poll started earlier reloads what is on screen.
     @Published var connectorSearch = ""
     private var connectorPoll: Task<Void, Never>?
@@ -2310,30 +2313,85 @@ final class AppModel: ObservableObject {
     }
 
     /// Opens Composio's hosted sign-in for one app in the default browser and
-    /// polls until the account is active, or gives up after two minutes.
+    /// polls until the account is active, or gives up after two minutes. An
+    /// app Composio has no OAuth app for opens the own-app form instead.
     func connectConnector(_ row: ConnectorToolkit, search: String) async {
         connectorBusy = row.slug
         connectorsError = nil
         connectorTimedOut = nil
+        connectorOwnApp = nil
         do {
             let target = try await client.authorizeConnector(slug: row.slug)
-            // Only an https page on Composio's own hosts is handed to the browser.
-            guard let url = URL(string: target), url.scheme?.lowercased() == "https",
-                  let host = url.host?.lowercased(), host == "composio.dev" || host.hasSuffix(".composio.dev") else {
-                connectorsError = "Composio sent a sign-in link this app will not open."
-                connectorBusy = nil
-                return
+            if openHostedSignIn(target) { startConnectorPoll(slug: row.slug) }
+        } catch BackendError.provider("connector_needs_own_app") {
+            do {
+                connectorOwnApp = try await client.connectorOwnAppForm(slug: row.slug)
+            } catch {
+                connectorsError = "\(row.name) needs your own OAuth app, and Composio would not say which details it takes. Create an auth config for it at platform.composio.dev, then try again."
             }
-            guard NSWorkspace.shared.open(url) else {
-                connectorsError = "The sign-in page could not be opened in the browser."
-                connectorBusy = nil
-                return
-            }
-            startConnectorPoll(slug: row.slug)
         } catch {
-            connectorsError = "Could not start connecting \(row.name)."
+            connectorsError = Self.connectFailureCopy(error, name: row.name)
         }
         connectorBusy = nil
+    }
+
+    /// Hands the owner's own OAuth app to Composio and opens the sign-in.
+    func connectOwnApp(_ row: ConnectorToolkit, credentials: [String: String]) async {
+        connectorBusy = row.slug
+        connectorsError = nil
+        connectorTimedOut = nil
+        do {
+            let target = try await client.connectOwnApp(slug: row.slug, credentials: credentials)
+            connectorOwnApp = nil
+            if openHostedSignIn(target) { startConnectorPoll(slug: row.slug) }
+        } catch {
+            connectorsError = Self.connectFailureCopy(error, name: row.name)
+        }
+        connectorBusy = nil
+    }
+
+    func dismissOwnApp() {
+        connectorOwnApp = nil
+    }
+
+    /// Only an https page on Composio's own hosts is handed to the browser.
+    private func openHostedSignIn(_ target: String) -> Bool {
+        guard let url = URL(string: target), url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(), host == "composio.dev" || host.hasSuffix(".composio.dev") else {
+            connectorsError = "Composio sent a sign-in link this app will not open."
+            return false
+        }
+        guard NSWorkspace.shared.open(url) else {
+            connectorsError = "The sign-in page could not be opened in the browser."
+            return false
+        }
+        return true
+    }
+
+    /// What went wrong, in the owner's terms, never a bare "could not". An
+    /// unknown code is shown as Composio sent it rather than hidden.
+    static func connectFailureCopy(_ error: Error, name: String) -> String {
+        guard case BackendError.provider(let code) = error else {
+            return "Could not reach the local service to connect \(name)."
+        }
+        switch code {
+        case "key_rejected":
+            return connectorKeyRejected
+        case "rate_limited":
+            return "Too many requests. Wait a moment, then try again."
+        case "authorize_no_redirect":
+            return "Composio accepted \(name) but sent no sign-in link. Try again."
+        case "own_app_fields":
+            return "Fill in every field."
+        case "own_app_rejected":
+            return "Composio rejected those details. Check each one against your \(name) developer app."
+        case "own_app_unsupported":
+            return "\(name) cannot take your own app through this dialog. Create an auth config for it at platform.composio.dev, then try again."
+        case "connector_needs_own_app":
+            return "\(name) needs your own OAuth app."
+        default:
+            return "Composio refused to connect \(name): \(code)."
+        }
     }
 
     func disconnectConnector(_ row: ConnectorToolkit, search: String) async {
