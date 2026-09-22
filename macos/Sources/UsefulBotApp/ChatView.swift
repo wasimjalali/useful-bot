@@ -381,7 +381,8 @@ struct ChatView: View {
     /// leaves `true`, so a reader in history would be yanked down; those
     /// systems keep the shift instead, as they had before the re-pin.
     private func repinAfterBannerChange(_ proxy: ScrollViewProxy) {
-        guard #available(macOS 15.0, *), pinnedToBottom, !holdingReplyAnchor else { return }
+        guard #available(macOS 15.0, *), pinnedToBottom, !holdingReplyAnchor,
+              !scrollProbe.dragging else { return }
         scrollToBottom(proxy)
     }
 
@@ -638,6 +639,7 @@ struct ChatView: View {
                 // the turn finishes. A reply that already fits is left alone.
                 .onChange(of: model.pending) { wasPending, nowPending in
                     guard wasPending, !nowPending, landedBotId == bot.id, pinnedToBottom,
+                          !scrollProbe.dragging,
                           replyHeight > viewportHeight - Self.replyAnchorSlack,
                           let anchor = model.latestReplyAnchor else { return }
                     holdingReplyAnchor = true
@@ -1304,8 +1306,12 @@ private final class ScrollProbe {
     var viewport: CGFloat = 0
     /// Whether the geometry has reported since the last reset.
     var seen = false
-    /// The distance from the bottom when the reader's current gesture began.
-    var gestureStartDistance: CGFloat = .infinity
+    var offset: CGFloat = 0
+    /// The offset when the reader's current gesture began.
+    var gestureStartOffset: CGFloat = 0
+    /// True while the reader's hand is on the transcript. The app's own
+    /// scrolls wait until the gesture has been judged.
+    var dragging = false
     /// Mirrors `holdingReplyAnchor`: while the view is parked at the top of a
     /// finished reply, no re-pin runs, and an offset change a late reload
     /// makes is not taken for the reader scrolling.
@@ -1374,21 +1380,32 @@ private struct ScrollPinnedTracker: ViewModifier {
             .onScrollPhaseChange { _, phase in
                 switch phase {
                 case .tracking, .interacting, .decelerating:
-                    if !dragging { probe.gestureStartDistance = probe.distance }
+                    if !dragging { probe.gestureStartOffset = probe.offset }
                     dragging = true
+                    probe.dragging = true
                 default:
                     guard dragging else { return }
                     dragging = false
+                    probe.dragging = false
                     // The reader's own gesture is judged once, where it came
                     // to rest, not frame by frame while the hand is on it:
                     // momentum, slow drags and lines streaming in under the
                     // gesture all move the geometry in ways a single frame
-                    // cannot tell apart. Pinned when it ended at the bottom,
-                    // or near it and closer than it started; a short flick up
-                    // to reread a line ends further away and stays unpinned.
+                    // cannot tell apart. It is judged by where the offset
+                    // went, since lines streaming in change the distance but
+                    // not the offset: a move up keeps the pin only at the very
+                    // bottom, a move down pins again near it, and fingers that
+                    // rested without moving change nothing.
                     let end = probe.distance
-                    let atBottom = end <= 2
-                        || (end <= Self.tolerance && end < probe.gestureStartDistance)
+                    let netUp = probe.gestureStartOffset - probe.offset
+                    let atBottom: Bool
+                    if netUp > 2 {
+                        atBottom = end <= 2
+                    } else if netUp < -2 {
+                        atBottom = end <= Self.tolerance
+                    } else {
+                        atBottom = pinned
+                    }
                     if pinned != atBottom { pinned = atBottom }
                 }
             }
@@ -1407,6 +1424,7 @@ private struct ScrollPinnedTracker: ViewModifier {
                 // height on a resize.
                 if viewport != new.viewport { viewport = new.viewport }
                 probe.distance = new.distance
+                probe.offset = new.offset
                 probe.contentHeight = new.contentHeight
                 probe.viewport = new.viewport
                 probe.seen = true
