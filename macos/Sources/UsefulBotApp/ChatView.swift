@@ -590,6 +590,8 @@ struct ChatView: View {
                             scrollToBottom(proxy)
                         }
                     }
+                    // Hidden, the reader cannot have scrolled: it is pinned.
+                    pinnedToBottom = true
                     landedBotId = bot.id
                 }
                 // A replay slower than the cap finishes after the rows were
@@ -1387,12 +1389,15 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // A mouse wheel or the keyboard moves the offset without
                     // a scroll phase. The app only ever moves a pinned reader
                     // down, except for its own anchor scrolls, so a move up
-                    // that the app did not make is the reader's, even when a
-                    // size change lands in the same frame. A content shrink
-                    // that clamps the offset keeps the reader at the bottom
-                    // and is not mistaken for one.
+                    // that the app did not make, and that took the reader
+                    // further from the bottom, is the reader's, however small
+                    // and even when a size change lands in the same frame. The
+                    // bottom anchor lowering the offset for a shrink keeps the
+                    // distance, and a clamp at the bottom leaves none, so
+                    // neither is mistaken for one.
                     let appScroll = Date() < probe.appScrollUntil
-                    if !appScroll, new.offset < old.offset - 0.5, new.distance > Self.tolerance {
+                    if !appScroll, new.offset < old.offset - 0.5,
+                       new.distance > old.distance + 0.5, new.distance > 2 {
                         if pinned { pinned = false }
                         return
                     }
