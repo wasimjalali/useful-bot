@@ -524,11 +524,12 @@ export default function Page() {
 
   type ThreadRow = {
     id: string;
-    kind: "user" | "assistant" | "handoff" | "post" | "note" | "proposal" | "widget";
+    kind: "user" | "assistant" | "handoff" | "post" | "note" | "proposal" | "widget" | "image";
     text: string;
     authorName: string | null;
     authorBotId: string | null;
     handoffId: string | null;
+    imageId: string | null;
     targetBotIds: string[];
     order: number;
   };
@@ -554,6 +555,7 @@ export default function Page() {
       authorName: event.authorName,
       authorBotId: event.authorBotId,
       handoffId: event.handoffId,
+      imageId: event.imageId,
       targetBotIds: event.targetBotIds,
       order: index,
     }));
@@ -589,6 +591,7 @@ export default function Page() {
         authorName: null,
         authorBotId: null,
         handoffId: null,
+        imageId: null,
         targetBotIds: [],
         order: head + rows.length,
       });
@@ -611,6 +614,7 @@ export default function Page() {
         authorName: null,
         authorBotId: null,
         handoffId: null,
+        imageId: null,
         targetBotIds: [],
         order: head + rows.length,
       });
@@ -912,6 +916,18 @@ export default function Page() {
                                 ) : null}
                                 {row.kind === "note" ? (
                                   <p className="text-[13px] text-ink-muted">{row.text}</p>
+                                ) : row.kind === "image" && row.imageId ? (
+                                  <div className="max-w-md">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      alt={row.text || "Generated image"}
+                                      className="w-full rounded-md"
+                                      src={`/api/agent/image/${encodeURIComponent(row.imageId)}`}
+                                    />
+                                    {row.text ? (
+                                      <p className="mt-1 text-[12px] text-ink-faint">{row.text}</p>
+                                    ) : null}
+                                  </div>
                                 ) : (
                                   <ChatMarkdown text={row.text} />
                                 )}

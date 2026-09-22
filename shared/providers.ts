@@ -17,6 +17,8 @@ import {
   humanizeModelId,
   isEffortId,
   isSpeedId,
+  modelChats,
+  modelMakesImages,
   snapComposer,
   type ComposerGroup,
   type ComposerPublic,
@@ -141,7 +143,7 @@ export interface ProviderStore {
   effort: EffortId | null;
   speed: SpeedId;
   /** Explicit per-role choice; absent role falls back to the active connection and the mode's default. */
-  roles: { reviewer?: RoleSelection };
+  roles: { reviewer?: RoleSelection; image?: RoleSelection };
 }
 
 /** @deprecated Slice 2 renders ConnectionPublic now. Kept so the old settings dialog compiles. */
@@ -392,6 +394,8 @@ export function parseProviderStore(raw: unknown, env: NodeJS.ProcessEnv = proces
   if (isRecord(rec.roles)) {
     const reviewer = parseRoleSelection(rec.roles.reviewer);
     if (reviewer && next.connections[reviewer.connectionId]) next.roles.reviewer = reviewer;
+    const image = parseRoleSelection(rec.roles.image);
+    if (image && next.connections[image.connectionId]) next.roles.image = image;
   }
   return next;
 }
@@ -586,6 +590,7 @@ export function clearConnection(store: ProviderStore, id: string): ProviderStore
   delete connections[id];
   const roles = { ...store.roles };
   if (roles.reviewer?.connectionId === id) delete roles.reviewer;
+  if (roles.image?.connectionId === id) delete roles.image;
   let activeConnectionId = store.activeConnectionId === id ? null : store.activeConnectionId;
   if (activeConnectionId && !isConnected(connections[activeConnectionId])) activeConnectionId = null;
   if (!activeConnectionId) {
@@ -660,10 +665,19 @@ export function setOAuthCredential(store: ProviderStore, providerId: string, cre
   };
 }
 
-export function setRole(store: ProviderStore, role: "reviewer", selection: RoleSelection | null, env: NodeJS.ProcessEnv = process.env): ProviderStore {
-  if (!selection) return { ...store, roles: {} };
+export function setRole(store: ProviderStore, role: "reviewer" | "image", selection: RoleSelection | null, env: NodeJS.ProcessEnv = process.env): ProviderStore {
+  if (!selection) {
+    // Clearing one role keeps the others; the store has more than one now.
+    const roles = { ...store.roles };
+    delete roles[role];
+    return { ...store, roles };
+  }
   store = withImplicit(store, selection.connectionId, env);
-  if (!store.connections[selection.connectionId]) throw new Error("connection_unknown");
+  const conn = store.connections[selection.connectionId];
+  if (!conn) throw new Error("connection_unknown");
+  if (role === "image" && !providerMode(conn.providerId, conn.mode).images) {
+    throw new Error("provider_incompatible");
+  }
   return { ...store, roles: { ...store.roles, [role]: selection } };
 }
 
@@ -726,7 +740,51 @@ function connectionLabel(conn: Pick<Connection, "providerId" | "mode" | "fields"
 }
 
 function modelRows(id: string): Array<{ id: string; label: string }> {
-  return catalogFor(id).map((item) => ({ id: item.id, label: item.label }));
+  // A model the catalog names image-only (outputs without "text") cannot
+  // carry a chat turn, so the pickers do not offer it. A model with no
+  // output facts stays: unknown is not a refusal.
+  return catalogFor(id)
+    .filter((item) => modelChats(item) !== false)
+    .map((item) => ({ id: item.id, label: item.label }));
+}
+
+/**
+ * The image picker's list for one connection: the mode's static image models
+ * (vendor /models lists do not name them) plus any live row the catalog
+ * facts mark as image output.
+ */
+function imageModelRows(conn: Connection): Array<{ id: string; label: string }> {
+  const mode = providerMode(conn.providerId, conn.mode);
+  // A live-catalog row only counts when the mode can serve
+  // /images/generations; otherwise the picker would offer a role the
+  // resolver refuses.
+  if (!mode.images) return [];
+  const seen = new Set<string>();
+  const rows: Array<{ id: string; label: string }> = [];
+  for (const id of mode.images?.models ?? []) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rows.push({ id, label: humanizeModelId(id) });
+  }
+  for (const item of catalogFor(conn.id)) {
+    if (seen.has(item.id) || modelMakesImages(item) !== true) continue;
+    seen.add(item.id);
+    rows.push({ id: item.id, label: item.label });
+  }
+  return rows;
+}
+
+/** First connected connection whose mode serves image generation, the active one preferred. */
+function firstImageConnection(listed: Connection[], connectedIds: Set<string>, activeId: string | null): Connection | null {
+  const capable = listed.filter((conn) => {
+    if (!connectedIds.has(conn.id)) return false;
+    try {
+      return Boolean(providerMode(conn.providerId, conn.mode).images);
+    } catch {
+      return false;
+    }
+  });
+  return capable.find((conn) => conn.id === activeId) ?? capable[0] ?? null;
 }
 
 function connectionStatus(conn: Connection): ConnectionPublic["status"] {
@@ -763,7 +821,7 @@ const MODE_ORDER: AuthMode[] = ["oauth", "plan", "api", "local"];
 export function publicProviders(
   store: ProviderStore,
   env: NodeJS.ProcessEnv = process.env,
-): { catalog: CatalogPublic[]; connections: ConnectionPublic[]; roles: { default: RolePublic; reviewer: RolePublic } } {
+): { catalog: CatalogPublic[]; connections: ConnectionPublic[]; roles: { default: RolePublic; reviewer: RolePublic; image: RolePublic } } {
   const implicit = !store.connections["opencode-go:plan"] ? envConnection(env) : null;
   const listed = [...Object.values(store.connections)];
   if (implicit) listed.push(implicit);
@@ -899,7 +957,50 @@ export function publicProviders(
     }
   }
 
-  return { catalog, connections, roles: { default: defaultRole, reviewer } };
+  // The image picker lists only connections whose mode serves image
+  // generation. With none connected the role is empty, and the pane hides it.
+  const imagePickerModels: RolePublic["models"] = [];
+  for (const conn of listed.filter((row) => connectedIds.has(row.id))) {
+    const label = connectionLabel(conn);
+    const icon = providerDef(conn.providerId).icon;
+    for (const row of imageModelRows(conn)) {
+      imagePickerModels.push({ connectionId: conn.id, connectionLabel: label, icon, id: row.id, label: row.label });
+    }
+  }
+  const imageSel = store.roles.image && connectedIds.has(store.roles.image.connectionId)
+    ? store.roles.image
+    : null;
+  let image: RolePublic;
+  if (imageSel) {
+    const conn = listed.find((row) => row.id === imageSel.connectionId) ?? null;
+    const picked = imagePickerModels.find((row) => row.connectionId === imageSel.connectionId && row.id === imageSel.modelId) ?? null;
+    image = {
+      connectionId: imageSel.connectionId,
+      connectionLabel: conn ? connectionLabel(conn) : imageSel.connectionId,
+      connectionIcon: conn ? providerDef(conn.providerId).icon : "",
+      modelId: imageSel.modelId,
+      modelLabel: picked?.label ?? humanizeModelId(imageSel.modelId),
+      effort: null,
+      effortLabel: null,
+      efforts: [],
+      models: imagePickerModels,
+    };
+  } else {
+    const fallback = firstImageConnection(listed, connectedIds, activeId);
+    image = {
+      connectionId: fallback?.id ?? null,
+      connectionLabel: fallback ? connectionLabel(fallback) : "",
+      connectionIcon: fallback ? providerDef(fallback.providerId).icon : "",
+      modelId: fallback ? imageModelRows(fallback)[0]?.id ?? "" : "",
+      modelLabel: fallback ? imageModelRows(fallback)[0]?.label ?? "" : "",
+      effort: null,
+      effortLabel: null,
+      efforts: [],
+      models: imagePickerModels,
+    };
+  }
+
+  return { catalog, connections, roles: { default: defaultRole, reviewer, image } };
 }
 
 /**
@@ -1036,7 +1137,7 @@ function credentialKey(credential: Credential): string {
 
 export function resolveUpstream(
   store: ProviderStore,
-  alias: "workhorse" | "reviewer",
+  alias: "workhorse" | "reviewer" | "image",
   env: NodeJS.ProcessEnv = process.env,
 ): {
   connection: Connection;
@@ -1056,6 +1157,43 @@ export function resolveUpstream(
   /** @deprecated Use credential instead. Kept so the router compiles until slice 4. */
   key: string;
 } {
+  if (alias === "image") {
+    // The picked connection wins; otherwise the first connected connection
+    // whose mode serves /images/generations, the chat connection preferred.
+    // Chat aliases fall back to the Go plan env key; there is no image
+    // fallback, so nothing connected is a plain refusal, not a surprise call.
+    const implicit = !store.connections["opencode-go:plan"] ? envConnection(env) : null;
+    const listed = implicit ? [...Object.values(store.connections), implicit] : Object.values(store.connections);
+    const sel = store.roles.image;
+    const selConn = sel ? listed.find((conn) => conn.id === sel.connectionId) : undefined;
+    const picked = selConn && isConnected(selConn)
+      ? selConn
+      : firstImageConnection(listed, new Set(listed.filter(isConnected).map((conn) => conn.id)), store.activeConnectionId);
+    if (!picked) throw new Error("provider_incompatible");
+    const mode = providerMode(picked.providerId, picked.mode);
+    const models = imageModelRows(picked);
+    const modelId = (sel && sel.connectionId === picked.id ? sel.modelId : "") || models[0]?.id || mode.images?.models[0];
+    if (!modelId || !mode.images) throw new Error("provider_incompatible");
+    const baseUrl = picked.providerId === "opencode-go" && env.UB_OPENCODE_GO_BASE
+      ? env.UB_OPENCODE_GO_BASE
+      : substituteBaseUrl(mode, picked.fields);
+    return {
+      connection: picked,
+      mode,
+      providerId: picked.providerId,
+      modelId,
+      effort: null,
+      speed: "standard",
+      baseUrl,
+      protocol: mode.protocol,
+      keyHeader: mode.keyHeader,
+      credential: picked.credential,
+      opencodeSession: mode.opencodeSession ?? false,
+      fallback: !(sel && sel.connectionId === picked.id),
+      model: modelId,
+      key: credentialKey(picked.credential),
+    };
+  }
   const live = activeConnection(store, env);
   const reviewerSel = alias === "reviewer" && store.roles.reviewer
     ? store.roles.reviewer

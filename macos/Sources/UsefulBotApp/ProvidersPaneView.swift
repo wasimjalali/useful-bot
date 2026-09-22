@@ -46,13 +46,25 @@ struct ProvidersPaneView: View {
             section("Task models") {
                 VStack(alignment: .leading, spacing: 24) {
                     settingsGroup {
+                        let showsImage = !(model.imageRole?.models.isEmpty ?? true)
                         roleRow(
                             role: "default",
                             title: "Default model",
                             sub: "Used for chat",
                             detail: model.defaultRole,
-                            last: true
+                            last: !showsImage
                         )
+                        // The row appears only while a connected provider
+                        // actually serves image generation.
+                        if showsImage {
+                            roleRow(
+                                role: "image",
+                                title: "Image model",
+                                sub: "Used for generated images",
+                                detail: model.imageRole,
+                                last: true
+                            )
+                        }
                     }
                 }
             }
@@ -392,10 +404,18 @@ struct ProvidersPaneView: View {
         return "?"
     }
 
+    private func roleDetail(_ role: String) -> RolePublic? {
+        switch role {
+        case "reviewer": return model.reviewerRole
+        case "image": return model.imageRole
+        default: return model.defaultRole
+        }
+    }
+
     // MARK: - Model picker card
 
     func modelPickerCardContent(role: String, maxHeight: CGFloat = 320) -> some View {
-        let detail = role == "reviewer" ? model.reviewerRole : model.defaultRole
+        let detail = roleDetail(role)
         return RoleModelPicker(
             models: detail?.models ?? [],
             currentConnectionId: detail?.connectionId ?? "",
@@ -410,19 +430,21 @@ struct ProvidersPaneView: View {
 
     private func saveModelPick(role: String, option: RoleModelOption) {
         let connectionId = option.connectionId.isEmpty ? nil : option.connectionId
-        if role == "reviewer" {
-            let effort = model.reviewerRole?.effort
-            Task { await model.saveRole("reviewer", connectionId: connectionId, modelId: option.id, effort: effort) }
-        } else {
+        if role == "default" {
             let effort = model.defaultRole?.effort
             Task { await model.saveDefaultModel(connectionId: connectionId, modelId: option.id, effort: effort) }
+        } else {
+            // Image and reviewer both persist through the generic role write;
+            // image carries no effort.
+            let effort = role == "reviewer" ? model.reviewerRole?.effort : nil
+            Task { await model.saveRole(role, connectionId: connectionId, modelId: option.id, effort: effort) }
         }
     }
 
     // MARK: - Reasoning card
 
     func effortCardContent(role: String) -> some View {
-        let detail = role == "reviewer" ? model.reviewerRole : model.defaultRole
+        let detail = roleDetail(role)
         return VStack(alignment: .leading, spacing: 0) {
             Text("Reasoning")
                 .font(.system(size: 12))
@@ -458,21 +480,21 @@ struct ProvidersPaneView: View {
     }
 
     private func saveEffortPick(role: String, effort: String) {
-        if role == "reviewer" {
-            let current = model.reviewerRole
-            Task {
-                await model.saveRole(
-                    "reviewer",
-                    connectionId: current?.connectionId,
-                    modelId: current?.modelId,
-                    effort: effort
-                )
-            }
-        } else {
+        if role == "default" {
             let current = model.defaultRole
             guard let modelId = current?.modelId, !modelId.isEmpty else { return }
             Task {
                 await model.saveDefaultModel(connectionId: current?.connectionId, modelId: modelId, effort: effort)
+            }
+        } else {
+            let current = roleDetail(role)
+            Task {
+                await model.saveRole(
+                    role,
+                    connectionId: current?.connectionId,
+                    modelId: current?.modelId,
+                    effort: effort
+                )
             }
         }
     }

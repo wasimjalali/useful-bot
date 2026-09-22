@@ -132,6 +132,9 @@ export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
     if (Array.isArray(rec.input_modalities) && rec.input_modalities.length > 0 && rec.input_modalities.every((item) => typeof item === "string")) {
       meta.inputs = rec.input_modalities as string[];
     }
+    if (Array.isArray(rec.output_modalities) && rec.output_modalities.length > 0 && rec.output_modalities.every((item) => typeof item === "string")) {
+      meta.outputs = rec.output_modalities as string[];
+    }
     if (Array.isArray(rec.supported_reasoning_levels)) {
       const efforts = rec.supported_reasoning_levels
         .map((level) => (level as { effort?: unknown } | null)?.effort)
@@ -182,6 +185,7 @@ export function parseModelsDev(raw: unknown): Record<string, Record<string, Mode
       if (!model || typeof model !== "object") continue;
       const limit = (model as { limit?: { context?: unknown } }).limit;
       const inputs = (model as { modalities?: { input?: unknown } }).modalities?.input;
+      const outputs = (model as { modalities?: { output?: unknown } }).modalities?.output;
       const meta: ModelMeta = {};
       if (limit && Number.isInteger(limit.context) && (limit.context as number) > 0) {
         meta.contextTokens = limit.context as number;
@@ -189,7 +193,10 @@ export function parseModelsDev(raw: unknown): Record<string, Record<string, Mode
       if (Array.isArray(inputs) && inputs.every((item) => typeof item === "string")) {
         meta.inputs = inputs as string[];
       }
-      if (meta.contextTokens || meta.inputs) rows[id] = meta;
+      if (Array.isArray(outputs) && outputs.every((item) => typeof item === "string")) {
+        meta.outputs = outputs as string[];
+      }
+      if (meta.contextTokens || meta.inputs || meta.outputs) rows[id] = meta;
     }
     if (Object.keys(rows).length > 0) out[providerId] = rows;
   }

@@ -25,6 +25,21 @@ struct ChatView: View {
     /// the bottom-pinning triggers from dragging the reader back down as the
     /// durable reload changes the list underneath them.
     @State private var holdingReplyAnchor = false
+    /// The chat whose transcript rests at its newest turn. Until it names the
+    /// open chat, the transcript lays out hidden under the mascot, so a chat
+    /// never opens in the middle of its history while the replay settles.
+    /// Keyed by chat rather than a flag, so a switch reads as not landed from
+    /// its first frame instead of once the mount's task has run.
+    @State private var landedBotId: String?
+    /// The transcript's latest scroll geometry, for the landing check. A
+    /// plain object so the pin tracker's per-frame writes do not re-render
+    /// the chat.
+    @State private var scrollProbe = ScrollProbe()
+    /// How long a stalled replay may keep the mascot up before the rows on
+    /// hand are shown anyway. A healthy replay lands well inside it: the
+    /// mascot stays until the newest turn is in, because rows shown before
+    /// then are replaced underneath the reader.
+    private static let landingCap: TimeInterval = 10
     /// Room for the user's message above the reply, so an answer that only
     /// just fits is left where it is.
     private static let replyAnchorSlack: CGFloat = 120
@@ -65,14 +80,35 @@ struct ChatView: View {
                     header(bot)
                     if model.hasThreadContent || model.pending {
                         transcript(bot)
+                            // The landing belongs to this mount. Without this a
+                            // chat left for an empty one, or remounted before
+                            // its replay, came back shown before it landed.
+                            .onDisappear { if landedBotId == bot.id { landedBotId = nil } }
                             // A new chat gets a new scroll view. Reusing one
                             // across bots hands the next chat the offset the
                             // last one was left at, which then has to be
                             // corrected on screen.
                             .id(bot.id)
-                    } else {
+                            // Only the opacity fades. An animation on the whole
+                            // transaction also animated any layout still moving
+                            // in it, and the rows drifted while they faded in.
+                            .animation(.easeOut(duration: 0.15)) {
+                                $0.opacity(landedBotId == bot.id ? 1 : 0)
+                            }
+                            .accessibilityHidden(landedBotId != bot.id)
+                            .overlay {
+                                ZStack { if landedBotId != bot.id { loadingState } }
+                                    .animation(.easeOut(duration: 0.15), value: landedBotId == bot.id)
+                            }
+                    } else if model.transcriptReady {
                         emptyState(bot)
+                    } else {
+                        loadingState
                     }
+                    // While the first load is still in flight the mascot waves
+                    // in the middle of the chat: the empty copy belongs to a
+                    // chat that is known empty, and flashing it in front of a
+                    // history that arrives a moment later reads as a jump.
                     // Anything the bot needs an answer to docks here, between
                     // the transcript and the composer, so the question sits
                     // where the reply is typed instead of scrolling away.
@@ -333,6 +369,7 @@ struct ChatView: View {
     private func scrollWithoutAnimation(_ proxy: ScrollViewProxy, to id: String) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
+        scrollProbe.markAppScroll()
         withTransaction(transaction) {
             proxy.scrollTo(id, anchor: .top)
         }
@@ -344,7 +381,14 @@ struct ChatView: View {
     /// leaves `true`, so a reader in history would be yanked down; those
     /// systems keep the shift instead, as they had before the re-pin.
     private func repinAfterBannerChange(_ proxy: ScrollViewProxy) {
-        guard #available(macOS 15.0, *), pinnedToBottom, !holdingReplyAnchor else { return }
+        guard #available(macOS 15.0, *), pinnedToBottom, !holdingReplyAnchor,
+              !scrollProbe.dragging else { return }
+        scrollToBottom(proxy)
+    }
+
+    /// The newest turn, without animating the trip. Used where the bottom
+    /// anchor is known to be the right place: the transcript's own mount.
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -448,9 +492,10 @@ struct ChatView: View {
                         if !model.searchHits.isEmpty {
                             SearchChipsRow(chips: model.searchHits)
                         }
+                        // Spacing only: the scroll target is the marker below,
+                        // at the very bottom of the content.
                         Color.clear
                             .frame(height: 1)
-                            .id("bottom")
                     }
                     .frame(maxWidth: DesignTokens.Space.chatColumnMax)
                     .background(
@@ -471,13 +516,90 @@ struct ChatView: View {
                     // empty above it. Once the chat outgrows the window this
                     // floor does nothing and the anchor takes over.
                     .frame(maxWidth: .infinity, minHeight: viewportHeight, alignment: .top)
+                    // The scroll target sits under the bottom padding. Inside
+                    // the stack it sat 8 points above the end of the content,
+                    // so every scroll to it stopped short, and the view slid
+                    // the rest of the way the next time the bottom anchor
+                    // re-applied.
+                    .overlay(alignment: .bottom) {
+                        Color.clear
+                            .frame(height: 1)
+                            .id("bottom")
+                    }
                 }
                 .uvScroll()
                 .defaultScrollAnchor(.bottom)
                 .modifier(ScrollPinnedTracker(
                     pinned: $pinnedToBottom,
-                    viewport: $viewportHeight
+                    viewport: $viewportHeight,
+                    probe: scrollProbe,
+                    onDrift: { repinAfterBannerChange(proxy) }
                 ))
+                // The transcript lands hidden under the mascot and is shown
+                // only once it rests at its newest turn. Rows on screen before
+                // the replay is in (the durable rows, a cached copy) are
+                // replaced by it, and the swap left the view mid-history, so
+                // the wait is for the replay, not a timer. Then the geometry
+                // must read the true bottom, with the content height unchanged,
+                // on three checks in a row. A chat opened earlier this session
+                // lands on the rows it was left with instead: the replay
+                // usually confirms them unchanged, and anything it adds is
+                // re-pinned by the drift check. Late layout (fold heights, the
+                // column width, drawings) settles hidden instead of on screen.
+                // macOS 14 has no scroll geometry and keeps three scrolls
+                // across the next layout passes. A send mounts it with nothing
+                // to wait for. The cap only covers a stalled replay. Runs on
+                // every mount, so each chat starts pinned and none inherits
+                // the last one's scroll state.
+                .task {
+                    pinnedToBottom = true
+                    holdingReplyAnchor = false
+                    replyHeight = 0
+                    // The probe outlives the remount; the last chat's
+                    // geometry must not stand in for this one's.
+                    scrollProbe.reset()
+                    scrollToBottom(proxy)
+                    let deadline = Date().addingTimeInterval(Self.landingCap)
+                    var steady = 0
+                    var lastHeight: CGFloat = -1
+                    while steady < 3, Date() < deadline {
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        guard !Task.isCancelled else { return }
+                        guard model.transcriptReady || model.pending || model.restoredFromCache else {
+                            scrollToBottom(proxy)
+                            continue
+                        }
+                        if #available(macOS 15.0, *) {
+                            // A chat that fits the window has nothing to
+                            // settle, and one whose geometry never reported
+                            // has nothing to check. A reply still streaming
+                            // changes height on every publish; the drift check
+                            // keeps it pinned, so being at the bottom is enough.
+                            let height = scrollProbe.contentHeight
+                            let atBottom = !scrollProbe.seen
+                                || scrollProbe.distance <= 1
+                                || height <= scrollProbe.viewport + 1
+                            if atBottom, height == lastHeight || model.pending || model.backgroundWorking {
+                                steady += 1
+                            } else {
+                                steady = 0
+                                scrollToBottom(proxy)
+                            }
+                            lastHeight = height
+                        } else {
+                            steady += 1
+                            scrollToBottom(proxy)
+                        }
+                    }
+                    // Hidden, the reader cannot have scrolled: it is pinned.
+                    pinnedToBottom = true
+                    landedBotId = bot.id
+                }
+                // A replay slower than the cap finishes after the rows were
+                // shown; a reader still at the newest turn is kept there.
+                .onChange(of: model.transcriptReady) { _, ready in
+                    if ready, landedBotId == bot.id { repinAfterBannerChange(proxy) }
+                }
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
                 // There is exactly one automatic scroll in this transcript, and
                 // it is the one below. Everything else stays at the newest turn
@@ -490,6 +612,7 @@ struct ChatView: View {
                 // is shorter than the window and SwiftUI had already placed.
                 .onChange(of: model.sendTick) { holdingReplyAnchor = false }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
+                .onChange(of: holdingReplyAnchor) { _, holding in scrollProbe.holding = holding }
                 // The two banners sit above this scroll view, so they take
                 // their height off the top of the viewport. The content kept
                 // its offset from the top and slid down by that much, which
@@ -507,13 +630,16 @@ struct ChatView: View {
                 // to ask for, so it is not the transcript moving on its own.
                 .onChange(of: model.transcriptWindow.hidden) { before, after in
                     guard after < before, let held = model.takeWindowExpandedFrom() else { return }
+                    // Reading history now: the growth above must not re-pin.
+                    pinnedToBottom = false
                     scrollWithoutAnimation(proxy, to: held)
                 }
                 // The single exception: an answer taller than the window is
                 // read from its first line, so the view moves there once, when
                 // the turn finishes. A reply that already fits is left alone.
                 .onChange(of: model.pending) { wasPending, nowPending in
-                    guard wasPending, !nowPending, pinnedToBottom,
+                    guard wasPending, !nowPending, landedBotId == bot.id, pinnedToBottom,
+                          !scrollProbe.dragging,
                           replyHeight > viewportHeight - Self.replyAnchorSlack,
                           let anchor = model.latestReplyAnchor else { return }
                     holdingReplyAnchor = true
@@ -530,6 +656,20 @@ struct ChatView: View {
     }
 
     // MARK: - Empty state
+
+    /// The brand wave while the first transcript load is in flight. The empty
+    /// copy is only for a chat known to be empty; before then the mascot marks
+    /// the wait so a cold open never reads as a blank pane.
+    private var loadingState: some View {
+        ZStack {
+            LoadingRing(size: 84)
+            BrandMotionView(size: 56)
+        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.opacity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Loading chat")
+    }
 
     private func emptyState(_ bot: ShellBot) -> some View {
         VStack(spacing: 8) {
@@ -596,6 +736,32 @@ private struct ChatColumnWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// A spinner arc circling the mascot while a chat loads, so the wait reads
+/// as work in progress. Held still when the owner asks for reduced motion.
+private struct LoadingRing: View {
+    let size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var spinning = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Theme.C.edge, lineWidth: 2)
+            Circle()
+                .trim(from: 0, to: 0.28)
+                .stroke(Theme.C.inkMuted, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(spinning ? 360 : 0))
+                .animation(
+                    reduceMotion ? nil : .linear(duration: 0.9).repeatForever(autoreverses: false),
+                    value: spinning
+                )
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+        .onAppear { spinning = true }
     }
 }
 
@@ -847,10 +1013,11 @@ struct TranscriptRowView: View, Equatable {
             replyRow(showsSpeaker: true)
         case .widget:
             WidgetSlot(widgetId: row.text)
-                .frame(height: 480)
-                .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                 .cardLift(cornerRadius: DesignTokens.Radius.md)
+        case .image:
+            // The event's text is the prompt; the id names the stored bytes.
+            GeneratedImageRow(imageId: row.imageId ?? "", prompt: row.text)
         }
     }
 
@@ -1130,14 +1297,72 @@ private struct ReplyHeightKey: PreferenceKey {
     }
 }
 
+/// The transcript's latest distance from its bottom and content height,
+/// written on every scroll frame and read by the landing check. A class, and
+/// not observed, so the writes never invalidate a view.
+private final class ScrollProbe {
+    var distance: CGFloat = .infinity
+    var contentHeight: CGFloat = 0
+    var viewport: CGFloat = 0
+    /// Whether the geometry has reported since the last reset.
+    var seen = false
+    var offset: CGFloat = 0
+    /// The offset when the reader's current gesture began.
+    var gestureStartOffset: CGFloat = 0
+    /// True while the reader's hand is on the transcript. The app's own
+    /// scrolls wait until the gesture has been judged.
+    var dragging = false
+    /// Mirrors `holdingReplyAnchor`: while the view is parked at the top of a
+    /// finished reply, no re-pin runs, and an offset change a late reload
+    /// makes is not taken for the reader scrolling.
+    var holding = false
+    /// Until when an offset change is the app's own scroll rather than the
+    /// reader's.
+    var appScrollUntil = Date.distantPast
+
+    func reset() {
+        distance = .infinity
+        contentHeight = 0
+        viewport = 0
+        seen = false
+        // A gesture on the last chat's scroll view never ends on this one.
+        dragging = false
+        gestureStartOffset = 0
+        holding = false
+    }
+
+    func markAppScroll() {
+        appScrollUntil = Date().addingTimeInterval(0.35)
+    }
+}
+
 private struct ScrollPinnedTracker: ViewModifier {
     @Binding var pinned: Bool
     /// The visible height of the transcript, for deciding whether a reply
     /// overflows it.
     @Binding var viewport: CGFloat
-    /// Within half a line of the bottom counts as pinned, so a hair of
-    /// rubber-band or rounding cannot drop the pin while streaming.
+    let probe: ScrollProbe
+    /// Called when the content or the window changed size and left a pinned
+    /// reader short of the bottom. The caller scrolls back if it still should.
+    let onDrift: () -> Void
+    /// A reader who scrolls back down to within half a line of the bottom is
+    /// pinned again, so they need not land on it exactly.
     private static let tolerance: CGFloat = 48
+
+    /// The rule for a mouse wheel and the keyboard, which move the offset with
+    /// no scroll phase to judge at rest. The reader left the newest turn when the
+    /// offset went up and took them further from the bottom; the bottom anchor
+    /// lowering the offset for a shrink keeps the distance, and content
+    /// growing below moves no offset, so neither counts. Only a move down can
+    /// bring them back, so the last sub-point frames of an upward flick never
+    /// re-pin.
+    private static func movedAway(_ old: Geometry, _ new: Geometry) -> Bool {
+        new.offset < old.offset && new.distance > old.distance + 0.25 && new.distance > 2
+    }
+
+    private static func cameBack(_ old: Geometry, _ new: Geometry) -> Bool {
+        new.offset > old.offset && new.distance <= tolerance
+    }
 
     /// Offset and content height together, because the pin can only be judged
     /// from the pair: the same distance-from-bottom means "the reader scrolled
@@ -1159,9 +1384,36 @@ private struct ScrollPinnedTracker: ViewModifier {
             .onScrollPhaseChange { _, phase in
                 switch phase {
                 case .tracking, .interacting, .decelerating:
+                    if !dragging { probe.gestureStartOffset = probe.offset }
                     dragging = true
+                    probe.dragging = true
                 default:
+                    guard dragging else { return }
                     dragging = false
+                    probe.dragging = false
+                    // The reader's own gesture is judged once, where it came
+                    // to rest, not frame by frame while the hand is on it:
+                    // momentum, slow drags and lines streaming in under the
+                    // gesture all move the geometry in ways a single frame
+                    // cannot tell apart. It is judged by where the offset
+                    // went, since lines streaming in change the distance but
+                    // not the offset: a move up keeps the pin only at the very
+                    // bottom, a move down pins again near it, and fingers that
+                    // rested without moving change nothing.
+                    let end = probe.distance
+                    let netUp = probe.gestureStartOffset - probe.offset
+                    let atBottom: Bool
+                    if netUp > 2 {
+                        atBottom = end <= 2
+                    } else if netUp < -2 {
+                        atBottom = end <= Self.tolerance
+                    } else {
+                        atBottom = pinned
+                    }
+                    if pinned != atBottom { pinned = atBottom }
+                    // Lines that streamed in under a resting hand were not
+                    // followed; a pinned reader catches up now.
+                    if atBottom, end > 1 { onDrift() }
                 }
             }
             .onScrollGeometryChange(for: Geometry.self) { geometry in
@@ -1178,6 +1430,11 @@ private struct ScrollPinnedTracker: ViewModifier {
                 // This fires for every scroll frame; the window only changes
                 // height on a resize.
                 if viewport != new.viewport { viewport = new.viewport }
+                probe.distance = new.distance
+                probe.offset = new.offset
+                probe.contentHeight = new.contentHeight
+                probe.viewport = new.viewport
+                probe.seen = true
                 // Only the reader's own gesture may break the pin.
                 //
                 // Everything else that moves this geometry is the app's doing
@@ -1188,8 +1445,43 @@ private struct ScrollPinnedTracker: ViewModifier {
                 // for one frame, the pin dropped, and every auto-scroll below
                 // is gated on the pin, which is how sending a message stranded
                 // the reader in the middle of the history.
-                guard dragging else { return }
-                pinned = new.distance <= Self.tolerance
+                guard dragging else {
+                    // A mouse wheel or the keyboard moves the offset without
+                    // a scroll phase. The app only ever moves a pinned reader
+                    // down, except for its own anchor scrolls, so a move up
+                    // that the app did not make, and that took the reader
+                    // further from the bottom, is the reader's, however small
+                    // and even when a size change lands in the same frame. The
+                    // bottom anchor lowering the offset for a shrink keeps the
+                    // distance, and a clamp at the bottom leaves none, so
+                    // neither is mistaken for one.
+                    let appScroll = Date() < probe.appScrollUntil
+                    let resized = new.contentHeight != old.contentHeight || new.viewport != old.viewport
+                    // While the view is parked at the top of a finished reply,
+                    // a resize frame is the reload settling, not the reader.
+                    if !appScroll, !(probe.holding && resized),
+                       Self.movedAway(old, new) {
+                        if pinned { pinned = false }
+                        return
+                    }
+                    if !resized, !appScroll, new.offset != old.offset {
+                        // Back down to the newest turn by wheel or keys pins again.
+                        if Self.cameBack(old, new), !pinned { pinned = true }
+                        return
+                    }
+                    // The bottom anchor does not hold through every change:
+                    // the replay replacing the rows kept the old offset, which
+                    // is mid-history in the new list. A reader at the newest
+                    // turn is put back there. Size changes only, so a scroll
+                    // the app made on purpose is left where it went.
+                    if pinned, new.distance > 1,
+                       new.contentHeight != old.contentHeight || new.viewport != old.viewport {
+                        onDrift()
+                    }
+                    return
+                }
+                // During the reader's own gesture nothing is decided here;
+                // the phase change above judges it where it comes to rest.
             }
         } else {
             content

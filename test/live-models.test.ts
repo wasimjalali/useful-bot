@@ -35,6 +35,15 @@ test("live OpenCode IDs hydrate efforts instead of staying on the two-model fall
   assert.equal(composer.effort, "max");
 });
 
+test("snapComposer leaves image-only models out of the chat flyout", () => {
+  const models = mergeLiveModels("openai:api", ["dall-e-3", "gpt-5.6-sol"], {
+    "dall-e-3": { outputs: ["image"] },
+    "gpt-5.6-sol": { outputs: ["text"] },
+  });
+  const composer = snapComposer("openai:api", "OpenAI", "gpt-5.6-sol", null, "standard", models);
+  assert.deepEqual(composer.models.map((item) => item.id), ["gpt-5.6-sol"]);
+});
+
 test("refreshProviderModels writes the fetched catalog to cache", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-models-")), "models-cache.json");
   const models = await refreshProviderModels({
@@ -61,7 +70,7 @@ test("models.dev facts land on the live rows: context window and image input", a
     },
     junk: { models: "no" },
   });
-  assert.deepEqual(catalog["opencode-go"]?.["glm-5.3-flash"], { contextTokens: 1_000_000, inputs: ["text", "image"] });
+  assert.deepEqual(catalog["opencode-go"]?.["glm-5.3-flash"], { contextTokens: 1_000_000, inputs: ["text", "image"], outputs: ["text"] });
   assert.equal(catalog["opencode-go"]?.odd, undefined);
   assert.equal(catalog.junk, undefined);
 

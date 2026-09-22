@@ -1,4 +1,4 @@
-export type Alias = "workhorse" | "reviewer";
+export type Alias = "workhorse" | "reviewer" | "image";
 export type Profile = "desktop" | "phone" | "reviewer" | "eval" | "ops";
 export type Effort = "low" | "high";
 

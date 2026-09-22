@@ -15,16 +15,24 @@ struct WidgetSlot: View {
     /// loading by the time it scrolls in.
     private static let margin: CGFloat = 800
     @State private var near = false
+    /// The page fetch failed or the host reported the drawing is gone. The
+    /// row collapses to a compact placeholder instead of holding 480 points
+    /// of blank.
+    @State private var unavailable = false
 
     var body: some View {
         if #available(macOS 15.0, *) {
             Group {
-                if near {
-                    WidgetWebView(widgetId: widgetId)
+                if unavailable {
+                    WidgetUnavailableRow(onRetry: { unavailable = false })
+                } else if near {
+                    WidgetWebView(widgetId: widgetId, onUnavailable: { unavailable = true })
                 } else {
                     Color.clear
                 }
             }
+            .frame(height: unavailable ? WidgetUnavailableRow.height : 480)
+            .frame(maxWidth: .infinity)
             .onGeometryChange(for: Bool.self) { proxy in
                 guard let window = proxy.bounds(of: .scrollView) else { return true }
                 return proxy.frame(in: .scrollView).intersects(window.insetBy(dx: 0, dy: -Self.margin))
@@ -32,8 +40,44 @@ struct WidgetSlot: View {
                 if isNear, !near { near = true }
             }
         } else {
-            WidgetWebView(widgetId: widgetId)
+            if unavailable {
+                WidgetUnavailableRow(onRetry: { unavailable = false })
+                    .frame(height: WidgetUnavailableRow.height)
+                    .frame(maxWidth: .infinity)
+            } else {
+                WidgetWebView(widgetId: widgetId, onUnavailable: { unavailable = true })
+                    .frame(height: 480)
+                    .frame(maxWidth: .infinity)
+            }
         }
+    }
+}
+
+/// A drawing that could not be shown: compact, says so, and offers a retry.
+/// The transcript event stays; only the blank canvas-sized box is gone.
+private struct WidgetUnavailableRow: View {
+    static let height: CGFloat = 52
+
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "scribble")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkMuted)
+            Text("Drawing unavailable")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkMuted)
+            Spacer(minLength: 0)
+            Button(action: onRetry) {
+                Text("Retry")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+        }
+        .padding(.horizontal, 14)
     }
 }
 
@@ -44,6 +88,9 @@ struct WidgetSlot: View {
 struct WidgetWebView: NSViewRepresentable {
     let widgetId: String
     var height: CGFloat = 480
+    /// The page fetch failed, or the host page itself said the drawing cannot
+    /// be shown. The slot swaps in its compact row.
+    var onUnavailable: (() -> Void)?
 
     func makeNSView(context: Context) -> NSView {
         let config = WKWebViewConfiguration()
@@ -60,6 +107,7 @@ struct WidgetWebView: NSViewRepresentable {
         container.addSubview(view)
         context.coordinator.webView = view
         context.coordinator.container = container
+        context.coordinator.onUnavailable = onUnavailable
         // The page is not fetched until the view has a width. The host page's
         // frame is `width: 100%`, and a drawing that laid itself out in a
         // zero-width frame, which is what a view created mid-scroll had for
@@ -75,6 +123,7 @@ struct WidgetWebView: NSViewRepresentable {
     func updateNSView(_ container: NSView, context: Context) {
         // A row whose id changes before its first size loads the new id.
         context.coordinator.wantedId = widgetId
+        context.coordinator.onUnavailable = onUnavailable
         guard let view = context.coordinator.webView else { return }
         if view.sized, context.coordinator.loadedId != widgetId {
             context.coordinator.load(widgetId: widgetId, into: view)
@@ -168,6 +217,7 @@ struct WidgetWebView: NSViewRepresentable {
         weak var container: NSView?
         private var loading: Task<Void, Never>?
         private var overlay: FullscreenOverlay?
+        var onUnavailable: (() -> Void)?
         private var lastLinkOpen = Date.distantPast
         /// When a tool call that the reader's click started came back. The
         /// export's link follows that round trip, well after the click.
@@ -216,6 +266,7 @@ struct WidgetWebView: NSViewRepresentable {
                         view?.loadHTMLString(Self.failurePage, baseURL: nil)
                         // Not final: the next view update fetches again.
                         self.loadedId = nil
+                        self.onUnavailable?()
                         return
                     }
                 }
@@ -270,6 +321,11 @@ struct WidgetWebView: NSViewRepresentable {
                 lastLinkOpen = Date()
                 clickedCallDone = .distantPast
                 NSWorkspace.shared.open(url)
+                reply([String: Any](), nil)
+            case "status":
+                // The host page says the drawing cannot be shown (its app was
+                // unreachable): the row collapses instead of holding a blank.
+                if body["status"] as? String == "unavailable" { onUnavailable?() }
                 reply([String: Any](), nil)
             case "mode":
                 // Full screen covers the whole window, so it too needs the

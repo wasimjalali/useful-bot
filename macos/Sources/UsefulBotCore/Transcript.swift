@@ -2,7 +2,7 @@ import Foundation
 
 public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case user, assistant, handoff, post, note, widget
+        case user, assistant, handoff, post, note, widget, image
     }
 
     public var id: String
@@ -19,6 +19,9 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     /// drawn as a card, not as a line of text.
     public var connectedName: String?
     public var connectedLogo: String?
+    /// The generated image this row renders, when it is one. `text` keeps the
+    /// prompt, so a reader that ignores the id still says what was drawn.
+    public var imageId: String?
 
     public init(
         id: String,
@@ -30,7 +33,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         handoffId: String? = nil,
         at: Date? = nil,
         connectedName: String? = nil,
-        connectedLogo: String? = nil
+        connectedLogo: String? = nil,
+        imageId: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -42,6 +46,7 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
         self.at = at
         self.connectedName = connectedName
         self.connectedLogo = connectedLogo
+        self.imageId = imageId
     }
 }
 
@@ -79,7 +84,8 @@ public enum Transcript {
                 handoffId: event.handoffId,
                 at: TranscriptBlocks.date(fromISO8601: event.at),
                 connectedName: kind == .note ? event.connectedName : nil,
-                connectedLogo: kind == .note ? event.connectedLogo : nil
+                connectedLogo: kind == .note ? event.connectedLogo : nil,
+                imageId: kind == .image ? event.imageId : nil
             ))
             if kind == .user {
                 durableUserCounts[text, default: 0] += 1
@@ -197,6 +203,7 @@ public enum Transcript {
         case "handoff": return .handoff
         case "post": return .post
         case "widget": return .widget
+        case "image": return .image
         default: return .note
         }
     }

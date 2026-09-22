@@ -1500,6 +1500,23 @@ public actor BackendClient {
         return html
     }
 
+    /// One generated image's bytes. Fetched here, with the session this
+    /// client holds, so the transcript row that names it never carries a URL
+    /// into a context without the session.
+    public func image(id: String) async throws -> (data: Data, mime: String) {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base
+                .appendingPathComponent("api/agent/image")
+                .appendingPathComponent(id))
+        }
+        try Self.expectOK(data, response)
+        let mime = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "content-type")?
+            .split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces) ?? "image/png"
+        return (data, mime)
+    }
+
     /// One of a drawing's own tool calls (Excalidraw's export). The server
     /// runs only tools the MCP server marked for its app; the result goes
     /// back to the app as JSON.
@@ -1754,6 +1771,11 @@ public actor BackendClient {
         return AsyncThrowingStream { continuation in
             let activity = ActivityBox()
             let armedBox = FlagBox()
+            // Set once a 2xx response's headers are in. Until then eve is
+            // still preparing the read: with `includeTailIndex` it opens every
+            // chunk file of the session to count the tail before it answers,
+            // which takes seconds on a long session and is not a hung link.
+            let openedBox = FlagBox()
             let reader = Task {
                 do {
                     for attempt in 0..<2 {
@@ -1824,6 +1846,7 @@ public actor BackendClient {
                                 .value(forHTTPHeaderField: "x-eve-stream-tail-index")
                                 .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
                             : nil
+                        openedBox.set()
                         tailBox?.set(tail)
                         var nextIndex = max(0, startIndex)
                         if untilTail, let tail, tail < nextIndex {
@@ -1919,10 +1942,13 @@ public actor BackendClient {
                 // History replay finishes when the server closes the stream;
                 // this is only a backstop for a hung connection, so it waits
                 // long enough not to truncate a slow large replay.
+                // The header wait gets a longer allowance than a gap in the
+                // body: eve scans the whole session before its first byte, so
+                // a 3s limit there failed every long chat before it replayed.
                 watchdog.set(Task {
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 500_000_000)
-                        if activity.idle > 3 {
+                        if activity.idle > (openedBox.value ? 3 : 30) {
                             // §8.3: a watchdog stop is an early stop - the
                             // read is incomplete and reported as such, never
                             // presented as a complete replay.

@@ -42,6 +42,12 @@ export interface ProviderMode {
   oauth?: OAuthDeviceConfig;
   /** Default model per alias when nothing is selected yet. */
   defaults: { workhorse: string; reviewer: string };
+  /**
+   * POST {baseUrl}/images/generations works with this credential, OpenAI
+   * shaped, and these are the model ids it takes. The vendor /models list
+   * does not name them, so the image picker reads this static list.
+   */
+  images?: { models: string[] };
   /** models.dev provider key used for context window / modality facts (shared/live-models.ts). null when models.dev has no entry. */
   modelsDevId: string | null;
   /** Extra static headers on inference calls (OpenRouter attribution, Copilot editor headers). */
@@ -129,6 +135,9 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         keyUrl: "https://platform.openai.com/api-keys",
         hint: "API key from platform.openai.com.",
         defaults: { workhorse: "gpt-4.1-mini", reviewer: "gpt-4.1" },
+        // The ChatGPT subscription (oauth mode) has no images endpoint; the
+        // API key does. gpt-image-1 answers b64_json only.
+        images: { models: ["gpt-image-1", "gpt-image-1-mini", "dall-e-3"] },
         modelsDevId: "openai",
       },
     ],
@@ -238,6 +247,9 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         hint: "API key from the Z.ai console.",
         // UNVERIFIED: not checked against the models.dev zai entry here.
         defaults: { workhorse: "glm-4.5-air", reviewer: "glm-4.5" },
+        // Z.AI image generation per docs.z.ai/api-reference/image/generate-image.
+        // glm-image answers a URL the router downloads; cogview-4-250304 does too.
+        images: { models: ["glm-image", "cogview-4-250304"] },
         modelsDevId: "zai",
       },
     ],
@@ -500,6 +512,8 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         hint: "API key from console.x.ai.",
         // UNVERIFIED: not checked against the models.dev xai entry here.
         defaults: { workhorse: "grok-4.6", reviewer: "grok-4.5" },
+        // Grok Imagine per docs.x.ai/developers/model-capabilities/images/generation.
+        images: { models: ["grok-imagine-image", "grok-imagine-image-quality"] },
         modelsDevId: "xai",
       },
     ],

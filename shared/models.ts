@@ -17,12 +17,15 @@ export type ModelOption = {
   contextTokens?: number;
   /** Input modalities from the catalog ("text", "image", ...); absent when unknown. */
   inputs?: string[];
+  /** Output modalities from the catalog ("text", "image", ...); absent when unknown. */
+  outputs?: string[];
 };
 
 /** Catalog facts about one model that the live list cannot tell on its own. */
 export type ModelMeta = {
   contextTokens?: number;
   inputs?: string[];
+  outputs?: string[];
   /** Set only when the vendor's own list names them (the ChatGPT Codex list does); they beat the guess by name. */
   label?: string;
   efforts?: EffortId[];
@@ -37,6 +40,26 @@ export type ModelMeta = {
 export function modelSeesImages(model: Pick<ModelOption, "inputs"> | null | undefined): boolean | null {
   if (!model?.inputs) return null;
   return model.inputs.includes("image");
+}
+
+/**
+ * Whether the model answers with images. Null when the catalog has not said;
+ * image-only rows still get a "yes" from the static provider lists, which set
+ * outputs themselves.
+ */
+export function modelMakesImages(model: Pick<ModelOption, "outputs"> | null | undefined): boolean | null {
+  if (!model?.outputs) return null;
+  return model.outputs.includes("image");
+}
+
+/**
+ * Whether the model answers with text. Null when the catalog has not said.
+ * A model the catalog names image-only (outputs without "text") is not a
+ * chat pick: it would fail every turn, so the pickers leave it out.
+ */
+export function modelChats(model: Pick<ModelOption, "outputs"> | null | undefined): boolean | null {
+  if (!model?.outputs) return null;
+  return model.outputs.includes("text");
 }
 
 export type ComposerGroup = {
@@ -286,6 +309,7 @@ export function hydrateModel(providerId: string, id: string, label?: string, met
     : { id, label: label?.trim() || humanizeModelId(id), ...inferCapabilities(id, providerId) };
   if (meta?.contextTokens) base.contextTokens = meta.contextTokens;
   if (meta?.inputs) base.inputs = meta.inputs;
+  if (meta?.outputs) base.outputs = meta.outputs;
   if (meta?.label) base.label = meta.label;
   if (meta?.efforts) {
     base.efforts = meta.efforts;
@@ -368,7 +392,7 @@ export function snapComposer(
     speed,
     efforts: model.efforts.map((item) => ({ id: item, label: effortLabel(item) })),
     speeds: model.speeds.map((item) => ({ id: item, label: speedLabel(item) })),
-    models: list.map((item) => ({ id: item.id, label: item.label })),
+    models: list.filter((item) => modelChats(item) !== false).map((item) => ({ id: item.id, label: item.label })),
     groups,
   };
 }

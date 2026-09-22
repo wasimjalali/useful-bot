@@ -702,26 +702,12 @@ private struct ProjectMenu: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     ForEach(projects) { project in
-                        MenuRowButton(action: { onPick(project.path) }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.inkMuted)
-                                Text(project.name)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.ink)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                if project.path == currentPath {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(Theme.C.inkMuted)
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .frame(height: 36)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                        ProjectRow(
+                            project: project,
+                            isCurrent: project.path == currentPath,
+                            onPick: { onPick(project.path) },
+                            onRemove: { onRemove(project.id) }
+                        )
                     }
                 }
             }
@@ -770,6 +756,86 @@ private struct ProjectMenu: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .popShadow()
+    }
+}
+
+/// One recent folder. The row picks; the × that appears on hover forgets it.
+/// Removing an attached folder only drops it from recents: the grant itself is
+/// let go through "Detach folder" below.
+private struct ProjectRow: View {
+    let project: ProjectEntry
+    let isCurrent: Bool
+    let onPick: () -> Void
+    let onRemove: () -> Void
+
+    @State private var hovering = false
+    @State private var removeArmed = false
+    @State private var hoverStamp = 0
+
+    var body: some View {
+        MenuRowButton(action: onPick) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                Text(project.name)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if isCurrent, !removeArmed {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // The × sits above the pick button rather than inside its label, and
+        // it only exists once the pointer has settled on the row: a removal
+        // slides the next row under the resting cursor, and an armed-but-
+        // unseen × there would eat a press aimed at the row just removed.
+        // While hidden, the trailing strip swallows presses so a near-miss on
+        // the × zone cannot pick the folder underneath.
+        .overlay(alignment: .trailing) {
+            if removeArmed {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(width: 22, height: 22)
+                        .background(Theme.C.sunken, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .frame(width: 34, height: 36)
+                .contentShape(Rectangle())
+                .pointerOnHover()
+                .help("Remove from list")
+                .accessibilityLabel("Remove from list")
+                .transition(.opacity)
+            } else {
+                Color.clear
+                    .frame(width: 34, height: 36)
+                    .contentShape(Rectangle())
+                    .onTapGesture {}
+            }
+        }
+        .onHover { over in
+            hovering = over
+            hoverStamp += 1
+            let stamp = hoverStamp
+            if over {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(200))
+                    if hovering, stamp == hoverStamp { removeArmed = true }
+                }
+            } else {
+                removeArmed = false
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: removeArmed)
     }
 }
 

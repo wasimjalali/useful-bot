@@ -150,18 +150,20 @@ export async function PUT(request: Request) {
     }
     if (body.roles !== undefined) {
       if (!isRecord(body.roles)) throw new Error("invalid");
-      const reviewer = body.roles.reviewer;
-      if (reviewer === null) {
-        store = setRole(store, "reviewer", null);
-      } else if (reviewer !== undefined) {
-        if (!isRecord(reviewer) || typeof reviewer.connectionId !== "string" || typeof reviewer.modelId !== "string") {
-          throw new Error("invalid");
+      for (const role of ["reviewer", "image"] as const) {
+        const selection = body.roles[role];
+        if (selection === null) {
+          store = setRole(store, role, null);
+        } else if (selection !== undefined) {
+          if (!isRecord(selection) || typeof selection.connectionId !== "string" || typeof selection.modelId !== "string") {
+            throw new Error("invalid");
+          }
+          store = setRole(store, role, {
+            connectionId: selection.connectionId,
+            modelId: selection.modelId,
+            effort: isEffortId(selection.effort) ? selection.effort : null,
+          });
         }
-        store = setRole(store, "reviewer", {
-          connectionId: reviewer.connectionId,
-          modelId: reviewer.modelId,
-          effort: isEffortId(reviewer.effort) ? reviewer.effort : null,
-        });
       }
     }
     return store;

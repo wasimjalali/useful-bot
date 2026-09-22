@@ -107,6 +107,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var providerConnections: [ConnectionPublic] = []
     @Published private(set) var defaultRole: RolePublic?
     @Published private(set) var reviewerRole: RolePublic?
+    @Published private(set) var imageRole: RolePublic?
     /// A connect-sheet failure, shown under the field it belongs to.
     @Published private(set) var connectError: String?
     /// A device flow the Providers pane is waiting on, with its poll.
@@ -325,6 +326,18 @@ final class AppModel: ObservableObject {
     /// first layout is the finished one and `defaultScrollAnchor(.bottom)`
     /// puts it on the newest turn with nothing to animate.
     @Published private(set) var transcriptReady = false
+    /// True while the rows on screen are the ones this chat was left with,
+    /// put back on a switch before the reload confirms them. The transcript
+    /// may land on those without waiting for the replay; nothing re-renders
+    /// on it, so it is not published.
+    private(set) var restoredFromCache = false
+    /// Chats whose stash was taken after their replay had finished. A chat
+    /// left while the mascot was still up was stashed with the durable rows
+    /// only, and landing on those would show rows the replay then replaces.
+    private var readyStashes: Set<String> = []
+    /// Whether the open chat's last load finished its replay. A failed load
+    /// also marks the transcript ready, with rows the next replay replaces.
+    private var loadSucceeded = false
     /// Per-bot fence for New Chat / Open Recent. A global counter aborted
     /// background sends on every other bot.
     private var chatGenerations: [String: Int] = [:]
@@ -574,6 +587,7 @@ final class AppModel: ObservableObject {
             markWorking(botId, sendTasks[botId] != nil)
             durableEvents = transcriptCache[botId]?.events ?? []
             rebuildTranscript()
+            restoredFromCache = !transcript.isEmpty && readyStashes.contains(botId)
         } else if let cached = transcriptCache[botId] {
             // A chat already opened this session comes back with its rows on
             // screen while the reload confirms them. The events come too: a
@@ -582,6 +596,7 @@ final class AppModel: ObservableObject {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             durableEvents = cached.events
+            restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(botId)
         }
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
@@ -807,6 +822,7 @@ final class AppModel: ObservableObject {
             // already at its newest turn. Marked ready first, so the publish
             // below is the one that counts as this chat's loaded state.
             transcriptReady = true
+            loadSucceeded = true
             publishTranscript(force: true)
             if sendTasks[bot.id] != nil {
                 pending = true
@@ -1989,6 +2005,7 @@ final class AppModel: ObservableObject {
         providerConnections = payload.connections
         defaultRole = payload.defaultRole
         reviewerRole = payload.reviewerRole
+        imageRole = payload.imageRole
         providers = payload.legacyProviders
         if let next = payload.composer, next != composer {
             composer = next
@@ -2608,10 +2625,12 @@ final class AppModel: ObservableObject {
             markWorking(id, sendTasks[id] != nil)
             durableEvents = transcriptCache[id]?.events ?? []
             rebuildTranscript()
+            restoredFromCache = !transcript.isEmpty && readyStashes.contains(id)
         } else if let cached = transcriptCache[id] {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             durableEvents = cached.events
+            restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(id)
         }
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
@@ -2808,6 +2827,7 @@ final class AppModel: ObservableObject {
         if transcriptReady || !transcript.isEmpty {
             transcriptCache[old] = (transcript, transcriptBlocks, durableEvents)
         }
+        if loadSucceeded { readyStashes.insert(old) } else { readyStashes.remove(old) }
         if sendTasks[old] == nil { markWorking(old, false) }
         cacheUse[old] = Date()
         trimCaches()
@@ -2847,6 +2867,8 @@ final class AppModel: ObservableObject {
         pendingPublish?.cancel()
         pendingPublish = nil
         transcriptReady = false
+        restoredFromCache = false
+        loadSucceeded = false
         // A switch to a shorter chat also shrinks the hidden count, and the
         // re-anchor must not chase a block of the chat just left.
         windowExpandedFrom = nil
@@ -3015,7 +3037,7 @@ final class AppModel: ObservableObject {
                     anchor = row.id
                     awaitingReply = false
                 }
-            case .handoff, .note, .widget:
+            case .handoff, .note, .widget, .image:
                 continue
             }
         }
@@ -3339,7 +3361,12 @@ final class AppModel: ObservableObject {
     func removeWorkspaceProject(id: String) {
         enqueue { [weak self] in
             guard let self else { return }
-            _ = try? await self.client.removeWorkspaceProject(id: id)
+            do {
+                _ = try await self.client.removeWorkspaceProject(id: id)
+                self.workspaceError = nil
+            } catch {
+                self.workspaceError = (error as? LocalizedError)?.errorDescription ?? "That folder could not be removed."
+            }
             await self.loadWorkspaceProjects()
         }
     }
