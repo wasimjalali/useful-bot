@@ -1325,6 +1325,10 @@ private final class ScrollProbe {
         contentHeight = 0
         viewport = 0
         seen = false
+        // A gesture on the last chat's scroll view never ends on this one.
+        dragging = false
+        gestureStartOffset = 0
+        holding = false
     }
 
     func markAppScroll() {
@@ -1407,6 +1411,9 @@ private struct ScrollPinnedTracker: ViewModifier {
                         atBottom = pinned
                     }
                     if pinned != atBottom { pinned = atBottom }
+                    // Lines that streamed in under a resting hand were not
+                    // followed; a pinned reader catches up now.
+                    if atBottom, end > 1 { onDrift() }
                 }
             }
             .onScrollGeometryChange(for: Geometry.self) { geometry in
