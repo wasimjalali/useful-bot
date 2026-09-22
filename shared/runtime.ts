@@ -11,10 +11,25 @@ export interface CredentialDigest {
   revokedAt: string | null;
 }
 
+/**
+ * The enrolled tailnet details `--pair-phone` records (spec S2). `httpsOrigin`
+ * is the Mac's Tailscale Serve origin; `userLogin` is the enrolled tailnet
+ * identity the ingress classifier checks requests against; `phoneIpv4`/
+ * `phoneIpv6` and `macIdentity` are the owner-visible enrollment details the
+ * Devices panes display.
+ */
+export interface TailnetConfig {
+  httpsOrigin: string;
+  userLogin: string;
+  phoneIpv4: string;
+  phoneIpv6: string;
+  macIdentity: string;
+}
+
 export interface RuntimeConfig {
   schemaVersion: 1;
   phoneEnabled: boolean;
-  tailnet: null;
+  tailnet: TailnetConfig | null;
   sandbox: { backend: "just-bash"; evidenceId: string; imageDigest: null };
   goBalanceDisabledConfirmedAt: string | null;
   searchKeyRequired: false;
@@ -73,7 +88,62 @@ export function loadRuntimeConfig(path: string): RuntimeConfig {
     throw new Error("runtime_config_credentials");
   }
   credentials.forEach((credential, index) => validateCredential(credential, index));
+  validateTailnet(raw);
   return raw as unknown as RuntimeConfig;
+}
+
+/**
+ * Canonical https origin: scheme https, non-empty host, no credentials, path,
+ * query or fragment, and no port but the implicit 443. The string form is what
+ * `Origin` headers carry, so the comparison elsewhere is exact.
+ */
+function isCanonicalHttpsOrigin(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" || !url.hostname) return false;
+  if (url.username || url.password) return false;
+  if (url.pathname !== "/" || url.search || url.hash) return false;
+  if (url.port && url.port !== "443") return false;
+  return url.origin === value;
+}
+
+const TAILNET_FIELDS = ["httpsOrigin", "userLogin", "phoneIpv4", "phoneIpv6", "macIdentity"] as const;
+
+function validateTailnet(raw: Record<string, unknown>): void {
+  if (typeof raw.phoneEnabled !== "boolean") {
+    throw new Error("runtime_config_phone_enabled");
+  }
+  const tailnet = raw.tailnet;
+  if (tailnet === null) {
+    // Phone access off requires no tailnet record; enabling one without the
+    // other is the misconfiguration this invariant exists to refuse.
+    if (raw.phoneEnabled === true) {
+      throw new Error("runtime_config_phone_no_tailnet");
+    }
+    return;
+  }
+  if (!tailnet || typeof tailnet !== "object" || Array.isArray(tailnet)) {
+    throw new Error("runtime_config_tailnet");
+  }
+  const record = tailnet as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!(TAILNET_FIELDS as readonly string[]).includes(key)) {
+      throw new Error(`runtime_config_tailnet_key:${key}`);
+    }
+  }
+  for (const field of TAILNET_FIELDS) {
+    const value = record[field];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(`runtime_config_tailnet:${field}`);
+    }
+  }
+  if (!isCanonicalHttpsOrigin(record.httpsOrigin as string)) {
+    throw new Error("runtime_config_tailnet:httpsOrigin");
+  }
 }
 
 export function limitsFor(profile: Profile | "ops") {

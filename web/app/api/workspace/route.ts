@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { lstatSync, realpathSync } from "node:fs";
 import { basename } from "node:path";
-import { isGateError, requireDesktop } from "../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
 import { isGrantableRootPath } from "../../../../shared/shell-store.ts";
 import {
@@ -16,7 +16,7 @@ import {
  * folders the owner has worked in, so the menu can offer them again.
  */
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   try {
     return NextResponse.json({ ok: true, projects: readWorkspaceStore().projects });
@@ -26,7 +26,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

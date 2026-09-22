@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { threadSnapshot } from "../../../../../shared/agent-store.ts";
 
 /**
@@ -8,7 +8,7 @@ import { threadSnapshot } from "../../../../../shared/agent-store.ts";
  * on an answer. Handoff delivery is driven separately by the tick route.
  */
 export async function GET(request: Request) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const botId = new URL(request.url).searchParams.get("botId")?.trim();
   if (!botId) {

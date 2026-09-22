@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { catalogueReady, resetCatalogueMemo } from "../shared/composio-catalogue.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
   searchConnectorTools,
   isKeyRejected,
   setComposioFactory,
+  toolkitHint,
   toolkitOf,
   type ComposioLike,
   type ComposioSessionLike,
@@ -117,7 +118,15 @@ function stub(overrides: Partial<StubState> = {}): { state: StubState; factory: 
     },
     connectedAccounts: {
       async list(query) {
-        return { items: query.userIds.flatMap((userId) => state.accounts[userId] ?? []) };
+        // Paged the way Composio pages: a cursor is the offset of the next
+        // page, and the last page carries no `nextCursor`.
+        const all = query.userIds.flatMap((userId) => state.accounts[userId] ?? []);
+        const limit = query.limit ?? all.length;
+        const offset = query.cursor ? Number(query.cursor) : 0;
+        state.listed.push({ limit, cursor: query.cursor });
+        const items = all.slice(offset, offset + limit);
+        const next = offset + limit < all.length ? String(offset + limit) : undefined;
+        return { items, nextCursor: next };
       },
       async delete(id) {
         state.deleted.push(id);
@@ -346,6 +355,49 @@ test("disconnect proves ownership by listing, deletes, and drops the cache entry
   await assert.rejects(() => disconnectConnector("ca_missing", path), /account_foreign/);
   await assert.rejects(() => disconnectConnector("../x", path), /account_invalid/);
   assert.deepEqual(state.deleted, ["ca_mine"]);
+});
+
+test("disconnect finds an account past the first page of connected accounts", async () => {
+  const path = tmpPath();
+  const userId = readConnectorsStore(path).userId;
+  // One page used to be the whole lookup, so everything past the hundredth
+  // account was refused as somebody else's.
+  const many = Array.from({ length: 250 }, (_, index) => ({
+    id: `ca_${index}`,
+    toolkit: { slug: index === 173 ? "notion" : "gmail" },
+  }));
+  const { state, factory } = stub({ accounts: { [userId]: many } });
+  setComposioFactory(factory);
+  updateConnectorsStore((store) => setConnectedToolkits(store, ["gmail", "notion"]), path);
+  await disconnectConnector("ca_173", path);
+  assert.deepEqual(state.deleted, ["ca_173"]);
+  assert.deepEqual(readConnectorsStore(path).connectedToolkits, ["gmail"]);
+  // An id nobody has still walks every page and still refuses.
+  await assert.rejects(() => disconnectConnector("ca_9999", path), /account_foreign/);
+});
+
+test("a tool's app is named from the cached catalogue, multi-word slugs included", () => {
+  const path = tmpPath();
+  const cataloguePath = process.env.UB_CATALOGUE_PATH as string;
+  writeFileSync(cataloguePath, JSON.stringify({
+    schemaVersion: 1,
+    fetchedAt: new Date().toISOString(),
+    items: [
+      { slug: "zoho_mail", name: "Zoho Mail", isNoAuth: false },
+      { slug: "zoho", name: "Zoho", isNoAuth: false },
+      { slug: "asana", name: "Asana", isNoAuth: false },
+    ],
+  }));
+  resetCatalogueMemo();
+  // The longest whole-segment match wins, so the app is zoho_mail and not the
+  // `zoho_mail_send` the old fallback invented by dropping the last word.
+  assert.equal(toolkitHint("ZOHO_MAIL_SEND_EMAIL", cataloguePath), "zoho_mail");
+  assert.equal(toolkitHint("ASANA_CREATE_TASK", cataloguePath), "asana");
+  // Featured covers a machine with no catalogue yet.
+  assert.equal(toolkitHint("MICROSOFT_TEAMS_SEND_MESSAGE", join(path, "..", "none.json")), "microsoft_teams");
+  // Nothing knows it: the last word comes off, which is all that is left.
+  assert.equal(toolkitHint("NEWAPP_DO_THING", cataloguePath), "newapp_do");
+  assert.equal(toolkitHint("SINGLE", cataloguePath), "unknown");
 });
 
 test("search is restricted to connected toolkits and trimmed", async () => {

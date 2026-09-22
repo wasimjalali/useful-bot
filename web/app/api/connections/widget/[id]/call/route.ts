@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isGateError, requireDesktop } from "../../../../../../lib/desktop-gate";
+import { isGateError, requireOwner } from "../../../../../../lib/desktop-gate";
 import { errorCode, rateLimited, readJson } from "../../../../../../lib/api-guard";
 import { findConnectionById } from "../../../../../../../shared/connections-store.ts";
 import { callMcpTool, listMcpTools, TOOL_CALL_TIMEOUT_MS } from "../../../../../../../shared/mcp-http.ts";
@@ -20,7 +20,7 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  const gate = await requireDesktop(request);
+  const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
   const csrf = request.headers.get("x-ub-csrf");
   if (!csrf || csrf !== gate.session.csrf) {

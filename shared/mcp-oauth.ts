@@ -37,6 +37,9 @@ export function setOauthFetch(next: FetchFn | null): void {
   injectedFetch = next;
 }
 
+/** The deadline every call in this file carries. */
+const OAUTH_TIMEOUT_MS = 8_000;
+
 function activeFetch(): FetchFn {
   return injectedFetch ?? fetch;
 }
@@ -94,11 +97,44 @@ function pkce(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
+/**
+ * Metadata is fetched from a host this side resolved and pinned, so a
+ * redirect is refused: one of these URLs comes from the server's own
+ * `www-authenticate` header, and following a hop would take a blind GET
+ * somewhere that check never looked. The body is read against a limit for
+ * the same reason the MCP client reads against one.
+ */
+const OAUTH_BODY_MAX = 512 * 1024;
+
+async function boundedJson(res: Response): Promise<unknown> {
+  const reader = res.body?.getReader();
+  if (!reader) return JSON.parse(await res.text());
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > OAUTH_BODY_MAX) throw new Error("oauth_body_too_large");
+      chunks.push(value);
+    }
+  } finally {
+    try { await reader.cancel(); } catch { /* already done */ }
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
 async function getJson(url: string): Promise<Record<string, unknown>> {
   const target = await assertResolvedPublic(assertPublicHttpsUrl(url));
-  const res = await activeFetch()(target, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(8_000) });
+  const res = await activeFetch()(target, {
+    headers: { accept: "application/json" },
+    redirect: "error",
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`oauth_http_${res.status}`);
-  const rec = asRecord(await res.json());
+  const rec = asRecord(await boundedJson(res));
   if (!rec) throw new Error("oauth_parse");
   return rec;
 }
@@ -130,7 +166,8 @@ async function protectedResource(mcpUrl: string): Promise<{ authorizationServers
     // Probe the MCP URL for a 401 with resource_metadata.
     const res = await activeFetch()(await assertResolvedPublic(mcpUrl), {
       headers: { accept: "application/json, text/event-stream" },
-      signal: AbortSignal.timeout(8_000),
+      redirect: "error",
+      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     });
     const www = res.headers.get("www-authenticate") ?? "";
     const meta = /resource_metadata="([^"]+)"/.exec(www)?.[1];
@@ -175,6 +212,11 @@ async function registerClient(
 ): Promise<{ clientId: string; clientSecret: string | null }> {
   const res = await activeFetch()(await assertResolvedPublic(registrationEndpoint), {
     method: "POST",
+    // Every other call here carries a deadline; these three did not, and a
+    // token endpoint that never answers holds a tool call, a tool search and
+    // a turn boundary open behind it.
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    redirect: "error",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({
       client_name: name.slice(0, 80),
@@ -185,7 +227,7 @@ async function registerClient(
     }),
   });
   if (!res.ok) throw new Error("oauth_register");
-  const rec = asRecord(await res.json());
+  const rec = asRecord(await boundedJson(res));
   if (!rec || typeof rec.client_id !== "string") throw new Error("oauth_register");
   return {
     clientId: rec.client_id,
@@ -256,11 +298,13 @@ export async function completeMcpOAuth(input: {
   });
   const res = await activeFetch()(await assertResolvedPublic(pending.tokenEndpoint), {
     method: "POST",
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    redirect: "error",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body,
   });
   if (!res.ok) throw new Error("oauth_token");
-  const rec = asRecord(await res.json());
+  const rec = asRecord(await boundedJson(res));
   if (!rec || typeof rec.access_token !== "string") throw new Error("oauth_token");
   writePending(rows.filter((row) => row.state !== input.state), path);
   const expiresIn = typeof rec.expires_in === "number" ? rec.expires_in : null;
@@ -286,11 +330,13 @@ export async function refreshMcpOAuth(bundle: OAuthTokenBundle): Promise<OAuthTo
   });
   const res = await activeFetch()(await assertResolvedPublic(bundle.tokenEndpoint), {
     method: "POST",
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    redirect: "error",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body,
   });
   if (!res.ok) throw new Error("oauth_refresh");
-  const rec = asRecord(await res.json());
+  const rec = asRecord(await boundedJson(res));
   if (!rec || typeof rec.access_token !== "string") throw new Error("oauth_refresh");
   const expiresIn = typeof rec.expires_in === "number" ? rec.expires_in : null;
   return {

@@ -112,6 +112,28 @@ public enum LocalHost {
         return left + zeros + right
     }
 
+    /// The phone's link rule (spec 4.7): the shared `isLocal` set plus the
+    /// paired Mac's own host, injected by the caller — a model-authored link
+    /// must never open the paired host either, which is the credential's own
+    /// address. `pairedHost` is a bare host string (no scheme) or nil.
+    public static func isBlocked(_ host: String?, pairedHost: String?) -> Bool {
+        func normalized(_ value: String) -> String {
+            var host = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if host.hasPrefix("["), host.hasSuffix("]") {
+                host = String(host.dropFirst().dropLast())
+            }
+            if let zone = host.firstIndex(of: "%") {
+                host = String(host[..<zone])
+            }
+            if host.hasSuffix(".") { host.removeLast() }
+            return host
+        }
+        if let pairedHost, let host, normalized(host) == normalized(pairedHost) {
+            return true
+        }
+        return isLocal(host)
+    }
+
     private static func isPrivateV4(_ address: UInt32) -> Bool {
         let first = (address >> 24) & 0xff
         let second = (address >> 16) & 0xff
@@ -119,6 +141,9 @@ public enum LocalHost {
         if first == 192, second == 168 { return true }
         if first == 172, (16...31).contains(second) { return true }
         if first == 169, second == 254 { return true }
+        // 100.64.0.0/10 — the tailnet CGNAT range a paired Mac lives in
+        // (spec 4.7 block list).
+        if first == 100, (64...127).contains(second) { return true }
         return false
     }
 

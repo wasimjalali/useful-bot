@@ -770,21 +770,33 @@ public struct UsagePayload: Codable, Equatable, Sendable {
     }
 }
 
-/// `/api/status` identity plus build info for the settings dialog.
+/// `/api/status` identity plus build info for the settings dialog. S15 adds
+/// `apiVersion` and the calling session's `profile`; `eve` is the readiness
+/// probe ("available" | "limited" | "unknown") that §7.2's `runtimeDown`
+/// level reads.
 public struct AppStatus: Codable, Equatable, Sendable {
     public let name: String?
     public let initials: String?
     public let version: String?
     public let theme: String?
+    public let apiVersion: Int?
+    public let profile: String?
+    public let eve: String?
 
-    public init(name: String?, initials: String?, version: String?, theme: String?) {
+    public init(name: String?, initials: String?, version: String?, theme: String?,
+                apiVersion: Int? = nil, profile: String? = nil, eve: String? = nil) {
         self.name = name
         self.initials = initials
         self.version = version
         self.theme = theme
+        self.apiVersion = apiVersion
+        self.profile = profile
+        self.eve = eve
     }
 
-    enum CodingKeys: String, CodingKey { case name, initials, version, theme }
+    enum CodingKeys: String, CodingKey {
+        case name, initials, version, theme, apiVersion, profile, eve
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: TopKeys.self)
@@ -793,9 +805,14 @@ public struct AppStatus: Codable, Equatable, Sendable {
         initials = try? operatorRow?.decodeIfPresent(String.self, forKey: .initials)
         version = try? c.decodeIfPresent(String.self, forKey: .version)
         theme = try? c.decodeIfPresent(String.self, forKey: .theme)
+        apiVersion = try? c.decodeIfPresent(Int.self, forKey: .apiVersion)
+        profile = try? c.decodeIfPresent(String.self, forKey: .profile)
+        eve = try? c.decodeIfPresent(String.self, forKey: .eve)
     }
 
-    enum TopKeys: String, CodingKey { case `operator`, version, theme }
+    enum TopKeys: String, CodingKey {
+        case `operator`, version, theme, apiVersion, profile, eve
+    }
 }
 
 /// One row of the Connectors catalogue from `/api/connectors`.

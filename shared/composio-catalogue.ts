@@ -108,6 +108,16 @@ export function readCatalogue(
   return current?.items ?? null;
 }
 
+/**
+ * The slugs the cache already holds, or null when there is no cache. A plain
+ * read: it never starts a walk, so a caller on an error path (naming the app
+ * a tool belongs to) cannot turn a miss into twenty pages of API calls.
+ */
+export function catalogueSlugs(path = cataloguePath()): string[] | null {
+  const current = load(path);
+  return current ? current.items.map((item) => item.slug) : null;
+}
+
 /** Waits for a build in progress, for tests and the probe. */
 export async function catalogueReady(): Promise<void> {
   await Promise.all([...building.values()]);

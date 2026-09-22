@@ -1,5 +1,5 @@
 import { Composio } from "@composio/core";
-import { readCatalogue } from "./composio-catalogue.ts";
+import { cataloguePath, catalogueSlugs, readCatalogue } from "./composio-catalogue.ts";
 import {
   connectorsPath,
   isToolkitSlug,
@@ -79,8 +79,9 @@ export interface ComposioLike {
     use(id: string): Promise<ComposioSessionLike>;
   };
   connectedAccounts: {
-    list(query: { userIds: string[]; limit?: number }): Promise<{
+    list(query: { userIds: string[]; limit?: number; cursor?: string }): Promise<{
       items: Array<{ id: string; toolkit?: { slug: string } }>;
+      nextCursor?: string | null | undefined;
     }>;
     delete(id: string): Promise<unknown>;
   };
@@ -186,6 +187,23 @@ export function toolkitOf(toolSlug: string, known: readonly string[]): string | 
     if (slug === toolkit || slug.startsWith(`${toolkit}_`)) return toolkit;
   }
   return null;
+}
+
+/**
+ * The app a tool slug belongs to, for an error that has to name one. The
+ * cached catalogue is asked first because it holds every toolkit Composio
+ * has, multi-word slugs included; the featured list covers a machine with no
+ * cache yet. Only when neither knows the app does this fall back to dropping
+ * the slug's last word, which is right for `ASANA_CREATE_TASK` and wrong for
+ * every toolkit whose own name has more than one: `ZOHO_MAIL_SEND_EMAIL`
+ * named `zoho_mail_send`, an app that does not exist, and the model then
+ * asked the owner to connect it.
+ */
+export function toolkitHint(toolSlug: string, path = cataloguePath()): string {
+  const known = catalogueSlugs(path);
+  const match = (known ? toolkitOf(toolSlug, known) : null) ?? toolkitOf(toolSlug, FEATURED_TOOLKITS);
+  if (match) return match;
+  return toolSlug.toLowerCase().split("_").slice(0, -1).join("_") || "unknown";
 }
 
 /** Composio answered 401: the stored key is not one it knows. */
@@ -405,12 +423,38 @@ export async function authorizeConnector(
  * user's accounts and finding the id there; an id that is not in that list
  * is refused, whatever Composio would say about it.
  */
+/**
+ * Pages to walk looking for the account being disconnected. Ownership is
+ * proved by finding the id under this store's user, so a single page made an
+ * owner with more than one page of accounts unable to disconnect anything
+ * past it: the lookup missed and the call refused as `account_foreign`. The
+ * ceiling is here so a paging bug cannot loop forever; at a hundred a page it
+ * is four thousand accounts, well past anything an owner has.
+ */
+const ACCOUNT_PAGE = 100;
+const ACCOUNT_PAGE_MAX = 40;
+
 export async function disconnectConnector(accountId: string, path = connectorsPath()): Promise<void> {
   if (!/^[A-Za-z0-9_-]{4,128}$/.test(accountId)) throw new Error("account_invalid");
   const store = readConnectorsStore(path);
   const client = factory(requireKey(store));
-  const mine = await client.connectedAccounts.list({ userIds: [store.userId], limit: 100 });
-  const account = mine.items.find((item) => item.id === accountId);
+  let account: { id: string; toolkit?: { slug: string } } | undefined;
+  let cursor: string | undefined;
+  const seen = new Set<string>();
+  for (let page = 0; page < ACCOUNT_PAGE_MAX; page++) {
+    const mine = await client.connectedAccounts.list({
+      userIds: [store.userId],
+      limit: ACCOUNT_PAGE,
+      ...(cursor ? { cursor } : {}),
+    });
+    account = mine.items.find((item) => item.id === accountId);
+    if (account) break;
+    const next = mine.nextCursor;
+    // A server that keeps handing back the same cursor would page forever.
+    if (!next || seen.has(next)) break;
+    seen.add(next);
+    cursor = next;
+  }
   if (!account) throw new Error("account_foreign");
   await client.connectedAccounts.delete(accountId);
   cached = null;
@@ -518,8 +562,7 @@ export async function executeConnectorTool(
     const err = new Error("not_connected") as Error & { toolkit: string };
     // The whole toolkit prefix, so MICROSOFT_TEAMS_* names microsoft_teams
     // and not microsoft.
-    err.toolkit = toolkitOf(toolSlug, FEATURED_TOOLKITS)
-      ?? (toolSlug.toLowerCase().split("_").slice(0, -1).join("_") || "unknown");
+    err.toolkit = toolkitHint(toolSlug);
     throw err;
   }
   // Never replay an execute: a write that the owner approved once must not

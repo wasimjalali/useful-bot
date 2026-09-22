@@ -21,6 +21,8 @@ function storePathOf(): string {
 import { listHandoffs, queueHandoff } from "../shared/handoffs.ts";
 import { memoryKeychain, setKeychainDriver, connectionSecretService, keychainGet, keychainSet } from "../shared/keychain.ts";
 import { setMcpFetch } from "../shared/mcp-http.ts";
+import { connectionIndex, putConnectionOperations } from "../shared/connection-tools-store.ts";
+import { MOUNTED_TOOL_BUDGET } from "../shared/policy.ts";
 import { findOauthPending, setOauthFetch } from "../shared/mcp-oauth.ts";
 import { writeShell } from "../shared/shell-io.ts";
 import { seedStore } from "../shared/shell-store.ts";
@@ -34,6 +36,7 @@ function paths() {
   process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
   process.env.UB_SHELL_PATH = join(dir, "shell.json");
   process.env.UB_OAUTH_PENDING_PATH = join(dir, "oauth.json");
+  process.env.UB_CONNECTION_TOOLS_PATH = join(dir, "connection-tools.json");
   resetConnectionMemo();
   setConnectionLookup(async () => "8.8.8.8");
   const shell = seedStore();
@@ -498,4 +501,174 @@ test("a settled card does not leave its sign-in on disk", async () => {
   await startConnectionConfirm(card.id, { callbackUrl: CALLBACK });
   assert.equal(findOauthPending("statevalue123456"), null);
   assert.equal(readConnectionsStore().connections.length, 1);
+});
+
+test("a connect that would overrun the mounted tool budget is refused before anything is written", async () => {
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  const { storePath } = paths();
+  // An OpenAPI spec mounts every operation for every turn. One that fills the
+  // budget leaves no room for the next. It has to be measured to be mounted,
+  // and only what is mounted is charged.
+  const big = Array.from({ length: MOUNTED_TOOL_BUDGET }, (_, i) => [`/p${i}`, { get: {} }]);
+  setMcpFetch(async () => new Response(JSON.stringify({ paths: Object.fromEntries(big) }), {
+    headers: { "content-type": "application/json" },
+  }));
+  upsertConnection({
+    id: "huge",
+    kind: "openapi",
+    name: "Huge",
+    url: "https://api.example.com/openapi.json",
+    description: "An OpenAPI service with many operations",
+    authKind: "none",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date().toISOString(),
+  });
+  putConnectionOperations("huge", { operations: MOUNTED_TOOL_BUDGET, schemaBytes: 1_000, textBytes: 0, longestName: 20 });
+  const proposal = seedCard({
+    connectionId: "second",
+    connectionKind: "openapi",
+    name: "Second",
+    url: "https://api2.example.com/openapi.json",
+    urlHost: "api2.example.com",
+    authKind: "apiKey",
+    authHeader: "X-Api-Key",
+  });
+  await assert.rejects(
+    () => startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK, secret: "sk_test_secret_1" }),
+    /tool_budget_exceeded/,
+  );
+  // Neither the row nor the credential landed, so nothing has to be unwound.
+  assert.equal(findConnectionById("second"), null);
+  assert.equal(keychainGet(connectionSecretService("second")), null);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
+});
+
+test("an MCP server whose tools wait to be asked for costs nothing at connect time", async () => {
+  const { storePath } = paths();
+  upsertConnection({
+    id: "huge",
+    kind: "mcp",
+    name: "Huge",
+    url: "https://huge.example.com/mcp",
+    description: "An MCP server with two hundred tools",
+    authKind: "none",
+    authHeader: null,
+    toolsAllow: null,
+    createdAt: new Date().toISOString(),
+  });
+  stubTools(2);
+  const proposal = seedCard();
+  await startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK });
+  assert.equal(findConnectionById("example")?.url, "https://mcp.example.com/mcp");
+  // And the listing went to the index the search reads, so the first
+  // find_tools after a connect answers from disk.
+  assert.equal(connectionIndex("example")?.tools.length, 2);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
+});
+
+test("a spec this app could not read is not a spec with no operations in it", async () => {
+  const { storePath } = paths();
+  // An unreachable or oversized spec used to count as zero operations and
+  // sail through the budget; eve then mounted its whole operation list on
+  // every later turn.
+  setMcpFetch(async () => new Response("nope", { status: 502 }));
+  const proposal = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+  });
+  await assert.rejects(
+    () => startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK }),
+    /tool_count_unknown/,
+  );
+  assert.equal(findConnectionById("spec"), null);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "pending");
+});
+
+test("a spec behind a key is counted with the key the owner just pasted", async () => {
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  const { storePath } = paths();
+  // The row does not exist yet, so the credential cannot come from the store.
+  // Without the pasted one the fetch 401s and a valid connect is refused.
+  const seen: string[] = [];
+  setMcpFetch(async (_input, init) => {
+    const key = new Headers(init?.headers).get("x-api-key") ?? "";
+    seen.push(key);
+    if (key !== "sk_test_secret_1") return new Response("no", { status: 401 });
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  const proposal = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+    authKind: "apiKey",
+    authHeader: "X-Api-Key",
+  });
+  await startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK, secret: "sk_test_secret_1" });
+  assert.equal(seen[0], "sk_test_secret_1");
+  assert.equal(findConnectionById("spec")?.id, "spec");
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
+});
+
+test("the budget check never reads a credential the new row does not own yet", async () => {
+  const mem = memoryKeychain();
+  setKeychainDriver(mem);
+  const { storePath } = paths();
+  // An id that is free in the connections store can still have a Keychain
+  // item behind it, from a row that was removed or a card that lost a race.
+  keychainSet(connectionSecretService("spec"), "sk_someone_elses_secret");
+  const seen: string[] = [];
+  setMcpFetch(async (_input, init) => {
+    seen.push(new Headers(init?.headers).get("x-api-key") ?? "");
+    return new Response(JSON.stringify({ paths: { "/a": { get: {} } } }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  const proposal = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+  });
+  await startConnectionConfirm(proposal.id, { callbackUrl: CALLBACK });
+  // A no-auth card sends no key, whatever is sitting under that id.
+  assert.deepEqual([...new Set(seen)], [""]);
+  assert.equal(readProposal(proposal.id, storePath)?.status, "confirmed");
+});
+
+test("a spec whose tool names would pass sixty-four under a reassigned id is refused", async () => {
+  const { storePath } = paths();
+  // "spec__" plus fifty-six fits, but the store can hand this row "spec-2",
+  // and eve prefixes whatever id the row ends up with.
+  const serve = (operationId: string) => setMcpFetch(async () => new Response(
+    JSON.stringify({ paths: { "/a": { get: { operationId } } } }),
+    { headers: { "content-type": "application/json" } },
+  ));
+  serve("o".repeat(56));
+  const refused = seedCard({
+    connectionId: "spec",
+    connectionKind: "openapi",
+    name: "Spec",
+    url: "https://api.example.com/openapi.json",
+    urlHost: "api.example.com",
+  });
+  await assert.rejects(
+    () => startConnectionConfirm(refused.id, { callbackUrl: CALLBACK }),
+    /tool_name_too_long/,
+  );
+  assert.equal(findConnectionById("spec"), null);
+  assert.equal(readProposal(refused.id, storePath)?.status, "pending");
+  serve("o".repeat(55));
+  await startConnectionConfirm(refused.id, { callbackUrl: CALLBACK });
+  assert.equal(findConnectionById("spec")?.id, "spec");
 });
