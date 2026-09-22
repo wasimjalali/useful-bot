@@ -338,6 +338,20 @@ struct ChatView: View {
         }
     }
 
+    /// Put the newest turn back against the composer after a banner above
+    /// the transcript changed height. Only for a reader who is pinned there.
+    /// Below macOS 15 the pin tracker is inert and `pinnedToBottom` never
+    /// leaves `true`, so a reader in history would be yanked down; those
+    /// systems keep the shift instead, as they had before the re-pin.
+    private func repinAfterBannerChange(_ proxy: ScrollViewProxy) {
+        guard #available(macOS 15.0, *), pinnedToBottom, !holdingReplyAnchor else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+    }
+
     private func transcript(_ bot: ShellBot) -> some View {
         let roster = model.store?.bots ?? []
         // What the rows are handed. A row is skipped while its inputs compare
@@ -476,19 +490,16 @@ struct ChatView: View {
                 // is shorter than the window and SwiftUI had already placed.
                 .onChange(of: model.sendTick) { holdingReplyAnchor = false }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
-                // The failure banner sits above this scroll view, so it takes
-                // its height off the top of the viewport. The content kept its
-                // offset from the top and slid down by that much, which put
-                // the failed message half under the composer. A reader at the
-                // newest turn is kept there; one reading history is not moved.
-                .onChange(of: model.threadError) { before, after in
-                    guard (before == nil) != (after == nil), pinnedToBottom, !holdingReplyAnchor else { return }
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
-                }
+                // The two banners sit above this scroll view, so they take
+                // their height off the top of the viewport. The content kept
+                // its offset from the top and slid down by that much, which
+                // put the failed message half under the composer. A reader at
+                // the newest turn is kept there; one reading history is not
+                // moved. Any change counts, not only appearing and clearing:
+                // a longer message wraps to a second line and shrinks the
+                // viewport the same way.
+                .onChange(of: model.threadError) { repinAfterBannerChange(proxy) }
+                .onChange(of: model.saveError) { repinAfterBannerChange(proxy) }
                 // The reader asked for earlier messages. Those mount above
                 // the row they were reading, and the scroll offset stays
                 // where it was, which would now be the top of the new rows;
