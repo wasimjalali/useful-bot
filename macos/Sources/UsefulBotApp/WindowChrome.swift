@@ -26,12 +26,15 @@ struct WindowChrome: NSViewRepresentable {
 
     func updateNSView(_ nsView: ChromeView, context: Context) {}
 
-    /// Where the lights' centre sits, from the window's top edge: the middle
-    /// of the chat header, which starts one stage margin down.
-    static let lightsCenterY = DesignTokens.Space.stageMargin + DesignTokens.Space.chatHead / 2
+    /// Where the lights' centre sits, from the window's top edge: tucked into
+    /// the corner the way Finder and Notes place them over a full-height
+    /// sidebar, not the middle of the header row, which put them beside the
+    /// logo.
+    static let lightsCenterY: CGFloat = 20
     /// How far the rail's first row starts below the rail's own top padding,
-    /// so the logo clears the lights instead of sharing their row.
-    static let railTopInset: CGFloat = lightsCenterY
+    /// so the logo clears the lights instead of sharing their row. Kept at
+    /// the header row's middle so the rail's own layout does not move.
+    static let railTopInset: CGFloat = DesignTokens.Space.stageMargin + DesignTokens.Space.chatHead / 2
 
     final class ChromeView: NSView {
         private var observers: [NSObjectProtocol] = []

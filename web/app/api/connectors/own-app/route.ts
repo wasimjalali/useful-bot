@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../../lib/api-guard";
 import { connectorsCallbackUrl } from "../../../../lib/connectors-callback";
-import { connectOwnApp, describeOwnApp } from "../../../../../shared/composio.ts";
+import { connectOwnApp, describeOwnApp, isKeyRejected } from "../../../../../shared/composio.ts";
 
 export const runtime = "nodejs";
 
@@ -32,7 +32,8 @@ export async function GET(request: Request) {
     const form = await describeOwnApp(toolkit);
     return NextResponse.json({ ok: true, ...form });
   } catch (err) {
-    return NextResponse.json({ ok: false, error: errorCode(err, "own_app_unavailable") }, { status: 400 });
+    const error = isKeyRejected(err) ? "key_rejected" : errorCode(err, "own_app_unavailable");
+    return NextResponse.json({ ok: false, error }, { status: 400 });
   }
 }
 
@@ -60,6 +61,7 @@ export async function POST(request: Request) {
   } catch (err) {
     const guarded = apiError(err);
     if (guarded) return guarded;
-    return NextResponse.json({ ok: false, error: errorCode(err, "own_app_failed") }, { status: 400 });
+    const error = isKeyRejected(err) ? "key_rejected" : errorCode(err, "own_app_failed");
+    return NextResponse.json({ ok: false, error }, { status: 400 });
   }
 }

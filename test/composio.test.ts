@@ -553,6 +553,20 @@ test("the catalogue records which apps need the owner's own OAuth app", async ()
   assert.equal(needsOwnApp({ auth_schemes: ["OAUTH1"], composio_managed_auth_schemes: [] }), true);
 });
 
+test("a failed flag walk still caches the catalogue, with the flags unset", async () => {
+  const { state, factory } = stub({ toolkitItems: [GMAIL, SLACK] });
+  const broken: ComposioLike = { ...factory("ak_stub"), client: { toolkits: { async list() { throw Object.assign(new Error("503"), { status: 503 }); } } } };
+  setComposioFactory(() => broken);
+  const path = tmpPath();
+  await listConnectorToolkits({}, path);
+  await catalogueReady();
+  const before = state.listed.length;
+  const page = await listConnectorToolkits({ limit: 10 }, path);
+  assert.deepEqual(page.rows.map((row) => [row.slug, row.ownApp]), [["gmail", false], ["slack", false]]);
+  // The cache is in place: the second read asked Composio for the connected page only.
+  assert.equal(state.listed.slice(before).every((options) => options?.isConnected === true), true);
+});
+
 test("disconnect proves ownership by listing, deletes, and drops the cache entry", async () => {
   const path = tmpPath();
   const userId = readConnectorsStore(path).userId;

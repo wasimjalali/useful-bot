@@ -2326,6 +2326,8 @@ final class AppModel: ObservableObject {
         } catch BackendError.provider("connector_needs_own_app") {
             do {
                 connectorOwnApp = try await client.connectorOwnAppForm(slug: row.slug)
+            } catch BackendError.provider("key_rejected") {
+                connectorsError = Self.connectorKeyRejected
             } catch {
                 connectorsError = "\(row.name) needs your own OAuth app, and Composio would not say which details it takes. Create an auth config for it at platform.composio.dev, then try again."
             }
@@ -2369,7 +2371,8 @@ final class AppModel: ObservableObject {
     }
 
     /// What went wrong, in the owner's terms, never a bare "could not". An
-    /// unknown code is shown as Composio sent it rather than hidden.
+    /// unknown code is shown rather than hidden; it is not pinned on Composio,
+    /// since the local service refuses with codes of its own (csrf, no key).
     static func connectFailureCopy(_ error: Error, name: String) -> String {
         guard case BackendError.provider(let code) = error else {
             return "Could not reach the local service to connect \(name)."
@@ -2390,7 +2393,7 @@ final class AppModel: ObservableObject {
         case "connector_needs_own_app":
             return "\(name) needs your own OAuth app."
         default:
-            return "Composio refused to connect \(name): \(code)."
+            return "Could not connect \(name): \(code)."
         }
     }
 

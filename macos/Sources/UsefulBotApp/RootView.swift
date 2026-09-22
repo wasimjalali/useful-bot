@@ -680,6 +680,9 @@ struct ConnectorsDialog: View {
         .onChange(of: model.connectors?.hasKey) { _, hasKey in
             if hasKey == true { searchFocused = true } else { keyFocused = true }
         }
+        // Field names repeat across apps (client_id, client_secret), so a
+        // draft typed for one app must not prefill the next app's form.
+        .onChange(of: model.connectorOwnApp?.toolkit) { _, _ in ownAppDraft = [:] }
     }
 
     private func close() {
@@ -964,7 +967,9 @@ struct ConnectorsDialog: View {
     }
 
     private func submitOwnApp(_ row: ConnectorToolkit, _ form: OwnAppForm) {
-        guard ownAppComplete(form) else { return }
+        // The busy flag is set inside the task, so a second click before the
+        // first hop is refused here rather than sent twice.
+        guard ownAppComplete(form), model.connectorBusy == nil else { return }
         var credentials: [String: String] = [:]
         for field in form.fields {
             credentials[field.name] = (ownAppDraft[field.name] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

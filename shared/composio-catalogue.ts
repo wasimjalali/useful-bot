@@ -125,10 +125,15 @@ async function build(session: ComposioSessionLike, client: ComposioLike, path: s
     if (!cursor || batch.items.length === 0) break;
   }
   if (items.length === 0) return;
-  // A failed flag walk fails the build: a cache with every flag missing
-  // would send owners to a Connect that cannot work, for a day.
-  const own = await ownAppSlugs(client);
-  for (const item of items) item.ownApp = own.has(item.slug.toLowerCase());
+  // A failed flag walk still saves the catalogue, flags unset: without a
+  // cache every dialog read would walk the whole catalogue again, and an
+  // unflagged own-app row only degrades to the click-time answer.
+  try {
+    const own = await ownAppSlugs(client);
+    for (const item of items) item.ownApp = own.has(item.slug.toLowerCase());
+  } catch {
+    // Left for the next build; the rows below carry no flag.
+  }
   save(items, path);
 }
 
