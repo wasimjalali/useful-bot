@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import UniformTypeIdentifiers
 import UsefulBotCore
 
@@ -17,6 +18,10 @@ struct OAuthPending: Equatable {
     let expiresAt: Double
     var intervalMs: Int
 }
+
+/// Snapshot writes are a cache: a failure costs the next open its speed, not
+/// its rows, so it is logged rather than surfaced.
+private let snapshotLog = Logger(subsystem: "com.usefulbot.app", category: "chat-snapshot")
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -269,7 +274,32 @@ final class AppModel: ObservableObject {
     /// session every few seconds and decided what was old from a second read,
     /// and a turn that finished during that second read was taken for history
     /// and never shown.
-    private var followCursor: (sessionId: String, next: Int)?
+    /// `lastEventId` is the id of the event at `next - 1`, which is how a
+    /// saved chat tells, from the session's newest id alone, that nothing was
+    /// recorded after it.
+    private var followCursor: (sessionId: String, next: Int, lastEventId: String?)?
+    /// Where the next reload picks the session up, set when a chat was put
+    /// back from a snapshot (the stash of one left at rest, or the file on
+    /// disk). That reload reads only what the session recorded after it
+    /// instead of replaying from zero, which for a long chat meant eve
+    /// opening every chunk file twice and the app decoding every event.
+    private var resumePoint: (sessionId: String, next: Int, lastEventId: String?)?
+    /// Per-bot chat snapshots on disk, so a first open after launch starts
+    /// where the chat was left instead of at event zero.
+    private let snapshots = ChatSnapshotStore(directory: ChatSnapshotStore.defaultDirectory)
+    /// Snapshots of chats left at rest this session, per bot: the in-memory
+    /// twin of the file, restored before the file is read.
+    private var stashSnapshots: [String: ChatSnapshot] = [:]
+    /// Writes go out one after another, so an older snapshot can never land
+    /// on top of a newer one.
+    private var snapshotWrite: Task<Void, Never>?
+    /// The open chat's pending snapshot, coalesced so a turn's run of
+    /// terminal events writes once.
+    private var snapshotTimer: Task<Void, Never>?
+    /// Bots being deleted: nothing may write their chat back to disk.
+    private var snapshotsBlocked: Set<String> = []
+    /// Builds snapshots for chats never opened, one at a time, after launch.
+    private var prewarmTask: Task<Void, Never>?
     /// Turns a local send streamed to their end, per session. The follower resumes
     /// from a cursor that sits before them, so it meets their events again and
     /// must pass over them rather than lean on the projection's bounded id
@@ -316,6 +346,12 @@ final class AppModel: ObservableObject {
     /// to the newest turn: sending is an explicit request to watch the answer,
     /// so it overrides whatever the reader's scroll position was.
     @Published private(set) var sendTick: UInt64 = 0
+    /// `sendTick` when the open chat was put on screen.
+    private var sendTickAtOpen: UInt64 = 0
+    /// Whether the owner sent in this chat since opening it. The transcript
+    /// lands on a send's rows only then: a send still running from before the
+    /// chat was left can sit on a history that never finished loading.
+    var sentSinceOpen: Bool { sendTick != sendTickAtOpen }
     /// False from the moment a chat is opened until its rows are all in.
     ///
     /// A thread arrives in two waves (the durable rows, then the session
@@ -446,12 +482,20 @@ final class AppModel: ObservableObject {
             guard !Task.isCancelled, attempt == startAttempt else { return }
             store = loaded
             selectedBotId = loaded.selectedBotId ?? loaded.bots.first?.id
+            // The chat the app opens on is painted from its snapshot in the
+            // same pass that shows the window, not after the reads below.
+            if let first = selectedBotId, transcript.isEmpty { restoreChat(first) }
             phase = .ready
+            // The chat's load starts first; the operator and composer reads
+            // share nothing with it and no longer hold it back.
+            startReload()
+            let firstLoad = reloadTask
             await loadOperator()
             await refreshComposer()
-            await reloadThread()
+            await firstLoad?.value
             await pollApprovals()
             startPolling()
+            startPrewarm()
         } catch is CancellationError {
             return
         } catch {
@@ -575,29 +619,7 @@ final class AppModel: ObservableObject {
         // previous transcript while its state loads. Do not cancel the
         // outgoing send: that turn belongs to the bot we left.
         resetThread()
-        if let stored = backgroundProjections[botId] {
-            projection = stored
-            pending = sendTasks[botId] != nil
-            // The stash is a snapshot from when this chat was left, and a
-            // turn nobody here sent may have ended since. Only a send this
-            // app still holds is known to be running; for anything else the
-            // reload below reads the session and decides.
-            backgroundWorking = false
-            activity = stored.activity
-            markWorking(botId, sendTasks[botId] != nil)
-            durableEvents = transcriptCache[botId]?.events ?? []
-            rebuildTranscript()
-            restoredFromCache = !transcript.isEmpty && readyStashes.contains(botId)
-        } else if let cached = transcriptCache[botId] {
-            // A chat already opened this session comes back with its rows on
-            // screen while the reload confirms them. The events come too: a
-            // second switch before the reload lands stashes this chat again,
-            // and rows paired with no events would lose them.
-            transcript = cached.rows
-            transcriptBlocks = cached.blocks
-            durableEvents = cached.events
-            restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(botId)
-        }
+        restoreChat(botId)
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
         if let err = sendErrors[botId] {
@@ -673,8 +695,21 @@ final class AppModel: ObservableObject {
 
     private func performReload(_ generation: Int) async {
         guard let bot = selectedBot else { return }
+        // Taken once: a restore put this chat on screen and said how far its
+        // session was read. Any later reload of it reads from zero.
+        let resume = resumePoint
+        resumePoint = nil
         do {
+            // Which event is the newest one recorded, asked beside the durable
+            // read. Everything up to it is history. eve's own answer to that,
+            // the tail index, costs a pass over every chunk file of the
+            // session before the first byte (1.25 s on a 12,554-event chat);
+            // this reads one file. Nil falls back to the tail index.
+            let probed = sendTasks[bot.id] == nil ? bot.sessionId ?? "" : ""
+            let client = client
+            async let newest: String? = probed.isEmpty ? nil : client.newestEventId(sessionId: probed)
             let state = try await client.threadState(botId: bot.id)
+            let marker = await newest
             guard generation == loadGeneration else { return }
             // Durable rows render before the session replay starts, so a long
             // transcript appears at once instead of after the stream goes idle.
@@ -694,7 +729,57 @@ final class AppModel: ObservableObject {
             // Where the newest event sat against the end of the recorded
             // history, when the server says.
             var historyRemaining: Int?
-            if !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
+            // A chat put back from its snapshot reads on from where the
+            // snapshot stopped. It was taken at rest, so every event past its
+            // cursor is one the projection has not seen, applied exactly as a
+            // replay from zero would apply it; `ChatSnapshotTests` pins that.
+            var resumed = false
+            if !localSend, let resume, let marker, let sessionId = bot.sessionId,
+               resume.sessionId == sessionId, !projection.pending {
+                followCursor = (sessionId, resume.next, resume.lastEventId)
+                if marker == resume.lastEventId {
+                    // Nothing was recorded after the snapshot: the rows on
+                    // screen are the whole session, and nothing is read.
+                    resumed = true
+                } else {
+                    let durableIds = Set(state.events.map(\.id))
+                    do {
+                        for try await event in client.stream(
+                            sessionId: sessionId,
+                            startIndex: resume.next,
+                            markHistory: true,
+                            historyMarker: marker
+                        ) {
+                            guard generation == loadGeneration else { return }
+                            if sendTasks[bot.id] != nil { return }
+                            historyRemaining = event.historyRemaining
+                            if let index = event.index { followCursor = (sessionId, index + 1, event.id) }
+                            noteTurnId(event, sessionId: sessionId)
+                            // A turn this app's own send painted to its end is
+                            // already in the projection; the follower passes
+                            // over it the same way.
+                            if let turnId = event.turnId,
+                               localTurnIds[sessionId]?.contains(turnId) == true,
+                               event.type != "input.resolved" {
+                                continue
+                            }
+                            let novel = event.id.map { !durableIds.contains($0) } ?? false
+                            liveTurn.apply(event, atLiveTail: true, novel: novel)
+                            projection.apply(event, live: true)
+                        }
+                        resumed = true
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        // The read never reached the newest event: the
+                        // snapshot is ahead of the session, or the read
+                        // dropped. A replay from zero below is always right,
+                        // and it rebuilds beside the rows on screen.
+                        snapshotLog.notice("resume missed its marker, replaying from zero: \(String(describing: error), privacy: .public)")
+                    }
+                }
+            }
+            if !resumed, !localSend, let sessionId = bot.sessionId, !sessionId.isEmpty {
                 // The durable rows already render the whole history, so the
                 // replay is applied silently and only starts publishing once
                 // `ReplayGate` says it reached the live tail. A turn still
@@ -730,7 +815,7 @@ final class AppModel: ObservableObject {
                 historyRemaining = nil
                 // This replay starts at zero and ends holding the whole
                 // session, so the follower's cursor is rebuilt with it.
-                followCursor = (sessionId, 0)
+                followCursor = (sessionId, 0, nil)
                 localTurnIds[sessionId] = nil
                 if baseline == 0, !projection.pending {
                     // Nothing to preserve: the reload owns the projection. A
@@ -741,14 +826,14 @@ final class AppModel: ObservableObject {
                     backgroundWorking = false
                     swapped = true
                 }
-                for try await event in client.stream(sessionId: sessionId, markHistory: true) {
+                for try await event in client.stream(sessionId: sessionId, markHistory: true, historyMarker: marker) {
                     guard generation == loadGeneration else { return }
                     historyRemaining = event.historyRemaining
                     // A send started while this replay was running. It owns the
                     // projection from that moment, and the row it painted must
                     // not be replaced by a replay that predates it.
                     if sendTasks[bot.id] != nil { return }
-                    if let index = event.index { followCursor = (sessionId, index + 1) }
+                    if let index = event.index { followCursor = (sessionId, index + 1, event.id) }
                     noteTurnId(event, sessionId: sessionId)
                     if !atLiveTail {
                         atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event)
@@ -818,6 +903,20 @@ final class AppModel: ObservableObject {
                 }
             }
             guard generation == loadGeneration else { return }
+            // A send of this app's is painting over a history that never
+            // finished loading: the chat was left before its first replay was
+            // in, and came back while the send ran. Those rows are not the
+            // chat, so it is not marked loaded and the transcript does not land
+            // on them; the follower replays from zero once the send is done.
+            if localSend, !loadSucceeded, !readyStashes.contains(bot.id) {
+                pending = true
+                followTask?.cancel()
+                followTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.followSession(generation: generation)
+                }
+                return
+            }
             // Every row is in, so the transcript can be built and laid out once,
             // already at its newest turn. Marked ready first, so the publish
             // below is the one that counts as this chat's loaded state.
@@ -873,6 +972,7 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 await self.followSession(generation: generation)
             }
+            scheduleSnapshot()
         } catch is CancellationError {
             return
         } catch {
@@ -937,7 +1037,7 @@ final class AppModel: ObservableObject {
                         handedOff = true
                         break
                     }
-                    if let index = event.index { followCursor = (sessionId, index + 1) }
+                    if let index = event.index { followCursor = (sessionId, index + 1, event.id) }
                     noteTurnId(event, sessionId: sessionId)
                     // A local send painted its own turn. An answer to a
                     // question carries the asking turn's id but arrives after
@@ -972,6 +1072,7 @@ final class AppModel: ObservableObject {
                         }
                     }
                     publishTranscript()
+                    if Self.restingEvents.contains(event.type), !projection.pending { scheduleSnapshot() }
                 }
                 if handedOff { continue }
             } catch is CancellationError {
@@ -1027,6 +1128,7 @@ final class AppModel: ObservableObject {
             for botId in moved {
                 backgroundProjections[botId] = nil
                 transcriptCache[botId] = nil
+                stashSnapshots[botId] = nil
                 forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
             }
             // Only a real change is published. Every view observes this whole
@@ -1382,7 +1484,7 @@ final class AppModel: ObservableObject {
                     // send, so the follower can start at its first event. Asked
                     // of the send itself, not of the stored pointer: that can
                     // be re-stamped by a poll between the snapshot and here.
-                    self.followCursor = (sessionId, 0)
+                    self.followCursor = (sessionId, 0, nil)
                 }
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                     // The turn was stopped (Stop or New Chat) while it was
@@ -1620,6 +1722,7 @@ final class AppModel: ObservableObject {
             pending = false
             sendTask = nil
             if activeSession?.botId == botId { activeSession = nil }
+            scheduleSnapshot()
         }
     }
 
@@ -1874,9 +1977,28 @@ final class AppModel: ObservableObject {
     private func republishWindow() {
         let window = TranscriptBlocks.window(
             transcriptBlocks,
-            startId: selectedBotId.flatMap { windowStarts[$0] }
+            startId: selectedBotId.flatMap { windowStarts[$0] },
+            minimum: slimFirstPaint ? Self.firstPaintBlocks : TranscriptBlocks.windowMinimum
         )
         if window != transcriptWindow { transcriptWindow = window }
+    }
+
+    /// How many blocks a restored chat mounts for its first frame. Building
+    /// the full 60-block window is most of what a switch costs once the rows
+    /// come from a snapshot (about 150 ms on Generalist); the newest turn is
+    /// always whole whatever this says.
+    private static let firstPaintBlocks = 14
+    /// True from a restore until the transcript has landed: the window holds
+    /// only the newest `firstPaintBlocks`, and the rest mounts above the fold
+    /// once the first frame is on screen, where the bottom anchor keeps the
+    /// reader's rows still.
+    private(set) var slimFirstPaint = false
+
+    /// Mounts the rest of the window after a restored chat's first frame.
+    func finishFirstPaint() {
+        guard slimFirstPaint else { return }
+        slimFirstPaint = false
+        republishWindow()
     }
 
     private func publishTranscript(force: Bool = false) {
@@ -2613,25 +2735,7 @@ final class AppModel: ObservableObject {
         selectedBotId = id
         clearRoutineState()
         clearPerThreadState()
-        if let stored = backgroundProjections[id] {
-            projection = stored
-            pending = sendTasks[id] != nil
-            // The stash is a snapshot from when this chat was left, and a
-            // turn nobody here sent may have ended since. Only a send this
-            // app still holds is known to be running; for anything else the
-            // reload below reads the session and decides.
-            backgroundWorking = false
-            activity = stored.activity
-            markWorking(id, sendTasks[id] != nil)
-            durableEvents = transcriptCache[id]?.events ?? []
-            rebuildTranscript()
-            restoredFromCache = !transcript.isEmpty && readyStashes.contains(id)
-        } else if let cached = transcriptCache[id] {
-            transcript = cached.rows
-            transcriptBlocks = cached.blocks
-            durableEvents = cached.events
-            restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(id)
-        }
+        restoreChat(id)
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
         if let err = sendErrors[id] {
@@ -2706,6 +2810,7 @@ final class AppModel: ObservableObject {
 
     func delete(botId: String) {
         transcriptCache[botId] = nil
+        removeSnapshot(botId)
         sendErrors[botId] = nil
         unsentDrafts[botId] = nil
         forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
@@ -2757,6 +2862,7 @@ final class AppModel: ObservableObject {
             // The old conversation is gone server-side; it must not come back
             // from the cache on the next switch.
             self.transcriptCache[id] = nil
+            self.stashSnapshots[id] = nil
             self.selectedBotId = id
             self.attachError = nil
             self.approvalError = nil
@@ -2820,6 +2926,17 @@ final class AppModel: ObservableObject {
         // A drawing that arrived inside the publish throttle has not been
         // saved yet, and the reset that follows cancels that publish.
         persistNewWidgets()
+        // A chat left at rest is kept as a snapshot, in memory and on disk,
+        // so coming back reads on from its cursor. One left mid-turn is not:
+        // only a read from zero sees where its turn began.
+        snapshotTimer?.cancel()
+        snapshotTimer = nil
+        if let snapshot = openChatSnapshot() {
+            stashSnapshots[old] = snapshot
+            writeSnapshot(snapshot)
+        } else {
+            stashSnapshots[old] = nil
+        }
         // Do not clobber a live stash with an empty post-reset projection.
         if !projection.messages.isEmpty || backgroundProjections[old] == nil {
             backgroundProjections[old] = projection
@@ -2831,6 +2948,217 @@ final class AppModel: ObservableObject {
         if sendTasks[old] == nil { markWorking(old, false) }
         cacheUse[old] = Date()
         trimCaches()
+    }
+
+    /// Puts a chat back on screen before its reload runs, from the fullest
+    /// copy this app has: the snapshot of it left at rest this session, the
+    /// projection a turn still running kept, the snapshot on disk, the rows
+    /// alone. Only a snapshot also says where the reload resumes the session;
+    /// the other two are confirmed by a replay from zero, as before.
+    private func restoreChat(_ botId: String) {
+        let sessionId = store?.bots.first { $0.id == botId }?.sessionId ?? ""
+        let resumable = sendTasks[botId] == nil && !sessionId.isEmpty && !snapshotsBlocked.contains(botId)
+        if resumable, let snapshot = stashSnapshots[botId], snapshot.sessionId == sessionId {
+            restore(snapshot)
+        } else if let stored = backgroundProjections[botId] {
+            projection = stored
+            pending = sendTasks[botId] != nil
+            // The stash is a snapshot from when this chat was left, and a
+            // turn nobody here sent may have ended since. Only a send this
+            // app still holds is known to be running; for anything else the
+            // reload below reads the session and decides.
+            backgroundWorking = false
+            activity = stored.activity
+            markWorking(botId, sendTasks[botId] != nil)
+            durableEvents = transcriptCache[botId]?.events ?? []
+            rebuildTranscript()
+            restoredFromCache = !transcript.isEmpty && readyStashes.contains(botId)
+        } else if resumable, let snapshot = snapshots.load(botId: botId, sessionId: sessionId) {
+            restore(snapshot)
+        } else if let cached = transcriptCache[botId] {
+            // A chat already opened this session comes back with its rows on
+            // screen while the reload confirms them. The events come too: a
+            // second switch before the reload lands stashes this chat again,
+            // and rows paired with no events would lose them.
+            transcript = cached.rows
+            transcriptBlocks = cached.blocks
+            durableEvents = cached.events
+            restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(botId)
+        }
+    }
+
+    private func restore(_ snapshot: ChatSnapshot) {
+        // A reader who expanded this chat's window keeps it: the held start
+        // wins over a slim first frame anyway.
+        // macOS 14 has no scroll geometry to land a slim window by.
+        if #available(macOS 15.0, *) {
+            slimFirstPaint = windowStarts[snapshot.botId] == nil
+        }
+        projection = snapshot.projection
+        durableEvents = snapshot.durableEvents
+        pending = false
+        backgroundWorking = false
+        activity = snapshot.projection.activity
+        markWorking(snapshot.botId, false)
+        seenTurnIds[snapshot.sessionId, default: []].formUnion(snapshot.seenTurnIds)
+        // Exactly the snapshot's: its projection holds these turns and no
+        // others, and a turn skipped that it does not hold would be lost.
+        localTurnIds[snapshot.sessionId] = Set(snapshot.localTurnIds)
+        rebuildTranscript()
+        restoredFromCache = !transcript.isEmpty
+        resumePoint = (snapshot.sessionId, snapshot.cursor, snapshot.lastEventId)
+    }
+
+    /// The events a turn or a session comes to rest on.
+    private static let restingEvents: Set<String> = [
+        "turn.completed", "turn.cancelled", "turn.failed", "session.waiting",
+    ]
+
+    /// The open chat as a snapshot, or nil when it is not at rest: a load
+    /// still running or failed, a send of this app's in flight, a turn still
+    /// going, or a projection that is not one session's replay.
+    private func openChatSnapshot() -> ChatSnapshot? {
+        guard let bot = selectedBot, bot.id == selectedBotId,
+              let sessionId = bot.sessionId, !sessionId.isEmpty,
+              !snapshotsBlocked.contains(bot.id),
+              loadSucceeded, transcriptReady,
+              sendTasks[bot.id] == nil, !pending, !projection.pending,
+              let cursor = followCursor, cursor.sessionId == sessionId, cursor.next > 0,
+              projection.soleSession == sessionId else { return nil }
+        return ChatSnapshot(
+            botId: bot.id,
+            sessionId: sessionId,
+            cursor: cursor.next,
+            lastEventId: cursor.lastEventId,
+            projection: projection,
+            durableEvents: durableEvents,
+            seenTurnIds: seenTurnIds[sessionId] ?? [],
+            localTurnIds: localTurnIds[sessionId] ?? []
+        )
+    }
+
+    /// Saves the open chat shortly, once whatever brought it to rest has
+    /// settled. A switch away saves it at once instead.
+    private func scheduleSnapshot() {
+        snapshotTimer?.cancel()
+        snapshotTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self, !Task.isCancelled, let snapshot = self.openChatSnapshot() else { return }
+            self.snapshotTimer = nil
+            self.writeSnapshot(snapshot)
+        }
+    }
+
+    /// Encoded and written off the main thread, strictly in order.
+    private func writeSnapshot(_ snapshot: ChatSnapshot) {
+        let store = snapshots
+        let previous = snapshotWrite
+        snapshotWrite = Task.detached(priority: .utility) {
+            await previous?.value
+            do {
+                try store.save(snapshot)
+            } catch {
+                snapshotLog.error("could not save a chat snapshot: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// A deleted bot's chat leaves the disk, after any write still queued.
+    private func removeSnapshot(_ botId: String) {
+        snapshotsBlocked.insert(botId)
+        stashSnapshots[botId] = nil
+        if selectedBotId == botId {
+            snapshotTimer?.cancel()
+            snapshotTimer = nil
+        }
+        let store = snapshots
+        let previous = snapshotWrite
+        snapshotWrite = Task.detached(priority: .utility) {
+            await previous?.value
+            store.remove(botId: botId)
+        }
+    }
+
+    /// Builds the snapshot of every chat that has none yet, one at a time and
+    /// off the main thread, so its first open is as quick as a return to it.
+    /// Costs eve one read of each such session, once: a chat with a snapshot
+    /// is skipped, and one the owner opens in the meantime is left to the
+    /// open itself.
+    private func startPrewarm() {
+        prewarmTask?.cancel()
+        prewarmTask = Task { @MainActor [weak self] in
+            // Out of the way of the launch and the first chat's own load.
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self else { return }
+            for bot in self.store?.bots ?? [] {
+                guard !Task.isCancelled else { return }
+                await self.prewarm(botId: bot.id)
+            }
+        }
+    }
+
+    private func prewarm(botId: String) async {
+        guard prewarmNeeded(botId),
+              let sessionId = store?.bots.first(where: { $0.id == botId })?.sessionId else { return }
+        let client = client
+        let built = await Task.detached(priority: .utility) {
+            await Self.buildSnapshot(client: client, botId: botId, sessionId: sessionId)
+        }.value
+        // Checked again: the owner may have opened, sent to or deleted this
+        // chat while it was read, and then the open owns its snapshot.
+        guard let built, prewarmNeeded(botId),
+              store?.bots.first(where: { $0.id == botId })?.sessionId == sessionId else { return }
+        writeSnapshot(built)
+    }
+
+    private func prewarmNeeded(_ botId: String) -> Bool {
+        guard botId != selectedBotId, sendTasks[botId] == nil, !snapshotsBlocked.contains(botId),
+              stashSnapshots[botId] == nil, !workingBotIds.contains(botId),
+              let sessionId = store?.bots.first(where: { $0.id == botId })?.sessionId,
+              !sessionId.isEmpty else { return false }
+        return snapshots.load(botId: botId, sessionId: sessionId) == nil
+    }
+
+    /// One chat's snapshot, read the way a reload reads it: the durable rows,
+    /// then the session up to its newest event. Nil when the session could
+    /// not be read to that event or ends with a turn still running.
+    private nonisolated static func buildSnapshot(
+        client: BackendClient,
+        botId: String,
+        sessionId: String
+    ) async -> ChatSnapshot? {
+        guard let state = try? await client.threadState(botId: botId),
+              let marker = await client.newestEventId(sessionId: sessionId) else { return nil }
+        let durable = ReplayGate.Durable(events: state.events)
+        var atLiveTail = durable.startsLive
+        var projection = StreamProjection()
+        var turnIds = Set<String>()
+        var cursor = 0
+        var lastEventId: String?
+        do {
+            for try await event in client.stream(sessionId: sessionId, markHistory: true, historyMarker: marker) {
+                if let index = event.index {
+                    cursor = index + 1
+                    lastEventId = event.id
+                }
+                if let turnId = event.turnId, !turnId.isEmpty { turnIds.insert(turnId) }
+                if !atLiveTail { atLiveTail = ReplayGate.reachedLiveTail(durable: durable, event: event) }
+                projection.apply(event, live: atLiveTail)
+            }
+        } catch {
+            return nil
+        }
+        guard cursor > 0, !projection.pending, projection.soleSession == sessionId else { return nil }
+        return ChatSnapshot(
+            botId: botId,
+            sessionId: sessionId,
+            cursor: cursor,
+            lastEventId: lastEventId,
+            projection: projection,
+            durableEvents: state.events,
+            seenTurnIds: turnIds,
+            localTurnIds: []
+        )
     }
 
     private func trimCaches() {
@@ -2851,6 +3179,8 @@ final class AppModel: ObservableObject {
         for id in CacheBudget.evictions(entries, budget: Self.cacheBudgetBytes) {
             transcriptCache[id] = nil
             backgroundProjections[id] = nil
+            // The file on disk stays: it is what the next open reads.
+            stashSnapshots[id] = nil
             cacheUse[id] = nil
         }
     }
@@ -2862,6 +3192,12 @@ final class AppModel: ObservableObject {
         reloadTask?.cancel()
         followTask?.cancel()
         followCursor = nil
+        resumePoint = nil
+        sendTickAtOpen = sendTick
+        slimFirstPaint = false
+        // A snapshot of the old thread still owed would be taken of the next.
+        snapshotTimer?.cancel()
+        snapshotTimer = nil
         // A trailing publish queued for the old thread would rebuild over the
         // cleared transcript.
         pendingPublish?.cancel()

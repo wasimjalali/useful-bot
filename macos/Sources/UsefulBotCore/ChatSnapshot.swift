@@ -1,0 +1,141 @@
+import Foundation
+
+/// A chat as it was last left at rest, kept on disk so the next open paints it
+/// at once and reads only what the session gained since.
+///
+/// Chat turns live only in the eve session, and eve answers a read from zero
+/// by opening every chunk file the session has, one at a time. A long chat
+/// (12,554 events for YT Producer) took four to seven seconds behind the
+/// mascot on every first open. The projection here is exactly the state that
+/// replay would have reached at `cursor`, so a resume applies events
+/// `cursor...` to it and ends up where a full replay would have.
+///
+/// Only a chat at rest is written: no turn in flight, no send of this app's
+/// running, and a load that finished. A turn in flight is still read from
+/// zero, which is the only read that sees where it began.
+public struct ChatSnapshot: Codable, Equatable, Sendable {
+    /// Bumped whenever the stored shape or meaning of `StreamProjection`
+    /// changes. A snapshot of another version is never restored; the chat is
+    /// replayed from zero instead and written again.
+    public static let formatVersion = 1
+
+    public var version: Int
+    public var botId: String
+    /// The session the projection and the cursor were read from. A snapshot
+    /// for any other session than the bot's current pointer is stale.
+    public var sessionId: String
+    /// The first event index the projection does not hold yet.
+    public var cursor: Int
+    /// The id of the event at `cursor - 1`. A resume whose session's newest
+    /// event carries this id is already caught up and reads nothing.
+    public var lastEventId: String?
+    public var projection: StreamProjection
+    /// The durable side channel (notes, handoffs, routine rows) the rows were
+    /// merged from, so the first paint is the full merge.
+    public var durableEvents: [AgentEvent]
+    /// Every turn id read off the session, for the send's stale-turn check.
+    public var seenTurnIds: [String]
+    /// Turns a local send painted to their end past `cursor`. The resume
+    /// meets their events again and passes over them, as the follower does.
+    public var localTurnIds: [String]
+    public var savedAt: Date
+
+    public init(
+        botId: String,
+        sessionId: String,
+        cursor: Int,
+        lastEventId: String?,
+        projection: StreamProjection,
+        durableEvents: [AgentEvent],
+        seenTurnIds: Set<String>,
+        localTurnIds: Set<String>,
+        savedAt: Date = Date()
+    ) {
+        self.version = Self.formatVersion
+        self.botId = botId
+        self.sessionId = sessionId
+        self.cursor = cursor
+        self.lastEventId = lastEventId
+        self.projection = projection
+        self.durableEvents = durableEvents
+        self.seenTurnIds = seenTurnIds.sorted()
+        self.localTurnIds = localTurnIds.sorted()
+        self.savedAt = savedAt
+    }
+}
+
+/// Reads and writes `ChatSnapshot`s, one file per bot. Every failure reads as
+/// "no snapshot": the caller then replays from zero, which is always correct.
+public struct ChatSnapshotStore: Sendable {
+    public let directory: URL
+
+    public init(directory: URL) {
+        self.directory = directory
+    }
+
+    /// `~/Library/Caches/UsefulBot/chat-snapshots`. A cache: everything in it
+    /// can be rebuilt from the eve session, so the system may purge it.
+    public static var defaultDirectory: URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return caches
+            .appendingPathComponent("UsefulBot", isDirectory: true)
+            .appendingPathComponent("chat-snapshots", isDirectory: true)
+    }
+
+    /// Bot ids are server-minted, but a file name is never taken on trust:
+    /// anything outside a plain id alphabet is hex-encoded.
+    public func fileURL(botId: String) -> URL {
+        let plain = !botId.isEmpty && botId.utf8.count <= 128 && botId.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "_" || $0 == "-"
+        }
+        let name = plain ? botId : "x" + botId.utf8.map { String(format: "%02x", $0) }.joined().prefix(200)
+        return directory.appendingPathComponent("\(name).json")
+    }
+
+    /// The snapshot for this bot's current session, or nil when there is none,
+    /// it belongs to another session, another format, or cannot be read.
+    public func load(botId: String, sessionId: String) -> ChatSnapshot? {
+        guard !sessionId.isEmpty,
+              let data = try? Data(contentsOf: fileURL(botId: botId)) else { return nil }
+        return Self.decode(data, botId: botId, sessionId: sessionId)
+    }
+
+    public static func decode(_ data: Data, botId: String, sessionId: String) -> ChatSnapshot? {
+        guard let snapshot = try? JSONDecoder().decode(ChatSnapshot.self, from: data),
+              snapshot.version == ChatSnapshot.formatVersion,
+              snapshot.botId == botId,
+              snapshot.sessionId == sessionId,
+              snapshot.cursor >= 0 else { return nil }
+        return snapshot
+    }
+
+    public static func encode(_ snapshot: ChatSnapshot) throws -> Data {
+        try JSONEncoder().encode(snapshot)
+    }
+
+    /// Written whole and swapped in, owner-only: the file holds the chat.
+    public func save(_ snapshot: ChatSnapshot) throws {
+        try save(Self.encode(snapshot), botId: snapshot.botId)
+    }
+
+    public func save(_ data: Data, botId: String) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let target = fileURL(botId: botId)
+        let temp = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
+        guard fm.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        // rename(2) swaps the file in atomically, over an older one or not.
+        guard rename(temp.path, target.path) == 0 else {
+            let code = errno
+            try? fm.removeItem(at: temp)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+    }
+
+    public func remove(botId: String) {
+        try? FileManager.default.removeItem(at: fileURL(botId: botId))
+    }
+}

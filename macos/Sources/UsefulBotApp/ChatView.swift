@@ -40,6 +40,11 @@ struct ChatView: View {
     /// mascot stays until the newest turn is in, because rows shown before
     /// then are replaced underneath the reader.
     private static let landingCap: TimeInterval = 10
+    /// How long a restored chat waits for its reload to say nothing was
+    /// recorded since the snapshot. That answer takes a durable read and a
+    /// one-file probe, tens of milliseconds; a chat that did gain a turn
+    /// then opens on it rather than showing it arrive.
+    private static let resumeConfirmWait: TimeInterval = 0.15
     /// Room for the user's message above the reply, so an answer that only
     /// just fits is left where it is.
     private static let replyAnchorSlack: CGFloat = 120
@@ -79,6 +84,10 @@ struct ChatView: View {
                 if let bot = model.selectedBot {
                     header(bot)
                     if model.hasThreadContent || model.pending {
+                        // Put back from a snapshot or a stash: it lands within
+                        // a few frames, so the mascot would only flash and the
+                        // fade would only delay it.
+                        let restored = model.restoredFromCache
                         transcript(bot)
                             // The landing belongs to this mount. Without this a
                             // chat left for an empty one, or remounted before
@@ -92,12 +101,12 @@ struct ChatView: View {
                             // Only the opacity fades. An animation on the whole
                             // transaction also animated any layout still moving
                             // in it, and the rows drifted while they faded in.
-                            .animation(.easeOut(duration: 0.15)) {
+                            .animation(restored ? nil : .easeOut(duration: 0.15)) {
                                 $0.opacity(landedBotId == bot.id ? 1 : 0)
                             }
                             .accessibilityHidden(landedBotId != bot.id)
                             .overlay {
-                                ZStack { if landedBotId != bot.id { loadingState } }
+                                ZStack { if landedBotId != bot.id, !restored { loadingState } }
                                     .animation(.easeOut(duration: 0.15), value: landedBotId == bot.id)
                             }
                     } else if model.transcriptReady {
@@ -386,6 +395,49 @@ struct ChatView: View {
         scrollToBottom(proxy)
     }
 
+    /// A chat put back from its snapshot or its stash has its rows known good,
+    /// so it lands as soon as layout reads the true bottom at one height on
+    /// two frames in a row: checked every frame, where a replayed chat waits
+    /// out three 50 ms checks, and shown without the fade.
+    @available(macOS 15.0, *)
+    private func landRestored(_ proxy: ScrollViewProxy, botId: String) async {
+        let confirmBy = Date().addingTimeInterval(Self.resumeConfirmWait)
+        let deadline = Date().addingTimeInterval(Self.landingCap)
+        var lastHeight: CGFloat = -1
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 16_000_000)
+            guard !Task.isCancelled else { return }
+            let height = scrollProbe.contentHeight
+            // Geometry that never reports has nothing to settle; it is given
+            // the confirmation wait to show up first.
+            let atBottom = scrollProbe.seen
+                ? scrollProbe.distance <= 1 || height <= scrollProbe.viewport + 1
+                : Date() >= confirmBy
+            let confirmed = model.transcriptReady || Date() >= confirmBy
+            if atBottom, height == lastHeight, confirmed {
+                // The newest rows alone do not fill the window: a short
+                // column sits at the top and would drop to the bottom once
+                // the rest mounted, so the rest mounts before anything shows.
+                if model.slimFirstPaint, scrollProbe.seen, height <= scrollProbe.viewport + 1 {
+                    model.finishFirstPaint()
+                    lastHeight = -1
+                    continue
+                }
+                break
+            }
+            if scrollProbe.seen, !atBottom { scrollToBottom(proxy) }
+            lastHeight = height
+        }
+        pinnedToBottom = true
+        landedBotId = botId
+        guard model.slimFirstPaint else { return }
+        // Two frames, so the landed frame is committed before the rest of the
+        // window is built above it.
+        try? await Task.sleep(nanoseconds: 34_000_000)
+        guard !Task.isCancelled else { return }
+        model.finishFirstPaint()
+    }
+
     /// The newest turn, without animating the trip. Used where the bottom
     /// anchor is known to be the right place: the transcript's own mount.
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -528,7 +580,7 @@ struct ChatView: View {
                     }
                 }
                 .uvScroll()
-                .defaultScrollAnchor(.bottom)
+                .modifier(TranscriptAnchor(pinned: pinnedToBottom))
                 .modifier(ScrollPinnedTracker(
                     pinned: $pinnedToBottom,
                     viewport: $viewportHeight,
@@ -559,13 +611,20 @@ struct ChatView: View {
                     // geometry must not stand in for this one's.
                     scrollProbe.reset()
                     scrollToBottom(proxy)
+                    if #available(macOS 15.0, *), model.restoredFromCache {
+                        await landRestored(proxy, botId: bot.id)
+                        return
+                    }
                     let deadline = Date().addingTimeInterval(Self.landingCap)
                     var steady = 0
                     var lastHeight: CGFloat = -1
                     while steady < 3, Date() < deadline {
                         try? await Task.sleep(nanoseconds: 50_000_000)
                         guard !Task.isCancelled else { return }
-                        guard model.transcriptReady || model.pending || model.restoredFromCache else {
+                        // A send counts only when it was made in this visit.
+                        // One still running from before the chat was left
+                        // sits on rows whose history may not be in yet.
+                        guard model.transcriptReady || (model.pending && model.sentSinceOpen) || model.restoredFromCache else {
                             scrollToBottom(proxy)
                             continue
                         }
@@ -594,6 +653,7 @@ struct ChatView: View {
                     // Hidden, the reader cannot have scrolled: it is pinned.
                     pinnedToBottom = true
                     landedBotId = bot.id
+                    model.finishFirstPaint()
                 }
                 // A replay slower than the cap finishes after the rows were
                 // shown; a reader still at the newest turn is kept there.
@@ -1333,6 +1393,25 @@ private final class ScrollProbe {
 
     func markAppScroll() {
         appScrollUntil = Date().addingTimeInterval(0.35)
+    }
+}
+
+/// Opens at the newest turn and keeps a reader who is there with it as the
+/// content grows. A reader up in the history keeps what they are reading
+/// instead: with the bottom anchor on every size change, a reply growing below
+/// them moved their rows up by as much as it grew.
+private struct TranscriptAnchor: ViewModifier {
+    let pinned: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .alignment)
+                .defaultScrollAnchor(pinned ? .bottom : .top, for: .sizeChanges)
+        } else {
+            content.defaultScrollAnchor(.bottom)
+        }
     }
 }
 

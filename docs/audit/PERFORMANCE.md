@@ -27,15 +27,91 @@ workspace credits once and was rerun).
 - Idle CPU: `top -l 31 -s 1 -pid <pid> -stats pid,cpu,mem`, drop the first sample, average the rest.
   Let the app settle for 20 s after launch first.
 - Where the time goes: `sample <pid> 5` and read "Sort by top of stack".
-- Chat open: count seconds from the `stream?startIndex=0` line in
-  `~/Library/Logs/UsefulBot/service-web.log` to the first `stream?startIndex=<n>` follow read.
-  The stream closes 3 s after its last event, so 3 to 4 s is the floor.
+- Chat open, frame by frame (since batch 10): record the window at 30 fps with
+  `winrec <windowId> <seconds> <dir> 30` while rail rows are clicked in the background through
+  `cua-driver` (`element_token`, never the real pointer). A clip is only written when the window
+  changes, so the time from the first changed frame after a click to the last changed frame before
+  the next click is click-to-final-frame. Diff only the chat column (leave out the rail and the
+  header) and look at every frame in the gap: a mascot, a blank or a jump shows up there and
+  nowhere else. The AX click reaches the app 2 to 3 s after `cua-driver` is called, so time from
+  the first changed frame, not from the call.
+- The clicks go through Accessibility, which switches on SwiftUI's accessibility tree for the app.
+  That makes every row build slower than it is for someone using a mouse, the same on both sides
+  of a comparison. A locked screen hides every window from Accessibility, so the recorder has to
+  run while the screen is unlocked.
 - Service cost: `ps -axo pid,rss,%cpu,command | grep -E 'next-server|eve'`.
 - Memory: `footprint <pid>` for the total and the per-category table (a big "CG image" line is a
   bitmap someone drew too large; `vmmap -v <pid> | grep '^CG image'` lists the regions). To find who
   allocated a region, launch the debug binary with `MallocStackLogging=1` and run
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
+
+## Batch 10: chats open from a snapshot (PR: perf/instant-chat-open)
+
+Measured on the installed build, frame by frame at 30 fps (see "How to measure"), cold launch then
+Test Bot, Generalist, Test Bot, Generalist, YT Producer, Test Bot, YT Producer. "First open" means
+the first open of that chat after a launch; before this batch every first open replayed the chat's
+whole eve session.
+
+| Case (events in the session) | Before (main @ 9465724) | After |
+|---|---|---|
+| Launch, window to first chat (Job Scout, 749) | 1.44 to 1.67 s | 1.16 s |
+| First open, Test Bot (7,659) | 4.35 to 4.69 s | 0.06 s |
+| First open, Generalist (10,794) | 5.41 s | 0.19 s |
+| First open, YT Producer (12,554) | 4.53 s; one run still on the mascot at 7 s | 0.13 s |
+| Switch back, Test Bot | 0.47 s | 0.09 to 0.11 s |
+| Switch back, Generalist | 0.87 s | 0.18 s |
+| Switch back, YT Producer | 0.61 s | 0.15 s |
+| eve CPU for one YT Producer open | 4.8 s | none when nothing is new; one chunk file per new event |
+
+- **Where the time went.** Chat turns live only in the eve session, so every first open replayed
+  it from event 0. eve's local world opens every chunk file of the session before it sends a byte
+  when asked for the tail index (1.25 s for YT Producer's 12,554 files, measured in isolation),
+  then reads every file again for the replay (another 1.2 s), then the app decoded all 12,554
+  events (373 ms in a debug build) and applied them. One YT Producer open cost eve 4.8 CPU seconds
+  and the app 6.2. A switch back to a chat opened earlier replayed the whole session again behind
+  its cached rows, and its landing waited out three 50 ms geometry checks and a 0.15 s fade: 0.35 s
+  before anything else.
+- **Fix 1: a snapshot per chat.** `ChatSnapshot` (UsefulBotCore) is the chat's full projection,
+  its durable rows, the event cursor, the id of the event before the cursor and the turn-id sets,
+  written to `~/Library/Caches/UsefulBot/chat-snapshots/<bot>.json` (0600) whenever the chat comes
+  to rest: a load finishing, a turn ending, the owner switching away. Only a chat at rest is saved,
+  and only a projection read from one session, so a snapshot is always exactly what a replay from
+  zero would have built at its cursor. YT Producer's is 164 KB and decodes in about a millisecond.
+- **Fix 2: read on from the cursor.** An open restores the snapshot in the same pass that selects
+  the chat, then reads only the events recorded after the cursor. When the session's newest event
+  is the one the snapshot ended on, it reads nothing at all.
+- **Fix 3: no tail index.** eve documents a negative `startIndex` as relative to the tail; a read
+  at `-1` opens one chunk file and names the newest event. Everything up to that event is history,
+  so the load reads to it and stops, and eve never scans the session. A chat with no snapshot yet
+  still replays from zero, 1.25 s sooner on a YT Producer sized chat.
+- **Fix 4: prebuilt snapshots.** Three seconds after launch the app builds the snapshot of every
+  chat that has none, one at a time and off the main thread. All seven chats here had one within
+  45 s of the first launch; every later first open is a restore.
+- **Fix 5: land at once.** A restored chat skips the mascot and the fade and lands as soon as layout
+  reads the true bottom at one height on two frames in a row, checked every frame. It waits up to
+  150 ms for the reload to confirm nothing was recorded since the snapshot, so a chat that gained a
+  turn while the app was closed opens on that turn instead of showing it arrive.
+- **Fix 6: the newest rows first.** With the replay gone, building the transcript's views was most
+  of what was left (about 150 ms on Generalist, whose 60 mounted blocks are 8,669 points tall). A
+  restored chat mounts the newest 14 blocks (the newest turn always whole) for its first frame and
+  the rest of the window two frames after it has landed, above the fold, where the bottom anchor
+  keeps the rows on screen still. If the newest rows do not fill the window, the rest mounts before
+  anything is shown, or the short column would sit at the top and then drop.
+- **Two open items from PR 117, closed.** A reader scrolled up into the history no longer moves when
+  a reply grows below them: the bottom anchor now applies to size changes only while the reader is
+  at the newest turn (macOS 15 and later). And a chat left before its first replay finished, with a
+  send still running, no longer lands on the partial rows when the owner comes back: the send only
+  counts toward landing when it was made in this visit, and the reload does not mark a partial
+  history loaded.
+- **How it is kept honest.** `ChatSnapshotTests` applies a session to a projection, round-trips it
+  through the snapshot, reads on from the cursor and requires the result to equal a replay from
+  zero, private state included. It also pins the projection's stored property names to
+  `ChatSnapshot.formatVersion`: adding a property fails the test until the version is bumped, and a
+  snapshot of another version is never restored. `HistoryMarkerTests` pins the marker read (no tail
+  index asked for, history ends at the marker, a read that ends before it throws). A resume that
+  never reaches its marker falls back to a replay from zero.
+- **Found in review (Opus 5.5, high effort).** Pending.
 
 ## Batch 9: the tick sweeps orphans once a minute (PR: perf/server-stores)
 
@@ -466,9 +542,8 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
-| Cached chat switch resumes from its cursor | a switch back still replays from zero | high | all five |
+| A send still asks eve for the tail index before it posts | about 1.25 s before the reply starts in a YT Producer sized chat | medium | batch 10 measurements |
 
 Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5), the
-streaming markdown cache (batch 6), the eager widget web views (batch 7), the cache budget (batch 8), the per-tick sweep (batch 9); the store parse memo was measured and
+streaming markdown cache (batch 6), the eager widget web views (batch 7), the cache budget (batch 8), the per-tick sweep (batch 9), the cached chat switch resuming from its cursor (batch 10); the store parse memo was measured and
 declined.
-Deferred by decision: the cached chat switch resuming from its cursor.

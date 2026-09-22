@@ -2,7 +2,7 @@ import Foundation
 
 /// Minimal JSON tree so event payloads with unknown shapes (search results,
 /// tool output) can be walked the way the web's `parseSearchChips` walks them.
-public enum JSONValue: Decodable, Equatable, Sendable {
+public enum JSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -26,6 +26,18 @@ public enum JSONValue: Decodable, Equatable, Sendable {
             self = .object(value)
         } else {
             throw DecodingError.dataCorruptedError(in: c, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try c.encode(value)
+        case .number(let value): try c.encode(value)
+        case .bool(let value): try c.encode(value)
+        case .array(let value): try c.encode(value)
+        case .object(let value): try c.encode(value)
+        case .null: try c.encodeNil()
         }
     }
 
@@ -67,7 +79,7 @@ public enum JSONValue: Decodable, Equatable, Sendable {
 }
 
 /// One web result chip from an `action.result` event.
-public struct SearchChip: Equatable, Sendable {
+public struct SearchChip: Codable, Equatable, Sendable {
     public let title: String
     public let url: String
     public let snippet: String
@@ -81,7 +93,7 @@ public struct SearchChip: Equatable, Sendable {
 
 /// What the live turn is doing right now, read off the session stream and
 /// shown in the working row while the reply is still on its way.
-public enum TurnActivity: Equatable, Sendable {
+public enum TurnActivity: Codable, Equatable, Sendable {
     case thinking
     case working
     /// The tool by name, and what it was pointed at when the call says so: the
@@ -149,7 +161,7 @@ public enum TurnActivity: Equatable, Sendable {
 }
 
 /// Why a turn failed, in words the owner can act on.
-public struct TurnFailure: Equatable, Sendable {
+public struct TurnFailure: Codable, Equatable, Sendable {
     public let code: String
     public let detail: String
 
@@ -367,8 +379,8 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     }
 }
 
-public struct ChatMessage: Identifiable, Equatable, Sendable {
-    public enum Role: String, Sendable { case user, assistant }
+public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
+    public enum Role: String, Codable, Sendable { case user, assistant }
     public var id: String
     public var role: Role
     public var text: String
@@ -393,6 +405,20 @@ public enum EveStream {
         guard let payload = payload(of: line),
               let data = payload.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(EveEvent.self, from: data)
+    }
+
+    /// Only an event's `meta.id`, for a line whose full shape this build may
+    /// not read.
+    private struct MetaIdOnly: Decodable {
+        struct Meta: Decodable { let id: String? }
+        let meta: Meta?
+    }
+
+    /// The `meta.id` of the event in a stream payload, whether or not the rest
+    /// of it decodes.
+    public static func eventId(ofPayload payload: String) -> String? {
+        guard let data = payload.data(using: .utf8) else { return nil }
+        return (try? JSONDecoder().decode(MetaIdOnly.self, from: data))?.meta?.id
     }
 
     /// The event text a stream line carries, or nil for a blank line, a
@@ -556,7 +582,10 @@ public enum EveStream {
 
 /// Live projection of a session stream, mirroring the web UI: a delta stream
 /// accumulates, message.completed is authoritative, replays dedupe by event id.
-public struct StreamProjection: Equatable, Sendable {
+/// Codable so a chat can be put back exactly as it was left (`ChatSnapshot`).
+/// Every stored property is part of that snapshot: a change to one must bump
+/// `ChatSnapshot.formatVersion`, which `ChatSnapshotTests` enforces.
+public struct StreamProjection: Codable, Equatable, Sendable {
     public private(set) var messages: [ChatMessage] = []
     public private(set) var pending = false
     /// Set when the turn or session failed, so callers can surface it instead
@@ -594,6 +623,13 @@ public struct StreamProjection: Equatable, Sendable {
             // in the eviction order.
             + turns.count * 128
     }
+    /// The one session every positioned event here was read from, or nil when
+    /// there were none or more than one. A send that moved to a fresh session
+    /// keeps the old session's rows in this projection, and a replay of the
+    /// fresh one would not: only a one-session projection is what a replay of
+    /// its session reproduces, so only that one may be saved and resumed.
+    public var soleSession: String? { journalBase == 0 ? journalSession : nil }
+
     /// Ids minted for rows whose events carried none. A count, not the row's
     /// position: a late discard removes a row, and a positional id then
     /// repeated one a surviving row already held.
@@ -641,7 +677,7 @@ public struct StreamProjection: Equatable, Sendable {
     /// it twice; and a failure can land after the owner has resent and the
     /// next turn's message is on screen. A slot reset by every boundary lost
     /// the carried row on each of those orderings, and the retry stacked.
-    private struct TurnRecord: Equatable {
+    private struct TurnRecord: Codable, Equatable {
         /// The user row this turn carried, while nothing has been said back.
         /// Nil when more than one row is open at once and the answer would be
         /// a guess.
@@ -1456,8 +1492,8 @@ public struct StreamProjection: Equatable, Sendable {
 }
 
 /// One `ask_question` request from an `input.requested` event.
-public struct OwnerQuestion: Identifiable, Equatable, Sendable {
-    public struct Option: Identifiable, Equatable, Sendable {
+public struct OwnerQuestion: Identifiable, Codable, Equatable, Sendable {
+    public struct Option: Identifiable, Codable, Equatable, Sendable {
         public var id: String
         public var label: String
         public var detail: String
@@ -1483,7 +1519,7 @@ public struct OwnerQuestion: Identifiable, Equatable, Sendable {
     }
 }
 
-public struct LiveWidget: Equatable, Sendable {
+public struct LiveWidget: Codable, Equatable, Sendable {
     public var id: String
     public var connectionId: String
     public var toolName: String
