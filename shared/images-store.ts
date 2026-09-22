@@ -29,8 +29,13 @@ export type ImageRecord = {
 };
 
 const ID = /^[a-zA-Z0-9_-]{8,80}$/;
-const IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/;
+export const IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/;
 
+/**
+ * The router refuses decoded image bytes past this, so the base64 body below
+ * (x4/3 plus the record's fields) always fits inside RECORD_MAX.
+ */
+export const IMAGE_BYTES_MAX = 12 * 1024 * 1024;
 /** A 4k PNG lands around 12 MB base64; anything past this is not one of ours. */
 const RECORD_MAX = 20_000_000;
 const PROMPT_MAX = 2_000;
@@ -51,6 +56,8 @@ export function writeImage(
 ): void {
   if (!ID.test(input.id)) throw new Error("image_id");
   if (!IMAGE_MIME.test(input.mime)) throw new Error("image_type");
+  const decoded = Math.floor(input.b64.length / 4) * 3 - (input.b64.endsWith("==") ? 2 : input.b64.endsWith("=") ? 1 : 0);
+  if (decoded > IMAGE_BYTES_MAX) throw new Error("image_too_large");
   const record: ImageRecord = {
     id: input.id,
     mime: input.mime,

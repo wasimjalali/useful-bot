@@ -514,6 +514,13 @@ struct ChatView: View {
                 // is shorter than the window and SwiftUI had already placed.
                 .onChange(of: model.sendTick) { holdingReplyAnchor = false }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
+                // The transcript remounts on `.id(bot.id)` but these survive
+                // it: a reader who left bot A off the bottom must not arrive
+                // at bot B unpinned, suppressing its re-pins and anchor jump.
+                .onChange(of: bot.id) {
+                    pinnedToBottom = true
+                    holdingReplyAnchor = false
+                }
                 // The two banners sit above this scroll view, so they take
                 // their height off the top of the viewport. The content kept
                 // its offset from the top and slid down by that much, which

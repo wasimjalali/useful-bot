@@ -38,14 +38,20 @@ struct GeneratedImageRow: View {
 
     @ViewBuilder private var content: some View {
         if let image {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 448, maxHeight: 448)
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                .cardLift(cornerRadius: DesignTokens.Radius.md)
-                .onTapGesture { open(image) }
-                .pointerOnHover()
+            Button {
+                open(image)
+            } label: {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 448, maxHeight: 448)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .cardLift(cornerRadius: DesignTokens.Radius.md)
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .accessibilityLabel(Text(prompt.isEmpty ? "Generated image" : prompt))
+            .accessibilityHint("Opens the image in your viewer")
         } else if failed {
             HStack(spacing: 8) {
                 Image(systemName: "photo")

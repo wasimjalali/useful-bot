@@ -11,7 +11,8 @@ import { LimitStore, estimateInputUnits } from "./limits.ts";
 import { entryFor, loadRegistry } from "./registry.ts";
 import { search } from "./search.ts";
 import { completeUpstream } from "./upstreams/opencode.ts";
-import { generateImage } from "./upstreams/images.ts";
+import { generateImage, IMAGE_USAGE_TOKENS } from "./upstreams/images.ts";
+import { readCapped } from "./read-capped.ts";
 import { usageFromPayload, usageFromSseBlock } from "../../shared/usage-parse.ts";
 import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
 
@@ -119,29 +120,7 @@ function parseJsonBody(raw: Buffer): unknown {
   }
 }
 
-async function readCapped(response: Response, limit: number): Promise<string> {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let size = 0;
-  let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > limit) {
-      await reader.cancel();
-      throw new RouterError({
-        status: 502,
-        type: "upstream_error",
-        code: "upstream_protocol_error",
-        message: "upstream body too large",
-      });
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-  return text + decoder.decode();
-}
+
 
 function waitForDrain(res: ServerResponse, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -776,10 +755,16 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         const releaseImage = imageGate.acquire(ConcurrencyGate.key(caller.callerId, sessionId));
         try {
           limits.rememberRequest(stepId, caller.callerId, Date.now());
-          // No token reservation: images bill per picture, not per token. The
-          // per-minute and per-day request caps still apply, which is what
-          // `hit` enforces.
-          limits.hit(caller, Date.now());
+          // Images bill per picture, so the reservation is a nominal token
+          // charge: it lands in the same 24h budgets as chat spend, and
+          // settles to the real count once the upstream answers.
+          const reservationId = limits.reserve({
+            caller,
+            alias: "image",
+            inputUnits: 0,
+            outputUnits: IMAGE_USAGE_TOKENS * parsed.n,
+            now: Date.now(),
+          });
           const controller = new AbortController();
           res.on("close", () => {
             if (!res.writableEnded) {
@@ -802,6 +787,12 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (kind === "idle" || kind === "total") throw timeoutError(false);
             throw error;
           }
+          limits.reconcile(
+            reservationId,
+            { inputTokens: 0, outputTokens: IMAGE_USAGE_TOKENS * result.images.length },
+            { provider: result.providerId, model: result.model },
+            Date.now(),
+          );
           send(res, 200, {
             created: Math.floor(Date.now() / 1000),
             model: result.model,

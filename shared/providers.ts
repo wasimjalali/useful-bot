@@ -673,7 +673,11 @@ export function setRole(store: ProviderStore, role: "reviewer" | "image", select
     return { ...store, roles };
   }
   store = withImplicit(store, selection.connectionId, env);
-  if (!store.connections[selection.connectionId]) throw new Error("connection_unknown");
+  const conn = store.connections[selection.connectionId];
+  if (!conn) throw new Error("connection_unknown");
+  if (role === "image" && !providerMode(conn.providerId, conn.mode).images) {
+    throw new Error("provider_incompatible");
+  }
   return { ...store, roles: { ...store.roles, [role]: selection } };
 }
 
@@ -751,6 +755,10 @@ function modelRows(id: string): Array<{ id: string; label: string }> {
  */
 function imageModelRows(conn: Connection): Array<{ id: string; label: string }> {
   const mode = providerMode(conn.providerId, conn.mode);
+  // A live-catalog row only counts when the mode can serve
+  // /images/generations; otherwise the picker would offer a role the
+  // resolver refuses.
+  if (!mode.images) return [];
   const seen = new Set<string>();
   const rows: Array<{ id: string; label: string }> = [];
   for (const id of mode.images?.models ?? []) {

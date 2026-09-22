@@ -392,7 +392,7 @@ export function snapComposer(
     speed,
     efforts: model.efforts.map((item) => ({ id: item, label: effortLabel(item) })),
     speeds: model.speeds.map((item) => ({ id: item, label: speedLabel(item) })),
-    models: list.map((item) => ({ id: item.id, label: item.label })),
+    models: list.filter((item) => modelChats(item) !== false).map((item) => ({ id: item.id, label: item.label })),
     groups,
   };
 }

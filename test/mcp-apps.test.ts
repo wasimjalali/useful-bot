@@ -81,7 +81,7 @@ test("the handshake names the tool with an input schema, which the app validates
 });
 
 /** Run the host page's script against a fake window and app frame. */
-function runHost(bridge: ((msg: Record<string, unknown>) => Promise<unknown>) | null) {
+function runHost(bridge: ((msg: Record<string, unknown>) => Promise<unknown>) | null, degraded = false) {
   const record: WidgetRecord = {
     id: "callid7777",
     connectionId: "excalidraw",
@@ -91,7 +91,7 @@ function runHost(bridge: ((msg: Record<string, unknown>) => Promise<unknown>) | 
     result: null,
     createdAt: new Date().toISOString(),
   };
-  const html = renderWidgetHost(record, "<html><body>app</body></html>", []);
+  const html = renderWidgetHost(record, "<html><body>app</body></html>", [], degraded);
   const script = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
   const toApp: Array<Record<string, any>> = [];
   const listeners: Record<string, (event: unknown) => void> = {};
@@ -123,6 +123,16 @@ function runHost(bridge: ((msg: Record<string, unknown>) => Promise<unknown>) | 
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a degraded host tells the native side the widget is unavailable, a healthy one stays quiet", async () => {
+  const degraded: Array<Record<string, unknown>> = [];
+  runHost(async (msg) => { degraded.push(JSON.parse(JSON.stringify(msg))); return {}; }, true);
+  assert.deepEqual(degraded, [{ kind: "status", status: "unavailable" }]);
+
+  const healthy: Array<Record<string, unknown>> = [];
+  runHost(async (msg) => { healthy.push(JSON.parse(JSON.stringify(msg))); return {}; });
+  assert.deepEqual(healthy, []);
+});
 
 test("the host passes the app's tool call, link and full screen to the native side", async () => {
   const asked: Array<Record<string, unknown>> = [];

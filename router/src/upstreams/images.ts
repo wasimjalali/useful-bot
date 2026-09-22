@@ -1,9 +1,16 @@
 import { RouterError } from "../errors.ts";
 import { retryAfterMs } from "../retry-after.ts";
+import { readCappedBytes } from "../read-capped.ts";
 import {
   readProviderStore,
   resolveUpstream,
 } from "../../../shared/providers.ts";
+import { IMAGE_BYTES_MAX, IMAGE_MIME } from "../../../shared/images-store.ts";
+import {
+  assertPublicHttpsUrl,
+  assertResolvedPublic,
+  ConnectionUrlError,
+} from "../../../shared/connection-url.ts";
 import {
   authFailed,
   clearConnectionError,
@@ -21,10 +28,15 @@ import {
 /** The tool asks in shapes; the provider takes the numbers it knows. */
 export type ImageSize = "square" | "wide" | "tall";
 
-const SIZE_DIMENSIONS: Record<ImageSize, string> = {
-  square: "1024x1024",
-  wide: "1536x1024",
-  tall: "1024x1536",
+/**
+ * Each provider's size contract, per docs.openai.com, docs.x.ai and
+ * docs.z.ai. Anything not listed sends no size and takes the model default:
+ * a wrong guess is a guaranteed upstream error, a missing one is not.
+ */
+const SIZE_DIMENSIONS: Record<string, Record<ImageSize, string>> = {
+  "dall-e-3": { square: "1024x1024", wide: "1792x1024", tall: "1024x1792" },
+  "gpt-image": { square: "1024x1024", wide: "1536x1024", tall: "1024x1536" },
+  zai: { square: "1280x1280", wide: "1568x1056", tall: "1056x1568" },
 };
 
 const SIZE_ASPECT: Record<ImageSize, string> = {
@@ -33,60 +45,82 @@ const SIZE_ASPECT: Record<ImageSize, string> = {
   tall: "9:16",
 };
 
-/** One downloaded image may not exceed this; beyond it is not one of ours. */
-const IMAGE_FETCH_MAX_BYTES = 20 * 1024 * 1024;
+/**
+ * The generations answer can carry up to four base64 images plus framing;
+ * each is capped at IMAGE_BYTES_MAX decoded, so the body cannot exceed this.
+ */
+const RESPONSE_MAX_BYTES = 4 * Math.ceil(IMAGE_BYTES_MAX * 4 / 3) + 1_000_000;
 const IMAGE_FETCH_MS = 60_000;
 
-const IMAGE_MIME = /^image\/(png|jpeg|gif|webp)/;
+/**
+ * Images bill per picture, which token budgets cannot see directly, so each
+ * one is charged a nominal 1500 units — roughly a mid-quality 1024px render.
+ * The route reserves n * this before dispatch and reconciles to the real
+ * count after, so an owner's daily cap covers image spend like chat spend.
+ */
+export const IMAGE_USAGE_TOKENS = 1500;
 
 export interface NormalizedImage {
   b64: string;
   mime: string;
 }
 
-function sizeParams(providerId: string, size: ImageSize | undefined): Record<string, unknown> {
+function sizeParams(providerId: string, model: string, size: ImageSize | undefined): Record<string, unknown> {
   if (!size) return {};
   // xAI takes aspect_ratio instead of a pixel size (docs.x.ai images
   // generation); OpenAI and Z.AI both take WxH on `size`.
   if (providerId === "xai") return { aspect_ratio: SIZE_ASPECT[size] };
-  return { size: SIZE_DIMENSIONS[size] };
+  const family = imageFamily(providerId, model);
+  const dims = family ? SIZE_DIMENSIONS[family] : undefined;
+  return dims ? { size: dims[size] } : {};
 }
 
-async function fetchImageBytes(url: string, signal: AbortSignal, fetchImpl: typeof fetch): Promise<{ bytes: Buffer; mime: string }> {
+function imageFamily(providerId: string, model: string): string | null {
+  if (providerId === "zai") return "zai";
+  return Object.keys(SIZE_DIMENSIONS).find((key) => key !== "zai" && model.startsWith(key)) ?? null;
+}
+
+function upstreamProtocolError(): RouterError {
+  return new RouterError({
+    status: 502,
+    type: "upstream_error",
+    code: "upstream_protocol_error",
+    message: "upstream_protocol_error",
+  });
+}
+
+/**
+ * Provider-returned download URLs get the full SSRF screen before any byte
+ * moves: https only, no credentials, no literal IPs, no loopback, default
+ * port, and the hostname must resolve to a public IPv4. The shared helpers
+ * allow 127.0.0.1 for owner-typed local URLs, so assertPublicHttpsUrl (which
+ * refuses it) runs first.
+ */
+async function imageFetchUrl(raw: string): Promise<string> {
+  try {
+    const href = assertPublicHttpsUrl(raw);
+    if (new URL(href).port) throw new ConnectionUrlError("url_port");
+    return await assertResolvedPublic(href);
+  } catch {
+    throw upstreamProtocolError();
+  }
+}
+
+async function fetchImageBytes(rawUrl: string, signal: AbortSignal, fetchImpl: typeof fetch): Promise<{ bytes: Buffer; mime: string }> {
   // The URL came from the upstream's answer, not from the caller, but it is
-  // still fetched like anything remote: no redirects followed blindly, a
-  // byte cap, and an image content type or nothing.
+  // still fetched like anything remote: screened host, no redirects followed
+  // blindly, a streamed byte cap, and an image content type or nothing.
+  const url = await imageFetchUrl(rawUrl);
   const res = await fetchImpl(url, {
     redirect: "manual",
     signal: AbortSignal.any([AbortSignal.timeout(IMAGE_FETCH_MS), signal]),
     headers: { accept: "image/*", "user-agent": "useful-bot/1.0" },
   });
-  if (!res.ok) {
-    throw new RouterError({
-      status: 502,
-      type: "upstream_error",
-      code: "upstream_protocol_error",
-      message: "upstream_protocol_error",
-    });
-  }
+  if (!res.ok) throw upstreamProtocolError();
   const mime = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  if (!IMAGE_MIME.test(mime)) {
-    throw new RouterError({
-      status: 502,
-      type: "upstream_error",
-      code: "upstream_protocol_error",
-      message: "upstream_protocol_error",
-    });
-  }
-  const bytes = Buffer.from(await res.arrayBuffer());
-  if (bytes.byteLength > IMAGE_FETCH_MAX_BYTES) {
-    throw new RouterError({
-      status: 502,
-      type: "upstream_error",
-      code: "upstream_protocol_error",
-      message: "upstream_protocol_error",
-    });
-  }
+  if (!IMAGE_MIME.test(mime)) throw upstreamProtocolError();
+  const bytes = await readCappedBytes(res, IMAGE_BYTES_MAX);
+  if (bytes.length === 0) throw upstreamProtocolError();
   return { bytes, mime };
 }
 
@@ -138,8 +172,10 @@ export async function generateImage(input: {
     body: JSON.stringify({
       model: resolved.model,
       prompt: input.prompt,
-      n: input.n,
-      ...sizeParams(resolved.providerId, input.size),
+      // dall-e-3 refuses anything but n=1; the response then carries one
+      // image and the route bills for what arrived, not what was asked.
+      n: imageFamily(resolved.providerId, resolved.model) === "dall-e-3" ? 1 : input.n,
+      ...sizeParams(resolved.providerId, resolved.model, input.size),
     }),
     redirect: "manual",
     signal: input.signal,
@@ -180,36 +216,32 @@ export async function generateImage(input: {
       message: "upstream_protocol_error",
     });
   }
-  const json = await response.json().catch(() => null) as { data?: unknown } | null;
-  const data = Array.isArray(json?.data) ? json.data : null;
-  if (!data || data.length === 0) {
-    throw new RouterError({
-      status: 502,
-      type: "upstream_error",
-      code: "upstream_protocol_error",
-      message: "upstream_protocol_error",
-    });
+  const bodyText = (await readCappedBytes(response, RESPONSE_MAX_BYTES)).toString("utf8");
+  let json: { data?: unknown } | null;
+  try {
+    json = JSON.parse(bodyText || "null") as { data?: unknown } | null;
+  } catch {
+    throw upstreamProtocolError();
   }
+  const data = Array.isArray(json?.data) ? json.data : null;
+  if (!data || data.length === 0) throw upstreamProtocolError();
   const images: NormalizedImage[] = [];
-  for (const item of data) {
+  for (const item of data.slice(0, input.n)) {
     const rec = item && typeof item === "object" ? item as Record<string, unknown> : {};
     if (typeof rec.b64_json === "string" && rec.b64_json) {
       const bytes = Buffer.from(rec.b64_json, "base64");
-      const mime = sniffMime(bytes) ?? "image/png";
+      if (bytes.length === 0 || bytes.length > IMAGE_BYTES_MAX) throw upstreamProtocolError();
+      const mime = sniffMime(bytes);
+      if (!mime) throw upstreamProtocolError();
       images.push({ b64: rec.b64_json, mime });
       continue;
     }
-    if (typeof rec.url === "string" && /^https:\/\/[^\s]+$/.test(rec.url)) {
+    if (typeof rec.url === "string") {
       const fetched = await fetchImageBytes(rec.url, input.signal, doFetch);
       images.push({ b64: fetched.bytes.toString("base64"), mime: fetched.mime });
       continue;
     }
-    throw new RouterError({
-      status: 502,
-      type: "upstream_error",
-      code: "upstream_protocol_error",
-      message: "upstream_protocol_error",
-    });
+    throw upstreamProtocolError();
   }
   return { providerId: resolved.providerId, model: resolved.model, images };
 }

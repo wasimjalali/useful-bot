@@ -21,6 +21,8 @@ import {
 } from "../shared/providers.ts";
 import { generateImage } from "../router/src/upstreams/images.ts";
 import { RouterError } from "../router/src/errors.ts";
+import { setConnectionLookup } from "../shared/connection-url.ts";
+import { IMAGE_BYTES_MAX } from "../shared/images-store.ts";
 
 // A 1x1 png, the smallest real image the store is asked to keep.
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -184,10 +186,15 @@ test("generateImage speaks aspect_ratio to xAI and downloads a url answer", asyn
       });
     }) as typeof fetch;
 
-    const out = await generateImage({ prompt: "a fox", size: "wide", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl });
-    assert.deepEqual(calls, ["https://api.x.ai/v1/images/generations", "https://cdn.example/img.png"]);
-    assert.equal(out.images[0]?.mime, "image/png");
-    assert.equal(out.images[0]?.b64, PNG_B64);
+    setConnectionLookup(async () => "8.8.8.8");
+    try {
+      const out = await generateImage({ prompt: "a fox", size: "wide", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl });
+      assert.deepEqual(calls, ["https://api.x.ai/v1/images/generations", "https://cdn.example/img.png"]);
+      assert.equal(out.images[0]?.mime, "image/png");
+      assert.equal(out.images[0]?.b64, PNG_B64);
+    } finally {
+      setConnectionLookup(null);
+    }
   });
 });
 
@@ -206,5 +213,196 @@ test("generateImage maps a 401 to auth_failed and a 429 to a retryable limit", a
     assert.ok(err429 instanceof RouterError);
     assert.equal(err429.code, "upstream_rate_limited");
     assert.equal(err429.retryable, true);
+  });
+});
+
+test("a url answer is screened before a byte is fetched", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "xai", "api", "xai-key-12345678");
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    for (const bad of [
+      "http://cdn.example/img.png",
+      "https://127.0.0.1/img.png",
+      "https://169.254.169.254/latest/meta-data",
+      "https://user:pass@cdn.example/img.png",
+      "https://cdn.example:8443/img.png",
+      "https://localhost/img.png",
+    ]) {
+      const calls: string[] = [];
+      const fetchImpl = (async (url: string | URL | Request) => {
+        calls.push(String(url));
+        return new Response(JSON.stringify({ data: [{ url: bad }] }), { status: 200 });
+      }) as typeof fetch;
+      const err = await generateImage({ prompt: "x", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl }).catch((e) => e);
+      assert.ok(err instanceof RouterError, bad);
+      assert.equal(err.code, "upstream_protocol_error", bad);
+      // The download was refused before fetch: only the generations call ran.
+      assert.equal(calls.length, 1, bad);
+    }
+
+    // A public name that resolves to a private address is refused the same way.
+    setConnectionLookup(async () => "10.0.0.4");
+    try {
+      const calls: string[] = [];
+      const fetchImpl = (async (url: string | URL | Request) => {
+        calls.push(String(url));
+        return new Response(JSON.stringify({ data: [{ url: "https://cdn.example/img.png" }] }), { status: 200 });
+      }) as typeof fetch;
+      const err = await generateImage({ prompt: "x", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl }).catch((e) => e);
+      assert.ok(err instanceof RouterError);
+      assert.equal(err.code, "upstream_protocol_error");
+      assert.equal(calls.length, 1);
+    } finally {
+      setConnectionLookup(null);
+    }
+  });
+});
+
+test("the download cap is enforced while streaming, not after buffering", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "xai", "api", "xai-key-12345678");
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    const oversized = Buffer.alloc(IMAGE_BYTES_MAX + 8, 0x89);
+    const fetchImpl = (async (url: string | URL | Request) => {
+      if (String(url).includes("images/generations")) {
+        return new Response(JSON.stringify({ data: [{ url: "https://cdn.example/big.png" }] }), { status: 200 });
+      }
+      // A declared length past the cap is refused before the body is read.
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(oversized);
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "image/png", "content-length": String(oversized.length) } });
+    }) as typeof fetch;
+
+    setConnectionLookup(async () => "8.8.8.8");
+    try {
+      const err = await generateImage({ prompt: "x", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl }).catch((e) => e);
+      assert.ok(err instanceof RouterError);
+      assert.equal(err.code, "upstream_protocol_error");
+    } finally {
+      setConnectionLookup(null);
+    }
+  });
+});
+
+test("an oversized b64_json answer is refused instead of stored", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    const big = Buffer.alloc(IMAGE_BYTES_MAX + 4, 0x89).toString("base64");
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ data: [{ b64_json: big }] }),
+      { status: 200 },
+    )) as typeof fetch;
+    const err = await generateImage({ prompt: "x", n: 1, signal: AbortSignal.timeout(10_000), fetchImpl }).catch((e) => e);
+    assert.ok(err instanceof RouterError);
+    assert.equal(err.code, "upstream_protocol_error");
+  });
+});
+
+test("a generations body past the response cap is refused", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    const fetchImpl = (async () => new Response("x", {
+      status: 200,
+      headers: { "content-length": String(4 * Math.ceil(IMAGE_BYTES_MAX * 4 / 3) + 2_000_000) },
+    })) as typeof fetch;
+    const err = await generateImage({ prompt: "x", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl }).catch((e) => e);
+    assert.ok(err instanceof RouterError);
+    assert.equal(err.code, "upstream_protocol_error");
+  });
+});
+
+test("dall-e-3 takes its own sizes and a single image per call", async () => {
+  await withImageStore(async (dir) => {
+    let store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
+    store = setRole(store, "image", { connectionId: "openai:api", modelId: "dall-e-3", effort: null });
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG_B64 }] }), { status: 200 });
+    }) as typeof fetch;
+
+    await generateImage({ prompt: "x", size: "wide", n: 4, signal: AbortSignal.timeout(5_000), fetchImpl });
+    assert.equal(seen[0]?.size, "1792x1024");
+    assert.equal(seen[0]?.n, 1);
+    await generateImage({ prompt: "x", size: "tall", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl });
+    assert.equal(seen[1]?.size, "1024x1792");
+    await generateImage({ prompt: "x", size: "square", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl });
+    assert.equal(seen[2]?.size, "1024x1024");
+  });
+});
+
+test("zai takes its documented pixel sizes", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "zai", "api", "zai-key-12345678");
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG_B64 }] }), { status: 200 });
+    }) as typeof fetch;
+
+    await generateImage({ prompt: "x", size: "wide", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl });
+    assert.equal(seen[0]?.size, "1568x1056");
+    assert.equal(seen[0]?.aspect_ratio, undefined);
+  });
+});
+
+test("a text-only connection cannot be written as the image role", () => {
+  const store = setProviderKey(emptyProviderStore(), "opencode-go", "plan", "go-key-12345678");
+  assert.throws(
+    () => setRole(store, "image", { connectionId: "opencode-go:plan", modelId: "anything", effort: null }),
+    /provider_incompatible/,
+  );
+});
+
+test("a b64 answer whose mime is not an image is refused", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "openai", "api", "sk-test-abcdef1234");
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    // A valid base64 payload that sniffs to nothing known.
+    const notImage = Buffer.from("<html><body>not a picture</body></html>").toString("base64");
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ data: [{ b64_json: notImage }] }),
+      { status: 200 },
+    )) as typeof fetch;
+    const err = await generateImage({ prompt: "x", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl }).catch((e) => e);
+    assert.ok(err instanceof RouterError);
+    assert.equal(err.code, "upstream_protocol_error");
+  });
+});
+
+test("a url answer with a non-image content type is refused", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "xai", "api", "xai-key-12345678");
+    writeProviderStore(store, join(dir, "providers.json"));
+
+    const fetchImpl = (async (url: string | URL | Request) => {
+      if (String(url).includes("images/generations")) {
+        return new Response(JSON.stringify({ data: [{ url: "https://cdn.example/img.pngx" }] }), { status: 200 });
+      }
+      return new Response("not image bytes", { status: 200, headers: { "content-type": "text/html" } });
+    }) as typeof fetch;
+
+    setConnectionLookup(async () => "8.8.8.8");
+    try {
+      const err = await generateImage({ prompt: "x", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl }).catch((e) => e);
+      assert.ok(err instanceof RouterError);
+      assert.equal(err.code, "upstream_protocol_error");
+    } finally {
+      setConnectionLookup(null);
+    }
   });
 });
