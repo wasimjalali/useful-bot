@@ -1,0 +1,1003 @@
+import SwiftUI
+import UIKit
+import UsefulBotCore
+
+/// Providers (spec 1.12): the connected list in 36 pt sunken tiles with
+/// status pills, the task-model rows, then "Add provider" pushing the
+/// catalogue. Every write is class A — OwnerGate runs first.
+struct PhoneProvidersView: View {
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(PhoneModel.self) private var phone
+    @State private var payload: ProvidersPayload?
+    @State private var error: String?
+    @State private var connectTarget: CatalogPublic?
+    @State private var detailTarget: ConnectionPublic?
+    @State private var roleTarget: RoleTarget?
+
+    enum RoleTarget: String, Identifiable {
+        case `default`, reviewer
+        var id: String { rawValue }
+        var title: String { self == .default ? "Chat model" : "Reviewer model" }
+    }
+
+    var body: some View {
+        List {
+            Section("Connected") {
+                let connections = payload?.connections ?? []
+                if connections.isEmpty {
+                    Text("No providers connected.")
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                ForEach(connections) { connection in
+                    Button {
+                        detailTarget = connection
+                    } label: {
+                        HStack(spacing: 12) {
+                            ProviderMark(icon: connection.icon, monogram: connection.monogram, size: 28)
+                                .frame(width: 36, height: 36)
+                                .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(connection.label)
+                                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                                    .foregroundStyle(Theme.C.ink)
+                                Text(connection.kindLabel)
+                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                    .foregroundStyle(Theme.C.inkMuted)
+                            }
+                            Spacer(minLength: 8)
+                            StatusPill(
+                                text: connection.active ? "Active" : (connection.connected ? "Connected" : "Off"),
+                                foreground: connection.active ? Theme.C.success : Theme.C.inkMuted,
+                                background: connection.active ? Theme.C.successSoft : Theme.C.sunken
+                            )
+                        }
+                        .frame(minHeight: 52)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button("Add provider") { showCatalog = true }
+                    .buttonStyle(SecondaryAction(enabled: blocked == nil))
+                    .frame(minHeight: 44)
+                    .disabled(blocked != nil)
+                    .listRowSeparator(.hidden)
+            }
+            Section("Task models") {
+                if let role = payload?.defaultRole {
+                    Button { roleTarget = .default } label: {
+                        roleRow(title: "Chat model", role: role)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(blocked != nil)
+                }
+                if let role = payload?.reviewerRole {
+                    Button { roleTarget = .reviewer } label: {
+                        roleRow(title: "Reviewer model", role: role)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(blocked != nil)
+                }
+            }
+            if let error {
+                Section { Text(error).foregroundStyle(Theme.C.danger) }
+            }
+            Section {
+                Text("Keys stay in your Mac's Keychain. This iPhone never holds them.")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+        }
+        .navigationTitle("Providers")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+        .sheet(item: $connectTarget) { catalog in
+            ProviderConnectView(catalog: catalog) { next in
+                payload = next
+            }
+            .environmentObject(coordinator)
+        }
+        .sheet(item: $detailTarget) { connection in
+            ConnectionDetailView(connection: connection) { next in
+                payload = next
+            }
+            .environmentObject(coordinator)
+        }
+        .sheet(item: $roleTarget) { target in
+            rolePicker(target)
+        }
+        .sheet(isPresented: $showCatalog) { catalogSheet }
+    }
+
+    @State private var showCatalog = false
+
+    private func roleRow(title: String, role: RolePublic) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                .foregroundStyle(Theme.C.ink)
+            Spacer(minLength: 8)
+            Text(role.modelLabel.isEmpty ? "Not set" : ([role.modelLabel, role.effortLabel].compactMap { $0 }.joined(separator: " · ")))
+                .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+                .lineLimit(1)
+            Image(systemName: "chevron.right")
+                .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                .foregroundStyle(Theme.C.inkFaint)
+        }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+    }
+
+    /// The role's model+effort picker: rows grouped by connection, picked row
+    /// sunken + checkmark, same contract as the composer sheet.
+    @ViewBuilder
+    private func rolePicker(_ target: RoleTarget) -> some View {
+        let role = target == .default ? payload?.defaultRole : payload?.reviewerRole
+        NavigationStack {
+            List {
+                if let role {
+                    if target == .reviewer {
+                        Button {
+                            Task { await saveRole(target, connectionId: nil, modelId: nil) }
+                        } label: {
+                            HStack {
+                                Text("None")
+                                    .foregroundStyle(Theme.C.ink)
+                                Spacer()
+                                if role.connectionId == nil {
+                                    Image(systemName: "checkmark").foregroundStyle(Theme.C.accent)
+                                }
+                            }
+                            .frame(minHeight: 44)
+                        }
+                    }
+                    ForEach(role.models, id: \.id) { model in
+                        Button {
+                            Task { await saveRole(target, connectionId: model.connectionId, modelId: model.id) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                ProviderMark(icon: model.icon, monogram: model.connectionLabel.first.map(String.init) ?? "?", size: 18)
+                                Text(model.label)
+                                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                                    .foregroundStyle(Theme.C.ink)
+                                Spacer(minLength: 8)
+                                if role.connectionId == model.connectionId && role.modelId == model.id {
+                                    Image(systemName: "checkmark").foregroundStyle(Theme.C.accent)
+                                }
+                            }
+                            .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if !role.efforts.isEmpty {
+                        Section("Effort") {
+                            effortPicker(target, role: role)
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(target.title)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func effortPicker(_ target: RoleTarget, role: RolePublic) -> some View {
+        TokenSegmented(
+            options: role.efforts.map { (id: $0.id, label: $0.label) },
+            selection: Binding(
+                get: { role.effort ?? role.efforts.first?.id ?? "" },
+                set: { next in
+                    let connectionId = role.connectionId
+                    let modelId = role.modelId.isEmpty ? nil : role.modelId
+                    _ = Task { await saveRole(target, connectionId: connectionId, modelId: modelId, effort: next) }
+                }
+            )
+        )
+    }
+
+    private var catalogSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(payload?.catalog ?? []) { item in
+                    Button { connectTarget = item } label: {
+                        HStack(spacing: 12) {
+                            ProviderMark(icon: item.icon, monogram: item.monogram, size: 28)
+                                .frame(width: 36, height: 36)
+                                .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.label)
+                                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                                    .foregroundStyle(Theme.C.ink)
+                                Text(item.kindLabel)
+                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                    .foregroundStyle(Theme.C.inkMuted)
+                            }
+                            Spacer(minLength: 8)
+                            if item.connected {
+                                StatusPill(text: "Connected", foreground: Theme.C.success, background: Theme.C.successSoft)
+                            }
+                        }
+                        .frame(minHeight: 52)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(blocked != nil)
+                }
+            }
+            .navigationTitle("Add provider")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.large])
+    }
+
+    private var blocked: String? {
+        phone.mutationBlocked(coordinator.readiness)
+    }
+
+    private func load() async {
+        guard let client = coordinator.client else { return }
+        do {
+            payload = try await client.providersPayload()
+            error = nil
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    private func saveRole(_ target: RoleTarget, connectionId: String?, modelId: String?, effort: String? = nil) async {
+        switch await OwnerGate.evaluate(reason: "Change a task model") {
+        case .approved:
+            break
+        case .unavailable:
+            error = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
+        guard let client = coordinator.client else { return }
+        do {
+            payload = try await client.setRole(target.rawValue, connectionId: connectionId, modelId: modelId, effort: effort)
+            error = nil
+            roleTarget = nil
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+}
+
+/// One connection's detail (spec 1.12): mark and name, its status and
+/// error, "Use for chat" when it isn't the active connection, and
+/// "Disconnect" in danger — class A.
+private struct ConnectionDetailView: View {
+    let connection: ConnectionPublic
+    var onChange: (ProvidersPayload) -> Void
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+    @State private var busy = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 12) {
+                        ProviderMark(icon: connection.icon, monogram: connection.monogram, size: 44)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(connection.label)
+                                .tokenFont(DesignTokens.FontSize.phoneLargeTitle, .semibold)
+                                .foregroundStyle(Theme.C.ink)
+                            Text(connection.kindLabel)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                    .frame(minHeight: 52)
+                }
+                Section {
+                    if let last4 = connection.last4 {
+                        LabeledContent("Key", value: "••••\(last4)")
+                            .frame(minHeight: 44)
+                    }
+                    if let accountId = connection.accountId {
+                        LabeledContent("Account", value: accountId)
+                            .frame(minHeight: 44)
+                    }
+                    if let lastError = connection.lastError {
+                        Text(lastError)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.danger)
+                    }
+                    if !connection.active {
+                        Button("Use for chat") { Task { await activate() } }
+                            .frame(minHeight: 44)
+                            .disabled(busy)
+                    }
+                }
+                Section {
+                    Button("Disconnect") { Task { await disconnect() } }
+                        .foregroundStyle(Theme.C.danger)
+                        .frame(minHeight: 44)
+                        .disabled(busy)
+                }
+                if let error {
+                    Section { Text(error).foregroundStyle(Theme.C.danger) }
+                }
+            }
+            .navigationTitle(connection.label)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func gate(_ reason: String) async -> Bool {
+        switch await OwnerGate.evaluate(reason: reason) {
+        case .approved:
+            return true
+        case .unavailable:
+            error = OwnerGate.unavailableCopy
+            return false
+        case .cancelledOrFailed:
+            return false
+        }
+    }
+
+    private func activate() async {
+        guard await gate("Use this provider for chat") else { return }
+        guard let client = coordinator.client else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            onChange(try await client.setActiveConnection(connection.id))
+            dismiss()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    private func disconnect() async {
+        guard await gate("Disconnect this provider") else { return }
+        guard let client = coordinator.client else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            onChange(try await client.disconnectConnection(connection.id))
+            dismiss()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+}
+
+/// The connect form for one catalogue row (spec 1.12 detail): OAuth gets the
+/// device-flow card with the code in mono 20, "Copy code" and a Safari sheet;
+/// api-key modes get a secure field plus Save; local modes get their fields.
+struct ProviderConnectView: View {
+    let catalog: CatalogPublic
+    var onChange: (ProvidersPayload) -> Void
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(\.dismiss) private var dismiss
+    @State private var key = ""
+    @State private var fields: [String: String] = [:]
+    @State private var error: String?
+    @State private var rejected = false
+    @State private var busy = false
+    @State private var flow: DeviceFlowStart?
+    @State private var pollStatus = ""
+    @State private var safariURL: URL?
+    @State private var pollTask: Task<Void, Never>?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 12) {
+                        ProviderMark(icon: catalog.icon, monogram: catalog.monogram, size: 44)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(catalog.label)
+                                .tokenFont(DesignTokens.FontSize.phoneLargeTitle, .semibold)
+                                .foregroundStyle(Theme.C.ink)
+                            Text(catalog.kindLabel)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                    .frame(minHeight: 52)
+                }
+                if catalog.oauth {
+                    oauthSection
+                } else {
+                    formSection
+                }
+                if let error {
+                    Section {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(rejected ? "Key rejected" : "Couldn't connect")
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
+                                .foregroundStyle(Theme.C.danger)
+                            Text(error)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Connect \(catalog.label)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .sheet(isPresented: Binding(get: { safariURL != nil }, set: { if !$0 { safariURL = nil } })) {
+            if let url = safariURL {
+                SafariSheet(url: url)
+            }
+        }
+        .onDisappear { pollTask?.cancel() }
+    }
+
+    private var oauthSection: some View {
+        Group {
+            if let flow {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(flow.userCode)
+                            .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Theme.C.ink)
+                            .minimumScaleFactor(0.5)
+                            .lineLimit(2)
+                        HStack(spacing: 12) {
+                            Button("Copy code") {
+                                UIPasteboard.general.string = flow.userCode
+                            }
+                            .buttonStyle(SecondaryAction())
+                            .frame(minHeight: 44)
+                            Button("Open in Safari") {
+                                if let url = URL(string: flow.verificationUrlComplete ?? flow.verificationUrl) {
+                                    safariURL = url
+                                }
+                            }
+                            .buttonStyle(SecondaryAction())
+                            .frame(minHeight: 44)
+                        }
+                        if !pollStatus.isEmpty {
+                            Text(pollStatus)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Section {
+                Button(flow == nil ? "Sign in" : "Try again") { Task { await startFlow() } }
+                    .buttonStyle(SecondaryAction(enabled: !busy))
+                    .frame(minHeight: 44)
+                    .disabled(busy)
+            }
+        }
+    }
+
+    private var formSection: some View {
+        Group {
+            Section {
+                if catalog.fields == nil || catalog.fields?.isEmpty == true {
+                    SecureField(catalog.hint.isEmpty ? "API key" : catalog.hint, text: $key)
+                        .frame(minHeight: 44)
+                }
+                ForEach(catalog.fields ?? [], id: \.id) { field in
+                    Group {
+                        if field.secret {
+                            SecureField(field.placeholder.isEmpty ? field.label : field.placeholder, text: binding(for: field.id))
+                        } else {
+                            TextField(field.placeholder.isEmpty ? field.label : field.placeholder, text: binding(for: field.id))
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        }
+                    }
+                    .frame(minHeight: 44)
+                }
+            }
+            Section {
+                Button(busy ? "Connecting" : (catalog.fields == nil || catalog.fields?.isEmpty == true ? "Save key" : "Connect")) {
+                    Task { await connect() }
+                }
+                .buttonStyle(SecondaryAction(enabled: !busy))
+                .frame(minHeight: 44)
+                .disabled(busy)
+            }
+        }
+    }
+
+    private func binding(for id: String) -> Binding<String> {
+        Binding(get: { fields[id] ?? "" }, set: { fields[id] = $0 })
+    }
+
+    private func startFlow() async {
+        guard let client = coordinator.client else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let started = try await client.startOAuth(providerId: catalog.providerId)
+            flow = started
+            pollStatus = "Waiting for you to finish in Safari"
+            error = nil
+            if let url = URL(string: started.verificationUrlComplete ?? started.verificationUrl) {
+                safariURL = url
+            }
+            poll(started)
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    /// The server names its own interval; follow it and stop on a terminal
+    /// status (complete / expired / failed).
+    private func poll(_ flow: DeviceFlowStart) {
+        guard let client = coordinator.client else { return }
+        pollTask?.cancel()
+        pollTask = Task {
+            var interval = max(1, Double(flow.intervalMs) / 1000)
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval))
+                guard !Task.isCancelled else { return }
+                do {
+                    let (status, intervalMs, payload) = try await client.pollOAuth(pollId: flow.pollId)
+                    if let intervalMs { interval = max(1, Double(intervalMs) / 1000) }
+                    switch status {
+                    case "complete":
+                        if let payload { onChange(payload) }
+                        dismiss()
+                        return
+                    case "pending":
+                        pollStatus = "Waiting for you to finish in Safari"
+                    case "expired":
+                        pollStatus = "The code expired."
+                        self.flow = nil
+                        return
+                    case "failed":
+                        pollStatus = "Sign-in failed. Try again."
+                        self.flow = nil
+                        return
+                    default:
+                        pollStatus = status
+                    }
+                } catch {
+                    pollStatus = "Lost the connection to your Mac."
+                    return
+                }
+            }
+        }
+    }
+
+    private func connect() async {
+        switch await OwnerGate.evaluate(reason: "Connect a provider") {
+        case .approved:
+            break
+        case .unavailable:
+            error = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
+        guard let client = coordinator.client else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let keyValue = key.isEmpty ? nil : key
+            let fieldValues = fields.isEmpty ? nil : fields
+            onChange(try await client.connect(providerId: catalog.providerId, mode: catalog.mode, key: keyValue, fields: fieldValues))
+            dismiss()
+        } catch {
+            rejected = true
+            self.error = (error as? LocalizedError)?.errorDescription ?? "The Mac refused this key"
+        }
+    }
+}
+
+/// Connectors (spec 1.13): the Composio key configuration first, then the
+/// searchable app list with Connect / Disconnect rows. Save/remove key and
+/// every connect write is class A.
+struct PhoneConnectorsView: View {
+    /// Chat's Add-to-message sheet pushes the list without the key form
+    /// (1.13: the key form lives only under Settings).
+    var showsKeyForm = true
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(PhoneModel.self) private var phone
+    @State private var payload: ConnectorsPayload?
+    @State private var query = ""
+    @State private var key = ""
+    @State private var rejectedReason: String?
+    @State private var error: String?
+    @State private var connectingSlug: String?
+    @State private var safariURL: URL?
+    @State private var shown = 20
+
+    var body: some View {
+        List {
+            if showsKeyForm {
+                keySection
+            }
+            if payload?.hasKey == true || !showsKeyForm {
+                appSection
+            } else if let payload, payload.error != nil {
+                Section {
+                    HStack {
+                        Text(payload.error ?? "Connectors failed")
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.danger)
+                        Spacer()
+                        Button("Retry") { Task { await load() } }
+                            .frame(minHeight: 44)
+                    }
+                }
+            }
+            if let error {
+                Section { Text(error).foregroundStyle(Theme.C.danger) }
+            }
+        }
+        .searchable(text: $query, prompt: "Search apps")
+        .navigationTitle("Connectors")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+        .sheet(isPresented: Binding(get: { safariURL != nil }, set: { if !$0 { safariURL = nil } }), onDismiss: {
+            connectingSlug = nil
+            Task { await load() }
+        }) {
+            if let url = safariURL {
+                SafariSheet(url: url)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var keySection: some View {
+        Section("Composio API key") {
+            if let payload, payload.hasKey {
+                HStack(spacing: 10) {
+                    Image(systemName: "key")
+                        .foregroundStyle(Theme.C.inkMuted)
+                    Text("Key ending \(payload.last4 ?? "????")")
+                        .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                        .foregroundStyle(Theme.C.ink)
+                    Spacer(minLength: 8)
+                    Button("Remove") { Task { await removeKey() } }
+                        .buttonStyle(SecondaryAction(enabled: blocked == nil))
+                        .frame(minHeight: 44)
+                        .disabled(blocked != nil)
+                }
+                .frame(minHeight: 44)
+            } else {
+                SecureField("Paste key", text: $key)
+                    .frame(minHeight: 44)
+                Button("Save key") { Task { await saveKey() } }
+                    .buttonStyle(SecondaryAction(enabled: blocked == nil && !key.isEmpty))
+                    .frame(minHeight: 44)
+                    .disabled(blocked != nil || key.isEmpty)
+                if key.isEmpty {
+                    Text("Paste a key to save it")
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                if let rejectedReason {
+                    Text("Key rejected")
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
+                        .foregroundStyle(Theme.C.danger)
+                    Text(rejectedReason)
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                Button {
+                    if let url = URL(string: "https://composio.dev") { safariURL = url }
+                } label: {
+                    HStack {
+                        Text("Get a key at composio.dev")
+                            .underline()
+                        Image(systemName: "arrow.up.forward")
+                    }
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.accent)
+                    .frame(minHeight: 44)
+                }
+                Text("Apps show here once a key is saved. Saving or removing a key needs Face ID.")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+        }
+    }
+
+    private var appSection: some View {
+        Section {
+            let toolkits = filtered()
+            if toolkits.isEmpty {
+                Text(query.isEmpty ? "No apps to show." : "No apps match \"\(query)\".")
+                    .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            ForEach(toolkits.prefix(shown)) { toolkit in
+                connectorRow(toolkit)
+            }
+            if toolkits.count > shown {
+                Button("Show more") { shown += 20 }
+                    .buttonStyle(SecondaryAction())
+                    .frame(minHeight: 44)
+            }
+        }
+    }
+
+    private func filtered() -> [ConnectorToolkit] {
+        let all = payload?.toolkits ?? []
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return all }
+        return all.filter { $0.name.lowercased().contains(needle) }
+    }
+
+    private func connectorRow(_ toolkit: ConnectorToolkit) -> some View {
+        HStack(spacing: 12) {
+            logoTile(toolkit)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(toolkit.name)
+                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                    .foregroundStyle(Theme.C.ink)
+                Text(statusLine(toolkit))
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(toolkit.connected ? Theme.C.success : Theme.C.inkMuted)
+            }
+            Spacer(minLength: 8)
+            if connectingSlug == toolkit.slug {
+                Text("Connecting")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(minHeight: 44)
+            } else if toolkit.connected {
+                Button("Disconnect") { Task { await disconnect(toolkit) } }
+                    .buttonStyle(SecondaryAction(enabled: blocked == nil))
+                    .frame(minHeight: 44)
+                    .disabled(blocked != nil)
+            } else if !toolkit.noAuth {
+                Button("Connect") { Task { await connect(toolkit) } }
+                    .buttonStyle(SecondaryAction(enabled: blocked == nil && connectingSlug == nil))
+                    .frame(minHeight: 44)
+                    .disabled(blocked != nil || connectingSlug != nil)
+            } else {
+                Text("No sign-in needed")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(minHeight: 44)
+            }
+        }
+        .frame(minHeight: 64)
+    }
+
+    /// The app logo tile; a remote mark falls back to the name's monogram.
+    private func logoTile(_ toolkit: ConnectorToolkit) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                .fill(Theme.C.sunken)
+            if let logo = toolkit.logo, let url = URL(string: logo) {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFit()
+                } placeholder: {
+                    Text(monogram(toolkit.name))
+                        .font(Theme.font(13, .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                }
+                .padding(6)
+            } else {
+                Text(monogram(toolkit.name))
+                    .font(Theme.font(13, .semibold))
+                    .foregroundStyle(Theme.C.ink)
+            }
+        }
+        .frame(width: 36, height: 36)
+        .accessibilityHidden(true)
+    }
+
+    private func monogram(_ name: String) -> String {
+        name.first.map { String($0).uppercased() } ?? "?"
+    }
+
+    private func statusLine(_ toolkit: ConnectorToolkit) -> String {
+        if toolkit.connected { return "Connected" }
+        if connectingSlug == toolkit.slug { return "Waiting for approval in the browser" }
+        if toolkit.noAuth { return "No sign-in needed" }
+        return "Not connected"
+    }
+
+    private var blocked: String? {
+        phone.mutationBlocked(coordinator.readiness)
+    }
+
+    private func load() async {
+        guard let client = coordinator.client else { return }
+        payload = try? await client.connectors()
+    }
+
+    private func saveKey() async {
+        guard await gate("Save the Composio key") else { return }
+        guard let client = coordinator.client else { return }
+        do {
+            try await client.setConnectorsKey(key)
+            key = ""
+            rejectedReason = nil
+            await load()
+        } catch {
+            rejectedReason = (error as? LocalizedError)?.errorDescription ?? "The Mac refused this key"
+        }
+    }
+
+    private func removeKey() async {
+        guard await gate("Remove the Composio key") else { return }
+        guard let client = coordinator.client else { return }
+        do {
+            try await client.setConnectorsKey(nil)
+            await load()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    private func connect(_ toolkit: ConnectorToolkit) async {
+        guard await gate("Connect \(toolkit.name)") else { return }
+        guard let client = coordinator.client else { return }
+        connectingSlug = toolkit.slug
+        do {
+            let url = try await client.authorizeConnector(slug: toolkit.slug)
+            if let target = URL(string: url) {
+                safariURL = target
+            } else {
+                connectingSlug = nil
+            }
+        } catch {
+            connectingSlug = nil
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    private func disconnect(_ toolkit: ConnectorToolkit) async {
+        guard let accountId = toolkit.accountId else { return }
+        guard await gate("Disconnect \(toolkit.name)") else { return }
+        guard let client = coordinator.client else { return }
+        do {
+            try await client.disconnectConnector(accountId: accountId)
+            await load()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    private func gate(_ reason: String) async -> Bool {
+        switch await OwnerGate.evaluate(reason: reason) {
+        case .approved:
+            return true
+        case .unavailable:
+            error = OwnerGate.unavailableCopy
+            return false
+        case .cancelledOrFailed:
+            return false
+        }
+    }
+}
+
+/// Usage (spec 1.14): the one daily budget with a stepper (class A) and the
+/// week's traffic by model in tabular figures.
+struct PhoneUsageView: View {
+    @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(PhoneModel.self) private var phone
+    @State private var usage: UsagePayload?
+    @State private var error: String?
+
+    var body: some View {
+        List {
+            if let usage {
+                if let budget = usage.budget {
+                    Section("Tokens a day") {
+                        Stepper(
+                            value: Binding(
+                                get: { budget.tokens },
+                                set: { next in Task { await setBudget(next) } }
+                            ),
+                            in: budget.min...budget.max,
+                            step: budget.step
+                        ) {
+                            HStack {
+                                Text(budget.isDefault ? "Default" : "\(budget.tokens.formatted()) tokens")
+                                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                                    .foregroundStyle(Theme.C.ink)
+                            }
+                        }
+                        .accessibilityLabel("Tokens a day")
+                        .accessibilityHint("Lower the daily limit or raise the daily limit")
+                        .frame(minHeight: 44)
+                        .disabled(blocked != nil)
+                        if let blocked {
+                            Text(blocked)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                }
+                Section {
+                    LabeledContent("Charged today", value: Self.format(usage.chargedInputTokens + usage.chargedOutputTokens))
+                    if let week = usage.week {
+                        LabeledContent("This week", value: Self.format(week.totalTokens))
+                    }
+                    LabeledContent("Requests", value: Self.format(usage.requests))
+                }
+                Section("This week by model") {
+                    if usage.byModel.isEmpty {
+                        Text("No model traffic this week yet.")
+                            .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
+                    ForEach(usage.byModel) { row in
+                        HStack {
+                            Text(row.model)
+                                .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                                .foregroundStyle(Theme.C.ink)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(Self.format(row.inputTokens + row.outputTokens))
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .monospacedDigit()
+                        }
+                        .frame(minHeight: 44)
+                    }
+                }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            if let error {
+                Section { Text(error).foregroundStyle(Theme.C.danger) }
+            }
+        }
+        .navigationTitle("Usage")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private var blocked: String? {
+        phone.mutationBlocked(coordinator.readiness)
+    }
+
+    private func load() async {
+        guard let client = coordinator.client else { return }
+        do {
+            usage = try await client.usage()
+            error = nil
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    private func setBudget(_ tokens: Int) async {
+        switch await OwnerGate.evaluate(reason: "Change the daily token budget") {
+        case .approved:
+            break
+        case .unavailable:
+            error = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
+        guard let client = coordinator.client else { return }
+        do {
+            usage = try await client.setDailyTokenBudget(tokens)
+            error = nil
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    private static func format(_ value: Int) -> String {
+        value.formatted(.number)
+    }
+}

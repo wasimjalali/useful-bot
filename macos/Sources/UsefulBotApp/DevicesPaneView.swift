@@ -43,7 +43,12 @@ struct DevicesPaneView: View {
             status = "No phone is paired."
             return
         }
-        let host = readHost() ?? "https://your-mac"
+        guard let host = readHost() else {
+            // Pairing without a resolved host would encode a dead URL — the
+            // phone would scan a code that can never connect.
+            status = "This Mac has no reachable address yet."
+            return
+        }
         let body: [String: Any] = ["v": 1, "host": host, "token": token, "name": "Mac"]
         guard let data = try? JSONSerialization.data(withJSONObject: body),
               let payload = String(data: data, encoding: .utf8) else {

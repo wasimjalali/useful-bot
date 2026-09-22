@@ -47,7 +47,7 @@ public enum ChatMarkdownParser {
     )
 
     public static func blocks(from source: String) -> [MarkdownBlock] {
-        let lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        var lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var i = 0
         while i < lines.count {
@@ -120,6 +120,22 @@ public enum ChatMarkdownParser {
                 i += 1
                 continue
             }
+            // A fence can open mid-line (`intro ```lang`, `code`, a closing
+            // ``` further down). Left alone the marker renders as literal
+            // backticks and the dangling opener still spawns an empty code
+            // card. When a closing fence exists below, split the line: the
+            // text before the marker becomes its own paragraph and the line
+            // is rewritten to start at the marker so the loop above reads a
+            // real fence. Without a closer the marker stays literal prose.
+            if let fence = line.range(of: "```"), fence.lowerBound != line.startIndex,
+               lines[(i + 1)...].contains(where: { $0.hasPrefix("```") }) {
+                let before = line[..<fence.lowerBound].trimmingCharacters(in: .whitespaces)
+                if !before.isEmpty {
+                    blocks.append(.paragraph(before))
+                }
+                lines[i] = String(line[fence.lowerBound...])
+                continue
+            }
             var paragraph = [line]
             i += 1
             while i < lines.count {
@@ -135,6 +151,18 @@ public enum ChatMarkdownParser {
                 // under it proves otherwise, so the paragraph has to let go of
                 // it rather than swallow the whole table as prose.
                 if i + 1 < lines.count, next.contains("|"), matches(tableDelimiter, in: lines[i + 1]) { break }
+                // The same mid-line fence, as a continuation line: close
+                // the paragraph at the marker and rewrite the line so the
+                // outer loop opens the code block.
+                if let fence = next.range(of: "```"), fence.lowerBound != next.startIndex,
+                   lines[(i + 1)...].contains(where: { $0.hasPrefix("```") }) {
+                    let before = next[..<fence.lowerBound].trimmingCharacters(in: .whitespaces)
+                    if !before.isEmpty {
+                        paragraph.append(before)
+                    }
+                    lines[i] = String(next[fence.lowerBound...])
+                    break
+                }
                 paragraph.append(next)
                 i += 1
             }

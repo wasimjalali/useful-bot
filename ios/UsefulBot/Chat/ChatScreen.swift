@@ -3,33 +3,25 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UsefulBotCore
 
+/// All bot avatars use the approved mascot artwork (brand/avatars, A.6:
+/// never redraw mascot geometry). Shape/image fields on the wire are kept
+/// for old stores only — same rule as the macOS `BotAvatarView`.
 struct BotFace: View {
     let bot: ShellBot
     var size: CGFloat = 40
 
     var body: some View {
-        Circle()
-            .fill(Self.color(FacePalette.displayColor(for: bot)))
+        Image(uiImage: Self.image(for: bot))
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
             .frame(width: size, height: size)
             .accessibilityHidden(true)
     }
 
-    static func color(_ name: String) -> Color {
-        let hex: String
-        switch name {
-        case "brown": hex = "#FFD2A3"
-        case "red": hex = "#FF879C"
-        case "orange": hex = "#FFBA73"
-        case "gold": hex = "#FFE16A"
-        case "green": hex = "#85E8A8"
-        case "teal": hex = "#70E4D9"
-        case "blue": hex = "#8CC5FF"
-        case "purple": hex = "#C6ABFF"
-        case "pink": hex = "#FFA6DB"
-        case "gray": hex = "#D5DDE7"
-        default: hex = "#FFFFFF"
-        }
-        return Theme.color(hex)
+    static func image(for bot: ShellBot) -> UIImage {
+        let named = "avatar-\(FacePalette.displayColor(for: bot))"
+        return UIImage(named: named) ?? UIImage(named: "avatar-ink") ?? UIImage()
     }
 }
 
@@ -38,12 +30,20 @@ struct ChatScreen: View {
     @Environment(PhoneModel.self) private var phone
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @FocusState private var composerFocused: Bool
     @State private var showModel = false
     @State private var showPermission = false
     @State private var showFolder = false
     @State private var showBotSettings = false
+    @State private var routineEditor: RoutineEditorRequest?
     @State private var confirmDelete = false
+    @State private var confirmClear = false
     @State private var photoItem: PhotosPickerItem?
+    @State private var showPhotos = false
+    @State private var showAttach = false
+    @State private var showCamera = false
+    @State private var showConnectorsSetup = false
     @State private var showFiles = false
     @State private var pinnedToBottom = true
     @State private var asksExpanded = false
@@ -107,13 +107,6 @@ struct ChatScreen: View {
                 }
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
             }
-            if phone.conflictNote {
-                Text("Your Mac moved this conversation")
-                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
-            }
             composer
         }
         .background(Theme.C.surface)
@@ -149,6 +142,38 @@ struct ChatScreen: View {
                 .accessibilityLabel("Bot settings")
                 .disabled(bot == nil)
             }
+        }
+        .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _, item in
+            Task {
+                if let data = try? await item?.loadTransferable(type: Data.self) {
+                    await phone.addPhoto(data)
+                }
+                photoItem = nil
+            }
+        }
+        .sheet(isPresented: $showAttach) {
+            AddToMessageSheet(
+                folderName: bot?.workspace?.folderName,
+                onPhoto: { showPhotos = true },
+                onFile: { showFiles = true },
+                onCamera: { showCamera = true },
+                onRecentPhoto: { data in Task { await phone.addPhoto(data) } },
+                onConnectorsSetup: { showConnectorsSetup = true }
+            )
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraCaptureView { data in
+                showCamera = false
+                if let data { Task { await phone.addPhoto(data) } }
+            }
+            .ignoresSafeArea()
+        }
+        // "Set up connectors in Settings" (1.13): the Add-to-message sheet
+        // dismisses, then Settings, Connectors pushes on the chat stack so
+        // the owner lands on the key form.
+        .navigationDestination(isPresented: $showConnectorsSetup) {
+            PhoneConnectorsView()
         }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.plainText, .text]) { result in
             guard case .success(let url) = result else { return }
@@ -191,6 +216,16 @@ struct ChatScreen: View {
                     if chat?.showWorking == true, let bot {
                         workingRow(bot)
                     }
+                    if chat?.sessionEnded == true {
+                        endedRow
+                    } else if chat?.failedText == nil, let note = chat?.error {
+                        Text(note)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                            .padding(.vertical, 4)
+                    }
                     if let failed = chat?.failedText {
                         failedCard(failed)
                     }
@@ -209,6 +244,19 @@ struct ChatScreen: View {
                 .padding(.top, 12)
             }
             .accessibilityIdentifier("transcript")
+            .overlay(alignment: .top) {
+                if phone.conflictNote {
+                    Text("Your Mac moved this conversation")
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                        .foregroundStyle(Theme.C.ink)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Theme.C.surface, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                        .cardLift(cornerRadius: DesignTokens.Radius.md)
+                        .padding(.top, 8)
+                        .accessibilityIdentifier("conflict-toast")
+                }
+            }
             .coordinateSpace(name: "transcript")
             .defaultScrollAnchor(.bottom)
             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
@@ -260,6 +308,26 @@ struct ChatScreen: View {
         }
     }
 
+    /// Spec 8.4: a send into a retired session resolves unsent — the echo is
+    /// pulled, the draft is restored and the ended marker offers "New chat".
+    private var endedRow: some View {
+        HStack(spacing: 12) {
+            Text("Session ended")
+                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+            Spacer()
+            if let bot {
+                Button("New chat") { Task { await phone.newChat(bot.id) } }
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                    .foregroundStyle(Theme.C.accent)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("session-ended-new-chat")
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        .padding(.vertical, 4)
+    }
+
     private func pinToBottom(_ proxy: ScrollViewProxy) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -272,11 +340,15 @@ struct ChatScreen: View {
     private func blockView(_ block: TranscriptBlock) -> some View {
         switch block {
         case .dayDivider(_, let label):
-            Text(label)
-                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
-                .foregroundStyle(Theme.C.inkMuted)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+            HStack(spacing: 8) {
+                Rectangle().fill(Theme.C.border).frame(height: 0.5)
+                Text(label)
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .layoutPriority(1)
+                Rectangle().fill(Theme.C.border).frame(height: 0.5)
+            }
+            .padding(.vertical, 8)
         case .message(let row, _):
             bubble(row)
                 .padding(.top, row.kind == .user ? DesignTokens.Space.phoneTranscriptGap : DesignTokens.Space.bubbleStackGap)
@@ -313,11 +385,14 @@ struct ChatScreen: View {
                     .padding(.vertical, 10)
                     .background(Theme.C.bubbleBot)
                     .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                            .strokeBorder(Theme.C.edge, lineWidth: 1)
-                    )
-                    .shadow(color: Theme.shadow(DesignTokens.Shadow.sm), radius: Theme.radius(DesignTokens.Shadow.sm), y: 1)
+                    // The bubble edge plus the spec's lift shadow (1.3).
+                    .cardLift(cornerRadius: DesignTokens.Radius.md)
+                    .contextMenu {
+                        Button { UIPasteboard.general.string = row.text } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                        }
+                        ShareLink(item: row.text) { Label("Share", systemImage: "square.and.arrow.up") }
+                    }
                 Spacer(minLength: 24)
             }
         }
@@ -341,14 +416,22 @@ struct ChatScreen: View {
         }
     }
 
+    /// After five quiet minutes the row names its age — "still working ·
+    /// N min" — so a stalled turn doesn't look freshly alive.
     private func workingRow(_ bot: ShellBot) -> some View {
-        HStack(spacing: 8) {
-            BotFace(bot: bot, size: 28)
-                .scaleEffect(reduceMotion ? 1 : 1.04)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: chat?.showWorking)
-            Text(chat?.projection.activity.label ?? "Thinking")
-                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                .foregroundStyle(Theme.C.inkMuted)
+        let start = chat?.workingSince ?? Date()
+        return HStack(spacing: 8) {
+            // The breathing avatar is the brand motion layers (1.2), not a
+            // scale pulse; Reduce Motion draws the rest frame.
+            BrandMotionAvatar(size: 28, color: FacePalette.displayColor(for: bot), avatar: true)
+            TimelineView(.periodic(from: start, by: 30)) { context in
+                let minutes = Int(context.date.timeIntervalSince(start) / 60)
+                Text(minutes >= 5
+                     ? "\(chat?.projection.activity.label ?? "Thinking") · still working, \(minutes) min"
+                     : (chat?.projection.activity.label ?? "Thinking"))
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
             Spacer()
         }
         .padding(.vertical, 8)
@@ -366,7 +449,7 @@ struct ChatScreen: View {
                     .foregroundStyle(Theme.C.inkMuted)
             }
             Button("Retry") { phone.retrySend(readiness: coordinator.readiness) }
-                .frame(minHeight: 44)
+                .buttonStyle(SecondaryAction(enabled: writesBlocked == nil))
                 .disabled(writesBlocked != nil)
             if let reason = writesBlocked {
                 Text(reason)
@@ -378,6 +461,11 @@ struct ChatScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.C.dangerSoft)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+        // V12: a failed turn carries a 40% danger edge over the soft fill.
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+                .strokeBorder(Theme.C.danger.opacity(0.4), lineWidth: 1)
+        )
         .accessibilityIdentifier("failed-turn")
         .accessibilityLabel(text)
     }
@@ -441,8 +529,11 @@ struct ChatScreen: View {
                     .lineLimit(1...6)
                     .tokenFont(DesignTokens.FontSize.chatBody, .regular)
                     .foregroundStyle(Theme.C.ink)
+                    .focused($composerFocused)
                 HStack(spacing: 8) {
-                    PhotosPicker(selection: $photoItem, matching: .images) {
+                    // '+' opens the attach sheet (photo / text file /
+                    // folder context), not the photo picker directly.
+                    Button { showAttach = true } label: {
                         Image(systemName: "plus")
                             .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
                             .foregroundStyle(Theme.C.ink)
@@ -451,26 +542,18 @@ struct ChatScreen: View {
                             .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel("Add to message")
-                    .onChange(of: photoItem) { _, item in
-                        Task {
-                            if let data = try? await item?.loadTransferable(type: Data.self) {
-                                await phone.addPhoto(data)
-                            }
-                            photoItem = nil
-                        }
-                    }
-                    Button { showFiles = true } label: {
-                        Image(systemName: "doc")
-                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                            .foregroundStyle(Theme.C.ink)
-                            .frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("Add a text file")
+                    .disabled(writesBlocked != nil)
                     Button { showModel = true } label: {
-                        Text(phone.composer?.modelLabel.isEmpty == false ? phone.composer!.modelLabel : "Model")
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
-                            .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
-                            .lineLimit(1)
+                        HStack(spacing: 4) {
+                            Text(phone.composer?.modelLabel.isEmpty == false ? phone.composer!.modelLabel : "Model")
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
+                            if let effort = phone.composer?.effortLabel, !effort.isEmpty {
+                                Text(effort)
+                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            }
+                        }
+                        .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
+                        .lineLimit(1)
                     }
                     .frame(minWidth: 44, minHeight: 44)
                     .disabled(writesBlocked != nil)
@@ -488,7 +571,7 @@ struct ChatScreen: View {
                                 .background(sendable || streaming ? Theme.C.brand : Theme.C.sunken, in: Circle())
                             if locked {
                                 Image(systemName: "lock.fill")
-                                    .font(Theme.font(10, .regular))
+                                    .font(Theme.font(14, .regular))
                                     .foregroundStyle(Theme.C.ink)
                             }
                         }
@@ -498,23 +581,36 @@ struct ChatScreen: View {
                     .accessibilityLabel(locked ? "Send, locked. Face ID required" : (streaming ? "Stop" : "Send"))
                 }
             }
-            .padding(12)
+            .padding(.top, 12)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
             .background(Theme.C.bubbleBot)
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
             .overlay(
+                // Edge at rest, borderStrong while the field has focus.
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
-                    .strokeBorder(Theme.C.edge, lineWidth: 1)
+                    .strokeBorder(composerFocused ? Theme.C.borderStrong : Theme.C.edge, lineWidth: 1)
             )
             HStack(spacing: 8) {
                 Button { showFolder = true } label: {
-                    Text(bot?.workspace?.path.split(separator: "/").last.map(String.init) ?? "No folder")
-                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .frame(minWidth: 44, minHeight: 44)
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder")
+                            .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                        Text(bot?.workspace?.path.split(separator: "/").last.map(String.init) ?? "No folder")
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    }
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(minWidth: 44, minHeight: 44)
                 }
                 Button { showPermission = true } label: {
-                    Text(bot?.permissionLabel ?? "Auto")
-                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.shield")
+                            .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                        Text(bot?.permissionLabel ?? "Auto")
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                    }
                         .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
                         .frame(minWidth: 44, minHeight: 44)
                 }
@@ -570,7 +666,7 @@ struct ChatScreen: View {
 
     private var mentionList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            let rows = mentionCandidates.prefix(4)
+            let rows = mentionCandidates.prefix(dynamicTypeSize.isAccessibilitySize ? 3 : 4)
             if rows.isEmpty {
                 Text("No member named \"\(mentionQuery ?? "")\"")
                     .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
@@ -578,7 +674,10 @@ struct ChatScreen: View {
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .padding(.horizontal, 12)
             }
-            ForEach(Array(rows)) { member in
+            // The first row is the default target — it sits on sunken so
+            // Enter-equivalent picks are guessable; a11y sizes get fewer,
+            // taller rows.
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, member in
                 Button {
                     insertMention(member.name)
                 } label: {
@@ -590,19 +689,17 @@ struct ChatScreen: View {
                         Spacer()
                     }
                     .padding(.horizontal, 12)
-                    .frame(minHeight: 52)
+                    .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? 64 : 52)
+                    .background(index == 0 ? Theme.C.sunken : Color.clear)
                 }
                 .contentShape(Rectangle())
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(member.name), group member")
+                .accessibilityLabel("\(member.name), group member, double-tap to mention")
             }
         }
         .background(Theme.C.surface)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-                .strokeBorder(Theme.C.edge, lineWidth: 1)
-        )
+        .cardLift(cornerRadius: DesignTokens.Radius.lg)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(mentionCandidates.count) suggestions")
     }
@@ -622,20 +719,25 @@ struct ChatScreen: View {
         Binding(get: { phone.draft }, set: { phone.updateDraft($0) })
     }
 
+    /// The chat's readiness banner is the same lifted §7.2 card the Bots
+    /// list uses — glyph, copy, Retry — not a flat strip.
     private func readinessStrip(_ level: MacReadiness) -> some View {
-        Text(phone.blockedReason(level) ?? "Your Mac is unreachable")
-            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-            .foregroundStyle(Theme.C.inkMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, DesignTokens.Space.phoneGutter)
-            .frame(minHeight: 36)
-            .background(Theme.C.sunken)
+        ReadinessBanner(level: level, lastFetchAt: nil) {
+            Task {
+                await coordinator.probeReadiness()
+                await phone.refresh()
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        .padding(.vertical, 8)
     }
 
     private var writesBlocked: String? {
         phone.mutationBlocked(coordinator.readiness)
     }
 
+    /// Spec 1.5: identity block, then Profile / Avatar / Defaults /
+    /// Routines / Memory / Past conversations / destructive groups.
     private var botSettings: some View {
         NavigationStack {
             List {
@@ -655,21 +757,38 @@ struct ChatScreen: View {
                         .frame(maxWidth: .infinity)
                         .listRowBackground(Color.clear)
                     }
+                    BotProfileSection(bot: bot)
+                    BotAvatarSection(bot: bot)
                     Section("Defaults") {
-                        Button("Model") { showModel = true }
-                            .disabled(writesBlocked != nil)
-                            .frame(minHeight: 44)
-                        Button("Permission") { showPermission = true }
-                            .disabled(writesBlocked != nil)
-                            .frame(minHeight: 44)
+                        Button {
+                            showBotSettings = false
+                            showModel = true
+                        } label: {
+                            LabeledContent("Model", value: phone.composer?.modelLabel ?? "Model")
+                                .foregroundStyle(Theme.C.ink)
+                                .frame(minHeight: 44)
+                        }
+                        .disabled(writesBlocked != nil)
+                        Button {
+                            showBotSettings = false
+                            showPermission = true
+                        } label: {
+                            LabeledContent("Permission", value: bot.permissionLabel)
+                                .foregroundStyle(Theme.C.ink)
+                                .frame(minHeight: 44)
+                        }
+                        .disabled(writesBlocked != nil)
                         LabeledContent("Working folder", value: bot.workspace?.folderName ?? "None")
+                            .frame(minHeight: 44)
                         Text("Attach a folder from your Mac.")
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
                     }
-                    BotRoutinesSection(bot: bot)
+                    BotRoutinesSection(bot: bot, editor: $routineEditor)
+                    BotMemorySection(bot: bot)
                     Section("Past conversations") {
-                        let recents = (phone.shell?.recents ?? []).filter { $0.botId == bot.id }.prefix(5)
+                        let all = (phone.shell?.recents ?? []).filter { $0.botId == bot.id }
+                        let recents = all.prefix(5)
                         if recents.isEmpty {
                             Text("No past conversations.")
                                 .foregroundStyle(Theme.C.inkMuted)
@@ -681,6 +800,16 @@ struct ChatScreen: View {
                             }
                             .frame(minHeight: 44)
                         }
+                        if all.count > 5 {
+                            NavigationLink {
+                                PastConversationsView(recents: all, botName: bot.name) { recent in
+                                    Task { await phone.openPast(recent) }
+                                }
+                            } label: {
+                                Text("Show all")
+                                    .frame(minHeight: 44)
+                            }
+                        }
                     }
                     Section {
                         Button("New chat") {
@@ -688,6 +817,10 @@ struct ChatScreen: View {
                         }
                         .disabled(writesBlocked != nil)
                         .frame(minHeight: 44)
+                        Button("Clear conversation") { confirmClear = true }
+                            .foregroundStyle(Theme.C.danger)
+                            .disabled(writesBlocked != nil)
+                            .frame(minHeight: 44)
                         Button("Delete bot", role: .destructive) { confirmDelete = true }
                             .disabled(writesBlocked != nil || (phone.shell?.bots.count ?? 0) <= 1)
                             .frame(minHeight: 44)
@@ -721,34 +854,82 @@ struct ChatScreen: View {
             } message: {
                 Text("This removes the bot from your Mac.")
             }
+            .confirmationDialog("Clear this conversation?", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Clear conversation", role: .destructive) {
+                    let id = botId
+                    Task { await phone.clearThread(id) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Messages stay on your Mac but are removed from this thread.")
+            }
+        }
+        .sheet(item: $routineEditor) { request in
+            if let bot {
+                RoutineEditorSheet(bot: bot, routine: request.routine) {}
+            }
         }
         .presentationDetents([.large])
     }
 
+    /// The model sheet (1.5's Model row → picker): provider-grouped rows
+    /// with the picked one sunken + checkmark, a search field, then Effort
+    /// and Speed as token segmented controls.
     private var modelSheet: some View {
+        ModelSheet()
+            .environment(phone)
+            .environmentObject(coordinator)
+    }
+
+    /// Permission escalation is class A on the way up only; the picked row
+    /// is a sunken card with a checkmark and the consequence copy under it.
+    private var permissionSheet: some View {
         NavigationStack {
             List {
-                if let composer = phone.composer {
-                    ForEach(composer.groups, id: \.connectionId) { group in
-                        Section(group.label) {
-                            ForEach(group.models, id: \.id) { model in
-                                Button(model.label) {
-                                    Task { await phone.saveComposer(modelId: model.id) }
-                                }
-                                .frame(minHeight: 44)
-                                .disabled(writesBlocked != nil)
+                ForEach(["read_only", "auto", "full_access"], id: \.self) { level in
+                    Button {
+                        Task {
+                            await phone.setPermission(botId, level)
+                            showPermission = false
+                        }
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: Self.permissionGlyph(level))
+                                .font(Theme.font(DesignTokens.FontSize.emptyBody, .regular))
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .frame(width: 40, height: 40)
+                                .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(Self.permissionName(level))
+                                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                                    .foregroundStyle(Theme.C.ink)
+                                Text(Self.permissionCopy(level))
+                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                    .foregroundStyle(Theme.C.inkMuted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            if bot?.permission == level {
+                                Image(systemName: "checkmark")
+                                    .font(Theme.font(DesignTokens.FontSize.chatName, .semibold))
+                                    .foregroundStyle(Theme.C.accent)
+                                    .padding(.top, 2)
                             }
                         }
+                        .frame(minHeight: 44)
+                        .padding(8)
+                        .background(bot?.permission == level ? Theme.C.sunken : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                        .contentShape(Rectangle())
                     }
-                    Section("Effort") {
-                        ForEach(composer.efforts, id: \.id) { effort in
-                            Button(effort.label) {
-                                Task { await phone.saveComposer(effort: effort.id) }
-                            }
-                            .frame(minHeight: 44)
-                            .disabled(writesBlocked != nil)
-                        }
-                    }
+                    .buttonStyle(.plain)
+                    .disabled(writesBlocked != nil)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
+                }
+                Section {
+                    Text("Only for things Useful Bot can do on this Mac.")
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
                 }
                 if let reason = writesBlocked {
                     Section {
@@ -758,50 +939,44 @@ struct ChatScreen: View {
                     }
                 }
             }
-            .navigationTitle("Model")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private var permissionSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(["read_only", "auto", "full_access"], id: \.self) { level in
-                    Button(Self.permissionName(level)) {
-                        Task {
-                            await phone.setPermission(botId, level)
-                            showPermission = false
-                        }
-                    }
-                    .frame(minHeight: 44)
-                    .disabled(writesBlocked != nil)
-                }
-                if let reason = writesBlocked {
-                    Text(reason)
-                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                        .foregroundStyle(Theme.C.inkMuted)
-                }
-            }
+            .listStyle(.plain)
             .navigationTitle("Permission")
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium])
     }
 
+    /// The folder sheet is a sunken row card with the folder glyph; the
+    /// path is long-pressable for the full string, like the approval card.
     private var folderSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(bot?.workspace == nil ? "No folder attached" : (bot?.workspace?.path ?? ""))
-                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                .foregroundStyle(bot?.workspace == nil ? Theme.C.inkMuted : Theme.C.ink)
-            Text("Attach a folder from your Mac. This iPhone can't change it.")
+            HStack(spacing: 10) {
+                Image(systemName: "folder")
+                    .font(Theme.font(DesignTokens.FontSize.chatName, .regular))
+                    .foregroundStyle(Theme.C.inkMuted)
+                Text(bot?.workspace?.path ?? "No folder attached")
+                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                    .foregroundStyle(bot?.workspace == nil ? Theme.C.inkMuted : Theme.C.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .onLongPressGesture(minimumDuration: 0.4) {
+                guard let path = bot?.workspace?.path else { return }
+                UIPasteboard.general.string = path
+            }
+            .accessibilityLabel((bot?.workspace?.path).map { Text("Working folder, \($0)") } ?? Text("No folder attached"))
+            Text("Attach a folder from your Mac. This iPhone can't change it. Long-press the path to copy it.")
                 .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                 .foregroundStyle(Theme.C.inkMuted)
             Button("Done") { showFolder = false }
+                .buttonStyle(SecondaryAction())
                 .frame(maxWidth: .infinity, minHeight: 50)
         }
         .padding(DesignTokens.Space.phoneGutter)
-        .presentationDetents([.height(220)])
+        .presentationDetents([.height(240)])
     }
 
     static func emptyCopy(_ bot: ShellBot, members: [ShellBot]) -> String {
@@ -826,6 +1001,25 @@ struct ChatScreen: View {
         case "read_only": return "Read only"
         case "full_access": return "Full access"
         default: return "Auto"
+        }
+    }
+
+    private static func permissionGlyph(_ level: String) -> String {
+        switch level {
+        case "read_only": return "eye"
+        case "full_access": return "lock.open"
+        default: return "checkmark.shield"
+        }
+    }
+
+    private static func permissionCopy(_ level: String) -> String {
+        switch level {
+        case "read_only":
+            return "Reads wherever it looks. Writes, commands that change anything, app edits and connector writes are off."
+        case "full_access":
+            return "Works anywhere on this Mac without asking. Only wiping a whole folder or disk still asks."
+        default:
+            return "Reads and creates new files under your home on its own. Changes to existing files, commands and connector writes ask first."
         }
     }
 }
@@ -903,7 +1097,9 @@ struct PhoneMarkdown: View {
             switch span.kind {
             case .strong: piece = piece.bold()
             case .emphasized: piece = piece.italic()
-            case .code: piece = Text(span.text).font(.system(.body, design: .monospaced, weight: .regular))
+            // Inline code is mono 15 like the chat body; `.subheadline` is
+            // the 15 pt text style, so it still tracks Dynamic Type.
+            case .code: piece = Text(span.text).font(.system(.subheadline, design: .monospaced, weight: .regular))
             case .link: piece = piece.underline()
             case .text: break
             }
@@ -955,6 +1151,40 @@ private struct ScrollDragProbe: UIViewRepresentable {
             }
             return nil
         }
+    }
+}
+
+/// Bot settings' "Show all": every past conversation for the bot, pushed in
+/// the sheet's own stack. Tapping a row opens the existing past-conversation
+/// view and closes the sheet.
+private struct PastConversationsView: View {
+    let recents: [ShellRecent]
+    let botName: String
+    var onOpen: (ShellRecent) async -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List(recents) { recent in
+            Button {
+                dismiss()
+                Task { await onOpen(recent) }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(recent.title)
+                        .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                        .foregroundStyle(Theme.C.ink)
+                    if !recent.preview.isEmpty {
+                        Text(recent.preview)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(minHeight: 44, alignment: .leading)
+            }
+        }
+        .navigationTitle("Past conversations")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

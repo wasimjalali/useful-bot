@@ -85,6 +85,26 @@ import Testing
         #expect(ChatMarkdownCache.entryCount() == 0)
     }
 
+    @Test func aFenceOpeningMidLineStillRendersItsBlock() {
+        // `intro ```lang` on one line then a closing fence below: the fence
+        // splits the paragraph and the block keeps its code instead of a
+        // literal ``` and an empty card.
+        #expect(
+            ChatMarkdownParser.blocks(from: "Looks like this: ```swift\nlet x = 1\n```")
+                == [.paragraph("Looks like this:"), .code(lang: "swift", text: "let x = 1")]
+        )
+        // The same mid-line marker inside a paragraph continuation.
+        #expect(
+            ChatMarkdownParser.blocks(from: "a\nb ```c\nx\n```")
+                == [.paragraph("a\nb"), .code(lang: "c", text: "x")]
+        )
+        // Without a closing fence the marker stays literal prose.
+        #expect(
+            ChatMarkdownParser.blocks(from: "Use ``` to fence code.")
+                == [.paragraph("Use ``` to fence code.")]
+        )
+    }
+
     @Test func streamingSlotsAreBoundedByRow() {
         ChatMarkdownCache.reset()
         for row in 0..<50 {

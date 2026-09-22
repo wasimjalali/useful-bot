@@ -47,6 +47,42 @@ struct PressedScale: ButtonStyle {
     }
 }
 
+/// The token segmented control (§1.0/1.8): options on a `border` track, the
+/// picked one a `surface` pill. Never the platform segmented control.
+struct TokenSegmented<Option: Hashable>: View {
+    let options: [(id: Option, label: String)]
+    @Binding var selection: Option
+    var enabled = true
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options, id: \.id) { option in
+                Button {
+                    selection = option.id
+                } label: {
+                    Text(option.label)
+                        .tokenFont(DesignTokens.FontSize.phoneFieldInput, selection == option.id ? .semibold : .regular)
+                        .foregroundStyle(enabled ? (selection == option.id ? Theme.C.ink : Theme.C.inkMuted) : Theme.C.inkFaint)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background {
+                            if selection == option.id {
+                                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                                    .fill(Theme.C.surface)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .frame(minHeight: 44)
+                .disabled(!enabled)
+            }
+        }
+        .padding(3)
+        .background(Theme.C.border)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+    }
+}
+
 /// A token font that still responds to Dynamic Type: `.system(size:)` alone
 /// is fixed, so the size rides through `ScaledMetric` on the `.body` curve.
 private struct ScaledTokenFont: ViewModifier {
@@ -131,5 +167,16 @@ extension View {
         )
         .shadow(color: Theme.C.shadow.opacity(0.04), radius: 0.5, x: 0, y: 0.5)
         .shadow(color: Theme.C.shadow.opacity(0.08), radius: 8, x: 0, y: 3)
+    }
+
+    /// The lift drawn conditionally — `enabled` off leaves the view bare,
+    /// no edge or shadow.
+    @ViewBuilder
+    func cardLift(cornerRadius: CGFloat, enabled: Bool) -> some View {
+        if enabled {
+            cardLift(cornerRadius: cornerRadius)
+        } else {
+            self
+        }
     }
 }

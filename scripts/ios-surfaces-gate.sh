@@ -133,7 +133,7 @@ cleanup() {
   [ -n "$WATCHER_PID" ] && kill "$WATCHER_PID" 2>/dev/null || true
   [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null || true
   [ -n "$PROBE_PID" ] && kill "$PROBE_PID" 2>/dev/null || true
-  rm -f /tmp/ub-cmd-* /tmp/ub-done-*
+  rm -f /tmp/ub-cmd-* /tmp/ub-done-* "$PAIR_FILE"
 }
 trap cleanup EXIT
 
@@ -274,7 +274,13 @@ run testAttachPhoto
 run testTextFileCap
 run testSettings
 run testRoutineCreate
+# The proposal legs share one expanded dock slot with every other ask; clear
+# leftovers from earlier legs/reruns, then seed the card under test.
+"$NODE" "$CTL" clear-asks
+"$NODE" "$CTL" seed-proposal
 run testProposalCard
+"$NODE" "$CTL" clear-asks
+"$NODE" "$CTL" seed-proposal
 run testProposalConfirm
 "$NODE" "$CTL" clear-asks
 "$NODE" "$CTL" seed-connect

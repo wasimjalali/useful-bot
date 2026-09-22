@@ -1327,8 +1327,8 @@ the reviewer sessions were slept for the cap.
 - Started: 2026-09-21T18:43Z
 - Branch: `ios/pr-3` at `9c041a2` (origin/main). No PR-3 code existed; this
   entry is the skeleton written before implementation.
-- Worktree: `/Users/wasimjalali/Desktop/useful-bot-ios`. The main checkout is
-  not used.
+- Worktree: a local checkout under the owner's Desktop (`useful-bot-ios`).
+  The main checkout is not used.
 
 ### Local environment (spec 17.0, owner's Mac)
 
@@ -1566,4 +1566,85 @@ Measured numbers live in `docs/audit/PERFORMANCE-IOS.md`; shots in
 
 #### Review rounds (SWE-2 three-role loop)
 
-Pending — appended as each round lands.
+##### Round 1 — head `6806b1d`
+
+Three fresh SWE-2 reviewer sessions on `6806b1d` (no PR exists for
+`ios/pr-3`; reviewers report via structured output, findings triaged
+here). Verdicts: correctness request_changes (4H/7M/3L), security approve
+(3L), design-a11y request_changes (3H/19M/7L). Every blocker/high/medium
+and every low fixed in one batch; the one false positive is recorded.
+
+Correctness highs: session-conflict adopt/discard/replay on the phone
+projection; sessionEnded restores projection+draft with an ended marker
+and New-chat affordance; attachments are per-bot (were global);
+RoutineEditorSheet exists — weekly day circles, daily, once+date,
+validated time, Active toggle, delete/run-now, next-run line.
+Correctness mediums: `lost(claimSession:false)` echoes resolves and
+replays the adopted session; `updateDraft` scoped per bot;
+PhoneWidgetSlot measures the real row via onGeometryChange and takes its
+height from scrollView.contentSize (dead 390 fallback gone); standalone
+"still catching up" line when a turn fails without failedText;
+PhoneSettingsSubscreens write through (providers/connectors/usage, all
+class-A behind OwnerGate); composer '+' opens the add-to-message sheet
+(recents strip + Photos/Camera/Files + Connectors push). One false
+positive: newChat is class A by the owner brief — gated by design.
+
+Security lows: `BiometricGate.confirm()` deleted (nil-on-cancel
+footgun); gate script rm's the pair file on cleanup; a personal path in
+this log genericized.
+
+Design-a11y highs: bundled BotFace mascot artwork (brand avatar sets +
+motion layers in Assets.xcassets, palette/motion JSON in Resources);
+the `.combine` on approval card actions swallowed Deny/Approve — removed
+(remaining combines are leaf rows); cardLift applied to pinned cards,
+approvals entry, approval/proposal/question cards, mention list, bubble
+lift. Mediums covered approval end-state pills + "Ask again", provenance
+(anatomy: avatar 20pt, folder glyph, long-press path, mono-13 preview),
+secondary-action tone-fill, ReadinessBanner anatomy, conflict toast +
+sessionEnded/Resume + working elapsed>5m, GlobalSearchSheet
+grouping/highlight/recents/offline, ModelSheet picked-state/search/
+token-segmented effort, permission-sheet tiles, the add-to-message sheet,
+PendingApprovalsView grouped-by-bot + countdown, widget host lift/Reload/
+crash recovery, settings groups + pushed subscreens, bot-settings
+Profile/Avatar/Memory groups + Clear conversation + Show all, routine
+rows (schedule/state pill/chevron), PastConversationsView transcript
+Continue, pending-approvals lifted card, and a mid-line fenced-code
+parser fix in ChatMarkdown (opens a real code block when a closer exists
+below; pinned test in ChatMarkdownCacheTests). Lows batched as one
+cleanup: composer/chip/divider, inline code mono 15, breathing avatar,
+failed-turn edge, mention list, toolbar isHeader, Devices tokenFont,
+working-folder sheet.
+
+Real bug found by the reshoot pass, not a reviewer: `.sheet(item:)`
+anchored to a `List` Section inside a presented sheet collapses the
+parent sheet on iOS 26 — tapping "New routine" in Bot settings dismissed
+the whole settings sheet. `RoutineEditorRequest` state is now hoisted to
+the host views (ChatScreen bot settings, PhoneSettingsView) which attach
+the sheet at their own root; the section reloads via `onChange` on
+dismissal. `testRoutineCreate` passes on the rebuilt app.
+
+Re-run scope (the round's diff touches roster, chat, asks, settings,
+routine, widget, attach, safari legs): every surface leg re-ran —
+testBotsList, testChat, testChatAccessibility, all nine approval legs,
+testWidget, testAttachPhoto, testTextFileCap, testSettings,
+testRoutineCreate, testProposalCard, testProposalConfirm,
+testSafariSheet(+Dark), testOwnerQuestion(+Dark), testReduceMotion,
+testTwoClientPreserveSelection, testLiveSend — all green on the fix
+build.
+
+Screenshot refresh: every docs shot on a touched surface was re-taken
+post-fix. The roster-state set (offline/loading/empty/load-error/
+paired/resigned-in/unreachable/runtime-down/expiring, light+dark, xxxl
+variants) needed cold launches landing on the roster — the app restores
+into the last chat via `phone.selectedBotId`, and deleting the key did
+nothing until two tooling bugs were fixed: `plutil -remove` treats the
+dot in `phone.selectedBotId` as a key-path separator (escape: `-remove
+'phone\.selectedBotId'`), and `cfprefsd` inside the sim serves the cached
+domain and rewrites the plist after file edits (SIGKILL it via
+`launchctl kill 9 user/501/com.apple.cfprefsd.xpc.daemon` before the
+edit, delete `Library/Saved Application State`, then launch).
+Unreachable/runtime-down used the live web/eve bounce choreography; all
+services restarted and verified listening. `bots-repaired-*` stays at
+its earlier vintage — the surface is the same roster evidenced fresh by
+`bots-paired`/`bots-resigned-in`; re-running a re-pair leg only re-cuts
+the same pixels.

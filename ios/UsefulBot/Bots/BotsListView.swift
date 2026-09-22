@@ -64,26 +64,37 @@ struct BotsListView: View {
             }
             Section {
                 if !phone.approvals.isEmpty {
+                    // The pending-approvals entry is a lifted card, not a
+                    // plain row (1.10): the count is a warn-soft pill.
                     Button {
                         showApprovals = true
                     } label: {
-                        HStack {
+                        HStack(spacing: 10) {
                             Image(systemName: "checkmark.shield")
                                 .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
                                 .foregroundStyle(Theme.C.warning)
                             Text("Approvals")
                                 .tokenFont(DesignTokens.FontSize.chatName, .semibold)
                                 .foregroundStyle(Theme.C.ink)
-                            Spacer()
-                            Text("\(phone.approvals.filter { $0.phase == .pending || $0.phase == .changed }.count) waiting")
-                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
-                                .foregroundStyle(Theme.C.warning)
+                            Spacer(minLength: 8)
+                            StatusPill(
+                                text: "\(phone.approvals.filter { $0.phase == .pending || $0.phase == .changed }.count) waiting",
+                                foreground: Theme.C.warning,
+                                background: Theme.C.warningSoft
+                            )
                         }
-                        .frame(minHeight: 60)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                        .background(Theme.C.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                        .cardLift(cornerRadius: DesignTokens.Radius.md)
                     }
                     .contentShape(Rectangle())
                     .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                     .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
                 Button {
                     showSearch = true
@@ -138,6 +149,7 @@ struct BotsListView: View {
                     Text("Useful Bot")
                         .tokenFont(DesignTokens.FontSize.phoneLargeTitle, .semibold)
                         .foregroundStyle(Theme.C.ink)
+                        .accessibilityAddTraits(.isHeader)
                 }
                 // iOS 26 sizes a custom leading item to its first subview and
                 // clips the rest; fixedSize keeps the title past the badge.
@@ -150,9 +162,10 @@ struct BotsListView: View {
                     NavigationLink {
                         PhoneSettingsView()
                     } label: {
-                        Image(systemName: "person.crop.circle")
-                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                            .foregroundStyle(Theme.C.ink)
+                        // The operator avatar opens settings (1.2 chrome);
+                        // it reads the owner's initial when a name is set.
+                        OperatorAvatar()
+                            .frame(width: 32, height: 32)
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .accessibilityLabel("Settings")
@@ -176,6 +189,9 @@ struct BotsListView: View {
                     .accessibilityLabel("New")
                     .accessibilityHint(createsBlocked ?? "New bot, group, or section")
                     .ubFocusRing()
+                    // Devices sits in the toolbar as well as Settings >
+                    // Devices: pairing a phone is a list-adjacent action
+                    // owners reach for here.
                     Button {
                         showDevices = true
                     } label: {
@@ -234,33 +250,8 @@ struct BotsListView: View {
             PastConversationView()
         }
         .sheet(isPresented: $showSearch) {
-            NavigationStack {
-                List {
-                    TextField("Search", text: searchBinding)
-                    ForEach(phone.searchHits()) { bot in
-                        Button(bot.name) {
-                            showSearch = false
-                            phone.select(bot.id)
-                        }
-                        .frame(minHeight: 44)
-                    }
-                    ForEach(phone.matchingRecents()) { recent in
-                        Button {
-                            showSearch = false
-                            Task { await phone.openPast(recent) }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(recent.title)
-                                Text("Past conversation")
-                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                                    .foregroundStyle(Theme.C.inkMuted)
-                            }
-                        }
-                        .frame(minHeight: 44)
-                    }
-                }
-                .navigationTitle("Search")
-                .navigationBarTitleDisplayMode(.inline)
+            GlobalSearchSheet {
+                showCreate = true
             }
         }
         .sheet(isPresented: $showCreate) {
@@ -384,9 +375,7 @@ struct BotsListView: View {
         phone.mutationBlocked(coordinator.readiness)
     }
 
-    private var searchBinding: Binding<String> {
-        Binding(get: { phone.searchQuery }, set: { phone.searchQuery = $0 })
-    }
+
 
     private var chatPresented: Binding<Bool> {
         Binding(
@@ -398,6 +387,8 @@ struct BotsListView: View {
     @ViewBuilder
     private func roster(_ shell: ShellStore) -> some View {
         let pinned = shell.pinnedBots
+        // Pinned reads as a group header like the named sections (1.2's
+        // ordering names pinned first but has no collapse for it).
         if !pinned.isEmpty {
             sectionHeader("Pinned", id: nil, collapsed: false)
             ForEach(pinned) { botRow($0, shell: shell) }
@@ -446,8 +437,13 @@ struct BotsListView: View {
             phone.select(bot.id)
         } label: {
             HStack(spacing: 12) {
-                BotFace(bot: bot, size: bot.pinned ? 44 : 40)
-                    .scaleEffect(phone.workingBotIds.contains(bot.id) && !reduceMotion ? 1.04 : 1)
+                // Working bots breathe with the brand motion layers (1.2);
+                // idle and Reduce Motion draw the static avatar.
+                if phone.workingBotIds.contains(bot.id) && !reduceMotion {
+                    BrandMotionAvatar(size: bot.pinned ? 44 : 40, color: FacePalette.displayColor(for: bot), avatar: true)
+                } else {
+                    BotFace(bot: bot, size: bot.pinned ? 44 : 40)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(bot.name)
                         .tokenFont(DesignTokens.FontSize.chatName, .semibold)
@@ -466,12 +462,10 @@ struct BotsListView: View {
                 if bot.pinned {
                     RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                         .fill(Theme.C.surface)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-                                .strokeBorder(Theme.C.edge, lineWidth: 1)
-                        )
                 }
             }
+            // A pinned card is lifted, not edge-only (1.2).
+            .cardLift(cornerRadius: DesignTokens.Radius.lg, enabled: bot.pinned)
         }
         .contentShape(Rectangle())
         .buttonStyle(.plain)
@@ -684,77 +678,15 @@ struct BotsListView: View {
     }
 
     /// The §7.2 banner is a lifted card: glyph, title, one line, trailing
-    /// "Retry" (design spec 1.2's Readiness banner table, verbatim copy).
+    /// "Retry" — the shared `ReadinessBanner` (design spec 1.2's table,
+    /// verbatim copy).
     private func readinessBanner(_ level: MacReadiness) -> some View {
-        let (glyph, title, line) = bannerCopy(level)
-        let retry = Button {
+        ReadinessBanner(level: level, lastFetchAt: lastFetchAt) {
             Task {
                 await coordinator.probeReadiness()
                 await refresh()
             }
-        } label: {
-            Text("Retry")
-                .tokenFont(DesignTokens.FontSize.button, .semibold)
-                .foregroundStyle(Theme.C.ink)
-                .padding(.horizontal, 14)
-                .frame(minHeight: DesignTokens.Space.phoneHitTarget)
         }
-        .buttonStyle(PressedScale())
-        .background(
-            Theme.C.sunken,
-            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                .strokeBorder(Theme.C.edge, lineWidth: 1)
-        )
-        .ubFocusRing()
-        let text = HStack(alignment: .top, spacing: 12) {
-            Image(systemName: glyph)
-                .font(Theme.font(DesignTokens.FontSize.emptyBody, .regular))
-                // §7.2 levels are degraded, not destructive — `warning`
-                // matches the Devices statusPill; `danger` is reserved for
-                // refused/destructive (§1.0 shared states).
-                .foregroundStyle(Theme.C.warning)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .tokenFont(DesignTokens.FontSize.emptyBody, .semibold)
-                    .foregroundStyle(Theme.C.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(line)
-                    .tokenFont(DesignTokens.FontSize.attachError, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        return Group {
-            if dynamicTypeSize.ubIsAccessibilitySize {
-                // Same A.7/1.0 rule as the error row: the trailing Retry
-                // drops under the copy rather than squeezing it.
-                VStack(alignment: .leading, spacing: 10) {
-                    text
-                    retry
-                }
-            } else {
-                HStack(alignment: .top, spacing: 12) {
-                    text
-                    Spacer(minLength: 8)
-                    retry
-                }
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            Theme.C.surface,
-            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-        )
-        // Lifted card per §4.3: `lift` shadow (two-component), not the
-        // button's `sm`.
-        .cardLift(cornerRadius: DesignTokens.Radius.md)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("readiness-banner")
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         .listRowInsets(EdgeInsets(
@@ -825,65 +757,6 @@ struct BotsListView: View {
         ))
     }
 
-    /// Copy pinned by the design spec's banner table; the age clause only
-    /// appears once there is a timestamp to quote.
-    private func bannerCopy(_ level: MacReadiness) -> (String, String, String) {
-        switch level {
-        case .noNetwork:
-            if let lastFetchAt {
-                return (
-                    "wifi.slash",
-                    "You're offline",
-                    "Showing what was cached \(Self.ago(lastFetchAt))."
-                )
-            }
-            return ("wifi.slash", "You're offline", "Showing cached data.")
-        case .macUnreachable(let lastSeen, _, _):
-            if let lastSeen {
-                return (
-                    "desktopcomputer",
-                    "Your Mac is unreachable",
-                    "Last seen \(Self.ago(lastSeen)). Bots pick up when it's back."
-                )
-            }
-            return (
-                "desktopcomputer",
-                "Your Mac is unreachable",
-                "Bots pick up when it's back."
-            )
-        case .runtimeDown:
-            return (
-                "exclamationmark.triangle",
-                "Agent runtime is down on your Mac",
-                "Settings still work. Chats are paused."
-            )
-        case .unsupportedVersion:
-            // S15's "says so": the Mac answered but speaks an apiVersion
-            // this build doesn't know — honest copy, not the pinned
-            // unreachable/runtime-down lines it would falsify.
-            return (
-                "exclamationmark.triangle",
-                "Your Mac runs an unsupported version",
-                "Update Useful Bot on your Mac."
-            )
-        case .ready:
-            return ("", "", "")
-        }
-    }
-
-    /// "4 min ago", abbreviated to match the spec's sample copy. Under a
-    /// minute the abbreviated formatter emits future tense ("in 0 sec") —
-    /// clamp those to "just now".
-    private static func ago(_ date: Date) -> String {
-        if Date().timeIntervalSince(date) < 60 { return "just now" }
-        return agoFormatter.localizedString(for: date, relativeTo: .now)
-    }
-
-    private static let agoFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
 }
 
 /// Devices (spec 6.2's sign-out home, pushed per design spec 1.15): the
@@ -1068,6 +941,9 @@ struct DevicesView: View {
         .scrollContentBackground(.hidden)
         // Grouped settings sit on canvas; the group rows are the surfaces.
         .background(Theme.C.canvas)
+        // Token law on the stock LabeledContent/Button rows: the scaled
+        // env font reaches the system labels and values.
+        .tokenFont(DesignTokens.FontSize.chatName, .regular)
     }
 
     /// The tailnet host with the scheme stripped (design spec 1.15 renders
@@ -1158,13 +1034,37 @@ struct PastConversationView: View {
                         .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                         .foregroundStyle(Theme.C.inkMuted)
                 }
+                // Read-only transcript, but in the chat's bubble anatomy so
+                // it reads like the conversation it was (design 1.4).
                 ForEach(phone.pastRows) { row in
-                    Text(row.text)
-                        .tokenFont(DesignTokens.FontSize.chatBody, .regular)
-                        .foregroundStyle(Theme.C.ink)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    if row.kind == .user {
+                        HStack {
+                            Spacer(minLength: 48)
+                            Text(row.text)
+                                .tokenFont(DesignTokens.FontSize.chatBody, .regular)
+                                .foregroundStyle(Theme.C.ink)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Theme.C.sunken)
+                                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                        }
+                    } else {
+                        HStack {
+                            PhoneMarkdown(text: row.text)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Theme.C.bubbleBot)
+                                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                                )
+                            Spacer(minLength: 24)
+                        }
+                    }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle(phone.pastRecent?.title ?? "Past conversation")
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) {
@@ -1174,10 +1074,19 @@ struct PastConversationView: View {
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
                     }
+                    // Continue this conversation is class A — the gate runs
+                    // inside `continuePast`.
                     Button("Continue") {
                         Task { await phone.continuePast() }
                     }
+                    .buttonStyle(PressedScale())
+                    .font(Theme.font(DesignTokens.FontSize.button, .semibold))
+                    .foregroundStyle(blocked == nil ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(
+                        (blocked == nil ? Theme.C.brand : Theme.C.sunken),
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                    )
                     .disabled(blocked != nil)
                 }
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)

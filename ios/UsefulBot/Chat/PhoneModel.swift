@@ -13,7 +13,11 @@ final class PhoneModel {
     private(set) var workingBotIds: Set<String> = []
     private(set) var approvals: [ApprovalCard] = []
     private(set) var proposalsByBot: [String: [Proposal]] = [:]
-    private(set) var attachments: [Attachment] = []
+    /// Staged attachments live on the open chat, per bot, so switching bots
+    /// mid-stage never carries files into a different conversation.
+    var attachments: [Attachment] {
+        selectedBotId.flatMap { chats[$0]?.attachments } ?? []
+    }
     var safariURL: URL?
     private(set) var chats: [String: OpenChat] = [:]
     var draft = ""
@@ -55,9 +59,17 @@ final class PhoneModel {
         /// was not moved. The next open tries again.
         var catchUpIncomplete = false
         var sessionEnded = false
+        var attachments: [Attachment] = []
         var error: String?
         var windowStart: String?
-        var showWorking = false
+        var showWorking = false {
+            // The working row's "still working · N min" line reads this.
+            didSet {
+                if showWorking && !oldValue { workingSince = Date() }
+                if !showWorking { workingSince = nil }
+            }
+        }
+        var workingSince: Date?
         var streamGeneration = 0
     }
 
@@ -157,6 +169,15 @@ final class PhoneModel {
         }
     }
 
+    /// "Ask again" on an expired card drops it from the dock. The dismissal is
+    /// tombstoned so the next approvals poll does not resurrect it.
+    private var dismissedApprovalIds: Set<String> = []
+
+    func dismissApproval(_ id: String) {
+        dismissedApprovalIds.insert(id)
+        approvals.removeAll { $0.id == id }
+    }
+
     func decide(_ card: ApprovalCard, approve: Bool) async {
         guard card.phase == .pending || card.phase == .changed else { return }
         if approve {
@@ -210,9 +231,13 @@ final class PhoneModel {
         defaults.removeObject(forKey: Self.selectionKey)
     }
 
-    func updateDraft(_ text: String) {
-        draft = text
-        if let id = selectedBotId { cache?.saveDraft(id, text) }
+    /// `forBot` keeps mid-send writes on the bot the send started on — a bot
+    /// switch while the request is in flight must not land the restored draft
+    /// on the newly selected conversation.
+    func updateDraft(_ text: String, forBot botId: String? = nil) {
+        let target = botId ?? selectedBotId
+        if target == selectedBotId { draft = text }
+        if let target { cache?.saveDraft(target, text) }
     }
 
     func blockedReason(_ readiness: MacReadiness?) -> String? {
@@ -326,6 +351,30 @@ final class PhoneModel {
         } catch {
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
+    }
+
+    /// Clear conversation is class A — OwnerGate runs before the shell
+    /// action, like new chat.
+    func clearThread(_ id: String) async {
+        switch await OwnerGate.evaluate(reason: "Clear this conversation") {
+        case .approved:
+            break
+        case .unavailable:
+            passcodeMessage = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
+        await act(ShellActions.clearThread(botId: id))
+        var chat = chats[id] ?? OpenChat()
+        chat.projection = StreamProjection()
+        chat.cursor = nil
+        chat.failedText = nil
+        chat.confirmingId = nil
+        chat.confirmingText = nil
+        chat.sessionEnded = false
+        chat.showWorking = false
+        chats[id] = chat
     }
 
     var pastRecent: ShellRecent?
@@ -529,6 +578,12 @@ final class PhoneModel {
         await act(ShellActions.setPermission(botId: id, permission: permission))
     }
 
+    /// Profile fields (name, label, description, avatarColor) ride the same
+    /// updateBot patch as the Mac's own profile editor.
+    func patchBot(_ id: String, _ patch: [String: Any?]) async {
+        await act(ShellActions.updateBot(botId: id, patch: patch))
+    }
+
     func saveComposer(modelId: String? = nil, effort: String? = nil, speed: String? = nil) async {
         guard let client else { return }
         if let next = try? await client.updateComposer(modelId: modelId, effort: effort, speed: speed) {
@@ -655,7 +710,7 @@ final class PhoneModel {
         guard let next = try? await client.approvals() else { return }
         guard current(generation) else { return }
         var merged: [ApprovalCard] = []
-        for item in next {
+        for item in next where !dismissedApprovalIds.contains(item.id) {
             let expired = item.expiresAt > 0 && Date().timeIntervalSince1970 * 1000 >= item.expiresAt
             if var card = approvals.first(where: { $0.id == item.id }) {
                 if card.item.actionSha256 != item.actionSha256 && card.phase == .pending {
@@ -669,7 +724,7 @@ final class PhoneModel {
                 merged.append(ApprovalCard(item: item, phase: expired ? .expired : .pending))
             }
         }
-        for var old in approvals where !merged.contains(where: { $0.id == old.id }) {
+        for var old in approvals where !merged.contains(where: { $0.id == old.id }) && !dismissedApprovalIds.contains(old.id) {
             switch old.phase {
             case .approved, .denied, .resolved:
                 merged.append(old)
@@ -727,7 +782,7 @@ final class PhoneModel {
             let state = try await client.threadState(botId: id)
             let events = state.events
             proposalsByBot[id] = state.proposals
-            guard current(generation), selectedStill(id) else { return }
+            guard current(generation) else { return }
             chat = chats[id] ?? chat
             if chat.durable != events { chat.durable = events }
             cache?.saveEvents(id, events)
@@ -890,7 +945,7 @@ final class PhoneModel {
         guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
         passcodeMessage = nil
-        let files = attachments
+        let files = chats[botId]?.attachments ?? []
         let formatted = Attachments.formatMessage(text, files: files)
         let echo = Attachments.echoedMessage(formatted, images: files)
         var chat = chats[botId] ?? OpenChat()
@@ -903,8 +958,8 @@ final class PhoneModel {
         chat.failedText = nil
         chat.showWorking = true
         chats[botId] = chat
-        let snapshot = draft
-        updateDraft(ComposerDraft.remainder(snapshot, afterSending: text))
+        let snapshot = chats[botId].map { _ in draft } ?? draft
+        updateDraft(ComposerDraft.remainder(snapshot, afterSending: text), forBot: botId)
         var postedSession: String?
         do {
             let fresh = try await client.shell()
@@ -916,7 +971,7 @@ final class PhoneModel {
             let pointer = bot(botId)?.sessionId
             let sessionId = try await post(botId: botId, sessionId: pointer, message: formatted, images: files)
             postedSession = sessionId
-            attachments = []
+            chats[botId]?.attachments = []
             guard current(generation) else {
                 await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: false)
                 return
@@ -953,19 +1008,11 @@ final class PhoneModel {
                     currentShell.bots[index].sessionId = currentPointer
                     shell = currentShell
                 }
-                if let posted = postedSession {
-                    var claimed = false
-                    do {
-                        try await client.touchChat(
-                            botId: botId,
-                            preview: formatted,
-                            sessionId: posted,
-                            expected: .pointer(currentPointer)
-                        )
-                        claimed = true
-                        conflictNote = false
-                    } catch {}
-                    await lost(text, needle: echo, botId: botId, error: error, sessionId: posted, claimSession: claimed)
+                if postedSession != nil {
+                    // S11/adjudication 7: the Mac's pointer wins. Discard the
+                    // session this send went into, replay the adopted one and
+                    // let the confirming rule resolve the echo's absence.
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: currentPointer, claimSession: false)
                 } else {
                     var stuck = chats[botId] ?? OpenChat()
                     stuck.projection = priorProjection
@@ -974,13 +1021,21 @@ final class PhoneModel {
                     stuck.confirmingText = nil
                     stuck.failedText = text
                     chats[botId] = stuck
-                    updateDraft(snapshot)
+                    updateDraft(snapshot, forBot: botId)
                 }
             case .sessionEnded:
+                // The send went into a retired session: nothing delivered.
+                // Restore the composer, drop the optimistic echo and surface
+                // the ended marker with a "New chat" offer (spec 8.4).
                 var chat = chats[botId] ?? OpenChat()
+                chat.projection = priorProjection
                 chat.sessionEnded = true
                 chat.showWorking = false
+                chat.confirmingId = nil
+                chat.confirmingText = nil
+                chat.failedText = nil
                 chats[botId] = chat
+                updateDraft(snapshot, forBot: botId)
             default:
                 await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession)
             }
@@ -1039,9 +1094,13 @@ final class PhoneModel {
             chat.showWorking = false
             chat.confirmingId = nil
             chat.confirmingText = nil
-            chat.failedText = draftText
-            chat.error = (error as? LocalizedError)?.errorDescription ?? "Your Mac moved this conversation"
-            if !echoed { updateDraft(draftText) }
+            if echoed {
+                chat.failedText = nil
+            } else {
+                chat.failedText = draftText
+                chat.error = (error as? LocalizedError)?.errorDescription ?? "Your Mac moved this conversation"
+                updateDraft(draftText, forBot: botId)
+            }
         } else if echoed {
             chat.confirmingId = nil
             chat.confirmingText = nil
@@ -1051,13 +1110,13 @@ final class PhoneModel {
             chat.confirmingText = nil
             chat.failedText = draftText
             chat.error = "This chat is still catching up."
-            updateDraft(draftText)
+            updateDraft(draftText, forBot: botId)
         } else {
             chat.confirmingId = nil
             chat.confirmingText = nil
             chat.failedText = draftText
             chat.error = (error as? LocalizedError)?.errorDescription
-            updateDraft(draftText)
+            updateDraft(draftText, forBot: botId)
         }
         chats[botId] = chat
         if let followSession, !chat.catchUpIncomplete, chat.projection.pending, let token = chats[botId]?.streamGeneration {
@@ -1073,7 +1132,7 @@ final class PhoneModel {
         chat.confirmingId = nil
         chat.confirmingText = nil
         chats[botId] = chat
-        updateDraft(snapshot)
+        updateDraft(snapshot, forBot: botId)
     }
 
     private struct InterruptedSend: LocalizedError {
@@ -1103,7 +1162,8 @@ final class PhoneModel {
     }
 
     func addPhoto(_ data: Data) async {
-        guard attachments.count < Attachments.maxFiles else {
+        guard let botId = selectedBotId else { return }
+        guard (chats[botId]?.attachments.count ?? 0) < Attachments.maxFiles else {
             actionError = "Five files is the limit."
             return
         }
@@ -1116,7 +1176,9 @@ final class PhoneModel {
             try jpeg.write(to: url, options: .completeFileProtection)
             let uploaded = try await client.uploadAttachment(fileURL: url, mimeType: "image/jpeg")
             try? FileManager.default.removeItem(at: url)
-            attachments.append(uploaded)
+            var chat = chats[botId] ?? OpenChat()
+            chat.attachments.append(uploaded)
+            chats[botId] = chat
         } catch {
             try? FileManager.default.removeItem(at: url)
             actionError = (error as? LocalizedError)?.errorDescription ?? "That photo was not attached."
@@ -1149,7 +1211,8 @@ final class PhoneModel {
             actionError = "Text files have to be 64 KB or smaller."
             return
         }
-        guard attachments.count < Attachments.maxFiles, let client else { return }
+        guard let botId = selectedBotId,
+              (chats[botId]?.attachments.count ?? 0) < Attachments.maxFiles, let client else { return }
         let safe: String
         do { safe = try Attachments.safeName(name) } catch {
             actionError = "That file cannot be attached."
@@ -1160,7 +1223,9 @@ final class PhoneModel {
             try data.write(to: url, options: .completeFileProtection)
             let uploaded = try await client.uploadAttachment(fileURL: url, mimeType: "text/plain")
             try? FileManager.default.removeItem(at: url)
-            attachments.append(uploaded)
+            var chat = chats[botId] ?? OpenChat()
+            chat.attachments.append(uploaded)
+            chats[botId] = chat
         } catch {
             try? FileManager.default.removeItem(at: url)
             actionError = (error as? LocalizedError)?.errorDescription ?? "That file was not attached."
@@ -1168,15 +1233,12 @@ final class PhoneModel {
     }
 
     func removeAttachment(_ id: String) {
-        attachments.removeAll { $0.id == id }
+        guard let botId = selectedBotId else { return }
+        chats[botId]?.attachments.removeAll { $0.id == id }
     }
 
     private func still(_ botId: String, _ token: Int, _ generation: Int) -> Bool {
         current(generation) && chats[botId]?.streamGeneration == token
-    }
-
-    private func selectedStill(_ id: String) -> Bool {
-        selectedBotId == id || chats[id] != nil
     }
 
     private func current(_ generation: Int) -> Bool {

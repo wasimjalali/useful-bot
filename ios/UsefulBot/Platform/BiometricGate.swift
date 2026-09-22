@@ -8,8 +8,8 @@ enum BiometricOutcome: Equatable {
     case failed
 }
 
-/// Class B is one successful check per foreground activation. Class A calls
-/// `confirm` and does not set the activation unlock.
+/// Class B is one successful check per foreground activation. Class A never
+/// reaches this gate — it goes through OwnerGate's named checks instead.
 @MainActor
 @Observable
 final class BiometricGate {
@@ -29,10 +29,6 @@ final class BiometricGate {
     func unlockForActivation() async -> String? {
         if unlocked { return nil }
         return await run(setUnlock: true)
-    }
-
-    func confirm() async -> String? {
-        await run(setUnlock: false)
     }
 
     private func run(setUnlock: Bool) async -> String? {

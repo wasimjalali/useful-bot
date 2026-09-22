@@ -87,6 +87,7 @@ final class SurfacesUITests: XCTestCase {
     ) {
         app.launchEnvironment["UB_APPEARANCE"] = appearance
         app.launchEnvironment["UB_CAMERA_STATE"] = "denied"
+        if let typeSize { app.launchEnvironment["UB_TYPE_SIZE"] = typeSize }
         if reset { app.launchEnvironment["UB_RESET_PAIRING"] = "1" }
         for (key, value) in extra { app.launchEnvironment[key] = value }
         installInterruptionMonitor()
@@ -102,10 +103,18 @@ final class SurfacesUITests: XCTestCase {
     /// into the last chat, hiding the roster. Pop back when that happened —
     /// a no-op on the roster itself (no navbar back button there).
     private func popIfRestored(_ app: XCUIApplication) {
-        if !app.descendants(matching: .any)["bots-list"].exists
-            && app.navigationBars.buttons.element(boundBy: 0).waitForExistence(timeout: 4) {
-            app.navigationBars.buttons.element(boundBy: 0).tap()
-            usleep(300_000)
+        // A restored launch can need a beat before `bots-list` enters the
+        // tree; only pop on a real back control — on the roster root the
+        // nav bar's first button is the Settings toolbar item, and tapping
+        // it pushes instead of popping.
+        for _ in 0..<3 {
+            if app.descendants(matching: .any)["bots-list"].waitForExistence(timeout: 4) { return }
+            let back = app.navigationBars.buttons.element(boundBy: 0)
+            guard back.waitForExistence(timeout: 3),
+                  back.label.localizedCaseInsensitiveContains("back")
+                    || back.identifier == "BackButton" else { return }
+            back.tap()
+            usleep(400_000)
         }
     }
 
@@ -513,9 +522,9 @@ final class SurfacesUITests: XCTestCase {
     }
 
     /// Two-client rule: createBot, New chat and Continue must carry
-    /// preserveSelection so the Mac's selected bot never moves and no
-    /// session forks. The driver asserts store.selectedBotId is unchanged;
-    /// the test only performs the actions.
+    /// preserveSelection so the Mac's selected bot never moves. The gate
+    /// reads the store before and after this leg and fails if
+    /// selectedBotId changed; the test only performs the actions.
     func testTwoClientPreserveSelection() throws {
         let app = XCUIApplication()
         try ensurePaired(app)
@@ -835,7 +844,14 @@ final class SurfacesUITests: XCTestCase {
         hostCmd("probe-reset")
         XCTAssertTrue(webview.exists,
                       "widget webview never rendered (skeleton=\(skeleton.exists) failed=\(failedText.exists))")
-        // Give its JS nav attempts time to fire and be cancelled.
+        // Give its JS nav attempts time to fire and be cancelled, and hunt
+        // until the row is actually on screen for the shot — `exists` answers
+        // true while the lazy stack still holds it off-frame.
+        let visibleDeadline = Date().addingTimeInterval(20)
+        while Date() < visibleDeadline && !webview.isHittable {
+            transcript.swipeDown()
+            usleep(300_000)
+        }
         sleep(3)
         shot("widget-light", app)
     }
@@ -847,6 +863,9 @@ final class SurfacesUITests: XCTestCase {
         try ensurePaired(app)
         openChat(app, "Test Bot")
         tapButton(app, "Add to message")
+        // The sheet's own rows answer .cells; open the system picker first
+        // so the probe only ever sees remote photo cells.
+        tapButton(app, "Photos")
         // Photos picker: a remote-rendered sheet — its photo cells do not
         // always answer app.images, so probe cells and large images alike.
         usleep(1_200_000)
@@ -928,6 +947,16 @@ final class SurfacesUITests: XCTestCase {
         tapButton(app, "Bot settings")
         XCTAssertTrue(app.navigationBars["Bot settings"].waitForExistence(timeout: 10),
                       "bot settings sheet never opened")
+        // The editor lives behind the "New routine" row — the settings form's
+        // own Name field would otherwise swallow the routine's name.
+        let newRoutine = app.buttons["New routine"]
+        let newRoutineDeadline = Date().addingTimeInterval(15)
+        while Date() < newRoutineDeadline && !(newRoutine.exists && newRoutine.isHittable) {
+            app.swipeUp()
+            usleep(300_000)
+        }
+        XCTAssertTrue(newRoutine.waitForExistence(timeout: 5), "New routine row never rendered")
+        newRoutine.tap()
         let nameField = app.textFields["Name"]
         let deadline = Date().addingTimeInterval(15)
         while Date() < deadline && !nameField.exists {
@@ -935,9 +964,28 @@ final class SurfacesUITests: XCTestCase {
             usleep(300_000)
         }
         type(app, nameField, "Morning check")
-        type(app, app.textFields["Instruction"], "Ping the morning status")
+        // The instruction field is multi-line (axis: .vertical): XCUI
+        // reports those under textViews, not textFields, and the row may sit
+        // below the fold — scroll until some element labels itself so.
+        var instructionField = app.textViews["Instruction"]
+        let instructionDeadline = Date().addingTimeInterval(15)
+        while Date() < instructionDeadline && !instructionField.exists {
+            if app.textFields["Instruction"].exists {
+                instructionField = app.textFields["Instruction"]
+                break
+            }
+            let byLabel = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == %@", "Instruction"))
+                .firstMatch
+            if byLabel.exists { instructionField = byLabel; break }
+            app.swipeUp()
+            usleep(300_000)
+        }
+        XCTAssertTrue(instructionField.waitForExistence(timeout: 5),
+                      "Instruction field never rendered")
+        type(app, instructionField, "Ping the morning status")
         hostCmd("biomatch")
-        tapButton(app, "Add routine")
+        tapButton(app, "Save")
         XCTAssertTrue(app.staticTexts["Morning check"].waitForExistence(timeout: 15),
                       "created routine never listed")
         shot("settings-routine-created-light", app)
