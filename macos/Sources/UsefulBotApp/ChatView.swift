@@ -25,6 +25,13 @@ struct ChatView: View {
     /// the bottom-pinning triggers from dragging the reader back down as the
     /// durable reload changes the list underneath them.
     @State private var holdingReplyAnchor = false
+    /// False from a transcript's mount until it rests at its newest turn. The
+    /// transcript lays out hidden under the mascot until then, so a chat never
+    /// opens in the middle of its history while the replay settles.
+    @State private var landed = false
+    /// How long a slow replay may keep the mascot up before the rows on hand
+    /// are shown anyway, so a stalled load never looks hung.
+    private static let landingCap: TimeInterval = 1.5
     /// Room for the user's message above the reply, so an answer that only
     /// just fits is left where it is.
     private static let replyAnchorSlack: CGFloat = 120
@@ -70,6 +77,9 @@ struct ChatView: View {
                             // last one was left at, which then has to be
                             // corrected on screen.
                             .id(bot.id)
+                            .opacity(landed ? 1 : 0)
+                            .accessibilityHidden(!landed)
+                            .overlay { if !landed { loadingState } }
                     } else if model.transcriptReady {
                         emptyState(bot)
                     } else {
@@ -491,16 +501,37 @@ struct ChatView: View {
                     viewport: $viewportHeight
                 ))
                 // The bottom anchor applies on the layout pass after mount;
-                // until it does, a fresh scroll view sits at the top, which is
-                // the flash of old rows on first open. An explicit jump is a
-                // no-op where the anchor already landed, so it runs once on
-                // mount, then once more after the real viewport is known.
-                .onAppear {
+                // until it does, a fresh scroll view sits at the top, and a
+                // replay that lands after it can leave the view where the
+                // cached rows ended. So the transcript lands hidden: it is
+                // pinned to its newest turn until the replay is in (or the cap
+                // runs out), then twice more across the next layout passes,
+                // and only then shown. A send mounts it with nothing to wait
+                // for. Runs on every mount, so each chat starts pinned and
+                // none inherits the last one's scroll state.
+                .task {
+                    landed = false
+                    pinnedToBottom = true
+                    holdingReplyAnchor = false
+                    replyHeight = 0
                     scrollToBottom(proxy)
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 300_000_000)
-                        repinAfterBannerChange(proxy)
+                    let deadline = Date().addingTimeInterval(Self.landingCap)
+                    while !model.transcriptReady, !model.pending, Date() < deadline {
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        guard !Task.isCancelled else { return }
+                        scrollToBottom(proxy)
                     }
+                    for _ in 0..<2 {
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                        guard !Task.isCancelled else { return }
+                        scrollToBottom(proxy)
+                    }
+                    withAnimation(.easeOut(duration: 0.15)) { landed = true }
+                }
+                // A replay slower than the cap finishes after the rows were
+                // shown; a reader still at the newest turn is kept there.
+                .onChange(of: model.transcriptReady) { _, ready in
+                    if ready, landed { repinAfterBannerChange(proxy) }
                 }
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
                 // There is exactly one automatic scroll in this transcript, and
@@ -514,13 +545,6 @@ struct ChatView: View {
                 // is shorter than the window and SwiftUI had already placed.
                 .onChange(of: model.sendTick) { holdingReplyAnchor = false }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
-                // The transcript remounts on `.id(bot.id)` but these survive
-                // it: a reader who left bot A off the bottom must not arrive
-                // at bot B unpinned, suppressing its re-pins and anchor jump.
-                .onChange(of: bot.id) {
-                    pinnedToBottom = true
-                    holdingReplyAnchor = false
-                }
                 // The two banners sit above this scroll view, so they take
                 // their height off the top of the viewport. The content kept
                 // its offset from the top and slid down by that much, which
@@ -544,7 +568,7 @@ struct ChatView: View {
                 // read from its first line, so the view moves there once, when
                 // the turn finishes. A reply that already fits is left alone.
                 .onChange(of: model.pending) { wasPending, nowPending in
-                    guard wasPending, !nowPending, pinnedToBottom,
+                    guard wasPending, !nowPending, landed, pinnedToBottom,
                           replyHeight > viewportHeight - Self.replyAnchorSlack,
                           let anchor = model.latestReplyAnchor else { return }
                     holdingReplyAnchor = true
