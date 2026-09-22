@@ -50,4 +50,5 @@ web/tsconfig.tsbuildinfo
 /polish-shots/
 /.playwright-mcp/
 /cli-verify-*.png
+/ownapp-*.png
 yarn.lock

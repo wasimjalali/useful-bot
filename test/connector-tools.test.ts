@@ -172,6 +172,29 @@ function sandbox(connected: string[] = ["gmail"], withKey = true): Box {
         return {};
       },
     },
+    toolkits: {
+      async get(slug) {
+        return { slug };
+      },
+    },
+    authConfigs: {
+      async list() {
+        return { items: [] };
+      },
+      async create() {
+        return { id: "ac_stub" };
+      },
+      async delete() {
+        return {};
+      },
+    },
+    client: {
+      toolkits: {
+        async list() {
+          return { items: [] };
+        },
+      },
+    },
     tools: {
       async getRawComposioTools() {
         return [];

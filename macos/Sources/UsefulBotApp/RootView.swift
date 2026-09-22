@@ -634,10 +634,14 @@ struct ConnectorsDialog: View {
 
     @State private var search = ""
     @State private var keyDraft = ""
+    /// What the owner has typed into the own-app form, by field name. Cleared
+    /// when the form closes; it never outlives the dialog.
+    @State private var ownAppDraft: [String: String] = [:]
     private static let rowHeight: CGFloat = 72
     private static let listMaxHeight: CGFloat = 460
     @FocusState private var keyFocused: Bool
     @FocusState private var searchFocused: Bool
+    @FocusState private var ownAppFocused: String?
 
     var body: some View {
         NativeDialog(maxWidth: 720, ariaLabel: "Connectors", onClose: close) {
@@ -676,10 +680,15 @@ struct ConnectorsDialog: View {
         .onChange(of: model.connectors?.hasKey) { _, hasKey in
             if hasKey == true { searchFocused = true } else { keyFocused = true }
         }
+        // Field names repeat across apps (client_id, client_secret), so a
+        // draft typed for one app must not prefill the next app's form.
+        .onChange(of: model.connectorOwnApp?.toolkit) { _, _ in ownAppDraft = [:] }
     }
 
     private func close() {
         model.stopConnectorPoll()
+        model.dismissOwnApp()
+        ownAppDraft = [:]
         onClose()
     }
 
@@ -793,7 +802,17 @@ struct ConnectorsDialog: View {
     private func catalogueHeight(_ payload: ConnectorsPayload) -> CGFloat {
         if payload.toolkits.isEmpty { return model.connectorsError != nil ? 0 : 100 }
         let more: CGFloat = payload.nextOffset != nil ? 48 : 0
-        return min(CGFloat(payload.toolkits.count) * Self.rowHeight + 2 + more, Self.listMaxHeight)
+        var form: CGFloat = 0
+        if let open = model.connectorOwnApp, payload.toolkits.contains(where: { $0.slug == open.toolkit }) {
+            form = Self.ownAppFormHeight(fields: open.fields.count)
+        }
+        return min(CGFloat(payload.toolkits.count) * Self.rowHeight + 2 + more + form, Self.listMaxHeight)
+    }
+
+    /// The own-app form's height, arithmetic like the rows: the note and
+    /// redirect line, one labelled field per credential, and the buttons.
+    static func ownAppFormHeight(fields: Int) -> CGFloat {
+        92 + CGFloat(fields) * 66 + 54
     }
 
     @ViewBuilder
@@ -839,8 +858,22 @@ struct ConnectorsDialog: View {
     }
 
     private func connectorRow(_ row: ConnectorToolkit, last: Bool) -> some View {
+        VStack(spacing: 0) {
+            connectorRowLine(row)
+            if let form = model.connectorOwnApp, form.toolkit == row.slug {
+                ownAppForm(row, form)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if !last { Hairline() }
+        }
+    }
+
+    private func connectorRowLine(_ row: ConnectorToolkit) -> some View {
         let pending = model.connectorPending == row.slug
         let busy = model.connectorBusy == row.slug
+        // The form under the row carries its own Connect; two would be one too many.
+        let formOpen = model.connectorOwnApp?.toolkit == row.slug
         return HStack(spacing: 16) {
             HStack(spacing: 12) {
                 AppLogo(name: row.name, url: row.logo)
@@ -860,7 +893,7 @@ struct ConnectorsDialog: View {
                 NativeButton("Disconnect", kind: .secondary, small: true, enabled: !busy && row.accountId != nil) {
                     Task { await model.disconnectConnector(row, search: search) }
                 }
-            } else {
+            } else if !formOpen {
                 NativeButton(pending ? "Connecting" : "Connect", kind: .primary, small: true, enabled: !busy && model.connectorPending == nil) {
                     Task { await model.connectConnector(row, search: search) }
                 }
@@ -869,8 +902,81 @@ struct ConnectorsDialog: View {
         .frame(minHeight: 52)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .overlay(alignment: .bottom) {
-            if !last { Hairline() }
+    }
+
+    /// The owner's own OAuth app for a connector Composio has no app for.
+    /// The one line of help is there because the redirect URI has to be
+    /// registered with the provider before the sign-in can come back.
+    private func ownAppForm(_ row: ConnectorToolkit, _ form: OwnAppForm) -> some View {
+        let busy = model.connectorBusy == row.slug
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Composio has no \(row.name) app of its own. Create one in the \(row.name) developer portal with this redirect URI, then paste its details here.")
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Text(form.redirectUri)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                NativeButton("Copy", kind: .secondary, small: true) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(form.redirectUri, forType: .string)
+                }
+                Spacer(minLength: 0)
+            }
+            ForEach(form.fields) { field in
+                FieldShell(label: field.label) {
+                    let text = Binding(
+                        get: { ownAppDraft[field.name] ?? "" },
+                        set: { ownAppDraft[field.name] = $0 }
+                    )
+                    if field.secret {
+                        SecureField("", text: text)
+                            .nativeField(focused: ownAppFocused == field.name)
+                            .focused($ownAppFocused, equals: field.name)
+                            .accessibilityLabel(field.label)
+                    } else {
+                        TextField("", text: text)
+                            .nativeField(focused: ownAppFocused == field.name)
+                            .focused($ownAppFocused, equals: field.name)
+                            .accessibilityLabel(field.label)
+                    }
+                }
+            }
+            HStack(spacing: 12) {
+                NativeButton(busy ? "Connecting" : "Connect", kind: .primary, small: true, enabled: !busy && ownAppComplete(form)) {
+                    submitOwnApp(row, form)
+                }
+                NativeButton("Cancel", kind: .secondary, small: true, enabled: !busy) {
+                    model.dismissOwnApp()
+                    ownAppDraft = [:]
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 14)
+        .onAppear { ownAppFocused = form.fields.first?.name }
+    }
+
+    private func ownAppComplete(_ form: OwnAppForm) -> Bool {
+        form.fields.allSatisfy { !(ownAppDraft[$0.name] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private func submitOwnApp(_ row: ConnectorToolkit, _ form: OwnAppForm) {
+        // The busy flag is set inside the task, so a second click before the
+        // first hop is refused here rather than sent twice.
+        guard ownAppComplete(form), model.connectorBusy == nil else { return }
+        var credentials: [String: String] = [:]
+        for field in form.fields {
+            credentials[field.name] = (ownAppDraft[field.name] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        Task {
+            await model.connectOwnApp(row, credentials: credentials)
+            if model.connectorOwnApp == nil { ownAppDraft = [:] }
         }
     }
 
@@ -879,6 +985,7 @@ struct ConnectorsDialog: View {
         if pending { return "Waiting for approval in the browser" }
         if model.connectorTimedOut == row.slug { return "Still not connected. Try again." }
         if row.noAuth { return "No sign-in needed" }
+        if row.ownApp { return "Needs your own app" }
         return "Not connected"
     }
 

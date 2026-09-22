@@ -272,6 +272,11 @@ export function ConnectorsDialog({ onClose }: { onClose: () => void }) {
         body: JSON.stringify({ toolkit: row.slug }),
       });
       const body = (await res.json()) as { ok?: boolean; redirectUrl?: string; error?: string };
+      // Composio has no OAuth app of its own for this one. The Mac app
+      // collects the owner's own app credentials; this dialog only says so.
+      if (body.error === "connector_needs_own_app") {
+        throw new Error(`${row.name} needs your own OAuth app. Connect it from the Mac app, or create an auth config for it at platform.composio.dev.`);
+      }
       if (!res.ok || !body.ok || !body.redirectUrl) throw new Error(`Could not start connecting ${row.name}.`);
       const target = safeSignInUrl(body.redirectUrl);
       if (!target) throw new Error("Composio sent a sign-in link this app will not open.");
