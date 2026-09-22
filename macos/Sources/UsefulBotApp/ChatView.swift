@@ -1304,6 +1304,8 @@ private final class ScrollProbe {
     var viewport: CGFloat = 0
     /// Whether the geometry has reported since the last reset.
     var seen = false
+    /// The distance from the bottom when the reader's current gesture began.
+    var gestureStartDistance: CGFloat = .infinity
     /// Mirrors `holdingReplyAnchor`: while the view is parked at the top of a
     /// finished reply, no re-pin runs, and an offset change a late reload
     /// makes is not taken for the reader scrolling.
@@ -1337,7 +1339,8 @@ private struct ScrollPinnedTracker: ViewModifier {
     /// pinned again, so they need not land on it exactly.
     private static let tolerance: CGFloat = 48
 
-    /// The one rule both paths share. The reader left the newest turn when the
+    /// The rule for a mouse wheel and the keyboard, which move the offset with
+    /// no scroll phase to judge at rest. The reader left the newest turn when the
     /// offset went up and took them further from the bottom; the bottom anchor
     /// lowering the offset for a shrink keeps the distance, and content
     /// growing below moves no offset, so neither counts. Only a move down can
@@ -1371,9 +1374,22 @@ private struct ScrollPinnedTracker: ViewModifier {
             .onScrollPhaseChange { _, phase in
                 switch phase {
                 case .tracking, .interacting, .decelerating:
+                    if !dragging { probe.gestureStartDistance = probe.distance }
                     dragging = true
                 default:
+                    guard dragging else { return }
                     dragging = false
+                    // The reader's own gesture is judged once, where it came
+                    // to rest, not frame by frame while the hand is on it:
+                    // momentum, slow drags and lines streaming in under the
+                    // gesture all move the geometry in ways a single frame
+                    // cannot tell apart. Pinned when it ended at the bottom,
+                    // or near it and closer than it started; a short flick up
+                    // to reread a line ends further away and stays unpinned.
+                    let end = probe.distance
+                    let atBottom = end <= 2
+                        || (end <= Self.tolerance && end < probe.gestureStartDistance)
+                    if pinned != atBottom { pinned = atBottom }
                 }
             }
             .onScrollGeometryChange(for: Geometry.self) { geometry in
@@ -1439,17 +1455,8 @@ private struct ScrollPinnedTracker: ViewModifier {
                     }
                     return
                 }
-                // The reader's own gesture: a move up past a hair unpins, so a
-                // short drag to reread a line is not pulled back down by the
-                // next streamed line; coming back near the newest turn pins
-                // again. Content growing under a still finger moves no offset
-                // and leaves the pin alone, and the rubber band past the end
-                // reads as the bottom.
-                if Self.movedAway(old, new) {
-                    if pinned { pinned = false }
-                } else if Self.cameBack(old, new), !pinned {
-                    pinned = true
-                }
+                // During the reader's own gesture nothing is decided here;
+                // the phase change above judges it where it comes to rest.
             }
         } else {
             content
