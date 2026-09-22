@@ -416,12 +416,38 @@ import Testing
         tooled.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
         #expect(tooled.messages.count == 2)
 
+    }
+
+    /// Reasoning leaves no row. A turn that thought, then failed with no
+    /// text, tool call or question (an empty model response, twice) is
+    /// rolled back by eve the same as one that never answered, and Test
+    /// Bot's history showed its question twice with nothing between. The
+    /// same text sent next rewrites the row, live and on a tagged replay.
+    @Test func aTurnThatOnlyReasonedFolds() {
         var reasoned = StreamProjection()
         reasoned.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
         reasoned.apply(EveEvent(type: "reasoning.appended", id: "r1"))
         reasoned.apply(EveEvent(type: "turn.failed", id: "2", message: "upstream_protocol_error"))
         reasoned.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
-        #expect(reasoned.messages.count == 2)
+        #expect(reasoned.messages.count == 1)
+        #expect(reasoned.messages.first?.id == "u2")
+
+        // The replay of the two turns behind the screenshot: turn 50 failed
+        // on reasoning alone, turn 51 carried the same text and answered.
+        var replay = StreamProjection()
+        replay.apply(EveEvent(type: "turn.started", id: "s50", turnId: "turn_50"))
+        replay.apply(EveEvent(type: "message.received", id: "u50", message: "draw it", turnId: "turn_50"))
+        replay.apply(EveEvent(type: "reasoning.appended", id: "r50", turnId: "turn_50"))
+        replay.apply(EveEvent(type: "reasoning.completed", id: "rc50", turnId: "turn_50"))
+        replay.apply(EveEvent(type: "turn.failed", id: "f50", message: "The model did not return a response.", turnId: "turn_50"))
+        replay.apply(EveEvent(type: "turn.started", id: "s51", turnId: "turn_51"))
+        replay.apply(EveEvent(type: "message.received", id: "u51", message: "draw it", turnId: "turn_51"))
+        replay.apply(EveEvent(type: "message.appended", id: "d51", messageDelta: "Drawn.", turnId: "turn_51"))
+        replay.apply(EveEvent(type: "turn.completed", id: "c51", turnId: "turn_51"))
+        #expect(replay.messages.map(\.role) == [.user, .assistant])
+        #expect(replay.messages.first?.text == "draw it")
+        #expect(!replay.failed)
+        #expect(!replay.pending)
     }
 
     /// Two user rows can be open at once when a send is queued behind another.
