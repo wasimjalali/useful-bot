@@ -239,12 +239,14 @@ public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
     public let proposalId: String?
     public let handoffId: String?
     public let widgetId: String?
+    /// Generated image the row renders, fetched from `/api/agent/image/<id>`.
+    public let imageId: String?
     /// On the host's "connected" note: what was added, and its logo.
     public let connectedName: String?
     public let connectedLogo: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, at, kind, text, authorBotId, authorName, targetBotIds, proposalId, handoffId, widgetId
+        case id, at, kind, text, authorBotId, authorName, targetBotIds, proposalId, handoffId, widgetId, imageId
         case connectedName, connectedLogo
     }
 
@@ -260,6 +262,7 @@ public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
         proposalId = try? c.decodeIfPresent(String.self, forKey: .proposalId)
         handoffId = try? c.decodeIfPresent(String.self, forKey: .handoffId)
         widgetId = try? c.decodeIfPresent(String.self, forKey: .widgetId)
+        imageId = try? c.decodeIfPresent(String.self, forKey: .imageId)
         connectedName = try? c.decodeIfPresent(String.self, forKey: .connectedName)
         connectedLogo = try? c.decodeIfPresent(String.self, forKey: .connectedLogo)
     }
@@ -624,6 +627,7 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
     public var connections: [ConnectionPublic]
     public var defaultRole: RolePublic?
     public var reviewerRole: RolePublic?
+    public var imageRole: RolePublic?
     public var composer: ComposerState?
     public var legacyProviders: [ProviderPublic]
     public var legacyActiveProviderId: String?
@@ -635,9 +639,11 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
         if let roles = try? c.nestedContainer(keyedBy: RoleKeys.self, forKey: .roles) {
             defaultRole = try? roles.decodeIfPresent(RolePublic.self, forKey: .default)
             reviewerRole = try? roles.decodeIfPresent(RolePublic.self, forKey: .reviewer)
+            imageRole = try? roles.decodeIfPresent(RolePublic.self, forKey: .image)
         } else {
             defaultRole = nil
             reviewerRole = nil
+            imageRole = nil
         }
         composer = try? c.decodeIfPresent(ComposerState.self, forKey: .composer)
         legacyProviders = (try? c.decode([ProviderPublic].self, forKey: .providers)) ?? []
@@ -648,7 +654,7 @@ public struct ProvidersPayload: Decodable, Equatable, Sendable {
         case catalog, connections, roles, composer, providers, activeProviderId
     }
 
-    enum RoleKeys: String, CodingKey { case `default`, reviewer }
+    enum RoleKeys: String, CodingKey { case `default`, reviewer, image }
 }
 
 /// `POST /api/providers/oauth` answer: what the device sheet shows.

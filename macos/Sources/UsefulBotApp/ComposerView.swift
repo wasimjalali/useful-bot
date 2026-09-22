@@ -702,26 +702,12 @@ private struct ProjectMenu: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     ForEach(projects) { project in
-                        MenuRowButton(action: { onPick(project.path) }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "folder")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.inkMuted)
-                                Text(project.name)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.C.ink)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                                if project.path == currentPath {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(Theme.C.inkMuted)
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .frame(height: 36)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                        ProjectRow(
+                            project: project,
+                            isCurrent: project.path == currentPath,
+                            onPick: { onPick(project.path) },
+                            onRemove: { onRemove(project.id) }
+                        )
                     }
                 }
             }
@@ -770,6 +756,62 @@ private struct ProjectMenu: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .popShadow()
+    }
+}
+
+/// One recent folder. The row picks; the × that appears on hover forgets it.
+/// Removing an attached folder only drops it from recents: the grant itself is
+/// let go through "Detach folder" below.
+private struct ProjectRow: View {
+    let project: ProjectEntry
+    let isCurrent: Bool
+    let onPick: () -> Void
+    let onRemove: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        MenuRowButton(action: onPick) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                Text(project.name)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if isCurrent, !hovering {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // The × sits above the pick button rather than inside its label, so
+        // its tap can never fall through and pick the folder instead.
+        .overlay(alignment: .trailing) {
+            if hovering {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(width: 22, height: 22)
+                        .background(Theme.C.sunken, in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .help("Remove from list")
+                .padding(.trailing, 7)
+                .transition(.opacity)
+            }
+        }
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 

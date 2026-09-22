@@ -70,9 +70,13 @@ struct ChatView: View {
                             // last one was left at, which then has to be
                             // corrected on screen.
                             .id(bot.id)
-                    } else {
+                    } else if model.transcriptReady {
                         emptyState(bot)
                     }
+                    // While the first load is still in flight the middle of
+                    // the chat shows nothing: the empty copy belongs to a
+                    // chat that is known empty, and flashing it in front of
+                    // a history that arrives a moment later reads as a jump.
                     // Anything the bot needs an answer to docks here, between
                     // the transcript and the composer, so the question sits
                     // where the reply is typed instead of scrolling away.
@@ -345,6 +349,12 @@ struct ChatView: View {
     /// systems keep the shift instead, as they had before the re-pin.
     private func repinAfterBannerChange(_ proxy: ScrollViewProxy) {
         guard #available(macOS 15.0, *), pinnedToBottom, !holdingReplyAnchor else { return }
+        scrollToBottom(proxy)
+    }
+
+    /// The newest turn, without animating the trip. Used where the bottom
+    /// anchor is known to be the right place: the transcript's own mount.
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -478,6 +488,18 @@ struct ChatView: View {
                     pinned: $pinnedToBottom,
                     viewport: $viewportHeight
                 ))
+                // The bottom anchor applies on the layout pass after mount;
+                // until it does, a fresh scroll view sits at the top, which is
+                // the flash of old rows on first open. An explicit jump is a
+                // no-op where the anchor already landed, so it runs once on
+                // mount, then once more after the real viewport is known.
+                .onAppear {
+                    scrollToBottom(proxy)
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        repinAfterBannerChange(proxy)
+                    }
+                }
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
                 // There is exactly one automatic scroll in this transcript, and
                 // it is the one below. Everything else stays at the newest turn
@@ -847,10 +869,11 @@ struct TranscriptRowView: View, Equatable {
             replyRow(showsSpeaker: true)
         case .widget:
             WidgetSlot(widgetId: row.text)
-                .frame(height: 480)
-                .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                 .cardLift(cornerRadius: DesignTokens.Radius.md)
+        case .image:
+            // The event's text is the prompt; the id names the stored bytes.
+            GeneratedImageRow(imageId: row.imageId ?? "", prompt: row.text)
         }
     }
 

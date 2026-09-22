@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_ACTIVE_SEARCH, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
+import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_ACTIVE_IMAGE, MAX_ACTIVE_SEARCH, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
 import { IMAGE_DATA_URL, MAX_IMAGE_DATA_URL_CHARS, MAX_IMAGE_PARTS } from "../../shared/attachments.ts";
 import { AuthTable } from "./auth.ts";
 import { AliasCircuit } from "./circuit.ts";
@@ -11,6 +11,7 @@ import { LimitStore, estimateInputUnits } from "./limits.ts";
 import { entryFor, loadRegistry } from "./registry.ts";
 import { search } from "./search.ts";
 import { completeUpstream } from "./upstreams/opencode.ts";
+import { generateImage } from "./upstreams/images.ts";
 import { usageFromPayload, usageFromSseBlock } from "../../shared/usage-parse.ts";
 import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
 
@@ -61,6 +62,7 @@ const ROUTE_METHODS: Record<string, string[]> = {
   "/v1/models": ["GET"],
   "/v1/search": ["POST"],
   "/v1/chat/completions": ["POST"],
+  "/v1/images/generations": ["POST"],
   "/v1/usage": ["GET"],
 };
 
@@ -413,6 +415,42 @@ function validateCompletion(body: unknown): { model: string; stream: boolean; ma
   return { model: rec.model, stream, max_tokens: typeof maxTokens === "number" ? maxTokens : undefined };
 }
 
+const ALLOWED_IMAGE_KEYS = new Set(["model", "prompt", "size", "n"]);
+const IMAGE_SIZES = new Set(["square", "wide", "tall"]);
+const IMAGE_PROMPT_MAX = 32_000;
+
+/**
+ * The images body is the alias name plus a prompt and an optional neutral
+ * size (square/wide/tall — the adapter maps it per provider). `n` stays small:
+ * one message shows one image at a time, and each one is billed.
+ */
+function validateImageGeneration(body: unknown): { prompt: string; size?: "square" | "wide" | "tall"; n: number } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw validationError("invalid_request");
+  }
+  const rec = body as Record<string, unknown>;
+  for (const key of Object.keys(rec)) {
+    if (!ALLOWED_IMAGE_KEYS.has(key)) {
+      throw validationError("unsupported_parameter", `unknown_key:${key.replace(/[^\w.-]/g, "?").slice(0, 40)}`);
+    }
+  }
+  if (rec.model !== "image") throw validationError("unknown_alias");
+  if (typeof rec.prompt !== "string" || !rec.prompt.trim() || rec.prompt.length > IMAGE_PROMPT_MAX) {
+    throw validationError("invalid_request", "image_prompt");
+  }
+  if (rec.size !== undefined && (typeof rec.size !== "string" || !IMAGE_SIZES.has(rec.size))) {
+    throw validationError("unsupported_parameter", "image_size");
+  }
+  if (rec.n !== undefined && (typeof rec.n !== "number" || !Number.isInteger(rec.n) || rec.n < 1 || rec.n > 4)) {
+    throw validationError("unsupported_parameter", "image_n");
+  }
+  return {
+    prompt: rec.prompt,
+    size: rec.size as "square" | "wide" | "tall" | undefined,
+    n: typeof rec.n === "number" ? rec.n : 1,
+  };
+}
+
 export function startRouter(options?: { port?: number; configPath?: string; lockPath?: string; dbPath?: string }) {
   const port = options?.port ?? Number(process.env.UB_ROUTER_PORT || ROUTER_PORT);
   const configPath = options?.configPath ?? process.env.UB_ROUTER_CONFIG;
@@ -429,6 +467,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
   // bot that is thinking never blocks a search. Both key on caller + session.
   const concurrency = new ConcurrencyGate();
   const searchGate = new ConcurrencyGate(MAX_ACTIVE_SEARCH);
+  const imageGate = new ConcurrencyGate(MAX_ACTIVE_IMAGE);
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -722,6 +761,60 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           return;
         } finally {
           release();
+        }
+      }
+      if (req.method === "POST" && url.pathname === "/v1/images/generations") {
+        if ((req.headers["content-type"] ?? "").split(";")[0].trim() !== "application/json") {
+          throw new RouterError({ status: 415, type: "invalid_request_error", code: "unsupported_media_type", message: "unsupported_media_type" });
+        }
+        const sessionId = headerUuid(req, "x-useful-session-id");
+        const stepId = headerUuid(req, "x-useful-request-id");
+        const raw = await readBody(req);
+        const body = parseJsonBody(raw);
+        const parsed = validateImageGeneration(body);
+        auth.assertAlias(caller, "image");
+        const releaseImage = imageGate.acquire(ConcurrencyGate.key(caller.callerId, sessionId));
+        try {
+          limits.rememberRequest(stepId, caller.callerId, Date.now());
+          // No token reservation: images bill per picture, not per token. The
+          // per-minute and per-day request caps still apply, which is what
+          // `hit` enforces.
+          limits.hit(caller, Date.now());
+          const controller = new AbortController();
+          res.on("close", () => {
+            if (!res.writableEnded) {
+              controller.abort(new Error("client_disconnect"));
+              res.destroy();
+            }
+          });
+          const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
+          let result: Awaited<ReturnType<typeof generateImage>>;
+          try {
+            result = await generateImage({
+              prompt: parsed.prompt,
+              size: parsed.size,
+              n: parsed.n,
+              signal,
+            });
+          } catch (error) {
+            const kind = abortKind(signal);
+            if (kind === "client") return;
+            if (kind === "idle" || kind === "total") throw timeoutError(false);
+            throw error;
+          }
+          send(res, 200, {
+            created: Math.floor(Date.now() / 1000),
+            model: result.model,
+            provider: result.providerId,
+            data: result.images.map((image) => ({ b64_json: image.b64, mime: image.mime })),
+          }, {
+            "x-useful-request-id": stepId,
+            "x-useful-upstream-model": result.model,
+            "x-useful-upstream-provider": result.providerId,
+          });
+          return;
+        } finally {
+          releaseImage();
         }
       }
       if (req.method === "GET" && url.pathname === "/v1/usage") {

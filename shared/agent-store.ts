@@ -43,7 +43,8 @@ export type AgentEventKind =
   | "post"
   | "note"
   | "proposal"
-  | "widget";
+  | "widget"
+  | "image";
 
 export type AgentEvent = {
   id: string;
@@ -56,6 +57,8 @@ export type AgentEvent = {
   proposalId: string | null;
   handoffId: string | null;
   widgetId: string | null;
+  /** Generated image the row renders: ~/.useful-bot/images/<id>.json. */
+  imageId: string | null;
   /**
    * Set on the host's "connected" note: the app or server that was just
    * added, so the chat can draw it as a card with its logo instead of a line
@@ -184,7 +187,7 @@ export type AgentStore = {
   reserves: string[];
 };
 
-export type ReserveKind = "handoff" | "post" | "proposal";
+export type ReserveKind = "handoff" | "post" | "proposal" | "image";
 
 const EVENT_KINDS = new Set<AgentEventKind>([
   "user",
@@ -194,6 +197,7 @@ const EVENT_KINDS = new Set<AgentEventKind>([
   "note",
   "proposal",
   "widget",
+  "image",
 ]);
 
 export function agentStorePath(): string {
@@ -252,6 +256,7 @@ function parseEvent(raw: unknown): AgentEvent | null {
     proposalId: isId(rec.proposalId, 120) ? rec.proposalId : null,
     handoffId: isId(rec.handoffId, 120) ? rec.handoffId : null,
     widgetId: isId(rec.widgetId, 120) ? rec.widgetId : null,
+    imageId: isId(rec.imageId, 120) ? rec.imageId : null,
     connectedName: clip(rec.connectedName, 80) || null,
     connectedLogo: typeof rec.connectedLogo === "string" && rec.connectedLogo.length <= 500 ? rec.connectedLogo : null,
   };
@@ -585,6 +590,33 @@ export function referencedWidgetIds(path = agentStorePath()): Set<string> | null
   return ids;
 }
 
+/**
+ * Every image id a stored thread event still names, across every thread, or
+ * null when the store cannot be read. Same contract as referencedWidgetIds:
+ * null means "unknown", never "nothing references an image".
+ */
+export function referencedImageIds(path = agentStorePath()): Set<string> | null {
+  if (!existsSync(path)) return new Set();
+  let store: AgentStore;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!raw || typeof raw !== "object") return null;
+    const rec = raw as Record<string, unknown>;
+    if (rec.schemaVersion !== AGENT_SCHEMA) return null;
+    if (!Array.isArray(rec.threads)) return null;
+    store = parseAgentStore(raw);
+  } catch {
+    return null;
+  }
+  const ids = new Set<string>();
+  for (const thread of store.threads) {
+    for (const event of thread.events) {
+      if (event.imageId) ids.add(event.imageId);
+    }
+  }
+  return ids;
+}
+
 export function appendAgentEvent(
   botId: string,
   input: {
@@ -598,6 +630,7 @@ export function appendAgentEvent(
     proposalId?: string | null;
     handoffId?: string | null;
     widgetId?: string | null;
+    imageId?: string | null;
     connectedName?: string | null;
     connectedLogo?: string | null;
     id?: string;
@@ -617,6 +650,7 @@ export function appendAgentEvent(
       proposalId: input.proposalId ?? null,
       handoffId: input.handoffId ?? null,
       widgetId: input.widgetId ?? null,
+      imageId: input.imageId ?? null,
       connectedName: input.connectedName ? clip(input.connectedName, 80) : null,
       connectedLogo: input.connectedLogo ?? null,
     };

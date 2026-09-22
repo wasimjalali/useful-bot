@@ -62,7 +62,7 @@ export function withoutImagesForTextModel(messages: unknown, sees: boolean | nul
   });
 }
 
-function authFailed(): RouterError {
+export function authFailed(): RouterError {
   return new RouterError({
     status: 502,
     type: "upstream_error",
@@ -72,7 +72,7 @@ function authFailed(): RouterError {
 }
 
 /** The token and the auth-derived headers (ChatGPT-Account-Id) for one call. */
-function tokenFor(providerId: string, credential: Credential): { token: string; headers: Record<string, string> } {
+export function tokenFor(providerId: string, credential: Credential): { token: string; headers: Record<string, string> } {
   if (credential.kind === "key") return { token: credential.key, headers: {} };
   if (credential.kind === "oauth") {
     const info = accessTokenFor(providerId, credential);
@@ -90,7 +90,7 @@ function persistOAuthCredential(providerId: string, credential: Credential): voi
  * not turn the model call itself into a failure, so both writers swallow
  * their own errors.
  */
-function noteConnectionError(connectionId: string, code: string): void {
+export function noteConnectionError(connectionId: string, code: string): void {
   try {
     updateProviderStore((store) => (
       store.connections[connectionId] ? recordConnectionError(store, connectionId, code) : store
@@ -103,7 +103,7 @@ function noteConnectionError(connectionId: string, code: string): void {
  * The check runs inside the lock, so a failure recorded a moment ago by
  * another call is not wiped by this stale success.
  */
-function clearConnectionError(connectionId: string): void {
+export function clearConnectionError(connectionId: string): void {
   try {
     updateProviderStore((store) => {
       const conn = store.connections[connectionId];

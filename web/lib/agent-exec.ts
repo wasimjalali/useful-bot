@@ -1,10 +1,12 @@
 import { createHmac } from "node:crypto";
 import {
   appendAgentEvent,
+  referencedImageIds,
   referencedWidgetIds,
   sweepOrphanThreads,
   type ThreadKind,
 } from "../../shared/agent-store.ts";
+import { sweepOrphanImages } from "../../shared/images-store.ts";
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
@@ -1146,6 +1148,8 @@ export function sweepOrphanState(): string[] {
     // sweep at all.
     const referenced = referencedWidgetIds();
     if (referenced) sweepOrphanWidgets(referenced);
+    const referencedImages = referencedImageIds();
+    if (referencedImages) sweepOrphanImages(referencedImages);
     return routines;
   } catch {
     // A locked or unreadable store is the next tick's problem, never this

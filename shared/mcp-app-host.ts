@@ -53,12 +53,13 @@ function withCsp(html: string, domains: string[]): string {
   return `${meta}${html}`;
 }
 
-export function renderWidgetHost(record: WidgetRecord, appHtml: string, cspDomains: string[]): string {
+export function renderWidgetHost(record: WidgetRecord, appHtml: string, cspDomains: string[], degraded = false): string {
   const payload = jsonScript({
     id: record.id,
     toolName: record.toolName,
     arguments: record.arguments,
     result: record.result,
+    degraded,
   });
   const framed = withCsp(appHtml, cspDomains);
   return `<!doctype html>
@@ -78,6 +79,10 @@ const payload = ${payload};
 const iframe = document.getElementById("app");
 iframe.srcdoc = ${jsonScript(framed)};
 const host = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ubHost;
+// The app itself could not be served (connection gone, resource fetch
+// failed): tell the native side, so the row collapses to its compact
+// unavailable state instead of holding a 480px blank.
+if (payload.degraded && host) host.postMessage({ kind: "status", status: "unavailable" });
 let displayMode = "inline";
 let inlineHeight = 480;
 // Bumped whenever the native side changes the mode on its own, so a reply
@@ -208,7 +213,7 @@ export async function htmlForWidget(record: WidgetRecord): Promise<{ html: strin
   const entry = findConnectionById(record.connectionId);
   const resourceUri = record.resourceUri ?? "ui://excalidraw/mcp-app.html";
   if (!entry || entry.kind !== "mcp") {
-    return { html: renderWidgetHost(record, emptyCanvas(record), []), mimeType: "text/html; charset=utf-8" };
+    return { html: renderWidgetHost(record, emptyCanvas(record), [], true), mimeType: "text/html; charset=utf-8" };
   }
   try {
     const resource = await readMcpResource(entry.url, resourceUri);
@@ -221,7 +226,7 @@ export async function htmlForWidget(record: WidgetRecord): Promise<{ html: strin
       mimeType: "text/html; charset=utf-8",
     };
   } catch {
-    return { html: renderWidgetHost(record, emptyCanvas(record), []), mimeType: "text/html; charset=utf-8" };
+    return { html: renderWidgetHost(record, emptyCanvas(record), [], true), mimeType: "text/html; charset=utf-8" };
   }
 }
 

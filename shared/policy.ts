@@ -1,4 +1,4 @@
-export type Alias = "workhorse" | "reviewer";
+export type Alias = "workhorse" | "reviewer" | "image";
 export type Profile = "desktop" | "phone" | "reviewer" | "eval";
 export type SandboxBackendName = "microsandbox" | "docker" | "just-bash";
 export type Isolation = "verified-vm" | "non-vm";
@@ -34,13 +34,13 @@ export const CALLER_LIMITS = {
   // 10 bots x 50 turns x 8 steps is 4,000. The daily TOKEN budgets beside them
   // are unchanged: they are the spend guard, and the owner sets them in
   // Settings.
-  desktop: { aliases: ["workhorse"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
+  desktop: { aliases: ["workhorse", "image"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
   // The phone profile is the owner's own phone, with the desktop budget
   // verbatim (spec S1): there is one owner inference budget, and which device
   // sent the turn does not change it.
-  phone: { aliases: ["workhorse"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
+  phone: { aliases: ["workhorse", "image"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
   reviewer: { aliases: ["reviewer"], search: false, rpm: 4, requests24h: 20, input24h: 300_000, output24h: 80_000 },
-  eval: { aliases: ["workhorse", "reviewer"], search: true, rpm: 12, requests24h: 80, input24h: 1_000_000, output24h: 160_000 },
+  eval: { aliases: ["workhorse", "reviewer", "image"], search: true, rpm: 12, requests24h: 80, input24h: 1_000_000, output24h: 160_000 },
   ops: { aliases: [], search: false, rpm: 30, requests24h: 0, input24h: 0, output24h: 0 },
 } as const;
 
@@ -70,6 +70,9 @@ export const MAX_ACTIVE_UPSTREAM = 10;
 // Searches in flight. Its own gate, so a search never holds a completion slot.
 // The provider allows about one search a second, so four is already generous.
 export const MAX_ACTIVE_SEARCH = 4;
+// Image generations in flight. Its own gate too: a minute-long image call
+// must never hold the completion slot a bot's next step is waiting on.
+export const MAX_ACTIVE_IMAGE = 4;
 
 /**
  * A count, like `MAX_TOOL_SCHEMAS` below, and not the real bound either:

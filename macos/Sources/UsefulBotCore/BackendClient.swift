@@ -1500,6 +1500,23 @@ public actor BackendClient {
         return html
     }
 
+    /// One generated image's bytes. Fetched here, with the session this
+    /// client holds, so the transcript row that names it never carries a URL
+    /// into a context without the session.
+    public func image(id: String) async throws -> (data: Data, mime: String) {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base
+                .appendingPathComponent("api/agent/image")
+                .appendingPathComponent(id))
+        }
+        try Self.expectOK(data, response)
+        let mime = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "content-type")?
+            .split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces) ?? "image/png"
+        return (data, mime)
+    }
+
     /// One of a drawing's own tool calls (Excalidraw's export). The server
     /// runs only tools the MCP server marked for its app; the result goes
     /// back to the app as JSON.
@@ -1695,6 +1712,23 @@ public actor BackendClient {
             return try await historySnapshot(sessionId: sessionId, readFrom: 0)
         }
         return HistorySnapshot(turnIds: ids, nextIndex: next)
+    }
+
+    /// The index of the session's last recorded event, without reading the
+    /// log. A cursor past any real count makes the `untilTail` read finish on
+    /// the response headers alone; the tail header still arrives. A server
+    /// that reports no tail reads the log once, which is what the caller was
+    /// about to do anyway.
+    public func tailIndex(sessionId: String) async throws -> Int? {
+        let tail = TailBox()
+        for try await _ in stream(
+            sessionId: sessionId,
+            expectedSuffix: nil,
+            startIndex: Int(Int32.max),
+            untilTail: true,
+            tailBox: tail
+        ) {}
+        return tail.value
     }
 
     /// Replay the session and yield events live. With `expectedSuffix` set, the

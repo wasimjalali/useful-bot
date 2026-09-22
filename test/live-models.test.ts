@@ -61,7 +61,7 @@ test("models.dev facts land on the live rows: context window and image input", a
     },
     junk: { models: "no" },
   });
-  assert.deepEqual(catalog["opencode-go"]?.["glm-5.3-flash"], { contextTokens: 1_000_000, inputs: ["text", "image"] });
+  assert.deepEqual(catalog["opencode-go"]?.["glm-5.3-flash"], { contextTokens: 1_000_000, inputs: ["text", "image"], outputs: ["text"] });
   assert.equal(catalog["opencode-go"]?.odd, undefined);
   assert.equal(catalog.junk, undefined);
 
