@@ -611,6 +611,7 @@ struct ChatView: View {
                 // is shorter than the window and SwiftUI had already placed.
                 .onChange(of: model.sendTick) { holdingReplyAnchor = false }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
+                .onChange(of: holdingReplyAnchor) { _, holding in scrollProbe.holding = holding }
                 // The two banners sit above this scroll view, so they take
                 // their height off the top of the viewport. The content kept
                 // its offset from the top and slid down by that much, which
@@ -1303,6 +1304,10 @@ private final class ScrollProbe {
     var viewport: CGFloat = 0
     /// Whether the geometry has reported since the last reset.
     var seen = false
+    /// Mirrors `holdingReplyAnchor`: while the view is parked at the top of a
+    /// finished reply, no re-pin runs, and an offset change a late reload
+    /// makes is not taken for the reader scrolling.
+    var holding = false
     /// Until when an offset change is the app's own scroll rather than the
     /// reader's.
     var appScrollUntil = Date.distantPast
@@ -1328,8 +1333,8 @@ private struct ScrollPinnedTracker: ViewModifier {
     /// Called when the content or the window changed size and left a pinned
     /// reader short of the bottom. The caller scrolls back if it still should.
     let onDrift: () -> Void
-    /// Within half a line of the bottom counts as pinned, so a hair of
-    /// rubber-band or rounding cannot drop the pin while streaming.
+    /// A reader who scrolls back down to within half a line of the bottom is
+    /// pinned again, so they need not land on it exactly.
     private static let tolerance: CGFloat = 48
 
     /// Offset and content height together, because the pin can only be judged
@@ -1396,7 +1401,7 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // distance, and a clamp at the bottom leaves none, so
                     // neither is mistaken for one.
                     let appScroll = Date() < probe.appScrollUntil
-                    if !appScroll, new.offset < old.offset - 0.5,
+                    if !appScroll, !probe.holding, new.offset < old.offset - 0.5,
                        new.distance > old.distance + 0.5, new.distance > 2 {
                         if pinned { pinned = false }
                         return
@@ -1418,7 +1423,17 @@ private struct ScrollPinnedTracker: ViewModifier {
                     }
                     return
                 }
-                pinned = new.distance <= Self.tolerance
+                // The reader's own gesture: a move up past a hair unpins, so a
+                // short drag to reread a line is not pulled back down by the
+                // next streamed line; coming back near the newest turn pins
+                // again. Content growing under a still finger moves no offset
+                // and leaves the pin alone, and the rubber band past the end
+                // reads as the bottom.
+                if new.offset < old.offset - 0.5, new.distance > 2 {
+                    if pinned { pinned = false }
+                } else if new.distance <= Self.tolerance, !pinned {
+                    pinned = true
+                }
             }
         } else {
             content
