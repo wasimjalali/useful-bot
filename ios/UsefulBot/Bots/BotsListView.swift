@@ -28,19 +28,50 @@ struct BotsListView: View {
     @State private var showCreate = false
     @State private var showGroup = false
     @State private var showSection = false
-    @State private var newBotName = ""
-    @State private var newGroupName = ""
-    @State private var newSectionName = ""
-    @State private var groupMembers: Set<String> = []
     @State private var renameTarget: ShellBot?
-    @State private var renameText = ""
     @State private var deleteTarget: ShellBot?
+    @State private var moveTarget: ShellBot?
     /// `loaded` means a roster fetch has *succeeded* at least once — a failed
     /// first load shows the error row, never "Create your first bot".
     private var loaded: Bool { phone.loaded }
     private var loadError: String? { phone.loadError }
     private var bots: [ShellBot] { phone.shell?.bots ?? [] }
-    @State private var showDevices = false
+    /// The approvals card's "N waiting" — computed once per body pass so
+    /// the label's interpolation doesn't slow the type-checker.
+    private var waitingLabel: String {
+        "\(phone.approvals.filter { $0.phase == .pending || $0.phase == .changed }.count) waiting"
+    }
+
+    /// The pending-approvals entry is a lifted card, not a plain row
+    /// (1.10): the count is a warn-soft pill.
+    private var approvalsCard: some View {
+        Button {
+            showApprovals = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.shield")
+                    .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                    .foregroundStyle(Theme.C.warning)
+                Text("Approvals")
+                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                    .foregroundStyle(Theme.C.ink)
+                Spacer(minLength: 8)
+                StatusPill(
+                    text: waitingLabel,
+                    foreground: Theme.C.warning,
+                    background: Theme.C.warningSoft
+                )
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .background(Theme.C.surface)
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .cardLift(cornerRadius: DesignTokens.Radius.md)
+        }
+        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+    }
     /// When `/api/shell` last answered — the "cached N min ago" the offline
     /// banner quotes.
     @State private var lastFetchAt: Date?
@@ -64,37 +95,10 @@ struct BotsListView: View {
             }
             Section {
                 if !phone.approvals.isEmpty {
-                    // The pending-approvals entry is a lifted card, not a
-                    // plain row (1.10): the count is a warn-soft pill.
-                    Button {
-                        showApprovals = true
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "checkmark.shield")
-                                .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                                .foregroundStyle(Theme.C.warning)
-                            Text("Approvals")
-                                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                                .foregroundStyle(Theme.C.ink)
-                            Spacer(minLength: 8)
-                            StatusPill(
-                                text: "\(phone.approvals.filter { $0.phase == .pending || $0.phase == .changed }.count) waiting",
-                                foreground: Theme.C.warning,
-                                background: Theme.C.warningSoft
-                            )
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-                        .background(Theme.C.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                        .cardLift(cornerRadius: DesignTokens.Radius.md)
-                    }
-                    .contentShape(Rectangle())
-                    .buttonStyle(.plain)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
+                    approvalsCard
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
                 Button {
                     showSearch = true
@@ -189,19 +193,6 @@ struct BotsListView: View {
                     .accessibilityLabel("New")
                     .accessibilityHint(createsBlocked ?? "New bot, group, or section")
                     .ubFocusRing()
-                    // Devices sits in the toolbar as well as Settings >
-                    // Devices: pairing a phone is a list-adjacent action
-                    // owners reach for here.
-                    Button {
-                        showDevices = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                            .foregroundStyle(Theme.C.ink)
-                            .frame(minWidth: 44, minHeight: 44)
-                    }
-                    .accessibilityLabel("Devices")
-                    .ubFocusRing()
                 }
             }
         }
@@ -223,151 +214,135 @@ struct BotsListView: View {
         .navigationDestination(isPresented: $showApprovals) {
             PendingApprovalsView()
         }
-        .navigationDestination(isPresented: $showDevices) {
-            DevicesView()
-        }
         .navigationDestination(isPresented: chatPresented) {
             if let id = phone.selectedBotId, UIDevice.current.userInterfaceIdiom != .pad {
                 ChatScreen(botId: id)
             }
         }
-        .confirmationDialog(
-            "Delete \(deleteTarget?.name ?? "this bot")?",
-            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Delete bot", role: .destructive) {
-                if let id = deleteTarget?.id {
-                    deleteTarget = nil
-                    Task { await phone.deleteBot(id) }
-                }
-            }
-            Button("Cancel", role: .cancel) { deleteTarget = nil }
-        } message: {
-            Text("This removes the bot from your Mac.")
-        }
-        .sheet(isPresented: Binding(get: { phone.pastRecent != nil }, set: { if !$0 { phone.pastRecent = nil } })) {
+        // A past conversation is a push (1.4), not a sheet — the stack's
+        // back chevron is the exit.
+        .navigationDestination(item: Binding(
+            get: { phone.pastRecent },
+            set: { if $0 == nil { phone.pastRecent = nil } }
+        )) { _ in
             PastConversationView()
         }
-        .sheet(isPresented: $showSearch) {
-            GlobalSearchSheet {
-                showCreate = true
-            }
-        }
-        .sheet(isPresented: $showCreate) {
-            NavigationStack {
-                Form {
-                    TextField("Name", text: $newBotName)
-                    Button("Create") {
-                        let name = newBotName
-                        newBotName = ""
+        .modifier(Sheets(
+            showSearch: $showSearch,
+            showCreate: $showCreate,
+            showSection: $showSection,
+            showGroup: $showGroup,
+            renameTarget: $renameTarget,
+            deleteTarget: $deleteTarget,
+            moveTarget: $moveTarget,
+            createsBlocked: createsBlocked,
+            bots: bots,
+            sections: phone.shell?.sections ?? [],
+            phone: phone
+        ))
+    }
+
+    /// The list's floating sheets — kept out of `body` so the generic
+    /// modifier stack doesn't stall the type-checker on the whole tree.
+    private struct Sheets: ViewModifier {
+        @Binding var showSearch: Bool
+        @Binding var showCreate: Bool
+        @Binding var showSection: Bool
+        @Binding var showGroup: Bool
+        @Binding var renameTarget: ShellBot?
+        @Binding var deleteTarget: ShellBot?
+        @Binding var moveTarget: ShellBot?
+        let createsBlocked: String?
+        let bots: [ShellBot]
+        let sections: [ShellSection]
+        let phone: PhoneModel
+
+        func body(content: Content) -> some View {
+            content
+                .floatingSheet(isPresented: $showSearch, title: "Search", detent: .large) {
+                    GlobalSearchSheet(onClose: { showSearch = false }) {
+                        showCreate = true
+                    }
+                }
+                .floatingSheet(
+                    isPresented: $showCreate,
+                    title: "New bot",
+                    detent: .large,
+                    leading: { Button("Cancel") { showCreate = false } }
+                ) {
+                    CreateBotSheet(blocked: createsBlocked) { name, label, brief, color in
                         showCreate = false
-                        Task { await phone.createBot(name: name) }
-                    }
-                    .disabled(createsBlocked != nil || newBotName.trimmingCharacters(in: .whitespaces).isEmpty)
-                    .frame(minHeight: 44)
-                    if let reason = createsBlocked {
-                        Text(reason)
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                            .foregroundStyle(Theme.C.inkMuted)
+                        await phone.createBot(name: name, label: label, description: brief, color: color)
                     }
                 }
-                .navigationTitle("New bot")
-                .navigationBarTitleDisplayMode(.inline)
-            }
-            .presentationDetents([.medium])
-        }
-        .sheet(isPresented: $showSection) {
-            NavigationStack {
-                Form {
-                    TextField("Name", text: $newSectionName)
-                    Button("Create") {
-                        let name = newSectionName
-                        newSectionName = ""
+                .floatingSheet(
+                    isPresented: $showSection,
+                    title: "Create section",
+                    detent: .fit,
+                    leading: { Button("Cancel") { showSection = false } }
+                ) {
+                    CreateSectionSheet(blocked: createsBlocked) { name in
                         showSection = false
-                        Task { await phone.createSection(name: name) }
-                    }
-                    .disabled(createsBlocked != nil || newSectionName.trimmingCharacters(in: .whitespaces).isEmpty)
-                    .frame(minHeight: 44)
-                    if let reason = createsBlocked {
-                        Text(reason)
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                            .foregroundStyle(Theme.C.inkMuted)
+                        await phone.createSection(name: name)
                     }
                 }
-                .navigationTitle("New section")
-                .navigationBarTitleDisplayMode(.inline)
-            }
-            .presentationDetents([.medium])
-        }
-        .sheet(isPresented: $showGroup) {
-            NavigationStack {
-                Form {
-                    TextField("Name", text: $newGroupName)
-                    Section("Members") {
-                        ForEach(bots.filter { !$0.isGroup }) { bot in
-                            Button {
-                                if groupMembers.contains(bot.id) { groupMembers.remove(bot.id) }
-                                else { groupMembers.insert(bot.id) }
-                            } label: {
-                                HStack {
-                                    Text(bot.name).foregroundStyle(Theme.C.ink)
-                                    Spacer()
-                                    if groupMembers.contains(bot.id) {
-                                        Image(systemName: "checkmark").foregroundStyle(Theme.C.ink)
-                                    }
-                                }
-                            }
-                            .frame(minHeight: 44)
+                .floatingSheet(
+                    isPresented: $showGroup,
+                    title: "New group",
+                    detent: .large,
+                    leading: { Button("Cancel") { showGroup = false } }
+                ) {
+                    CreateGroupSheet(bots: bots.filter { !$0.isGroup }, blocked: createsBlocked) { name, members in
+                        showGroup = false
+                        await phone.createGroup(name: name, memberIds: members)
+                    }
+                }
+                .floatingSheet(
+                    item: $renameTarget,
+                    detent: .fit,
+                    title: { _ in "Rename" },
+                    leading: { _ in Button("Cancel") { renameTarget = nil } },
+                    trailing: { _ in EmptyView() },
+                    content: { bot in
+                        RenameSheet(bot: bot, blocked: createsBlocked) { name in
+                            renameTarget = nil
+                            await phone.rename(bot.id, name)
                         }
                     }
-                    Button("Create") {
-                        let name = newGroupName
-                        let members = Array(groupMembers)
-                        newGroupName = ""
-                        groupMembers = []
-                        showGroup = false
-                        Task { await phone.createGroup(name: name, memberIds: members) }
+                )
+                // Spec 1.7's delete confirm: a smallest-detent floating
+                // sheet, not the system action sheet — title asks,
+                // message gives the consequence, "Delete bot" is the
+                // destructive action.
+                .floatingSheet(
+                    item: $deleteTarget,
+                    detent: .fit,
+                    title: { "Delete \($0.name)?" },
+                    content: { bot in
+                        ConfirmSheet(
+                            message: "Its conversation and routines are removed from your Mac.",
+                            confirmTitle: "Delete bot",
+                            onConfirm: { Task { await phone.deleteBot(bot.id) } },
+                            onClose: { deleteTarget = nil }
+                        )
                     }
-                    .disabled(createsBlocked != nil || newGroupName.trimmingCharacters(in: .whitespaces).isEmpty || groupMembers.count < 2)
-                    .frame(minHeight: 44)
-                    .accessibilityHint(createsBlocked ?? (groupMembers.count < 2 ? "Pick at least two members" : ""))
-                    if let reason = createsBlocked {
-                        Text(reason)
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                            .foregroundStyle(Theme.C.inkMuted)
-                    } else if groupMembers.count < 2 {
-                        Text("Pick at least two members")
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                            .foregroundStyle(Theme.C.inkMuted)
+                )
+                .floatingSheet(
+                    item: $moveTarget,
+                    detent: .medium,
+                    title: { _ in "Move to section" },
+                    content: { bot in
+                        MoveToSectionSheet(
+                            bot: bot,
+                            sections: sections,
+                            onPick: { sectionId in
+                                moveTarget = nil
+                                Task { await phone.move(bot.id, sectionId: sectionId) }
+                            },
+                            onClose: { moveTarget = nil }
+                        )
                     }
-                }
-                .navigationTitle("New group")
-                .navigationBarTitleDisplayMode(.inline)
-            }
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $renameTarget) { bot in
-            NavigationStack {
-                Form {
-                    TextField("Name", text: $renameText)
-                    Button("Rename") {
-                        let name = renameText
-                        renameTarget = nil
-                        Task { await phone.rename(bot.id, name) }
-                    }
-                    .disabled(createsBlocked != nil || renameText.trimmingCharacters(in: .whitespaces).isEmpty)
-                    .frame(minHeight: 44)
-                    if let reason = createsBlocked {
-                        Text(reason)
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                            .foregroundStyle(Theme.C.inkMuted)
-                    }
-                }
-                .navigationTitle("Rename")
-                .navigationBarTitleDisplayMode(.inline)
-            }
-            .presentationDetents([.medium])
+                )
         }
     }
 
@@ -490,23 +465,23 @@ struct BotsListView: View {
             Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }
                 .disabled(createsBlocked != nil)
             Button("Rename") {
-                renameText = bot.name
                 renameTarget = bot
             }
             .disabled(createsBlocked != nil)
-            Menu("Move to section") {
-                Button("Unassigned") { Task { await phone.move(bot.id, sectionId: nil) } }
-                    .disabled(createsBlocked != nil)
-                ForEach(shell.sections) { section in
-                    Button(section.name) { Task { await phone.move(bot.id, sectionId: section.id) } }
-                        .disabled(createsBlocked != nil)
-                }
-            }
-            .disabled(createsBlocked != nil)
+            // 1.7's Move to section is a floating sheet of option rows
+            // with the current one checked, not a nested menu.
+            Button("Move to section") { moveTarget = bot }
+                .disabled(createsBlocked != nil)
             Button("New chat") { Task { await phone.newChat(bot.id) } }
                 .disabled(createsBlocked != nil)
             Button("Hide") { Task { await phone.hide(bot.id, true) } }
                 .disabled(createsBlocked != nil)
+            // Settings opens the chat's own bot-settings sheet — the flag
+            // lands it once the push completes (1.2's menu).
+            Button("Settings") {
+                phone.pendingSettingsBot = bot.id
+                phone.select(bot.id)
+            }
             Button("Delete", role: .destructive) { deleteTarget = bot }
                 .disabled(createsBlocked != nil)
         }
@@ -901,25 +876,23 @@ struct DevicesView: View {
                 }
             }
         }
-        .confirmationDialog(
-            "Unpair this iPhone?",
-            isPresented: $confirmUnpair,
-            titleVisibility: .visible
-        ) {
-            Button("Unpair", role: .destructive) {
-                Task {
-                    let verdict = await OwnerGate.evaluate(reason: "Unpair this iPhone")
-                    guard verdict == .approved else {
-                        gateUnavailable = verdict == .unavailable
-                        return
+        .floatingSheet(isPresented: $confirmUnpair, title: "Unpair this iPhone?", detent: .fit) {
+            ConfirmSheet(
+                message: "Your bots stay on your Mac.",
+                confirmTitle: "Unpair",
+                onConfirm: {
+                    Task {
+                        let verdict = await OwnerGate.evaluate(reason: "Unpair this iPhone")
+                        guard verdict == .approved else {
+                            gateUnavailable = verdict == .unavailable
+                            return
+                        }
+                        await coordinator.unpair()
+                        dismiss()
                     }
-                    await coordinator.unpair()
-                    dismiss()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This signs out and erases the pairing token, caches and drafts on this iPhone. Pair again with a new code from your Mac.")
+                },
+                onClose: { confirmUnpair = false }
+            )
         }
         .navigationTitle("Devices")
         .navigationBarTitleDisplayMode(.inline)
@@ -1015,8 +988,9 @@ struct DevicesView: View {
     }
 }
 
-/// A past conversation opened from search. Read-only until Continue, which is
-/// class A and switches the bot onto that session.
+/// A past conversation opened from search — pushed, not a sheet (1.4).
+/// Read-only until "Continue this conversation", which is class A and
+/// switches the bot onto that session.
 struct PastConversationView: View {
     @Environment(PhoneModel.self) private var phone
     @EnvironmentObject private var coordinator: PairingCoordinator
@@ -1027,10 +1001,9 @@ struct PastConversationView: View {
     }
 
     var body: some View {
-        NavigationStack {
             List {
                 if phone.pastRows.isEmpty {
-                    Text(phone.actionError ?? "Nothing in this conversation yet.")
+                    Text(phone.actionError ?? "This conversation has no messages.")
                         .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                         .foregroundStyle(Theme.C.inkMuted)
                 }
@@ -1074,25 +1047,378 @@ struct PastConversationView: View {
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
                     }
-                    // Continue this conversation is class A — the gate runs
-                    // inside `continuePast`.
-                    Button("Continue") {
+                    // "Continue this conversation" is class A — the gate
+                    // runs inside `continuePast`.
+                    Button("Continue this conversation") {
                         Task { await phone.continuePast() }
                     }
-                    .buttonStyle(PressedScale())
-                    .font(Theme.font(DesignTokens.FontSize.button, .semibold))
+                    .buttonStyle(PressedScale(
+                        fill: blocked == nil ? Theme.C.brand : Theme.C.sunken,
+                        pressedFill: Theme.C.accentStrong,
+                        shadowed: blocked == nil
+                    ))
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
                     .foregroundStyle(blocked == nil ? Theme.C.brandInk : Theme.C.inkFaint)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(
-                        (blocked == nil ? Theme.C.brand : Theme.C.sunken),
-                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    )
+                    .frame(maxWidth: .infinity, minHeight: 50)
                     .disabled(blocked != nil)
                 }
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
                 .padding(.vertical, 8)
                 .background(Theme.C.surface)
             }
+    }
+}
+
+/// The 1.7 field recipe: a 13 pt label over a sunken 44 pt field.
+private struct CreateField: View {
+    let title: String
+    @Binding var text: String
+    var axis: Axis = .horizontal
+    var placeholder: String?
+
+    init(_ title: String, text: Binding<String>, axis: Axis = .horizontal, placeholder: String? = nil) {
+        self.title = title
+        _text = text
+        self.axis = axis
+        self.placeholder = placeholder
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
+                .foregroundStyle(Theme.C.inkMuted)
+            TextField(placeholder ?? title, text: $text, axis: axis)
+                .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
+                .foregroundStyle(Theme.C.ink)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44, alignment: axis == .vertical ? .topLeading : .center)
+                .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                )
         }
+    }
+}
+
+/// The create flow's full-width primary with its rendered disabled reason
+/// (1.7: "Add a name" style, or the offline/creates-blocked reason).
+private struct CreatePrimaryButton: View {
+    let title: String
+    var busyTitle: String? = nil
+    var busy = false
+    /// The reason the button is disabled; nil means enabled.
+    var reason: String?
+    var action: () async -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                Task { await action() }
+            } label: {
+                Text(busy ? (busyTitle ?? title) : title)
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
+                    .foregroundStyle(reason == nil && !busy ? Theme.C.brandInk : Theme.C.inkFaint)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+            }
+            .disabled(reason != nil || busy)
+            .buttonStyle(PressedScale(
+                fill: reason == nil && !busy ? Theme.C.brand : Theme.C.sunken,
+                pressedFill: Theme.C.accentStrong,
+                shadowed: reason == nil && !busy
+            ))
+            .ubFocusRing()
+            if let reason {
+                Text(reason)
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+        }
+    }
+}
+
+/// New bot (spec 1.7): centered 84 pt avatar preview, the approved-palette
+/// swatches at 44 pt with the picked one ringed 2 pt `ink`, Name / Label /
+/// First brief fields, and the full-width "Create bot" primary.
+private struct CreateBotSheet: View {
+    /// Offline/creates-blocked reason; nil means the write can run.
+    var blocked: String?
+    var onCreate: (_ name: String, _ label: String, _ brief: String, _ color: String) async -> Void
+    @State private var name = ""
+    @State private var label = ""
+    @State private var brief = ""
+    @State private var color = FacePalette.colors.randomElement() ?? "ink"
+    @State private var busy = false
+
+    private var reason: String? {
+        if let blocked { return blocked }
+        return name.trimmingCharacters(in: .whitespaces).isEmpty ? "Add a name" : nil
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                Image(uiImage: UIImage(named: "avatar-\(color)") ?? UIImage(named: "avatar-ink") ?? UIImage())
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 84, height: 84)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Avatar color")
+                        .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
+                        .foregroundStyle(Theme.C.inkMuted)
+                    // 44 pt swatch targets; they wrap to two rows at
+                    // accessibility sizes (1.7 Dynamic Type).
+                    FlowRow(spacing: 8) {
+                        ForEach(FacePalette.colors, id: \.self) { swatch in
+                            Button { color = swatch } label: {
+                                ZStack {
+                                    Image(uiImage: UIImage(named: "avatar-\(swatch)") ?? UIImage())
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .scaledToFit()
+                                        .frame(width: 36, height: 36)
+                                    if color == swatch {
+                                        Circle()
+                                            .strokeBorder(Theme.C.ink, lineWidth: 2)
+                                            .frame(width: 42, height: 42)
+                                    }
+                                }
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(swatch) mascot")
+                            .accessibilityAddTraits(color == swatch ? .isSelected : [])
+                        }
+                    }
+                }
+                CreateField("Name", text: $name)
+                CreateField("Label", text: $label)
+                CreateField("First brief", text: $brief, axis: .vertical)
+                CreatePrimaryButton(
+                    title: "Create bot",
+                    busyTitle: "Creating",
+                    busy: busy,
+                    reason: reason
+                ) {
+                    busy = true
+                    await onCreate(
+                        name.trimmingCharacters(in: .whitespaces),
+                        label.trimmingCharacters(in: .whitespaces),
+                        brief.trimmingCharacters(in: .whitespacesAndNewlines),
+                        color
+                    )
+                }
+            }
+            .padding(.horizontal, DesignTokens.Space.phoneGutter)
+            .padding(.bottom, 12)
+        }
+        .scrollContentBackground(.hidden)
+    }
+}
+
+/// A minimal wrap row for the swatches — enough for 11 chips on a phone and
+/// the two-row wrap at XXXL.
+private struct FlowRow<Content: View>: View {
+    var spacing: CGFloat = 8
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: spacing) {
+                content()
+            }
+        }
+    }
+}
+
+/// New group (spec 1.7): Name field, member multi-select with avatar + a
+/// trailing checkmark on the picked (sunken) row, "Create group" primary.
+private struct CreateGroupSheet: View {
+    let bots: [ShellBot]
+    var blocked: String?
+    var onCreate: (_ name: String, _ memberIds: [String]) async -> Void
+    @State private var name = ""
+    @State private var members: Set<String> = []
+    @State private var busy = false
+
+    private var reason: String? {
+        if let blocked { return blocked }
+        if name.trimmingCharacters(in: .whitespaces).isEmpty { return "Add a name" }
+        return members.count < 2 ? "Pick at least two members" : nil
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            CreateField("Name", text: $name)
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+            List {
+                Section("Members") {
+                    ForEach(bots) { bot in
+                        let picked = members.contains(bot.id)
+                        Button {
+                            if picked { members.remove(bot.id) } else { members.insert(bot.id) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                BotFace(bot: bot, size: 32)
+                                Text(bot.name)
+                                    .tokenFont(DesignTokens.FontSize.chatName, picked ? .semibold : .regular)
+                                    .foregroundStyle(Theme.C.ink)
+                                Spacer(minLength: 8)
+                                if picked {
+                                    Image(systemName: "checkmark")
+                                        .font(Theme.font(DesignTokens.FontSize.chatName, .semibold))
+                                        .foregroundStyle(Theme.C.accent)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
+                            .background(picked ? Theme.C.sunken : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
+                        .accessibilityAddTraits(picked ? .isSelected : [])
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            CreatePrimaryButton(
+                title: "Create group",
+                busyTitle: "Creating",
+                busy: busy,
+                reason: reason
+            ) {
+                busy = true
+                await onCreate(
+                    name.trimmingCharacters(in: .whitespaces),
+                    Array(members)
+                )
+            }
+            .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        }
+        .padding(.bottom, 12)
+    }
+}
+
+/// New section (spec 1.7): one field and "Create section" at the smallest
+/// detent.
+private struct CreateSectionSheet: View {
+    var blocked: String?
+    var onCreate: (_ name: String) async -> Void
+    @State private var name = ""
+    @State private var busy = false
+
+    private var reason: String? {
+        if let blocked { return blocked }
+        return name.trimmingCharacters(in: .whitespaces).isEmpty ? "Add a name" : nil
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            CreateField("Name", text: $name)
+            CreatePrimaryButton(
+                title: "Create section",
+                busyTitle: "Creating",
+                busy: busy,
+                reason: reason
+            ) {
+                busy = true
+                await onCreate(name.trimmingCharacters(in: .whitespaces))
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        .padding(.bottom, 12)
+    }
+}
+
+/// Rename (spec 1.7): the prefilled name field and "Save".
+private struct RenameSheet: View {
+    let bot: ShellBot
+    var blocked: String?
+    var onSave: (_ name: String) async -> Void
+    @State private var name: String
+    @State private var busy = false
+
+    init(bot: ShellBot, blocked: String?, onSave: @escaping (String) async -> Void) {
+        self.bot = bot
+        self.blocked = blocked
+        self.onSave = onSave
+        _name = State(initialValue: bot.name)
+    }
+
+    private var reason: String? {
+        if let blocked { return blocked }
+        return name.trimmingCharacters(in: .whitespaces).isEmpty ? "Add a name" : nil
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            CreateField("Name", text: $name)
+            CreatePrimaryButton(
+                title: "Save",
+                busyTitle: "Saving",
+                busy: busy,
+                reason: reason
+            ) {
+                busy = true
+                await onSave(name.trimmingCharacters(in: .whitespaces))
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        .padding(.bottom, 12)
+    }
+}
+
+/// Move to section (spec 1.7): the section list plus Unassigned, with the
+/// checkmark on the bot's current section.
+private struct MoveToSectionSheet: View {
+    let bot: ShellBot
+    let sections: [ShellSection]
+    var onPick: (String?) -> Void
+    var onClose: () -> Void
+
+    var body: some View {
+        List {
+            row(title: "Unassigned", picked: bot.sectionId == nil) {
+                onPick(nil)
+            }
+            ForEach(sections.sorted { $0.order < $1.order }) { section in
+                row(title: section.name, picked: bot.sectionId == section.id) {
+                    onPick(section.id)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func row(title: String, picked: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Text(title)
+                    .tokenFont(DesignTokens.FontSize.chatName, picked ? .semibold : .regular)
+                    .foregroundStyle(Theme.C.ink)
+                Spacer(minLength: 8)
+                if picked {
+                    Image(systemName: "checkmark")
+                        .font(Theme.font(DesignTokens.FontSize.chatName, .semibold))
+                        .foregroundStyle(Theme.C.accent)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .background(picked ? Theme.C.sunken : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
+        .accessibilityAddTraits(picked ? .isSelected : [])
     }
 }

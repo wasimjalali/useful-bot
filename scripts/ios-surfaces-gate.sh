@@ -239,6 +239,10 @@ fi
 # leg under test expects to tap.
 seedfor() {
   if [ -n "$ONLY" ]; then case " $ONLY " in *" $1 "*) ;; *) return 0;; esac; fi
+  # Each seeded leg decides on whichever card the dock expands; a still-
+  # pending leftover from an earlier leg can take that slot and resolve
+  # under the tap instead, so every seeded leg starts from an empty store.
+  "$NODE" "$CTL" clear-approvals
   shift; "$NODE" "$CTL" seed-approval "$@"
 }
 "$NODE" "$CTL" clear-approvals

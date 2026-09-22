@@ -25,6 +25,11 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case attachment(String)
     /// `/api/shell` answered with its own error code.
     case shell(String)
+    /// The local server was busy in a way §8.4 sanctions one retry for: a
+    /// 503 carrying `approvals_locked` or `workspace_unavailable`. Any other
+    /// 503 stays `.http` — a send's response may already be accepted, and the
+    /// spec forbids auto-resend for anything else.
+    case unavailable(String)
     /// eve retired the session this chat pointed at (a failed turn ends a
     /// session for good), so nothing can be sent to it again.
     case sessionEnded
@@ -85,6 +90,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return code
         case .shell(let code):
             return Self.shellCopy(code)
+        case .unavailable(let code):
+            return "The local server could not complete this request (\(code))."
         case .sessionEnded:
             return "This chat's session ended. Send again to start a new one."
         case .streamInterrupted:
@@ -241,11 +248,13 @@ private final class FlagBox: @unchecked Sendable {
     }
 }
 
-/// The tail index a stream's response reported, for the caller that started it.
-private final class TailBox: @unchecked Sendable {
+/// The tail index a stream's response reported, for the caller that started
+/// it. `nil` means the server did not advertise one; -1 is an empty session.
+public final class TailBox: @unchecked Sendable {
     private let lock = NSLock()
     private var tail: Int?
-    var value: Int? {
+    public init() {}
+    public var value: Int? {
         lock.lock()
         defer { lock.unlock() }
         return tail
@@ -1383,6 +1392,15 @@ public actor BackendClient {
            failure.error == "model_no_vision" {
             throw BackendError.modelNoVision
         }
+        // §8.4: a coded 503 keeps its code so the caller can tell the two
+        // retryable ones (approvals_locked, workspace_unavailable) from every
+        // other busy answer, which must not be resent automatically — the
+        // turn may already be accepted.
+        if let http = response as? HTTPURLResponse, http.statusCode == 503,
+           let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
+           let code = failure.error ?? failure.code, !code.isEmpty {
+            throw BackendError.unavailable(code)
+        }
         try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(SendResponse.self, from: data) else {
             throw BackendError.decoding
@@ -1760,6 +1778,11 @@ public actor BackendClient {
     /// With `markHistory` the server is asked for the same tail but the read
     /// carries on past it: each event says how far it sat from the end of the
     /// history, and the caller tells a replay from a live turn by that.
+    /// `tailBox` receives the advertised tail the response header reports,
+    /// including on the early-finish path where no event carries it. A caller
+    /// judging completeness (§8.3) needs that header: a read that started
+    /// past the tail yields zero events and would otherwise look like an
+    /// answer the server never gave.
     public nonisolated func stream(
         sessionId: String,
         expectedSuffix: String? = nil,
@@ -1767,9 +1790,10 @@ public actor BackendClient {
         startIndex: Int = 0,
         untilTail: Bool = false,
         markHistory: Bool = false,
-        allowUntaggedTurn: Bool = true
+        allowUntaggedTurn: Bool = true,
+        tailBox: TailBox? = nil
     ) -> AsyncThrowingStream<EveEvent, Error> {
-        stream(
+        streamRead(
             sessionId: sessionId,
             expectedSuffix: expectedSuffix,
             historyTurnIds: historyTurnIds,
@@ -1777,11 +1801,11 @@ public actor BackendClient {
             untilTail: untilTail,
             markHistory: markHistory,
             allowUntaggedTurn: allowUntaggedTurn,
-            tailBox: nil
+            tailBox: tailBox
         )
     }
 
-    private nonisolated func stream(
+    private nonisolated func streamRead(
         sessionId: String,
         expectedSuffix: String?,
         historyTurnIds: Set<String> = [],

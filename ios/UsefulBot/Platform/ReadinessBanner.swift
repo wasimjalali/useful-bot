@@ -9,6 +9,9 @@ struct ReadinessBanner: View {
     /// When `/api/shell` last answered — the "cached N min ago" the offline
     /// banner quotes. Nil shows the undated copy.
     var lastFetchAt: Date?
+    /// Spec 1.3: the chat strip is flat — sunken fill, no lift, no card
+    /// radius, full width. The roster keeps the lifted card.
+    var flat = false
     var onRetry: () -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -68,13 +71,19 @@ struct ReadinessBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+        // Chat's strip is flat — sunken, edge-to-edge, no card shape; the
+        // roster keeps the lifted card per §4.3.
         .background(
-            Theme.C.surface,
-            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+            flat ? Theme.C.sunken : Theme.C.surface,
+            in: flat ? AnyShape(Rectangle()) : AnyShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
         )
-        // Lifted card per §4.3: `lift` shadow (two-component), not the
-        // button's `sm`.
-        .cardLift(cornerRadius: DesignTokens.Radius.md)
+        .overlay {
+            if !flat {
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                    .strokeBorder(Theme.C.edge, lineWidth: 1)
+            }
+        }
+        .cardLift(cornerRadius: DesignTokens.Radius.md, enabled: !flat)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("readiness-banner")
     }

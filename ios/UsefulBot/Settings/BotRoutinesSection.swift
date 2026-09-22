@@ -80,7 +80,12 @@ struct BotRoutinesSection: View {
 
     private func load() async {
         guard let client = coordinator.client else { return }
-        routines = (try? await client.routines(botId: bot.id)) ?? []
+        do {
+            routines = try await client.routines(botId: bot.id)
+            error = nil
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? "Routines could not be loaded."
+        }
     }
 }
 
@@ -98,6 +103,9 @@ struct RoutineEditorSheet: View {
     let bot: ShellBot
     /// nil means create.
     let routine: Routine?
+    /// The floating sheet's close — bare chrome draws this sheet's own
+    /// Cancel/Save title row (spec 1.8).
+    var onClose: () -> Void = {}
     var onSaved: () async -> Void
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(PhoneModel.self) private var phone
@@ -115,9 +123,10 @@ struct RoutineEditorSheet: View {
     @State private var error: String?
     @State private var busy = false
 
-    init(bot: ShellBot, routine: Routine?, onSaved: @escaping () async -> Void) {
+    init(bot: ShellBot, routine: Routine?, onClose: @escaping () -> Void = {}, onSaved: @escaping () async -> Void) {
         self.bot = bot
         self.routine = routine
+        self.onClose = onClose
         self.onSaved = onSaved
         _name = State(initialValue: routine?.name ?? "")
         _instruction = State(initialValue: routine?.instruction ?? "")
@@ -143,12 +152,38 @@ struct RoutineEditorSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            // Spec 1.8: title is the routine name; Cancel and Save live in
+            // the sheet's title row (the floating sheet's bare chrome).
+            HStack(spacing: 8) {
+                Button("Cancel") { close() }
+                    .frame(minHeight: 44)
+                Spacer(minLength: 0)
+                Text(routine?.name.isEmpty == false ? routine!.name : "New routine")
+                    .tokenFont(DesignTokens.FontSize.dialogTitle, .semibold)
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button("Save") { Task { await save() } }
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
+                    .foregroundStyle(Theme.C.accent)
+                    .frame(minHeight: 44)
+                    .disabled(blocked != nil || busy || invalidReason != nil)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
             List {
                 if routine != nil {
                     Section {
-                        Toggle("Active", isOn: $active)
-                            .disabled(blocked != nil)
+                        LabeledContent("Active") {
+                            TokenToggle(isOn: $active, enabled: blocked == nil)
+                        }
+                        .frame(minHeight: 44)
+                        if let blocked {
+                            Text(blocked)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
                     }
                 }
                 Section {
@@ -210,9 +245,16 @@ struct RoutineEditorSheet: View {
                         .frame(minHeight: 44)
                         .disabled(blocked != nil)
                     }
-                    if !routine.runHistory.isEmpty {
-                        Section("Run history") {
-                            ForEach(routine.runHistory.prefix(10)) { run in
+                    Section("Run history") {
+                        if routine.runHistory.isEmpty {
+                            Text("No runs yet.")
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                        ForEach(routine.runHistory.prefix(10)) { run in
+                            Button {
+                                openRun(run)
+                            } label: {
                                 HStack {
                                     Text(RoutineCopy.runLabel(iso: run.at))
                                         .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
@@ -223,9 +265,18 @@ struct RoutineEditorSheet: View {
                                         foreground: run.succeeded ? Theme.C.success : Theme.C.danger,
                                         background: run.succeeded ? Theme.C.successSoft : Theme.C.dangerSoft
                                     )
+                                    if run.sessionId != nil {
+                                        Image(systemName: "chevron.right")
+                                            .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                                            .foregroundStyle(Theme.C.inkFaint)
+                                    }
                                 }
                                 .frame(minHeight: 44)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .disabled(run.sessionId == nil)
+                            .accessibilityHint(run.sessionId == nil ? "" : "Opens the run's session")
                         }
                     }
                 }
@@ -242,23 +293,46 @@ struct RoutineEditorSheet: View {
                             .disabled(blocked != nil || busy)
                     }
                 }
+                // 1.8 Disabled: the Save in the title bar stays disabled
+                // until the form is valid, and the reason renders here.
+                if let reason = blocked ?? invalidReason {
+                    Section {
+                        Text(reason)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
+                }
                 if let error {
                     Section { Text(error).foregroundStyle(Theme.C.danger) }
                 }
             }
-            .navigationTitle(routine?.name.isEmpty == false ? routine!.name : "New routine")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }
-                        .disabled(blocked != nil || busy || invalidReason != nil)
-                }
-            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
-        .presentationDetents([.large])
+    }
+
+    private func close() {
+        dismiss()
+        onClose()
+    }
+
+    /// A run row opens the run's session in the past-conversation sheet,
+    /// which lives on the list root — the editor sheet closes first.
+    private func openRun(_ run: RoutineRun) {
+        guard let sessionId = run.sessionId else { return }
+        let recent = ShellRecent(
+            id: run.id,
+            botId: bot.id,
+            title: "\(bot.name) routine, \(RoutineCopy.runLabel(iso: run.at))",
+            sessionId: sessionId,
+            preview: "",
+            updatedAt: run.at
+        )
+        close()
+        Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            await phone.openPast(recent)
+        }
     }
 
     private var blocked: String? {
@@ -289,6 +363,7 @@ struct RoutineEditorSheet: View {
 
     private var dayPicker: some View {
         let labels = ["S", "M", "T", "W", "T", "F", "S"]
+        let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
         return HStack(spacing: 8) {
             ForEach(0..<7, id: \.self) { day in
                 Button {
@@ -302,11 +377,14 @@ struct RoutineEditorSheet: View {
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel(names[day])
+                .accessibilityAddTraits(days.contains(day) ? .isSelected : [])
             }
         }
         .frame(maxWidth: .infinity)
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)
+        .accessibilityElement(children: .contain)
     }
 
     /// The schedule row the form describes, in the shape the server parses.
@@ -389,7 +467,7 @@ struct RoutineEditorSheet: View {
                 )
             }
             await onSaved()
-            dismiss()
+            close()
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription
         }
@@ -432,7 +510,7 @@ struct RoutineEditorSheet: View {
         do {
             try await client.deleteRoutine(id: routine.id)
             await onSaved()
-            dismiss()
+            close()
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription
         }

@@ -1648,3 +1648,85 @@ services restarted and verified listening. `bots-repaired-*` stays at
 its earlier vintage — the surface is the same roster evidenced fresh by
 `bots-paired`/`bots-resigned-in`; re-running a re-pair leg only re-cuts
 the same pixels.
+
+##### Round 2 — head `f272aca`
+
+Three fresh SWE-2 reviewer sessions on `f272aca`. Verdicts: correctness
+request_changes (2H/6M/9L), security request_changes (1M/2L),
+design-a11y request_changes (3H/16M/10L). Every blocker/high/medium
+fixed before this entry; lows batched into the same cleanup.
+
+Correctness highs: `follow()` never reconnected after a dropped eve
+stream — it now loops a 2s reconnect bounded by
+`still(botId, token, generation)` like the Mac's AppModel.followSession;
+a warm resume of a quiet chat judged `tailMissing` forever — the tail
+check now uses `tailBox` so a chat whose last event predates the window
+is live, not stuck.
+
+Correctness mediums: `threadState` is re-fetched on refresh cadence, not
+only in `open()`; `post()` no longer resends on any 503 — it decodes the
+body and retries only `approvals_lock`/`busy` conflicts; provider
+`startFlow` OAuth is gated through OwnerGate ("Sign in to a provider");
+proposal-status completion polling (spec 9.4) watches Composio/proposal
+Safari flows; pure-name search matches no longer drop groups
+(`items.isEmpty` fell to `group == nil`); `ChatMarkdown.midLineFence` no
+longer treats prose like "the ``` marker" as a fence — a whitespace-
+leading tail or non-lang charset declines the fence (pinned test).
+
+Correctness lows: failed sends restore `attachments` alongside text on
+every path; echo resolution is position-anchored (no false-resolve on a
+duplicated earlier message); `loadCursor`/`saveCursor` persist the
+replay cursor so relaunch isn't a cold replay; `open()` clears
+`updating` on a generation bail (permanent skeleton gone); `cancelSend`
+no longer wipes an open question before the cancel lands; `newChat`/
+`clearThread` clear `chat.error` + `catchUpIncomplete`; unprovenanced
+cards still dock; `BotRoutinesSection.load()` surfaces errors;
+`matchingRecents`/`searchHits` dead code removed.
+
+Security: OAuth start gated (same fix as C2-M5); remaining lows folded
+into the cleanup.
+
+Design-a11y highs: Create-bot/group/section/Rename/Move/Delete confirm
+flows are FloatingSheet anatomy per spec 1.7 (avatar preview, color
+swatches, Label/First brief, Cancel/primary, "Add a name" reason); the
+send-lock badge reads on a contrast disc; routine day circles carry day
+names + selected trait. Mediums: FloatingSheet component itself (8pt
+sides/bottom, Radius.xl, grabber, title+close, overlay scrim) with the
+smallest-detent anatomy on confirms; chat readiness strip flat sunken
+with lastFetchAt; approval countdown on TimelineView; mention list
+scrolls at a11y sizes; permission footer names the bot; past-
+conversation Continue uses token type; model rows stop weight-jumping;
+camera row shows its disabled reason; Connect/"Save key" is primary;
+search highlighting drops fixed-.body injection; routine Save disabled
+reason renders; run history is navigable with "No runs yet."; proposal
+detail no longer truncates at XXXL; roster context menu gains Settings
++ Move-to-section submenu; ProgressView spinners replaced with skeleton
+rows; settings gains Language ("System"), "Change photo", "Operator
+name". Lows: Devices gear duplication, cwd a11y hint copy, delete-
+confirm copy, OAuth code 20pt+minScaleFactor, unpair copy keeps "Your
+bots stay on your Mac.", effort label tone, TokenToggle, skeleton brand
+curve, role-picker sunken picked row, folder-sheet copy.
+
+Real bug found by the gate, not a reviewer: `.fit`-detent floating
+sheets hug content via `fixedSize(vertical:)` — a `List` reports ~0
+ideal height and the card collapsed to its header ("Add to message"
+opened as a 91pt sliver; Photos row laid out below the screen edge,
+never hittable). `List` content can't hug, so the attach picker runs at
+`.medium` and Move-to-section at `.medium`; `.fit` stays for VStack
+content only.
+
+Harness fixes this round (not app bugs): `seedfor` clears the approval
+store per leg — a still-pending leftover could take the dock's single
+expanded slot and resolve under a later leg's tap; the widget hunt taps
+"Show earlier" (the 300-event thread pushes the widget event above the
+transcript window) with a 45s deadline; `tapButton` prints every match's
+frame on a hittable-miss.
+
+Re-run scope: every leg the diff touches plus the failed legs —
+testBotsList, testChat, testChatAccessibility, all nine approval legs,
+testWidget, testAttachPhoto, testTextFileCap, testSettings,
+testRoutineCreate, testProposalCard, testProposalConfirm,
+testSafariSheet(+Dark), testOwnerQuestion(+Dark), testReduceMotion,
+testTwoClientPreserveSelection, testLiveSend, LongChatPerf, PerfColdLaunch,
+PerfChatOpenCached, PerfChatOpenColdReplay, PerfScroll — all green on
+the fix build.

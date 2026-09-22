@@ -78,10 +78,14 @@ struct ApprovalCardView: View {
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
                     .foregroundStyle(Theme.C.ink)
                 Spacer(minLength: 0)
-                Text(countdown)
-                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .monospacedDigit()
+                // The countdown ticks live (spec: "4:32" counts down),
+                // not a render-time snapshot.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(Self.countdown(card.item.expiresAt, at: context.date))
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .monospacedDigit()
+                }
             }
             if !card.item.cwd.isEmpty {
                 Button {
@@ -101,7 +105,7 @@ struct ApprovalCardView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Working directory \(card.item.cwd)")
-                .accessibilityHint("Double-tap and hold to read the full path")
+                .accessibilityHint("Double-tap to read the full path")
                 .alert("Working directory", isPresented: $showFullPath) {
                     Button("OK", role: .cancel) {}
                 } message: {
@@ -178,9 +182,9 @@ struct ApprovalCardView: View {
         .frame(minHeight: 44)
     }
 
-    private var countdown: String {
-        guard card.item.expiresAt > 0 else { return "" }
-        let remaining = Int(card.item.expiresAt / 1000 - Date().timeIntervalSince1970)
+    private static func countdown(_ expiresAt: Double, at now: Date = Date()) -> String {
+        guard expiresAt > 0 else { return "" }
+        let remaining = Int(expiresAt / 1000 - now.timeIntervalSince1970)
         if remaining <= 0 { return "0:00" }
         return String(format: "%d:%02d", remaining / 60, remaining % 60)
     }
@@ -198,44 +202,14 @@ struct PendingApprovalsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    let groups = Dictionary(grouping: phone.approvals, by: { $0.item.botName.isEmpty ? "Approvals" : $0.item.botName })
-                    ForEach(groups.keys.sorted(), id: \.self) { name in
+                    ForEach(groupedBots, id: \.0) { name, cards in
                         Section {
-                            ForEach(groups[name] ?? []) { card in
-                                Button {
-                                    if !card.item.botId.isEmpty { phone.select(card.item.botId) }
-                                } label: {
-                                    HStack(alignment: .top, spacing: 8) {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(card.item.preview)
-                                                .tokenFont(DesignTokens.FontSize.proposalBody, .regular, design: .monospaced)
-                                                .foregroundStyle(Theme.C.ink)
-                                                .lineLimit(1)
-                                            Text(card.item.cwd)
-                                                .tokenFont(DesignTokens.FontSize.proposalBody, .regular)
-                                                .foregroundStyle(Theme.C.inkMuted)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer(minLength: 0)
-                                        Text(Self.countdown(card.item.expiresAt))
-                                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                                            .foregroundStyle(Theme.C.inkMuted)
-                                            .monospacedDigit()
-                                    }
-                                    .padding(10)
-                                    .frame(minHeight: 60, alignment: .leading)
-                                    .background(Theme.C.surface)
-                                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                                    .cardLift(cornerRadius: DesignTokens.Radius.md)
-                                }
-                                .buttonStyle(.plain)
-                                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
+                            ForEach(cards) { card in
+                                row(card)
                             }
                         } header: {
                             HStack(spacing: 8) {
-                                if let bot = groups[name]?.first?.item.botId, let shell = phone.bot(bot) {
+                                if let bot = cards.first?.item.botId, let shell = phone.bot(bot) {
                                     BotFace(bot: shell, size: 20)
                                 }
                                 Text(name)
@@ -254,6 +228,49 @@ struct PendingApprovalsView: View {
         .background(Theme.C.canvas)
         .navigationTitle("Approvals")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Approvals grouped by bot name — hoisted out of the List builder so
+    /// the type-checker doesn't time out on the nested closure.
+    private var groupedBots: [(String, [PhoneModel.ApprovalCard])] {
+        let groups = Dictionary(
+            grouping: phone.approvals,
+            by: { $0.item.botName.isEmpty ? "Approvals" : $0.item.botName }
+        )
+        return groups.keys.sorted().map { ($0, groups[$0] ?? []) }
+    }
+
+    private func row(_ card: PhoneModel.ApprovalCard) -> some View {
+        Button {
+            if !card.item.botId.isEmpty { phone.select(card.item.botId) }
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.item.preview)
+                        .tokenFont(DesignTokens.FontSize.proposalBody, .regular, design: .monospaced)
+                        .foregroundStyle(Theme.C.ink)
+                        .lineLimit(1)
+                    Text(card.item.cwd)
+                        .tokenFont(DesignTokens.FontSize.proposalBody, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Text(Self.countdown(card.item.expiresAt))
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .monospacedDigit()
+            }
+            .padding(10)
+            .frame(minHeight: 60, alignment: .leading)
+            .background(Theme.C.surface)
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .cardLift(cornerRadius: DesignTokens.Radius.md)
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     private static func countdown(_ expiresAt: Double) -> String {
@@ -278,9 +295,15 @@ struct ProposalCardView: View {
                 Spacer(minLength: 0)
                 StatusPill(text: "Proposal")
             }
-            Text(detail)
-                .tokenFont(DesignTokens.FontSize.proposalBody, .regular)
-                .foregroundStyle(Theme.C.inkMuted)
+            ScrollView {
+                Text(detail)
+                    .tokenFont(DesignTokens.FontSize.proposalBody, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // Long proposals scroll inside a capped box so an XXXL card
+            // can never crowd out its own actions.
+            .frame(maxHeight: 160)
             if proposal.kind == .unknown {
                 Text("This proposal cannot be confirmed by this app. Dismiss it instead.")
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)

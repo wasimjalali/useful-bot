@@ -48,7 +48,27 @@ struct ModelSheet: View {
     @State private var search = ""
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            // `.searchable` needs system sheet chrome; the floating sheet
+            // draws its own field with the same sunken-pill recipe (1.13).
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(Theme.C.inkMuted)
+                TextField("Search models", text: $search)
+                    .tokenFont(DesignTokens.FontSize.chatBody, .regular)
+                    .foregroundStyle(Theme.C.ink)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                    .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
+            )
+            .padding(.horizontal, DesignTokens.Space.phoneGutter)
+            .padding(.bottom, 8)
             List {
                 if let composer = phone.composer {
                     let groups = filteredGroups(composer)
@@ -96,11 +116,9 @@ struct ModelSheet: View {
                     }
                 }
             }
-            .searchable(text: $search, prompt: "Search models")
-            .navigationTitle("Model")
-            .navigationBarTitleDisplayMode(.inline)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         }
-        .presentationDetents([.medium, .large])
     }
 
     private var blocked: String? {
@@ -170,66 +188,58 @@ struct ModelSheet: View {
 /// are never offered from the phone (class A lives on the Mac).
 struct AddToMessageSheet: View {
     let folderName: String?
+    /// Overlay sheets have no working `dismiss` — the parent owns close.
+    var onClose: () -> Void
     var onPhoto: () -> Void
     var onFile: () -> Void
     var onCamera: () -> Void
     var onRecentPhoto: (Data) -> Void
+    /// The Connectors row swaps this sheet's content (same card, large).
+    var onConnectors: () -> Void
     var onConnectorsSetup: () -> Void
     @EnvironmentObject private var coordinator: PairingCoordinator
     @State private var connectorsHasKey = false
-    @State private var showConnectors = false
-    @State private var detent: PresentationDetent = .height(340)
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List {
-                RecentPhotosStrip(onPick: { data in
-                    dismiss()
-                    onRecentPhoto(data)
-                })
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                Section {
-                    Button {
-                        dismiss()
-                        onPhoto()
-                    } label: {
-                        Label("Photos", systemImage: "photo")
-                            .tokenFont(DesignTokens.FontSize.chatName, .regular)
-                            .foregroundStyle(Theme.C.ink)
-                            .frame(minHeight: 44)
-                    }
-                    cameraRow
-                    Button {
-                        dismiss()
-                        onFile()
-                    } label: {
-                        Label("Files", systemImage: "doc")
-                            .tokenFont(DesignTokens.FontSize.chatName, .regular)
-                            .foregroundStyle(Theme.C.ink)
-                            .frame(minHeight: 44)
-                    }
+        List {
+            RecentPhotosStrip(onPick: { data in
+                onClose()
+                onRecentPhoto(data)
+            })
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            Section {
+                Button {
+                    onClose()
+                    onPhoto()
+                } label: {
+                    Label("Photos", systemImage: "photo")
+                        .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                        .foregroundStyle(Theme.C.ink)
+                        .frame(minHeight: 44)
                 }
-                Section {
-                    connectorsRow
-                } footer: {
-                    Text("Attachments send with your next message.")
-                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                        .foregroundStyle(Theme.C.inkMuted)
+                cameraRow
+                Button {
+                    onClose()
+                    onFile()
+                } label: {
+                    Label("Files", systemImage: "doc")
+                        .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                        .foregroundStyle(Theme.C.ink)
+                        .frame(minHeight: 44)
                 }
             }
-            .navigationTitle("Add to message")
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(isPresented: $showConnectors) {
-                // The list pushes inside this sheet (1.13: the chat sheet
-                // never shows the key form) and the sheet grows to large.
-                PhoneConnectorsView(showsKeyForm: false)
-                    .onAppear { detent = .large }
+            Section {
+                connectorsRow
+            } footer: {
+                Text("Attachments send with your next message.")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
             }
         }
-        .presentationDetents([.height(340), .large], selection: $detent)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .task {
             connectorsHasKey = (try? await coordinator.client?.connectors(limit: 1).hasKey) ?? false
         }
@@ -239,7 +249,7 @@ struct AddToMessageSheet: View {
     private var cameraRow: some View {
         if UIImagePickerController.isSourceTypeAvailable(.camera) {
             Button {
-                dismiss()
+                onClose()
                 onCamera()
             } label: {
                 Label("Camera", systemImage: "camera")
@@ -248,18 +258,25 @@ struct AddToMessageSheet: View {
                     .frame(minHeight: 44)
             }
         } else {
-            Label("Camera", systemImage: "camera")
-                .tokenFont(DesignTokens.FontSize.chatName, .regular)
-                .foregroundStyle(Theme.C.inkFaint)
-                .frame(minHeight: 44)
-                .accessibilityHint("No camera on this iPhone")
+            // §1.0: a disabled row still says why, in text under the label,
+            // not by grey alone.
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Camera", systemImage: "camera")
+                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                    .foregroundStyle(Theme.C.inkFaint)
+                Text("No camera on this iPhone")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            .frame(minHeight: 44)
+            .accessibilityElement(children: .combine)
         }
     }
 
     @ViewBuilder
     private var connectorsRow: some View {
         if connectorsHasKey {
-            Button { showConnectors = true } label: {
+            Button { onConnectors() } label: {
                 HStack {
                     Label("Connectors", systemImage: "square.grid.2x2")
                         .tokenFont(DesignTokens.FontSize.chatName, .regular)
@@ -275,7 +292,7 @@ struct AddToMessageSheet: View {
             .buttonStyle(.plain)
         } else {
             Button {
-                dismiss()
+                onClose()
                 onConnectorsSetup()
             } label: {
                 HStack {

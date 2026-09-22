@@ -22,10 +22,15 @@ final class PhoneModel {
     private(set) var chats: [String: OpenChat] = [:]
     var draft = ""
     var composer: ComposerState?
+    /// When the shell last answered — the readiness strip's "Cached N min
+    /// ago" reads it while the Mac is unreachable.
+    var lastFetchAt: Date?
     var passcodeMessage: String?
     var actionError: String?
+    /// The roster context menu's "Settings": the chat opens bot settings
+    /// once it lands. Cleared when the gear sheet opens.
+    var pendingSettingsBot: String?
     var conflictNote = false
-    var searchQuery = ""
 
     let biometrics = BiometricGate()
 
@@ -93,12 +98,11 @@ final class PhoneModel {
     func showEarlier(_ botId: String) {
         guard var chat = chats[botId] else { return }
         let window = rows(for: botId)
-        guard window.hidden > 0, let first = window.blocks.first else { return }
+        guard window.hidden > 0 else { return }
         let merged = Transcript.merge(events: chat.durable, messages: chat.projection.messages)
         let blocks = TranscriptBlocks.build(rows: merged, selectedBotId: botId)
         let start = max(0, window.hidden - TranscriptBlocks.windowMinimum)
         chat.windowStart = blocks[start].id
-        _ = first
         chats[botId] = chat
     }
 
@@ -158,6 +162,12 @@ final class PhoneModel {
         await refreshComposer()
         await tick()
         await loadApprovals()
+        if shell != nil { lastFetchAt = Date() }
+        // §9.4: proposals raised mid-turn or resolved elsewhere have no
+        // stream event; the open chat's list rides the same cadence.
+        if let id = selectedBotId {
+            await reloadProposals(id)
+        }
     }
 
     func approvals(for botId: String) -> [ApprovalCard] {
@@ -165,7 +175,9 @@ final class PhoneModel {
         return approvals.filter { card in
             if !card.item.botId.isEmpty { return card.item.botId == botId }
             if let session, !card.item.sessionId.isEmpty { return card.item.sessionId == session }
-            return false
+            // A card with no bot provenance can not be routed anywhere else;
+            // showing it here beats dropping it where it cannot be answered.
+            return card.item.botId.isEmpty
         }
     }
 
@@ -316,7 +328,9 @@ final class PhoneModel {
         if var chat = chats[id] {
             chat.streamGeneration += 1
             chat.showWorking = false
-            chat.projection.beginTurn()
+            // Not beginTurn: the cancel is fire-and-forget, and beginTurn
+            // would clear an open question before the request lands.
+            chat.projection.cancelPending()
             chats[id] = chat
         }
         Task { try? await client?.cancel(sessionId: session) }
@@ -347,6 +361,7 @@ final class PhoneModel {
             chat.catchUpIncomplete = false
             chat.sessionEnded = false
             chat.showWorking = false
+            chat.error = nil
             chats[id] = chat
         } catch {
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
@@ -372,8 +387,10 @@ final class PhoneModel {
         chat.failedText = nil
         chat.confirmingId = nil
         chat.confirmingText = nil
+        chat.catchUpIncomplete = false
         chat.sessionEnded = false
         chat.showWorking = false
+        chat.error = nil
         chats[id] = chat
     }
 
@@ -419,17 +436,27 @@ final class PhoneModel {
         }
     }
 
-    func createBot(name: String) async {
+    func createBot(name: String, label: String? = nil, description: String? = nil, color: String? = nil) async {
         guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
         let before = Set(shell?.bots.map(\.id) ?? [])
         do {
             let next = try await client.shellAction(ShellActions.createBot(
-                name: name, petname: name, label: name, description: "", sectionId: nil, preserveSelection: true
+                name: name,
+                petname: name,
+                label: (label?.isEmpty == false ? label : nil) ?? name,
+                description: description ?? "",
+                sectionId: nil,
+                preserveSelection: true
             ))
             guard current(generation) else { return }
             adopt(next)
             if let created = next.bots.first(where: { !before.contains($0.id) }) {
+                // The create wire action has no avatar field; the picked
+                // color lands as an updateBot patch right behind it.
+                if let color, FacePalette.isColor(color) {
+                    await act(ShellActions.updateBot(botId: created.id, patch: ["avatarColor": color]))
+                }
                 select(created.id)
             }
         } catch {
@@ -479,6 +506,7 @@ final class PhoneModel {
             if let raw = result.redirectUrl, let url = URL(string: raw),
                Proposal.connectRedirectAllowed(raw, kind: proposal.kind, expectedHost: result.redirectHost ?? proposal.redirectHost) {
                 safariURL = url
+                watchProposal(proposal)
             }
             if let botId = proposal.botId ?? proposal.sourceBotId {
                 await reloadProposals(botId)
@@ -554,6 +582,33 @@ final class PhoneModel {
         }
     }
 
+    private var proposalWatch: Task<Void, Never>?
+
+    /// §9.4: a connect/server proposal finishes in the Safari sheet
+    /// server-side; poll the proposal and close the sheet the moment it
+    /// leaves the waiting states so a completed connect does not sit on a
+    /// stale browser.
+    private func watchProposal(_ proposal: Proposal) {
+        let botId = proposal.botId ?? proposal.sourceBotId
+        proposalWatch?.cancel()
+        proposalWatch = Task { [weak self] in
+            while !Task.isCancelled, self?.safariURL != nil {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, let self else { return }
+                if let botId { await self.reloadProposals(botId) }
+                let current = botId
+                    .flatMap { self.proposalsByBot[$0]?.first(where: { $0.id == proposal.id }) }
+                let settled = current.map {
+                    $0.status != "pending" || $0.phase == .connected || $0.phase == .expired
+                } ?? true
+                if settled {
+                    self.safariURL = nil
+                    return
+                }
+            }
+        }
+    }
+
     func pin(_ id: String, _ pinned: Bool) async {
         await act(ShellActions.pin(botId: id, pinned: pinned))
     }
@@ -588,29 +643,6 @@ final class PhoneModel {
         guard let client else { return }
         if let next = try? await client.updateComposer(modelId: modelId, effort: effort, speed: speed) {
             if next != composer { composer = next }
-        }
-    }
-
-    func matchingRecents() -> [ShellRecent] {
-        guard let shell else { return [] }
-        let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
-        return shell.recents.filter { recent in
-            [recent.title, recent.preview].joined(separator: " ").lowercased().contains(needle)
-        }
-    }
-
-    func searchHits() -> [ShellBot] {
-        guard let shell else { return [] }
-        let needle = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
-        return shell.bots.filter { bot in
-            let section = shell.sections.first { $0.id == bot.sectionId }?.name ?? ""
-            let recent = shell.recents.filter { $0.botId == bot.id }.map(\.title).joined(separator: " ")
-            return [bot.name, bot.label, bot.description, section, recent]
-                .joined(separator: " ")
-                .lowercased()
-                .contains(needle)
         }
     }
 
@@ -782,13 +814,19 @@ final class PhoneModel {
             let state = try await client.threadState(botId: id)
             let events = state.events
             proposalsByBot[id] = state.proposals
-            guard current(generation) else { return }
+            guard current(generation) else {
+                chat.updating = false
+                chats[id] = chat
+                return
+            }
             chat = chats[id] ?? chat
             if chat.durable != events { chat.durable = events }
             cache?.saveEvents(id, events)
             let session = bot(id)?.sessionId
             if chat.cursor?.sessionId != session {
-                chat.cursor = nil
+                // A matching cached cursor turns a relaunch into a warm
+                // resume instead of a replay from zero (§8.3/§13).
+                chat.cursor = session.flatMap { cache?.loadCursor($0) }
                 chat.showWorking = false
             }
             chats[id] = chat
@@ -845,13 +883,15 @@ final class PhoneModel {
         var assembly = ReplayAssembly(seed)
         var applied: [Int] = []
         var tail: Int?
+        let tailBox = TailBox()
         var stoppedEarly = false
         do {
             for try await event in client.stream(
                 sessionId: sessionId,
                 startIndex: resumeAt,
                 untilTail: true,
-                markHistory: true
+                markHistory: true,
+                tailBox: tailBox
             ) {
                 guard still(botId, token, generation) else { return }
                 assembly.collect { state in
@@ -872,7 +912,11 @@ final class PhoneModel {
         let judged = StreamRecovery.judge(
             resumeIndex: resumeAt,
             applied: applied,
-            advertisedTail: tail,
+            // The header's tail is authoritative, including on the
+            // zero-event early finish where nothing else reports it; the
+            // per-event derivation stays as the fallback for a server that
+            // never advertises.
+            advertisedTail: tailBox.value ?? tail,
             stoppedEarly: stoppedEarly
         )
         chat = chats[botId] ?? chat
@@ -904,40 +948,52 @@ final class PhoneModel {
         }
     }
 
+    /// The live read, re-armed like the Mac's `followSession`: a quiet
+    /// stream finishes after its idle timeout and a dropped link throws, but
+    /// neither ends the chat — each cycle re-opens from the cursor.
     private func follow(botId: String, sessionId: String, token: Int) async {
-        guard let client, let cursor = chats[botId]?.cursor else { return }
+        guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
-        do {
-            for try await event in client.stream(
-                sessionId: sessionId,
-                startIndex: cursor.resumeIndex,
-                markHistory: true
-            ) {
+        while still(botId, token, generation) {
+            guard let cursor = chats[botId]?.cursor, cursor.sessionId == sessionId else { return }
+            do {
+                for try await event in client.stream(
+                    sessionId: sessionId,
+                    startIndex: cursor.resumeIndex,
+                    markHistory: true
+                ) {
+                    guard still(botId, token, generation) else { return }
+                    var chat = chats[botId] ?? OpenChat()
+                    let replaying = (event.historyRemaining ?? -1) > 0
+                    if replaying {
+                        chat.projection.apply(event, live: false)
+                    } else {
+                        chat.projection.apply(event, live: true)
+                        chat.showWorking = chat.projection.pending
+                    }
+                    if let index = event.index, var cursor = chat.cursor, !replaying {
+                        cursor.applied(index)
+                        chat.cursor = cursor
+                    }
+                    if event.type == "session.completed" || event.type == "session.failed" {
+                        chat.sessionEnded = event.type == "session.failed" || chat.projection.failed
+                    }
+                    resolveConfirming(&chat)
+                    chats[botId] = chat
+                }
+            } catch is CancellationError {
+                return
+            } catch {
                 guard still(botId, token, generation) else { return }
                 var chat = chats[botId] ?? OpenChat()
-                let replaying = (event.historyRemaining ?? -1) > 0
-                if replaying {
-                    chat.projection.apply(event, live: false)
-                } else {
-                    chat.projection.apply(event, live: true)
-                    chat.showWorking = chat.projection.pending
-                }
-                if let index = event.index, var cursor = chat.cursor, !replaying {
-                    cursor.applied(index)
-                    chat.cursor = cursor
-                }
-                if event.type == "session.completed" || event.type == "session.failed" {
-                    chat.sessionEnded = event.type == "session.failed" || chat.projection.failed
-                }
-                resolveConfirming(&chat)
+                chat.showWorking = false
+                if (error as? BackendError) == .sessionEnded { chat.sessionEnded = true }
                 chats[botId] = chat
+                if (error as? BackendError) == .sessionEnded { return }
             }
-        } catch {
             guard still(botId, token, generation) else { return }
-            var chat = chats[botId] ?? OpenChat()
-            chat.showWorking = false
-            if (error as? BackendError) == .sessionEnded { chat.sessionEnded = true }
-            chats[botId] = chat
+            if chats[botId]?.sessionEnded == true { return }
+            try? await Task.sleep(for: .seconds(2))
         }
     }
 
@@ -964,7 +1020,7 @@ final class PhoneModel {
         do {
             let fresh = try await client.shell()
             guard current(generation) else {
-                dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 return
             }
             adopt(fresh)
@@ -973,7 +1029,7 @@ final class PhoneModel {
             postedSession = sessionId
             chats[botId]?.attachments = []
             guard current(generation) else {
-                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: false)
+                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: false, files: files)
                 return
             }
             try await client.touchChat(
@@ -983,7 +1039,7 @@ final class PhoneModel {
                 expected: .pointer(pointer)
             )
             guard current(generation) else {
-                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: true)
+                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: true, files: files)
                 return
             }
             conflictNote = false
@@ -995,9 +1051,9 @@ final class PhoneModel {
         } catch let error as BackendError {
             guard current(generation) else {
                 if postedSession != nil {
-                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false)
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, files: files)
                 } else {
-                    dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                    dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
@@ -1012,7 +1068,7 @@ final class PhoneModel {
                     // S11/adjudication 7: the Mac's pointer wins. Discard the
                     // session this send went into, replay the adopted one and
                     // let the confirming rule resolve the echo's absence.
-                    await lost(text, needle: echo, botId: botId, error: error, sessionId: currentPointer, claimSession: false)
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: currentPointer, claimSession: false, files: files)
                 } else {
                     var stuck = chats[botId] ?? OpenChat()
                     stuck.projection = priorProjection
@@ -1020,6 +1076,7 @@ final class PhoneModel {
                     stuck.confirmingId = nil
                     stuck.confirmingText = nil
                     stuck.failedText = text
+                    stuck.attachments = files
                     chats[botId] = stuck
                     updateDraft(snapshot, forBot: botId)
                 }
@@ -1034,37 +1091,38 @@ final class PhoneModel {
                 chat.confirmingId = nil
                 chat.confirmingText = nil
                 chat.failedText = nil
+                chat.attachments = files
                 chats[botId] = chat
                 updateDraft(snapshot, forBot: botId)
             default:
-                await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession)
+                await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, files: files)
             }
         } catch let url as URLError where url.code == .timedOut || url.code == .networkConnectionLost {
             guard current(generation) else {
                 if postedSession != nil {
-                    await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, claimSession: false)
+                    await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, claimSession: false, files: files)
                 } else {
-                    dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                    dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
-            await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession)
+            await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, files: files)
         } catch {
             guard current(generation) else {
                 if postedSession != nil {
-                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false)
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, files: files)
                 } else {
-                    dropUnsent(botId, prior: priorProjection, draft: snapshot)
+                    dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
-            await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession)
+            await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, files: files)
         }
     }
 
     /// The POST response never came back, or a later step failed after the
     /// message was accepted. Read that session. Do not send again.
-    private func lost(_ draftText: String, needle: String, botId: String, error: Error, sessionId: String?, claimSession: Bool = true) async {
+    private func lost(_ draftText: String, needle: String, botId: String, error: Error, sessionId: String?, claimSession: Bool = true, files: [Attachment] = []) async {
         var chat = chats[botId] ?? OpenChat()
         chat.confirmingId = chat.projection.messages.last(where: { $0.id.hasPrefix(EveStream.optimisticUserPrefix) })?.id
         chat.confirmingText = needle
@@ -1087,9 +1145,7 @@ final class PhoneModel {
             )
         }
         chat = chats[botId] ?? chat
-        let echoed = chat.projection.messages.contains {
-            $0.role == .user && $0.text == needle && !$0.id.hasPrefix(EveStream.optimisticUserPrefix)
-        }
+        let echoed = echoDelivered(chat, needle: needle)
         if !claimSession {
             chat.showWorking = false
             chat.confirmingId = nil
@@ -1098,6 +1154,7 @@ final class PhoneModel {
                 chat.failedText = nil
             } else {
                 chat.failedText = draftText
+                chat.attachments = files
                 chat.error = (error as? LocalizedError)?.errorDescription ?? "Your Mac moved this conversation"
                 updateDraft(draftText, forBot: botId)
             }
@@ -1109,12 +1166,14 @@ final class PhoneModel {
             chat.confirmingId = nil
             chat.confirmingText = nil
             chat.failedText = draftText
+            chat.attachments = files
             chat.error = "This chat is still catching up."
             updateDraft(draftText, forBot: botId)
         } else {
             chat.confirmingId = nil
             chat.confirmingText = nil
             chat.failedText = draftText
+            chat.attachments = files
             chat.error = (error as? LocalizedError)?.errorDescription
             updateDraft(draftText, forBot: botId)
         }
@@ -1125,12 +1184,13 @@ final class PhoneModel {
     }
 
     /// Pairing changed after the composer was cleared but before the turn was accepted.
-    private func dropUnsent(_ botId: String, prior: StreamProjection, draft snapshot: String) {
+    private func dropUnsent(_ botId: String, prior: StreamProjection, draft snapshot: String, files: [Attachment] = []) {
         var chat = chats[botId] ?? OpenChat()
         chat.projection = prior
         chat.showWorking = false
         chat.confirmingId = nil
         chat.confirmingText = nil
+        chat.attachments = files
         chats[botId] = chat
         updateDraft(snapshot, forBot: botId)
     }
@@ -1139,12 +1199,21 @@ final class PhoneModel {
         var errorDescription: String? { "This send was interrupted." }
     }
 
-    private func resolveConfirming(_ chat: inout OpenChat) {
-        guard let needle = chat.confirmingText else { return }
-        let echoed = chat.projection.messages.contains {
+    /// The durable echo, proven by position: only a message AFTER the
+    /// optimistic send's anchor counts, so an identical earlier send can
+    /// never resolve a lost one as delivered.
+    private func echoDelivered(_ chat: OpenChat, needle: String) -> Bool {
+        let messages = chat.projection.messages
+        guard let anchor = chat.confirmingId,
+              let position = messages.firstIndex(where: { $0.id == anchor }) else { return false }
+        return messages[messages.index(after: position)...].contains {
             $0.role == .user && $0.text == needle && !$0.id.hasPrefix(EveStream.optimisticUserPrefix)
         }
-        if echoed {
+    }
+
+    private func resolveConfirming(_ chat: inout OpenChat) {
+        guard let needle = chat.confirmingText else { return }
+        if echoDelivered(chat, needle: needle) {
             chat.confirmingId = nil
             chat.confirmingText = nil
             chat.failedText = nil
@@ -1155,7 +1224,10 @@ final class PhoneModel {
         guard let client else { throw BackendError.deviceTokenMissing }
         do {
             return try await client.send(botId: botId, sessionId: sessionId, message: message, images: images)
-        } catch BackendError.http(503) {
+        } catch BackendError.unavailable(let code)
+            where ["approvals_locked", "workspace_unavailable"].contains(code) {
+            // §8.4 sanctions one retry only for these two; every other busy
+            // answer surfaces, because the turn may already be accepted.
             try await Task.sleep(for: .seconds(1))
             return try await client.send(botId: botId, sessionId: sessionId, message: message, images: images)
         }

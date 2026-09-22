@@ -127,7 +127,7 @@ public enum ChatMarkdownParser {
             // text before the marker becomes its own paragraph and the line
             // is rewritten to start at the marker so the loop above reads a
             // real fence. Without a closer the marker stays literal prose.
-            if let fence = line.range(of: "```"), fence.lowerBound != line.startIndex,
+            if let fence = midLineFence(line),
                lines[(i + 1)...].contains(where: { $0.hasPrefix("```") }) {
                 let before = line[..<fence.lowerBound].trimmingCharacters(in: .whitespaces)
                 if !before.isEmpty {
@@ -154,7 +154,7 @@ public enum ChatMarkdownParser {
                 // The same mid-line fence, as a continuation line: close
                 // the paragraph at the marker and rewrite the line so the
                 // outer loop opens the code block.
-                if let fence = next.range(of: "```"), fence.lowerBound != next.startIndex,
+                if let fence = midLineFence(next),
                    lines[(i + 1)...].contains(where: { $0.hasPrefix("```") }) {
                     let before = next[..<fence.lowerBound].trimmingCharacters(in: .whitespaces)
                     if !before.isEmpty {
@@ -251,6 +251,22 @@ public enum ChatMarkdownParser {
         if alignments.count == count { return alignments }
         if alignments.count > count { return Array(alignments.prefix(count)) }
         return alignments + Array(repeating: .leading, count: count - alignments.count)
+    }
+
+    /// A ``` run away from the line start is a fence opener only when the
+    /// rest of the line could be its language tag: nothing, or a token
+    /// hugging the run with no space in between. Prose like `use ``` marks`
+    /// fails that check — a real tag never leads with a space — so inline
+    /// backtick talk never rewrites the line and swallows a real fenced
+    /// block's closer further down.
+    private static func midLineFence(_ line: String) -> Range<String.Index>? {
+        guard let fence = line.range(of: "```"), fence.lowerBound != line.startIndex else { return nil }
+        let rest = line[fence.upperBound...]
+        guard !rest.contains("`") else { return nil }
+        if let first = rest.first, first.isWhitespace { return nil }
+        let lang = rest.trimmingCharacters(in: .whitespaces)
+        guard lang.allSatisfy({ $0.isLetter || $0.isNumber || "+#_-".contains($0) }) else { return nil }
+        return fence
     }
 
     private static func firstMatch(_ regex: NSRegularExpression, in line: String) -> NSTextCheckingResult? {

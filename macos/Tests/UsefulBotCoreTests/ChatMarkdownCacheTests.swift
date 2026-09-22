@@ -103,6 +103,18 @@ import Testing
             ChatMarkdownParser.blocks(from: "Use ``` to fence code.")
                 == [.paragraph("Use ``` to fence code.")]
         )
+        // Inline ``` talk above a real block: the mid-line run has prose
+        // after it, so the line stays a paragraph and the real block below
+        // keeps its code rather than being eaten as the phantom's body.
+        #expect(
+            ChatMarkdownParser.blocks(from: "Use ``` to fence code.\n\n```swift\nlet x = 1\n```")
+                == [.paragraph("Use ``` to fence code."), .code(lang: "swift", text: "let x = 1")]
+        )
+        // The same inside a paragraph continuation.
+        #expect(
+            ChatMarkdownParser.blocks(from: "a\nthe ``` marker\n\n```c\nx\n```")
+                == [.paragraph("a\nthe ``` marker"), .code(lang: "c", text: "x")]
+        )
     }
 
     @Test func streamingSlotsAreBoundedByRow() {

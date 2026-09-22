@@ -5,15 +5,15 @@ import UsefulBotCore
 /// the bot row, then its matching fields and conversation titles as indented
 /// rows. Matched characters render semibold, never a background block (V7).
 struct GlobalSearchSheet: View {
+    /// Overlay sheets have no working `dismiss` — the parent owns close.
+    var onClose: () -> Void = {}
     var onNewBot: () -> Void
     @Environment(PhoneModel.self) private var phone
     @EnvironmentObject private var coordinator: PairingCoordinator
-    @Environment(\.dismiss) private var dismiss
     @FocusState private var fieldFocused: Bool
     @State private var query = ""
 
     var body: some View {
-        NavigationStack {
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     HStack(spacing: 8) {
@@ -33,11 +33,10 @@ struct GlobalSearchSheet: View {
                         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                             .strokeBorder(fieldFocused ? Theme.C.ink : Theme.C.edge, lineWidth: 1)
                     )
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { onClose() }
                         .frame(minHeight: 44)
                 }
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                .padding(.top, 12)
                 .padding(.bottom, 8)
                 if offline {
                     Text("Searching what's on this phone")
@@ -49,9 +48,6 @@ struct GlobalSearchSheet: View {
                 }
                 content
             }
-            .navigationBarHidden(true)
-        }
-        .presentationDetents([.large])
         .onAppear { fieldFocused = true }
     }
 
@@ -93,8 +89,8 @@ struct GlobalSearchSheet: View {
         let shell = phone.shell
         let recents = shell?.recents ?? []
         let groups = (shell?.bots ?? []).compactMap { bot -> (ShellBot, [ResultItem])? in
-            let items = matches(for: bot, recents: recents)
-            return items.isEmpty ? nil : (bot, items)
+            guard let items = matches(for: bot, recents: recents) else { return nil }
+            return (bot, items)
         }
         return List {
             if groups.isEmpty {
@@ -105,7 +101,7 @@ struct GlobalSearchSheet: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 40)
                     Button("New bot") {
-                        dismiss()
+                        onClose()
                         onNewBot()
                     }
                     .buttonStyle(SecondaryAction())
@@ -137,7 +133,9 @@ struct GlobalSearchSheet: View {
         enum Kind { case field, conversation }
     }
 
-    private func matches(for bot: ShellBot, recents: [ShellRecent]) -> [ResultItem] {
+    /// Nil means no group at all. A bare name or label hit still earns the
+    /// bot's own row — the group renders with no indented items.
+    private func matches(for bot: ShellBot, recents: [ShellRecent]) -> [ResultItem]? {
         var items: [ResultItem] = []
         let nameHit = wordHit(bot.name) || wordHit(bot.label)
         if !bot.label.isEmpty, bot.label != bot.name, wordHit(bot.label) {
@@ -153,7 +151,7 @@ struct GlobalSearchSheet: View {
         for recent in recents where recent.botId == bot.id && recent.title.lowercased().contains(needle) {
             items.append(ResultItem(text: recent.title, kind: .conversation, recent: recent))
         }
-        if !nameHit && items.isEmpty { return [] }
+        if items.isEmpty && !nameHit { return nil }
         return items
     }
 
@@ -164,14 +162,14 @@ struct GlobalSearchSheet: View {
 
     private func botRow(_ bot: ShellBot) -> some View {
         Button {
-            dismiss()
+            onClose()
             phone.select(bot.id)
         } label: {
             HStack(spacing: 10) {
                 BotFace(bot: bot, size: 32)
                 VStack(alignment: .leading, spacing: 1) {
                     highlighted(bot.name)
-                        .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                        .tokenFont(DesignTokens.FontSize.chatName, .semibold)
                         .foregroundStyle(Theme.C.ink)
                     if !bot.label.isEmpty, bot.label != bot.name {
                         highlighted(bot.label)
@@ -205,7 +203,7 @@ struct GlobalSearchSheet: View {
         .frame(minHeight: 44)
         if item.kind == .conversation, let recent = item.recent {
             Button {
-                dismiss()
+                onClose()
                 Task { await phone.openPast(recent) }
             } label: {
                 row.contentShape(Rectangle())
@@ -217,16 +215,22 @@ struct GlobalSearchSheet: View {
     }
 
     /// V7's match highlight: matched characters in semibold ink, inline —
-    /// never a colored block behind them.
+    /// never a colored block behind them. `fontWeight` runs inherit the
+    /// token font the row sets, so the highlight scales with Dynamic Type.
     private func highlighted(_ text: String) -> Text {
-        var attributed = AttributedString(text)
-        guard !needle.isEmpty else { return Text(attributed) }
-        var searchStart = attributed.startIndex
-        while let range = attributed[searchStart...].range(of: needle, options: .caseInsensitive) {
-            attributed[range].font = .body.weight(.semibold)
-            attributed[range].foregroundColor = UIColor(Theme.C.ink)
-            searchStart = range.upperBound
+        guard !needle.isEmpty,
+              var range = text.range(of: needle, options: .caseInsensitive) else {
+            return Text(text)
         }
-        return Text(attributed)
+        var result = Text(String(text[..<range.lowerBound]))
+        var cursor = range.lowerBound
+        while true {
+            result = result + Text(String(text[range])).fontWeight(.semibold)
+            cursor = range.upperBound
+            guard let next = text[cursor...].range(of: needle, options: .caseInsensitive) else { break }
+            result = result + Text(String(text[cursor..<next.lowerBound]))
+            range = next
+        }
+        return result + Text(String(text[cursor...]))
     }
 }

@@ -85,8 +85,14 @@ struct BotMemorySection: View {
     var body: some View {
         Section("Memory") {
             if !loaded {
-                ProgressView()
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                // Row skeletons, not a spinner (spec: loading keeps row
+                // geometry).
+                ForEach(0..<3, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                        .fill(Theme.C.border)
+                        .frame(height: 12)
+                        .frame(minHeight: 44)
+                }
             } else if notes.isEmpty {
                 Text("Nothing remembered for \(bot.name) yet.")
                     .tokenFont(DesignTokens.FontSize.emptyBody, .regular)

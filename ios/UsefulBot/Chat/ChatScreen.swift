@@ -42,6 +42,7 @@ struct ChatScreen: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showPhotos = false
     @State private var showAttach = false
+    @State private var attachConnectors = false
     @State private var showCamera = false
     @State private var showConnectorsSetup = false
     @State private var showFiles = false
@@ -152,15 +153,49 @@ struct ChatScreen: View {
                 photoItem = nil
             }
         }
-        .sheet(isPresented: $showAttach) {
-            AddToMessageSheet(
-                folderName: bot?.workspace?.folderName,
-                onPhoto: { showPhotos = true },
-                onFile: { showFiles = true },
-                onCamera: { showCamera = true },
-                onRecentPhoto: { data in Task { await phone.addPhoto(data) } },
-                onConnectorsSetup: { showConnectorsSetup = true }
-            )
+        // Add to message is a floating sheet (design §5); its Connectors
+        // push swaps content inside the same sheet and grows it to large,
+        // with the back chevron in the sheet's title row.
+        .floatingSheet(
+            isPresented: $showAttach,
+            title: attachConnectors ? "Connectors" : "Add to message",
+            // List content can't hug (ideal height collapses), so the
+            // picker runs at the fixed medium detent, not .fit.
+            detent: attachConnectors ? .large : .medium,
+            leading: {
+                Group {
+                    if attachConnectors {
+                        Button {
+                            attachConnectors = false
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(Theme.font(DesignTokens.FontSize.dialogTitle, .semibold))
+                                .foregroundStyle(Theme.C.ink)
+                                .frame(minWidth: 44, minHeight: 44)
+                        }
+                        .accessibilityLabel("Back")
+                    }
+                }
+            }
+        ) {
+            if attachConnectors {
+                // 1.13: the chat sheet never shows the key form.
+                PhoneConnectorsView(showsKeyForm: false)
+            } else {
+                AddToMessageSheet(
+                    folderName: bot?.workspace?.folderName,
+                    onClose: { showAttach = false },
+                    onPhoto: { showPhotos = true },
+                    onFile: { showFiles = true },
+                    onCamera: { showCamera = true },
+                    onRecentPhoto: { data in Task { await phone.addPhoto(data) } },
+                    onConnectors: { attachConnectors = true },
+                    onConnectorsSetup: { showConnectorsSetup = true }
+                )
+            }
+        }
+        .onChange(of: showAttach) { _, shown in
+            if !shown { attachConnectors = false }
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraCaptureView { data in
@@ -188,10 +223,72 @@ struct ChatScreen: View {
                 SafariSheet(url: url)
             }
         }
-        .sheet(isPresented: $showModel) { modelSheet }
-        .sheet(isPresented: $showPermission) { permissionSheet }
-        .sheet(isPresented: $showFolder) { folderSheet }
-        .sheet(isPresented: $showBotSettings) { botSettings }
+        .floatingSheet(isPresented: $showModel, title: "Model", detent: .large) {
+            modelSheet
+        }
+        .floatingSheet(isPresented: $showPermission, title: "Permission", detent: .medium) {
+            permissionSheet
+        }
+        .floatingSheet(isPresented: $showFolder, title: "Working folder", detent: .fit) {
+            folderSheet
+        }
+        .floatingSheet(
+            isPresented: $showBotSettings,
+            title: "Bot settings",
+            detent: .large,
+            trailing: { Button("Done") { showBotSettings = false } },
+            content: { botSettings }
+        )
+        // The routine editor draws its own Cancel | title | Save row (1.8),
+        // so it takes the bare-chrome floating sheet.
+        .floatingSheet(
+            item: $routineEditor,
+            detent: .large,
+            showsHeader: false,
+            title: { $0.routine?.name.isEmpty == false ? $0.routine!.name : "New routine" },
+            content: { request in
+                if let bot {
+                    RoutineEditorSheet(bot: bot, routine: request.routine, onClose: { routineEditor = nil }) {}
+                }
+            }
+        )
+        // Destructive confirms are floating sheets at the smallest detent
+        // (1.5's confirm rule), stacked over the settings sheet.
+        .floatingSheet(isPresented: $confirmDelete, title: "Delete this bot?", detent: .fit) {
+            ConfirmSheet(
+                message: "Its conversation and routines are removed from your Mac.",
+                confirmTitle: "Delete bot",
+                onConfirm: {
+                    let id = botId
+                    showBotSettings = false
+                    Task { await phone.deleteBot(id) }
+                },
+                onClose: { confirmDelete = false }
+            )
+        }
+        .floatingSheet(isPresented: $confirmClear, title: "Clear this conversation?", detent: .fit) {
+            ConfirmSheet(
+                message: "Messages stay on your Mac but are removed from this thread.",
+                confirmTitle: "Clear conversation",
+                onConfirm: {
+                    Task { await phone.clearThread(botId) }
+                },
+                onClose: { confirmClear = false }
+            )
+        }
+        .task(openPendingSettings)
+        .onChange(of: phone.pendingSettingsBot) { _, _ in openPendingSettings() }
+    }
+
+    /// The roster context menu's "Settings" lands here: open the same
+    /// sheet the gear opens once the chat has mounted. Runs on task *and*
+    /// on every change so an iPad split (no push, no fresh task) still
+    /// lands it.
+    private func openPendingSettings() {
+        if phone.pendingSettingsBot == botId {
+            phone.pendingSettingsBot = nil
+            showBotSettings = true
+        }
     }
 
     private var transcript: some View {
@@ -550,6 +647,9 @@ struct ChatScreen: View {
                             if let effort = phone.composer?.effortLabel, !effort.isEmpty {
                                 Text(effort)
                                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                    // The effort is the muted second half
+                                    // of the chip, not another accent.
+                                    .foregroundStyle(writesBlocked == nil ? Theme.C.inkMuted : Theme.C.inkFaint)
                             }
                         }
                         .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
@@ -570,9 +670,18 @@ struct ChatScreen: View {
                                 .frame(width: 36, height: 36)
                                 .background(sendable || streaming ? Theme.C.brand : Theme.C.sunken, in: Circle())
                             if locked {
+                                // The lock badge sits on a contrast disc at
+                                // the button's corner so it reads on either
+                                // the brand or sunken fill beneath it.
                                 Image(systemName: "lock.fill")
-                                    .font(Theme.font(14, .regular))
+                                    .font(Theme.font(11, .semibold))
                                     .foregroundStyle(Theme.C.ink)
+                                    .frame(width: 18, height: 18)
+                                    .background(Theme.C.surface, in: Circle())
+                                    .overlay(
+                                        Circle().strokeBorder(Theme.C.edge, lineWidth: 1)
+                                    )
+                                    .offset(x: 4, y: -4)
                             }
                         }
                         .frame(width: 44, height: 44)
@@ -665,38 +774,43 @@ struct ChatScreen: View {
     }
 
     private var mentionList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            let rows = mentionCandidates.prefix(dynamicTypeSize.isAccessibilitySize ? 3 : 4)
-            if rows.isEmpty {
-                Text("No member named \"\(mentionQuery ?? "")\"")
-                    .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 12)
-            }
-            // The first row is the default target — it sits on sunken so
-            // Enter-equivalent picks are guessable; a11y sizes get fewer,
-            // taller rows.
-            ForEach(Array(rows.enumerated()), id: \.offset) { index, member in
-                Button {
-                    insertMention(member.name)
-                } label: {
-                    HStack(spacing: 12) {
-                        BotFace(bot: member, size: 32)
-                        Text(member.name)
-                            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                            .foregroundStyle(Theme.C.ink)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? 64 : 52)
-                    .background(index == 0 ? Theme.C.sunken : Color.clear)
+        // Long member lists scroll inside the card instead of truncating —
+        // the cap is four rows (three at accessibility sizes).
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                let rows = mentionCandidates
+                if rows.isEmpty {
+                    Text("No member named \"\(mentionQuery ?? "")\"")
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 12)
                 }
-                .contentShape(Rectangle())
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(member.name), group member, double-tap to mention")
+                // The first row is the default target — it sits on sunken so
+                // Enter-equivalent picks are guessable; a11y sizes get
+                // taller rows.
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, member in
+                    Button {
+                        insertMention(member.name)
+                    } label: {
+                        HStack(spacing: 12) {
+                            BotFace(bot: member, size: 32)
+                            Text(member.name)
+                                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                                .foregroundStyle(Theme.C.ink)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? 64 : 52)
+                        .background(index == 0 ? Theme.C.sunken : Color.clear)
+                    }
+                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(member.name), group member, double-tap to mention")
+                }
             }
         }
+        .frame(maxHeight: dynamicTypeSize.isAccessibilitySize ? 196 : 212)
         .background(Theme.C.surface)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .cardLift(cornerRadius: DesignTokens.Radius.lg)
@@ -719,17 +833,16 @@ struct ChatScreen: View {
         Binding(get: { phone.draft }, set: { phone.updateDraft($0) })
     }
 
-    /// The chat's readiness banner is the same lifted §7.2 card the Bots
-    /// list uses — glyph, copy, Retry — not a flat strip.
+    /// The chat's readiness line is spec 1.3's flat, sunken full-width
+    /// strip — not the roster's lifted card — and it quotes the shell's
+    /// cache age while the Mac is unreachable.
     private func readinessStrip(_ level: MacReadiness) -> some View {
-        ReadinessBanner(level: level, lastFetchAt: nil) {
+        ReadinessBanner(level: level, lastFetchAt: phone.lastFetchAt, flat: true) {
             Task {
                 await coordinator.probeReadiness()
                 await phone.refresh()
             }
         }
-        .padding(.horizontal, DesignTokens.Space.phoneGutter)
-        .padding(.vertical, 8)
     }
 
     private var writesBlocked: String? {
@@ -737,7 +850,9 @@ struct ChatScreen: View {
     }
 
     /// Spec 1.5: identity block, then Profile / Avatar / Defaults /
-    /// Routines / Memory / Past conversations / destructive groups.
+    /// Routines / Memory / Past conversations / destructive groups. The
+    /// stack stays inside the floating sheet so "Show all" pushes internal;
+    /// the sheet's title row owns the title and the Done.
     private var botSettings: some View {
         NavigationStack {
             List {
@@ -837,39 +952,9 @@ struct ChatScreen: View {
                     }
                 }
             }
-            .navigationTitle("Bot settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showBotSettings = false }
-                }
-            }
-            .confirmationDialog("Delete this bot?", isPresented: $confirmDelete, titleVisibility: .visible) {
-                Button("Delete bot", role: .destructive) {
-                    let id = botId
-                    showBotSettings = false
-                    Task { await phone.deleteBot(id) }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This removes the bot from your Mac.")
-            }
-            .confirmationDialog("Clear this conversation?", isPresented: $confirmClear, titleVisibility: .visible) {
-                Button("Clear conversation", role: .destructive) {
-                    let id = botId
-                    Task { await phone.clearThread(id) }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Messages stay on your Mac but are removed from this thread.")
-            }
+            .toolbar(.hidden, for: .navigationBar)
         }
-        .sheet(item: $routineEditor) { request in
-            if let bot {
-                RoutineEditorSheet(bot: bot, routine: request.routine) {}
-            }
-        }
-        .presentationDetents([.large])
+        .scrollContentBackground(.hidden)
     }
 
     /// The model sheet (1.5's Model row → picker): provider-grouped rows
@@ -883,8 +968,8 @@ struct ChatScreen: View {
 
     /// Permission escalation is class A on the way up only; the picked row
     /// is a sunken card with a checkmark and the consequence copy under it.
+    /// The floating sheet carries the title — no inner stack here.
     private var permissionSheet: some View {
-        NavigationStack {
             List {
                 ForEach(["read_only", "auto", "full_access"], id: \.self) { level in
                     Button {
@@ -927,7 +1012,7 @@ struct ChatScreen: View {
                     .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
                 }
                 Section {
-                    Text("Only for things Useful Bot can do on this Mac.")
+                    Text("Applies to \(bot?.name ?? "this bot") on your Mac.")
                         .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                         .foregroundStyle(Theme.C.inkMuted)
                 }
@@ -940,10 +1025,7 @@ struct ChatScreen: View {
                 }
             }
             .listStyle(.plain)
-            .navigationTitle("Permission")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .presentationDetents([.medium])
+            .scrollContentBackground(.hidden)
     }
 
     /// The folder sheet is a sunken row card with the folder glyph; the
@@ -968,7 +1050,7 @@ struct ChatScreen: View {
                 UIPasteboard.general.string = path
             }
             .accessibilityLabel((bot?.workspace?.path).map { Text("Working folder, \($0)") } ?? Text("No folder attached"))
-            Text("Attach a folder from your Mac. This iPhone can't change it. Long-press the path to copy it.")
+            Text("Attach a folder from your Mac. This iPhone can't change it.")
                 .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                 .foregroundStyle(Theme.C.inkMuted)
             Button("Done") { showFolder = false }
@@ -976,7 +1058,6 @@ struct ChatScreen: View {
                 .frame(maxWidth: .infinity, minHeight: 50)
         }
         .padding(DesignTokens.Space.phoneGutter)
-        .presentationDetents([.height(240)])
     }
 
     static func emptyCopy(_ bot: ShellBot, members: [ShellBot]) -> String {

@@ -613,6 +613,15 @@ public struct StreamProjection: Equatable, Sendable {
         replayingMessage = false
     }
 
+    /// The owner's "Stop" while a turn is in flight. Ends pending on screen
+    /// immediately, but keeps the turn's open questions: the cancel is a
+    /// request, and eve's own terminal event resolves the questions. Wiping
+    /// them here would drop an unanswered question the server still holds.
+    public mutating func cancelPending() {
+        pending = false
+        currentAssistantId = nil
+    }
+
     /// Dedupe identity with a bounded FIFO: the oldest remembered id is
     /// evicted first, so a long replay can neither grow without bound nor
     /// re-apply the events it already saw.

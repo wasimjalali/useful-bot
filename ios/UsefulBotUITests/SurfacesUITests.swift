@@ -135,6 +135,13 @@ final class SurfacesUITests: XCTestCase {
             app.swipeUp()
             usleep(400_000)
         }
+        // Diagnose "exists but never hittable": print every match's frame
+        // so a covered or off-screen row shows where it actually sits.
+        let frames = (0..<matches.count).map { i -> String in
+            let el = matches.element(boundBy: i)
+            return "#\(i) f=\(el.exists ? el.frame.debugDescription : "∅") hit=\(el.isHittable)"
+        }.joined(separator: " ")
+        print("diag hittable-miss \(label): \(frames)")
         XCTFail("\(label) never became hittable")
     }
 
@@ -832,10 +839,18 @@ final class SurfacesUITests: XCTestCase {
         let skeleton = app.descendants(matching: .any)["Loading drawing"]
         let failedText = app.staticTexts["This drawing could not be opened."]
         let transcript = app.scrollViews["transcript"]
-        let deadline = Date().addingTimeInterval(30)
+        let earlier = app.buttons["Show earlier"]
+        let deadline = Date().addingTimeInterval(45)
         while Date() < deadline && !webview.exists && !failedText.exists {
             if skeleton.exists {
                 usleep(300_000)   // slot mounted, fetch in flight
+            } else if earlier.exists && earlier.isHittable {
+                // The thread fixture grows a few rows every run; once the
+                // widget slips above the transcript's window, swiping alone
+                // can never reach it — the window only widens through "Show
+                // earlier".
+                earlier.tap()
+                usleep(300_000)
             } else {
                 transcript.swipeDown()   // still hunting the row
                 usleep(300_000)

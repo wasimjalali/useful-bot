@@ -91,22 +91,39 @@ struct PhoneProvidersView: View {
         .navigationTitle("Providers")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
-        .sheet(item: $connectTarget) { catalog in
-            ProviderConnectView(catalog: catalog) { next in
-                payload = next
+        .floatingSheet(
+            item: $connectTarget,
+            detent: .large,
+            title: { "Connect \($0.label)" },
+            content: { catalog in
+                ProviderConnectView(catalog: catalog, onClose: { connectTarget = nil }) { next in
+                    payload = next
+                }
+                .environmentObject(coordinator)
             }
-            .environmentObject(coordinator)
-        }
-        .sheet(item: $detailTarget) { connection in
-            ConnectionDetailView(connection: connection) { next in
-                payload = next
+        )
+        .floatingSheet(
+            item: $detailTarget,
+            detent: .large,
+            title: { $0.label },
+            content: { connection in
+                ConnectionDetailView(connection: connection, onClose: { detailTarget = nil }) { next in
+                    payload = next
+                }
+                .environmentObject(coordinator)
             }
-            .environmentObject(coordinator)
+        )
+        .floatingSheet(
+            item: $roleTarget,
+            detent: .large,
+            title: { $0.title },
+            content: { target in
+                rolePicker(target)
+            }
+        )
+        .floatingSheet(isPresented: $showCatalog, title: "Add provider", detent: .large) {
+            catalogSheet
         }
-        .sheet(item: $roleTarget) { target in
-            rolePicker(target)
-        }
-        .sheet(isPresented: $showCatalog) { catalogSheet }
     }
 
     @State private var showCatalog = false
@@ -134,7 +151,6 @@ struct PhoneProvidersView: View {
     @ViewBuilder
     private func rolePicker(_ target: RoleTarget) -> some View {
         let role = target == .default ? payload?.defaultRole : payload?.reviewerRole
-        NavigationStack {
             List {
                 if let role {
                     if target == .reviewer {
@@ -149,8 +165,15 @@ struct PhoneProvidersView: View {
                                     Image(systemName: "checkmark").foregroundStyle(Theme.C.accent)
                                 }
                             }
+                            .padding(.horizontal, 12)
                             .frame(minHeight: 44)
+                            .background(
+                                role.connectionId == nil ? Theme.C.sunken : Color.clear,
+                                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                     ForEach(role.models, id: \.id) { model in
                         Button {
@@ -166,7 +189,13 @@ struct PhoneProvidersView: View {
                                     Image(systemName: "checkmark").foregroundStyle(Theme.C.accent)
                                 }
                             }
+                            .padding(.horizontal, 12)
                             .frame(minHeight: 44)
+                            .background(
+                                role.connectionId == model.connectionId && role.modelId == model.id ? Theme.C.sunken : Color.clear,
+                                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -179,10 +208,8 @@ struct PhoneProvidersView: View {
                     }
                 }
             }
-            .navigationTitle(target.title)
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .presentationDetents([.medium, .large])
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
     }
 
     private func effortPicker(_ target: RoleTarget, role: RolePublic) -> some View {
@@ -200,7 +227,6 @@ struct PhoneProvidersView: View {
     }
 
     private var catalogSheet: some View {
-        NavigationStack {
             List {
                 ForEach(payload?.catalog ?? []) { item in
                     Button { connectTarget = item } label: {
@@ -228,10 +254,8 @@ struct PhoneProvidersView: View {
                     .disabled(blocked != nil)
                 }
             }
-            .navigationTitle("Add provider")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .presentationDetents([.large])
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
     }
 
     private var blocked: String? {
@@ -274,14 +298,14 @@ struct PhoneProvidersView: View {
 /// "Disconnect" in danger — class A.
 private struct ConnectionDetailView: View {
     let connection: ConnectionPublic
+    /// Overlay sheets have no working `dismiss` — the parent owns close.
+    var onClose: () -> Void = {}
     var onChange: (ProvidersPayload) -> Void
     @EnvironmentObject private var coordinator: PairingCoordinator
-    @Environment(\.dismiss) private var dismiss
     @State private var error: String?
     @State private var busy = false
 
     var body: some View {
-        NavigationStack {
             List {
                 Section {
                     HStack(spacing: 12) {
@@ -327,10 +351,8 @@ private struct ConnectionDetailView: View {
                     Section { Text(error).foregroundStyle(Theme.C.danger) }
                 }
             }
-            .navigationTitle(connection.label)
-            .navigationBarTitleDisplayMode(.inline)
-        }
-        .presentationDetents([.medium, .large])
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
     }
 
     private func gate(_ reason: String) async -> Bool {
@@ -352,7 +374,7 @@ private struct ConnectionDetailView: View {
         defer { busy = false }
         do {
             onChange(try await client.setActiveConnection(connection.id))
-            dismiss()
+            onClose()
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription
         }
@@ -365,7 +387,7 @@ private struct ConnectionDetailView: View {
         defer { busy = false }
         do {
             onChange(try await client.disconnectConnection(connection.id))
-            dismiss()
+            onClose()
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription
         }
@@ -377,9 +399,10 @@ private struct ConnectionDetailView: View {
 /// api-key modes get a secure field plus Save; local modes get their fields.
 struct ProviderConnectView: View {
     let catalog: CatalogPublic
+    /// Overlay sheets have no working `dismiss` — the parent owns close.
+    var onClose: () -> Void = {}
     var onChange: (ProvidersPayload) -> Void
     @EnvironmentObject private var coordinator: PairingCoordinator
-    @Environment(\.dismiss) private var dismiss
     @State private var key = ""
     @State private var fields: [String: String] = [:]
     @State private var error: String?
@@ -391,7 +414,6 @@ struct ProviderConnectView: View {
     @State private var pollTask: Task<Void, Never>?
 
     var body: some View {
-        NavigationStack {
             List {
                 Section {
                     HStack(spacing: 12) {
@@ -425,15 +447,8 @@ struct ProviderConnectView: View {
                     }
                 }
             }
-            .navigationTitle("Connect \(catalog.label)")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
         .sheet(isPresented: Binding(get: { safariURL != nil }, set: { if !$0 { safariURL = nil } })) {
             if let url = safariURL {
                 SafariSheet(url: url)
@@ -447,10 +462,11 @@ struct ProviderConnectView: View {
             if let flow {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
+                        // Spec: the OAuth code is SF Mono 20, Dynamic Type
+                        // scales it — no minimumScaleFactor cramp.
                         Text(flow.userCode)
-                            .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                            .tokenFont(20, .semibold, design: .monospaced)
                             .foregroundStyle(Theme.C.ink)
-                            .minimumScaleFactor(0.5)
                             .lineLimit(2)
                         HStack(spacing: 12) {
                             Button("Copy code") {
@@ -476,11 +492,16 @@ struct ProviderConnectView: View {
                 }
             }
             Section {
-                Button(flow == nil ? "Sign in" : "Try again") { Task { await startFlow() } }
-                    .buttonStyle(SecondaryAction(enabled: !busy))
-                    .frame(minHeight: 44)
+                // Provider connect is a primary commit, not a secondary
+                // row (design spec: "Sign in"/"Connect" render brand).
+                Button(busy ? "Connecting" : (flow == nil ? "Sign in" : "Try again")) { Task { await startFlow() } }
+                    .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong, shadowed: !busy))
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
+                    .foregroundStyle(busy ? Theme.C.inkFaint : Theme.C.brandInk)
+                    .frame(maxWidth: .infinity, minHeight: 50)
                     .disabled(busy)
             }
+            .listRowSeparator(.hidden)
         }
     }
 
@@ -508,10 +529,13 @@ struct ProviderConnectView: View {
                 Button(busy ? "Connecting" : (catalog.fields == nil || catalog.fields?.isEmpty == true ? "Save key" : "Connect")) {
                     Task { await connect() }
                 }
-                .buttonStyle(SecondaryAction(enabled: !busy))
-                .frame(minHeight: 44)
+                .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong, shadowed: !busy))
+                .tokenFont(DesignTokens.FontSize.button, .semibold)
+                .foregroundStyle(busy ? Theme.C.inkFaint : Theme.C.brandInk)
+                .frame(maxWidth: .infinity, minHeight: 50)
                 .disabled(busy)
             }
+            .listRowSeparator(.hidden)
         }
     }
 
@@ -520,13 +544,22 @@ struct ProviderConnectView: View {
     }
 
     private func startFlow() async {
+        switch await OwnerGate.evaluate(reason: "Sign in to a provider") {
+        case .approved:
+            break
+        case .unavailable:
+            error = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
         guard let client = coordinator.client else { return }
         busy = true
         defer { busy = false }
         do {
             let started = try await client.startOAuth(providerId: catalog.providerId)
             flow = started
-            pollStatus = "Waiting for you to finish in Safari"
+            pollStatus = "Waiting for approval in the browser"
             error = nil
             if let url = URL(string: started.verificationUrlComplete ?? started.verificationUrl) {
                 safariURL = url
@@ -553,10 +586,10 @@ struct ProviderConnectView: View {
                     switch status {
                     case "complete":
                         if let payload { onChange(payload) }
-                        dismiss()
+                        onClose()
                         return
                     case "pending":
-                        pollStatus = "Waiting for you to finish in Safari"
+                        pollStatus = "Waiting for approval in the browser"
                     case "expired":
                         pollStatus = "The code expired."
                         self.flow = nil
@@ -593,7 +626,7 @@ struct ProviderConnectView: View {
             let keyValue = key.isEmpty ? nil : key
             let fieldValues = fields.isEmpty ? nil : fields
             onChange(try await client.connect(providerId: catalog.providerId, mode: catalog.mode, key: keyValue, fields: fieldValues))
-            dismiss()
+            onClose()
         } catch {
             rejected = true
             self.error = (error as? LocalizedError)?.errorDescription ?? "The Mac refused this key"
@@ -676,9 +709,16 @@ struct PhoneConnectorsView: View {
             } else {
                 SecureField("Paste key", text: $key)
                     .frame(minHeight: 44)
+                // The key commit is primary (spec 1.13 anatomy).
                 Button("Save key") { Task { await saveKey() } }
-                    .buttonStyle(SecondaryAction(enabled: blocked == nil && !key.isEmpty))
-                    .frame(minHeight: 44)
+                    .buttonStyle(PressedScale(
+                        fill: blocked == nil && !key.isEmpty ? Theme.C.brand : Theme.C.sunken,
+                        pressedFill: Theme.C.accentStrong,
+                        shadowed: blocked == nil && !key.isEmpty
+                    ))
+                    .tokenFont(DesignTokens.FontSize.button, .semibold)
+                    .foregroundStyle(blocked == nil && !key.isEmpty ? Theme.C.brandInk : Theme.C.inkFaint)
+                    .frame(maxWidth: .infinity, minHeight: 50)
                     .disabled(blocked != nil || key.isEmpty)
                 if key.isEmpty {
                     Text("Paste a key to save it")
@@ -851,12 +891,36 @@ struct PhoneConnectorsView: View {
             let url = try await client.authorizeConnector(slug: toolkit.slug)
             if let target = URL(string: url) {
                 safariURL = target
+                watchConnection(slug: toolkit.slug)
             } else {
                 connectingSlug = nil
             }
         } catch {
             connectingSlug = nil
             self.error = (error as? LocalizedError)?.errorDescription
+        }
+    }
+
+    @State private var connectPoll: Task<Void, Never>?
+
+    /// §9.4: the OAuth completes server-side while the Safari sheet is up;
+    /// poll the toolkit list and close the sheet when the connection lands.
+    private func watchConnection(slug: String) {
+        guard let client = coordinator.client else { return }
+        connectPoll?.cancel()
+        connectPoll = Task {
+            while !Task.isCancelled, safariURL != nil {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                if let next = try? await client.connectors() {
+                    payload = next
+                    if next.toolkits.first(where: { $0.slug == slug })?.connected == true {
+                        safariURL = nil
+                        connectingSlug = nil
+                        return
+                    }
+                }
+            }
         }
     }
 
@@ -952,8 +1016,16 @@ struct PhoneUsageView: View {
                     }
                 }
             } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                // Row skeletons, not a spinner — the loading state keeps
+                // the section's geometry (design spec loading table).
+                Section {
+                    ForEach(0..<3, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                            .fill(Theme.C.border)
+                            .frame(height: 12)
+                            .frame(minHeight: 44)
+                    }
+                }
             }
             if let error {
                 Section { Text(error).foregroundStyle(Theme.C.danger) }

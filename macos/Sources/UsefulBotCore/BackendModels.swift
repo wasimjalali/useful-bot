@@ -176,13 +176,22 @@ public struct ShellSection: Codable, Identifiable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case id, name, collapsed, order }
 }
 
-public struct ShellRecent: Codable, Identifiable, Equatable, Sendable {
+public struct ShellRecent: Codable, Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public var botId: String
     public var title: String
     public var sessionId: String?
     public var preview: String
     public var updatedAt: String
+
+    public init(id: String, botId: String, title: String, sessionId: String?, preview: String, updatedAt: String) {
+        self.id = id
+        self.botId = botId
+        self.title = title
+        self.sessionId = sessionId
+        self.preview = preview
+        self.updatedAt = updatedAt
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)

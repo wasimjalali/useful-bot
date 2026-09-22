@@ -1,6 +1,354 @@
 import SwiftUI
 import UsefulBotCore
 
+/// The shared motion curve — the brand ease used for presses, sheets and
+/// pulses (web `cubic-bezier(0.22, 1, 0.36, 1)`).
+extension Animation {
+    static var brand: Animation {
+        .timingCurve(0.22, 1, 0.36, 1, duration: DesignTokens.Motion.dialog)
+    }
+    static var brandFast: Animation {
+        .timingCurve(0.22, 1, 0.36, 1, duration: DesignTokens.Motion.fast)
+    }
+    static var brandOverlay: Animation {
+        .timingCurve(0.22, 1, 0.36, 1, duration: DesignTokens.Motion.overlay)
+    }
+}
+
+/// The spec's drawn toggle (51x31, token fills): `brand` track with a
+/// `surface` thumb when on, `sunken`/`edge` when off. VoiceOver reads it as
+/// a real switch; the caller renders any disabled reason as text.
+struct TokenToggle: View {
+    @Binding var isOn: Bool
+    var enabled = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn ? Theme.C.brand : Theme.C.sunken)
+                    .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
+                Circle()
+                    .fill(Theme.C.surface)
+                    .shadow(color: Theme.C.shadow.opacity(0.15), radius: 1, x: 0, y: 1)
+                    .padding(2)
+            }
+            .frame(width: 51, height: 31)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(Text(isOn ? "On" : "Off"))
+        .animation(reduceMotion ? nil : .brandFast, value: isOn)
+    }
+}
+
+/// Sheet height: medium and large follow the platform detents' share of the
+/// stage; `fit` hugs the content up to a cap (rename, folder, confirms).
+enum FloatingSheetDetent {
+    case fit, medium, large
+
+    func maxHeight(in height: CGFloat) -> CGFloat {
+        switch self {
+        case .fit: return height * 0.85
+        case .medium: return height * 0.55
+        case .large: return height * 0.92
+        }
+    }
+}
+
+/// Section 5 / line 241: sheets opened from chat float — 8 pt off the screen
+/// sides and bottom, `Radius.xl` on all four corners, a grabber, a title row
+/// with a close affordance, over the `overlay` scrim (light) / `overlayDark`
+/// (dark). System `.sheet` chrome cannot draw the side insets, so the sheet
+/// renders in an overlay on the host view. Content that pushes internally
+/// brings its own `NavigationStack`.
+struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
+    let title: String
+    var detent: FloatingSheetDetent = .medium
+    /// Bare sheets draw their own title row (the routine editor's
+    /// Cancel/Save pair); the standard header still draws grabber, title
+    /// and the close affordance.
+    var showsHeader = true
+    var onClose: () -> Void
+    @ViewBuilder var leading: () -> Leading
+    @ViewBuilder var trailing: () -> Trailing
+    @ViewBuilder var content: () -> Content
+
+    @State private var drag: CGFloat = 0
+
+    init(
+        title: String,
+        detent: FloatingSheetDetent = .medium,
+        showsHeader: Bool = true,
+        onClose: @escaping () -> Void,
+        @ViewBuilder leading: @escaping () -> Leading = { EmptyView() },
+        @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() },
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.title = title
+        self.detent = detent
+        self.showsHeader = showsHeader
+        self.onClose = onClose
+        self.leading = leading
+        self.trailing = trailing
+        self.content = content
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                Theme.C.overlay
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { onClose() }
+                    .accessibilityLabel("Dismiss sheet")
+                VStack(spacing: 0) {
+                    Capsule()
+                        .fill(Theme.C.borderStrong)
+                        .frame(width: 36, height: 5)
+                        .padding(.top, 8)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(dismissDrag)
+                    if showsHeader {
+                        HStack(spacing: 8) {
+                            leading()
+                            Text(title)
+                                .tokenFont(DesignTokens.FontSize.dialogTitle, .semibold)
+                                .foregroundStyle(Theme.C.ink)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            trailing()
+                            SheetCloseButton { onClose() }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    }
+                    content()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+                .background(Theme.C.surface)
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
+                .cardLift(cornerRadius: DesignTokens.Radius.xl)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+                .frame(maxHeight: detent.maxHeight(in: geo.size.height))
+                .fixedSize(horizontal: false, vertical: detent == .fit)
+                .offset(y: drag)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        // The keyboard's safe-area shrink moves the bottom-pinned card up;
+        // the scrim already ignores safe areas above.
+    }
+
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                drag = max(0, value.translation.height)
+            }
+            .onEnded { value in
+                if value.translation.height > 80 {
+                    onClose()
+                } else {
+                    drag = 0
+                }
+            }
+    }
+}
+
+/// §1.7's confirm anatomy at the smallest detent: title from the floating
+/// sheet's header, one line of consequence, then the destructive action
+/// and Cancel side by side — the class-A delete/unpair pattern.
+struct ConfirmSheet: View {
+    /// The consequence line under the title ("Its conversation and
+    /// routines are removed from your Mac.").
+    let message: String
+    /// The destructive verb ("Delete bot", "Unpair").
+    var confirmTitle: String
+    var onConfirm: () -> Void
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(message)
+                .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Cancel") { onClose() }
+                    .buttonStyle(SecondaryAction())
+                    .frame(minHeight: 44)
+                Button(confirmTitle, role: .destructive) {
+                    onConfirm()
+                    onClose()
+                }
+                .buttonStyle(SecondaryAction())
+                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                .foregroundStyle(Theme.C.danger)
+                .frame(maxWidth: .infinity, minHeight: 44)
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        .padding(.bottom, 8)
+    }
+}
+
+/// The circular close button at the sheet's title row.
+struct SheetCloseButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .semibold))
+                .foregroundStyle(Theme.C.inkMuted)
+                .frame(width: 28, height: 28)
+                .background(Theme.C.sunken, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Close")
+    }
+}
+
+private struct FloatingSheetBoolHost<Sheet: View, Leading: View, Trailing: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    let title: String
+    let detent: FloatingSheetDetent
+    let showsHeader: Bool
+    @ViewBuilder var leading: () -> Leading
+    @ViewBuilder var trailing: () -> Trailing
+    @ViewBuilder var sheet: () -> Sheet
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if isPresented {
+                    FloatingSheet(
+                        title: title,
+                        detent: detent,
+                        showsHeader: showsHeader,
+                        onClose: { isPresented = false },
+                        leading: leading,
+                        trailing: trailing,
+                        content: sheet
+                    )
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                }
+            }
+            .animation(reduceMotion ? nil : .brand, value: isPresented)
+    }
+}
+
+private struct FloatingSheetItemHost<Item: Identifiable, Sheet: View, Leading: View, Trailing: View>: ViewModifier {
+    @Binding var item: Item?
+    let detent: FloatingSheetDetent
+    let showsHeader: Bool
+    var title: (Item) -> String
+    @ViewBuilder var leading: (Item) -> Leading
+    @ViewBuilder var trailing: (Item) -> Trailing
+    @ViewBuilder var sheet: (Item) -> Sheet
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if let item {
+                    FloatingSheet(
+                        title: title(item),
+                        detent: detent,
+                        showsHeader: showsHeader,
+                        onClose: { self.item = nil },
+                        leading: { leading(item) },
+                        trailing: { trailing(item) },
+                        content: { sheet(item) }
+                    )
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .opacity
+                    ))
+                }
+            }
+            .animation(reduceMotion ? nil : .brand, value: item?.id != nil)
+    }
+}
+
+extension View {
+    /// Present a `FloatingSheet` while `isPresented` holds. The sheet's
+    /// content and header slots take no payload.
+    func floatingSheet<C: View, L: View, T: View>(
+        isPresented: Binding<Bool>,
+        title: String,
+        detent: FloatingSheetDetent = .medium,
+        showsHeader: Bool = true,
+        @ViewBuilder leading: @escaping () -> L = { EmptyView() },
+        @ViewBuilder trailing: @escaping () -> T = { EmptyView() },
+        @ViewBuilder content: @escaping () -> C
+    ) -> some View {
+        modifier(FloatingSheetBoolHost(
+            isPresented: isPresented,
+            title: title,
+            detent: detent,
+            showsHeader: showsHeader,
+            leading: leading,
+            trailing: trailing,
+            sheet: content
+        ))
+    }
+
+    /// Present a `FloatingSheet` for a non-nil `item`, the `.sheet(item:)`
+    /// analogue. The payload flows to the title and content closures.
+    func floatingSheet<Item: Identifiable, C: View>(
+        item: Binding<Item?>,
+        detent: FloatingSheetDetent = .medium,
+        showsHeader: Bool = true,
+        title: @escaping (Item) -> String,
+        @ViewBuilder content: @escaping (Item) -> C
+    ) -> some View {
+        floatingSheet(
+            item: item,
+            detent: detent,
+            showsHeader: showsHeader,
+            title: title,
+            leading: { _ in EmptyView() },
+            trailing: { _ in EmptyView() },
+            content: content
+        )
+    }
+
+    /// The item variant with leading/trailing header slots.
+    func floatingSheet<Item: Identifiable, C: View, L: View, T: View>(
+        item: Binding<Item?>,
+        detent: FloatingSheetDetent = .medium,
+        showsHeader: Bool = true,
+        title: @escaping (Item) -> String,
+        @ViewBuilder leading: @escaping (Item) -> L,
+        @ViewBuilder trailing: @escaping (Item) -> T,
+        @ViewBuilder content: @escaping (Item) -> C
+    ) -> some View {
+        modifier(FloatingSheetItemHost(
+            item: item,
+            detent: detent,
+            showsHeader: showsHeader,
+            title: title,
+            leading: leading,
+            trailing: trailing,
+            sheet: content
+        ))
+    }
+}
+
 /// The web button press: scale 0.98 plus one tone step, for `Motion.fast`,
 /// on the shared motion curve. iOS has no hover; pressed is the only
 /// transient state. Under Reduce Motion the tone step stays and the scale
