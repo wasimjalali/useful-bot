@@ -1337,6 +1337,20 @@ private struct ScrollPinnedTracker: ViewModifier {
     /// pinned again, so they need not land on it exactly.
     private static let tolerance: CGFloat = 48
 
+    /// The one rule both paths share. The reader left the newest turn when the
+    /// offset went up and took them further from the bottom; the bottom anchor
+    /// lowering the offset for a shrink keeps the distance, and content
+    /// growing below moves no offset, so neither counts. Only a move down can
+    /// bring them back, so the last sub-point frames of an upward flick never
+    /// re-pin.
+    private static func movedAway(_ old: Geometry, _ new: Geometry) -> Bool {
+        new.offset < old.offset && new.distance > old.distance + 0.25 && new.distance > 2
+    }
+
+    private static func cameBack(_ old: Geometry, _ new: Geometry) -> Bool {
+        new.offset > old.offset && new.distance <= tolerance
+    }
+
     /// Offset and content height together, because the pin can only be judged
     /// from the pair: the same distance-from-bottom means "the reader scrolled
     /// up" when the offset moved and "a row was appended" when the content grew.
@@ -1401,15 +1415,17 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // distance, and a clamp at the bottom leaves none, so
                     // neither is mistaken for one.
                     let appScroll = Date() < probe.appScrollUntil
-                    if !appScroll, !probe.holding, new.offset < old.offset - 0.5,
-                       new.distance > old.distance + 0.5, new.distance > 2 {
+                    let resized = new.contentHeight != old.contentHeight || new.viewport != old.viewport
+                    // While the view is parked at the top of a finished reply,
+                    // a resize frame is the reload settling, not the reader.
+                    if !appScroll, !(probe.holding && resized),
+                       Self.movedAway(old, new) {
                         if pinned { pinned = false }
                         return
                     }
-                    let resized = new.contentHeight != old.contentHeight || new.viewport != old.viewport
                     if !resized, !appScroll, new.offset != old.offset {
                         // Back down to the newest turn by wheel or keys pins again.
-                        if new.distance <= Self.tolerance, !pinned { pinned = true }
+                        if Self.cameBack(old, new), !pinned { pinned = true }
                         return
                     }
                     // The bottom anchor does not hold through every change:
@@ -1429,9 +1445,9 @@ private struct ScrollPinnedTracker: ViewModifier {
                 // again. Content growing under a still finger moves no offset
                 // and leaves the pin alone, and the rubber band past the end
                 // reads as the bottom.
-                if new.offset < old.offset - 0.5, new.distance > 2 {
+                if Self.movedAway(old, new) {
                     if pinned { pinned = false }
-                } else if new.distance <= Self.tolerance, !pinned {
+                } else if Self.cameBack(old, new), !pinned {
                     pinned = true
                 }
             }
