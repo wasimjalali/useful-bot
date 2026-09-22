@@ -19,6 +19,8 @@ build/
 
 # regenerable verification evidence (large, reproduce with scripts/build-plan-html.py)
 review-*.png
+dup-*.png
+ondemand-*.png
 
 # release verification report (reproduce with npm run verify:release)
 release-verify.json

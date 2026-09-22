@@ -334,4 +334,465 @@ import Testing
         #expect(projection.messages[0].id == "evt-user")
         #expect(projection.messages[0].text == typed)
     }
+
+    /// The provider was down for eight minutes and the same question stood in
+    /// the transcript six times over, under one failure banner. eve had none
+    /// of them: a turn that fails takes the owner's message with it, so every
+    /// resend was the first copy the session had ever seen.
+    @Test func resendingAMessageAFailedTurnThrewAwayRewritesItsRow() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "2", message: "upstream_protocol_error"))
+
+        projection.apply(EveEvent(type: "turn.started", id: "3"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages[0].id == "u2")
+        #expect(projection.messages[0].role == .user)
+
+        // A third attempt folds into the same row, and the row the owner sees
+        // is the one the session will answer.
+        projection.apply(EveEvent(type: "turn.failed", id: "4", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "hi"))
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages[0].id == "u3")
+    }
+
+    /// The send path inserts its own row before the echo arrives, so the fold
+    /// has to survive the optimistic hop as well as a replay.
+    @Test func aRetryFromTheComposerFoldsThroughItsOptimisticRow() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"), live: true)
+        projection.apply(EveEvent(type: "turn.failed", id: "2", message: "circuit_open"), live: true)
+
+        projection.beginTurn()
+        projection.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: "hi"
+        ), live: true)
+        #expect(projection.messages.count == 1)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"), live: true)
+        #expect(projection.messages.count == 1)
+        #expect(projection.messages[0].id == "u2")
+    }
+
+    /// Only the message the failed turn threw away folds. A turn that failed
+    /// after the bot had started answering keeps its input, and a repeat of
+    /// text the bot already answered is a second question, not a retry.
+    @Test func onlyTheDiscardedMessageFolds() {
+        var answered = StreamProjection()
+        answered.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        answered.apply(EveEvent(type: "message.completed", id: "a1", message: "Hello"))
+        answered.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(answered.messages.count == 3)
+
+        var cutOff = StreamProjection()
+        cutOff.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        cutOff.apply(EveEvent(type: "message.appended", id: "a1", messageDelta: "Half an ans"))
+        cutOff.apply(EveEvent(type: "turn.failed", id: "2", message: "ended without a finish reason"))
+        cutOff.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(cutOff.messages.count == 3)
+
+        var edited = StreamProjection()
+        edited.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        edited.apply(EveEvent(type: "turn.failed", id: "2", message: "upstream_protocol_error"))
+        edited.apply(EveEvent(type: "message.received", id: "u2", message: "hi again"))
+        #expect(edited.messages.count == 2)
+    }
+
+    /// A turn that reached a tool call can leave the call in the session, the
+    /// shape `historyBroken` names, so eve did not roll it back and the resend
+    /// is a second message however empty the transcript looks.
+    @Test func aTurnThatGotAsFarAsWorkKeepsItsRow() {
+        let requested = #"""
+        {"type":"actions.requested","meta":{"id":"t1"},"data":{"actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}
+        """#
+        var tooled = StreamProjection()
+        tooled.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        tooled.apply(EveStream.parseLine(requested)!)
+        tooled.apply(EveEvent(type: "turn.failed", id: "2", message: "Tool result is missing for tool call c1."))
+        tooled.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(tooled.messages.count == 2)
+
+        var reasoned = StreamProjection()
+        reasoned.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        reasoned.apply(EveEvent(type: "reasoning.appended", id: "r1"))
+        reasoned.apply(EveEvent(type: "turn.failed", id: "2", message: "upstream_protocol_error"))
+        reasoned.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(reasoned.messages.count == 2)
+    }
+
+    /// Two user rows can be open at once when a send is queued behind another.
+    /// A failure then belongs to one of them and the projection cannot say
+    /// which, so it claims neither rather than folding into the wrong one.
+    @Test func twoOpenUserRowsArmNothing() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "first"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "second"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"))
+        #expect(projection.messages.count == 3)
+    }
+
+    /// The fold starts a turn, so the banner the failure put up has to come
+    /// down with it: a stream that sends no `turn.started` of its own left it
+    /// over a row that was live again.
+    @Test func foldingARetryClearsTheFailureBanner() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        #expect(projection.failed)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(!projection.failed)
+        #expect(projection.failure == nil)
+        #expect(projection.pending)
+    }
+
+    /// The id a folded row leaves behind still names it. eve's durable stream
+    /// can redeliver the failed turn's `message.received` once the bounded id
+    /// cache has evicted it, and that lookup is what keeps it from appending
+    /// the copy this fold exists to remove.
+    @Test func theFoldedAwayIdStillResolvesToItsRow() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 1)
+        // Push the folded-away id out of the bounded cache, then replay the
+        // event it named the way a long re-read does.
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        #expect(projection.messages.count == 1)
+    }
+
+    /// Three rows open at once are no less ambiguous than two. Counting them
+    /// says so; toggling a single slot said the third was a fresh start.
+    @Test func aThirdOpenUserRowIsStillAmbiguous() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "first"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "second"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "third"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u4", message: "third"))
+        #expect(projection.messages.count == 4)
+    }
+
+    /// A tool call's arguments arrive in chunks before eve has a validated
+    /// call to keep, so a turn that dies mid-chunk is rolled back like any
+    /// other and its message still folds.
+    @Test func aHalfWrittenToolCallIsNotWorkYet() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(
+            type: "action.input.appended",
+            id: "d1",
+            data: .object(["toolName": .string("web_search")])
+        ))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 1)
+    }
+
+    /// A follower that rewinds replays an older turn's text into a turn that
+    /// has done nothing. That is the old turn's work, not this one's, and
+    /// counting it blocked the fold the retry needed.
+    @Test func replayedTextIsNotThisTurnsWork() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "message.completed", id: "a1", message: "Hello"))
+        projection.apply(EveEvent(type: "turn.completed", id: "t1"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "again"))
+        // The follower re-sends the first reply's events; the id cache no
+        // longer covers them, so `indexById` is what recognises them.
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.appended", id: "a1", messageDelta: "Hello"))
+        projection.apply(EveEvent(type: "message.completed", id: "a1", message: "Hello"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "again"))
+        #expect(projection.messages.filter { $0.role == .user && $0.text == "again" }.count == 1)
+    }
+    /// A turn refused before its own echo (a busy session, an open circuit)
+    /// throws away nothing: the message the last row names was delivered by an
+    /// earlier turn and the session still holds it.
+    @Test func aFailureWithNoMessageOfItsOwnArmsNothing() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s1"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        // No terminal for that turn, the way a cut stream leaves one.
+        projection.apply(EveEvent(type: "turn.started", id: "s2"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "session_busy"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 2)
+    }
+
+    /// An older turn's tool call replayed by a follower that rewound past the
+    /// id cache is that turn's work, and it carries that turn's id.
+    @Test func replayedToolWorkIsNotThisTurnsWork() {
+        let requested = #"""
+        {"type":"actions.requested","meta":{"id":"t1"},"data":{"turnId":"turn-1","actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}
+        """#
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s2", turnId: "turn-2"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveStream.parseLine(requested)!)
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 1)
+    }
+
+    /// The optimistic fold must not claim a row when two are open: re-pointing
+    /// the claim is only right when it already named the row being folded.
+    @Test func theOptimisticFoldKeepsAnAmbiguousClaimAmbiguous() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "first"), live: true)
+        projection.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: "second"
+        ), live: true)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "second"), live: true)
+        #expect(projection.messages.count == 2)
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"), live: true)
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"), live: true)
+        #expect(projection.messages.count == 3)
+    }
+    /// A redelivery is not a retry: it must not take the failure banner down
+    /// or mark a turn as running.
+    @Test func aRedeliveredMessageLeavesTheBannerUp() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        #expect(projection.messages.count == 1)
+        #expect(projection.failed)
+        #expect(!projection.pending)
+    }
+
+    /// An answer closes the exchange above it. Without that, a stream that
+    /// sends no turn terminals counted every user row it ever saw as open and
+    /// never folded again.
+    @Test func anAnswerClosesTheRowsAboveIt() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "first"))
+        projection.apply(EveEvent(type: "message.completed", id: "a1", message: "Hello"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "second"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"))
+        #expect(projection.messages.count == 3)
+    }
+    /// Only the matching retry used to take the banner down, so a stream that
+    /// sends no `turn.started` left a failure standing over a different
+    /// question that was already running.
+    @Test func aNewMessageTakesTheLastTurnsFailureWithIt() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        #expect(projection.failed)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "something else"))
+        #expect(!projection.failed)
+        #expect(projection.failure == nil)
+        #expect(projection.pending)
+    }
+
+    /// A question ends the turn: the bot is waiting on the owner, not working.
+    /// Counting the row above it as still open left a later retry stacking.
+    @Test func aQuestionClosesTheRowsAboveIt() {
+        let asked = #"""
+        {"type":"input.requested","meta":{"id":"q1"},"data":{"requests":[{"requestId":"r1","kind":"input","prompt":"Which one?"}]}}
+        """#
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "first"))
+        projection.apply(EveStream.parseLine(asked)!)
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "second"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "second"))
+        #expect(projection.messages.filter { $0.role == .user && $0.text == "second" }.count == 1)
+    }
+
+    /// A turn that ended takes its id with it. Left behind, the next turn's
+    /// work looked like somebody else's and stopped counting, which folds a
+    /// turn that had in fact acted.
+    @Test func aFinishedTurnsIdDoesNotOutliveIt() {
+        let requested = #"""
+        {"type":"actions.requested","meta":{"id":"t1"},"data":{"turnId":"turn-2","actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}
+        """#
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s1", turnId: "turn-1"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "turn.completed", id: "done1"))
+        // A second turn the stream did not announce, doing real work.
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "again"))
+        projection.apply(EveStream.parseLine(requested)!)
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u3", message: "again"))
+        #expect(projection.messages.filter { $0.role == .user && $0.text == "again" }.count == 2)
+    }
+
+    /// A follower that rewinds past the bounded id cache replays an older
+    /// turn's events. They were counting as neither work nor an open row, and
+    /// still putting that turn's tool in the working row, its drawing on
+    /// screen, its chips under the transcript and its question card back up.
+    @Test func anOlderTurnsEventsDoNotResurfaceOnThisOne() {
+        let requested = #"""
+        {"type":"actions.requested","meta":{"id":"t1"},"data":{"turnId":"turn-1","actions":[{"callId":"c1","kind":"tool-call","toolName":"web_search"}]}}
+        """#
+        let asked = #"""
+        {"type":"input.requested","meta":{"id":"q1"},"data":{"turnId":"turn-1","requests":[{"requestId":"r1","kind":"input","prompt":"Which one?"}]}}
+        """#
+        let found = #"""
+        {"type":"action.result","meta":{"id":"h1"},"data":{"turnId":"turn-1","results":[{"title":"Old","url":"https://example.com","snippet":"stale"}]}}
+        """#
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s2", turnId: "turn-2"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveStream.parseLine(requested)!)
+        projection.apply(EveStream.parseLine(asked)!)
+        projection.apply(EveStream.parseLine(found)!)
+        #expect(projection.widgets.isEmpty)
+        #expect(projection.questions.isEmpty)
+        #expect(projection.searchHits.isEmpty)
+        #expect(projection.activity == .thinking)
+        // And this turn still reached nothing, so its message folds.
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.count == 1)
+    }
+
+    /// A delta this turn owns, dropped because a replayed block is still being
+    /// read past, still means the turn started answering.
+    @Test func aDeltaDroppedByAReplayStillCountsAsWork() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "message.appended", id: "a1", messageDelta: "Half"))
+        // The follower rewinds and re-sends that block's first delta, which
+        // this projection recognises and starts reading past.
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.appended", id: "a1", messageDelta: "Half"))
+        projection.apply(EveEvent(type: "message.appended", id: "a2", messageDelta: " an answer"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi"))
+        #expect(projection.messages.filter { $0.role == .user }.count == 2)
+    }
+    // The four below came out of the seventh adversarial pass, which wrote
+    // them to prove what it had found. Three asserted the behaviour that was
+    // wanted and failed; this one asserted the behaviour that was there.
+
+    /// A failure names the turn it belongs to. One journaled with no boundary
+    /// of its own used to claim whatever row was last delivered, and if eve
+    /// kept that message, the next same-text send folded away something the
+    /// session holds.
+    @Test func aFailureFromAnotherTurnClaimsNothingHere() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "s1", turnId: "t1"))
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"))
+        projection.apply(EveEvent(type: "turn.failed", id: "f", message: "session_busy", turnId: "t2"))
+        projection.apply(EveEvent(type: "turn.completed", id: "c1", turnId: "t1"))
+        projection.apply(EveEvent(type: "turn.started", id: "s3", turnId: "t3"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t3"))
+        #expect(projection.messages.count == 2)
+    }
+
+    /// A rewind that re-sends an older block's deltas was taken for the live
+    /// answer: it stole the current block, and the rest of this turn's text
+    /// then appended to that older row.
+    @Test func aReplayedBlockDoesNotSplitTheLiveReply() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "message.received", id: "u1", message: "hi"))
+        projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "Hello"))
+        projection.apply(EveEvent(type: "message.completed", id: "c1", message: "Hello"))
+        projection.apply(EveEvent(type: "turn.completed", id: "t1"))
+        projection.apply(EveEvent(type: "turn.started", id: "s2", turnId: "t2"))
+        projection.apply(EveEvent(type: "message.received", id: "u2", message: "again", turnId: "t2"))
+        projection.apply(EveEvent(type: "message.appended", id: "d2", messageDelta: "Hi", turnId: "t2"))
+        #expect(projection.activity == .working)
+        for index in 0..<2_100 {
+            projection.apply(EveEvent(type: "heartbeat", id: "noise-\(index)"))
+        }
+        projection.apply(EveEvent(type: "message.appended", id: "d1", messageDelta: "Hello", turnId: "t1"))
+        projection.apply(EveEvent(type: "message.completed", id: "c1", message: "Hello", turnId: "t1"))
+        projection.apply(EveEvent(type: "message.appended", id: "d3", messageDelta: " there", turnId: "t2"))
+        let assistantRows = projection.messages.filter { $0.role == .assistant }
+        #expect(assistantRows.count == 2)
+        #expect(assistantRows.last?.id == "d2")
+        #expect(assistantRows.last?.text == "Hi there")
+    }
+
+    /// A send arms its stream at its own `message.received`, so the
+    /// `turn.started` ahead of it never reaches this projection. Without the
+    /// message naming its turn, the id stayed unknown for the whole live turn
+    /// and an older turn's straggler counted as this one's work.
+    @Test func aLiveSendKnowsItsOwnTurn() {
+        var live = StreamProjection()
+        live.beginTurn()
+        live.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: "hi"
+        ), live: true)
+        live.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"), live: true)
+        // A late-flushed result from the turn before, inside the armed window.
+        live.apply(EveEvent(type: "action.result", id: "r1", turnId: "t0"))
+        live.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error", turnId: "t1"), live: true)
+        live.beginTurn()
+        live.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t2"), live: true)
+        #expect(live.messages.count == 1)
+
+        // The same stream replayed, where `turn.started` is present, has always
+        // excluded that straggler. The two must not disagree.
+        var replay = StreamProjection()
+        replay.apply(EveEvent(type: "turn.started", id: "s1", turnId: "t1"))
+        replay.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1"))
+        replay.apply(EveEvent(type: "action.result", id: "r1", turnId: "t0"))
+        replay.apply(EveEvent(type: "turn.failed", id: "f", message: "upstream_protocol_error", turnId: "t1"))
+        replay.apply(EveEvent(type: "turn.started", id: "s2", turnId: "t2"))
+        replay.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t2"))
+        #expect(replay.messages.count == 1)
+    }
+    /// A drawing arrives on the turn that asked for it, and the turn gate
+    /// must not stand between them. The send's armed stream never carries
+    /// `turn.started`, so the only thing naming the turn is the message.
+    @Test func aDrawingOnThisTurnReachesTheTranscript() {
+        let drawn = #"""
+        {"type":"actions.requested","meta":{"id":"w1"},"data":{"turnId":"turn-9","actions":[{"callId":"call_00_excalidraw_one","kind":"tool-call","toolName":"excalidraw__create_view","input":{"elements":[]}}]}}
+        """#
+        var live = StreamProjection()
+        live.beginTurn()
+        live.apply(EveEvent(
+            type: "message.received",
+            id: "\(EveStream.optimisticUserPrefix)local",
+            message: "draw me a box"
+        ), live: true)
+        live.apply(EveEvent(type: "message.received", id: "u1", message: "draw me a box", turnId: "turn-9"), live: true)
+        live.apply(EveStream.parseLine(drawn)!, live: true)
+        #expect(live.widgets.count == 1)
+        #expect(live.widgets.first?.connectionId == "excalidraw")
+        #expect(live.widgets.first?.toolName == "excalidraw__create_view")
+
+        // And on a replay, where `turn.started` is the thing that names it.
+        var replay = StreamProjection()
+        replay.apply(EveEvent(type: "turn.started", id: "s1", turnId: "turn-9"))
+        replay.apply(EveEvent(type: "message.received", id: "u1", message: "draw me a box", turnId: "turn-9"))
+        replay.apply(EveStream.parseLine(drawn)!)
+        #expect(replay.widgets.count == 1)
+
+        // A stream that tags nothing at all still draws, the way it always did.
+        let untagged = #"""
+        {"type":"actions.requested","meta":{"id":"w2"},"data":{"actions":[{"callId":"call_00_excalidraw_two","kind":"tool-call","toolName":"excalidraw__create_view","input":{"elements":[]}}]}}
+        """#
+        var plain = StreamProjection()
+        plain.apply(EveEvent(type: "message.received", id: "u1", message: "draw me a box"))
+        plain.apply(EveStream.parseLine(untagged)!)
+        #expect(plain.widgets.count == 1)
+    }
 }
