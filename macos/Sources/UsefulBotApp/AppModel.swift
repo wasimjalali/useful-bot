@@ -311,18 +311,6 @@ final class AppModel: ObservableObject {
     /// A quiet stretch this long inside a session replay means the history
     /// burst is over. The loopback server sends it as fast as it can read it.
     private static let replayBurstGap: TimeInterval = 0.35
-    /// How much of a session's event log an open-time replay reads. The
-    /// durable store already renders the history, so the replay only needs
-    /// the tail: enough to spot a turn still running and to rebuild the
-    /// follow position. A turn longer than this is widened to the whole log.
-    private static let replayTailEvents = 16_384
-    /// Event types that bound a turn. A replay window holding none of these
-    /// opened inside a turn still in flight, so its start is further back.
-    private static let replayBoundaryTypes: Set<String> = [
-        "session.started", "turn.started", "message.received",
-        "turn.completed", "turn.cancelled", "turn.failed",
-        "session.completed", "session.failed", "session.cancelled", "session.waiting",
-    ]
     private var loadGeneration = 0
     /// Bumped once per owner-initiated send. The transcript watches it to jump
     /// to the newest turn: sending is an explicit request to watch the answer,
@@ -700,14 +688,16 @@ final class AppModel: ObservableObject {
                 // switch) publishes live from that point so coming back shows
                 // the working row and the tokens as they arrive.
                 let durable = ReplayGate.Durable(events: state.events)
-                // The replay only needs the tail of the log: the durable rows
-                // hold everything older, and the merge pairs them. The probe
-                // asks for the tail index without reading the log; a server
-                // that does not report one replays from zero, as before.
-                var replayStart = 0
-                if let tail = try? await client.tailIndex(sessionId: sessionId) {
-                    replayStart = max(0, tail + 1 - Self.replayTailEvents)
-                }
+                var atLiveTail = durable.startsLive
+                // History arrives in one burst from the loopback server, so a
+                // gap in it means the burst is over and whatever comes next is
+                // happening now. Until then every event is the past being read
+                // back, however recent: a card dismissed a second ago replays
+                // exactly like one dismissed an hour ago.
+                // Seeded on the first event, never before it: the wait for
+                // the stream to open is not a gap inside the burst, and a slow
+                // open would otherwise read as one.
+                var lastEventAt: Date?
                 // A replay is never applied over rows that are already on
                 // screen. The projection forgets the oldest event ids it has
                 // seen, so a session longer than that cache re-appended the
@@ -721,29 +711,13 @@ final class AppModel: ObservableObject {
                 // only its first delta, and swapping there would run the reply
                 // backwards on screen until the rest arrived.
                 let baselineTail = projection.messages.last?.text.count ?? 0
-                // A window that opened inside a turn in flight holds no turn
-                // boundary at all; widen once to the whole log then.
-                var widened = false
-                replayLoop: while true {
-                var atLiveTail = durable.startsLive
-                // History arrives in one burst from the loopback server, so a
-                // gap in it means the burst is over and whatever comes next is
-                // happening now. Until then every event is the past being read
-                // back, however recent: a card dismissed a second ago replays
-                // exactly like one dismissed an hour ago.
-                // Seeded on the first event, never before it: the wait for
-                // the stream to open is not a gap inside the burst, and a slow
-                // open would otherwise read as one.
-                var lastEventAt: Date?
                 var replay = StreamProjection()
                 var swapped = false
-                var sawBoundary = false
                 historyRemaining = nil
-                // The follower's cursor is rebuilt as this replay reads.
-                followCursor = (sessionId, replayStart)
+                // This replay starts at zero and ends holding the whole
+                // session, so the follower's cursor is rebuilt with it.
+                followCursor = (sessionId, 0)
                 localTurnIds[sessionId] = nil
-                liveTurn = ReplayGate.LiveTurn()
-                drained = false
                 if baseline == 0, !projection.pending {
                     // Nothing to preserve: the reload owns the projection. A
                     // turn that has only started has no rows yet but is
@@ -753,10 +727,9 @@ final class AppModel: ObservableObject {
                     backgroundWorking = false
                     swapped = true
                 }
-                for try await event in client.stream(sessionId: sessionId, startIndex: replayStart, markHistory: true) {
+                for try await event in client.stream(sessionId: sessionId, markHistory: true) {
                     guard generation == loadGeneration else { return }
                     historyRemaining = event.historyRemaining
-                    if !sawBoundary, Self.replayBoundaryTypes.contains(event.type) { sawBoundary = true }
                     // A send started while this replay was running. It owns the
                     // projection from that moment, and the row it painted must
                     // not be replaced by a replay that predates it.
@@ -823,21 +796,11 @@ final class AppModel: ObservableObject {
                         if (historyRemaining ?? 0) <= 0 { publishTranscript() }
                     }
                 }
-                // No boundary in a window that has history before it means the
-                // replay opened inside a turn: its start, and the only true
-                // picture of what is live, sit further back. Widen once.
-                if !sawBoundary, replayStart > 0, !widened {
-                    widened = true
-                    replayStart = 0
-                    continue replayLoop
-                }
                 if !swapped, sendTasks[bot.id] == nil {
                     // The session holds fewer messages than the rows on screen
                     // (it was cleared or replaced elsewhere). The replay is
                     // still the authority on what this chat is.
                     projection = replay
-                }
-                break
                 }
             }
             guard generation == loadGeneration else { return }
