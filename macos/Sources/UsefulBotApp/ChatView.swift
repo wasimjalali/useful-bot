@@ -35,16 +35,25 @@ struct ChatView: View {
     /// plain object so the pin tracker's per-frame writes do not re-render
     /// the chat.
     @State private var scrollProbe = ScrollProbe()
+    /// Set when a restored chat's reload is slow to confirm its rows: the
+    /// mascot comes back rather than a blank pane.
+    @State private var slowRestore = false
     /// How long a stalled replay may keep the mascot up before the rows on
     /// hand are shown anyway. A healthy replay lands well inside it: the
     /// mascot stays until the newest turn is in, because rows shown before
     /// then are replaced underneath the reader.
     private static let landingCap: TimeInterval = 10
-    /// How long a restored chat waits for its reload to say nothing was
-    /// recorded since the snapshot. That answer takes a durable read and a
-    /// one-file probe, tens of milliseconds; a chat that did gain a turn
-    /// then opens on it rather than showing it arrive.
-    private static let resumeConfirmWait: TimeInterval = 0.15
+    /// How long a restored chat waits for its reload with nothing on screen.
+    /// The reload's answer (a durable read, a one-file probe, whatever the
+    /// session gained since the snapshot) takes about 70 ms, but its reply
+    /// can queue behind the transcript's own build on the main thread; one
+    /// still missing after this gets the mascot until it is in, so a chat
+    /// that gained a turn opens on it rather than showing it arrive.
+    private static let resumeConfirmWait: TimeInterval = 0.6
+    private static var fastLanding: Bool {
+        if #available(macOS 15.0, *) { return true }
+        return false
+    }
     /// Room for the user's message above the reply, so an answer that only
     /// just fits is left where it is.
     private static let replyAnchorSlack: CGFloat = 120
@@ -86,8 +95,9 @@ struct ChatView: View {
                     if model.hasThreadContent || model.pending {
                         // Put back from a snapshot or a stash: it lands within
                         // a few frames, so the mascot would only flash and the
-                        // fade would only delay it.
-                        let restored = model.restoredFromCache
+                        // fade would only delay it. macOS 14 has no scroll
+                        // geometry to land it that fast and keeps both.
+                        let restored = model.restoredFromCache && Self.fastLanding
                         transcript(bot)
                             // The landing belongs to this mount. Without this a
                             // chat left for an empty one, or remounted before
@@ -106,8 +116,10 @@ struct ChatView: View {
                             }
                             .accessibilityHidden(landedBotId != bot.id)
                             .overlay {
-                                ZStack { if landedBotId != bot.id, !restored { loadingState } }
-                                    .animation(.easeOut(duration: 0.15), value: landedBotId == bot.id)
+                                ZStack { if landedBotId != bot.id, !restored || slowRestore { loadingState } }
+                                    // A restored chat's rows show at once, so
+                                    // its mascot must not fade out over them.
+                                    .animation(restored ? nil : .easeOut(duration: 0.15), value: landedBotId == bot.id)
                             }
                     } else if model.transcriptReady {
                         emptyState(bot)
@@ -395,13 +407,15 @@ struct ChatView: View {
         scrollToBottom(proxy)
     }
 
-    /// A chat put back from its snapshot or its stash has its rows known good,
-    /// so it lands as soon as layout reads the true bottom at one height on
-    /// two frames in a row: checked every frame, where a replayed chat waits
-    /// out three 50 ms checks, and shown without the fade.
+    /// A chat put back from its snapshot or its stash has its rows ready, so
+    /// it lands as soon as its reload confirms them and layout reads the true
+    /// bottom at one height on two frames in a row: checked every frame,
+    /// where a replayed chat waits out three 50 ms checks, and shown without
+    /// the fade.
     @available(macOS 15.0, *)
     private func landRestored(_ proxy: ScrollViewProxy, botId: String) async {
-        let confirmBy = Date().addingTimeInterval(Self.resumeConfirmWait)
+        slowRestore = false
+        let slowAfter = Date().addingTimeInterval(Self.resumeConfirmWait)
         let deadline = Date().addingTimeInterval(Self.landingCap)
         var lastHeight: CGFloat = -1
         while Date() < deadline {
@@ -409,11 +423,14 @@ struct ChatView: View {
             guard !Task.isCancelled else { return }
             let height = scrollProbe.contentHeight
             // Geometry that never reports has nothing to settle; it is given
-            // the confirmation wait to show up first.
+            // a moment to show up first.
             let atBottom = scrollProbe.seen
                 ? scrollProbe.distance <= 1 || height <= scrollProbe.viewport + 1
-                : Date() >= confirmBy
-            let confirmed = model.transcriptReady || Date() >= confirmBy
+                : Date() >= slowAfter
+            // The reload's word that these rows are the session, or a send of
+            // the owner's in this visit, which lands on its own rows.
+            let confirmed = model.transcriptReady || (model.pending && model.sentSinceOpen)
+            if !confirmed, !slowRestore, Date() >= slowAfter { slowRestore = true }
             if atBottom, height == lastHeight, confirmed {
                 // The newest rows alone do not fill the window: a short
                 // column sits at the top and would drop to the bottom once
@@ -430,12 +447,15 @@ struct ChatView: View {
         }
         pinnedToBottom = true
         landedBotId = botId
+        slowRestore = false
         guard model.slimFirstPaint else { return }
         // Two frames, so the landed frame is committed before the rest of the
-        // window is built above it.
-        try? await Task.sleep(nanoseconds: 34_000_000)
-        guard !Task.isCancelled else { return }
-        model.finishFirstPaint()
+        // window is built above it. Not tied to this task: a remount in those
+        // frames must not leave the window slim for the rest of the visit.
+        Task { @MainActor [model] in
+            try? await Task.sleep(nanoseconds: 34_000_000)
+            model.finishFirstPaint(for: botId)
+        }
     }
 
     /// The newest turn, without animating the trip. Used where the bottom

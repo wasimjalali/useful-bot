@@ -1722,7 +1722,7 @@ public actor BackendClient {
     /// instead (`includeTailIndex`) makes eve open every chunk file of the
     /// session before it answers, 1.25 s for a 12,554-event chat, and a load
     /// only needs to know which event is the last one it will call history.
-    public func newestEventId(sessionId: String, timeout: TimeInterval = 3) async -> String? {
+    public func newestEventId(sessionId: String, timeout: TimeInterval = 1.5) async -> String? {
         await withTaskGroup(of: String?.self) { group in
             group.addTask { try? await self.readNewestEventId(sessionId: sessionId, timeout: timeout) }
             group.addTask {
@@ -1744,14 +1744,29 @@ public actor BackendClient {
         guard let url = components?.url else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
-        let (bytes, response, _, _) = try await sendBytes(request)
-        // The read follows the live stream after that one event; it is
-        // dropped as soon as the event is in.
-        defer { bytes.task.cancel() }
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return nil }
-        for try await line in bytes.lines {
-            guard let payload = EveStream.payload(of: line) else { continue }
-            return EveStream.eventId(ofPayload: payload)
+        for attempt in 0..<2 {
+            let (bytes, response, sentCookie, sentEpoch) = try await sendBytes(request)
+            // The read follows the live stream after that one event; it is
+            // dropped as soon as the event is in.
+            defer { bytes.task.cancel() }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+#if os(macOS)
+            // The same one re-sign-in the stream makes after a server restart
+            // rotated the session. Without it every first open after one fell
+            // back to the whole-session scan.
+            if status == 401 || status == 403, attempt == 0 {
+                try await reauth(unlessRotatedFrom: sentCookie, signedOutSince: sentEpoch)
+                continue
+            }
+#else
+            _ = (attempt, sentCookie, sentEpoch)
+#endif
+            guard (200...299).contains(status) else { return nil }
+            for try await line in bytes.lines {
+                guard let payload = EveStream.payload(of: line) else { continue }
+                return EveStream.eventId(ofPayload: payload)
+            }
+            return nil
         }
         return nil
     }

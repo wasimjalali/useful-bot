@@ -86,11 +86,19 @@ public struct ChatSnapshotStore: Sendable {
     /// Bot ids are server-minted, but a file name is never taken on trust:
     /// anything outside a plain id alphabet is hex-encoded.
     public func fileURL(botId: String) -> URL {
+        directory.appendingPathComponent("\(Self.fileStem(botId)).json")
+    }
+
+    /// Where the prewarm notes a session it could not snapshot at rest.
+    private func unbuildableURL(botId: String) -> URL {
+        directory.appendingPathComponent("\(Self.fileStem(botId)).none")
+    }
+
+    private static func fileStem(_ botId: String) -> String {
         let plain = !botId.isEmpty && botId.utf8.count <= 128 && botId.unicodeScalars.allSatisfy {
             CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "_" || $0 == "-"
         }
-        let name = plain ? botId : "x" + botId.utf8.map { String(format: "%02x", $0) }.joined().prefix(200)
-        return directory.appendingPathComponent("\(name).json")
+        return plain ? botId : "x" + botId.utf8.map { String(format: "%02x", $0) }.joined().prefix(200)
     }
 
     /// The snapshot for this bot's current session, or nil when there is none,
@@ -106,7 +114,8 @@ public struct ChatSnapshotStore: Sendable {
               snapshot.version == ChatSnapshot.formatVersion,
               snapshot.botId == botId,
               snapshot.sessionId == sessionId,
-              snapshot.cursor >= 0 else { return nil }
+              snapshot.cursor >= 0,
+              snapshot.projection.isConsistent else { return nil }
         return snapshot
     }
 
@@ -120,9 +129,12 @@ public struct ChatSnapshotStore: Sendable {
     }
 
     public func save(_ data: Data, botId: String) throws {
+        try save(data, to: fileURL(botId: botId))
+    }
+
+    private func save(_ data: Data, to target: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let target = fileURL(botId: botId)
         let temp = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
         guard fm.createFile(atPath: temp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
             throw CocoaError(.fileWriteUnknown)
@@ -137,5 +149,28 @@ public struct ChatSnapshotStore: Sendable {
 
     public func remove(botId: String) {
         try? FileManager.default.removeItem(at: fileURL(botId: botId))
+        try? FileManager.default.removeItem(at: unbuildableURL(botId: botId))
+    }
+
+    /// Notes that this session ends on a turn still open, so no snapshot of it
+    /// can be taken at rest and the prewarm need not read it again each launch.
+    /// A new session for the bot does not match it and is tried afresh.
+    public func markUnbuildable(botId: String, sessionId: String) throws {
+        try save(Data(sessionId.utf8), to: unbuildableURL(botId: botId))
+    }
+
+    public func isMarkedUnbuildable(botId: String, sessionId: String) -> Bool {
+        guard let data = try? Data(contentsOf: unbuildableURL(botId: botId)) else { return false }
+        return String(decoding: data, as: UTF8.self) == sessionId
+    }
+
+    /// Removes every file that belongs to no bot in `botIds`: chats deleted
+    /// while this app was closed, or from another surface.
+    public func prune(keeping botIds: Set<String>) {
+        let keep = Set(botIds.flatMap { ["\(Self.fileStem($0)).json", "\(Self.fileStem($0)).none"] })
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
+        for name in names where !keep.contains(name) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 }

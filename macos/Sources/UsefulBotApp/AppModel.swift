@@ -35,7 +35,17 @@ final class AppModel: ObservableObject {
     /// Why startup failed when the reason is more specific than a dead server,
     /// for example a missing node binary. Shown on the launch screen.
     @Published private(set) var startupError: String?
-    @Published private(set) var store: ShellStore?
+    @Published private(set) var store: ShellStore? {
+        didSet {
+            // A chat deleted anywhere (the web UI, a bot's own tool) leaves
+            // the disk with its bot, not only one deleted from this rail.
+            guard let oldValue, let store else { return }
+            let kept = Set(store.bots.map(\.id))
+            for bot in oldValue.bots where !kept.contains(bot.id) {
+                removeSnapshot(bot.id)
+            }
+        }
+    }
     @Published private(set) var selectedBotId: String?
     @Published private(set) var transcript: [TranscriptRow] = []
     /// The grouped render list for `transcript`. Derived once per change here
@@ -300,6 +310,11 @@ final class AppModel: ObservableObject {
     private var snapshotsBlocked: Set<String> = []
     /// Builds snapshots for chats never opened, one at a time, after launch.
     private var prewarmTask: Task<Void, Never>?
+    /// The load generation whose reload finished. A snapshot is only taken
+    /// while it is the current one: an in-place reload (Retry, a proposal,
+    /// Stop) rewinds the cursor to zero while the old projection is still on
+    /// screen, and a snapshot of that pair would replay events it holds.
+    private var completedLoad: Int?
     /// Turns a local send streamed to their end, per session. The follower resumes
     /// from a cursor that sits before them, so it meets their events again and
     /// must pass over them rather than lean on the projection's bounded id
@@ -767,6 +782,9 @@ final class AppModel: ObservableObject {
                             liveTurn.apply(event, atLiveTail: true, novel: novel)
                             projection.apply(event, live: true)
                         }
+                        // A marker read that finished reached the marker, even
+                        // one whose line this build could not decode.
+                        historyRemaining = 0
                         resumed = true
                     } catch is CancellationError {
                         return
@@ -895,6 +913,7 @@ final class AppModel: ObservableObject {
                         if (historyRemaining ?? 0) <= 0 { publishTranscript() }
                     }
                 }
+                if marker != nil { historyRemaining = 0 }
                 if !swapped, sendTasks[bot.id] == nil {
                     // The session holds fewer messages than the rows on screen
                     // (it was cleared or replaced elsewhere). The replay is
@@ -922,6 +941,7 @@ final class AppModel: ObservableObject {
             // below is the one that counts as this chat's loaded state.
             transcriptReady = true
             loadSucceeded = true
+            completedLoad = generation
             publishTranscript(force: true)
             if sendTasks[bot.id] != nil {
                 pending = true
@@ -1995,8 +2015,9 @@ final class AppModel: ObservableObject {
     private(set) var slimFirstPaint = false
 
     /// Mounts the rest of the window after a restored chat's first frame.
-    func finishFirstPaint() {
-        guard slimFirstPaint else { return }
+    /// With a bot, only while that chat is still the open one.
+    func finishFirstPaint(for botId: String? = nil) {
+        guard slimFirstPaint, botId == nil || botId == selectedBotId else { return }
         slimFirstPaint = false
         republishWindow()
     }
@@ -2862,7 +2883,7 @@ final class AppModel: ObservableObject {
             // The old conversation is gone server-side; it must not come back
             // from the cache on the next switch.
             self.transcriptCache[id] = nil
-            self.stashSnapshots[id] = nil
+            self.removeSnapshot(id, blockWrites: false)
             self.selectedBotId = id
             self.attachError = nil
             self.approvalError = nil
@@ -2934,7 +2955,10 @@ final class AppModel: ObservableObject {
         if let snapshot = openChatSnapshot() {
             stashSnapshots[old] = snapshot
             writeSnapshot(snapshot)
-        } else {
+        } else if stashSnapshots[old]?.sessionId != selectedBot?.sessionId {
+            // One not at rest now keeps the snapshot it was opened from: the
+            // session only grows, so that is still a point a resume can read
+            // on from. One for another session is no use.
             stashSnapshots[old] = nil
         }
         // Do not clobber a live stash with an empty post-reset projection.
@@ -3021,7 +3045,7 @@ final class AppModel: ObservableObject {
         guard let bot = selectedBot, bot.id == selectedBotId,
               let sessionId = bot.sessionId, !sessionId.isEmpty,
               !snapshotsBlocked.contains(bot.id),
-              loadSucceeded, transcriptReady,
+              loadSucceeded, transcriptReady, completedLoad == loadGeneration,
               sendTasks[bot.id] == nil, !pending, !projection.pending,
               let cursor = followCursor, cursor.sessionId == sessionId, cursor.next > 0,
               projection.soleSession == sessionId else { return nil }
@@ -3063,9 +3087,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// A deleted bot's chat leaves the disk, after any write still queued.
-    private func removeSnapshot(_ botId: String) {
-        snapshotsBlocked.insert(botId)
+    /// A chat's snapshot leaves memory and the disk, after any write still
+    /// queued. A deleted bot's also blocks every later write for it.
+    private func removeSnapshot(_ botId: String, blockWrites: Bool = true) {
+        if blockWrites { snapshotsBlocked.insert(botId) }
         stashSnapshots[botId] = nil
         if selectedBotId == botId {
             snapshotTimer?.cancel()
@@ -3076,6 +3101,19 @@ final class AppModel: ObservableObject {
         snapshotWrite = Task.detached(priority: .utility) {
             await previous?.value
             store.remove(botId: botId)
+        }
+    }
+
+    /// Clears the files of bots that no longer exist, deleted while the app
+    /// was closed. In the write chain, so it never meets a write half done.
+    private func pruneSnapshots() {
+        guard let bots = store?.bots else { return }
+        let kept = Set(bots.map(\.id))
+        let store = snapshots
+        let previous = snapshotWrite
+        snapshotWrite = Task.detached(priority: .utility) {
+            await previous?.value
+            store.prune(keeping: kept)
         }
     }
 
@@ -3090,6 +3128,7 @@ final class AppModel: ObservableObject {
             // Out of the way of the launch and the first chat's own load.
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard let self else { return }
+            self.pruneSnapshots()
             for bot in self.store?.bots ?? [] {
                 guard !Task.isCancelled else { return }
                 await self.prewarm(botId: bot.id)
@@ -3101,14 +3140,37 @@ final class AppModel: ObservableObject {
         guard prewarmNeeded(botId),
               let sessionId = store?.bots.first(where: { $0.id == botId })?.sessionId else { return }
         let client = client
-        let built = await Task.detached(priority: .utility) {
-            await Self.buildSnapshot(client: client, botId: botId, sessionId: sessionId)
+        let store = snapshots
+        let outcome = await Task.detached(priority: .utility) { () -> PrewarmOutcome in
+            // Read off the main thread: a snapshot or a note that this
+            // session cannot have one means there is nothing to build.
+            if store.load(botId: botId, sessionId: sessionId) != nil
+                || store.isMarkedUnbuildable(botId: botId, sessionId: sessionId) {
+                return .skipped
+            }
+            return await Self.buildSnapshot(client: client, botId: botId, sessionId: sessionId)
         }.value
         // Checked again: the owner may have opened, sent to or deleted this
-        // chat while it was read, and then the open owns its snapshot.
-        guard let built, prewarmNeeded(botId),
-              store?.bots.first(where: { $0.id == botId })?.sessionId == sessionId else { return }
-        writeSnapshot(built)
+        // chat while it was read, and then the open owns its snapshot. A
+        // prewarm cancelled meanwhile writes nothing either.
+        guard !Task.isCancelled, prewarmNeeded(botId),
+              self.store?.bots.first(where: { $0.id == botId })?.sessionId == sessionId else { return }
+        switch outcome {
+        case .built(let snapshot):
+            writeSnapshot(snapshot)
+        case .unbuildable:
+            let previous = snapshotWrite
+            snapshotWrite = Task.detached(priority: .utility) {
+                await previous?.value
+                do {
+                    try store.markUnbuildable(botId: botId, sessionId: sessionId)
+                } catch {
+                    snapshotLog.error("could not note an unbuildable chat: \(String(describing: error), privacy: .public)")
+                }
+            }
+        case .skipped, .unread:
+            break
+        }
     }
 
     private func prewarmNeeded(_ botId: String) -> Bool {
@@ -3116,7 +3178,18 @@ final class AppModel: ObservableObject {
               stashSnapshots[botId] == nil, !workingBotIds.contains(botId),
               let sessionId = store?.bots.first(where: { $0.id == botId })?.sessionId,
               !sessionId.isEmpty else { return false }
-        return snapshots.load(botId: botId, sessionId: sessionId) == nil
+        return true
+    }
+
+    private enum PrewarmOutcome: Sendable {
+        case built(ChatSnapshot)
+        /// Read to its newest event and it ends on a turn still open, or on
+        /// more than one session's rows: no snapshot can be taken at rest.
+        case unbuildable
+        /// Already has one, or is known not to.
+        case skipped
+        /// Could not be read this time; tried again next launch.
+        case unread
     }
 
     /// One chat's snapshot, read the way a reload reads it: the durable rows,
@@ -3126,9 +3199,9 @@ final class AppModel: ObservableObject {
         client: BackendClient,
         botId: String,
         sessionId: String
-    ) async -> ChatSnapshot? {
+    ) async -> PrewarmOutcome {
         guard let state = try? await client.threadState(botId: botId),
-              let marker = await client.newestEventId(sessionId: sessionId) else { return nil }
+              let marker = await client.newestEventId(sessionId: sessionId) else { return .unread }
         let durable = ReplayGate.Durable(events: state.events)
         var atLiveTail = durable.startsLive
         var projection = StreamProjection()
@@ -3146,10 +3219,11 @@ final class AppModel: ObservableObject {
                 projection.apply(event, live: atLiveTail)
             }
         } catch {
-            return nil
+            return .unread
         }
-        guard cursor > 0, !projection.pending, projection.soleSession == sessionId else { return nil }
-        return ChatSnapshot(
+        guard cursor > 0 else { return .unread }
+        guard !projection.pending, projection.soleSession == sessionId else { return .unbuildable }
+        return .built(ChatSnapshot(
             botId: botId,
             sessionId: sessionId,
             cursor: cursor,
@@ -3158,7 +3232,7 @@ final class AppModel: ObservableObject {
             durableEvents: state.events,
             seenTurnIds: turnIds,
             localTurnIds: []
-        )
+        ))
     }
 
     private func trimCaches() {
@@ -3169,7 +3243,8 @@ final class AppModel: ObservableObject {
             let events = cached?.events.reduce(0) { $0 + $1.text.utf8.count + 128 } ?? 0
             return CacheBudget.Entry(
                 id: id,
-                bytes: rows + events + (backgroundProjections[id]?.estimatedBytes ?? 0),
+                bytes: rows + events + (backgroundProjections[id]?.estimatedBytes ?? 0)
+                    + (stashSnapshots[id]?.projection.estimatedBytes ?? 0),
                 lastUsed: cacheUse[id] ?? .distantPast,
                 // The open chat, a send this app holds, or a turn the follower
                 // is painting into the stash: all still in use.

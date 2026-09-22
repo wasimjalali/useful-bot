@@ -171,6 +171,46 @@ import Testing
         #expect(store.load(botId: "bot_1", sessionId: "wrun_1") == nil)
     }
 
+    /// A file whose bookkeeping points past its rows would crash the first
+    /// fold that indexes by it; it is refused instead, and the chat replays.
+    @Test func aDamagedProjectionIsNoSnapshot() throws {
+        let saved = Self.snapshot()
+        #expect(saved.projection.isConsistent)
+        var object = try #require(try JSONSerialization.jsonObject(with: ChatSnapshotStore.encode(saved)) as? [String: Any])
+        var projection = try #require(object["projection"] as? [String: Any])
+        var indexById = try #require(projection["indexById"] as? [String: Any])
+        indexById["e2"] = 999
+        projection["indexById"] = indexById
+        object["projection"] = projection
+        let damaged = try JSONSerialization.data(withJSONObject: object)
+        #expect(ChatSnapshotStore.decode(damaged, botId: "bot_1", sessionId: "wrun_1") == nil)
+        #expect(ChatSnapshotStore.decode(try ChatSnapshotStore.encode(saved), botId: "bot_1", sessionId: "wrun_1") == saved)
+    }
+
+    @Test func aSessionNotedUnbuildableIsSkippedUntilTheSessionChanges() throws {
+        let store = Self.tempStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1"))
+        try store.markUnbuildable(botId: "bot_1", sessionId: "wrun_1")
+        #expect(store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1"))
+        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_2"))
+        store.remove(botId: "bot_1")
+        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1"))
+    }
+
+    /// Chats deleted while the app was closed leave no file behind.
+    @Test func pruningKeepsOnlyTheBotsThatExist() throws {
+        let store = Self.tempStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        try store.save(Self.snapshot(bot: "bot_1"))
+        try store.save(Self.snapshot(bot: "bot_2"))
+        try store.markUnbuildable(botId: "bot_2", sessionId: "wrun_1")
+        try store.markUnbuildable(botId: "bot_3", sessionId: "wrun_1")
+        store.prune(keeping: ["bot_1"])
+        let names = try FileManager.default.contentsOfDirectory(atPath: store.directory.path)
+        #expect(names == ["bot_1.json"])
+    }
+
     @Test func aBotIdIsNeverUsedAsAPathUnchecked() {
         let store = Self.tempStore()
         #expect(store.fileURL(botId: "bot_01M2-x").lastPathComponent == "bot_01M2-x.json")

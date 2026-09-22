@@ -630,6 +630,20 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// its session reproduces, so only that one may be saved and resumed.
     public var soleSession: String? { journalBase == 0 ? journalSession : nil }
 
+    /// Whether the bookkeeping that the lookups index by agrees with the rows.
+    /// A projection decoded from a snapshot that fails this (a damaged file,
+    /// or one whose fields meant something else) is never restored: the
+    /// folds and discards index `messages` through these without checking.
+    public var isConsistent: Bool {
+        rowJournal.count == messages.count
+            && indexById.values.allSatisfy { $0 >= 0 && $0 < messages.count }
+            && seenOrder.count <= Self.seenCap
+            && seenCursor >= 0
+            && (seenOrder.count < Self.seenCap ? seenCursor == 0 : seenCursor < seenOrder.count)
+            && turnOrder.count == turns.count
+            && turnOrder.allSatisfy { turns[$0] != nil }
+    }
+
     /// Ids minted for rows whose events carried none. A count, not the row's
     /// position: a late discard removes a row, and a positional id then
     /// repeated one a surviving row already held.
