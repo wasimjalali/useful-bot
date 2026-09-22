@@ -369,6 +369,7 @@ struct ChatView: View {
     private func scrollWithoutAnimation(_ proxy: ScrollViewProxy, to id: String) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
+        scrollProbe.markAppScroll()
         withTransaction(transaction) {
             proxy.scrollTo(id, anchor: .top)
         }
@@ -389,6 +390,7 @@ struct ChatView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
+        scrollProbe.markAppScroll()
         withTransaction(transaction) {
             proxy.scrollTo("bottom", anchor: .bottom)
         }
@@ -553,6 +555,9 @@ struct ChatView: View {
                     pinnedToBottom = true
                     holdingReplyAnchor = false
                     replyHeight = 0
+                    // The probe outlives the remount; the last chat's
+                    // geometry must not stand in for this one's.
+                    scrollProbe.reset()
                     scrollToBottom(proxy)
                     let deadline = Date().addingTimeInterval(Self.landingCap)
                     var steady = 0
@@ -565,8 +570,16 @@ struct ChatView: View {
                             continue
                         }
                         if #available(macOS 15.0, *) {
+                            // A chat that fits the window has nothing to
+                            // settle, and one whose geometry never reported
+                            // has nothing to check. A reply still streaming
+                            // changes height on every publish; the drift check
+                            // keeps it pinned, so being at the bottom is enough.
                             let height = scrollProbe.contentHeight
-                            if scrollProbe.distance <= 1, height == lastHeight {
+                            let atBottom = !scrollProbe.seen
+                                || scrollProbe.distance <= 1
+                                || height <= scrollProbe.viewport + 1
+                            if atBottom, height == lastHeight || model.pending {
                                 steady += 1
                             } else {
                                 steady = 0
@@ -1286,6 +1299,23 @@ private struct ReplyHeightKey: PreferenceKey {
 private final class ScrollProbe {
     var distance: CGFloat = .infinity
     var contentHeight: CGFloat = 0
+    var viewport: CGFloat = 0
+    /// Whether the geometry has reported since the last reset.
+    var seen = false
+    /// Until when an offset change is the app's own scroll rather than the
+    /// reader's.
+    var appScrollUntil = Date.distantPast
+
+    func reset() {
+        distance = .infinity
+        contentHeight = 0
+        viewport = 0
+        seen = false
+    }
+
+    func markAppScroll() {
+        appScrollUntil = Date().addingTimeInterval(0.35)
+    }
 }
 
 private struct ScrollPinnedTracker: ViewModifier {
@@ -1342,6 +1372,8 @@ private struct ScrollPinnedTracker: ViewModifier {
                 if viewport != new.viewport { viewport = new.viewport }
                 probe.distance = new.distance
                 probe.contentHeight = new.contentHeight
+                probe.viewport = new.viewport
+                probe.seen = true
                 // Only the reader's own gesture may break the pin.
                 //
                 // Everything else that moves this geometry is the app's doing
@@ -1353,6 +1385,18 @@ private struct ScrollPinnedTracker: ViewModifier {
                 // is gated on the pin, which is how sending a message stranded
                 // the reader in the middle of the history.
                 guard dragging else {
+                    // A mouse wheel or the keyboard moves the offset without
+                    // a scroll phase. An offset change that no size change
+                    // explains, and that the app did not make, is the reader's
+                    // own, and it sets the pin like a drag does.
+                    if new.offset != old.offset,
+                       new.contentHeight == old.contentHeight,
+                       new.viewport == old.viewport,
+                       Date() >= probe.appScrollUntil {
+                        let atBottom = new.distance <= Self.tolerance
+                        if pinned != atBottom { pinned = atBottom }
+                        return
+                    }
                     // The bottom anchor does not hold through every change:
                     // the replay replacing the rows kept the old offset, which
                     // is mid-history in the new list. A reader at the newest

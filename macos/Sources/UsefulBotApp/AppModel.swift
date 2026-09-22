@@ -331,6 +331,10 @@ final class AppModel: ObservableObject {
     /// may land on those without waiting for the replay; nothing re-renders
     /// on it, so it is not published.
     private(set) var restoredFromCache = false
+    /// Chats whose stash was taken after their replay had finished. A chat
+    /// left while the mascot was still up was stashed with the durable rows
+    /// only, and landing on those would show rows the replay then replaces.
+    private var readyStashes: Set<String> = []
     /// Per-bot fence for New Chat / Open Recent. A global counter aborted
     /// background sends on every other bot.
     private var chatGenerations: [String: Int] = [:]
@@ -580,7 +584,7 @@ final class AppModel: ObservableObject {
             markWorking(botId, sendTasks[botId] != nil)
             durableEvents = transcriptCache[botId]?.events ?? []
             rebuildTranscript()
-            restoredFromCache = !transcript.isEmpty
+            restoredFromCache = !transcript.isEmpty && readyStashes.contains(botId)
         } else if let cached = transcriptCache[botId] {
             // A chat already opened this session comes back with its rows on
             // screen while the reload confirms them. The events come too: a
@@ -589,7 +593,7 @@ final class AppModel: ObservableObject {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             durableEvents = cached.events
-            restoredFromCache = !cached.rows.isEmpty
+            restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(botId)
         }
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
@@ -2617,12 +2621,12 @@ final class AppModel: ObservableObject {
             markWorking(id, sendTasks[id] != nil)
             durableEvents = transcriptCache[id]?.events ?? []
             rebuildTranscript()
-            restoredFromCache = !transcript.isEmpty
+            restoredFromCache = !transcript.isEmpty && readyStashes.contains(id)
         } else if let cached = transcriptCache[id] {
             transcript = cached.rows
             transcriptBlocks = cached.blocks
             durableEvents = cached.events
-            restoredFromCache = !cached.rows.isEmpty
+            restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(id)
         }
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
@@ -2819,6 +2823,7 @@ final class AppModel: ObservableObject {
         if transcriptReady || !transcript.isEmpty {
             transcriptCache[old] = (transcript, transcriptBlocks, durableEvents)
         }
+        if transcriptReady { readyStashes.insert(old) } else { readyStashes.remove(old) }
         if sendTasks[old] == nil { markWorking(old, false) }
         cacheUse[old] = Date()
         trimCaches()
