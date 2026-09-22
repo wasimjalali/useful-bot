@@ -390,7 +390,6 @@ struct ChatView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         var transaction = Transaction()
         transaction.disablesAnimations = true
-        scrollProbe.markAppScroll()
         withTransaction(transaction) {
             proxy.scrollTo("bottom", anchor: .bottom)
         }
@@ -579,7 +578,7 @@ struct ChatView: View {
                             let atBottom = !scrollProbe.seen
                                 || scrollProbe.distance <= 1
                                 || height <= scrollProbe.viewport + 1
-                            if atBottom, height == lastHeight || model.pending {
+                            if atBottom, height == lastHeight || model.pending || model.backgroundWorking {
                                 steady += 1
                             } else {
                                 steady = 0
@@ -1386,15 +1385,21 @@ private struct ScrollPinnedTracker: ViewModifier {
                 // the reader in the middle of the history.
                 guard dragging else {
                     // A mouse wheel or the keyboard moves the offset without
-                    // a scroll phase. An offset change that no size change
-                    // explains, and that the app did not make, is the reader's
-                    // own, and it sets the pin like a drag does.
-                    if new.offset != old.offset,
-                       new.contentHeight == old.contentHeight,
-                       new.viewport == old.viewport,
-                       Date() >= probe.appScrollUntil {
-                        let atBottom = new.distance <= Self.tolerance
-                        if pinned != atBottom { pinned = atBottom }
+                    // a scroll phase. The app only ever moves a pinned reader
+                    // down, except for its own anchor scrolls, so a move up
+                    // that the app did not make is the reader's, even when a
+                    // size change lands in the same frame. A content shrink
+                    // that clamps the offset keeps the reader at the bottom
+                    // and is not mistaken for one.
+                    let appScroll = Date() < probe.appScrollUntil
+                    if !appScroll, new.offset < old.offset - 0.5, new.distance > Self.tolerance {
+                        if pinned { pinned = false }
+                        return
+                    }
+                    let resized = new.contentHeight != old.contentHeight || new.viewport != old.viewport
+                    if !resized, !appScroll, new.offset != old.offset {
+                        // Back down to the newest turn by wheel or keys pins again.
+                        if new.distance <= Self.tolerance, !pinned { pinned = true }
                         return
                     }
                     // The bottom anchor does not hold through every change:

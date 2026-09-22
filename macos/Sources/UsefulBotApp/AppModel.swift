@@ -335,6 +335,9 @@ final class AppModel: ObservableObject {
     /// left while the mascot was still up was stashed with the durable rows
     /// only, and landing on those would show rows the replay then replaces.
     private var readyStashes: Set<String> = []
+    /// Whether the open chat's last load finished its replay. A failed load
+    /// also marks the transcript ready, with rows the next replay replaces.
+    private var loadSucceeded = false
     /// Per-bot fence for New Chat / Open Recent. A global counter aborted
     /// background sends on every other bot.
     private var chatGenerations: [String: Int] = [:]
@@ -819,6 +822,7 @@ final class AppModel: ObservableObject {
             // already at its newest turn. Marked ready first, so the publish
             // below is the one that counts as this chat's loaded state.
             transcriptReady = true
+            loadSucceeded = true
             publishTranscript(force: true)
             if sendTasks[bot.id] != nil {
                 pending = true
@@ -2823,7 +2827,7 @@ final class AppModel: ObservableObject {
         if transcriptReady || !transcript.isEmpty {
             transcriptCache[old] = (transcript, transcriptBlocks, durableEvents)
         }
-        if transcriptReady { readyStashes.insert(old) } else { readyStashes.remove(old) }
+        if loadSucceeded { readyStashes.insert(old) } else { readyStashes.remove(old) }
         if sendTasks[old] == nil { markWorking(old, false) }
         cacheUse[old] = Date()
         trimCaches()
@@ -2864,6 +2868,7 @@ final class AppModel: ObservableObject {
         pendingPublish = nil
         transcriptReady = false
         restoredFromCache = false
+        loadSucceeded = false
         // A switch to a shorter chat also shrinks the hidden count, and the
         // re-anchor must not chase a block of the chat just left.
         windowExpandedFrom = nil
