@@ -35,9 +35,10 @@ struct ChatView: View {
     /// plain object so the pin tracker's per-frame writes do not re-render
     /// the chat.
     @State private var scrollProbe = ScrollProbe()
-    /// Set when a restored chat's reload is slow to confirm its rows: the
-    /// mascot comes back rather than a blank pane.
-    @State private var slowRestore = false
+    /// The restored chat whose reload is slow to confirm its rows: the mascot
+    /// comes back rather than a blank pane. Keyed by chat, so a chat left
+    /// before it landed cannot hand its mascot to the next one.
+    @State private var slowRestoreBotId: String?
     /// How long a stalled replay may keep the mascot up before the rows on
     /// hand are shown anyway. A healthy replay lands well inside it: the
     /// mascot stays until the newest turn is in, because rows shown before
@@ -116,7 +117,7 @@ struct ChatView: View {
                             }
                             .accessibilityHidden(landedBotId != bot.id)
                             .overlay {
-                                ZStack { if landedBotId != bot.id, !restored || slowRestore { loadingState } }
+                                ZStack { if landedBotId != bot.id, !restored || slowRestoreBotId == bot.id { loadingState } }
                                     // A restored chat's rows show at once, so
                                     // its mascot must not fade out over them.
                                     .animation(restored ? nil : .easeOut(duration: 0.15), value: landedBotId == bot.id)
@@ -414,7 +415,7 @@ struct ChatView: View {
     /// the fade.
     @available(macOS 15.0, *)
     private func landRestored(_ proxy: ScrollViewProxy, botId: String) async {
-        slowRestore = false
+        slowRestoreBotId = nil
         let slowAfter = Date().addingTimeInterval(Self.resumeConfirmWait)
         let deadline = Date().addingTimeInterval(Self.landingCap)
         var lastHeight: CGFloat = -1
@@ -427,11 +428,19 @@ struct ChatView: View {
             let atBottom = scrollProbe.seen
                 ? scrollProbe.distance <= 1 || height <= scrollProbe.viewport + 1
                 : Date() >= slowAfter
-            // The reload's word that these rows are the session, or a send of
-            // the owner's in this visit, which lands on its own rows.
+            // The reload's word that a snapshot's rows are the session, or a
+            // send of the owner's in this visit, which lands on its own rows.
+            // Rows from a stash are confirmed by a replay from zero, which
+            // they never waited for.
             let confirmed = model.transcriptReady || (model.pending && model.sentSinceOpen)
-            if !confirmed, !slowRestore, Date() >= slowAfter { slowRestore = true }
-            if atBottom, height == lastHeight, confirmed {
+                || !model.restoredFromSnapshot
+            if !confirmed {
+                if slowRestoreBotId != botId, Date() >= slowAfter { slowRestoreBotId = botId }
+                // The two equal frames are counted on the confirmed rows only.
+                lastHeight = -1
+                continue
+            }
+            if atBottom, height == lastHeight {
                 // The newest rows alone do not fill the window: a short
                 // column sits at the top and would drop to the bottom once
                 // the rest mounted, so the rest mounts before anything shows.
@@ -447,7 +456,7 @@ struct ChatView: View {
         }
         pinnedToBottom = true
         landedBotId = botId
-        slowRestore = false
+        slowRestoreBotId = nil
         guard model.slimFirstPaint else { return }
         // Two frames, so the landed frame is committed before the rest of the
         // window is built above it. Not tied to this task: a remount in those
@@ -644,7 +653,8 @@ struct ChatView: View {
                         // A send counts only when it was made in this visit.
                         // One still running from before the chat was left
                         // sits on rows whose history may not be in yet.
-                        guard model.transcriptReady || (model.pending && model.sentSinceOpen) || model.restoredFromCache else {
+                        guard model.transcriptReady || (model.pending && model.sentSinceOpen)
+                                || (model.restoredFromCache && !model.restoredFromSnapshot) else {
                             scrollToBottom(proxy)
                             continue
                         }

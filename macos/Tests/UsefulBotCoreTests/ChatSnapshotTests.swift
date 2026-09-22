@@ -104,6 +104,32 @@ import Testing
         ])
     }
 
+    /// The same for every type stored inside the projection: an optional
+    /// field added to one of these would decode from an old file as nil with
+    /// no error, so it has to bump the version too.
+    @Test func theNestedStoredShapesArePinnedToTheFormatVersion() throws {
+        func labels(_ value: Any) -> [String] {
+            Mirror(reflecting: value).children.compactMap(\.label).sorted()
+        }
+        #expect(ChatSnapshot.formatVersion == 1)
+        let turn = try #require(Mirror(reflecting: StreamProjection()).children.first { $0.label == "turn" }?.value)
+        #expect(labels(turn) == [
+            "assistantId", "carriedUserMessageId", "ended", "lastRowId", "openUserRows",
+            "producedWork", "replayingMessage", "sawMessage", "superseded",
+        ])
+        #expect(labels(ChatMessage(id: "m", role: .user, text: "t")) == ["at", "id", "role", "text"])
+        #expect(labels(SearchChip(title: "t", url: "u", snippet: "s")) == ["snippet", "title", "url"])
+        #expect(labels(TurnFailure(code: "c", detail: "d")) == ["code", "detail"])
+        #expect(labels(LiveWidget(id: "w", connectionId: "c", toolName: "t", arguments: [:], callId: "k"))
+            == ["arguments", "callId", "connectionId", "id", "toolName"])
+        #expect(labels(OwnerQuestion(id: "q", prompt: "p", options: [], allowFreeform: true))
+            == ["allowFreeform", "id", "options", "prompt"])
+        #expect(labels(OwnerQuestion.Option(id: "o", label: "l", detail: "d")) == ["detail", "id", "label"])
+        // An enum's payloads are its stored shape.
+        let tool = try #require(Mirror(reflecting: TurnActivity.tool("bash", detail: "ls")).children.first?.value)
+        #expect(Mirror(reflecting: tool).children.map { $0.label ?? "" } == [".0", "detail"])
+    }
+
     @Test func aJSONValueEncodesToWhatItWasReadFrom() throws {
         let value = JSONValue.object([
             "a": .array([.number(1.5), .bool(true), .null, .string("x")]),
@@ -187,15 +213,18 @@ import Testing
         #expect(ChatSnapshotStore.decode(try ChatSnapshotStore.encode(saved), botId: "bot_1", sessionId: "wrun_1") == saved)
     }
 
-    @Test func aSessionNotedUnbuildableIsSkippedUntilTheSessionChanges() throws {
+    /// A session left on a turn still open is skipped only while nothing new
+    /// has been recorded in it: the turn ending moves its newest event.
+    @Test func aSessionNotedUnbuildableIsSkippedUntilItMovesOn() throws {
         let store = Self.tempStore()
         defer { try? FileManager.default.removeItem(at: store.directory) }
-        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1"))
-        try store.markUnbuildable(botId: "bot_1", sessionId: "wrun_1")
-        #expect(store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1"))
-        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_2"))
+        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1", newestEventId: "evt_5"))
+        try store.markUnbuildable(botId: "bot_1", sessionId: "wrun_1", newestEventId: "evt_5")
+        #expect(store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1", newestEventId: "evt_5"))
+        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1", newestEventId: "evt_6"))
+        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_2", newestEventId: "evt_5"))
         store.remove(botId: "bot_1")
-        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1"))
+        #expect(!store.isMarkedUnbuildable(botId: "bot_1", sessionId: "wrun_1", newestEventId: "evt_5"))
     }
 
     /// Chats deleted while the app was closed leave no file behind.
@@ -204,8 +233,8 @@ import Testing
         defer { try? FileManager.default.removeItem(at: store.directory) }
         try store.save(Self.snapshot(bot: "bot_1"))
         try store.save(Self.snapshot(bot: "bot_2"))
-        try store.markUnbuildable(botId: "bot_2", sessionId: "wrun_1")
-        try store.markUnbuildable(botId: "bot_3", sessionId: "wrun_1")
+        try store.markUnbuildable(botId: "bot_2", sessionId: "wrun_1", newestEventId: "evt_1")
+        try store.markUnbuildable(botId: "bot_3", sessionId: "wrun_1", newestEventId: "evt_1")
         store.prune(keeping: ["bot_1"])
         let names = try FileManager.default.contentsOfDirectory(atPath: store.directory.path)
         #expect(names == ["bot_1.json"])

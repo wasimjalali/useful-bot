@@ -382,6 +382,11 @@ final class AppModel: ObservableObject {
     /// may land on those without waiting for the replay; nothing re-renders
     /// on it, so it is not published.
     private(set) var restoredFromCache = false
+    /// True when those rows came from a snapshot, whose reload reads on from
+    /// its cursor in tens of milliseconds: the transcript waits for that to
+    /// confirm the rows. Rows from a stash or the row cache are confirmed by
+    /// a replay from zero, which it does not wait for.
+    private(set) var restoredFromSnapshot = false
     /// Chats whose stash was taken after their replay had finished. A chat
     /// left while the mascot was still up was stashed with the durable rows
     /// only, and landing on those would show rows the replay then replaces.
@@ -750,7 +755,8 @@ final class AppModel: ObservableObject {
             // replay from zero would apply it; `ChatSnapshotTests` pins that.
             var resumed = false
             if !localSend, let resume, let marker, let sessionId = bot.sessionId,
-               resume.sessionId == sessionId, !projection.pending {
+               resume.sessionId == sessionId, resume.next > 0, let resumeLast = resume.lastEventId,
+               !projection.pending {
                 followCursor = (sessionId, resume.next, resume.lastEventId)
                 if marker == resume.lastEventId {
                     // Nothing was recorded after the snapshot: the rows on
@@ -758,15 +764,28 @@ final class AppModel: ObservableObject {
                     resumed = true
                 } else {
                     let durableIds = Set(state.events.map(\.id))
+                    // The read starts one event early, on the event the
+                    // snapshot ended on. Any other event there means the
+                    // snapshot does not describe this session (its cursor is
+                    // past the end, or the session is not the one it read),
+                    // and waiting for the marker could then never end.
+                    var anchored = false
                     do {
                         for try await event in client.stream(
                             sessionId: sessionId,
-                            startIndex: resume.next,
+                            startIndex: resume.next - 1,
                             markHistory: true,
                             historyMarker: marker
                         ) {
                             guard generation == loadGeneration else { return }
                             if sendTasks[bot.id] != nil { return }
+                            if !anchored {
+                                guard event.index == resume.next - 1, event.id == resumeLast else {
+                                    throw BackendError.streamInterrupted
+                                }
+                                anchored = true
+                                continue
+                            }
                             historyRemaining = event.historyRemaining
                             if let index = event.index { followCursor = (sessionId, index + 1, event.id) }
                             noteTurnId(event, sessionId: sessionId)
@@ -2831,7 +2850,9 @@ final class AppModel: ObservableObject {
 
     func delete(botId: String) {
         transcriptCache[botId] = nil
-        removeSnapshot(botId)
+        // Gone from disk now; blocked for good once the store drops the bot,
+        // so a delete the server refuses leaves the chat able to save again.
+        removeSnapshot(botId, blockWrites: false)
         sendErrors[botId] = nil
         unsentDrafts[botId] = nil
         forgetTurnIds(of: store?.bots.first { $0.id == botId }?.sessionId)
@@ -3030,7 +3051,12 @@ final class AppModel: ObservableObject {
         localTurnIds[snapshot.sessionId] = Set(snapshot.localTurnIds)
         rebuildTranscript()
         restoredFromCache = !transcript.isEmpty
+        restoredFromSnapshot = restoredFromCache
         resumePoint = (snapshot.sessionId, snapshot.cursor, snapshot.lastEventId)
+        // Kept as this chat's stash: if it is left before it comes to rest
+        // again (a send, a turn, a reload in flight), coming back still has a
+        // point to read on from instead of a replay from zero.
+        stashSnapshots[snapshot.botId] = snapshot
     }
 
     /// The events a turn or a session comes to rest on.
@@ -3069,6 +3095,7 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard let self, !Task.isCancelled, let snapshot = self.openChatSnapshot() else { return }
             self.snapshotTimer = nil
+            self.stashSnapshots[snapshot.botId] = snapshot
             self.writeSnapshot(snapshot)
         }
     }
@@ -3142,13 +3169,15 @@ final class AppModel: ObservableObject {
         let client = client
         let store = snapshots
         let outcome = await Task.detached(priority: .utility) { () -> PrewarmOutcome in
-            // Read off the main thread: a snapshot or a note that this
-            // session cannot have one means there is nothing to build.
-            if store.load(botId: botId, sessionId: sessionId) != nil
-                || store.isMarkedUnbuildable(botId: botId, sessionId: sessionId) {
+            // Read off the main thread: a snapshot, or a note that this
+            // session could not have one and has not moved since, means there
+            // is nothing to build.
+            if store.load(botId: botId, sessionId: sessionId) != nil { return .skipped }
+            guard let marker = await client.newestEventId(sessionId: sessionId) else { return .unread }
+            if store.isMarkedUnbuildable(botId: botId, sessionId: sessionId, newestEventId: marker) {
                 return .skipped
             }
-            return await Self.buildSnapshot(client: client, botId: botId, sessionId: sessionId)
+            return await Self.buildSnapshot(client: client, botId: botId, sessionId: sessionId, marker: marker)
         }.value
         // Checked again: the owner may have opened, sent to or deleted this
         // chat while it was read, and then the open owns its snapshot. A
@@ -3158,12 +3187,12 @@ final class AppModel: ObservableObject {
         switch outcome {
         case .built(let snapshot):
             writeSnapshot(snapshot)
-        case .unbuildable:
+        case .unbuildable(let marker):
             let previous = snapshotWrite
             snapshotWrite = Task.detached(priority: .utility) {
                 await previous?.value
                 do {
-                    try store.markUnbuildable(botId: botId, sessionId: sessionId)
+                    try store.markUnbuildable(botId: botId, sessionId: sessionId, newestEventId: marker)
                 } catch {
                     snapshotLog.error("could not note an unbuildable chat: \(String(describing: error), privacy: .public)")
                 }
@@ -3185,7 +3214,7 @@ final class AppModel: ObservableObject {
         case built(ChatSnapshot)
         /// Read to its newest event and it ends on a turn still open, or on
         /// more than one session's rows: no snapshot can be taken at rest.
-        case unbuildable
+        case unbuildable(newestEventId: String)
         /// Already has one, or is known not to.
         case skipped
         /// Could not be read this time; tried again next launch.
@@ -3198,10 +3227,10 @@ final class AppModel: ObservableObject {
     private nonisolated static func buildSnapshot(
         client: BackendClient,
         botId: String,
-        sessionId: String
+        sessionId: String,
+        marker: String
     ) async -> PrewarmOutcome {
-        guard let state = try? await client.threadState(botId: botId),
-              let marker = await client.newestEventId(sessionId: sessionId) else { return .unread }
+        guard let state = try? await client.threadState(botId: botId) else { return .unread }
         let durable = ReplayGate.Durable(events: state.events)
         var atLiveTail = durable.startsLive
         var projection = StreamProjection()
@@ -3222,7 +3251,7 @@ final class AppModel: ObservableObject {
             return .unread
         }
         guard cursor > 0 else { return .unread }
-        guard !projection.pending, projection.soleSession == sessionId else { return .unbuildable }
+        guard !projection.pending, projection.soleSession == sessionId else { return .unbuildable(newestEventId: marker) }
         return .built(ChatSnapshot(
             botId: botId,
             sessionId: sessionId,
@@ -3279,6 +3308,7 @@ final class AppModel: ObservableObject {
         pendingPublish = nil
         transcriptReady = false
         restoredFromCache = false
+        restoredFromSnapshot = false
         loadSucceeded = false
         // A switch to a shorter chat also shrinks the hidden count, and the
         // re-anchor must not chase a block of the chat just left.

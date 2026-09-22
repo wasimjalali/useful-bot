@@ -14,9 +14,10 @@ import Foundation
 /// running, and a load that finished. A turn in flight is still read from
 /// zero, which is the only read that sees where it began.
 public struct ChatSnapshot: Codable, Equatable, Sendable {
-    /// Bumped whenever the stored shape or meaning of `StreamProjection`
-    /// changes. A snapshot of another version is never restored; the chat is
-    /// replayed from zero instead and written again.
+    /// Bumped whenever the stored shape or meaning of `StreamProjection`, or
+    /// of any type stored inside it, changes. A snapshot of another version is
+    /// never restored; the chat is replayed from zero instead and written
+    /// again. `ChatSnapshotTests` pins the stored names to this number.
     public static let formatVersion = 1
 
     public var version: Int
@@ -152,16 +153,17 @@ public struct ChatSnapshotStore: Sendable {
         try? FileManager.default.removeItem(at: unbuildableURL(botId: botId))
     }
 
-    /// Notes that this session ends on a turn still open, so no snapshot of it
-    /// can be taken at rest and the prewarm need not read it again each launch.
-    /// A new session for the bot does not match it and is tried afresh.
-    public func markUnbuildable(botId: String, sessionId: String) throws {
-        try save(Data(sessionId.utf8), to: unbuildableURL(botId: botId))
+    /// Notes that this session, read up to `newestEventId`, ends on a turn
+    /// still open, so no snapshot of it can be taken at rest. The prewarm
+    /// skips it while the session's newest event is still that one; once the
+    /// session moves on (the turn ended, a new one ran) it is tried again.
+    public func markUnbuildable(botId: String, sessionId: String, newestEventId: String) throws {
+        try save(Data("\(sessionId)\n\(newestEventId)".utf8), to: unbuildableURL(botId: botId))
     }
 
-    public func isMarkedUnbuildable(botId: String, sessionId: String) -> Bool {
+    public func isMarkedUnbuildable(botId: String, sessionId: String, newestEventId: String) -> Bool {
         guard let data = try? Data(contentsOf: unbuildableURL(botId: botId)) else { return false }
-        return String(decoding: data, as: UTF8.self) == sessionId
+        return String(decoding: data, as: UTF8.self) == "\(sessionId)\n\(newestEventId)"
     }
 
     /// Removes every file that belongs to no bot in `botIds`: chats deleted
