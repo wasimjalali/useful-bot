@@ -46,6 +46,10 @@ struct ChatScreen: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var showFiles = false
     @State private var pinnedToBottom = true
+    @State private var asksExpanded = false
+    @State private var transcriptHeight: CGFloat = 0
+    @State private var repinTask: Task<Void, Never>?
+    @State private var repinBudget = 24
 
     private var bot: ShellBot? { phone.bot(botId) }
     private var chat: PhoneModel.OpenChat? { phone.chats[botId] }
@@ -56,7 +60,33 @@ struct ChatScreen: View {
                 readinessStrip(readiness)
             }
             transcript
-            ForEach(phone.proposals(for: botId)) { proposal in
+            let approvals = phone.approvals(for: botId)
+            let questions = phone.questions(for: botId)
+            let proposals = phone.proposals(for: botId)
+            // Docked asks expand one at a time; the rest fold behind a
+            // "N more waiting" row that opens the stack (design spec §chat).
+            // Approvals and questions outrank proposals — they gate a running
+            // turn, so the expanded card must never be an open proposal.
+            let shownApprovals = asksExpanded ? approvals.count : min(1, approvals.count)
+            let shownQuestions = asksExpanded ? questions.count : min(questions.count, max(0, 1 - approvals.count))
+            let shownProposals = asksExpanded ? proposals.count : min(proposals.count, max(0, 1 - approvals.count - questions.count))
+            let asksWaiting = approvals.count + questions.count + proposals.count
+                - shownApprovals - shownQuestions - shownProposals
+            ForEach(approvals.prefix(shownApprovals)) { card in
+                ApprovalCardView(card: card, blockedReason: writesBlocked) { approve in
+                    Task { await phone.decide(card, approve: approve) }
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
+            ForEach(questions.prefix(shownQuestions)) { question in
+                QuestionCardView(question: question, blockedReason: writesBlocked) { option in
+                    phone.answer(question, option: option, readiness: coordinator.readiness)
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
+            ForEach(proposals.prefix(shownProposals)) { proposal in
                 ProposalCardView(proposal: proposal, blockedReason: writesBlocked) { confirmed in
                     Task {
                         if confirmed { await phone.confirmProposal(proposal) }
@@ -66,19 +96,16 @@ struct ChatScreen: View {
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
                 .padding(.bottom, 8)
             }
-            ForEach(phone.questions(for: botId)) { question in
-                QuestionCardView(question: question, blockedReason: writesBlocked) { option in
-                    phone.answer(question, option: option, readiness: coordinator.readiness)
+            if asksWaiting > 0 {
+                Button {
+                    asksExpanded = true
+                } label: {
+                    Text("\(asksWaiting) more waiting")
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                .padding(.bottom, 8)
-            }
-            ForEach(phone.approvals(for: botId)) { card in
-                ApprovalCardView(card: card, blockedReason: writesBlocked) { approve in
-                    Task { await phone.decide(card, approve: approve) }
-                }
-                .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                .padding(.bottom, 8)
             }
             if phone.conflictNote {
                 Text("Your Mac moved this conversation")
@@ -144,36 +171,101 @@ struct ChatScreen: View {
 
     private var transcript: some View {
         let window = phone.rows(for: botId)
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if window.hidden > 0 {
-                    Button("Show earlier") { phone.showEarlier(botId) }
-                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .frame(maxWidth: .infinity, minHeight: 44)
+        return ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if window.hidden > 0 {
+                        Button("Show earlier") { phone.showEarlier(botId) }
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    if chat?.updating == true && window.blocks.isEmpty {
+                        skeleton
+                    } else if window.blocks.isEmpty && chat?.updating != true {
+                        empty
+                    }
+                    ForEach(window.blocks) { block in
+                        blockView(block)
+                    }
+                    if chat?.showWorking == true, let bot {
+                        workingRow(bot)
+                    }
+                    if let failed = chat?.failedText {
+                        failedCard(failed)
+                    }
+                    Color.clear
+                        .frame(height: 1)
+                        .id("transcript-bottom")
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BottomSentinelY.self,
+                                    value: geo.frame(in: .named("transcript")).minY)
+                            }
+                        )
                 }
-                if chat?.updating == true && window.blocks.isEmpty {
-                    skeleton
-                } else if window.blocks.isEmpty && chat?.updating != true {
-                    empty
-                }
-                ForEach(window.blocks) { block in
-                    blockView(block)
-                }
-                if chat?.showWorking == true, let bot {
-                    workingRow(bot)
-                }
-                if let failed = chat?.failedText {
-                    failedCard(failed)
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.top, 12)
+            }
+            .accessibilityIdentifier("transcript")
+            .coordinateSpace(name: "transcript")
+            .defaultScrollAnchor(.bottom)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                transcriptHeight = $0
+            }
+            .background(ScrollDragProbe { dragging in
+                if dragging { pinnedToBottom = false }
+            })
+            // `defaultScrollAnchor(.bottom)` holds the bottom only once
+            // content exists; a transcript that lands after the first
+            // layout (cold open, durable fetch) leaves the offset at the
+            // top. When the window first fills, jump to the newest block —
+            // the same pin the macOS transcript keeps via ScrollPinnedTracker.
+            .onChange(of: window.blocks.isEmpty) { was, now in
+                guard was, !now, pinnedToBottom else { return }
+                pinToBottom(proxy)
+                // The lazy stack measures rows during the first scroll, so
+                // the first landing can sit short of the tail; re-apply
+                // once heights have settled.
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard pinnedToBottom else { return }
+                    pinToBottom(proxy)
                 }
             }
-            .padding(.horizontal, DesignTokens.Space.phoneGutter)
-            .padding(.top, 12)
+            // The lazy stack keeps re-measuring rows above the fold for
+            // seconds after the first pin, which drags the tail back out
+            // of view on a long chat. Whenever the sentinel sinks below
+            // the viewport while pinned, schedule one delayed re-pin —
+            // debounced so a burst of layout passes collapses into a single
+            // scroll, and capped so a measurement bug can never spin the
+            // main thread. The counter re-arms whenever the tail is home.
+            .onPreferenceChange(BottomSentinelY.self) { minY in
+                guard pinnedToBottom, !window.blocks.isEmpty,
+                      transcriptHeight > 0 else { return }
+                if minY <= transcriptHeight + 2 {
+                    repinBudget = 96
+                    return
+                }
+                guard repinBudget > 0 else { return }
+                repinBudget -= 1
+                repinTask?.cancel()
+                repinTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled, pinnedToBottom else { return }
+                    pinToBottom(proxy)
+                }
+            }
         }
-        .defaultScrollAnchor(.bottom)
-        .background(ScrollDragProbe { dragging in
-            if dragging { pinnedToBottom = false }
-        })
+    }
+
+    private func pinToBottom(_ proxy: ScrollViewProxy) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo("transcript-bottom", anchor: .bottom)
+        }
     }
 
     @ViewBuilder
@@ -442,6 +534,11 @@ struct ChatScreen: View {
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
             }
+            if let actionError = phone.actionError {
+                Text(actionError)
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
         }
         .padding(.horizontal, DesignTokens.Space.phoneGutter)
         .padding(.bottom, 8)
@@ -495,6 +592,7 @@ struct ChatScreen: View {
                     .padding(.horizontal, 12)
                     .frame(minHeight: 52)
                 }
+                .contentShape(Rectangle())
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(member.name), group member")
             }
@@ -569,6 +667,7 @@ struct ChatScreen: View {
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
                     }
+                    BotRoutinesSection(bot: bot)
                     Section("Past conversations") {
                         let recents = (phone.shell?.recents ?? []).filter { $0.botId == bot.id }.prefix(5)
                         if recents.isEmpty {
@@ -857,4 +956,9 @@ private struct ScrollDragProbe: UIViewRepresentable {
             return nil
         }
     }
+}
+
+private struct BottomSentinelY: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

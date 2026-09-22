@@ -226,7 +226,7 @@ test("completion maps model to alias", async () => {
 
 test("opencode-go forwards the model selected in the composer and reports it", async () => {
   let forwarded: Record<string, unknown> = {};
-  await withRouter(async (base, tokens) => {
+  await withModelsCache(() => withRouter(async (base, tokens) => {
     writeFileSync(process.env.UB_PROVIDERS_PATH!, JSON.stringify({
       schemaVersion: 1,
       activeProviderId: "opencode-go",
@@ -261,7 +261,7 @@ test("opencode-go forwards the model selected in the composer and reports it", a
         usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
       }));
     });
-  });
+  }));
 });
 
 function withModelsCache(fn: (path: string) => Promise<void>): Promise<void> {

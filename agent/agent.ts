@@ -68,6 +68,20 @@ async function fixtureFetch(input: RequestInfo | URL, init?: RequestInit): Promi
   const signal = init?.signal ?? undefined;
 
   if (!hasToolResult(messages)) {
+    // UB_S2_QUESTION=1 makes the fixture ask instead of plant: an
+    // ask_question call runs through eve's request-input handling, so the
+    // phone sees a real input.requested owner-question card.
+    const toolName = process.env.UB_S2_QUESTION === "1" ? "ask_question" : "plant_read";
+    const toolArgs = toolName === "ask_question"
+      ? JSON.stringify({
+          prompt: "Which route do you want?",
+          options: [
+            { id: "coastal", label: "Coastal route", description: "Longer, follows the shore" },
+            { id: "inland", label: "Inland route", description: "Faster, through the pass" },
+          ],
+          allowFreeform: true,
+        })
+      : "{}";
     const toolCall = {
       id: "s2cmpl_tool",
       object: stream ? "chat.completion.chunk" : "chat.completion",
@@ -84,7 +98,7 @@ async function fixtureFetch(input: RequestInfo | URL, init?: RequestInit): Promi
                       index: 0,
                       id: "call_plant",
                       type: "function",
-                      function: { name: "plant_read", arguments: "{}" },
+                      function: { name: toolName, arguments: toolArgs },
                     },
                   ],
                 },
@@ -96,7 +110,7 @@ async function fixtureFetch(input: RequestInfo | URL, init?: RequestInit): Promi
                     {
                       id: "call_plant",
                       type: "function",
-                      function: { name: "plant_read", arguments: "{}" },
+                      function: { name: toolName, arguments: toolArgs },
                     },
                   ],
                 },

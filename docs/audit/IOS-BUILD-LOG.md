@@ -1472,3 +1472,98 @@ design each returned no remaining critical or high findings after the fixes
 on this branch. Shell-store tests passed, including `openRecent` keeping the
 other client's selection. The macOS package builds. Simulator, screenshots,
 biometrics, and long-chat numbers stay in the closing PR.
+
+### Simulator pass environment record (cloud VM, 2026-09-21)
+
+- Xcode 26.6 (17F113). `xcodebuild -downloadPlatform iOS` was required
+  before the simulator destinations enumerated (iOS 26.5 platform 23F77,
+  8.52 GB); `-runFirstLaunch` alone did not register the platform.
+- Runtimes present: iOS 26.5 (23F73, plus downloaded 23F77) and iOS 27.0
+  (24A434).
+- Node v24.20.0 at `/usr/local/bin/node` (constraint ≥24.11.1 <25),
+  npm 10.8.3. `package-lock.json` sha256 unchanged through `npm ci`
+  (`e82e2b98c058d061497eb135afcbbc8e789630404e38c47c4198db9ddd737356`).
+- macOS 26.5.2 (25F84) arm64.
+- Devices used: iPhone 17 iOS 26.5 (D0B64A8A-D5F1-4668-8FFC-A86B400AF527,
+  primary), iPhone 12 mini iOS 26.5 (D2E21043-1DDB-41B4-AD7A-80C35E21B089)
+  and a fresh iPhone 13 mini (7D33930B-7271-4729-8365-4BB13CBC6B16) for the
+  narrow-width legs — both mini device types render a 1124-px framebuffer
+  under iOS 26.5, so the narrow shots are recorded at 375 pt, the narrowest
+  width the runtime produced; iPhone 17 iOS 27.0
+  (8E780854-5816-4435-AD8F-8098DF847EB5), iPad Pro 11-inch (M5)
+  (ACBFDBB9-8A81-42D3-B391-A6A1A578D5D1) for the split legs.
+- `simctl biometric` does not exist on Xcode 26.6. Enrollment and
+  match/non-match are driven through the sim-side BiometricKit bridge:
+  `defaults write com.apple.BiometricKit enrolled true` +
+  `pearlIDEnrolled true`, `notifyutil -s com.apple.BiometricKit.enrollmentChanged`,
+  then `notifyutil -p com.apple.BiometricKit_Sim.pearl.match|.nomatch` at the
+  prompt. Verified against the Simulator.app binary's notification names.
+
+### Simulator pass results (cloud VM, 2026-09-21/22, head under ios/pr-3)
+
+Gate: `scripts/ios-surfaces-gate.sh` drives pairing, seeding, the fixture
+eve, the mcp-stub/probe servers, and one xcodebuild UI leg per check.
+
+All legs green on the final build: BotsList (light/dark), Chat
+(light/dark), ChatAccessibility (XXXL), PerfColdLaunch, PerfChatOpenCached,
+PerfChatOpenColdReplay, PerfScroll, LongChatPerf, TwoClientPreserveSelection
+(plus a host-side `selectedBotId` stability read), ApprovalPending / Deny /
+Approve / BioFailure / BioCancel / Approving / Resolved / Changed / Expired,
+Widget (nav-probe listener stayed at 0 hits), AttachPhoto, TextFileCap,
+Settings, RoutineCreate, ProposalCard, ProposalConfirm, SafariSheet
+(light+dark), ReduceMotion, OwnerQuestion (light+dark), LiveSend. Repeated
+on iPhone mini (375 pt) and iPad Pro 11 (834 pt, split) for the shot rows.
+
+Measured numbers live in `docs/audit/PERFORMANCE-IOS.md`; shots in
+`docs/audit/ios-shots/PR-3` … `PR-7` at 1x. The Devices QR shot is
+`devices-qr-masked.png` — the token-bearing raw capture is not committed.
+
+#### App fixes the pass surfaced
+
+- Composer was not keyboard-avoiding: the hardware keyboard occluded Send on
+  the simulator, so a live send could never be tapped. Fixed in
+  `ChatScreen`/`PhoneModel`.
+- Docked ask cards could stack unbounded and crush the transcript to zero
+  height. `ChatScreen` now shows one expanded card plus a collapsed "N more
+  waiting" row per the docked-asks law, with `repinBudget` raised so a long
+  tail still pins.
+- Transcript scroll view carries `.accessibilityIdentifier("transcript")` so
+  tests target it instead of `scrollViews.firstMatch` (the roster's own list
+  was eating the query).
+
+#### Harness/infra fixes and surprises
+
+- The owner-question leg stamps a throwaway eve session onto `bot-test` in
+  `shell.json`; the stamp persisted across legs and diverted later chat and
+  send legs into the wrong session. The seed script now saves the prior id
+  (`/tmp/ub-question-prev`) and the gate restores it right after the
+  question legs.
+- `xcodebuild` stalls ~10 min per failing leg collecting `simctl diagnose`
+  output; killing that subprocess frees the leg.
+- The installed web service ran `next dev` for this pass (per
+  `scripts/web-mode.mjs`, sources edited after the last `build:app`); noted
+  in PERFORMANCE-IOS.md, none of the native timings depend on it.
+- Keychain ACL prompt on the Mac's "Show pairing QR" needed the VM's login
+  password; the QR itself is masked out of the published shot.
+- Docked-ask accumulation: repeated seeds left ~25 pending proposals plus
+  the lapsed `apr_exp` card on bot-test, and the dock's priority order
+  (approvals > questions > proposals) meant an Expired card held the single
+  expanded slot so the connect card never expanded. Harness fix: a
+  `clear-asks` ctl (empties the approvals store + dismisses pending
+  proposals) now runs before each Safari-sheet leg — the same crowding rule
+  the gate already applies to approval seeds.
+- Safari-sheet ceiling: `SFSafariViewController` only presents when the Mac
+  returns `redirectUrl`. connectApp goes through Composio
+  (`authorizeConnector` → `connectors_no_key` without an API key) and
+  connectServer OAuth discovery is pinned to public HTTPS
+  (`assertPublicHttpsUrl` refuses loopback metadata). Neither can be
+  satisfied on this stack, so no sheet can present here. The legs instead
+  assert the gated contract — the biomatch+Confirm path runs and a refused
+  confirm must leave the card pending, never settle silently — and the
+  `safari-sheet-*.png` shots capture that end state (card up, "Connectors
+  No Key" status visible). Owner re-check with a real key goes on the
+  checklist.
+
+#### Review rounds (SWE-2 three-role loop)
+
+Pending — appended as each round lands.

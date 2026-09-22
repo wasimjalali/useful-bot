@@ -86,6 +86,24 @@ Reverse order only: `tailscale serve reset` (remote exposure off first) →
 code and restart services. Never revert code while Serve is still
 forwarding.
 
+## 5. Safari sheet on a live connectors key (PR-3–8 simulator pass — recorded
+gated, owner-run)
+
+The cloud VM has no Composio key, and connectServer OAuth discovery is
+pinned to public HTTPS, so `SFSafariViewController` could not present during
+the pass (see IOS-BUILD-LOG "Safari-sheet ceiling"). The legs verified the
+gated contract instead: biomatch + Confirm runs, a refused connect leaves
+the card pending rather than settling silently.
+
+- With `COMPOSIO_API_KEY` (or a connectors key in Settings) set on the Mac:
+  seed or trigger a connectApp proposal, open the bot's chat on the phone,
+  Face ID + Confirm. Expected: a Safari sheet presents the Composio
+  authorize URL; cancelling it leaves the card waiting, completing it
+  connects the app.
+- Alternatively seed a connectServer card whose `authKind` is `oauth`
+  against an OAuth-capable public MCP URL: Confirm must open the
+  authorization server's consent page in the sheet.
+
 ---
 
 ## Record
@@ -96,3 +114,4 @@ forwarding.
 | Real-Serve check | 2 | ☐ | |
 | Install to iPhone | 2 | ☐ | |
 | Rollback order | 2 | ☐ | |
+| Safari sheet (live key) | 3 | ☐ | |

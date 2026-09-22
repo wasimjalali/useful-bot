@@ -35,7 +35,15 @@ fi
 # "Mach error -308" before the first test line.
 sim_udid() {
   if [ -n "$SIM_ID" ]; then printf '%s' "$SIM_ID"; return; fi
-  xcrun simctl list devices available -j | /usr/bin/python3 - "${SIM_NAME:-iPhone 17}" <<'PY'
+  local out
+  # CoreSimulator occasionally answers an empty body right after a shutdown;
+  # retry a few times rather than die on the transient.
+  for _ in 1 2 3 4 5; do
+    out=$(xcrun simctl list devices available -j 2>/dev/null)
+    [ -n "$out" ] && break
+    sleep 2
+  done
+  printf '%s' "$out" | /usr/bin/python3 -c '
 import json, sys
 name = sys.argv[1]
 for runtime, devs in json.load(sys.stdin)["devices"].items():
@@ -45,7 +53,7 @@ for runtime, devs in json.load(sys.stdin)["devices"].items():
         if d["name"] == name:
             print(d["udid"]); sys.exit(0)
 sys.exit("no iOS sim named %r" % name)
-PY
+' "${SIM_NAME:-iPhone 17}"
 }
 
 disable_password_autofill() {
@@ -114,6 +122,13 @@ payload() {
 leg() {
   local test_name="$1"
   local class="${2:-PairingFlowUITests}"
+  # Per-leg resume: once inside the block containing GATE_FROM, skip legs
+  # until the named one, then clear the flag and run the rest.
+  if [ -n "$GATE_SKIP" ] && [ "$test_name" != "$GATE_FROM" ]; then
+    echo "--- skip $class/$test_name"
+    return 0
+  fi
+  GATE_SKIP=""
   echo "--- leg $class/$test_name"
   "$XCB" \
     -project ios/UsefulBot.xcodeproj -scheme UsefulBot \
@@ -211,8 +226,11 @@ stop_web() {
 }
 
 start_web() {
+  # Launch through service.mjs, not bare `next dev`: the proxy signs eve
+  # calls with UB_CHANNEL_JWT, which only the service wrapper injects from
+  # the Keychain. web:dev leaves it unset and every eve route 401s.
   (cd "$ROOT" && env $UB_ENV UB_ROUTER_CONFIG="${UB_ROUTER_CONFIG:-$HOME/.useful-bot/config.json}" \
-    nohup npm run web:dev >/tmp/ub-web.log 2>&1 &)
+    nohup "$NODE" scripts/service.mjs web >/tmp/ub-web.log 2>&1 &)
   for _ in $(seq 1 90); do
     lsof -ti tcp:4320 -sTCP:LISTEN >/dev/null 2>&1 && break
     sleep 1
@@ -251,6 +269,39 @@ start_eve() {
   EVE_KILLED=""
 }
 
+# GATE_FROM=<test name> resumes an aborted run at that leg instead of
+# replaying legs that already passed. The precondition stays "paired, live
+# credential, payload file + secure watcher up" — the flips inside earlier
+# blocks (revoke/rotate) must not re-run against a live pairing.
+GATE_FROM="${GATE_FROM:-}"
+GATE_SKIP="${GATE_FROM:+1}"
+checkpoint() {
+  # checkpoint <block name>: false while a named resume point is still ahead.
+  # GATE_FROM may name a block (testA_PairAndSessionLifecycle, testBotsLoading,
+  # testOfflineBanner, testConnectingBothAppearances) or any leg inside one of
+  # the three later blocks — the block containing it opens and leg() skips
+  # the legs before it. Blocks whose legs are fully skipped must not run
+  # their inline credential flips (revoke/rotate), which is why the whole
+  # block is gated.
+  [ -z "$GATE_SKIP" ] && return 0
+  if [ "$1" = "$GATE_FROM" ]; then GATE_SKIP=""; return 0; fi
+  case "$1" in
+    testBotsLoading)
+      case " $GATE_FROM " in
+        *" testBotsEmpty "*|*" testBotsLoadError "*|*" testBotsLoadErrorAccessibility "*|*" testExpiryBanner "*|*" testJourneyLight "*|*" testJourneyDark "*|*" testUnpairConfirm "*|*" testJourneyAccessibilityLight "*|*" testJourneyAccessibilityDark "*) return 0;;
+      esac;;
+    testOfflineBanner)
+      case " $GATE_FROM " in
+        *" testMacUnreachableBanner "*|*" testSignedOutStates "*|*" testResignIn "*|*" testRuntimeDownBanner "*) return 0;;
+      esac;;
+    testConnectingBothAppearances)
+      case " $GATE_FROM " in
+        *" testConnectFailedBothAppearances "*|*" testOfflinePairing "*|*" testPairingLight "*|*" testPairingDark "*|*" testPairingAccessibilityLight "*|*" testPairingAccessibilityDark "*|*" testPairingCameraDeniedLight "*) return 0;;
+      esac;;
+  esac
+  return 1
+}
+
 # The enrolled credential is the fixture: pair if nothing is live yet.
 if ! payload >/dev/null 2>&1; then
   echo "no live phone credential — enrolling (--pair-phone)"
@@ -260,6 +311,7 @@ fi
 # Leg A: pair, sign out, sign in — against the live credential.
 payload > "$PAIR_FILE"
 start_secure_watcher
+if checkpoint testA_PairAndSessionLifecycle; then
 leg testA_PairAndSessionLifecycle
 
 # The 600 ms "Connected to <name>" success line needs UB_HOLD_CONNECTED to
@@ -283,9 +335,11 @@ payload > "$PAIR_FILE"
 leg testC_RePairAfterRotation
 wait_banked paired
 leg testRepairedDark ShotsUITests
+fi
 
 # Loading/empty list states: env seams hold or empty the roster fetch; the
 # app stays paired underneath either way.
+if checkpoint testBotsLoading; then
 leg testBotsLoading ShotsUITests
 leg testBotsEmpty ShotsUITests
 leg testBotsLoadError ShotsUITests
@@ -307,12 +361,14 @@ leg testJourneyAccessibilityLight ShotsUITests
 wait_banked paired
 leg testJourneyAccessibilityDark ShotsUITests
 wait_banked paired
+fi
 
 # Readiness banners: the paired app is left on the sim from the journeys.
 # No network first (UB_OFFLINE pins the monitor), then web down for "Your
 # Mac is unreachable" — and inside that window, the signed-out error and
 # offline shots (sign-out is offline-pure by spec). Resign before eve-down
 # so the runtime-down leg still launches a paired app.
+if checkpoint testOfflineBanner; then
 leg testOfflineBanner ShotsUITests
 stop_web
 leg testMacUnreachableBanner ShotsUITests
@@ -324,7 +380,9 @@ wait_banked paired
 stop_eve
 leg testRuntimeDownBanner ShotsUITests
 start_eve
+fi
 
+if checkpoint testConnectingBothAppearances; then
 # Connecting / failed states: the stall stub holds the exchange open, then
 # a dead loopback port fails it. No live credential needed.
 start_stub
@@ -355,6 +413,7 @@ leg testPairingCameraDeniedAccessibilityDark PairingUITests
 leg testManualReadyHold PairingUITests
 leg testManualReadyHoldAccessibility PairingUITests
 leg testManualFailedHold PairingUITests
+fi
 
 rm -f "$PAIR_FILE"
 

@@ -95,7 +95,17 @@ final class PhoneModel {
         pairing = coordinator.store
         if let origin = coordinator.store.pairedOrigin {
             cache = PhoneCache(origin: origin)
-            if shell == nil, let cached = cache?.loadShell() {
+            // The shell seams are cold-launch states: UB_HANG_SHELL hangs the
+            // roster fetch to hold the skeleton, UB_EMPTY_SHELL/UB_FAIL_SHELL
+            // force an empty or failed roster — the disk cache must never
+            // warm past any of them.
+            let env = ProcessInfo.processInfo.environment
+            let shellSeam = env["UB_HANG_SHELL"] == "1"
+                || env["UB_EMPTY_SHELL"] == "1"
+                || env["UB_FAIL_SHELL"] == "1"
+            if shell == nil,
+               !shellSeam,
+               let cached = cache?.loadShell() {
                 shell = cached
                 loaded = true
             }
@@ -105,6 +115,12 @@ final class PhoneModel {
         }
         if let id = selectedBotId, bot(id) == nil, loaded, shell != nil {
             selectedBotId = nil
+        }
+        // A relaunch restores straight into the last chat without a row
+        // tap, so open() never ran; fetch the durable transcript here or
+        // the restored screen sits blank.
+        if let id = selectedBotId, chats[id] == nil {
+            Task { await open(id) }
         }
     }
 
@@ -156,6 +172,12 @@ final class PhoneModel {
         }
         guard let client else { return }
         setApproval(card.id, .approving)
+        // UI-test seam: slow the decide so the "Approving" phase is
+        // capturable. Never set outside the harness.
+        if let ms = ProcessInfo.processInfo.environment["UB_DECIDE_DELAY_MS"],
+           let delay = Double(ms), delay > 0 {
+            try? await Task.sleep(for: .milliseconds(delay))
+        }
         do {
             try await client.decideApproval(
                 id: card.item.id,
@@ -234,6 +256,7 @@ final class PhoneModel {
         return nil
     }
 
+    private var consumedTextFileSeam = false
     private(set) var sending = false
 
     func send(_ text: String, readiness: MacReadiness?) {
@@ -646,10 +669,20 @@ final class PhoneModel {
                 merged.append(ApprovalCard(item: item, phase: expired ? .expired : .pending))
             }
         }
-        for old in approvals where !merged.contains(where: { $0.id == old.id }) {
+        for var old in approvals where !merged.contains(where: { $0.id == old.id }) {
             switch old.phase {
-            case .approved, .denied, .resolved: merged.append(old)
-            default: break
+            case .approved, .denied, .resolved:
+                merged.append(old)
+            case .pending, .changed, .approving:
+                // The pending list drops a record the moment it is decided
+                // elsewhere or expires, so a vanished card is one of the
+                // two; its own expiry timestamp is the only way to tell.
+                let lapsed = old.item.expiresAt > 0
+                    && Date().timeIntervalSince1970 * 1000 >= old.item.expiresAt
+                old.phase = lapsed ? .expired : .resolved
+                merged.append(old)
+            case .expired:
+                merged.append(old)
             }
         }
         if merged != approvals { approvals = merged }
@@ -712,6 +745,14 @@ final class PhoneModel {
                 chats[id] = chat
             }
             conflictNote = false
+            // UI-test seam: attach the text file UB_TEXT_FILE names once per
+            // launch, standing in for the Files picker the simulator cannot
+            // drive. Never set outside the harness.
+            if !consumedTextFileSeam,
+               let path = ProcessInfo.processInfo.environment["UB_TEXT_FILE"] {
+                consumedTextFileSeam = true
+                await addTextFile(url: URL(fileURLWithPath: path))
+            }
         } catch {
             guard current(generation) else { return }
             chat = chats[id] ?? chat

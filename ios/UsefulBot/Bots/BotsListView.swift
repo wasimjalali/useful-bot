@@ -81,6 +81,7 @@ struct BotsListView: View {
                         }
                         .frame(minHeight: 60)
                     }
+                    .contentShape(Rectangle())
                     .buttonStyle(.plain)
                     .listRowBackground(Color.clear)
                 }
@@ -142,50 +143,50 @@ struct BotsListView: View {
                 // clips the rest; fixedSize keeps the title past the badge.
                 .fixedSize()
             }
+            // iOS 26 collapses a third topBarTrailing item into the overflow
+            // menu; one HStack keeps Settings, New, and Devices visible.
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    PhoneSettingsView()
-                } label: {
-                    Image(systemName: "person.crop.circle")
-                        .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                        .foregroundStyle(Theme.C.ink)
-                        .frame(minWidth: 44, minHeight: 44)
-                }
-                .accessibilityLabel("Settings")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    if let reason = createsBlocked {
-                        Button(reason) {}
-                            .disabled(true)
+                HStack(spacing: 0) {
+                    NavigationLink {
+                        PhoneSettingsView()
+                    } label: {
+                        Image(systemName: "person.crop.circle")
+                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                            .foregroundStyle(Theme.C.ink)
+                            .frame(minWidth: 44, minHeight: 44)
                     }
-                    Button("New bot") { showCreate = true }
-                        .disabled(createsBlocked != nil)
-                    Button("New group") { showGroup = true }
-                        .disabled(createsBlocked != nil)
-                    Button("New section") { showSection = true }
-                        .disabled(createsBlocked != nil)
-                } label: {
-                    Image(systemName: "plus")
-                        .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                        .foregroundStyle(Theme.C.ink)
-                        .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("Settings")
+                    Menu {
+                        if let reason = createsBlocked {
+                            Button(reason) {}
+                                .disabled(true)
+                        }
+                        Button("New bot") { showCreate = true }
+                            .disabled(createsBlocked != nil)
+                        Button("New group") { showGroup = true }
+                            .disabled(createsBlocked != nil)
+                        Button("New section") { showSection = true }
+                            .disabled(createsBlocked != nil)
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                            .foregroundStyle(Theme.C.ink)
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("New")
+                    .accessibilityHint(createsBlocked ?? "New bot, group, or section")
+                    .ubFocusRing()
+                    Button {
+                        showDevices = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                            .foregroundStyle(Theme.C.ink)
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Devices")
+                    .ubFocusRing()
                 }
-                .accessibilityLabel("New")
-                .accessibilityHint(createsBlocked ?? "New bot, group, or section")
-                .ubFocusRing()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showDevices = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                        .foregroundStyle(Theme.C.ink)
-                        .frame(minWidth: 44, minHeight: 44)
-                }
-                .accessibilityLabel("Devices")
-                .ubFocusRing()
             }
         }
         .task {
@@ -434,6 +435,7 @@ struct BotsListView: View {
             }
             .frame(minHeight: 44)
         }
+        .contentShape(Rectangle())
         .buttonStyle(.plain)
         .disabled(id == nil)
         .listRowBackground(Color.clear)
@@ -471,6 +473,7 @@ struct BotsListView: View {
                 }
             }
         }
+        .contentShape(Rectangle())
         .buttonStyle(.plain)
         .listRowBackground(Color.clear)
         .accessibilityLabel(phone.workingBotIds.contains(bot.id) ? "\(bot.name), working" : bot.name)
@@ -663,7 +666,7 @@ struct BotsListView: View {
                 .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
             }
         }
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("bots-skeleton")
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
