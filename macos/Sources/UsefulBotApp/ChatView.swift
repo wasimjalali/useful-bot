@@ -72,11 +72,13 @@ struct ChatView: View {
                             .id(bot.id)
                     } else if model.transcriptReady {
                         emptyState(bot)
+                    } else {
+                        loadingState
                     }
-                    // While the first load is still in flight the middle of
-                    // the chat shows nothing: the empty copy belongs to a
-                    // chat that is known empty, and flashing it in front of
-                    // a history that arrives a moment later reads as a jump.
+                    // While the first load is still in flight the mascot waves
+                    // in the middle of the chat: the empty copy belongs to a
+                    // chat that is known empty, and flashing it in front of a
+                    // history that arrives a moment later reads as a jump.
                     // Anything the bot needs an answer to docks here, between
                     // the transcript and the composer, so the question sits
                     // where the reply is typed instead of scrolling away.
@@ -552,6 +554,17 @@ struct ChatView: View {
     }
 
     // MARK: - Empty state
+
+    /// The brand wave while the first transcript load is in flight. The empty
+    /// copy is only for a chat known to be empty; before then the mascot marks
+    /// the wait so a cold open never reads as a blank pane.
+    private var loadingState: some View {
+        BrandMotionView(size: 56)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.opacity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Loading chat")
+    }
 
     private func emptyState(_ bot: ShellBot) -> some View {
         VStack(spacing: 8) {
