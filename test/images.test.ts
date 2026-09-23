@@ -23,6 +23,8 @@ import { generateImage } from "../router/src/upstreams/images.ts";
 import { RouterError } from "../router/src/errors.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
 import { IMAGE_BYTES_MAX } from "../shared/images-store.ts";
+import { catalogFor, writeModelsCache } from "../shared/live-models.ts";
+import { hydrateModel, modelIsImageGenerator, snapComposer } from "../shared/models.ts";
 
 // A 1x1 png, the smallest real image the store is asked to keep.
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -137,6 +139,76 @@ test("the public image role lists capable connections only", () => {
   // The fallback pick is the capable connection's first model.
   assert.equal(pub.roles.image.connectionId, "zai:api");
   assert.equal(pub.roles.image.modelId, "glm-image");
+});
+
+test("OpenRouter image models fill the image picker and stay out of the chat lists", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-images-or-"));
+  const cachePath = join(dir, "models-cache.json");
+  const previous = process.env.UB_MODELS_CACHE_PATH;
+  process.env.UB_MODELS_CACHE_PATH = cachePath;
+  try {
+    const row = (id: string, outputs: string[]) => ({ ...hydrateModel("openrouter:api", id), outputs });
+    writeModelsCache({
+      schemaVersion: 3,
+      providers: {
+        "openrouter:api": {
+          fetchedAt: Date.now(),
+          models: [
+            row("black-forest-labs/flux.2-pro", ["image"]),
+            row("google/gemini-3.1-flash-image", ["image", "text"]),
+            row("openai/gpt-5.1", ["text", "image"]),
+            row("openrouter/auto", ["text", "image"]),
+            row("openai/gpt-4.1-mini", ["text"]),
+          ],
+        },
+      },
+    }, cachePath);
+    const store = setActiveConnection(setProviderKey(emptyProviderStore(), "openrouter", "api", "sk-or-12345678"), "openrouter:api");
+    const pub = publicProviders(store, {});
+    // Detected on connect: the role picks OpenRouter with no setup.
+    assert.equal(pub.roles.image.connectionId, "openrouter:api");
+    assert.equal(pub.roles.image.modelId, "google/gemini-3.1-flash-image");
+    assert.deepEqual(pub.roles.image.models.map((m) => m.id), ["google/gemini-3.1-flash-image", "black-forest-labs/flux.2-pro"]);
+    // Chat models that also list image output stay chat models; generators leave the chat lists.
+    const chatIds = pub.roles.default.models.map((m) => m.id);
+    assert.deepEqual(chatIds.sort(), ["openai/gpt-4.1-mini", "openai/gpt-5.1", "openrouter/auto"]);
+    const composer = pub.connections.find((c) => c.id === "openrouter:api");
+    assert.deepEqual(composer?.models.map((m) => m.id).sort(), chatIds);
+    // A stale pick of an image model snaps to a chat model, never to another generator.
+    const snapped = snapComposer("openrouter:api", "OpenRouter", "black-forest-labs/flux.2-pro", null, null, catalogFor("openrouter:api"));
+    assert.ok(chatIds.includes(snapped.modelId));
+    // The router resolves the image role to OpenRouter's /images path.
+    const resolved = resolveUpstream(store, "image", {});
+    assert.equal(resolved.connection.id, "openrouter:api");
+    assert.equal(resolved.mode.images?.path, "images");
+  } finally {
+    if (previous === undefined) delete process.env.UB_MODELS_CACHE_PATH;
+    else process.env.UB_MODELS_CACHE_PATH = previous;
+  }
+});
+
+test("modelIsImageGenerator tells generators from chat models that list image output", () => {
+  assert.equal(modelIsImageGenerator({ id: "recraft/recraft-v4", outputs: ["image"] }), true);
+  assert.equal(modelIsImageGenerator({ id: "openai/gpt-5-image", outputs: ["image", "text"] }), true);
+  assert.equal(modelIsImageGenerator({ id: "openai/gpt-5.1", outputs: ["text", "image"] }), false);
+  assert.equal(modelIsImageGenerator({ id: "openai/gpt-4.1-mini", outputs: ["text"] }), false);
+  assert.equal(modelIsImageGenerator({ id: "gpt-image-1" }), false);
+});
+
+test("generateImage posts to OpenRouter's /images with an aspect ratio", async () => {
+  await withImageStore(async (dir) => {
+    const store = setProviderKey(emptyProviderStore(), "openrouter", "api", "sk-or-12345678");
+    writeProviderStore(store, join(dir, "providers.json"));
+    const seen: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG_B64, media_type: "image/png" }] }), { status: 200 });
+    }) as typeof fetch;
+    const out = await generateImage({ prompt: "a fox", size: "wide", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl });
+    assert.equal(seen[0]?.url, "https://openrouter.ai/api/v1/images");
+    assert.deepEqual(seen[0]?.body, { model: "google/gemini-3.1-flash-image", prompt: "a fox", n: 1, aspect_ratio: "16:9" });
+    assert.equal(out.images[0]?.mime, "image/png");
+  });
 });
 
 test("generateImage posts the OpenAI shape and returns the b64 data", async () => {

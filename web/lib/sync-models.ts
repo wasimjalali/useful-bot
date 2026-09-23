@@ -69,7 +69,8 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
     return;
   }
   const query = mode.modelsQuery;
-  const sig = JSON.stringify([baseUrl, key, headers, query]);
+  const imagesQuery = mode.images?.listQuery;
+  const sig = JSON.stringify([baseUrl, key, headers, query, imagesQuery]);
   const running = inFlight.get(id);
   // An unforced poll never queues behind a running fetch: its request may be
   // older than the one running, and writing after it would put a stale list
@@ -85,6 +86,7 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
     keyHeader: mode.keyHeader,
     headers,
     query,
+    imagesQuery,
     force: force || Boolean(running),
   });
   const job: Promise<unknown> = (running ? running.job.catch(() => undefined).then(run) : run()).finally(() => {

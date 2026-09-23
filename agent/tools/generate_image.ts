@@ -14,7 +14,7 @@ const GENERATE_TIMEOUT_MS = 150_000;
 
 export default defineTool({
   description:
-    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (OpenAI, xAI or Z.ai API key) is connected in Settings; when it is not, say so instead of retrying. The drawing lands in the transcript by itself: answer in text and do not link or embed the file.",
+    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (an OpenAI, xAI, Z.ai or OpenRouter API key) is connected in Settings; when it is not, say so instead of retrying. The drawing lands in the transcript by itself: answer in text and do not link or embed the file.",
   inputSchema: z.object({
     prompt: z.string().min(1).max(4000),
     size: z.enum(["square", "wide", "tall"]).optional(),
@@ -58,7 +58,7 @@ export default defineTool({
       if (code === "provider_incompatible" || code === "upstream_credential_missing" || code === "provider_disconnected") {
         return {
           status: "unavailable",
-          error: "No image-capable provider is connected. The owner can add an OpenAI, xAI or Z.ai API key in Settings, or pick an image model there.",
+          error: "No image-capable provider is connected. The owner can add an OpenAI, xAI, Z.ai or OpenRouter API key in Settings, or pick an image model there.",
         };
       }
       return { status: "failed", error: code };

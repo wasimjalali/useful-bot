@@ -18,7 +18,7 @@ import {
   isEffortId,
   isSpeedId,
   modelChats,
-  modelMakesImages,
+  modelIsImageGenerator,
   snapComposer,
   type ComposerGroup,
   type ComposerPublic,
@@ -741,10 +741,11 @@ function connectionLabel(conn: Pick<Connection, "providerId" | "mode" | "fields"
 
 function modelRows(id: string): Array<{ id: string; label: string }> {
   // A model the catalog names image-only (outputs without "text") cannot
-  // carry a chat turn, so the pickers do not offer it. A model with no
-  // output facts stays: unknown is not a refusal.
+  // carry a chat turn, and an image generator belongs to the image picker,
+  // so the chat pickers offer neither. A model with no output facts stays:
+  // unknown is not a refusal.
   return catalogFor(id)
-    .filter((item) => modelChats(item) !== false)
+    .filter((item) => modelChats(item) !== false && !modelIsImageGenerator(item))
     .map((item) => ({ id: item.id, label: item.label }));
 }
 
@@ -761,13 +762,14 @@ function imageModelRows(conn: Connection): Array<{ id: string; label: string }> 
   if (!mode.images) return [];
   const seen = new Set<string>();
   const rows: Array<{ id: string; label: string }> = [];
+  const live = catalogFor(conn.id);
   for (const id of mode.images?.models ?? []) {
     if (seen.has(id)) continue;
     seen.add(id);
-    rows.push({ id, label: humanizeModelId(id) });
+    rows.push({ id, label: live.find((item) => item.id === id)?.label ?? humanizeModelId(id) });
   }
-  for (const item of catalogFor(conn.id)) {
-    if (seen.has(item.id) || modelMakesImages(item) !== true) continue;
+  for (const item of live) {
+    if (seen.has(item.id) || !modelIsImageGenerator(item)) continue;
     seen.add(item.id);
     rows.push({ id: item.id, label: item.label });
   }

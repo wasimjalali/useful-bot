@@ -20,9 +20,10 @@ import {
 } from "./opencode.ts";
 
 /**
- * OpenAI shaped POST {base}/images/generations. The three modes that carry
- * the `images` flag (openai:api, xai:api, zai:api) all speak it; what differs
- * is the size knob and whether the answer is base64 or a URL to download.
+ * OpenAI shaped POST {base}/images/generations. The modes that carry the
+ * `images` flag (openai:api, xai:api, zai:api, openrouter:api) all speak it;
+ * what differs is the path (OpenRouter serves /images), the size knob and
+ * whether the answer is base64 or a URL to download.
  */
 
 /** The tool asks in shapes; the provider takes the numbers it knows. */
@@ -67,9 +68,10 @@ export interface NormalizedImage {
 
 function sizeParams(providerId: string, model: string, size: ImageSize | undefined): Record<string, unknown> {
   if (!size) return {};
-  // xAI takes aspect_ratio instead of a pixel size (docs.x.ai images
-  // generation); OpenAI and Z.AI both take WxH on `size`.
-  if (providerId === "xai") return { aspect_ratio: SIZE_ASPECT[size] };
+  // xAI and OpenRouter take aspect_ratio instead of a pixel size (docs.x.ai
+  // images generation, openrouter.ai image generation); OpenAI and Z.AI both
+  // take WxH on `size`.
+  if (providerId === "xai" || providerId === "openrouter") return { aspect_ratio: SIZE_ASPECT[size] };
   const family = imageFamily(providerId, model);
   const dims = family ? SIZE_DIMENSIONS[family] : undefined;
   return dims ? { size: dims[size] } : {};
@@ -164,7 +166,7 @@ export async function generateImage(input: {
     else if (resolved.keyHeader === "api-key") headers["api-key"] = auth.token;
     else headers.authorization = `Bearer ${auth.token}`;
   }
-  const url = `${resolved.baseUrl.replace(/\/$/, "")}/images/generations`;
+  const url = `${resolved.baseUrl.replace(/\/$/, "")}/${resolved.mode.images?.path ?? "images/generations"}`;
   const doFetch = input.fetchImpl ?? fetch;
   const response = await doFetch(url, {
     method: "POST",

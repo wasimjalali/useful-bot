@@ -258,13 +258,44 @@ test("the Anthropic list is asked with its version header and one full page", as
 test("the parsed models cache is reused until another process replaces the file", () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-models-memo-")), "models-cache.json");
   const row = (id: string) => mergeLiveModels("opencode-go:plan", [id]);
-  writeModelsCache({ schemaVersion: 2, providers: { "opencode-go:plan": { fetchedAt: 1, models: row("kimi-k3") } } }, path);
+  writeModelsCache({ schemaVersion: 3, providers: { "opencode-go:plan": { fetchedAt: 1, models: row("kimi-k3") } } }, path);
   const first = readModelsCache(path);
   assert.equal(readModelsCache(path), first, "an unchanged file is not parsed again");
   // What another process does: a whole new file renamed over this one, same
   // byte length, inside the same clock tick.
-  const next = JSON.stringify({ schemaVersion: 2, providers: { "opencode-go:plan": { fetchedAt: 1, models: row("kimi-k4") } } });
+  const next = JSON.stringify({ schemaVersion: 3, providers: { "opencode-go:plan": { fetchedAt: 1, models: row("kimi-k4") } } });
   writeFileSync(`${path}.other`, `${next}\n`);
   renameSync(`${path}.other`, path);
   assert.equal(catalogFor("opencode-go:plan", path)[0]?.id, "kimi-k4");
+});
+
+test("an images query merges the image-only rows the default list hides", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "ub-models-")), "models-cache.json");
+  const models = await refreshProviderModels({
+    providerId: "openrouter:api",
+    baseUrl: "https://openrouter.ai/api/v1",
+    key: "sk-or-12345678",
+    imagesQuery: { output_modalities: "image" },
+    modelsDevId: null,
+    force: true,
+    path,
+    fetchImpl: async (input) => {
+      const url = String(input);
+      if (url.endsWith("?output_modalities=image")) {
+        return new Response(JSON.stringify({
+          data: [
+            { id: "black-forest-labs/flux.2-pro", architecture: { output_modalities: ["image"] } },
+            { id: "openai/gpt-5-image", output_modalities: ["image", "text"] },
+          ],
+        }));
+      }
+      return new Response(JSON.stringify({
+        data: [{ id: "openai/gpt-4.1-mini", output_modalities: ["text"] }, { id: "openai/gpt-5-image", output_modalities: ["image", "text"] }],
+      }));
+    },
+  });
+  const byId = new Map(models.map((item) => [item.id, item]));
+  assert.equal(models.length, 3);
+  assert.deepEqual(byId.get("black-forest-labs/flux.2-pro")?.outputs, ["image"]);
+  assert.deepEqual(byId.get("openai/gpt-4.1-mini")?.outputs, ["text"]);
 });

@@ -62,6 +62,18 @@ export function modelChats(model: Pick<ModelOption, "outputs"> | null | undefine
   return model.outputs.includes("text");
 }
 
+/**
+ * Whether the model is an image generator rather than a chat model: it
+ * answers with images, and either never with text or its id names it as an
+ * image model (gemini-*-image, gpt-5-image). Chat models that also list image
+ * output (gpt-5.1, openrouter/auto) stay chat models. The composer leaves
+ * these out; the image picker offers only these.
+ */
+export function modelIsImageGenerator(model: Pick<ModelOption, "id" | "outputs"> | null | undefined): boolean {
+  if (!model || modelMakesImages(model) !== true) return false;
+  return modelChats(model) === false || /image|imagine/i.test(model.id);
+}
+
 export type ComposerGroup = {
   connectionId: string;
   label: string;
@@ -359,7 +371,10 @@ export function snapComposer(
   } catch {
     connectionId = LEGACY_CONNECTION[id] ?? "";
   }
-  const list = catalog && catalog.length > 0 ? catalog : modelsFor(id);
+  // Image generators live in the same live list but never carry a chat turn,
+  // so neither the pick nor its fallback may land on one.
+  const list = (catalog && catalog.length > 0 ? catalog : modelsFor(id))
+    .filter((item) => modelChats(item) !== false && !modelIsImageGenerator(item));
   const model = modelOption(id, preferredModel, list);
   if (!model) {
     return {
@@ -392,7 +407,7 @@ export function snapComposer(
     speed,
     efforts: model.efforts.map((item) => ({ id: item, label: effortLabel(item) })),
     speeds: model.speeds.map((item) => ({ id: item, label: speedLabel(item) })),
-    models: list.filter((item) => modelChats(item) !== false).map((item) => ({ id: item.id, label: item.label })),
+    models: list.map((item) => ({ id: item.id, label: item.label })),
     groups,
   };
 }

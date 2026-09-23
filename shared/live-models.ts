@@ -11,9 +11,10 @@ export const MODELS_DEV_URL = "https://models.dev/api.json";
 /**
  * Version 2 added the models.dev facts on each row. A version 1 file reads
  * as empty so the first refresh after the upgrade fetches them instead of
- * serving a fresh-looking list with no context window on it.
+ * serving a fresh-looking list with no context window on it. Version 3 adds
+ * OpenRouter's image models and modalities, which the image picker needs.
  */
-const CACHE_SCHEMA = 2;
+const CACHE_SCHEMA = 3;
 
 type CacheFile = {
   schemaVersion: typeof CACHE_SCHEMA;
@@ -126,14 +127,18 @@ export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
     const id = typeof rec.id === "string" ? rec.id : rec.slug;
     if (typeof id !== "string" || !id.trim()) continue;
     const meta: ModelMeta = {};
+    // OpenRouter nests the modalities under `architecture`.
+    const arch = rec.architecture && typeof rec.architecture === "object" ? rec.architecture as Record<string, unknown> : {};
+    const inputs = rec.input_modalities ?? arch.input_modalities;
+    const outputs = rec.output_modalities ?? arch.output_modalities;
     if (typeof rec.display_name === "string" && rec.display_name.trim()) meta.label = rec.display_name.trim();
     if (Number.isInteger(rec.context_window) && (rec.context_window as number) > 0) meta.contextTokens = rec.context_window as number;
     // An empty array says nothing, so it leaves models.dev and the name guess standing.
-    if (Array.isArray(rec.input_modalities) && rec.input_modalities.length > 0 && rec.input_modalities.every((item) => typeof item === "string")) {
-      meta.inputs = rec.input_modalities as string[];
+    if (Array.isArray(inputs) && inputs.length > 0 && inputs.every((item) => typeof item === "string")) {
+      meta.inputs = inputs as string[];
     }
-    if (Array.isArray(rec.output_modalities) && rec.output_modalities.length > 0 && rec.output_modalities.every((item) => typeof item === "string")) {
-      meta.outputs = rec.output_modalities as string[];
+    if (Array.isArray(outputs) && outputs.length > 0 && outputs.every((item) => typeof item === "string")) {
+      meta.outputs = outputs as string[];
     }
     if (Array.isArray(rec.supported_reasoning_levels)) {
       const efforts = rec.supported_reasoning_levels
@@ -294,6 +299,8 @@ export async function refreshProviderModels(input: {
   keyHeader?: KeyHeader;
   headers?: Record<string, string>;
   query?: Record<string, string>;
+  /** A second /models query merged into the list (OpenRouter's image models). */
+  imagesQuery?: Record<string, string>;
   modelsDevId?: string | null;
   force?: boolean;
   path?: string;
@@ -306,8 +313,19 @@ export async function refreshProviderModels(input: {
   if (!input.force && fresh) return current.models;
   try {
     const listed = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, input.query);
-    const ids = listed.ids;
-    if (ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
+    if (listed.ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
+    if (input.imagesQuery) {
+      // The image list is a separate call; if it fails, the chat list still
+      // lands and the image picker shows the mode's static ids.
+      const images = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, { ...input.query, ...input.imagesQuery })
+        .catch((err) => {
+          console.error(`[models] image list ${input.providerId} failed`, err);
+          return { ids: [] as string[], meta: {} as Record<string, ModelMeta> };
+        });
+      listed.ids.push(...images.ids);
+      for (const [id, meta] of Object.entries(images.meta)) listed.meta[id] = { ...listed.meta[id], ...meta };
+    }
+    const ids = [...new Set(listed.ids)];
     const metaKey = metaKeyFor(input.providerId, input.modelsDevId);
     const catalogMeta = metaKey ? await modelMetaFor(metaKey, path, input.fetchImpl) : {};
     // The vendor's own facts win over models.dev, field by field.
