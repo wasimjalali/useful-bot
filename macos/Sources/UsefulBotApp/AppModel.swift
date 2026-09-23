@@ -296,7 +296,16 @@ final class AppModel: ObservableObject {
     private var resumePoint: (sessionId: String, next: Int, lastEventId: String?)?
     /// Per-bot chat snapshots on disk, so a first open after launch starts
     /// where the chat was left instead of at event zero.
-    private let snapshots = ChatSnapshotStore(directory: ChatSnapshotStore.defaultDirectory)
+    private let snapshots = ChatSnapshotStore(directory: ChatSnapshotStore.defaultDirectory, build: AppModel.buildId)
+    /// This binary, as the snapshots know it: every rebuild changes its size
+    /// or modification time, and with it which snapshots are trusted.
+    private static let buildId: String = {
+        guard let url = Bundle.main.executableURL,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return "unknown" }
+        let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(size)-\(Int64(modified))"
+    }()
     /// Snapshots of chats left at rest this session, per bot: the in-memory
     /// twin of the file, restored before the file is read.
     private var stashSnapshots: [String: ChatSnapshot] = [:]
@@ -2974,8 +2983,10 @@ final class AppModel: ObservableObject {
         snapshotTimer?.cancel()
         snapshotTimer = nil
         if let snapshot = openChatSnapshot() {
-            stashSnapshots[old] = snapshot
-            writeSnapshot(snapshot)
+            if isNewSnapshot(snapshot) {
+                stashSnapshots[old] = snapshot
+                writeSnapshot(snapshot)
+            }
         } else if stashSnapshots[old]?.sessionId != selectedBot?.sessionId {
             // One not at rest now keeps the snapshot it was opened from: the
             // session only grows, so that is still a point a resume can read
@@ -3074,7 +3085,11 @@ final class AppModel: ObservableObject {
               loadSucceeded, transcriptReady, completedLoad == loadGeneration,
               sendTasks[bot.id] == nil, !pending, !projection.pending,
               let cursor = followCursor, cursor.sessionId == sessionId, cursor.next > 0,
-              projection.soleSession == sessionId else { return nil }
+              projection.soleSession == sessionId,
+              // A turn a local send painted is in the projection but not folded
+              // the way a replay folds it (its events are passed over), so it is
+              // not saved; the chat keeps the snapshot it had before the send.
+              (localTurnIds[sessionId] ?? []).isEmpty else { return nil }
         return ChatSnapshot(
             botId: bot.id,
             sessionId: sessionId,
@@ -3095,9 +3110,22 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard let self, !Task.isCancelled, let snapshot = self.openChatSnapshot() else { return }
             self.snapshotTimer = nil
+            guard self.isNewSnapshot(snapshot) else { return }
             self.stashSnapshots[snapshot.botId] = snapshot
             self.writeSnapshot(snapshot)
         }
+    }
+
+    /// Whether this snapshot says anything the stash of its chat does not.
+    /// A reload that read nothing, or a switch away from a chat unchanged
+    /// since it opened, would otherwise encode and write the same file again.
+    private func isNewSnapshot(_ snapshot: ChatSnapshot) -> Bool {
+        guard let kept = stashSnapshots[snapshot.botId] else { return true }
+        return kept.sessionId != snapshot.sessionId
+            || kept.cursor != snapshot.cursor
+            || kept.lastEventId != snapshot.lastEventId
+            || kept.durableEvents != snapshot.durableEvents
+            || kept.projection != snapshot.projection
     }
 
     /// Encoded and written off the main thread, strictly in order.
@@ -3168,7 +3196,7 @@ final class AppModel: ObservableObject {
               let sessionId = store?.bots.first(where: { $0.id == botId })?.sessionId else { return }
         let client = client
         let store = snapshots
-        let outcome = await Task.detached(priority: .utility) { () -> PrewarmOutcome in
+        let build = Task.detached(priority: .utility) { () -> PrewarmOutcome in
             // Read off the main thread: a snapshot, or a note that this
             // session could not have one and has not moved since, means there
             // is nothing to build.
@@ -3178,7 +3206,14 @@ final class AppModel: ObservableObject {
                 return .skipped
             }
             return await Self.buildSnapshot(client: client, botId: botId, sessionId: sessionId, marker: marker)
-        }.value
+        }
+        // Detached work does not inherit cancellation; a cancelled prewarm
+        // stops its read instead of finishing a replay nobody will write.
+        let outcome = await withTaskCancellationHandler {
+            await build.value
+        } onCancel: {
+            build.cancel()
+        }
         // Checked again: the owner may have opened, sent to or deleted this
         // chat while it was read, and then the open owns its snapshot. A
         // prewarm cancelled meanwhile writes nothing either.

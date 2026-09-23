@@ -240,6 +240,20 @@ import Testing
         #expect(names == ["bot_1.json"])
     }
 
+    /// Another build's fold logic may differ, and a week is as long as any
+    /// snapshot goes without being replayed from zero.
+    @Test func aSnapshotIsTrustedOnlyByItsOwnBuildAndForAWeek() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("chat-snapshots-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let this = ChatSnapshotStore(directory: dir, build: "b1")
+        try this.save(Self.snapshot())
+        #expect(this.load(botId: "bot_1", sessionId: "wrun_1")?.build == "b1")
+        #expect(ChatSnapshotStore(directory: dir, build: "b2").load(botId: "bot_1", sessionId: "wrun_1") == nil)
+        let data = try Data(contentsOf: this.fileURL(botId: "bot_1"))
+        let later = Date().addingTimeInterval(8 * 24 * 3600)
+        #expect(ChatSnapshotStore.decode(data, botId: "bot_1", sessionId: "wrun_1", build: "b1", maxAge: this.maxAge, now: later) == nil)
+    }
+
     @Test func aBotIdIsNeverUsedAsAPathUnchecked() {
         let store = Self.tempStore()
         #expect(store.fileURL(botId: "bot_01M2-x").lastPathComponent == "bot_01M2-x.json")

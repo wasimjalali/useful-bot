@@ -40,6 +40,11 @@ public struct ChatSnapshot: Codable, Equatable, Sendable {
     /// meets their events again and passes over them, as the follower does.
     public var localTurnIds: [String]
     public var savedAt: Date
+    /// The app build that wrote it. The fold logic in `StreamProjection.apply`
+    /// changes between builds without renaming a field, and a snapshot is
+    /// only what a replay from zero gives under the logic that made it, so
+    /// another build replays the chat and writes it afresh.
+    public var build: String = ""
 
     public init(
         botId: String,
@@ -69,9 +74,16 @@ public struct ChatSnapshot: Codable, Equatable, Sendable {
 /// "no snapshot": the caller then replays from zero, which is always correct.
 public struct ChatSnapshotStore: Sendable {
     public let directory: URL
+    /// Stamped on every save and required on every load.
+    public let build: String
+    /// A snapshot older than this is replayed from zero instead, so anything
+    /// it got wrong heals within a week even under one build.
+    public let maxAge: TimeInterval
 
-    public init(directory: URL) {
+    public init(directory: URL, build: String = "", maxAge: TimeInterval = 7 * 24 * 3600) {
         self.directory = directory
+        self.build = build
+        self.maxAge = maxAge
     }
 
     /// `~/Library/Caches/UsefulBot/chat-snapshots`. A cache: everything in it
@@ -107,12 +119,21 @@ public struct ChatSnapshotStore: Sendable {
     public func load(botId: String, sessionId: String) -> ChatSnapshot? {
         guard !sessionId.isEmpty,
               let data = try? Data(contentsOf: fileURL(botId: botId)) else { return nil }
-        return Self.decode(data, botId: botId, sessionId: sessionId)
+        return Self.decode(data, botId: botId, sessionId: sessionId, build: build, maxAge: maxAge)
     }
 
-    public static func decode(_ data: Data, botId: String, sessionId: String) -> ChatSnapshot? {
+    public static func decode(
+        _ data: Data,
+        botId: String,
+        sessionId: String,
+        build: String = "",
+        maxAge: TimeInterval = .infinity,
+        now: Date = Date()
+    ) -> ChatSnapshot? {
         guard let snapshot = try? JSONDecoder().decode(ChatSnapshot.self, from: data),
               snapshot.version == ChatSnapshot.formatVersion,
+              snapshot.build == build,
+              now.timeIntervalSince(snapshot.savedAt) <= maxAge,
               snapshot.botId == botId,
               snapshot.sessionId == sessionId,
               snapshot.cursor >= 0,
@@ -126,7 +147,9 @@ public struct ChatSnapshotStore: Sendable {
 
     /// Written whole and swapped in, owner-only: the file holds the chat.
     public func save(_ snapshot: ChatSnapshot) throws {
-        try save(Self.encode(snapshot), botId: snapshot.botId)
+        var stamped = snapshot
+        stamped.build = build
+        try save(Self.encode(stamped), botId: snapshot.botId)
     }
 
     public func save(_ data: Data, botId: String) throws {

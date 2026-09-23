@@ -120,7 +120,9 @@ struct ChatView: View {
                                 ZStack { if landedBotId != bot.id, !restored || slowRestoreBotId == bot.id { loadingState } }
                                     // A restored chat's rows show at once, so
                                     // its mascot must not fade out over them.
-                                    .animation(restored ? nil : .easeOut(duration: 0.15), value: landedBotId == bot.id)
+                                    // A slow one fades, so a confirmation just past
+                                    // the wait does not pop the mascot for a frame.
+                                    .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landedBotId == bot.id)
                             }
                     } else if model.transcriptReady {
                         emptyState(bot)
@@ -455,8 +457,9 @@ struct ChatView: View {
             lastHeight = height
         }
         pinnedToBottom = true
+        // `slowRestoreBotId` stays set through the landing, so a slow
+        // chat's mascot fades out; the next landing clears it.
         landedBotId = botId
-        slowRestoreBotId = nil
         guard model.slimFirstPaint else { return }
         // Two frames, so the landed frame is committed before the rest of the
         // window is built above it. Not tied to this task: a remount in those

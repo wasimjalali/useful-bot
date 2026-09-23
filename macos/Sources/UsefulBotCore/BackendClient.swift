@@ -1722,7 +1722,7 @@ public actor BackendClient {
     /// instead (`includeTailIndex`) makes eve open every chunk file of the
     /// session before it answers, 1.25 s for a 12,554-event chat, and a load
     /// only needs to know which event is the last one it will call history.
-    public func newestEventId(sessionId: String, timeout: TimeInterval = 1.5) async -> String? {
+    public func newestEventId(sessionId: String, timeout: TimeInterval = 0.8) async -> String? {
         await withTaskGroup(of: String?.self) { group in
             group.addTask { try? await self.readNewestEventId(sessionId: sessionId, timeout: timeout) }
             group.addTask {
