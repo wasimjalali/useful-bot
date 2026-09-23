@@ -1564,6 +1564,20 @@ public actor BackendClient {
         return (decoded.root, decoded.items, decoded.held ?? 0)
     }
 
+    /// One Library item by id, nil when the Library no longer has it.
+    public func mediaItem(id: String) async throws -> MediaItem? {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base
+                .appendingPathComponent("api/agent/media")
+                .appendingPathComponent(id))
+        }
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 { return nil }
+        try Self.expectOK(data, response)
+        struct Response: Decodable { let item: MediaItem }
+        guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else { throw BackendError.decoding }
+        return decoded.item
+    }
+
     /// Point a moved item at the file the owner picked.
     public func relinkMedia(id: String, path: String) async throws {
         let (data, response) = try await perform { client, token in

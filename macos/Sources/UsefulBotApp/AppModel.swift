@@ -3546,7 +3546,7 @@ final class AppModel: ObservableObject {
                     anchor = row.id
                     awaitingReply = false
                 }
-            case .handoff, .note, .widget, .image:
+            case .handoff, .note, .widget, .image, .page:
                 continue
             }
         }

@@ -1166,8 +1166,18 @@ private struct ModelFlyout: View {
 
     @State private var query = ""
     @FocusState private var searchFocused: Bool
-    /// Collapsed sections by connection id. Every section starts expanded.
-    @State private var collapsed: Set<String> = []
+    /// Opened sections by connection id. Every section starts collapsed, so
+    /// the list opens as one row per connection; a search opens every section
+    /// with a match.
+    @State private var expanded: Set<String> = []
+
+    private var searching: Bool {
+        !query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func isOpen(_ group: ComposerState.Group) -> Bool {
+        searching || expanded.contains(group.connectionId)
+    }
 
     private struct Section {
         let group: ComposerState.Group
@@ -1257,7 +1267,7 @@ private struct ModelFlyout: View {
                                 Hairline()
                             }
                             sectionHeader(section.group)
-                            if !collapsed.contains(section.group.connectionId) {
+                            if isOpen(section.group) {
                                 ForEach(section.models, id: \.id) { item in
                                     modelRow(
                                         label: item.label,
@@ -1291,13 +1301,16 @@ private struct ModelFlyout: View {
     }
 
     private func sectionHeader(_ group: ComposerState.Group) -> some View {
-        let shut = collapsed.contains(group.connectionId)
+        let shut = !isOpen(group)
         let mark = group.label.prefix(1)
         return Button {
-            if shut {
-                collapsed.remove(group.connectionId)
+            // A search holds every matching section open; a click then would
+            // only land later, as the opposite of what was meant.
+            guard !searching else { return }
+            if expanded.contains(group.connectionId) {
+                expanded.remove(group.connectionId)
             } else {
-                collapsed.insert(group.connectionId)
+                expanded.insert(group.connectionId)
             }
         } label: {
             HStack(spacing: 8) {

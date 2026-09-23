@@ -7,7 +7,7 @@ import { legacyImageIds } from "../../../../../shared/images-store.ts";
 
 export const runtime = "nodejs";
 
-/** The Library: every saved image and drawing, newest first, owner only. */
+/** The Library: every saved image, drawing and page, newest first, owner only. */
 export async function GET(request: Request) {
   const gate = await requireOwner(request);
   if (isGateError(gate)) return gate.error;
@@ -21,7 +21,7 @@ export async function GET(request: Request) {
   }
   const url = new URL(request.url);
   const kindParam = url.searchParams.get("kind");
-  const kind: MediaKind | undefined = kindParam === "image" || kindParam === "drawing" ? kindParam : undefined;
+  const kind: MediaKind | undefined = kindParam === "image" || kindParam === "drawing" || kindParam === "page" ? kindParam : undefined;
   try {
     const items = listMedia({
       kind,

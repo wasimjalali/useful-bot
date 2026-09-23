@@ -13,8 +13,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 
 /**
  * What the agent makes belongs to the owner, like the chats: every generated
@@ -24,7 +24,12 @@ import { dirname, extname, isAbsolute, join, resolve } from "node:path";
  * prompt, the model, the bot, and where the file is now if the owner moved it.
  */
 
-export type MediaKind = "image" | "drawing";
+/**
+ * A page is an HTML file a bot wrote in its workspace. Unlike an image or a
+ * drawing it is not copied into the media folder: the entry points at the
+ * file where the bot keeps working on it, next to the assets it links.
+ */
+export type MediaKind = "image" | "drawing" | "page";
 
 export type MediaItem = {
   id: string;
@@ -67,7 +72,10 @@ const EXT_MIME: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".excalidraw": "application/vnd.excalidraw+json",
+  ".html": "text/html",
+  ".htm": "text/html",
 };
+const PAGE_MIME = "text/html";
 const DRAWING_MIME = "application/vnd.excalidraw+json";
 // The critical section is a read, a small edit and an fsynced write: a
 // holder is done in milliseconds. A lock older than a few seconds belongs to
@@ -103,8 +111,9 @@ function isItem(value: unknown): value is MediaItem {
   if (!value || typeof value !== "object") return false;
   const rec = value as Record<string, unknown>;
   return typeof rec.id === "string" && ID.test(rec.id)
-    && (rec.kind === "image" || rec.kind === "drawing")
+    && (rec.kind === "image" || rec.kind === "drawing" || rec.kind === "page")
     && typeof rec.path === "string" && isAbsolute(rec.path)
+    && (rec.kind !== "page" || isPagePath(rec.path))
     && typeof rec.botId === "string" && typeof rec.botName === "string"
     && typeof rec.title === "string" && typeof rec.prompt === "string"
     && typeof rec.model === "string" && typeof rec.provider === "string"
@@ -428,6 +437,71 @@ export function saveDrawing(input: {
   }, root, indexPath);
 }
 
+export function isPagePath(path: string): boolean {
+  const ext = extname(path).toLowerCase();
+  return ext === ".html" || ext === ".htm";
+}
+
+/** The page's own <title>, else its file name. */
+export function pageTitle(html: string, path: string): string {
+  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html.slice(0, 20_000));
+  const text = match?.[1]
+    ?.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;/g, "'")
+    .trim();
+  return safeName(text || basename(path, extname(path)), "Page");
+}
+
+/**
+ * Index an HTML file a bot wrote, where it is. One entry per real path, so a
+ * bot that rewrites its page keeps one Library item; `added` is true only the
+ * first time, which is when the chat gets its card. A page the owner removed
+ * stays removed.
+ */
+export function recordPage(input: {
+  path: string;
+  html: string;
+  botId: string;
+  botName: string;
+  createdAt?: Date;
+}, indexPath = mediaIndexPath()): { item: MediaItem; added: boolean } {
+  if (!isAbsolute(input.path) || !isPagePath(input.path)) throw new Error("media_type");
+  const real = realOrSelf(input.path);
+  if (!isRegularFile(real)) throw new Error("media_type");
+  const pageId = (seed: string) => `page${createHash("sha256").update(seed).digest("hex").slice(0, 24)}`;
+  let id = pageId(real);
+  const item: MediaItem = {
+    id,
+    kind: "page",
+    path: real,
+    botId: input.botId,
+    botName: input.botName,
+    title: pageTitle(input.html, real),
+    prompt: "",
+    model: "",
+    provider: "",
+    mime: PAGE_MIME,
+    createdAt: (input.createdAt ?? new Date()).toISOString(),
+  };
+  return withIndex((index) => {
+    // By where the file is now first: a page relinked after a move keeps
+    // the id it was first saved under.
+    const existing = index.items.find((row) => row.kind === "page" && realOrSelf(row.path) === real);
+    // The id is taken by a page relinked away from this path: this file is
+    // a new page and gets an id of its own.
+    if (!existing && index.items.some((row) => row.id === id)) {
+      id = pageId(`${real}\n${item.createdAt}`);
+      item.id = id;
+    }
+    if (existing) {
+      // A rewrite can rename the page; the rest stays as first saved.
+      if (!existing.forgotten) existing.title = item.title;
+      return { item: { ...existing }, added: false };
+    }
+    index.items.push(item);
+    return { item, added: true };
+  }, indexPath);
+}
+
 /** Only a regular file counts as the item: a folder at that path is not it. */
 function isRegularFile(path: string): boolean {
   try {
@@ -483,6 +557,12 @@ function readsAs(path: string, kind: MediaKind): boolean {
 
 function readVerified(path: string, kind: MediaKind): { mime: string; bytes: Buffer } {
   if (!lstatSync(path).isFile()) throw new Error("media_type");
+  if (kind === "page") {
+    // Only the name says a page. Its bytes are never read here, so no route
+    // can serve a bot's HTML from the app's origin; the app opens the file.
+    if (!isPagePath(path)) throw new Error("media_type");
+    return { mime: PAGE_MIME, bytes: Buffer.alloc(0) };
+  }
   const bytes = readFileSync(path);
   if (kind === "drawing") {
     if (!isExcalidrawScene(bytes)) throw new Error("media_type");

@@ -4,7 +4,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UsefulBotCore
 
-/// Everything the agents made, as files in the owner's media folder: a grid
+/// Everything the agents made, as files in the owner's media folder (and the
+/// HTML pages they wrote, where they wrote them): a grid
 /// newest first, filtered by kind, bot and prompt, and one item at a time
 /// with what made it and what can be done with it.
 struct LibraryView: View {
@@ -15,6 +16,7 @@ struct LibraryView: View {
         case all = "All"
         case images = "Images"
         case drawings = "Drawings"
+        case pages = "HTML"
     }
 
     @State private var items: [MediaItem] = []
@@ -212,6 +214,7 @@ struct LibraryView: View {
             case .all: break
             case .images: if item.kind != "image" { return false }
             case .drawings: if item.kind != "drawing" { return false }
+            case .pages: if item.kind != "page" { return false }
             }
             if let botFilter, item.botId != botFilter { return false }
             if q.isEmpty { return true }
@@ -270,9 +273,11 @@ struct LibraryView: View {
     /// Point a moved item at where its file went, then show it from there.
     private func locate(_ item: MediaItem) {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = item.kind == "drawing"
-            ? [UTType(filenameExtension: "excalidraw") ?? .json]
-            : [.png, .jpeg, .gif, .webP]
+        switch item.kind {
+        case "drawing": panel.allowedContentTypes = [UTType(filenameExtension: "excalidraw") ?? .json]
+        case "page": panel.allowedContentTypes = [.html]
+        default: panel.allowedContentTypes = [.png, .jpeg, .gif, .webP]
+        }
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -301,6 +306,8 @@ struct LibraryView: View {
                     return
                 }
             }
+            // The file is gone either way: a chat row showing it lets go now.
+            NotificationCenter.default.post(name: .mediaItemGone, object: item.id)
             do {
                 try await GeneratedImageCache.shared.forget(item.id)
             } catch {
@@ -365,6 +372,8 @@ private struct LibraryTile: View {
             guard item.exists else { return }
             if item.kind == "image" {
                 thumbnail = await LibraryThumbnails.shared.thumbnail(path: item.path, maxPixel: 520)
+            } else if item.kind == "page" {
+                thumbnail = await PageThumbnails.shared.thumbnail(path: item.path)
             } else {
                 scene = await ExcalidrawScenes.shared.scene(path: item.path)
             }
@@ -373,7 +382,11 @@ private struct LibraryTile: View {
 
     private var symbol: String {
         if !item.exists { return "questionmark.folder" }
-        return item.kind == "drawing" ? "scribble.variable" : "photo"
+        switch item.kind {
+        case "drawing": return "scribble.variable"
+        case "page": return "globe"
+        default: return "photo"
+        }
     }
 }
 
@@ -388,6 +401,7 @@ struct LibraryDetail: View {
     @State private var preview: NSImage?
     @State private var scene: ExcalidrawScene?
     @State private var liveReady = false
+    @State private var pageHovering = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 24) {
@@ -414,6 +428,8 @@ struct LibraryDetail: View {
                         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                             .strokeBorder(Theme.C.border, lineWidth: 1)
                     )
+                } else if item.kind == "page" {
+                    pagePreview
                 } else {
                     ZStack {
                         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
@@ -447,11 +463,16 @@ struct LibraryDetail: View {
                 VStack(alignment: .leading, spacing: 8) {
                     if item.exists {
                         HStack(spacing: 8) {
-                            // Images open in the default viewer; a drawing
-                            // opens from its live view's own buttons.
+                            // Images open in the default viewer and pages in
+                            // the default browser; a drawing opens from its
+                            // live view's own buttons.
                             if item.kind == "image" {
                                 NativeButton("Open", kind: .primary, small: true) {
                                     NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
+                                }
+                            } else if item.kind == "page" {
+                                NativeButton("Open", kind: .primary, small: true) {
+                                    PageOpener.open(URL(fileURLWithPath: item.path))
                                 }
                             }
                             NativeButton("Show in Finder", kind: .secondary, small: true) {
@@ -493,10 +514,54 @@ struct LibraryDetail: View {
             guard item.exists else { return }
             if item.kind == "image" {
                 preview = await LibraryThumbnails.shared.thumbnail(path: item.path, maxPixel: 1600)
+            } else if item.kind == "page" {
+                preview = await PageThumbnails.shared.thumbnail(path: item.path)
             } else {
                 scene = await ExcalidrawScenes.shared.scene(path: item.path)
             }
         }
+    }
+
+    /// The page's picture at the width of a drawing, Open on hover.
+    private var pagePreview: some View {
+        Button {
+            PageOpener.open(URL(fileURLWithPath: item.path))
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Theme.C.sunken
+                    .overlay {
+                        if let preview {
+                            Image(nsImage: preview)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "globe")
+                                .font(.system(size: 32))
+                                .foregroundStyle(Theme.C.inkFaint)
+                        }
+                    }
+                    .frame(width: 640, height: 400, alignment: .top)
+                    .clipped()
+                if pageHovering, item.exists {
+                    PageOpenChip()
+                        .padding(12)
+                        .transition(.opacity)
+                }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                    .strokeBorder(Theme.C.border, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!item.exists)
+        .pointerOnHover()
+        .onHover { inside in
+            withAnimation(.easeOut(duration: DesignTokens.Motion.overlay)) { pageHovering = inside }
+        }
+        .help("Open in your browser")
+        .accessibilityLabel(Text(item.title))
+        .accessibilityHint("Opens the page in your browser")
     }
 
     private func fact(_ label: String, _ value: String) -> some View {

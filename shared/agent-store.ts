@@ -44,7 +44,8 @@ export type AgentEventKind =
   | "note"
   | "proposal"
   | "widget"
-  | "image";
+  | "image"
+  | "page";
 
 export type AgentEvent = {
   id: string;
@@ -57,7 +58,10 @@ export type AgentEvent = {
   proposalId: string | null;
   handoffId: string | null;
   widgetId: string | null;
-  /** Generated image the row renders: ~/.useful-bot/images/<id>.json. */
+  /**
+   * The media item the row renders: a generated image, or on a "page" row
+   * the Library entry of an HTML file the bot wrote.
+   */
   imageId: string | null;
   /**
    * Set on the host's "connected" note: the app or server that was just
@@ -198,6 +202,7 @@ const EVENT_KINDS = new Set<AgentEventKind>([
   "proposal",
   "widget",
   "image",
+  "page",
 ]);
 
 export function agentStorePath(): string {

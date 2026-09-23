@@ -318,6 +318,11 @@ actor GeneratedImageCache {
         invalidate(id)
     }
 
+    /// A page row's item: where its file is and whether it is still there.
+    func mediaItem(_ id: String) async throws -> MediaItem? {
+        try await Self.client.mediaItem(id: id)
+    }
+
     /// The Library's calls ride the same signed-in client as the rows.
     func mediaList() async throws -> (root: String, items: [MediaItem], held: Int) {
         try await Self.client.mediaList()

@@ -1171,6 +1171,9 @@ struct TranscriptRowView: View, Equatable {
         case .image:
             // The event's text is the prompt; the id names the stored bytes.
             GeneratedImageRow(imageId: row.imageId ?? "", prompt: row.text)
+        case .page:
+            // The row's text is the page title; the id names the Library item.
+            PageRow(mediaId: row.imageId ?? "", title: row.text)
         }
     }
 
