@@ -107,12 +107,12 @@ struct ApprovalCardView: View {
                 // truncated at rest.
                 HStack(spacing: 6) {
                     Image(systemName: "folder")
-                        .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                        .font(Theme.font(DesignTokens.FontSize.proposalBody, .regular))
                     Text(card.item.cwd)
                         .lineLimit(showFullPath ? nil : 1)
                         .truncationMode(.middle)
                 }
-                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular, design: .monospaced)
+                .tokenFont(DesignTokens.FontSize.proposalBody, .regular, design: .monospaced)
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(minHeight: 44)
@@ -125,7 +125,7 @@ struct ApprovalCardView: View {
             }
             ScrollView {
                 Text(card.item.preview)
-                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular, design: .monospaced)
+                    .tokenFont(DesignTokens.FontSize.proposalBody, .regular, design: .monospaced)
                     .foregroundStyle(Theme.C.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -490,7 +490,7 @@ struct OnboardingCardView: View {
             Text("NEW BOT")
                 .tokenFont(DesignTokens.FontSize.proposalTitle, .semibold)
                 .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.proposalTitle)
-                .foregroundStyle(Theme.C.inkFaint)
+                .foregroundStyle(Theme.C.inkMuted)
             Text("\(name) has no job yet. What should I own? Give me a job title, standing rules, and anything I must never do without asking.")
                 .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                 .lineSpacing(6)
@@ -506,7 +506,7 @@ struct OnboardingCardView: View {
                     Text("Fill the form")
                         .tokenFont(DesignTokens.FontSize.button, .semibold)
                         .foregroundStyle(Theme.C.brandInk)
-                        .frame(minHeight: 36)
+                        .frame(minHeight: 44)
                         .padding(.horizontal, 12)
                 }
                 .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong))

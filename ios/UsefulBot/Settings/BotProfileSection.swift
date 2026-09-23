@@ -71,7 +71,7 @@ struct BotAvatarSection: View {
                                 .scaledToFit()
                                 .frame(width: 40, height: 40)
                             Text(BrandLayers.palette[color]?.label ?? color.capitalized)
-                                .tokenFont(10, .medium)
+                                .tokenFont(DesignTokens.FontSize.phoneRailLabel, .medium)
                                 .foregroundStyle(Theme.C.ink)
                                 .lineLimit(1)
                         }
@@ -185,14 +185,24 @@ private struct GroupMembersPickerView: View {
         let candidates = (phone.shell?.bots ?? []).filter { $0.kind == "bot" && !$0.hidden && $0.id != live.id && $0.id != Threads.defaultBotId }
         List {
             ForEach(candidates) { candidate in
+                let capped = !members.contains(candidate.id) && members.count >= 6
                 Button {
                     toggle(candidate)
                 } label: {
                     HStack(spacing: 10) {
                         BotFace(bot: candidate, size: 32)
-                        Text(candidate.name)
-                            .tokenFont(DesignTokens.FontSize.chatName, .regular)
-                            .foregroundStyle(!members.contains(candidate.id) && members.count >= 6 ? Theme.C.inkMuted : Theme.C.ink)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(candidate.name)
+                                .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                                .foregroundStyle(capped ? Theme.C.inkFaint : Theme.C.ink)
+                            if capped {
+                                // Disabled rows state the reason in place —
+                                // §1.0's state table, not grey alone.
+                                Text("Group is full")
+                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                    .foregroundStyle(Theme.C.inkMuted)
+                            }
+                        }
                         Spacer(minLength: 8)
                         if members.contains(candidate.id) {
                             Image(systemName: "checkmark.circle")
@@ -206,6 +216,7 @@ private struct GroupMembersPickerView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(RowButtonStyle())
+                .disabled(capped)
                 .accessibilityAddTraits(members.contains(candidate.id) ? .isSelected : [])
             }
         }
@@ -265,16 +276,22 @@ struct BotMemorySection: View {
                 }
                 .skeletonPulse(reduceMotion)
             } else if let error {
-                HStack {
+                // Error row anatomy (spec 1.2): danger glyph, one muted
+                // sentence, trailing secondary Retry.
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(Theme.C.danger)
                     Text(error)
                         .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                        .foregroundStyle(Theme.C.danger)
-                    Spacer()
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
                     Button("Retry") {
                         loaded = false
                         self.error = nil
                         Task { await load() }
                     }
+                    .buttonStyle(SecondaryAction(compact: true))
                     .frame(minHeight: 44)
                 }
             } else if notes.isEmpty {

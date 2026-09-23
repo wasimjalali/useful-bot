@@ -80,6 +80,9 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
     /// Cancel/Save pair); the standard header still draws grabber, title
     /// and the close affordance.
     var showsHeader = true
+    /// Sheets that draw a worded header action ('Done') drop the stock X —
+    /// one close affordance per header.
+    var showsClose = true
     /// Grouped content (a `List` of row cards) sits on `canvas` so its
     /// `surface` rows read as cards; plain content keeps the sheet `surface`.
     var canvas = false
@@ -94,6 +97,7 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
         title: String,
         detent: FloatingSheetDetent = .medium,
         showsHeader: Bool = true,
+        showsClose: Bool = true,
         canvas: Bool = false,
         onClose: @escaping () -> Void,
         @ViewBuilder leading: @escaping () -> Leading = { EmptyView() },
@@ -103,6 +107,7 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
         self.title = title
         self.detent = detent
         self.showsHeader = showsHeader
+        self.showsClose = showsClose
         self.canvas = canvas
         self.onClose = onClose
         self.leading = leading
@@ -135,7 +140,9 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
                                 .lineLimit(1)
                             Spacer(minLength: 0)
                             trailing()
-                            SheetCloseButton { onClose() }
+                            if showsClose {
+                                SheetCloseButton { onClose() }
+                            }
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -241,6 +248,7 @@ private struct FloatingSheetBoolHost<Sheet: View, Leading: View, Trailing: View>
     let title: String
     let detent: FloatingSheetDetent
     let showsHeader: Bool
+    var showsClose = true
     let canvas: Bool
     @ViewBuilder var leading: () -> Leading
     @ViewBuilder var trailing: () -> Trailing
@@ -255,6 +263,7 @@ private struct FloatingSheetBoolHost<Sheet: View, Leading: View, Trailing: View>
                         title: title,
                         detent: detent,
                         showsHeader: showsHeader,
+                        showsClose: showsClose,
                         canvas: canvas,
                         onClose: { isPresented = false },
                         leading: leading,
@@ -316,6 +325,7 @@ extension View {
         title: String,
         detent: FloatingSheetDetent = .medium,
         showsHeader: Bool = true,
+        showsClose: Bool = true,
         canvas: Bool = false,
         @ViewBuilder leading: @escaping () -> L = { EmptyView() },
         @ViewBuilder trailing: @escaping () -> T = { EmptyView() },
@@ -326,6 +336,7 @@ extension View {
             title: title,
             detent: detent,
             showsHeader: showsHeader,
+            showsClose: showsClose,
             canvas: canvas,
             leading: leading,
             trailing: trailing,

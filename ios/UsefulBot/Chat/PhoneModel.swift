@@ -6,6 +6,11 @@ import UsefulBotCore
 @MainActor
 @Observable
 final class PhoneModel {
+    /// How many consecutive stream-open `.sessionEnded`s latch §8.4's
+    /// ended row: eve funnels its transient not-yet-readable window
+    /// through the same 404, and its own client retries ~12 opens —
+    /// replay and follow share the same budget.
+    private static let endedStrikeBudget = 12
     private(set) var shell: ShellStore?
     private(set) var loaded = false
     private(set) var loadError: String?
@@ -520,7 +525,10 @@ final class PhoneModel {
             let next = try await client.shellAction(ShellActions.createBot(
                 name: name,
                 petname: name,
-                label: (label?.isEmpty == false ? label : nil) ?? name,
+                // Label goes verbatim — an empty string is 'no label' on
+                // the wire; substituting the name here kills §1.3's
+                // onboarding card on both surfaces.
+                label: label ?? "",
                 description: description ?? "",
                 sectionId: nil,
                 preserveSelection: true
@@ -547,11 +555,18 @@ final class PhoneModel {
 
     /// §1.3's fresh-bot onboarding card — same rule as the Mac's
     /// `showOnboarding` and the same per-device dismissal key.
+    /// The in-memory set mirrors the Mac's `onboardingDismissedFor` so a
+    /// dismissal invalidates the view now; UserDefaults persists it
+    /// across launches.
+    private var onboardingDismissedFor: Set<String> = []
+
     func onboardingDismissed(for botId: String) -> Bool {
-        UserDefaults.standard.bool(forKey: "ub-onboarding:\(botId)")
+        onboardingDismissedFor.contains(botId)
+            || UserDefaults.standard.bool(forKey: "ub-onboarding:\(botId)")
     }
 
     func dismissOnboarding(botId: String) {
+        onboardingDismissedFor.insert(botId)
         UserDefaults.standard.set(true, forKey: "ub-onboarding:\(botId)")
     }
 
@@ -1059,7 +1074,7 @@ final class PhoneModel {
                 break replayLoop
             } catch let error as BackendError where error == .sessionEnded {
                 endedAttempts += 1
-                if endedAttempts >= 4 {
+                if endedAttempts >= PhoneModel.endedStrikeBudget {
                     ended = true
                     break replayLoop
                 }
@@ -1188,7 +1203,7 @@ final class PhoneModel {
                 var latch = false
                 if (error as? BackendError) == .sessionEnded {
                     endedStrikes += 1
-                    if endedStrikes >= 12 {
+                    if endedStrikes >= PhoneModel.endedStrikeBudget {
                         chat.sessionEnded = true
                         latch = true
                     }
@@ -1218,6 +1233,10 @@ final class PhoneModel {
         chat.confirmingText = nil
         chat.failedText = nil
         chat.showWorking = true
+        // A replay opened before the send must not publish its pre-echo
+        // state over this optimistic row — same guard every post-send
+        // write takes.
+        chat.streamGeneration += 1
         chats[botId] = chat
         let snapshot = draftAtSend
         updateDraft(ComposerDraft.remainder(snapshot, afterSending: text), forBot: botId)

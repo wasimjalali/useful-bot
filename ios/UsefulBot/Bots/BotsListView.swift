@@ -497,16 +497,16 @@ struct BotsListView: View {
             // with the current one checked, not a nested menu.
             Button("Move to section") { moveTarget = bot }
                 .disabled(createsBlocked != nil)
-            Button("New chat") { Task { await phone.newChat(bot.id) } }
-                .disabled(createsBlocked != nil)
-            Button("Hide") { Task { await phone.hide(bot.id, true) } }
-                .disabled(createsBlocked != nil)
             // Settings opens the chat's own bot-settings sheet — the flag
             // lands it once the push completes (1.2's menu).
             Button("Settings") {
                 phone.pendingSettingsBot = bot.id
                 phone.select(bot.id)
             }
+            Button("Hide") { Task { await phone.hide(bot.id, true) } }
+                .disabled(createsBlocked != nil)
+            Button("New chat") { Task { await phone.newChat(bot.id) } }
+                .disabled(createsBlocked != nil)
             Button("Delete", role: .destructive) { deleteTarget = bot }
                 .disabled(createsBlocked != nil)
         }
@@ -867,7 +867,7 @@ struct DevicesView: View {
                         dismiss()
                     }
                 }
-                .foregroundStyle(Theme.C.ink)
+                .foregroundStyle(connectBusy ? Theme.C.inkFaint : Theme.C.ink)
                 .disabled(connectBusy)
                 .ubFocusRing()
                 Button {
@@ -877,7 +877,7 @@ struct DevicesView: View {
                     confirmUnpair = true
                 } label: {
                     Text("Unpair")
-                        .foregroundStyle(Theme.C.danger)
+                        .foregroundStyle(connectBusy ? Theme.C.inkFaint : Theme.C.danger)
                 }
                 .disabled(connectBusy)
                 .ubFocusRing()
@@ -1157,6 +1157,7 @@ private struct CreateField: View {
     @Binding var text: String
     var axis: Axis = .horizontal
     var placeholder: String?
+    @FocusState private var focused: Bool
 
     init(_ title: String, text: Binding<String>, axis: Axis = .horizontal, placeholder: String? = nil) {
         self.title = title
@@ -1179,12 +1180,22 @@ private struct CreateField: View {
             }
             .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
             .foregroundStyle(Theme.C.ink)
+            .focused($focused)
             .padding(.horizontal, 12)
                 .frame(minHeight: 44, alignment: axis == .vertical ? .topLeading : .center)
                 .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                    // Focused field: `ink` edge plus a 3 pt ring at 8%
+                    // (spec 1.7's state table).
+                    ZStack {
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            .strokeBorder(focused ? Theme.C.ink : Theme.C.edge, lineWidth: 1)
+                        if focused {
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.md + 3, style: .continuous)
+                                .strokeBorder(Theme.C.ink.opacity(0.08), lineWidth: 3)
+                                .padding(-4)
+                        }
+                    }
                 )
         }
     }

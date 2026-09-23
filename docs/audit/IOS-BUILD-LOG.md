@@ -2127,3 +2127,125 @@ copy fix changed. `npm test` 650/650, `verify-release.mjs` PASS,
 no-diff. 59 shots regenerated from this build — the round-6 design
 review's stale evidence (`proposal-card-{light,dark}`,
 `safari-sheet-gated-pending-light`) is refreshed.
+
+## Round 7 (2026-09-23, head 7a822a5)
+
+### Correctness (max effort) — request_changes, 1H + 3M + 3L, all applied
+
+- **H** — `createBot` stored `label = name` when the create sheet's Label
+  field was blank, killing §1.3's onboarding card for every phone-created
+  bot on both surfaces: `shared/shell-store.ts` stores the label verbatim
+  and `showOnboarding` requires an empty label, so the card could never
+  render. The phone now sends the label verbatim — `label: label ?? ""`
+  (PhoneModel.swift:523) — matching the Mac client and the server
+  contract.
+- **M** — `dismissOnboarding` wrote `UserDefaults` only, which
+  `@Observable` never tracks; "Skip" left the card up to a poll cycle.
+  The Mac's in-memory `onboardingDismissedFor` set is restored —
+  `showOnboarding` consults the set (persisted to UserDefaults as
+  before), so dismissal invalidates the body immediately.
+- **M** — replay's `.sessionEnded` retry budget was 4 strikes (~5 s) vs
+  follow()'s 12 (~26 s), although both comments cite the same eve
+  behavior — a transient stream-open 404 window > ~5 s could latch
+  `chat.sessionEnded` on a live session and suppress `spawnFollow`. Both
+  paths now share `endedStrikeBudget = 12`.
+- **M** — widget crash auto-reload was a no-op: `onProcessGone` refetched
+  the deterministic host page into the same string, and `updateUIView`
+  only calls `loadHTMLString` when `coordinator.loaded != html` — so a
+  terminated web view stayed blank forever (`failed` never set, the spec's
+  "could not be loaded" copy + Reload never rendered). `onProcessGone`
+  now clears `coordinator.loaded` first, so the reload is unconditional.
+- **L×3** — a cancelled OAuth poll could stamp terminal-state copy onto a
+  fresh flow (cancel landing mid-`pollOAuth` → `catch` wrote
+  `terminalStatus` after `startFlow` reset it); the catch now guards
+  `!Task.isCancelled`. ModelSheet's Effort/Speed used `.disabled`, which
+  gates interaction but leaves `TokenSegmented`/`TokenToggle`'s `enabled`
+  recipe at full strength — they now take `enabled: blocked == nil`
+  (duplicate of design M4). `deliver()`'s optimistic echo could flicker
+  out behind an in-flight replay — the echo now bumps `streamGeneration`
+  so a pre-send replay fails `still()` instead of publishing a pre-echo
+  projection.
+
+### Security (max effort) — approve, zero blocker/high/medium/low reported
+
+### Design-a11y (normal) — request_changes, 6M + 11L, all applied
+
+- **M** — `OnboardingCardView`'s "NEW BOT" eyebrow rendered `inkFaint`
+  (≈2.5:1, decorative-only per §4.2 + adjudication #24); now `inkMuted`.
+- **M** — "Fill the form" hit target was 36 pt; now 44 pt floor.
+- **M** — `PhoneConnectorsView` disabled Remove key / Save key /
+  Disconnect / Connect on `blocked` but rendered the reason nowhere
+  (§1.0 "never grey alone"). `blocked` now renders under the key form
+  and under the connector rows.
+- **M** — `TokenToggle`/`TokenSegmented` draw their disabled recipe from
+  an `enabled` parameter that env `.disabled(...)` never flips, so the
+  model sheet's blocked Effort/Speed rendered full-strength while inert.
+  All three now take `enabled: blocked == nil` (same root cause as
+  correctness L6).
+- **M** — `CreateField` (New bot/group/section/Rename sheets) had no
+  focus tracking — the edge stayed `edge` 1 pt. Now `@FocusState` +
+  §1.7's `ink` stroke with the 3 pt `ink@8%` ring.
+- **M** — Defaults "Model"/"Permission" rows omitted the trailing
+  chevron §1.5 item 4 requires (the cue distinguishing them from the
+  read-only "Working folder"). Both rows now share a `defaultsRow`
+  helper with the `chevron.right` phoneChatMeta/inkFaint convention.
+- **L×11** — text rows kept full ink/danger while disabled: Clear
+  conversation / Delete bot (`danger`), New chat / Defaults rows (`ink`),
+  Devices Sign out / Unpair, Delete routine — all now take the
+  quieter-fill pattern (`? ink/danger : inkFaint`, `? danger : inkFaint`).
+  GroupMembersPickerView at the 6-member cap dimmed unchecked rows but
+  left them tappable with the reason detached in a bottom inset; rows
+  are now `.disabled` with "Group is full" rendered beside the row.
+  Docked approval card cwd/preview mono was `phoneChatMeta` 12 pt; now
+  `proposalBody` 13 pt per §1.3, matching PendingApprovalsView. Bot
+  context-menu order corrected to §1.2's Pin / Rename / Move to section /
+  Settings / Hide / New chat / Delete. Face-grid labels used a raw
+  `tokenFont(10)`; now `phoneRailLabel` (the iPhone readable floor).
+  Settings-group error rows grew the §1.0 Error anatomy (danger glyph +
+  one `inkMuted` sentence + secondary-chrome Retry): BotProfileSection
+  memory, BotRoutinesSection list + editor, PhoneSettingsSubscreens key
+  form + providers. Key `SecureField` overlay `Radius.sm` → `Radius.md`
+  (fields are Radius.md). Composer "+" kept `ink` while disabled; now
+  `inkFaint` glyph + `sunken.opacity(0.6)` circle like the sibling chips.
+  Bot-settings sheet rendered trailing "Done" AND the stock X close;
+  `FloatingSheet` gained a `showsClose` parameter and the sheet keeps
+  "Done" only (§1.5's named affordance). rolePicker sheet contents were
+  ungated mid-sheet — "None"/model rows and the effortPicker now take the
+  `blocked` gate + reason like catalogSheet.
+
+### Verified-clean / pass areas (not re-hunted)
+
+Correctness: replay `.sessionEnded` resets, follow() endedStrikes reset
+semantics, confirmProposal refused-redirect → actionError, group picker
+filters, `shared/connection-url.ts` round-trip, ProviderConnectView
+terminalStatus retention, PhoneProvidersView.blocked, UsefulBotApp boot
+skeleton, TokenLabeledContentStyle inner-wins, PairingCoordinator
+generation guards, PhoneCache eviction/safe-name,
+GlobalSearchSheet.highlighted. Design: boot skeleton, widget skeleton +
+"could not be loaded" copy, OAuth terminal + Try again, Devices pill
+vocab, unsupportedVersion reason, Use-for-chat SecondaryAction, +N
+tokenFont, TokenLabeledContentStyle at root, roster order, equal-width
+actions, avatar picker, focus strokes.
+
+### Re-run scope
+
+Full surfaces gate on the round-7 fix build (gate31) plus targeted
+re-runs (gate32, gate33): all 26 non-perf legs green — bots list, chat,
+chat accessibility, two-client preserveSelection, all 10 approval
+states, widget (nav-probe 0 hits), attach photo, text-file cap,
+settings, routine create, proposal card + confirm, Safari sheet
+light+dark, owner-question light+dark, reduce motion, live send.
+Three legs failed inside gate31 on sim-side flakes — XCUI snapshot
+timeouts / `kAXErrorServerNotFound` stalls on testSettings +
+testReduceMotion, and a 12 s seed-window race on testApprovalExpired
+(app automation-setup idled ~11 s past the seed TTL, so the record had
+lapsed before the first approvals fetch — the app marks `.expired`
+locally on cards it has already seen) — each passes on re-run
+(testApprovalExpired alone on a rested sim). `xcodebuild build` clean;
+the round-7 diff is iOS-only, so server gates (npm test, verify-release)
+and `make -C macos test` were not re-run. 43 shots refreshed from this
+build. The diff also required breaking ChatScreen's `body` into helpers
+(`dockedAsks`, `chatToolbar`) — the type checker had begun timing out
+on the enlarged expression; no behavior change. Onboarding card, model
+sheet, connectors, and avatar picker still have no shot legs — their
+fixes are code-verified only.

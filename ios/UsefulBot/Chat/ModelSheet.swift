@@ -100,7 +100,8 @@ struct ModelSheet: View {
                         Section {
                             TokenSegmented(
                                 options: composer.efforts.map { (id: $0.id, label: $0.label) },
-                                selection: effortBinding(composer)
+                                selection: effortBinding(composer),
+                                enabled: blocked == nil
                             )
                             .disabled(blocked != nil)
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
@@ -116,9 +117,9 @@ struct ModelSheet: View {
                             HStack {
                                 Text(fast.label)
                                     .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
-                                    .foregroundStyle(Theme.C.ink)
+                                    .foregroundStyle(blocked == nil ? Theme.C.ink : Theme.C.inkFaint)
                                 Spacer()
-                                TokenToggle(isOn: speedToggle(fast, in: composer))
+                                TokenToggle(isOn: speedToggle(fast, in: composer), enabled: blocked == nil)
                             }
                             .frame(minHeight: 44)
                             .disabled(blocked != nil)
@@ -129,7 +130,8 @@ struct ModelSheet: View {
                         Section {
                             TokenSegmented(
                                 options: composer.speeds.map { (id: $0.id, label: $0.label) },
-                                selection: speedBinding(composer)
+                                selection: speedBinding(composer),
+                                enabled: blocked == nil
                             )
                             .disabled(blocked != nil)
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))

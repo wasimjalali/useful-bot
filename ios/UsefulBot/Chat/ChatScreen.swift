@@ -65,60 +65,7 @@ struct ChatScreen: View {
                 readinessStrip(readiness)
             }
             transcript
-            let approvals = phone.approvals(for: botId)
-            let questions = phone.questions(for: botId)
-            let proposals = phone.proposals(for: botId)
-            // Docked asks expand one at a time; the rest fold behind a
-            // "N more waiting" row that opens the stack (design spec §chat).
-            // Approvals and questions outrank proposals — they gate a running
-            // turn, so the expanded card must never be an open proposal.
-            let shownApprovals = asksExpanded ? approvals.count : min(1, approvals.count)
-            let shownQuestions = asksExpanded ? questions.count : min(questions.count, max(0, 1 - approvals.count))
-            let shownProposals = asksExpanded ? proposals.count : min(proposals.count, max(0, 1 - approvals.count - questions.count))
-            let asksWaiting = approvals.count + questions.count + proposals.count
-                - shownApprovals - shownQuestions - shownProposals
-            ForEach(approvals.prefix(shownApprovals)) { card in
-                ApprovalCardView(card: card, blockedReason: writesBlocked) { approve in
-                    Task { await phone.decide(card, approve: approve) }
-                }
-                .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                .padding(.bottom, 8)
-            }
-            ForEach(questions.prefix(shownQuestions)) { question in
-                QuestionCardView(question: question, blockedReason: writesBlocked) { option in
-                    phone.answer(question, option: option, readiness: coordinator.readiness)
-                }
-                .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                .padding(.bottom, 8)
-            }
-            ForEach(proposals.prefix(shownProposals)) { proposal in
-                ProposalCardView(proposal: proposal, blockedReason: writesBlocked) { confirmed in
-                    Task {
-                        if confirmed { await phone.confirmProposal(proposal) }
-                        else { await phone.dismissProposal(proposal) }
-                    }
-                }
-                .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                .padding(.bottom, 8)
-            }
-            // Spec 1.3: the mention card docks directly above the composer,
-            // above every docked ask.
-            if mentionVisible {
-                mentionList
-                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                    .padding(.bottom, 8)
-            }
-            if asksWaiting > 0 {
-                Button {
-                    asksExpanded = true
-                } label: {
-                    Text("\(asksWaiting) more waiting")
-                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .padding(.horizontal, DesignTokens.Space.phoneGutter)
-            }
+            dockedAsks
             composer
         }
         .background(Theme.C.surface)
@@ -129,43 +76,7 @@ struct ChatScreen: View {
             return .handled
         }))
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                if let bot {
-                    Button {
-                        showBotSettings = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            if bot.isGroup {
-                                AvatarStackView(bots: groupMemberBots(bot, shell: phone.shell), size: 18, maxVisible: 2)
-                                    .frame(width: 28, height: 28)
-                            } else {
-                                BotFace(bot: bot, size: 28)
-                            }
-                            Text(bot.name)
-                                .tokenFont(DesignTokens.FontSize.phoneNavTitle, .semibold)
-                                .foregroundStyle(Theme.C.ink)
-                                .lineLimit(1)
-                        }
-                        .frame(minWidth: 44, minHeight: 44)
-                    }
-                    .accessibilityLabel("\(bot.name), Bot settings")
-                    .accessibilityAddTraits(.isHeader)
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showBotSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                        .foregroundStyle(Theme.C.ink)
-                        .frame(minWidth: 44, minHeight: 44)
-                }
-                .accessibilityLabel("Bot settings")
-                .disabled(bot == nil)
-            }
-        }
+        .toolbar { chatToolbar }
         .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { _, item in
             Task {
@@ -263,6 +174,8 @@ struct ChatScreen: View {
             detent: .large,
             // Spec 1.5: the large-detent sheet paints `canvas` so its
             // grouped rows read as `surface` cards.
+            // One close affordance per header: the 'Done' word, not X+Done.
+            showsClose: false,
             canvas: true,
             trailing: { Button("Done") { showBotSettings = false } },
             content: { botSettings }
@@ -826,9 +739,9 @@ struct ChatScreen: View {
                     Button { showAttach = true } label: {
                         Image(systemName: "plus")
                             .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                            .foregroundStyle(Theme.C.ink)
+                            .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
                             .frame(width: 36, height: 36)
-                            .background(Theme.C.sunken, in: Circle())
+                            .background(writesBlocked == nil ? Theme.C.sunken : Theme.C.sunken.opacity(0.6), in: Circle())
                             .frame(width: 44, height: 44)
                     }
                     .accessibilityLabel("Add to message")
@@ -1115,6 +1028,124 @@ struct ChatScreen: View {
         phone.mutationBlocked(coordinator.readiness)
     }
 
+    /// Nav bar: the bot face + name principal opens bot settings, and so
+    /// does the trailing gear — one affordance, two sizes.
+    @ToolbarContentBuilder
+    private var chatToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            if let bot {
+                Button {
+                    showBotSettings = true
+                } label: {
+                    HStack(spacing: 8) {
+                        if bot.isGroup {
+                            AvatarStackView(bots: groupMemberBots(bot, shell: phone.shell), size: 18, maxVisible: 2)
+                                .frame(width: 28, height: 28)
+                        } else {
+                            BotFace(bot: bot, size: 28)
+                        }
+                        Text(bot.name)
+                            .tokenFont(DesignTokens.FontSize.phoneNavTitle, .semibold)
+                            .foregroundStyle(Theme.C.ink)
+                            .lineLimit(1)
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                }
+                .accessibilityLabel("\(bot.name), Bot settings")
+                .accessibilityAddTraits(.isHeader)
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                showBotSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
+                    .foregroundStyle(Theme.C.ink)
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .accessibilityLabel("Bot settings")
+            .disabled(bot == nil)
+        }
+    }
+
+    /// The docked ask stack between transcript and composer: approvals and
+    /// questions outrank proposals (they gate a running turn), and at most
+    /// one card expands at a time — the rest fold behind a "N more waiting"
+    /// row that opens the stack (design spec §chat).
+    private var dockedAsks: some View {
+        let approvals = phone.approvals(for: botId)
+        let questions = phone.questions(for: botId)
+        let proposals = phone.proposals(for: botId)
+        let shownApprovals = asksExpanded ? approvals.count : min(1, approvals.count)
+        let shownQuestions = asksExpanded ? questions.count : min(questions.count, max(0, 1 - approvals.count))
+        let shownProposals = asksExpanded ? proposals.count : min(proposals.count, max(0, 1 - approvals.count - questions.count))
+        let asksWaiting = approvals.count + questions.count + proposals.count
+            - shownApprovals - shownQuestions - shownProposals
+        return Group {
+            ForEach(approvals.prefix(shownApprovals)) { card in
+                ApprovalCardView(card: card, blockedReason: writesBlocked) { approve in
+                    Task { await phone.decide(card, approve: approve) }
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
+            ForEach(questions.prefix(shownQuestions)) { question in
+                QuestionCardView(question: question, blockedReason: writesBlocked) { option in
+                    phone.answer(question, option: option, readiness: coordinator.readiness)
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
+            ForEach(proposals.prefix(shownProposals)) { proposal in
+                ProposalCardView(proposal: proposal, blockedReason: writesBlocked) { confirmed in
+                    Task {
+                        if confirmed { await phone.confirmProposal(proposal) }
+                        else { await phone.dismissProposal(proposal) }
+                    }
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
+            // Spec 1.3: the mention card docks directly above the composer,
+            // above every docked ask.
+            if mentionVisible {
+                mentionList
+                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                    .padding(.bottom, 8)
+            }
+            if asksWaiting > 0 {
+                Button {
+                    asksExpanded = true
+                } label: {
+                    Text("\(asksWaiting) more waiting")
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+            }
+        }
+    }
+
+    /// Defaults section's label | value 〉 row — the chevron marks the row
+    /// as a push (spec's drill-down grammar), quieted with the row.
+    private func defaultsRow(_ title: String, value: String) -> some View {
+        LabeledContent {
+            HStack {
+                Text(value)
+                    .foregroundStyle(writesBlocked == nil ? Theme.C.inkMuted : Theme.C.inkFaint)
+                Image(systemName: "chevron.right")
+                    .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                    .foregroundStyle(Theme.C.inkFaint)
+            }
+        } label: {
+            Text(title)
+                .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
+        }
+        .frame(minHeight: 44)
+    }
+
     /// Spec 1.5: identity block, then Profile / Avatar / Defaults /
     /// Routines / Memory / Past conversations / destructive groups. The
     /// stack stays inside the floating sheet so "Show all" pushes internal;
@@ -1163,18 +1194,14 @@ struct ChatScreen: View {
                             showBotSettings = false
                             showModel = true
                         } label: {
-                            LabeledContent("Model", value: phone.composer?.modelLabel ?? "Model")
-                                .foregroundStyle(Theme.C.ink)
-                                .frame(minHeight: 44)
+                            defaultsRow("Model", value: phone.composer?.modelLabel ?? "Model")
                         }
                         .disabled(writesBlocked != nil)
                         Button {
                             showBotSettings = false
                             showPermission = true
                         } label: {
-                            LabeledContent("Permission", value: bot.permissionLabel)
-                                .foregroundStyle(Theme.C.ink)
-                                .frame(minHeight: 44)
+                            defaultsRow("Permission", value: bot.permissionLabel)
                         }
                         .disabled(writesBlocked != nil)
                         LabeledContent("Working folder", value: bot.workspace?.folderName ?? "None")
@@ -1223,16 +1250,17 @@ struct ChatScreen: View {
                         Button("New chat") {
                             Task { await phone.newChat(bot.id) }
                         }
+                        .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
                         .disabled(writesBlocked != nil)
                         .frame(minHeight: 44)
                         Button("Clear conversation") { confirmClear = true }
-                            .foregroundStyle(Theme.C.danger)
+                            .foregroundStyle(writesBlocked == nil ? Theme.C.danger : Theme.C.inkFaint)
                             .disabled(writesBlocked != nil)
                             .frame(minHeight: 44)
                         Button(bot.isGroup ? "Delete group" : "Delete bot") { confirmDelete = true }
                             // The token danger, not the system destructive
                             // red — same treatment as 'Clear conversation'.
-                            .foregroundStyle(Theme.C.danger)
+                            .foregroundStyle(writesBlocked == nil && (phone.shell?.bots.count ?? 0) > 1 ? Theme.C.danger : Theme.C.inkFaint)
                             .disabled(writesBlocked != nil || (phone.shell?.bots.count ?? 0) <= 1)
                             .frame(minHeight: 44)
                         if (phone.shell?.bots.count ?? 0) <= 1 {

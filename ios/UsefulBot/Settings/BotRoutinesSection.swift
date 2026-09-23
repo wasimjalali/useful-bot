@@ -74,16 +74,22 @@ struct BotRoutinesSection: View {
                     .foregroundStyle(Theme.C.inkMuted)
             }
             if let error {
-                HStack {
+                // Error row anatomy (spec 1.2): danger glyph, one muted
+                // sentence, trailing secondary Retry.
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(Theme.C.danger)
                     Text(error)
                         .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                        .foregroundStyle(Theme.C.danger)
-                    Spacer()
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
                     Button("Retry") {
                         loaded = false
                         self.error = nil
                         Task { await load() }
                     }
+                    .buttonStyle(SecondaryAction(compact: true))
                     .frame(minHeight: 44)
                 }
             }
@@ -341,7 +347,7 @@ struct RoutineEditorSheet: View {
                 if routine != nil {
                     Section {
                         Button("Delete routine") { Task { await remove() } }
-                            .foregroundStyle(Theme.C.danger)
+                            .foregroundStyle(blocked == nil && !busy ? Theme.C.danger : Theme.C.inkFaint)
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .disabled(blocked != nil || busy)
                     }
@@ -356,7 +362,16 @@ struct RoutineEditorSheet: View {
                     }
                 }
                 if let error {
-                    Section { Text(error).foregroundStyle(Theme.C.danger) }
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.circle")
+                                .foregroundStyle(Theme.C.danger)
+                            Text(error)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
             .listStyle(.plain)

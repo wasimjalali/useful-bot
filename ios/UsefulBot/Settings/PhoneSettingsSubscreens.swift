@@ -94,7 +94,16 @@ struct PhoneProvidersView: View {
                 }
             }
             if let error {
-                Section { Text(error).foregroundStyle(Theme.C.danger) }
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.circle")
+                            .foregroundStyle(Theme.C.danger)
+                        Text(error)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             Section {
                 Text("Keys stay in your Mac's Keychain. This iPhone never holds them.")
@@ -166,6 +175,14 @@ struct PhoneProvidersView: View {
     private func rolePicker(_ target: RoleTarget) -> some View {
         let role = target == .default ? payload?.defaultRole : payload?.reviewerRole
             List {
+                if let blocked {
+                    // The row push is gated on the parents' `blocked`, but
+                    // the sheet can stay open while readiness flips —
+                    // render the same reason here (§1.0).
+                    Text(blocked)
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
                 if let role {
                     if target == .reviewer {
                         Button {
@@ -173,7 +190,7 @@ struct PhoneProvidersView: View {
                         } label: {
                             HStack {
                                 Text("None")
-                                    .foregroundStyle(Theme.C.ink)
+                                    .foregroundStyle(blocked == nil ? Theme.C.ink : Theme.C.inkFaint)
                                 Spacer()
                                 if role.connectionId == nil {
                                     Image(systemName: "checkmark").foregroundStyle(Theme.C.accent)
@@ -188,6 +205,7 @@ struct PhoneProvidersView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(RowButtonStyle())
+                        .disabled(blocked != nil)
                     }
                     ForEach(role.models, id: \.id) { model in
                         Button {
@@ -197,7 +215,7 @@ struct PhoneProvidersView: View {
                                 ProviderMark(icon: model.icon, monogram: model.connectionLabel.first.map(String.init) ?? "?", size: 18)
                                 Text(model.label)
                                     .tokenFont(DesignTokens.FontSize.chatName, .regular)
-                                    .foregroundStyle(Theme.C.ink)
+                                    .foregroundStyle(blocked == nil ? Theme.C.ink : Theme.C.inkFaint)
                                 Spacer(minLength: 8)
                                 if role.connectionId == model.connectionId && role.modelId == model.id {
                                     Image(systemName: "checkmark").foregroundStyle(Theme.C.accent)
@@ -212,10 +230,12 @@ struct PhoneProvidersView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(RowButtonStyle())
+                        .disabled(blocked != nil)
                     }
                     if !role.efforts.isEmpty {
                         Section {
                             effortPicker(target, role: role)
+                                .disabled(blocked != nil)
                                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                                 .listRowBackground(Color.clear)
                         } header: {
@@ -241,7 +261,8 @@ struct PhoneProvidersView: View {
                     let modelId = role.modelId.isEmpty ? nil : role.modelId
                     _ = Task { await saveRole(target, connectionId: connectionId, modelId: modelId, effort: next) }
                 }
-            )
+            ),
+            enabled: blocked == nil
         )
     }
 
@@ -672,6 +693,9 @@ struct ProviderConnectView: View {
                         pollStatus = status
                     }
                 } catch {
+                    // A cancelled poll (Try again started a new flow)
+                    // must not stamp terminal copy onto the fresh one.
+                    guard !Task.isCancelled else { return }
                     pollStatus = "Lost the connection to your Mac."
                     terminalStatus = true
                     return
@@ -776,19 +800,32 @@ struct PhoneConnectorsView: View {
                         appSection
                     } else if let payload, payload.error != nil {
                         Section {
-                            HStack {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.circle")
+                                    .foregroundStyle(Theme.C.danger)
                                 Text(payload.error ?? "Connectors failed")
                                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                                    .foregroundStyle(Theme.C.danger)
-                                Spacer()
+                                    .foregroundStyle(Theme.C.inkMuted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 8)
                                 Button("Retry") { Task { await load() } }
+                                    .buttonStyle(SecondaryAction(compact: true))
                                     .frame(minHeight: 44)
                             }
                         }
                     }
                 }
                 if let error {
-                    Section { Text(error).foregroundStyle(Theme.C.danger) }
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.circle")
+                                .foregroundStyle(Theme.C.danger)
+                            Text(error)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -859,7 +896,7 @@ struct PhoneConnectorsView: View {
                 .overlay {
                     // `edge` at rest, `ink` on focus; key-rejected strokes
                     // the field danger (spec 1.13).
-                    RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                         .strokeBorder(rejectedReason != nil ? Theme.C.danger : (keyFocused ? Theme.C.ink : Theme.C.edge), lineWidth: 1)
                 }
                 // The key commit is primary (spec 1.13 anatomy).
@@ -903,6 +940,11 @@ struct PhoneConnectorsView: View {
                 Text("Apps show here once a key is saved. Saving or removing a key needs Face ID.")
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
+                if let blocked {
+                    Text(blocked)
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
             }
         } header: {
             tokenGroupHeader("Composio API key")
@@ -929,6 +971,11 @@ struct PhoneConnectorsView: View {
                 // Disabled-state reason (spec 1.13): every other Connect
                 // is quieted while one sign-in is pending.
                 Text("Finish the other sign-in first")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            if let blocked {
+                Text(blocked)
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
             }

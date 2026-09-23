@@ -180,6 +180,9 @@ private struct WidgetWebView: UIViewRepresentable {
         }
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            // The dead view must reload even when the re-fetched markup is
+            // byte-identical — drop the marker updateUIView compares on.
+            loaded = nil
             onProcessGone()
         }
     }
