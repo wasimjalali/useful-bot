@@ -112,8 +112,12 @@ export class AliasCircuit {
       return;
     }
     if (error.code === "model_unavailable") {
-      current.openUntil = Math.max(current.openUntil, now + MISSING_MODEL_OPEN_MS);
-      current.rateLimited = false;
+      // The later deadline decides what the pause is: a rate-limit pause that
+      // outlasts this one keeps its label, so the agent still waits it out.
+      if (now + MISSING_MODEL_OPEN_MS >= current.openUntil) {
+        current.openUntil = now + MISSING_MODEL_OPEN_MS;
+        current.rateLimited = false;
+      }
       return;
     }
     // A timeout is a 5xx-class failure too: three in the window open the
@@ -122,8 +126,10 @@ export class AliasCircuit {
       current.failures = current.failures.filter((at) => now - at < FAILURE_WINDOW_MS);
       current.failures.push(now);
       if (current.failures.length >= FAILURE_THRESHOLD) {
-        current.openUntil = Math.max(current.openUntil, now + FAILURE_OPEN_MS);
-        current.rateLimited = false;
+        if (now + FAILURE_OPEN_MS >= current.openUntil) {
+          current.openUntil = now + FAILURE_OPEN_MS;
+          current.rateLimited = false;
+        }
       }
     }
   }

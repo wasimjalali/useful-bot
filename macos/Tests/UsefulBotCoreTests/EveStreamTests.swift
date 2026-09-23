@@ -277,7 +277,7 @@ import Testing
             == "The provider account is out of credit or over its spend limit. Top it up, or pick another model.")
         // The provider's rate limit is named as the provider's, not the router's.
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "AI_RetryError: Failed after 3 attempts. Last error: AI_APICallError: upstream_rate_limited").reason
-            == "The model provider is rate limiting. Wait a minute and send again, or pick another model.")
+            == "The model provider is rate limiting. Wait a minute and send again.")
     }
 
     @Test func resetTimesReadAsAClockTime() {

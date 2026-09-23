@@ -171,6 +171,20 @@ test("a provider rate limit pauses the call for its retry-after instead of faili
   assert.equal(forever.sleeps.reduce((sum, ms) => sum + ms, 0) <= MAX_PROVIDER_TOTAL_WAIT_MS, true);
   assert.equal(forever.sleeps.length, 3);
 
+  // A pause longer than one slice is waited a slice at a time.
+  const long = harness([
+    () => refusal("upstream_rate_limited", 120_000),
+    () => refusal("upstream_rate_limited", 30_000),
+    () => new Response("{}", { status: 200 }),
+  ]);
+  assert.equal((await long.doFetch("http://router/x")).status, 200);
+  assert.deepEqual(long.sleeps, [90_000, 30_000]);
+
+  // One longer than the whole allowance goes back at once.
+  const hours = harness([() => refusal("upstream_rate_limited", 3_600_000)]);
+  assert.equal((await hours.doFetch("http://router/x")).status, 429);
+  assert.deepEqual(hours.sleeps, []);
+
   // A used-up plan is not a wait.
   const used = harness([() => new Response(JSON.stringify({ error: { code: "upstream_usage_limit", retryable: false } }), { status: 402 })]);
   assert.equal((await used.doFetch("http://router/x")).status, 402);

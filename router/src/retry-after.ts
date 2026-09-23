@@ -28,7 +28,12 @@ const QUOTA_CODES = new Set([
  * provider gave one, so the app can say what happened and until when.
  */
 export async function upstreamLimitError(response: Response): Promise<RouterError> {
-  const text = await readCapped(response, 16_384).catch(() => "");
+  const text = await readCapped(response, 16_384).catch(async () => {
+    // Too large or unreadable: an ordinary rate limit, and the socket is
+    // released rather than left for the collector.
+    await response.body?.cancel().catch(() => {});
+    return "";
+  });
   let type = "";
   let code = "";
   let resetsAt: number | undefined;

@@ -710,6 +710,17 @@ test("a provider rate limit pauses the alias as a rate limit, with the time left
   circuit.assertClosed("workhorse", at + 45_001);
 });
 
+test("failures inside a longer rate-limit pause keep it a rate-limit pause", () => {
+  const circuit = new AliasCircuit();
+  const at = 4_000_000;
+  circuit.recordFailure("workhorse", new RouterError({
+    status: 429, type: "rate_limit_error", code: "upstream_rate_limited", message: "upstream_rate_limited", retryable: true, retryAfterMs: 120_000,
+  }), at);
+  const protocolError = new RouterError({ status: 502, type: "upstream_error", code: "upstream_protocol_error", message: "upstream_protocol_error" });
+  for (let i = 0; i < 3; i += 1) circuit.recordFailure("workhorse", protocolError, at + 1_000);
+  assert.throws(() => circuit.assertClosed("workhorse", at + 60_000), /upstream_rate_limited/);
+});
+
 test("a reservation overrun keeps the alias shut, because a spend guard on a timer is not one", () => {
   const circuit = new AliasCircuit();
   circuit.disable("workhorse");

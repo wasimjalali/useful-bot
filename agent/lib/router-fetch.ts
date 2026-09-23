@@ -102,9 +102,24 @@ export function routerFetch(options: RouterFetchOptions): FetchLike {
       const singleCap = provider ? MAX_PROVIDER_SINGLE_WAIT_MS : MAX_SINGLE_WAIT_MS;
       const totalCap = provider ? MAX_PROVIDER_TOTAL_WAIT_MS : MAX_TOTAL_WAIT_MS;
       const backoff = Math.min(BASE_BACKOFF_MS * 2 ** attempt, singleCap);
-      // Jitter, so ten bots refused together do not all come back together.
-      const wait = Math.round((hint.ms ?? backoff) + random() * 500);
-      if (wait > singleCap + 500 || waited + wait > totalCap) return response;
+      let wait: number;
+      if (provider) {
+        const hinted = hint.ms ?? backoff;
+        // A pause longer than the whole allowance cannot be waited out, so it
+        // goes back now rather than after minutes of waiting for nothing.
+        if (waited + hinted > totalCap) return response;
+        // A pause longer than one slice is waited a slice at a time: the
+        // router answers the next ask with the time still left. The jitter
+        // grows with the pause, so bots released together by one pause do
+        // not all hit the provider in the same half second.
+        const jitter = random() * Math.min(5_000, Math.max(500, hinted * 0.1));
+        wait = Math.min(Math.round(Math.min(hinted, singleCap) + jitter), totalCap - waited);
+        if (wait <= 0) return response;
+      } else {
+        // Jitter, so ten bots refused together do not all come back together.
+        wait = Math.round((hint.ms ?? backoff) + random() * 500);
+        if (wait > singleCap + 500 || waited + wait > totalCap) return response;
+      }
       await response.body?.cancel();
       await doSleep(wait, init?.signal);
       waited += wait;

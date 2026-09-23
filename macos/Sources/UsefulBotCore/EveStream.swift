@@ -293,10 +293,11 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         if haystack.contains("budget_exhausted") {
             return "The daily token limit is used up. Raise it in Settings, under Usage."
         }
-        // The router already waited out the provider's limit as long as a
-        // turn can, so this one is the provider's, and it is longer.
+        // The agent already waited out the provider's limit as long as a turn
+        // can, so this one is the provider's, and it is longer. Another model
+        // on the same alias is paused too, so the copy does not offer one.
         if haystack.contains("upstream_rate_limited") {
-            return "The model provider is rate limiting. Wait a minute and send again, or pick another model."
+            return "The model provider is rate limiting. Wait a minute and send again."
         }
         if haystack.contains("rate_limit") {
             return "The router is rate limiting. Wait a moment and send again."
