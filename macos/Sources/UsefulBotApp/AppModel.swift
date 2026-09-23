@@ -254,9 +254,11 @@ final class AppModel: ObservableObject {
 
     private var prefillObserver: NSObjectProtocol?
 
-    /// Replace the composer draft with text the app wrote, never typing.
+    /// Add text the app wrote to the composer draft. Whatever the owner had
+    /// typed stays, above it: a prefill never costs them their words.
     func prefillDraft(_ text: String) {
-        draft = text
+        let kept = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = kept.isEmpty ? text : "\(draft)\n\n\(text)"
         draftWriteToken &+= 1
     }
 

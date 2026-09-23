@@ -1,7 +1,7 @@
 import { isGateError, requireOwner } from "../../../../../lib/desktop-gate";
 import { migrateLegacyImages } from "../../../../../lib/media-migrate";
 import { readImage } from "../../../../../../shared/images-store.ts";
-import { readMediaBytes } from "../../../../../../shared/media-store.ts";
+import { readMediaBytes, sniffImage } from "../../../../../../shared/media-store.ts";
 
 export const runtime = "nodejs";
 
@@ -13,6 +13,9 @@ function answer(bytes: Buffer, mime: string): Response {
       // Not immutable: a relinked file answers under the same id.
       "cache-control": "private, no-cache",
       "x-content-type-options": "nosniff",
+      // Defence in depth: whatever these bytes are, nothing in them runs.
+      "content-security-policy": "default-src 'none'; sandbox",
+      "content-disposition": "inline; filename=\"image\"",
     },
   });
 }
@@ -41,8 +44,18 @@ export async function GET(
   }
   if (found.status === "missing") {
     // Still in the app's own store (the folder could not take it yet).
+    // Checked like the media path: the bytes must be an image, and the type
+    // served is what they are, not what the record says.
     const legacy = readImage(id);
-    if (legacy) return answer(Buffer.from(legacy.b64, "base64"), legacy.mime);
+    if (legacy) {
+      const bytes = Buffer.from(legacy.b64, "base64");
+      const mime = sniffImage(bytes);
+      if (!mime) {
+        console.error(`[media] legacy image ${id} is not an image`);
+        return new Response("error", { status: 500, headers: { "cache-control": "no-store" } });
+      }
+      return answer(bytes, mime);
+    }
   }
   if (found.status === "ok" && found.item.kind === "image") return answer(found.bytes, found.mime);
   if (found.status === "error") {

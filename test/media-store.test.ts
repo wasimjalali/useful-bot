@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -56,6 +56,10 @@ test("a moved file reads as moved, Locate relinks it, and only to the same kind"
   renameSync(item.path, moved);
   assert.equal(readMediaBytes("imgmove00001", index).status, "moved");
   assert.equal(listMedia({}, index)[0]?.exists, false);
+  // A folder at the item's path is not the item: Move to Trash must not take it.
+  mkdirSync(item.path);
+  assert.equal(listMedia({}, index)[0]?.exists, false);
+  renameSync(item.path, join(dir, "a-folder"));
   const drawingPath = join(dir, "scene.excalidraw");
   writeFileSync(drawingPath, "{}");
   assert.throws(() => relinkMedia("imgmove00001", drawingPath, index), /media_type/);
@@ -118,6 +122,8 @@ test("an unreadable index refuses writes instead of dropping every entry", () =>
   writeFileSync(index, "{ not json");
   assert.throws(() => saveImage({ id: "imgbad000001", mime: "image/png", bytes: PNG, prompt: "x", model: "", provider: "", botId: "b", botName: "B" }, root, index), /media_index_unreadable/);
   assert.equal(readFileSync(index, "utf8"), "{ not json");
+  // And the Library says so instead of showing an empty grid over real files.
+  assert.throws(() => listMedia({}, index), /media_index_unreadable/);
   // The file written before the index refused is undone.
   assert.deepEqual(readdirSync(join(root, "B"), { recursive: true }).filter((name) => String(name).endsWith(".png")), []);
 });

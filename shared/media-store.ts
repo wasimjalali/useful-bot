@@ -69,8 +69,12 @@ const EXT_MIME: Record<string, string> = {
   ".excalidraw": "application/vnd.excalidraw+json",
 };
 const DRAWING_MIME = "application/vnd.excalidraw+json";
-const LOCK_TIMEOUT_MS = 5_000;
-const LOCK_STALE_MS = 30_000;
+// The critical section is a read, a small edit and an fsynced write: a
+// holder is done in milliseconds. A lock older than a few seconds belongs to
+// a process that died holding it, and a waiter gives up quickly rather than
+// stall the service it runs in.
+const LOCK_TIMEOUT_MS = 2_000;
+const LOCK_STALE_MS = 10_000;
 const TITLE_MAX = 60;
 const PROMPT_MAX = 2_000;
 
@@ -233,9 +237,13 @@ function writeNewFile(dir: string, base: string, ext: string, bytes: Buffer): st
       try {
         writeFileSync(fd, bytes);
         fsyncSync(fd);
-      } finally {
+      } catch (err) {
+        // A half-written file must not stay behind as a corrupt image.
         closeSync(fd);
+        try { unlinkSync(path); } catch { /* ignore */ }
+        throw err;
       }
+      closeSync(fd);
       return path;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
@@ -332,6 +340,8 @@ export function saveImage(input: {
 export function saveDrawing(input: {
   id: string;
   elements: unknown;
+  /** Embedded images the scene's image elements point at, when the widget carries them. */
+  files?: unknown;
   title: string;
   botId: string;
   botName: string;
@@ -347,7 +357,7 @@ export function saveDrawing(input: {
     source: "Useful Bot",
     elements: elements.filter((el) => el && typeof el === "object" && (el as { type?: unknown }).type !== "cameraUpdate"),
     appState: { viewBackgroundColor: "#ffffff" },
-    files: {},
+    files: input.files && typeof input.files === "object" && !Array.isArray(input.files) ? input.files : {},
   };
   return saveFile({
     id: input.id,
@@ -365,8 +375,26 @@ export function saveDrawing(input: {
   }, root, indexPath);
 }
 
+/** Only a regular file counts as the item: a folder at that path is not it. */
+function isRegularFile(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Where a path really is, for comparing two paths that may go through a link. */
+function realOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 /** The image type the bytes themselves say, never the file name. */
-function sniffImage(bytes: Buffer): string | null {
+export function sniffImage(bytes: Buffer): string | null {
   if (bytes.length > 8 && bytes[0] === 0x89 && bytes.subarray(1, 4).toString("ascii") === "PNG") return "image/png";
   if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
   if (bytes.length > 6 && /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString("ascii"))) return "image/gif";
@@ -434,13 +462,17 @@ export function listMedia(
   indexPath = mediaIndexPath(),
 ): Array<MediaItem & { exists: boolean }> {
   const q = filter.query?.trim().toLowerCase();
-  return readMediaIndex(indexPath)
+  // An index that will not parse is an error the owner must see, never an
+  // empty Library over files that are all still there.
+  const index = readIndexOrNull(indexPath);
+  if (!index) throw new Error("media_index_unreadable");
+  return index.items
     .filter((item) => !item.forgotten)
     .filter((item) => !filter.kind || item.kind === filter.kind)
     .filter((item) => !filter.botId || item.botId === filter.botId)
     .filter((item) => !q || item.title.toLowerCase().includes(q) || item.prompt.toLowerCase().includes(q) || item.botName.toLowerCase().includes(q))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map((item) => ({ ...item, exists: existsSync(item.path) }));
+    .map((item) => ({ ...item, exists: isRegularFile(item.path) }));
 }
 
 /**
@@ -463,7 +495,7 @@ export function relinkMedia(id: string, newPath: string, indexPath = mediaIndexP
     const item = index.items.find((row) => row.id === id);
     if (!item || item.forgotten) throw new Error("media_missing");
     const { mime } = readVerified(path, item.kind);
-    if (index.items.some((row) => row.id !== id && !row.forgotten && row.path === path)) throw new Error("media_in_use");
+    if (index.items.some((row) => row.id !== id && !row.forgotten && realOrSelf(row.path) === path)) throw new Error("media_in_use");
     item.path = path;
     item.mime = mime;
     return { ...item };

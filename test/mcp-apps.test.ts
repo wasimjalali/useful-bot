@@ -221,3 +221,22 @@ test("a full-screen reply that lands after the reader left full screen does not 
   assert.equal(host.iframe.style.height, "480px");
   assert.deepEqual(host.toApp.find((msg) => msg.id === 1)?.result, { mode: "inline" });
 });
+
+test("an Excalidraw camera that cuts its drawing is widened to fit, 4:3; one that fits is untouched", async () => {
+  const { fitExcalidrawCamera } = await import("../shared/mcp-app-host.ts");
+  const cut = [
+    { type: "cameraUpdate", x: 0, y: 0, width: 400, height: 300 },
+    { type: "rectangle", x: 50, y: 115, width: 140, height: 70 },
+    { type: "arrow", x: 190, y: 150, width: 100, height: 0, points: [[0, 0], [100, 0]] },
+    { type: "rectangle", x: 290, y: 115, width: 140, height: 70 },
+  ];
+  const fitted = JSON.parse(fitExcalidrawCamera({ elements: JSON.stringify(cut) }).elements as string) as Array<Record<string, number>>;
+  const camera = fitted[0]!;
+  assert.ok(camera.x <= 50 && camera.x + camera.width >= 430, "covers the right box");
+  assert.ok(Math.abs(camera.width / camera.height - 4 / 3) < 0.02, "keeps 4:3");
+  assert.deepEqual(fitted.slice(1), cut.slice(1));
+  const fits = { elements: [{ type: "cameraUpdate", x: 0, y: 0, width: 800, height: 600 }, { type: "rectangle", x: 10, y: 10, width: 50, height: 50 }] };
+  assert.equal(fitExcalidrawCamera(fits), fits);
+  const noCamera = { elements: [{ type: "rectangle", x: 10, y: 10, width: 50, height: 50 }] };
+  assert.equal(fitExcalidrawCamera(noCamera), noCamera);
+});

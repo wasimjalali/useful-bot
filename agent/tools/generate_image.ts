@@ -97,8 +97,18 @@ export default defineTool({
       return { status: "failed", error: "empty_image" };
     }
     const imageId = `img${randomUUID().replaceAll("-", "").slice(0, 24)}`;
-    const shell = readShell();
-    const botId = activeBotId(shell, ctx);
+    // Everything from here runs after the provider billed. Each failure ends
+    // in a plain, final answer the bot relays, never a thrown error it would
+    // retry (and pay for again).
+    let botId = "";
+    let botName = "Useful Bot";
+    try {
+      const shell = readShell();
+      botId = activeBotId(shell, ctx);
+      botName = shell.bots.find((bot) => bot.id === botId)?.name ?? botName;
+    } catch (err) {
+      console.error(`[media] could not read the roster for image ${imageId}`, err);
+    }
     const mime = typeof item.mime === "string" ? item.mime : "image/png";
     const provider = typeof json?.provider === "string" ? json.provider : "";
     const model = typeof json?.model === "string" ? json.model : "";
@@ -116,7 +126,7 @@ export default defineTool({
         provider,
         model,
         botId,
-        botName: shell.bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot",
+        botName,
       }).path;
     } catch (err) {
       console.error(`[media] could not save image ${imageId} to the media folder`, err);
@@ -132,18 +142,31 @@ export default defineTool({
         };
       }
     }
-    appendAgentEvent(botId, {
-      kind: "image",
-      text: input.prompt,
-      imageId,
-      id: `img_${imageId}`,
-    });
+    let shown = Boolean(botId);
+    if (shown) {
+      try {
+        appendAgentEvent(botId, {
+          kind: "image",
+          text: input.prompt,
+          imageId,
+          id: `img_${imageId}`,
+        });
+      } catch (err) {
+        console.error(`[media] could not add image ${imageId} to the chat`, err);
+        shown = false;
+      }
+    }
+    const where = savedPath
+      ? `Saved as ${savedPath}.`
+      : "Kept in the app's own store for now; it moves into the Useful Bot folder in Documents on the next Library load, so there is no file path to copy yet.";
     return {
       status: "generated",
       imageId,
-      path: savedPath,
-      model: typeof json?.model === "string" ? json.model : undefined,
-      note: "The image is in the chat now. Describe it in words if that helps, but the owner already sees it.",
+      ...(savedPath ? { path: savedPath } : {}),
+      model: model || undefined,
+      note: shown
+        ? `The image is in the chat now. ${where} Describe it in words if that helps, but the owner already sees it.`
+        : `The image was generated and kept, but it could not be added to this chat. ${where} Tell the owner it is in the Library; do not generate it again.`,
     };
   },
 });

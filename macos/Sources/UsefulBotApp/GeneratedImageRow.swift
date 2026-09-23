@@ -82,16 +82,15 @@ struct GeneratedImageRow: View {
                 Spacer(minLength: 0)
                 switch lost {
                 case .moved:
-                    // The server cannot tell moved from deleted: both ways out.
+                    // The server cannot tell moved from deleted: both ways
+                    // out, and Retry for a file put back where it was.
+                    rowAction("Retry") { retry() }
                     rowAction("Locate") { locate() }
                     regenerateAction
                 case .missing:
                     regenerateAction
                 case .failed:
-                    rowAction("Retry") {
-                        self.lost = nil
-                        attempt += 1
-                    }
+                    rowAction("Retry") { retry() }
                 }
             }
             .padding(.horizontal, 14)
@@ -115,6 +114,14 @@ struct GeneratedImageRow: View {
                     userInfo: ["text": "Generate this image again: \(prompt)"]
                 )
             }
+        }
+    }
+
+    private func retry() {
+        Task {
+            await GeneratedImageCache.shared.forgetOutcome(imageId)
+            lost = nil
+            attempt += 1
         }
     }
 
@@ -224,6 +231,11 @@ actor GeneratedImageCache {
             break
         }
         return result
+    }
+
+    /// A Retry asks the server again rather than the minute-long memory.
+    func forgetOutcome(_ id: String) {
+        lost[id] = nil
     }
 
     func relink(_ id: String, path: String) async throws {

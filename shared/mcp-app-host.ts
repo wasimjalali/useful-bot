@@ -53,11 +53,83 @@ function withCsp(html: string, domains: string[]): string {
   return `${meta}${html}`;
 }
 
+type Box = { minX: number; minY: number; maxX: number; maxY: number };
+
+/**
+ * An Excalidraw scene whose last camera does not cover its shapes gets that
+ * camera widened to fit them, keeping Excalidraw's 4:3 camera shape. Bots
+ * pick the camera by hand and often draw past its edge (a 400-wide camera
+ * over a box ending at 430), and the live view then cuts the drawing in the
+ * chat and in the Library alike. A camera that already covers the scene, or
+ * a scene with no camera, is left exactly as the bot drew it.
+ */
+export function fitExcalidrawCamera(args: Record<string, unknown>): Record<string, unknown> {
+  const raw = args.elements;
+  let list: unknown;
+  try {
+    list = typeof raw === "string" ? JSON.parse(raw) as unknown : raw;
+  } catch {
+    return args;
+  }
+  if (!Array.isArray(list)) return args;
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  let box: Box | null = null;
+  const grow = (x: number, y: number) => {
+    box = box
+      ? { minX: Math.min(box.minX, x), minY: Math.min(box.minY, y), maxX: Math.max(box.maxX, x), maxY: Math.max(box.maxY, y) }
+      : { minX: x, minY: y, maxX: x, maxY: y };
+  };
+  let cameraIndex = -1;
+  list.forEach((el, index) => {
+    if (!el || typeof el !== "object") return;
+    const rec = el as Record<string, unknown>;
+    if (rec.type === "cameraUpdate") { cameraIndex = index; return; }
+    if (rec.type === "delete" || rec.isDeleted === true) return;
+    const x = num(rec.x);
+    const y = num(rec.y);
+    if (x === null || y === null) return;
+    const points = Array.isArray(rec.points) ? rec.points : null;
+    if (points && points.length > 0) {
+      for (const point of points) {
+        if (Array.isArray(point) && num(point[0]) !== null && num(point[1]) !== null) grow(x + point[0], y + point[1]);
+      }
+    } else {
+      grow(x, y);
+      grow(x + (num(rec.width) ?? 0), y + (num(rec.height) ?? 0));
+    }
+  });
+  const bounds = box as Box | null;
+  if (cameraIndex < 0 || !bounds) return args;
+  const camera = list[cameraIndex] as Record<string, unknown>;
+  const cx = num(camera.x) ?? 0;
+  const cy = num(camera.y) ?? 0;
+  const cw = num(camera.width) ?? 0;
+  const ch = num(camera.height) ?? 0;
+  if (cw > 0 && ch > 0 && bounds.minX >= cx && bounds.minY >= cy && bounds.maxX <= cx + cw && bounds.maxY <= cy + ch) return args;
+  const pad = 40;
+  let width = Math.max(cw, bounds.maxX - bounds.minX + pad * 2);
+  let height = Math.max(ch, bounds.maxY - bounds.minY + pad * 2);
+  if (width / height > 4 / 3) height = width * 3 / 4;
+  else width = height * 4 / 3;
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  const fitted = [...list];
+  fitted[cameraIndex] = {
+    ...camera,
+    x: Math.round(centerX - width / 2),
+    y: Math.round(centerY - height / 2),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
+  return { ...args, elements: typeof raw === "string" ? JSON.stringify(fitted) : fitted };
+}
+
 export function renderWidgetHost(record: WidgetRecord, appHtml: string, cspDomains: string[], degraded = false): string {
+  const excalidraw = record.connectionId === "excalidraw" || record.toolName.startsWith("excalidraw__");
   const payload = jsonScript({
     id: record.id,
     toolName: record.toolName,
-    arguments: record.arguments,
+    arguments: excalidraw ? fitExcalidrawCamera(record.arguments) : record.arguments,
     result: record.result,
     degraded,
   });
@@ -209,6 +281,32 @@ window.addEventListener("message", (event) => {
 </html>`;
 }
 
+/**
+ * The app page an MCP server serves for its widgets (Excalidraw's editor) is
+ * the same for every drawing, and reading it costs two round trips to the
+ * server. It is kept ten minutes per server and resource, and opens that land
+ * while a read is running share it, so a chat full of drawings or a Library
+ * detail opens without waiting on the network each time. A failed read is
+ * not kept.
+ */
+const APP_PAGE_TTL_MS = 10 * 60 * 1000;
+const APP_PAGE_KEY = Symbol.for("useful-bot.mcp-app-pages");
+// On globalThis: the dev server gives each route its own copy of this module.
+const appPages: Map<string, { at: number; read: Promise<Awaited<ReturnType<typeof readMcpResource>>> }> =
+  ((globalThis as Record<symbol, unknown>)[APP_PAGE_KEY] ??= new Map()) as Map<string, { at: number; read: Promise<Awaited<ReturnType<typeof readMcpResource>>> }>;
+
+function appPage(url: string, uri: string): Promise<Awaited<ReturnType<typeof readMcpResource>>> {
+  const key = `${url}\n${uri}`;
+  const hit = appPages.get(key);
+  if (hit && Date.now() - hit.at < APP_PAGE_TTL_MS) return hit.read;
+  const read = readMcpResource(url, uri);
+  appPages.set(key, { at: Date.now(), read });
+  read.catch(() => {
+    if (appPages.get(key)?.read === read) appPages.delete(key);
+  });
+  return read;
+}
+
 export async function htmlForWidget(record: WidgetRecord): Promise<{ html: string; mimeType: string }> {
   const entry = findConnectionById(record.connectionId);
   const resourceUri = record.resourceUri ?? "ui://excalidraw/mcp-app.html";
@@ -216,7 +314,7 @@ export async function htmlForWidget(record: WidgetRecord): Promise<{ html: strin
     return { html: renderWidgetHost(record, emptyCanvas(record), [], true), mimeType: "text/html; charset=utf-8" };
   }
   try {
-    const resource = await readMcpResource(entry.url, resourceUri);
+    const resource = await appPage(entry.url, resourceUri);
     const domains = [
       ...(resource.csp?.resourceDomains ?? []),
       ...(resource.csp?.connectDomains ?? []),

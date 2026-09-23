@@ -30,7 +30,7 @@ struct LibraryView: View {
     private static let gridHeight: CGFloat = 560
 
     var body: some View {
-        NativeDialog(maxWidth: 920, ariaLabel: "Library", onClose: onClose) {
+        NativeDialog(maxWidth: 1040, ariaLabel: "Library", onClose: onClose) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
                     if selected != nil {
@@ -127,6 +127,7 @@ struct LibraryView: View {
                             .frame(height: 30)
                             .background(filter == option ? Theme.C.sunken : Color.clear)
                             .clipShape(Capsule(style: .continuous))
+                            .contentShape(Capsule(style: .continuous))
                     }
                     .buttonStyle(.plain)
                     .pointerOnHover()
@@ -216,17 +217,27 @@ struct LibraryView: View {
     }
 
     private func openChat(_ item: MediaItem) {
-        guard !item.botId.isEmpty else { return }
+        guard botExists(item.botId) else {
+            error = "The bot that made this is no longer here"
+            selected = nil
+            return
+        }
         model.select(item.botId)
         onClose()
     }
 
     /// Put the saved prompt in the bot's composer, in its chat.
+    /// Put the saved prompt in the composer of the bot that made it, or of
+    /// the open chat when that bot is gone.
     private func regenerate(_ item: MediaItem) {
-        guard !item.botId.isEmpty, !item.prompt.isEmpty else { return }
-        model.select(item.botId)
+        guard !item.prompt.isEmpty else { return }
+        if botExists(item.botId) { model.select(item.botId) }
         model.prefillDraft("Generate this image again: \(item.prompt)")
         onClose()
+    }
+
+    private func botExists(_ id: String) -> Bool {
+        !id.isEmpty && (model.store?.bots.contains { $0.id == id } ?? false)
     }
 
     /// Point a moved item at where its file went, then show it from there.
@@ -280,6 +291,7 @@ struct LibraryView: View {
 private struct LibraryTile: View {
     let item: MediaItem
     @State private var thumbnail: NSImage?
+    @State private var scene: ExcalidrawScene?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -294,6 +306,8 @@ private struct LibraryTile: View {
                         Image(nsImage: thumbnail)
                             .resizable()
                             .scaledToFill()
+                    } else if let scene {
+                        ExcalidrawPreview(scene: scene)
                     } else {
                         Image(systemName: symbol)
                             .font(.system(size: 22))
@@ -301,6 +315,11 @@ private struct LibraryTile: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                // A white drawing on the white dialog still reads as a card.
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                        .strokeBorder(Theme.C.border, lineWidth: 1)
+                )
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .font(.system(size: 13, weight: .medium))
@@ -312,9 +331,16 @@ private struct LibraryTile: View {
                     .lineLimit(1)
             }
         }
+        // The whole tile is the target, gaps included, so the pointer and the
+        // click hold from the picture down to the date.
+        .contentShape(Rectangle())
         .task(id: item.path) {
-            guard item.kind == "image", item.exists else { return }
-            thumbnail = await LibraryThumbnails.shared.thumbnail(path: item.path, maxPixel: 520)
+            guard item.exists else { return }
+            if item.kind == "image" {
+                thumbnail = await LibraryThumbnails.shared.thumbnail(path: item.path, maxPixel: 520)
+            } else {
+                scene = await ExcalidrawScenes.shared.scene(path: item.path)
+            }
         }
     }
 
@@ -332,6 +358,8 @@ struct LibraryDetail: View {
     let onRegenerate: () -> Void
     let onTrash: () -> Void
     @State private var preview: NSImage?
+    @State private var scene: ExcalidrawScene?
+    @State private var liveReady = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 24) {
@@ -339,9 +367,25 @@ struct LibraryDetail: View {
                 if item.kind == "drawing" {
                     // The same live drawing the chat shows, with its own Edit
                     // and Open in Excalidraw: a .excalidraw file has no app
-                    // on a Mac to open it.
-                    WidgetSlot(widgetId: item.id)
-                        .frame(width: 520)
+                    // on a Mac to open it. The native picture stands in while
+                    // the live page loads, so the drawing shows at once.
+                    ZStack {
+                        WidgetSlot(widgetId: item.id, onLoaded: {
+                            withAnimation(.easeOut(duration: DesignTokens.Motion.overlay)) { liveReady = true }
+                        })
+                        if !liveReady, let scene {
+                            ExcalidrawPreview(scene: scene)
+                                .allowsHitTesting(false)
+                                .transition(.opacity)
+                        }
+                    }
+                    // Excalidraw's cameras are 4:3 and the live page fits the
+                    // camera to the frame's width, so a 4:3 frame shows it all.
+                    .frame(width: 640, height: 480)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            .strokeBorder(Theme.C.border, lineWidth: 1)
+                    )
                 } else {
                     ZStack {
                         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
@@ -398,7 +442,7 @@ struct LibraryDetail: View {
                     HStack(spacing: 8) {
                         if !item.exists {
                             NativeButton("Locate", kind: .primary, small: true, action: onLocate)
-                            if item.kind == "image", !item.prompt.isEmpty, !item.botId.isEmpty {
+                            if item.kind == "image", !item.prompt.isEmpty {
                                 NativeButton("Regenerate", kind: .secondary, small: true, action: onRegenerate)
                             }
                         }
@@ -413,8 +457,12 @@ struct LibraryDetail: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: item.path) {
-            guard item.kind == "image", item.exists else { return }
-            preview = await LibraryThumbnails.shared.thumbnail(path: item.path, maxPixel: 1600)
+            guard item.exists else { return }
+            if item.kind == "image" {
+                preview = await LibraryThumbnails.shared.thumbnail(path: item.path, maxPixel: 1600)
+            } else {
+                scene = await ExcalidrawScenes.shared.scene(path: item.path)
+            }
         }
     }
 

@@ -33,6 +33,7 @@ export function saveWidgetDrawing(record: WidgetRecord, botId: string, botName: 
     id: record.id,
     elements: record.arguments.elements,
     title: drawingTitle(record.arguments.elements),
+    files: record.arguments.files,
     botId,
     botName,
     provider: record.connectionId,
@@ -45,8 +46,11 @@ export function saveWidgetDrawing(record: WidgetRecord, botId: string, botName: 
  * that first showed it. Drawings made before the Library existed, and any
  * whose save failed when they were drawn, land here on the next load.
  */
+/** Widget ids already looked at and found not to be drawings (charts and other apps). */
+const notDrawings = new Set<string>();
+
 export function migrateDrawings(): { saved: number; failed: number } {
-  const known = new Set(readMediaIndex().map((item) => item.id));
+  const known = new Set([...readMediaIndex().map((item) => item.id), ...notDrawings]);
   const bots = peekShell()?.bots ?? [];
   let saved = 0;
   let failed = 0;
@@ -56,7 +60,11 @@ export function migrateDrawings(): { saved: number; failed: number } {
       known.add(event.widgetId);
       try {
         const record = readWidget(event.widgetId);
-        if (!record || !isExcalidrawWidget(record)) continue;
+        if (!record) continue;
+        if (!isExcalidrawWidget(record)) {
+          notDrawings.add(event.widgetId);
+          continue;
+        }
         saveWidgetDrawing(record, thread.botId, bots.find((bot) => bot.id === thread.botId)?.name ?? "Useful Bot", event.at);
         saved += 1;
       } catch (err) {
@@ -74,6 +82,8 @@ export function migrateDrawings(): { saved: number; failed: number } {
  * The old record is removed only once its file and index entry exist. A
  * record that fails stays where it is and the next call tries again.
  */
+const LEGACY_OWNER_WAIT_MS = 2 * 60 * 1000;
+
 export function migrateLegacyImages(): { moved: number; failed: number } {
   const ids = legacyImageIds();
   if (ids.length === 0) return { moved: 0, failed: 0 };
@@ -91,6 +101,10 @@ export function migrateLegacyImages(): { moved: number; failed: number } {
       if (!findMedia(id)) {
         const record = readImage(id);
         if (!record) continue;
+        // A fallback record is written just before its chat event. One with
+        // no event yet waits a little, so it is filed under its bot rather
+        // than under no bot for good.
+        if (!owners.has(id) && Date.now() - Date.parse(record.createdAt) < LEGACY_OWNER_WAIT_MS) continue;
         const botId = owners.get(id) ?? "";
         saveImage({
           id,

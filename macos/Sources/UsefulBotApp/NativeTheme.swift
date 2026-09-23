@@ -387,6 +387,17 @@ private struct PointerOnHover: ViewModifier {
     @State private var hovering = false
 
     func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            // The system pointer style is a cursor rect the window owns: it
+            // holds over a whole control and next to a web view, where a
+            // push/pop on hover events flickered or never showed.
+            content.pointerStyle(.link)
+        } else {
+            legacy(content)
+        }
+    }
+
+    private func legacy(_ content: Content) -> some View {
         content
             .onHover { inside in
                 guard inside != hovering else { return }
