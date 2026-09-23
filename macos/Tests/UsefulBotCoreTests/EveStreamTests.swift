@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import UsefulBotCore
 
@@ -257,6 +258,34 @@ import Testing
         #expect(limited.retryAfterSeconds == 4)
         #expect(limited.coolDownSeconds == nil)
         #expect(limited.reason == "The router is rate limiting. Wait a moment and send again.")
+    }
+
+    @Test func providerLimitsSayWhatRanOut() {
+        let resets = Date().addingTimeInterval(3600)
+        let used = TurnFailure(
+            code: "MODEL_CALL_FAILED",
+            detail: "AI_APICallError: upstream_usage_limit resets_at=\(Int(resets.timeIntervalSince1970))"
+        )
+        #expect(used.resetsAt.map { Int($0.timeIntervalSince1970) } == Int(resets.timeIntervalSince1970))
+        #expect(used.reason?.hasPrefix("Your plan's usage limit for this model is used up. It resets at ") == true)
+        #expect(used.reason?.hasSuffix("Pick another model to keep going.") == true)
+        #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_usage_limit").reason
+            == "Your plan's usage limit for this model is used up. Pick another model to keep going.")
+        #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_usage_not_included").reason
+            == "Your plan doesn't include this model. Pick another model.")
+        #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_quota_exhausted").reason
+            == "The provider account is out of credit or over its spend limit. Top it up, or pick another model.")
+        // The provider's rate limit is named as the provider's, not the router's.
+        #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "AI_RetryError: Failed after 3 attempts. Last error: AI_APICallError: upstream_rate_limited").reason
+            == "The model provider is rate limiting. Wait a minute and send again, or pick another model.")
+    }
+
+    @Test func resetTimesReadAsAClockTime() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        let now = Date(timeIntervalSince1970: 1_790_150_000) // Wed 23 Sep 2026, 09:53 Berlin
+        #expect(TurnFailure.resetCopy(now.addingTimeInterval(3600), now: now, calendar: calendar) == "10:53")
+        #expect(TurnFailure.resetCopy(now.addingTimeInterval(86_400), now: now, calendar: calendar) == "Thu 09:53")
     }
 
     @Test func aToolCallWithNoResultMarksTheHistoryBroken() {

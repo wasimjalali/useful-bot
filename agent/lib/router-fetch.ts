@@ -8,11 +8,21 @@ import type { RouterIds } from "./router-identity.ts";
  * codes are deliberately absent: a spent day does not come back in a minute.
  */
 const WAITABLE_CODES = new Set(["global_concurrency_limit", "caller_rate_limit"]);
+/**
+ * The provider's own rate limit, which lifts in about a minute. A long
+ * agent run meets it routinely, and failing the turn on it ended runs that
+ * only needed to pause. A used-up plan or credit is a different code (402)
+ * and is never waited on.
+ */
+const PROVIDER_CODES = new Set(["upstream_rate_limited"]);
 
 /** The most one model call will wait in total before the 429 is handed back. */
 export const MAX_TOTAL_WAIT_MS = 60_000;
 // A full per-minute window can take most of a minute to open again.
 const MAX_SINGLE_WAIT_MS = 30_000;
+/** The provider's limit gets longer: its retry-after is often a full minute. */
+export const MAX_PROVIDER_TOTAL_WAIT_MS = 180_000;
+const MAX_PROVIDER_SINGLE_WAIT_MS = 90_000;
 const BASE_BACKOFF_MS = 1_000;
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -87,11 +97,14 @@ export function routerFetch(options: RouterFetchOptions): FetchLike {
       const response = await doFetch(input, { ...init, headers });
       if (response.status !== 429) return response;
       const hint = await waitHint(response);
-      if (!hint.code || !WAITABLE_CODES.has(hint.code)) return response;
-      const backoff = Math.min(BASE_BACKOFF_MS * 2 ** attempt, MAX_SINGLE_WAIT_MS);
+      const provider = hint.code !== null && PROVIDER_CODES.has(hint.code);
+      if (!hint.code || (!WAITABLE_CODES.has(hint.code) && !provider)) return response;
+      const singleCap = provider ? MAX_PROVIDER_SINGLE_WAIT_MS : MAX_SINGLE_WAIT_MS;
+      const totalCap = provider ? MAX_PROVIDER_TOTAL_WAIT_MS : MAX_TOTAL_WAIT_MS;
+      const backoff = Math.min(BASE_BACKOFF_MS * 2 ** attempt, singleCap);
       // Jitter, so ten bots refused together do not all come back together.
       const wait = Math.round((hint.ms ?? backoff) + random() * 500);
-      if (wait > MAX_SINGLE_WAIT_MS + 500 || waited + wait > MAX_TOTAL_WAIT_MS) return response;
+      if (wait > singleCap + 500 || waited + wait > totalCap) return response;
       await response.body?.cancel();
       await doSleep(wait, init?.signal);
       waited += wait;

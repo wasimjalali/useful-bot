@@ -16,7 +16,7 @@ import { accessTokenFor, refreshCredential } from "../../../shared/provider-oaut
 import { postChatCompletions } from "./openai-chat.ts";
 import { postMessages } from "./anthropic-messages.ts";
 import { postResponses } from "./openai-responses.ts";
-import { retryAfterMs } from "../retry-after.ts";
+import { upstreamLimitError } from "../retry-after.ts";
 
 export function sessionHeader(callerId: string, sessionId: string, role: string): string {
   return createHash("sha256").update(`${callerId}:${sessionId}:${role}`).digest("hex");
@@ -227,14 +227,7 @@ export async function completeUpstream(input: {
     throw authFailed();
   }
   if (response.status === 429) {
-    throw new RouterError({
-      status: 429,
-      type: "rate_limit_error",
-      code: "upstream_rate_limited",
-      message: "upstream_rate_limited",
-      retryable: true,
-      retryAfterMs: retryAfterMs(response),
-    });
+    throw await upstreamLimitError(response);
   }
   if (response.status === 404) {
     throw new RouterError({

@@ -1,5 +1,5 @@
 import { RouterError } from "../errors.ts";
-import { retryAfterMs } from "../retry-after.ts";
+import { upstreamLimitError } from "../retry-after.ts";
 import { readCappedBytes } from "../read-capped.ts";
 import {
   readProviderStore,
@@ -231,14 +231,7 @@ export async function generateImage(input: {
     noteConnectionError(resolved.connection.id, "upstream_auth_failed");
     throw authFailed();
   } else if (response.status === 429) {
-    throw new RouterError({
-      status: 429,
-      type: "rate_limit_error",
-      code: "upstream_rate_limited",
-      message: "upstream_rate_limited",
-      retryable: true,
-      retryAfterMs: retryAfterMs(response),
-    });
+    throw await upstreamLimitError(response);
   } else if (response.status === 404) {
     throw new RouterError({
       status: 502,

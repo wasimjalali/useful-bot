@@ -212,8 +212,47 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         return max(1, Int((Double(ms) / 1000).rounded(.up)))
     }
 
+    /// When the provider said a used-up plan limit resets, from the router's
+    /// `resets_at=<epoch seconds>` in the failure text.
+    public var resetsAt: Date? {
+        guard let range = detail.range(of: "resets_at=") else { return nil }
+        let digits = detail[range.upperBound...].prefix { $0.isNumber }
+        guard let seconds = TimeInterval(digits), seconds > 0 else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    /// "18:40" today, "Thu 09:15" within a week, a date beyond that.
+    static func resetCopy(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        if calendar.isDate(date, inSameDayAs: now) {
+            formatter.dateFormat = "HH:mm"
+        } else if date.timeIntervalSince(now) < 6 * 24 * 3600 {
+            formatter.dateFormat = "EEE HH:mm"
+        } else {
+            formatter.dateFormat = "d MMM HH:mm"
+        }
+        return formatter.string(from: date)
+    }
+
     public var reason: String? {
         let haystack = "\(code) \(detail)".lowercased()
+        // The provider's own limits, from the 429 body: no wait lifts these
+        // in a turn's time, so the copy says what ran out and what to do.
+        if haystack.contains("upstream_usage_limit") {
+            if let resetsAt {
+                return "Your plan's usage limit for this model is used up. It resets at \(Self.resetCopy(resetsAt)). Pick another model to keep going."
+            }
+            return "Your plan's usage limit for this model is used up. Pick another model to keep going."
+        }
+        if haystack.contains("upstream_usage_not_included") {
+            return "Your plan doesn't include this model. Pick another model."
+        }
+        if haystack.contains("upstream_quota_exhausted") {
+            return "The provider account is out of credit or over its spend limit. Top it up, or pick another model."
+        }
         if historyBroken {
             return "This chat's last step was cut off and can't continue. Retry sends your message in a fresh chat."
         }
@@ -253,6 +292,11 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         }
         if haystack.contains("budget_exhausted") {
             return "The daily token limit is used up. Raise it in Settings, under Usage."
+        }
+        // The router already waited out the provider's limit as long as a
+        // turn can, so this one is the provider's, and it is longer.
+        if haystack.contains("upstream_rate_limited") {
+            return "The model provider is rate limiting. Wait a minute and send again, or pick another model."
         }
         if haystack.contains("rate_limit") {
             return "The router is rate limiting. Wait a moment and send again."

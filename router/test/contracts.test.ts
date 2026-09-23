@@ -15,6 +15,10 @@ import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
+// The caps scale with the owner's daily budget; these tests assume the
+// default one, never the budget set on this Mac.
+process.env.UB_LIMITS_PATH = join(mkdtempSync(join(tmpdir(), "ub-limits-file-")), "limits.json");
+
 type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
 const jsonFixture: UpstreamHandler = (_req, res) => {
@@ -462,6 +466,49 @@ test("upstream 429 maps to a retryable rate limit", async () => {
   });
 });
 
+test("a used-up plan answers 402 upstream_usage_limit with its reset, and is not retried", async () => {
+  let calls = 0;
+  const resetsAt = Math.round(Date.now() / 1000) + 3600;
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 402);
+    const body = await res.json();
+    assert.equal(body.error.code, "upstream_usage_limit");
+    assert.equal(body.error.message, `upstream_usage_limit resets_at=${resetsAt}`);
+    assert.equal(body.error.retryable, false);
+    assert.equal(calls, 1);
+  }, (_req, res) => {
+    calls += 1;
+    res.writeHead(429, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { type: "usage_limit_reached", message: "The usage limit has been reached", plan_type: "plus", resets_at: resetsAt } }));
+  });
+});
+
+test("quota and plan limits get their own codes", async () => {
+  for (const [error, code] of [
+    [{ type: "usage_not_included" }, "upstream_usage_not_included"],
+    [{ type: "insufficient_quota" }, "upstream_quota_exhausted"],
+    [{ code: "organization_spend_limit_exceeded" }, "upstream_quota_exhausted"],
+  ] as const) {
+    await withRouter(async (base, tokens) => {
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+        body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+      });
+      assert.equal(res.status, 402);
+      assert.equal((await res.json()).error.code, code);
+    }, (_req, res) => {
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error }));
+    });
+  }
+});
+
 test("upstream model 404 maps to model_unavailable", async () => {
   await withRouter(async (base, tokens) => {
     const res = await fetch(`${base}/v1/chat/completions`, {
@@ -638,6 +685,29 @@ test("a model the upstream does not have opens the alias for a while, not for go
   // The alias used to stay dead for the life of the process, so the only way
   // back was restarting the services.
   circuit.assertClosed("workhorse", at + 300_001);
+});
+
+test("a provider rate limit pauses the alias as a rate limit, with the time left", () => {
+  const circuit = new AliasCircuit();
+  const at = 3_000_000;
+  circuit.recordFailure("workhorse", new RouterError({
+    status: 429,
+    type: "rate_limit_error",
+    code: "upstream_rate_limited",
+    message: "upstream_rate_limited",
+    retryable: true,
+    retryAfterMs: 45_000,
+  }), at);
+  try {
+    circuit.assertClosed("workhorse", at + 5_000);
+    assert.fail("the alias should be paused");
+  } catch (err) {
+    // Not circuit_open: the agent waits out a rate limit, never a cool-down.
+    assert.equal((err as RouterError).code, "upstream_rate_limited");
+    assert.equal((err as RouterError).status, 429);
+    assert.equal((err as RouterError).retryAfterMs, 40_000);
+  }
+  circuit.assertClosed("workhorse", at + 45_001);
 });
 
 test("a reservation overrun keeps the alias shut, because a spend guard on a timer is not one", () => {
