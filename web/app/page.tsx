@@ -870,14 +870,16 @@ export default function Page() {
                     <div className="w-full px-4 py-6 sm:px-6 sm:py-8">
                       <div className="flex flex-col gap-6">
                         {showOnboarding ? (
-                          <OnboardingCard
-                            onDismiss={dismissOnboarding}
-                            onFillForm={() => {
-                              dismissOnboarding();
-                              setSettingsOpen(true);
-                            }}
-                            name={bot.name}
-                          />
+                          <div className="max-w-bubble">
+                            <OnboardingCard
+                              onDismiss={dismissOnboarding}
+                              onFillForm={() => {
+                                dismissOnboarding();
+                                setSettingsOpen(true);
+                              }}
+                              name={bot.name}
+                            />
+                          </div>
                         ) : null}
                         {threadRows.map((row) => {
                           // Only the owner's words sit on the right. A

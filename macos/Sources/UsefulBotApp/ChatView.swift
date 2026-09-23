@@ -530,6 +530,8 @@ struct ChatView: View {
                                 },
                                 onDismiss: { model.dismissOnboarding(botId: bot.id) }
                             )
+                            // A host card on the bot side, under the bubble cap.
+                            .frame(maxWidth: DesignTokens.Space.bubbleMax)
                         }
                         if window.hidden > 0 {
                             ShowEarlierRow { model.showEarlierMessages() }
@@ -943,6 +945,9 @@ private struct BotMetaRow: View {
     let botIds: [String]
     var names: [String] = []
     let roster: [ShellBot]
+    /// A label over a bot-side bubble sits on the left with it; a strip that
+    /// stands alone stays centered.
+    var leading = false
 
     private var bots: [ShellBot] {
         botIds.compactMap { id in roster.first { $0.id == id } }
@@ -954,7 +959,9 @@ private struct BotMetaRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Spacer(minLength: 0)
+            if !leading {
+                Spacer(minLength: 0)
+            }
             HStack(spacing: 6) {
                 Text(prefix)
                 if !bots.isEmpty {
@@ -1105,7 +1112,8 @@ struct TranscriptRowView: View, Equatable {
                     prefix: "Messaged",
                     botIds: recipients.isEmpty ? row.targetBotIds : recipients,
                     names: ["a teammate"],
-                    roster: bots
+                    roster: bots,
+                    leading: true
                 )
                 replyRow(showsSpeaker: false)
             }
@@ -1120,7 +1128,8 @@ struct TranscriptRowView: View, Equatable {
                     // A deleted bot that stored no name still reads as a
                     // teammate rather than as "1 Bot".
                     names: [author.isEmpty ? "a teammate" : author],
-                    roster: bots
+                    roster: bots,
+                    leading: true
                 )
                 // Whatever a teammate posts, a question to this bot or an
                 // answer, is a bot speaking: it sits on the left in the bot
@@ -1146,6 +1155,7 @@ struct TranscriptRowView: View, Equatable {
                 }
                 Spacer(minLength: 0)
             }
+            .frame(maxWidth: max(160, maxBubbleWidth))
         case .assistant:
             replyRow(showsSpeaker: true)
         case .widget:
