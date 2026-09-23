@@ -603,7 +603,11 @@ struct ChatView: View {
                         Color.clear
                             .frame(height: 1)
                     }
-                    .frame(maxWidth: DesignTokens.Space.chatColumnMax)
+                    // The transcript spans the pane, not a centered column:
+                    // the owner's bubbles sit flush right and the bots' flush
+                    // left, however wide the window, with `bubbleMax` keeping
+                    // the far side empty.
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         GeometryReader { proxy in
                             Color.clear.preference(key: ChatColumnWidthKey.self, value: proxy.size.width)
