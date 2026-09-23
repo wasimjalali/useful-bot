@@ -131,7 +131,8 @@ struct GeneratedImageRow: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 52)
-            .frame(maxWidth: .infinity)
+            // The width the picture would have had, not the whole column.
+            .frame(maxWidth: 448, alignment: .leading)
         } else {
             // Bytes are still in flight; hold the footprint the image will
             // take so the transcript does not jump when it lands.

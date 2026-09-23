@@ -123,6 +123,9 @@ public enum DesignTokens {
         public static let stageMargin: CGFloat = 10
         public static let chatHead: CGFloat = 52
         public static let chatColumnMax: CGFloat = 768
+        /// The one cap on a bubble's width, for the owner and the bots alike.
+        /// A narrow window shrinks bubbles below it; nothing grows past it.
+        public static let bubbleMax: CGFloat = 640
         public static let chatColumnPadding: CGFloat = 24
         public static let chatPaddingVertical: CGFloat = 32
         public static let transcriptGap: CGFloat = 24
