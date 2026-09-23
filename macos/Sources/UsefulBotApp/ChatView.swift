@@ -1145,9 +1145,15 @@ struct TranscriptRowView: View, Equatable {
         case .assistant:
             replyRow(showsSpeaker: true)
         case .widget:
-            WidgetSlot(widgetId: row.text)
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                .cardLift(cornerRadius: DesignTokens.Radius.md)
+            // A host card on the bot side, under the same width cap as every
+            // bubble.
+            HStack(spacing: 0) {
+                WidgetSlot(widgetId: row.text)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .cardLift(cornerRadius: DesignTokens.Radius.md)
+                    .frame(maxWidth: max(160, maxBubbleWidth))
+                Spacer(minLength: 0)
+            }
         case .image:
             // The event's text is the prompt; the id names the stored bytes.
             GeneratedImageRow(imageId: row.imageId ?? "", prompt: row.text)

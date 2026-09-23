@@ -880,15 +880,12 @@ export default function Page() {
                           />
                         ) : null}
                         {threadRows.map((row) => {
-                          if (row.kind === "user" || row.kind === "post") {
+                          // Only the owner's words sit on the right. A
+                          // teammate's post is a bot speaking: left, labelled.
+                          if (row.kind === "user") {
                             return (
                               <div className="msg-in flex justify-end" key={row.id}>
-                                <div className="flex max-w-[85%] flex-col items-end gap-1">
-                                  {row.kind === "post" && row.authorName ? (
-                                    <p className="text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-faint">
-                                      Message from {row.authorName}
-                                    </p>
-                                  ) : null}
+                                <div className="flex max-w-[min(85%,var(--container-bubble))] flex-col items-end gap-1">
                                   <div className="whitespace-pre-wrap break-words rounded-md rounded-br-xs bg-sunken px-4 py-2.5 text-[15px] leading-6 text-ink">
                                     {row.text}
                                   </div>
@@ -906,12 +903,14 @@ export default function Page() {
                           return (
                             <div className="msg-in flex gap-3" key={row.id}>
                               <BotAvatar bot={speaker} size="sm" />
-                              <div className="min-w-0 flex-1 pt-0.5">
-                                {handoff || row.authorName || row.kind === "note" ? (
+                              <div className="min-w-0 max-w-bubble flex-1 pt-0.5">
+                                {handoff || row.authorName || row.kind === "note" || row.kind === "post" ? (
                                   <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-ink-faint">
                                     {row.kind === "handoff" && targetNames.length > 0
                                       ? `Handoff to ${targetNames.join(", ")}`
-                                      : row.authorName ?? speaker.name}
+                                      : row.kind === "post"
+                                        ? `Message from ${row.authorName || "a teammate"}`
+                                        : row.authorName ?? speaker.name}
                                   </p>
                                 ) : null}
                                 {row.kind === "note" ? (
@@ -938,7 +937,7 @@ export default function Page() {
                         {openProposals.map((proposal) => (
                           <div className="msg-in flex gap-3" key={proposal.id}>
                             <BotAvatar bot={bot} size="sm" />
-                            <div className="min-w-0 flex-1 pt-0.5">
+                            <div className="min-w-0 max-w-bubble flex-1 pt-0.5">
                               <ProposalCard
                                 bots={store.bots}
                                 onDecision={decideProposal}
