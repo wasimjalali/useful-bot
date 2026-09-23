@@ -91,8 +91,7 @@ struct ComposerView: View {
 
     /// The reply chip belongs to the chat it was started in.
     private var replying: ReplyQuote? {
-        guard let quote = model.replyQuote, quote.botId == bot.id else { return nil }
-        return quote
+        model.replyQuotes[bot.id]
     }
 
     /// Whether `Attachments.formatMessage` would come back non-empty, without
@@ -533,7 +532,7 @@ struct ComposerView: View {
                 .truncationMode(.tail)
                 .frame(maxWidth: 360, alignment: .leading)
             Button {
-                model.replyQuote = nil
+                model.replyQuotes[quote.botId] = nil
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .medium))

@@ -224,7 +224,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var draftWriteToken: UInt64 = 0
     /// A bot message the owner is replying to: it rides above the composer
     /// as a chip and goes out quoted above the next message to that bot.
-    @Published var replyQuote: ReplyQuote?
+    @Published var replyQuotes: [String: ReplyQuote] = [:]
     /// Bumped when Reply wants the caret in the composer.
     @Published private(set) var composerFocusToken: UInt64 = 0
     @Published var attachments: [Attachment] = []
@@ -1412,7 +1412,7 @@ final class AppModel: ObservableObject {
         let draftSnapshot = retrying ? "" : draft
         // Only this chat's reply rides with this send; one started in
         // another chat stays there.
-        let quoteSnapshot = retrying ? nil : replyQuote.flatMap { $0.botId == bot.id ? $0 : nil }
+        let quoteSnapshot = retrying ? nil : replyQuotes[bot.id]
         let sentAttachments = retrying ? [] : attachments
         let sentAttachmentIds = Set(sentAttachments.map(\.id))
         // Pictures ride beside the text as file parts; the composed string
@@ -1444,7 +1444,7 @@ final class AppModel: ObservableObject {
         // send fails below.
         if !retrying {
             clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
-            if let quoteSnapshot, replyQuote == quoteSnapshot { replyQuote = nil }
+            if let quoteSnapshot, replyQuotes[bot.id] == quoteSnapshot { replyQuotes[bot.id] = nil }
         }
         // An explicit send is an explicit request to watch the answer, so the
         // transcript follows it whatever the reader was doing before.
@@ -1657,7 +1657,7 @@ final class AppModel: ObservableObject {
                     }
                     // The quote went with the text; it comes back with it. It
                     // names its chat, so it shows there whenever the owner is.
-                    if let quoteSnapshot, self.replyQuote == nil { self.replyQuote = quoteSnapshot }
+                    if let quoteSnapshot, self.replyQuotes[bot.id] == nil { self.replyQuotes[bot.id] = quoteSnapshot }
                     self.recordSendError(
                         bot.id,
                         (error as? LocalizedError)?.errorDescription ?? "Send failed.",
@@ -1704,9 +1704,9 @@ final class AppModel: ObservableObject {
 
     /// Reply to a bot message: the chip goes above the composer of this chat
     /// and the caret into the field.
-    func reply(to text: String) {
-        guard let botId = selectedBotId else { return }
-        replyQuote = ReplyQuote(botId: botId, text: text)
+    func reply(to text: String, author: String?, botId: String) {
+        guard botId == selectedBotId else { return }
+        replyQuotes[botId] = ReplyQuote(botId: botId, text: text, author: author)
         composerFocusToken &+= 1
     }
 
@@ -3876,23 +3876,37 @@ final class AppModel: ObservableObject {
 struct ReplyQuote: Equatable {
     let botId: String
     let text: String
+    /// The member who wrote it, in a group; nil for the chat's own bot.
+    var author: String?
 
     /// How much of the message goes into the quote. A long reply is quoted
     /// by its opening; the whole of it is already in the conversation.
     static let maxQuoted = 600
 
+    /// The quoted text, with every @ swapped for a full-width ＠: routing and
+    /// attribution read @name anywhere in a message, and a name inside the
+    /// quote must not send the reply to that bot.
     var quoted: String {
         let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return flat.count > Self.maxQuoted ? String(flat.prefix(Self.maxQuoted)) + "…" : flat
+        let clipped = flat.count > Self.maxQuoted ? String(flat.prefix(Self.maxQuoted)) + "…" : flat
+        return clipped.replacingOccurrences(of: "@", with: "＠")
     }
 
     /// The line that marks a message as a reply, so a message the owner
-    /// simply starts with a blockquote is never taken for one.
-    static let marker = "Replying to your message:"
+    /// simply starts with a blockquote is never taken for one. In a group it
+    /// names the member who wrote the quoted message.
+    var marker: String {
+        guard let author, !author.isEmpty else { return "Replying to your message:" }
+        return "Replying to \(author.replacingOccurrences(of: "@", with: "＠"))'s message:"
+    }
+
+    static func isMarker(_ line: String) -> Bool {
+        line.hasPrefix("Replying to ") && line.hasSuffix("message:")
+    }
 
     func wrap(_ message: String) -> String {
         let lines = quoted.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
-        return Self.marker + "\n" + lines.joined(separator: "\n") + "\n\n" + message
+        return marker + "\n" + lines.joined(separator: "\n") + "\n\n" + message
     }
 
     /// One line of the message as it reads, for the chip and the quote line:
@@ -3910,8 +3924,8 @@ struct ReplyQuote: Equatable {
     /// A sent message that opens with a quote, split into the quote and the
     /// rest, so the bubble can show the quote as a quote.
     static func split(_ text: String) -> (quote: String, body: String)? {
-        guard text.hasPrefix(marker + "\n") else { return nil }
         let lines = text.components(separatedBy: "\n")
+        guard lines.count > 1, isMarker(lines[0]), lines[1].hasPrefix(">") else { return nil }
         var quote: [String] = []
         var index = 1
         while index < lines.count, lines[index].hasPrefix(">") {

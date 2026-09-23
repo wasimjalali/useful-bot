@@ -54,6 +54,9 @@ struct ComposerTextView: NSViewRepresentable {
         // this one only shows it once the field actually scrolls.
         ThinScrollbar.install()
 
+        // A fresh field takes the token as it stands: only a Reply made
+        // after it mounted should move the caret.
+        context.coordinator.focusToken = focusToken
         let textView = FocusReportingTextView()
         textView.onFocusChange = { [weak coordinator = context.coordinator] focused in
             coordinator?.onFocusChange(focused)

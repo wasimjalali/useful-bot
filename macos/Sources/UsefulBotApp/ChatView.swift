@@ -165,8 +165,9 @@ struct ChatView: View {
         }
         .background(Theme.C.surface)
         .onReceive(NotificationCenter.default.publisher(for: .replyToMessage)) { note in
-            guard let text = note.userInfo?["text"] as? String else { return }
-            model.reply(to: text)
+            guard let text = note.userInfo?["text"] as? String,
+                  let botId = note.userInfo?["botId"] as? String else { return }
+            model.reply(to: text, author: note.userInfo?["author"] as? String, botId: botId)
         }
     }
 
@@ -1185,7 +1186,7 @@ struct TranscriptRowView: View, Equatable {
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                MessageHoverActions(text: row.text, enabled: !streaming) {
+                MessageHoverActions(text: row.text, botId: bot.id, author: speaker?.name, enabled: !streaming) {
                     ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -1676,6 +1677,9 @@ private enum HoverActionsDebug {
 /// its row. They keep their room when hidden, so the bubble never shifts.
 private struct MessageHoverActions<Content: View>: View {
     let text: String
+    /// The chat the message is in, and who wrote it when that is a member.
+    let botId: String
+    var author: String?
     var enabled = true
     @ViewBuilder var content: Content
 
@@ -1687,9 +1691,7 @@ private struct MessageHoverActions<Content: View>: View {
         HStack(alignment: .center, spacing: 8) {
             content
             HStack(spacing: 2) {
-                Button {
-                    NotificationCenter.default.post(name: .replyToMessage, object: nil, userInfo: ["text": text])
-                } label: {
+                Button(action: reply) {
                     Image(systemName: "arrowshape.turn.up.left")
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.C.inkMuted)
@@ -1700,15 +1702,7 @@ private struct MessageHoverActions<Content: View>: View {
                 .pointerOnHover()
                 .help("Reply")
                 .accessibilityLabel("Reply")
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                    copied = true
-                    Task {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        copied = false
-                    }
-                } label: {
+                Button(action: copy) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.inkMuted)
@@ -1726,5 +1720,25 @@ private struct MessageHoverActions<Content: View>: View {
         }
         .contentShape(Rectangle())
         .onHover { self.hovering = $0 }
+        // Hidden buttons leave the accessibility tree, so the same two
+        // actions ride on the message for VoiceOver and keyboard users.
+        .accessibilityAction(named: "Reply", reply)
+        .accessibilityAction(named: "Copy", copy)
+    }
+
+    private func reply() {
+        var info: [String: String] = ["text": text, "botId": botId]
+        if let author { info["author"] = author }
+        NotificationCenter.default.post(name: .replyToMessage, object: nil, userInfo: info)
+    }
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copied = false
+        }
     }
 }
