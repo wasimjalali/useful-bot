@@ -342,57 +342,104 @@ async function sessionEventIds(sessionId: string, jwt: string): Promise<Set<stri
 }
 
 /** How much of an old session the carry-over reads before it stops. */
-const CARRY_READ = { idleMs: 2_000, hardMs: 20_000, maxEvents: 60_000, maxBytes: 48 * 1024 * 1024 };
+const CARRY_READ = { headEvents: 400, tailEvents: 20_000, idleMs: 3_000, hardMs: 15_000, maxBytes: 48 * 1024 * 1024 };
 
 /**
- * A session's recorded events, oldest first. eve keeps a retired session's
- * stream readable. The stream stays open after the last event, so the read
- * ends on a short quiet period, a hard deadline or the event and byte caps,
- * whichever comes first: a 195k-token session must not stall the send.
+ * Up to `count` events from absolute index `start`, plus the stream's tail
+ * index from eve's catch-up header. The stream stays open after its last
+ * event, so the read stops at the count; the quiet period only guards a
+ * stream that stalls, and is armed once the headers are in.
  */
-export async function readSessionEvents(sessionId: string, jwt: string): Promise<StreamEvent[]> {
+async function readStreamRange(
+  sessionId: string,
+  jwt: string,
+  start: number,
+  count: number,
+): Promise<{ events: StreamEvent[]; tail: number | null; cut: boolean }> {
   const events: StreamEvent[] = [];
   const controller = new AbortController();
-  let idle = setTimeout(() => controller.abort(), CARRY_READ.idleMs);
   const hard = setTimeout(() => controller.abort(), CARRY_READ.hardMs);
+  let idle: ReturnType<typeof setTimeout> | undefined;
   const reset = () => {
-    clearTimeout(idle);
+    if (idle) clearTimeout(idle);
     idle = setTimeout(() => controller.abort(), CARRY_READ.idleMs);
   };
+  let tail: number | null = null;
+  let cut = false;
   let bytes = 0;
   try {
-    const res = await fetch(`${EVE}/eve/v1/session/${encodeURIComponent(sessionId)}/stream?startIndex=0`, {
-      headers: { authorization: `Bearer ${jwt}` },
-      signal: controller.signal,
-    });
+    const url = `${EVE}/eve/v1/session/${encodeURIComponent(sessionId)}/stream?startIndex=${start}&includeTailIndex=1`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${jwt}` }, signal: controller.signal });
     if (!res.ok || !res.body) throw new Error(`eve_stream_${res.status}`);
+    const header = Number(res.headers.get("x-eve-stream-tail-index"));
+    tail = res.headers.has("x-eve-stream-tail-index") && Number.isInteger(header) ? header : null;
+    // Nothing recorded past `start`: no need to wait on a live stream.
+    const wanted = tail === null ? count : Math.min(count, tail + 1 - start);
+    if (wanted <= 0) {
+      await res.body.cancel().catch(() => undefined);
+      return { events, tail, cut };
+    }
     reset();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    while (events.length < CARRY_READ.maxEvents && bytes < CARRY_READ.maxBytes) {
+    while (events.length < wanted) {
       const chunk = await reader.read();
       if (chunk.done) break;
       reset();
       bytes += chunk.value.byteLength;
+      if (bytes > CARRY_READ.maxBytes) {
+        cut = true;
+        break;
+      }
       buf += decoder.decode(chunk.value, { stream: true });
       const lines = buf.split(/\r?\n/);
       buf = lines.pop() ?? "";
       for (const line of lines) {
         const event = parseEveStreamLine(line);
-        if (event) events.push(event);
+        if (event && events.length < wanted) events.push(event);
       }
     }
     await reader.cancel().catch(() => undefined);
   } catch (err) {
-    // The quiet period and the deadline both end the read by aborting it;
-    // what was read by then is the history. Anything else is a real failure.
+    // The deadline or a stalled stream ended the read. What came in is kept
+    // and marked cut; anything else is a real failure.
     if (!controller.signal.aborted) throw err;
+    cut = true;
   } finally {
-    clearTimeout(idle);
+    if (idle) clearTimeout(idle);
     clearTimeout(hard);
   }
-  return events;
+  return { events, tail, cut };
+}
+
+/**
+ * A session's recorded events for the carry-over brief: its opening (the
+ * original request, any brief it inherited) and its newest stretch (the
+ * latest work, the todo list and the failure that ended it). On a long
+ * session the middle is skipped and counted, never the end. An empty read
+ * throws, so the brief says the context was lost instead of pretending
+ * there was none.
+ */
+export async function readSessionEvents(
+  sessionId: string,
+  jwt: string,
+): Promise<{ events: StreamEvent[]; skipped: number; cut: boolean }> {
+  const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents);
+  if (head.events.length === 0) throw new Error("eve_stream_empty");
+  if (head.tail === null) {
+    // No tail index: only the opening is certain, and the end may be missing.
+    return { events: head.events, skipped: 0, cut: true };
+  }
+  const total = head.tail + 1;
+  if (total <= head.events.length) return { events: head.events, skipped: 0, cut: head.cut };
+  const start = Math.max(head.events.length, total - CARRY_READ.tailEvents);
+  const rest = await readStreamRange(sessionId, jwt, start, total - start);
+  return {
+    events: [...head.events, ...rest.events],
+    skipped: start - head.events.length,
+    cut: head.cut || rest.cut || rest.events.length < total - start,
+  };
 }
 
 /**
@@ -402,7 +449,8 @@ export async function readSessionEvents(sessionId: string, jwt: string): Promise
  */
 export async function continuationBriefFor(sessionId: string, jwt: string, reason?: string): Promise<string> {
   try {
-    return buildContinuationBrief(await readSessionEvents(sessionId, jwt), { reason });
+    const read = await readSessionEvents(sessionId, jwt);
+    return buildContinuationBrief(read.events, { reason, skipped: read.skipped, cut: read.cut });
   } catch {
     return buildContinuationBrief([], {
       reason: `${reason ?? "the previous session stopped"}; its conversation could not be read back, so tell the owner you lost the earlier context and ask what to pick up`,

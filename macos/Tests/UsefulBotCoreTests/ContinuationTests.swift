@@ -10,13 +10,9 @@ import Testing
         let noted = "Session note: the lines below come from the app, not from the owner.\n"
             + "Continued session brief: this chat moved to a fresh session.\nEnd of brief.\n\nCarry on"
         #expect(EveStream.stripThreadPrefix(noted) == "Carry on")
-        #expect(EveStream.isContinuationTurn(noted))
-        // A retry note alone is not a carry-over.
+        // A retry note folded into an identity prefix strips the same way.
         let retry = "You are Scout.\nStanding instructions: Survey.\nRetry note: the owner is retrying.\n\nGo"
         #expect(EveStream.stripThreadPrefix(retry) == "Go")
-        #expect(!EveStream.isContinuationTurn(retry))
-        // The marker typed by the owner sits after the prefix and does not count.
-        #expect(!EveStream.isContinuationTurn("You are Scout.\nStanding instructions: x\n\nContinued session brief: hi"))
     }
 
     @Test func providerRefusalNamesTheProvidersOwnCode() {

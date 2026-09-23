@@ -134,6 +134,12 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members, notes));
         headers.set("content-type", "application/json");
       } catch {
+        // A carry-over or a retry note that could not be folded in is refused
+        // here: forwarding the original body would relay those fields to eve
+        // and record a carry-over the new session does not hold.
+        if (notes.length > 0) {
+          return Response.json({ ok: false, error: "eve_message_invalid" }, { status: 400 });
+        }
         /* keep the original body: a malformed turn must fail at eve, not here */
       }
       // Outside the body-rewrite try on purpose. The tools that run during

@@ -34,6 +34,16 @@ export const NON_STREAM_RETRIES = 2;
 const TRANSIENT_STATUSES = new Set([502, 503, 504]);
 const MAX_TRANSIENT_WAIT_MS = 30_000;
 
+/** True for the router's 502 that carries a provider's 4xx refusal. */
+async function refusedByProvider(response: Response): Promise<boolean> {
+  try {
+    const body = await response.clone().json() as { error?: { message?: unknown } };
+    return typeof body.error?.message === "string" && /\(4\d\d\b/.test(body.error.message);
+  } catch {
+    return false;
+  }
+}
+
 function isNonStreaming(body: RequestInit["body"]): boolean {
   if (typeof body !== "string") return false;
   try {
@@ -124,8 +134,11 @@ export function routerFetch(options: RouterFetchOptions): FetchLike {
         continue;
       }
       if (retriesTransient && TRANSIENT_STATUSES.has(response.status) && transientTries < NON_STREAM_RETRIES) {
-        transientTries += 1;
         const hint = await waitHint(response);
+        // A provider's 4xx refusal reaches here as a 502 that names it,
+        // "upstream_protocol_error (400 ...)"; another try gets the same answer.
+        if (await refusedByProvider(response)) return response;
+        transientTries += 1;
         await response.body?.cancel();
         await doSleep(Math.min(hint.ms ?? BASE_BACKOFF_MS * 2 ** transientTries, MAX_TRANSIENT_WAIT_MS), init?.signal);
         continue;

@@ -152,7 +152,7 @@ export async function completeUpstream(input: {
   const model = resolved.model;
   const option = modelOption(resolved.connection.id, model, catalogFor(resolved.connection.id));
   const sees = modelSeesImages(option);
-  // eve compacts at 90% of the model's window (agent/lib/model-window.ts reads
+  // eve compacts at 75% of the model's window (agent/lib/model-window.ts reads
   // the same catalog), so the output cap keeps to the last tenth: a prompt at
   // the threshold plus a full answer still fits a small model's window.
   // `modelOption` falls back to the list's first model; only the picked

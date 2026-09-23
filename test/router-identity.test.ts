@@ -258,3 +258,11 @@ test("a streaming step's 5xx goes straight back: eve retries those itself", asyn
   assert.equal(h.calls(), 1);
   assert.deepEqual(h.sleeps, []);
 });
+
+test("a non-streaming call does not retry a provider's 4xx refusal", async () => {
+  const refusal = () => new Response(JSON.stringify({ error: { code: "upstream_protocol_error", message: "upstream_protocol_error (400 invalid_request_error)" } }), { status: 502 });
+  const h = harnessWith([refusal]);
+  const res = await h.doFetch("http://router/v1/chat/completions", { method: "POST", body: JSON.stringify({}) });
+  assert.equal(res.status, 502);
+  assert.equal(h.calls(), 1);
+});

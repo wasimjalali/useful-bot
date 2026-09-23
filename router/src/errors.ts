@@ -16,8 +16,9 @@ export class RouterError extends Error {
   readonly detail?: string;
   /**
    * The upstream's own refusal, for the router log only: provider, model,
-   * status and the provider's error type, code and message, capped. Never
-   * prompt text, headers or keys.
+   * status and the provider's error type, code and message, capped, with
+   * key-like runs masked. A provider can quote part of the request in its
+   * message, so this stays in the local log and is never sent to a caller.
    */
   readonly upstream?: string;
 

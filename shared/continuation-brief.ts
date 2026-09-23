@@ -65,7 +65,7 @@ function todoLine(input: unknown): string | null {
   const items = todos
     .map((item) => asRecord(item))
     .filter((item): item is Record<string, unknown> => item !== null && typeof item.content === "string")
-    .map((item) => `[${typeof item.status === "string" ? item.status : "pending"}] ${oneLine(String(item.content), 200)}`);
+    .map((item) => `[${typeof item.status === "string" ? oneLine(item.status, 20) : "pending"}] ${oneLine(String(item.content), 200)}`);
   return items.length > 0 ? items.join("; ") : null;
 }
 
@@ -74,7 +74,17 @@ function todoLine(input: unknown): string | null {
  * caller reads the stream. `reason` names why the old session stopped when
  * the stream itself does not say.
  */
-export function buildContinuationBrief(events: EveEvent[], options: { reason?: string; maxChars?: number } = {}): string {
+export function buildContinuationBrief(
+  events: EveEvent[],
+  options: {
+    reason?: string;
+    maxChars?: number;
+    /** Events from the middle of the old session that were not read. */
+    skipped?: number;
+    /** The read stopped early, so the newest part may be missing. */
+    cut?: boolean;
+  } = {},
+): string {
   const maxChars = options.maxChars ?? BRIEF_MAX_CHARS;
   const entries: string[] = [];
   const toolNames = new Map<string, string>();
@@ -119,7 +129,7 @@ export function buildContinuationBrief(events: EveEvent[], options: { reason?: s
         for (const item of actions) {
           const action = asRecord(item);
           if (!action) continue;
-          const name = String(action.toolName ?? action.subagentName ?? action.name ?? "tool");
+          const name = oneLine(String(action.toolName ?? action.subagentName ?? action.name ?? "tool"), 60);
           if (typeof action.callId === "string") toolNames.set(action.callId, name);
           if (name === "todo") {
             const line = todoLine(action.input);
@@ -131,7 +141,7 @@ export function buildContinuationBrief(events: EveEvent[], options: { reason?: s
       }
       case "action.result": {
         const result = asRecord(data.result);
-        const status = typeof data.status === "string" ? data.status : "completed";
+        const status = typeof data.status === "string" ? oneLine(data.status, 20) : "completed";
         const callId = typeof result?.callId === "string" ? result.callId : "";
         const name = toolNames.get(callId) ?? "tool";
         if (name === "todo") break;
@@ -160,6 +170,12 @@ export function buildContinuationBrief(events: EveEvent[], options: { reason?: s
   if (task) head.push(`Original request: ${oneLine(task, TASK_MAX_CHARS)}`);
   if (inherited) head.push(`Earlier sessions: ${oneLine(inherited, INHERITED_MAX_CHARS)}`);
   if (todos) head.push(`Latest todo list: ${todos}`);
+  if (options.skipped && options.skipped > 0) {
+    head.push(`Note: ${options.skipped} events from the middle of the earlier session were not read back; the opening and the newest part are below.`);
+  }
+  if (options.cut) {
+    head.push("Note: the earlier session could not be read to its end, so its last steps may be missing. Check the current state before acting, and tell the owner if something is unclear.");
+  }
   const tail = BRIEF_END;
   const intro = "Conversation, oldest first (older parts trimmed to fit):";
   let used = head.reduce((sum, line) => sum + line.length + 1, 0) + intro.length + tail.length + 2;

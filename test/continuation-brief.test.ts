@@ -139,3 +139,10 @@ test("the lineage survives a store round trip and junk ids are dropped", () => {
   assert.deepEqual(parsed.bots[0].previousSessionIds, ["wrun_old"]);
   assert.equal(parsed.bots[0].continuedSessionId, "wrun_now");
 });
+
+test("a partial read is said in the brief, never passed off as the whole session", () => {
+  const brief = buildContinuationBrief(generalistRun, { skipped: 1200, cut: true });
+  assert.match(brief, /1200 events from the middle of the earlier session were not read back/);
+  assert.match(brief, /could not be read to its end/);
+  assert.equal(/\n\s*\n/.test(brief), false);
+});

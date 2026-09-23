@@ -515,17 +515,6 @@ public enum EveStream {
     private static let sessionNotePrefix = try! NSRegularExpression(
         pattern: "^Session note: [^\\n]+\\n"
     )
-    /// Port of `BRIEF_MARKER`: the first turn of a session carried over from
-    /// an older one holds the old conversation in its hidden prefix.
-    static let continuationMarker = "Continued session brief:"
-
-    /// True when a stored user turn opened a session carried over from an
-    /// older one: its hidden prefix, the part before the first blank line,
-    /// holds the brief.
-    public static func isContinuationTurn(_ text: String) -> Bool {
-        let head = text.range(of: "\n\n").map { String(text[..<$0.lowerBound]) } ?? text
-        return head.contains(continuationMarker)
-    }
 
     /// Port of `handoffEnvelope` in `web/lib/agent-exec.ts`: a user turn the
     /// handoff pump sent on the owner's behalf. Its first two lines are fixed.
