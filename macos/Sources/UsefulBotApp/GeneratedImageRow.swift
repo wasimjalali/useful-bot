@@ -184,6 +184,9 @@ actor GeneratedImageCache {
     /// Moved or missing answers, kept a minute so rows scrolling back into
     /// view do not ask the server again each time. Locate clears its id.
     private var lost: [String: (outcome: Outcome, at: Date)] = [:]
+    /// Bumped by Locate and Remove: a fetch that started before them must not
+    /// write its now-stale answer back into the caches.
+    private var generation: [String: Int] = [:]
     private var inFlight: [String: Task<Outcome, Never>] = [:]
 
     /// One client for every fetch. Each `BackendClient` owns a private cookie
@@ -202,6 +205,7 @@ actor GeneratedImageCache {
         if let cached = images[id] { return .image(cached) }
         if let known = lost[id], Date().timeIntervalSince(known.at) < 60 { return known.outcome }
         if let running = inFlight[id] { return await running.value }
+        let started = generation[id, default: 0]
         let task = Task<Outcome, Never> {
             do {
                 switch try await Self.client.imageFetch(id: id) {
@@ -219,7 +223,8 @@ actor GeneratedImageCache {
         }
         inFlight[id] = task
         let result = await task.value
-        inFlight[id] = nil
+        if inFlight[id] == task { inFlight[id] = nil }
+        guard generation[id, default: 0] == started else { return result }
         switch result {
         case .image(let image):
             if images.count >= Self.maxEntries { images.removeAll() }
@@ -238,20 +243,25 @@ actor GeneratedImageCache {
         lost[id] = nil
     }
 
-    func relink(_ id: String, path: String) async throws {
-        try await Self.client.relinkMedia(id: id, path: path)
+    private func invalidate(_ id: String) {
         images[id] = nil
         lost[id] = nil
+        inFlight[id] = nil
+        generation[id, default: 0] += 1
+    }
+
+    func relink(_ id: String, path: String) async throws {
+        try await Self.client.relinkMedia(id: id, path: path)
+        invalidate(id)
     }
 
     /// The Library's calls ride the same signed-in client as the rows.
-    func mediaList() async throws -> (root: String, items: [MediaItem]) {
+    func mediaList() async throws -> (root: String, items: [MediaItem], held: Int) {
         try await Self.client.mediaList()
     }
 
     func forget(_ id: String) async throws {
         try await Self.client.forgetMedia(id: id)
-        images[id] = nil
-        lost[id] = nil
+        invalidate(id)
     }
 }

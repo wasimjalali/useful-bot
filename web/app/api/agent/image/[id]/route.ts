@@ -1,5 +1,5 @@
 import { isGateError, requireOwner } from "../../../../../lib/desktop-gate";
-import { migrateLegacyImages } from "../../../../../lib/media-migrate";
+import { migrateLegacyImagesThrottled } from "../../../../../lib/media-migrate";
 import { readImage } from "../../../../../../shared/images-store.ts";
 import { readMediaBytes, sniffImage } from "../../../../../../shared/media-store.ts";
 
@@ -37,7 +37,7 @@ export async function GET(
   let found = readMediaBytes(id);
   if (found.status === "missing") {
     try {
-      if (migrateLegacyImages().moved > 0) found = readMediaBytes(id);
+      if (migrateLegacyImagesThrottled().moved > 0) found = readMediaBytes(id);
     } catch (err) {
       console.error("[media] legacy migration failed", err);
     }

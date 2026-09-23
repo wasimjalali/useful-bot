@@ -83,6 +83,19 @@ export function migrateDrawings(): { saved: number; failed: number } {
  * record that fails stays where it is and the next call tries again.
  */
 const LEGACY_OWNER_WAIT_MS = 2 * 60 * 1000;
+const LEGACY_RETRY_MS = 60 * 1000;
+let lastLegacyRun = 0;
+
+/**
+ * The image route runs the migration when an id is missing. It moves every
+ * record in one pass, so a burst of missing rows (or a folder that keeps
+ * refusing) would repeat it per request: once a minute is enough.
+ */
+export function migrateLegacyImagesThrottled(): { moved: number; failed: number } {
+  if (Date.now() - lastLegacyRun < LEGACY_RETRY_MS) return { moved: 0, failed: 0 };
+  lastLegacyRun = Date.now();
+  return migrateLegacyImages();
+}
 
 export function migrateLegacyImages(): { moved: number; failed: number } {
   const ids = legacyImageIds();

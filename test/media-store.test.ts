@@ -76,10 +76,10 @@ test("a moved file reads as moved, Locate relinks it, and only to the same kind"
   renameSync(other.path, join(dir, "gone.png"));
   assert.throws(() => relinkMedia("imgother0001", moved, index), /media_in_use/);
   // A file swapped for a link, or for something that is not an image, stops
-  // serving instead of reading as moved.
+  // serving and reads as moved, so Locate can point it back.
   renameSync(moved, join(dir, "real.png"));
   symlinkSync(join(dir, "real.png"), moved);
-  assert.equal(readMediaBytes("imgmove00001", index).status, "error");
+  assert.equal(readMediaBytes("imgmove00001", index).status, "moved");
   assert.equal(readMediaBytes("imgnothing01", index).status, "missing");
 });
 

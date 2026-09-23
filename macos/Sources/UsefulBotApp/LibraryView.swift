@@ -19,6 +19,7 @@ struct LibraryView: View {
 
     @State private var items: [MediaItem] = []
     @State private var root = ""
+    @State private var held = 0
     @State private var loaded = false
     @State private var error: String?
     @State private var search = ""
@@ -71,6 +72,9 @@ struct LibraryView: View {
                         onRegenerate: { regenerate(selected) },
                         onTrash: { trash(selected) }
                     )
+                    // A fresh detail per item: no picture or live page from
+                    // the one before carries over.
+                    .id(selected.id)
                         .padding(20)
                 } else {
                     toolbar
@@ -80,6 +84,15 @@ struct LibraryView: View {
                         Text(error)
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.C.danger)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 12)
+                    }
+                    if held > 0 {
+                        Text(held == 1
+                             ? "1 image could not move into the folder yet. It still shows in its chat."
+                             : "\(held) images could not move into the folder yet. They still show in their chats.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
                             .padding(.horizontal, 20)
                             .padding(.top, 12)
                     }
@@ -209,6 +222,7 @@ struct LibraryView: View {
             let listed = try await GeneratedImageCache.shared.mediaList()
             root = listed.root
             items = listed.items
+            held = listed.held
             error = nil
         } catch {
             self.error = "The Library could not load"
@@ -231,6 +245,14 @@ struct LibraryView: View {
     /// the open chat when that bot is gone.
     private func regenerate(_ item: MediaItem) {
         guard !item.prompt.isEmpty else { return }
+        // The composer draft is shared across chats: text typed for another
+        // bot must not ride along into this one.
+        if botExists(item.botId), item.botId != model.selectedBotId,
+           !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            error = "Send or clear your draft first, then Regenerate"
+            selected = nil
+            return
+        }
         if botExists(item.botId) { model.select(item.botId) }
         model.prefillDraft("Generate this image again: \(item.prompt)")
         onClose()
@@ -430,11 +452,15 @@ struct LibraryDetail: View {
                             }
                             if item.kind == "image" {
                                 NativeButton("Copy", kind: .secondary, small: true) {
-                                    // The original file, not the downsampled preview.
+                                    // The original file, not the downsampled
+                                    // preview, decoded off the main thread.
                                     let url = URL(fileURLWithPath: item.path)
-                                    guard let full = NSImage(contentsOf: url) else { return }
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.writeObjects([full, url as NSURL])
+                                    Task {
+                                        let data = await Task.detached { try? Data(contentsOf: url) }.value
+                                        guard let data, let full = NSImage(data: data) else { return }
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.writeObjects([full, url as NSURL])
+                                    }
                                 }
                             }
                         }
@@ -506,7 +532,10 @@ actor LibraryThumbnails {
     private let cache = NSCache<NSString, NSImage>()
 
     func thumbnail(path: String, maxPixel: Int) async -> NSImage? {
-        let key = "\(maxPixel):\(path)" as NSString
+        // Keyed by the file's modification time too: a file replaced at the
+        // same path gets a fresh picture.
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let key = "\(maxPixel):\(stamp):\(path)" as NSString
         if let hit = cache.object(forKey: key) { return hit }
         let url = URL(fileURLWithPath: path) as CFURL
         guard let source = CGImageSourceCreateWithURL(url, nil),

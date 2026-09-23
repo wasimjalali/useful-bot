@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../../../lib/desktop-gate";
-import { errorCode, readJson } from "../../../../../lib/api-guard";
+import { apiError, errorCode, readJson } from "../../../../../lib/api-guard";
 import { forgetMedia, relinkMedia } from "../../../../../../shared/media-store.ts";
 
 export const runtime = "nodejs";
@@ -25,7 +25,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (typeof body.path !== "string") return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     return NextResponse.json({ ok: true, item: relinkMedia(id, body.path) });
   } catch (err) {
-    return NextResponse.json({ ok: false, error: errorCode(err, "relink_failed") }, { status: 400 });
+    return apiError(err) ?? NextResponse.json({ ok: false, error: errorCode(err, "relink_failed") }, { status: 400 });
   }
 }
 

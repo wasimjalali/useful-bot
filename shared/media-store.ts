@@ -8,7 +8,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  rmdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -161,20 +161,42 @@ function writeIndex(index: MediaIndex, path: string): void {
 
 const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 
-/** Cross-process read/merge/write: eve saves images, the web service saves drawings. */
+function lockOwner(lock: string): string | null {
+  try {
+    return readFileSync(join(lock, "owner"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cross-process read/merge/write: eve saves images, the web service saves
+ * drawings. The lock is a directory holding its owner's token. A lock left by
+ * a process that died is moved aside whole (a rename, so two waiters cannot
+ * both take it) and removed. A holder checks the token is still its own just
+ * before it commits, and removes only its own lock, so a lock taken from a
+ * live but stalled holder makes that holder's save fail loudly instead of
+ * two writers each dropping the other's entry.
+ */
 function withIndex<T>(fn: (index: MediaIndex) => T, path = mediaIndexPath()): T {
   const lock = `${path}.lock`;
+  const token = randomUUID();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   let held = false;
   while (!held) {
     try {
       mkdirSync(lock, { mode: 0o700 });
+      writeFileSync(join(lock, "owner"), token, { mode: 0o600 });
       held = true;
     } catch {
       try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
-      } catch { /* lock vanished; retry */ }
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
+          const aside = `${lock}.stale.${randomUUID().slice(0, 8)}`;
+          renameSync(lock, aside);
+          rmSync(aside, { recursive: true, force: true });
+        }
+      } catch { /* lock vanished or another waiter moved it; retry */ }
       if (Date.now() > deadline) break;
       Atomics.wait(SLEEP_SIGNAL, 0, 0, 15);
     }
@@ -184,10 +206,13 @@ function withIndex<T>(fn: (index: MediaIndex) => T, path = mediaIndexPath()): T 
     const index = readIndexOrNull(path);
     if (!index) throw new Error("media_index_unreadable");
     const result = fn(index);
+    if (lockOwner(lock) !== token) throw new Error("media_index_locked");
     writeIndex(index, path);
     return result;
   } finally {
-    try { rmdirSync(lock); } catch { /* ignore */ }
+    if (lockOwner(lock) === token) {
+      try { rmSync(lock, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -452,7 +477,11 @@ export function readMediaBytes(id: string, indexPath = mediaIndexPath()): MediaB
     return { status: "ok", item, ...readVerified(item.path, item.kind) };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return { status: "moved", item };
+    // Nothing there, or something that is not the item (a folder, a link, a
+    // file of another kind): either way the item is not at its path, and
+    // Locate is the way back.
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { status: "moved", item };
+    if (err instanceof Error && err.message === "media_type") return { status: "moved", item };
     return { status: "error", item, code: err instanceof Error && err.message === "media_type" ? "media_type" : code ?? "media_read" };
   }
 }

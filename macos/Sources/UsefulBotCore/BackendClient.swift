@@ -1540,7 +1540,7 @@ public actor BackendClient {
 
     /// The Library: every saved image and drawing, newest first, and the
     /// folder they live in.
-    public func mediaList(kind: String? = nil, botId: String? = nil, query: String? = nil) async throws -> (root: String, items: [MediaItem]) {
+    public func mediaList(kind: String? = nil, botId: String? = nil, query: String? = nil) async throws -> (root: String, items: [MediaItem], held: Int) {
         let (data, response) = try await perform { client, _ in
             var components = URLComponents(
                 url: client.base.appendingPathComponent("api/agent/media"),
@@ -1555,9 +1555,9 @@ public actor BackendClient {
             return URLRequest(url: url)
         }
         try Self.expectOK(data, response)
-        struct Response: Decodable { let root: String; let items: [MediaItem] }
+        struct Response: Decodable { let root: String; let items: [MediaItem]; let held: Int? }
         guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else { throw BackendError.decoding }
-        return (decoded.root, decoded.items)
+        return (decoded.root, decoded.items, decoded.held ?? 0)
     }
 
     /// Point a moved item at the file the owner picked.

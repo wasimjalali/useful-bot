@@ -79,12 +79,17 @@ export function fitExcalidrawCamera(args: Record<string, unknown>): Record<strin
       ? { minX: Math.min(box.minX, x), minY: Math.min(box.minY, y), maxX: Math.max(box.maxX, x), maxY: Math.max(box.maxY, y) }
       : { minX: x, minY: y, maxX: x, maxY: y };
   };
+  // A scene built on a checkpoint or with deletions is not fully in this
+  // list, so its bounds here are not the drawing on screen: leave it be.
+  if (list.some((el) => el && typeof el === "object" && ["restoreCheckpoint", "delete"].includes(String((el as Record<string, unknown>).type)))) {
+    return args;
+  }
   let cameraIndex = -1;
   list.forEach((el, index) => {
     if (!el || typeof el !== "object") return;
     const rec = el as Record<string, unknown>;
     if (rec.type === "cameraUpdate") { cameraIndex = index; return; }
-    if (rec.type === "delete" || rec.isDeleted === true) return;
+    if (rec.isDeleted === true) return;
     const x = num(rec.x);
     const y = num(rec.y);
     if (x === null || y === null) return;
@@ -94,8 +99,14 @@ export function fitExcalidrawCamera(args: Record<string, unknown>): Record<strin
         if (Array.isArray(point) && num(point[0]) !== null && num(point[1]) !== null) grow(x + point[0], y + point[1]);
       }
     } else {
+      // Text often carries no size: estimate it from the string and font.
+      const fontSize = num(rec.fontSize) ?? 20;
+      const text = typeof rec.text === "string" ? rec.text : "";
+      const lines = text.split("\n");
+      const estWidth = Math.max(...lines.map((line) => line.length)) * fontSize * 0.55;
+      const estHeight = lines.length * fontSize * 1.25;
       grow(x, y);
-      grow(x + (num(rec.width) ?? 0), y + (num(rec.height) ?? 0));
+      grow(x + (num(rec.width) ?? (text ? estWidth : 0)), y + (num(rec.height) ?? (text ? estHeight : 0)));
     }
   });
   const bounds = box as Box | null;

@@ -181,12 +181,16 @@ struct ExcalidrawScene: Sendable {
 /// Parsed scenes by path, so a grid of drawings reads each file once.
 actor ExcalidrawScenes {
     static let shared = ExcalidrawScenes()
-    private var scenes: [String: ExcalidrawScene] = [:]
+    private var scenes: [String: (stamp: Double, scene: ExcalidrawScene)] = [:]
 
+    /// Keyed by path and modification time, so a file saved back in place is
+    /// read again; a small cap keeps a big Library from holding every scene.
     func scene(path: String) -> ExcalidrawScene? {
-        if let hit = scenes[path] { return hit }
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        if let hit = scenes[path], hit.stamp == stamp { return hit.scene }
         guard let data = FileManager.default.contents(atPath: path), let scene = ExcalidrawScene(data: data) else { return nil }
-        scenes[path] = scene
+        if scenes.count >= 64 { scenes.removeAll() }
+        scenes[path] = (stamp, scene)
         return scene
     }
 }

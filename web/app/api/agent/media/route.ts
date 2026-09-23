@@ -3,6 +3,7 @@ import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { errorCode } from "../../../../lib/api-guard";
 import { migrateDrawings, migrateLegacyImages } from "../../../../lib/media-migrate";
 import { listMedia, mediaRoot, type MediaKind } from "../../../../../shared/media-store.ts";
+import { legacyImageIds } from "../../../../../shared/images-store.ts";
 
 export const runtime = "nodejs";
 
@@ -27,7 +28,10 @@ export async function GET(request: Request) {
       botId: url.searchParams.get("botId") ?? undefined,
       query: url.searchParams.get("q")?.slice(0, 200) ?? undefined,
     });
-    return NextResponse.json({ ok: true, root: mediaRoot(), items }, { headers: { "cache-control": "no-store" } });
+    // Images the folder has not taken yet (it refused them): the Library says
+    // how many, rather than leaving them out without a word.
+    const held = legacyImageIds().length;
+    return NextResponse.json({ ok: true, root: mediaRoot(), items, held }, { headers: { "cache-control": "no-store" } });
   } catch (err) {
     console.error("[media] Library list failed", err);
     return NextResponse.json({ ok: false, error: errorCode(err, "media_list_failed") }, { status: 500 });
