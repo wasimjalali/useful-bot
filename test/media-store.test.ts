@@ -322,9 +322,18 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
     const drawing2 = regenerateImage("imglost00001");
     assert.equal(forgetMedia("imglost00001", index), true);
     resume2();
-    await drawing2;
+    await assert.rejects(() => drawing2, /image_removed/);
     assert.equal(findMedia("imglost00001", index)?.forgotten, true);
     // Asked for again after the Remove, it comes back.
+    await regenerateImage("imglost00001");
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+    // Something that is not the image sitting at the old path does not
+    // count as the owner putting it back.
+    const junkHome = findMedia("imglost00001", index)!.path;
+    renameSync(junkHome, join(dir, "away3.png"));
+    writeFileSync(junkHome, "not an image");
+    assert.equal(readMediaBytes("imglost00001", index).status, "moved");
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }))) as typeof fetch;
     await regenerateImage("imglost00001");
     assert.equal(readMediaBytes("imglost00001", index).status, "ok");
   } finally {

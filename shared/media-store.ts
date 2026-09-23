@@ -330,7 +330,7 @@ function saveFile(input: {
         // removed (unless it was removed when they asked), and a file they
         // put back at its path stays the one the entry names.
         if (raced.forgotten && !input.revive) return raced;
-        if (!raced.forgotten && raced.path !== item.path && isFile(raced.path)) return raced;
+        if (!raced.forgotten && raced.path !== item.path && readsAs(raced.path, raced.kind)) return raced;
         // The replacement keeps the entry's prompt and bot id, and takes the
         // new file and the folder name it was filed under.
         Object.assign(raced, { path: item.path, mime: item.mime, model: item.model, provider: item.provider, botName: item.botName, createdAt: item.createdAt });
@@ -440,14 +440,6 @@ function realOrSelf(path: string): string {
 }
 
 /** The image type the bytes themselves say, never the file name. */
-function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
 export function sniffImage(bytes: Buffer): string | null {
   if (bytes.length > 8 && bytes[0] === 0x89 && bytes.subarray(1, 4).toString("ascii") === "PNG") return "image/png";
   if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
@@ -472,6 +464,16 @@ function isExcalidrawScene(bytes: Buffer): boolean {
  * Locate nor a file swapped in later can make the image route serve anything
  * else.
  */
+/** Whether the file at `path` is a readable item of this kind, the test readMediaBytes calls "ok". */
+function readsAs(path: string, kind: MediaKind): boolean {
+  try {
+    readVerified(path, kind);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readVerified(path: string, kind: MediaKind): { mime: string; bytes: Buffer } {
   if (!lstatSync(path).isFile()) throw new Error("media_type");
   const bytes = readFileSync(path);

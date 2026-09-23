@@ -140,6 +140,9 @@ export function migrateLegacyImages(): { moved: number; failed: number } {
           createdAt: Number.isNaN(Date.parse(record.createdAt)) ? undefined : new Date(record.createdAt),
           replace: lost,
         });
+        // The record goes only once the folder serves the image: a
+        // replacement the index turned down leaves the record as the copy.
+        if (lost && readMediaBytes(id).status !== "ok") continue;
       }
       deleteImage(id);
       moved += 1;

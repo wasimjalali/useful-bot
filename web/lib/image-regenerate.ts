@@ -26,13 +26,13 @@ const inflight: Map<string, Promise<{ path: string }>> =
  * already had.
  */
 function source(id: string): { prompt: string; botId: string; botName?: string } | null {
-  const read = readMediaBytes(id);
-  if (read.status === "moved") return { prompt: read.item.prompt, botId: read.item.botId, botName: read.item.botName };
+  const entry = findMedia(id);
+  // The chat event keeps the whole prompt; the Library entry a clipped one.
   for (const thread of readAgentStore().threads) {
     const event = thread.events.find((row) => row.imageId === id && row.kind === "image");
-    if (event?.text) return { prompt: event.text, botId: thread.botId, botName: findMedia(id)?.botName };
+    if (event?.text) return { prompt: event.text, botId: entry?.botId || thread.botId, botName: entry?.botName };
   }
-  return null;
+  return entry ? { prompt: entry.prompt, botId: entry.botId, botName: entry.botName } : null;
 }
 
 /**
@@ -118,14 +118,23 @@ async function redraw(id: string): Promise<{ path: string }> {
       replace: true,
       revive,
     });
+    // The owner removed it while it was drawn: it stays removed, and the
+    // answer says so rather than reporting an image that is not there.
+    if (saved.forgotten) {
+      console.error(`[media] regenerated image ${id} was dropped: removed from the Library during the redraw`);
+      throw new ApiError(409, "image_removed");
+    }
     return { path: saved.path };
   } catch (err) {
+    if (err instanceof ApiError) throw err;
     console.error(`[media] could not save regenerated image ${id} to the media folder`, err);
     try {
       writeImage({ id, mime, b64: item.b64_json, prompt: from.prompt, provider, model });
     } catch (fallbackErr) {
       console.error(`[media] could not keep regenerated image ${id} at all`, fallbackErr);
-      throw new ApiError(500, "image_not_saved");
+      // Bytes no store takes (not an image, or too large) are not a disk problem.
+      const unusable = fallbackErr instanceof Error && (fallbackErr.message === "image_type" || fallbackErr.message === "image_too_large");
+      throw new ApiError(unusable ? 502 : 500, unusable ? "image_unusable" : "image_not_saved");
     }
     return { path: "" };
   }

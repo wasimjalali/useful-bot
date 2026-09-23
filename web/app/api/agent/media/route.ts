@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { errorCode } from "../../../../lib/api-guard";
 import { migrateDrawings, migrateLegacyImages } from "../../../../lib/media-migrate";
-import { listMedia, mediaRoot, type MediaKind } from "../../../../../shared/media-store.ts";
+import { findMedia, listMedia, mediaRoot, readMediaBytes, type MediaKind } from "../../../../../shared/media-store.ts";
 import { legacyImageIds } from "../../../../../shared/images-store.ts";
 
 export const runtime = "nodejs";
@@ -30,7 +30,12 @@ export async function GET(request: Request) {
     });
     // Images the folder has not taken yet (it refused them): the Library says
     // how many, rather than leaving them out without a word.
-    const held = legacyImageIds().length;
+    // Only records still on their way in: one held behind a removed or
+    // unreadable entry stays put by design and is not a backlog.
+    const held = legacyImageIds().filter((id) => {
+      const entry = findMedia(id);
+      return !entry || (!entry.forgotten && readMediaBytes(id).status === "moved");
+    }).length;
     return NextResponse.json({ ok: true, root: mediaRoot(), items, held }, { headers: { "cache-control": "no-store" } });
   } catch (err) {
     console.error("[media] Library list failed", err);

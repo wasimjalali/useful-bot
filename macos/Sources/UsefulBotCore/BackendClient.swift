@@ -1611,6 +1611,10 @@ public actor BackendClient {
             return "This image's prompt wasn't saved, so it can't be drawn again."
         case "regenerate_timeout", "timeout":
             return "The image model took too long. It may still have been billed, so check the Library before trying again."
+        case "image_removed":
+            return "This image was removed from the Library while it was drawn, so it stays removed."
+        case "image_unusable":
+            return "The image model sent back something that isn't a usable image."
         case "image_not_saved":
             return "The image was drawn but couldn't be saved on this Mac. Check disk space and access to Documents."
         default:
