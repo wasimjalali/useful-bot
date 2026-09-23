@@ -240,6 +240,7 @@ public struct AgentEvent: Codable, Identifiable, Equatable, Sendable {
     public let handoffId: String?
     public let widgetId: String?
     /// Generated image the row renders, fetched from `/api/agent/image/<id>`.
+    /// On a "page" row, the Library item of the HTML file.
     public let imageId: String?
     /// On the host's "connected" note: what was added, and its logo.
     public let connectedName: String?
@@ -947,7 +948,7 @@ public struct ConnectorsPayload: Codable, Equatable, Sendable {
 /// lists it. `exists` is false when the file is no longer at `path`.
 public struct MediaItem: Codable, Equatable, Identifiable, Sendable {
     public let id: String
-    /// "image" or "drawing".
+    /// "image", "drawing" or "page" (an HTML file a bot wrote).
     public let kind: String
     public let path: String
     public let botId: String

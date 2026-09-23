@@ -2,7 +2,7 @@ import Foundation
 
 public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case user, assistant, handoff, post, note, widget, image
+        case user, assistant, handoff, post, note, widget, image, page
     }
 
     public var id: String
@@ -20,7 +20,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public var connectedName: String?
     public var connectedLogo: String?
     /// The generated image this row renders, when it is one. `text` keeps the
-    /// prompt, so a reader that ignores the id still says what was drawn.
+    /// prompt, so a reader that ignores the id still says what was drawn. On
+    /// a page row, the Library item of the HTML file, and `text` its title.
     public var imageId: String?
 
     public init(
@@ -85,7 +86,7 @@ public enum Transcript {
                 at: TranscriptBlocks.date(fromISO8601: event.at),
                 connectedName: kind == .note ? event.connectedName : nil,
                 connectedLogo: kind == .note ? event.connectedLogo : nil,
-                imageId: kind == .image ? event.imageId : nil
+                imageId: kind == .image || kind == .page ? event.imageId : nil
             ))
             if kind == .user {
                 durableUserCounts[text, default: 0] += 1
@@ -204,6 +205,7 @@ public enum Transcript {
         case "post": return .post
         case "widget": return .widget
         case "image": return .image
+        case "page": return .page
         default: return .note
         }
     }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import {
   forgetMedia,
   listMedia,
   readMediaBytes,
+  recordPage,
   relinkMedia,
   saveDrawing,
   saveImage,
@@ -348,4 +349,48 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
       else process.env[key] = previous[key];
     }
   }
+});
+
+test("an HTML page is indexed where the bot wrote it, once per file, and stays removed once removed", () => {
+  const { index, dir } = box();
+  const path = join(dir, "site", "report.html");
+  mkdirSync(dirname(path), { recursive: true });
+  const html = "<html><head><title>Q3 &amp; Q4 report</title></head><body>hi</body></html>";
+  writeFileSync(path, html);
+  const first = recordPage({ path, html, botId: "b", botName: "B" }, index);
+  assert.equal(first.added, true);
+  assert.equal(first.item.kind, "page");
+  assert.equal(first.item.title, "Q3 & Q4 report");
+  assert.equal(first.item.mime, "text/html");
+  // Indexed in place, not copied into the media folder.
+  assert.equal(first.item.path, realpathSync(path));
+  assert.equal(readMediaBytes(first.item.id, index).status, "ok");
+  assert.deepEqual(listMedia({ kind: "page" }, index).map((item) => item.id), [first.item.id]);
+  // A rewrite keeps the one entry and takes the new title.
+  const again = recordPage({ path, html: "<title>Final report</title>", botId: "b", botName: "B" }, index);
+  assert.equal(again.added, false);
+  assert.equal(again.item.id, first.item.id);
+  assert.equal(findMedia(first.item.id, index)?.title, "Final report");
+  // No <title>: the file name.
+  const bare = join(dir, "site", "landing page.htm");
+  writeFileSync(bare, "<p>x</p>");
+  assert.equal(recordPage({ path: bare, html: "<p>x</p>", botId: "b", botName: "B" }, index).item.title, "landing page");
+  // Only .html files, only real files.
+  const text = join(dir, "notes.txt");
+  writeFileSync(text, "x");
+  assert.throws(() => recordPage({ path: text, html: "x", botId: "b", botName: "B" }, index), /media_type/);
+  assert.throws(() => recordPage({ path: join(dir, "missing.html"), html: "x", botId: "b", botName: "B" }, index), /media_type/);
+  // A page never relinks to an image, nor an image to a page.
+  const png = join(dir, "pic.png");
+  writeFileSync(png, PNG);
+  renameSync(path, join(dir, "moved.html"));
+  assert.throws(() => relinkMedia(first.item.id, png, index), /media_type/);
+  relinkMedia(first.item.id, join(dir, "moved.html"), index);
+  assert.equal(readMediaBytes(first.item.id, index).status, "ok");
+  // Removed from the Library: a later write does not bring it back.
+  assert.equal(forgetMedia(first.item.id, index), true);
+  writeFileSync(path, html);
+  const after = recordPage({ path: join(dir, "moved.html"), html, botId: "b", botName: "B" }, index);
+  assert.equal(after.added, false);
+  assert.equal(after.item.forgotten, true);
 });

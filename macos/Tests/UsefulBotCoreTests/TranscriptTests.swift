@@ -117,6 +117,16 @@ import Testing
         #expect(rows.first?.text == "Gmail connected")
     }
 
+    @Test func aPageEventBecomesAPageRowNamingItsLibraryItem() throws {
+        let event = try JSONDecoder().decode(AgentEvent.self, from: Data(#"""
+        {"id":"page_pageabc","kind":"page","text":"Q3 report","imageId":"pageabc","targetBotIds":[]}
+        """#.utf8))
+        let rows = Transcript.merge(events: [event], messages: [])
+        #expect(rows.first?.kind == .page)
+        #expect(rows.first?.imageId == "pageabc")
+        #expect(rows.first?.text == "Q3 report")
+    }
+
     @Test func mergeRendersHandoffsAndNotes() throws {
         let handoff = try JSONDecoder().decode(
             AgentEvent.self,
