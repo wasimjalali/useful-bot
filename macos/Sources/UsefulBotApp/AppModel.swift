@@ -242,24 +242,6 @@ final class AppModel: ObservableObject {
         // DesktopEndpointPolicy never rejects; the throws exists so iOS
         // policies can refuse an endpoint (spec 4.7).
         self.client = try! BackendClient(base: config.baseURL)
-        // Regenerate on a lost image puts its prompt in the composer for the
-        // owner to send (see GeneratedImageRow).
-        prefillObserver = NotificationCenter.default.addObserver(
-            forName: .prefillComposer, object: nil, queue: .main
-        ) { [weak self] note in
-            guard let text = note.userInfo?["text"] as? String else { return }
-            MainActor.assumeIsolated { self?.prefillDraft(text) }
-        }
-    }
-
-    private var prefillObserver: NSObjectProtocol?
-
-    /// Add text the app wrote to the composer draft. Whatever the owner had
-    /// typed stays, above it: a prefill never costs them their words.
-    func prefillDraft(_ text: String) {
-        let kept = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        draft = kept.isEmpty ? text : "\(draft)\n\n\(text)"
-        draftWriteToken &+= 1
     }
 
     private var projection = StreamProjection()

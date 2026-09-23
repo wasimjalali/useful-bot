@@ -213,3 +213,48 @@ test("drawings still in a chat backfill into the Library, dated when first drawn
     }
   }
 });
+
+test("Regenerate redraws a lost image from the stored prompt under the same id, and refuses one that is there", async () => {
+  const { root, index, dir } = box();
+  const keys = ["UB_MEDIA_DIR", "UB_MEDIA_INDEX_PATH", "UB_IMAGES_DIR", "UB_AGENT_STORE_PATH", "UB_SHELL_PATH", "UB_ROUTER_DESKTOP_TOKEN"] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const realFetch = globalThis.fetch;
+  process.env.UB_MEDIA_DIR = root;
+  process.env.UB_MEDIA_INDEX_PATH = index;
+  process.env.UB_IMAGES_DIR = join(dir, "legacy");
+  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
+  process.env.UB_SHELL_PATH = join(dir, "shell.json");
+  process.env.UB_ROUTER_DESKTOP_TOKEN = "router-token-test";
+  try {
+    const shell = readShell();
+    const bot = shell.bots[0]!;
+    writeShell(shell);
+    appendAgentEvent(bot.id, { kind: "image", text: "a red kite over dunes", imageId: "imglost00001", id: "img_imglost00001" });
+    const sent: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return new Response(JSON.stringify({ model: "flux", provider: "openrouter", data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const { regenerateImage } = await import("../web/lib/image-regenerate.ts");
+    await regenerateImage("imglost00001");
+    assert.deepEqual(sent[0]?.body, { model: "image", prompt: "a red kite over dunes" });
+    const read = readMediaBytes("imglost00001", index);
+    assert.equal(read.status, "ok");
+    assert.equal(findMedia("imglost00001", index)?.botId, bot.id);
+    // It is there now: another click is refused before any paid call.
+    await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
+    assert.equal(sent.length, 1);
+    // A moved file is replaced under the same id and entry.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "gone.png"));
+    await regenerateImage("imglost00001");
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+    assert.equal(listMedia({}, index).filter((row) => row.id === "imglost00001").length, 1);
+    await assert.rejects(() => regenerateImage("imgnothing99"), /image_prompt_missing/);
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});

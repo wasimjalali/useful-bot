@@ -3,12 +3,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UsefulBotCore
 
-extension Notification.Name {
-    /// Carries a draft for the composer (Regenerate on a lost image). The row
-    /// posts it instead of observing AppModel, so transcript rows stay cheap.
-    static let prefillComposer = Notification.Name("useful-bot.prefill-composer")
-}
-
 /// One generated image in the transcript: the picture at chat width, its
 /// prompt under it, a compact row when the bytes cannot be fetched. The
 /// image is fetched through the signed-in client, so the row never carries a
@@ -24,6 +18,8 @@ struct GeneratedImageRow: View {
     @State private var image: NSImage?
     @State private var lost: Lost?
     @State private var locateError: String?
+    @State private var regenerating = false
+    @State private var copied = false
     /// A retry bumps this so `.task` runs the fetch again.
     @State private var attempt = 0
 
@@ -31,11 +27,7 @@ struct GeneratedImageRow: View {
         VStack(alignment: .leading, spacing: 6) {
             content
             if !prompt.isEmpty {
-                Text(prompt)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.C.inkFaint)
-                    .lineLimit(3)
-                    .textSelection(.enabled)
+                promptLine
             }
         }
         .task(id: attempt) {
@@ -55,8 +47,52 @@ struct GeneratedImageRow: View {
         }
     }
 
+    /// One line of the prompt and a button that copies all of it.
+    private var promptLine: some View {
+        HStack(spacing: 6) {
+            Text(prompt)
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.inkFaint)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(prompt, forType: .string)
+                copied = true
+                Task {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copied = false
+                }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .help("Copy prompt")
+            .accessibilityLabel(copied ? "Prompt copied" : "Copy prompt")
+        }
+        .frame(maxWidth: 448, alignment: .leading)
+    }
+
     @ViewBuilder private var content: some View {
-        if let image {
+        if regenerating {
+            // The footprint the new picture will take, with the work shown.
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                .fill(Theme.C.sunken)
+                .frame(width: 320, height: 320)
+                .overlay {
+                    VStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Generating")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.C.inkMuted)
+                    }
+                }
+        } else if let image {
             Button {
                 open(image)
             } label: {
@@ -107,12 +143,24 @@ struct GeneratedImageRow: View {
 
     @ViewBuilder private var regenerateAction: some View {
         if !prompt.isEmpty {
-            rowAction("Regenerate") {
-                NotificationCenter.default.post(
-                    name: .prefillComposer,
-                    object: nil,
-                    userInfo: ["text": "Generate this image again: \(prompt)"]
-                )
+            rowAction("Regenerate") { regenerate() }
+        }
+    }
+
+    /// Draw it again here, from the prompt the server kept, under the same
+    /// id: the new picture lands in this row.
+    private func regenerate() {
+        regenerating = true
+        locateError = nil
+        Task {
+            do {
+                try await GeneratedImageCache.shared.regenerate(imageId)
+                regenerating = false
+                lost = nil
+                attempt += 1
+            } catch {
+                regenerating = false
+                locateError = "The image could not be generated again"
             }
         }
     }
@@ -248,6 +296,11 @@ actor GeneratedImageCache {
         lost[id] = nil
         inFlight[id] = nil
         generation[id, default: 0] += 1
+    }
+
+    func regenerate(_ id: String) async throws {
+        try await Self.client.regenerateImage(id: id)
+        invalidate(id)
     }
 
     func relink(_ id: String, path: String) async throws {

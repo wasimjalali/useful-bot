@@ -1575,6 +1575,22 @@ public actor BackendClient {
         try Self.expectOK(data, response)
     }
 
+    /// Draw a lost image again from the prompt the server kept, in place under
+    /// the same id. Slow (an image model call), so the caller shows progress.
+    public func regenerateImage(id: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base
+                .appendingPathComponent("api/agent/image")
+                .appendingPathComponent(id)
+                .appendingPathComponent("regenerate"))
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.timeoutInterval = 180
+            return request
+        }
+        try Self.expectOK(data, response)
+    }
+
     /// Forget an item after its file went to the Trash.
     public func forgetMedia(id: String) async throws {
         let (data, response) = try await perform { client, token in

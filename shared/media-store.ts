@@ -291,13 +291,18 @@ function saveFile(input: {
   model: string;
   provider: string;
   createdAt?: Date;
+  /**
+   * Regenerate: the id's file is gone, and a new one takes its place under
+   * the same id (so the chat row that names it shows the new picture).
+   */
+  replace?: boolean;
 }, root = mediaRoot(), indexPath = mediaIndexPath()): MediaItem {
   if (!ID.test(input.id)) throw new Error("media_id");
-  // One file per id, ever. The app posts a drawing again whenever a chat
+  // One file per id, ever, unless this is a replacement. The app posts a drawing again whenever a chat
   // replays it, and a second file per replay would fill the folder with
   // copies; an owner who moved or trashed the file keeps that choice too.
   const existing = findMedia(input.id, indexPath);
-  if (existing) return existing;
+  if (existing && !input.replace) return existing;
   const when = input.createdAt ?? new Date();
   const { month, prefix } = stamp(when);
   const dir = join(root, safeName(input.botName, "Useful Bot"), month);
@@ -317,8 +322,16 @@ function saveFile(input: {
   };
   try {
     const kept = withIndex((index) => {
-      // A save racing this one for the same id won: keep its file, drop ours.
       const raced = index.items.find((row) => row.id === item.id);
+      if (raced && input.replace) {
+        // The replacement keeps the entry's prompt and bot, takes the new
+        // file, and comes back if the owner had removed it: Regenerate is
+        // them asking for it again.
+        Object.assign(raced, { path: item.path, mime: item.mime, model: item.model, provider: item.provider, createdAt: item.createdAt });
+        delete raced.forgotten;
+        return null;
+      }
+      // A save racing this one for the same id won: keep its file, drop ours.
       if (raced) return raced;
       index.items.push(item);
       return null;
@@ -346,6 +359,7 @@ export function saveImage(input: {
   botId: string;
   botName: string;
   createdAt?: Date;
+  replace?: boolean;
 }, root = mediaRoot(), indexPath = mediaIndexPath()): MediaItem {
   const ext = IMAGE_EXT[input.mime];
   if (!ext) throw new Error("image_type");
