@@ -26,7 +26,7 @@ struct LibraryView: View {
     @State private var filter: Filter = .all
     @State private var botFilter: String?
     @State private var selected: MediaItem?
-    @State private var regenerating: String?
+    @State private var regenerating: Set<String> = []
     @FocusState private var searchFocused: Bool
 
     private static let gridHeight: CGFloat = 560
@@ -68,7 +68,7 @@ struct LibraryView: View {
                 if let selected {
                     LibraryDetail(
                         item: selected,
-                        regenerating: regenerating == selected.id,
+                        regenerating: regenerating.contains(selected.id),
                         onOpenChat: { openChat(selected) },
                         onLocate: { locate(selected) },
                         onRegenerate: { regenerate(selected) },
@@ -242,22 +242,24 @@ struct LibraryView: View {
         onClose()
     }
 
-    /// Put the saved prompt in the bot's composer, in its chat.
     /// Draw it again in place from the prompt the server kept; the item comes
     /// back with its new file.
     private func regenerate(_ item: MediaItem) {
         guard !item.prompt.isEmpty else { return }
-        regenerating = item.id
+        regenerating.insert(item.id)
         Task {
             do {
                 try await GeneratedImageCache.shared.regenerate(item.id)
                 await load()
-                selected = items.first { $0.id == item.id }
+                // Only while the owner is still on this item's detail.
+                if selected?.id == item.id {
+                    selected = items.first { $0.id == item.id }
+                }
             } catch {
                 self.error = GeneratedImageCache.regenerateMessage(error)
-                selected = nil
+                if selected?.id == item.id { selected = nil }
             }
-            regenerating = nil
+            regenerating.remove(item.id)
         }
     }
 

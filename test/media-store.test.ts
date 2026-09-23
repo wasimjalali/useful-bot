@@ -336,6 +336,11 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
     globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }))) as typeof fetch;
     await regenerateImage("imglost00001");
     assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+    // Bytes that are not an image, whatever their label, are refused.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "away4.png"));
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: Buffer.from("not an image").toString("base64"), mime: "image/png" }] }))) as typeof fetch;
+    await assert.rejects(() => regenerateImage("imglost00001"), /image_unusable/);
+    assert.equal(readMediaBytes("imglost00001", index).status, "moved");
   } finally {
     globalThis.fetch = realFetch;
     for (const key of keys) {

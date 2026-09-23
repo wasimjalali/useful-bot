@@ -101,7 +101,11 @@ async function redraw(id: string): Promise<{ path: string }> {
   // The type is what the bytes are, not what the router said they are, so a
   // mislabelled image still has a folder and a store that take it.
   const bytes = Buffer.from(item.b64_json, "base64");
-  const mime = sniffImage(bytes) ?? (typeof item.mime === "string" ? item.mime : "image/png");
+  const mime = sniffImage(bytes);
+  if (!mime) {
+    console.error(`[media] regenerated image ${id} is not an image; nothing saved`);
+    throw new ApiError(502, "image_unusable");
+  }
   const model = typeof json?.model === "string" ? json.model : "";
   const provider = typeof json?.provider === "string" ? json.provider : "";
   try {

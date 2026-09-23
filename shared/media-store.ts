@@ -333,7 +333,14 @@ function saveFile(input: {
         if (!raced.forgotten && raced.path !== item.path && readsAs(raced.path, raced.kind)) return raced;
         // The replacement keeps the entry's prompt and bot id, and takes the
         // new file and the folder name it was filed under.
-        Object.assign(raced, { path: item.path, mime: item.mime, model: item.model, provider: item.provider, botName: item.botName, createdAt: item.createdAt });
+        Object.assign(raced, {
+          path: item.path,
+          mime: item.mime,
+          model: item.model || raced.model,
+          provider: item.provider || raced.provider,
+          botName: item.botName,
+          createdAt: item.createdAt,
+        });
         delete raced.forgotten;
         return null;
       }

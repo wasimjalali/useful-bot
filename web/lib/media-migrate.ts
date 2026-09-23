@@ -1,6 +1,6 @@
 import { readAgentStore } from "../../shared/agent-store.ts";
 import { deleteImage, legacyImageIds, readImage } from "../../shared/images-store.ts";
-import { findMedia, readMediaBytes, readMediaIndex, saveDrawing, saveImage } from "../../shared/media-store.ts";
+import { findMedia, readMediaBytes, readMediaIndex, saveDrawing, saveImage, sniffImage } from "../../shared/media-store.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import { readWidget, type WidgetRecord } from "../../shared/widgets-store.ts";
 
@@ -120,9 +120,18 @@ export function migrateLegacyImages(): { moved: number; failed: number } {
       const status = entry ? readMediaBytes(id).status : "missing";
       if (entry && (entry.forgotten || status === "error")) continue;
       const lost = entry !== null && status === "moved";
+      if (entry && !lost && readImage(id)) {
+        console.error(`[media] dropping the app-store copy of image ${id}: the folder already serves its file`);
+      }
       if (!entry || lost) {
         const record = readImage(id);
         if (!record) continue;
+        // Bytes that are not an image would be saved and read as moved on
+        // every load; they stay a failure instead of a new file each time.
+        if (!sniffImage(Buffer.from(record.b64, "base64"))) {
+          failed += 1;
+          continue;
+        }
         // A fallback record is written just before its chat event. One with
         // no event yet waits a little, so it is filed under its bot rather
         // than under no bot for good. An entry already names its bot.
