@@ -344,6 +344,22 @@ test("a plan that runs out mid-stream gets the router's limit code", async () =>
   });
   const { error } = await readTranslated(res);
   assert.deepEqual(error, { message: "upstream_quota_exhausted", code: "upstream_quota_exhausted" });
+
+  // A used-up plan mid-stream carries its reset, like one refused up front.
+  const resetsAt = Math.round(Date.now() / 1000) + 3600;
+  const planStub: typeof fetch = async () => new Response(sse([
+    { event: "response.failed", data: { type: "response.failed", response: { error: { type: "usage_limit_reached", message: "The usage limit has been reached", resets_at: resetsAt } } } },
+  ]), { headers: { "content-type": "text/event-stream" } });
+  const plan = await readTranslated(await postResponses({
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    model: "gpt-5.4-mini",
+    chatgpt: true,
+    body: { ...CHAT_BODY },
+    headers: {},
+    signal: AbortSignal.timeout(5000),
+    fetchImpl: planStub,
+  }));
+  assert.deepEqual(plan.error, { message: `upstream_usage_limit resets_at=${resetsAt}`, code: "upstream_usage_limit", type: "usage_limit_reached" });
 });
 
 test("messages request maps system, tools, images and thinking", () => {

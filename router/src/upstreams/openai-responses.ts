@@ -1,5 +1,5 @@
 import { RouterError } from "../errors.ts";
-import { usedLimitCode } from "../retry-after.ts";
+import { resetOf, usedLimitCode, usedLimitMessage } from "../retry-after.ts";
 
 /**
  * openai-responses protocol (ChatGPT Codex backend): translate the router's
@@ -362,7 +362,7 @@ function applyResponsesEvent(state: ResponsesStreamState, event: Record<string, 
     const used = usedLimitCode(typeof error.type === "string" ? error.type : "", typeof error.code === "string" ? error.code : "");
     if (used) {
       error.code = used;
-      error.message = used;
+      error.message = usedLimitMessage(used, inner ? resetOf(inner) : undefined);
     }
     state.enqueue(`data: ${JSON.stringify({ error })}\n\n`);
     return "error";

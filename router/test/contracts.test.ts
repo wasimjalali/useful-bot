@@ -516,6 +516,8 @@ test("other vendors' used-up plans are read from their documented bodies", async
   assert.equal((await limit({ error: { code: 1310 } })).code, "upstream_usage_limit");
   assert.equal((await limit({ error: { code: "1311" } })).code, "upstream_usage_not_included");
   assert.equal((await limit({ error: { code: "1113" } })).code, "upstream_quota_exhausted");
+  // A code named like an Object method is not a Z.ai code.
+  assert.equal((await limit({ error: { code: "constructor" } })).code, "upstream_rate_limited");
   // Kimi.
   assert.equal((await limit({ error: { type: "exceeded_current_quota_error" } })).code, "upstream_quota_exhausted");
   // Google names a per-day quota, inside the array its OpenAI endpoint wraps errors in.

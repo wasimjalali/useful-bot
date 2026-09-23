@@ -24,22 +24,22 @@ const QUOTA_CODES = new Set([
  * Z.ai sends every limit as a 429 with a numeric `code` (docs.z.ai/api-reference/api-code).
  * 1302 (requests too fast) and 1305 (overloaded) are real rate limits and absent here.
  */
-const ZAI_CODES: Record<string, string> = {
-  "1113": "upstream_quota_exhausted", // no balance or resource package
-  "1308": "upstream_usage_limit", // plan usage limit, resets later
-  "1309": "upstream_quota_exhausted", // Coding Plan package expired
-  "1310": "upstream_usage_limit", // weekly or monthly limit
-  "1311": "upstream_usage_not_included", // plan does not include the model
-  "1313": "upstream_usage_limit", // fair usage policy
-  "1314": "upstream_quota_exhausted", // enterprise package expired
-  "1315": "upstream_usage_not_included", // key limited to enterprise coding use
-  "1316": "upstream_usage_limit",
-  "1317": "upstream_usage_limit",
-  "1318": "upstream_usage_limit",
-  "1319": "upstream_usage_limit",
-  "1320": "upstream_usage_limit",
-  "1321": "upstream_usage_limit",
-};
+const ZAI_CODES = new Map<string, string>([
+  ["1113", "upstream_quota_exhausted"], // no balance or resource package
+  ["1308", "upstream_usage_limit"], // plan usage limit, resets later
+  ["1309", "upstream_quota_exhausted"], // Coding Plan package expired
+  ["1310", "upstream_usage_limit"], // weekly or monthly limit
+  ["1311", "upstream_usage_not_included"], // plan does not include the model
+  ["1313", "upstream_usage_limit"], // fair usage policy
+  ["1314", "upstream_quota_exhausted"], // enterprise package expired
+  ["1315", "upstream_usage_not_included"], // key limited to enterprise coding use
+  ["1316", "upstream_usage_limit"],
+  ["1317", "upstream_usage_limit"],
+  ["1318", "upstream_usage_limit"],
+  ["1319", "upstream_usage_limit"],
+  ["1320", "upstream_usage_limit"],
+  ["1321", "upstream_usage_limit"],
+]);
 
 /** The furthest reset worth naming; anything later is a unit mixup or junk. */
 const MAX_RESET_S = 400 * 24 * 3600;
@@ -56,7 +56,10 @@ export function usedLimitCode(type: string, code: string): string | null {
   if (type === "usage_not_included") return "upstream_usage_not_included";
   if (type === "insufficient_quota" || QUOTA_CODES.has(code)) return "upstream_quota_exhausted";
   if (type === "exceeded_current_quota_error") return "upstream_quota_exhausted";
-  return ZAI_CODES[code] ?? null;
+  // Kimi's tokens-per-day limit shares `rate_limit_reached_error` with its
+  // per-minute ones, and the type is all its docs promise, so a spent Kimi
+  // day still reads as a rate limit (the agent's wait is bounded all the same).
+  return ZAI_CODES.get(code) ?? null;
 }
 
 /** Epoch seconds of a reset, or undefined when the value can't be one. */
@@ -65,6 +68,23 @@ function plausibleReset(seconds: number, nowS: number): number | undefined {
   const value = seconds > 1e12 ? seconds / 1000 : seconds;
   if (!(value > nowS && value <= nowS + MAX_RESET_S)) return undefined;
   return Math.round(value);
+}
+
+/** The reset a provider error names, as epoch seconds, when it names a plausible one. */
+export function resetOf(error: Record<string, unknown>): number | undefined {
+  const nowS = Date.now() / 1000;
+  if (typeof error.resets_at === "number" && Number.isFinite(error.resets_at)) {
+    return plausibleReset(error.resets_at, nowS);
+  }
+  if (typeof error.resets_in_seconds === "number" && Number.isFinite(error.resets_in_seconds)) {
+    return plausibleReset(nowS + error.resets_in_seconds, nowS);
+  }
+  return undefined;
+}
+
+/** A used-up limit's message: the code, and the reset when there is one. */
+export function usedLimitMessage(name: string, resetsAt: number | undefined): string {
+  return resetsAt !== undefined ? `${name} resets_at=${resetsAt}` : name;
 }
 
 /**
@@ -89,12 +109,7 @@ export async function upstreamLimitError(response: Response): Promise<RouterErro
       type = typeof error.type === "string" ? error.type : "";
       code = typeof error.code === "string" ? error.code
         : typeof error.code === "number" ? String(error.code) : "";
-      const nowS = Date.now() / 1000;
-      if (typeof error.resets_at === "number" && Number.isFinite(error.resets_at)) {
-        resetsAt = plausibleReset(error.resets_at, nowS);
-      } else if (typeof error.resets_in_seconds === "number" && Number.isFinite(error.resets_in_seconds)) {
-        resetsAt = plausibleReset(nowS + error.resets_in_seconds, nowS);
-      }
+      resetsAt = resetOf(error);
     }
   } catch { /* not JSON: an ordinary rate limit */ }
   // Google names the quota that ran out (google.rpc.QuotaFailure); a per-day
@@ -108,7 +123,7 @@ export async function upstreamLimitError(response: Response): Promise<RouterErro
       code: name,
       // The reset rides in the message: it is what reaches the app through
       // eve's failure text.
-      message: resetsAt !== undefined ? `${name} resets_at=${resetsAt}` : name,
+      message: usedLimitMessage(name, resetsAt),
       retryable: false,
     });
   }
