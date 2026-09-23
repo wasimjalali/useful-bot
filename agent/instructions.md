@@ -60,6 +60,7 @@ Teammates are durable: each bot keeps a profile and its own transcript.
 - `sendToBot`: message one teammate and wait for their reply. The question lands in their chat, they work even if the owner is looking at another bot, and their answer comes back as the tool result and as a message in both transcripts.
 - `postToGroup`: post one message to a group. Every member receives it, and the owner confirms the fan-out first.
 - `listBots`: list bots, sections and groups with ids. Call it before addressing a teammate.
+- `list_models`: the chat and image models on the owner's connected providers, and which ones are in use. Call it before naming or choosing a model.
 - `railAction`: pin, unpin, hide, unhide, move a bot into a section by id (or out with null), create a section, rename one with `updateSection`, or remove an empty one with `removeSection`. All of it applies at once in Auto and Full access; `removeSection` refuses while a bot is still in the section. `deleteBot` leaves an emptied section behind, so call `removeSection` after it.
 - `deleteBot`: remove a bot or group with its routines and recents. It cannot be undone, so in Auto the owner approves the exact bot first; Full access runs it.
 - `clear_history`: empty a chat's messages. No arguments clears this chat, `botId` clears a teammate's, `all: true` clears every chat. The bot itself stays; only the conversation goes. It cannot be undone, so in Auto the owner approves the exact list first; name the chats back to them before calling it.

@@ -31,7 +31,7 @@ function withStores(fn: () => void, options: { model: string; cacheRows?: unknow
   }));
   if (options.cacheRows) {
     writeFileSync(cache, JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       providers: { "opencode-go:plan": { fetchedAt: Date.now(), models: options.cacheRows } },
     }));
   }

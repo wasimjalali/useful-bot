@@ -4,7 +4,9 @@ import { readCappedBytes } from "../read-capped.ts";
 import {
   readProviderStore,
   resolveUpstream,
+  withImagePick,
 } from "../../../shared/providers.ts";
+import { catalogFor } from "../../../shared/live-models.ts";
 import { IMAGE_BYTES_MAX, IMAGE_MIME } from "../../../shared/images-store.ts";
 import {
   assertPublicHttpsUrl,
@@ -20,9 +22,10 @@ import {
 } from "./opencode.ts";
 
 /**
- * OpenAI shaped POST {base}/images/generations. The three modes that carry
- * the `images` flag (openai:api, xai:api, zai:api) all speak it; what differs
- * is the size knob and whether the answer is base64 or a URL to download.
+ * OpenAI shaped POST {base}/images/generations. The modes that carry the
+ * `images` flag (openai:api, xai:api, zai:api, openrouter:api) all speak it;
+ * what differs is the path (OpenRouter serves /images), the size knob and
+ * whether the answer is base64 or a URL to download.
  */
 
 /** The tool asks in shapes; the provider takes the numbers it knows. */
@@ -45,6 +48,20 @@ const SIZE_ASPECT: Record<ImageSize, string> = {
   tall: "9:16",
 };
 
+/** The next best ratio when a model does not take the first choice (gpt-image takes 3:2, not 16:9). */
+const SIZE_ASPECT_FALLBACK: Record<ImageSize, string[]> = {
+  square: [],
+  wide: ["3:2", "4:3"],
+  tall: ["2:3", "3:4"],
+};
+
+function aspectFor(size: ImageSize, supported: string[] | undefined): string | null {
+  // Unknown ratios (a cold cache) send none: the model default beats a guess
+  // the upstream may refuse after the call is made.
+  if (!supported) return null;
+  return [SIZE_ASPECT[size], ...SIZE_ASPECT_FALLBACK[size]].find((ratio) => supported.includes(ratio)) ?? null;
+}
+
 /**
  * The generations answer can carry up to four base64 images plus framing;
  * each is capped at IMAGE_BYTES_MAX decoded, so the body cannot exceed this.
@@ -65,11 +82,17 @@ export interface NormalizedImage {
   mime: string;
 }
 
-function sizeParams(providerId: string, model: string, size: ImageSize | undefined): Record<string, unknown> {
+function sizeParams(providerId: string, model: string, size: ImageSize | undefined, ratios?: string[]): Record<string, unknown> {
   if (!size) return {};
-  // xAI takes aspect_ratio instead of a pixel size (docs.x.ai images
-  // generation); OpenAI and Z.AI both take WxH on `size`.
+  // xAI and OpenRouter take aspect_ratio instead of a pixel size (docs.x.ai
+  // images generation, openrouter.ai image generation); OpenAI and Z.AI both
+  // take WxH on `size`. OpenRouter lists each model's ratios, so a shape the
+  // model cannot take goes to its nearest one, or to the model default.
   if (providerId === "xai") return { aspect_ratio: SIZE_ASPECT[size] };
+  if (providerId === "openrouter") {
+    const ratio = aspectFor(size, ratios);
+    return ratio ? { aspect_ratio: ratio } : {};
+  }
   const family = imageFamily(providerId, model);
   const dims = family ? SIZE_DIMENSIONS[family] : undefined;
   return dims ? { size: dims[size] } : {};
@@ -142,12 +165,26 @@ export async function generateImage(input: {
   prompt: string;
   size?: ImageSize;
   n: number;
+  /** One call's choice among the owner's image models; the saved role otherwise. */
+  pick?: { connectionId?: string; modelId: string };
   signal: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<{ providerId: string; model: string; images: NormalizedImage[] }> {
+  let store = readProviderStore();
+  if (input.pick) {
+    try {
+      store = withImagePick(store, input.pick, process.env);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      // Anything else (a store that cannot be read) is a real fault, not a
+      // wrong id, and goes up as one.
+      if (code !== "image_model_unknown" && code !== "image_model_ambiguous") throw upstreamConfigError(error);
+      throw new RouterError({ status: 400, type: "invalid_request_error", code, message: code });
+    }
+  }
   let resolved: ReturnType<typeof resolveUpstream>;
   try {
-    resolved = resolveUpstream(readProviderStore(), "image", process.env);
+    resolved = resolveUpstream(store, "image", process.env);
   } catch (error) {
     throw upstreamConfigError(error);
   }
@@ -164,7 +201,7 @@ export async function generateImage(input: {
     else if (resolved.keyHeader === "api-key") headers["api-key"] = auth.token;
     else headers.authorization = `Bearer ${auth.token}`;
   }
-  const url = `${resolved.baseUrl.replace(/\/$/, "")}/images/generations`;
+  const url = `${resolved.baseUrl.replace(/\/$/, "")}/${resolved.mode.images?.path ?? "images/generations"}`;
   const doFetch = input.fetchImpl ?? fetch;
   const response = await doFetch(url, {
     method: "POST",
@@ -175,7 +212,8 @@ export async function generateImage(input: {
       // dall-e-3 refuses anything but n=1; the response then carries one
       // image and the route bills for what arrived, not what was asked.
       n: imageFamily(resolved.providerId, resolved.model) === "dall-e-3" ? 1 : input.n,
-      ...sizeParams(resolved.providerId, resolved.model, input.size),
+      ...sizeParams(resolved.providerId, resolved.model, input.size,
+        catalogFor(resolved.connection.id).find((item) => item.id === resolved.model)?.aspectRatios),
     }),
     redirect: "manual",
     signal: input.signal,

@@ -11,9 +11,10 @@ export const MODELS_DEV_URL = "https://models.dev/api.json";
 /**
  * Version 2 added the models.dev facts on each row. A version 1 file reads
  * as empty so the first refresh after the upgrade fetches them instead of
- * serving a fresh-looking list with no context window on it.
+ * serving a fresh-looking list with no context window on it. Version 3 adds
+ * OpenRouter's image models and modalities, which the image picker needs.
  */
-const CACHE_SCHEMA = 2;
+const CACHE_SCHEMA = 3;
 
 type CacheFile = {
   schemaVersion: typeof CACHE_SCHEMA;
@@ -126,14 +127,18 @@ export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
     const id = typeof rec.id === "string" ? rec.id : rec.slug;
     if (typeof id !== "string" || !id.trim()) continue;
     const meta: ModelMeta = {};
+    // OpenRouter nests the modalities under `architecture`.
+    const arch = rec.architecture && typeof rec.architecture === "object" ? rec.architecture as Record<string, unknown> : {};
+    const inputs = rec.input_modalities ?? arch.input_modalities;
+    const outputs = rec.output_modalities ?? arch.output_modalities;
     if (typeof rec.display_name === "string" && rec.display_name.trim()) meta.label = rec.display_name.trim();
     if (Number.isInteger(rec.context_window) && (rec.context_window as number) > 0) meta.contextTokens = rec.context_window as number;
     // An empty array says nothing, so it leaves models.dev and the name guess standing.
-    if (Array.isArray(rec.input_modalities) && rec.input_modalities.length > 0 && rec.input_modalities.every((item) => typeof item === "string")) {
-      meta.inputs = rec.input_modalities as string[];
+    if (Array.isArray(inputs) && inputs.length > 0 && inputs.every((item) => typeof item === "string")) {
+      meta.inputs = inputs as string[];
     }
-    if (Array.isArray(rec.output_modalities) && rec.output_modalities.length > 0 && rec.output_modalities.every((item) => typeof item === "string")) {
-      meta.outputs = rec.output_modalities as string[];
+    if (Array.isArray(outputs) && outputs.length > 0 && outputs.every((item) => typeof item === "string")) {
+      meta.outputs = outputs as string[];
     }
     if (Array.isArray(rec.supported_reasoning_levels)) {
       const efforts = rec.supported_reasoning_levels
@@ -154,6 +159,45 @@ export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
     if (Object.keys(meta).length > 0) out[id.trim()] = meta;
   }
   return out;
+}
+
+/** Formats the image store keeps (shared/images-store.ts IMAGE_MIME). */
+const STORABLE_IMAGE_FORMATS = new Set(["png", "jpeg", "jpg", "webp", "gif"]);
+
+/**
+ * The vendor's image endpoint list (OpenRouter GET /images/models). Every row
+ * is a model POST /images serves, so each is marked an image generator, with
+ * its aspect ratios. A model whose only formats this app cannot store (the
+ * SVG-only Recraft vector models) is left out: every call to it would bill
+ * and then be refused.
+ */
+export function parseImageModels(raw: unknown): { ids: string[]; meta: Record<string, ModelMeta> } {
+  const ids: string[] = [];
+  const meta: Record<string, ModelMeta> = {};
+  const listed = parseListedMeta(raw);
+  for (const row of rowsOf(raw)) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    if (typeof rec.id !== "string" || !rec.id.trim()) continue;
+    const id = rec.id.trim();
+    const params = rec.supported_parameters && typeof rec.supported_parameters === "object"
+      ? rec.supported_parameters as Record<string, { values?: unknown }>
+      : {};
+    const formats = Array.isArray(params.output_format?.values) ? params.output_format.values : null;
+    if (formats && !formats.some((format) => typeof format === "string" && STORABLE_IMAGE_FORMATS.has(format))) continue;
+    const ratios = Array.isArray(params.aspect_ratio?.values)
+      ? params.aspect_ratio.values.filter((value): value is string => typeof value === "string")
+      : [];
+    ids.push(id);
+    // No `outputs` default: imageGen alone marks the generator, and a made-up
+    // ["image"] would overwrite a dual model's chat-side modalities.
+    meta[id] = {
+      ...listed[id],
+      imageGen: true,
+      ...(ratios.length > 0 ? { aspectRatios: ratios } : {}),
+    };
+  }
+  return { ids, meta };
 }
 
 function idsFromRows(rows: unknown[]): string[] {
@@ -245,6 +289,7 @@ export async function fetchProviderModels(
   keyHeader: KeyHeader = "bearer",
   headers: Record<string, string> = {},
   query: Record<string, string> = {},
+  path = "models",
 ): Promise<{ ids: string[]; meta: Record<string, ModelMeta> }> {
   const out: Record<string, string> = {
     accept: "application/json",
@@ -257,12 +302,16 @@ export async function fetchProviderModels(
     else out.authorization = `Bearer ${key}`;
   }
   const search = new URLSearchParams(query).toString();
-  const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/models${search ? `?${search}` : ""}`, {
+  const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/${path}${search ? `?${search}` : ""}`, {
     headers: out,
     signal: AbortSignal.timeout(4000),
   });
+  // The image list fails loud so the caller can keep the last good rows; an
+  // answer with no storable models is a real empty list and replaces them.
+  if (!res.ok && path !== "models") throw new Error(`image list ${res.status}`);
   if (!res.ok) return { ids: [], meta: {} };
   const raw = await res.json();
+  if (path !== "models") return parseImageModels(raw);
   return { ids: parseModelList(raw), meta: parseListedMeta(raw) };
 }
 
@@ -294,6 +343,8 @@ export async function refreshProviderModels(input: {
   keyHeader?: KeyHeader;
   headers?: Record<string, string>;
   query?: Record<string, string>;
+  /** The vendor's image model list, merged into the list (OpenRouter's images/models). */
+  imagesPath?: string;
   modelsDevId?: string | null;
   force?: boolean;
   path?: string;
@@ -306,8 +357,35 @@ export async function refreshProviderModels(input: {
   if (!input.force && fresh) return current.models;
   try {
     const listed = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, input.query);
-    const ids = listed.ids;
-    if (ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
+    if (listed.ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
+    if (input.imagesPath) {
+      // The image list is a separate call. If it fails, the chat list still
+      // lands and the image rows from the last good refresh stay with all
+      // their facts, so one bad fetch does not empty the picker for 30 min.
+      let images: { ids: string[]; meta: Record<string, ModelMeta> };
+      try {
+        images = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, {}, input.imagesPath);
+      } catch (err) {
+        console.error(`[models] image list ${input.providerId} failed`, err);
+        const kept = (current?.models ?? []).filter((item) => item.imageGen);
+        images = {
+          ids: kept.map((item) => item.id),
+          meta: Object.fromEntries(kept.map(({ id, label, contextTokens, inputs, outputs, aspectRatios, efforts, defaultEffort }) => [id, {
+            label,
+            efforts,
+            defaultEffort,
+            imageGen: true,
+            ...(contextTokens ? { contextTokens } : {}),
+            ...(inputs ? { inputs } : {}),
+            ...(outputs ? { outputs } : {}),
+            ...(aspectRatios ? { aspectRatios } : {}),
+          } satisfies ModelMeta])),
+        };
+      }
+      listed.ids.push(...images.ids);
+      for (const [id, meta] of Object.entries(images.meta)) listed.meta[id] = { ...listed.meta[id], ...meta };
+    }
+    const ids = [...new Set(listed.ids)];
     const metaKey = metaKeyFor(input.providerId, input.modelsDevId);
     const catalogMeta = metaKey ? await modelMetaFor(metaKey, path, input.fetchImpl) : {};
     // The vendor's own facts win over models.dev, field by field.

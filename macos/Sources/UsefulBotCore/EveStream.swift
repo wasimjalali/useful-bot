@@ -138,6 +138,7 @@ public enum TurnActivity: Codable, Equatable, Sendable {
         "install_cli": "Setting up a tool",
         "list_bots": "Checking the roster",
         "list_dir": "Reading a folder",
+        "list_models": "Checking the models",
         "list_routines": "Checking the routines",
         "memory_read": "Reading memory",
         "memory_search": "Searching memory",

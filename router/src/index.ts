@@ -394,7 +394,8 @@ function validateCompletion(body: unknown): { model: string; stream: boolean; ma
   return { model: rec.model, stream, max_tokens: typeof maxTokens === "number" ? maxTokens : undefined };
 }
 
-const ALLOWED_IMAGE_KEYS = new Set(["model", "prompt", "size", "n"]);
+const ALLOWED_IMAGE_KEYS = new Set(["model", "prompt", "size", "n", "image_model", "image_connection"]);
+const IMAGE_PICK_MAX = 200;
 const IMAGE_SIZES = new Set(["square", "wide", "tall"]);
 const IMAGE_PROMPT_MAX = 32_000;
 
@@ -403,7 +404,12 @@ const IMAGE_PROMPT_MAX = 32_000;
  * size (square/wide/tall — the adapter maps it per provider). `n` stays small:
  * one message shows one image at a time, and each one is billed.
  */
-function validateImageGeneration(body: unknown): { prompt: string; size?: "square" | "wide" | "tall"; n: number } {
+function validateImageGeneration(body: unknown): {
+  prompt: string;
+  size?: "square" | "wide" | "tall";
+  n: number;
+  pick?: { connectionId?: string; modelId: string };
+} {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw validationError("invalid_request");
   }
@@ -423,10 +429,24 @@ function validateImageGeneration(body: unknown): { prompt: string; size?: "squar
   if (rec.n !== undefined && (typeof rec.n !== "number" || !Number.isInteger(rec.n) || rec.n < 1 || rec.n > 4)) {
     throw validationError("unsupported_parameter", "image_n");
   }
+  // An optional pick among the owner's image models; generateImage refuses
+  // anything the image picker does not offer.
+  for (const key of ["image_model", "image_connection"]) {
+    const value = rec[key];
+    if (value !== undefined && (typeof value !== "string" || !value.trim() || value.length > IMAGE_PICK_MAX)) {
+      throw validationError("unsupported_parameter", key);
+    }
+  }
+  if (rec.image_connection !== undefined && rec.image_model === undefined) {
+    throw validationError("unsupported_parameter", "image_connection");
+  }
   return {
     prompt: rec.prompt,
     size: rec.size as "square" | "wide" | "tall" | undefined,
     n: typeof rec.n === "number" ? rec.n : 1,
+    ...(typeof rec.image_model === "string"
+      ? { pick: { modelId: rec.image_model.trim(), ...(typeof rec.image_connection === "string" ? { connectionId: rec.image_connection.trim() } : {}) } }
+      : {}),
   };
 }
 
@@ -779,6 +799,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               prompt: parsed.prompt,
               size: parsed.size,
               n: parsed.n,
+              pick: parsed.pick,
               signal,
             });
           } catch (error) {

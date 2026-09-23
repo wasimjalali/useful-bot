@@ -226,7 +226,8 @@ test("completion maps model to alias", async () => {
 
 test("opencode-go forwards the model selected in the composer and reports it", async () => {
   let forwarded: Record<string, unknown> = {};
-  await withRouter(async (base, tokens) => {
+  // The window comes from the models cache; a fixture keeps the machine's own cache out of it.
+  await withModelsCache(() => withRouter(async (base, tokens) => {
     writeFileSync(process.env.UB_PROVIDERS_PATH!, JSON.stringify({
       schemaVersion: 1,
       activeProviderId: "opencode-go",
@@ -261,14 +262,14 @@ test("opencode-go forwards the model selected in the composer and reports it", a
         usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 },
       }));
     });
-  });
+  }));
 });
 
 function withModelsCache(fn: (path: string) => Promise<void>): Promise<void> {
   const previous = process.env.UB_MODELS_CACHE_PATH;
   const path = join(mkdtempSync(join(tmpdir(), "ub-router-models-")), "models-cache.json");
   writeFileSync(path, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     providers: {
       "opencode-go": {
         fetchedAt: Date.now(),
