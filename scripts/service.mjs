@@ -215,6 +215,15 @@ async function main() {
     } catch {
       fail("credential_store_locked_or_missing", "com.usefulbot.channel.desktop");
     }
+    // Regenerate on a lost image draws through the router's image alias,
+    // the same credential the agent's generate_image uses. Without it only
+    // that button fails (and says so); the rest of the app runs.
+    try {
+      env.UB_ROUTER_DESKTOP_TOKEN = await keychain("com.usefulbot.router.desktop");
+    } catch {
+      delete env.UB_ROUTER_DESKTOP_TOKEN;
+      process.stderr.write(`${JSON.stringify({ service: "web", warning: "router_token_missing", item: "com.usefulbot.router.desktop" })}\n`);
+    }
     // The web reviewer route runs the same alias as the agent's review tool.
     const reviewer = await reviewerToken();
     if (reviewer) env.UB_ROUTER_REVIEWER_TOKEN = reviewer;

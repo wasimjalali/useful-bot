@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -13,7 +13,7 @@ import {
   saveImage,
   titleFromPrompt,
 } from "../shared/media-store.ts";
-import { writeImage } from "../shared/images-store.ts";
+import { readImage, writeImage } from "../shared/images-store.ts";
 import { appendAgentEvent } from "../shared/agent-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 import { isExcalidrawWidget, migrateDrawings, migrateLegacyImages } from "../web/lib/media-migrate.ts";
@@ -207,6 +207,142 @@ test("drawings still in a chat backfill into the Library, dated when first drawn
     assert.deepEqual(migrateDrawings(), { saved: 0, failed: 0 });
     assert.equal(isExcalidrawWidget({ connectionId: "other", toolName: "other__x", arguments: { elements: [] } }), false);
   } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test("Regenerate redraws a lost image from the stored prompt under the same id, and refuses one that is there", async () => {
+  const { root, index, dir } = box();
+  const keys = ["UB_MEDIA_DIR", "UB_MEDIA_INDEX_PATH", "UB_IMAGES_DIR", "UB_AGENT_STORE_PATH", "UB_SHELL_PATH", "UB_ROUTER_DESKTOP_TOKEN"] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const realFetch = globalThis.fetch;
+  process.env.UB_MEDIA_DIR = root;
+  process.env.UB_MEDIA_INDEX_PATH = index;
+  process.env.UB_IMAGES_DIR = join(dir, "legacy");
+  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
+  process.env.UB_SHELL_PATH = join(dir, "shell.json");
+  process.env.UB_ROUTER_DESKTOP_TOKEN = "router-token-test";
+  try {
+    const shell = readShell();
+    const bot = shell.bots[0]!;
+    writeShell(shell);
+    appendAgentEvent(bot.id, { kind: "image", text: "a red kite over dunes", imageId: "imglost00001", id: "img_imglost00001" });
+    const sent: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return new Response(JSON.stringify({ model: "flux", provider: "openrouter", data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const { regenerateImage } = await import("../web/lib/image-regenerate.ts");
+    await regenerateImage("imglost00001");
+    assert.deepEqual(sent[0]?.body, { model: "image", prompt: "a red kite over dunes" });
+    const read = readMediaBytes("imglost00001", index);
+    assert.equal(read.status, "ok");
+    assert.equal(findMedia("imglost00001", index)?.botId, bot.id);
+    // It is there now: another click is refused before any paid call.
+    await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
+    assert.equal(sent.length, 1);
+    // An unreadable file is still there, not lost.
+    const kept = findMedia("imglost00001", index)!.path;
+    chmodSync(kept, 0o000);
+    try {
+      await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
+    } finally {
+      chmodSync(kept, 0o644);
+    }
+    assert.equal(sent.length, 1);
+    // A moved file is replaced under the same id and entry.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "gone.png"));
+    await regenerateImage("imglost00001");
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+    assert.equal(listMedia({}, index).filter((row) => row.id === "imglost00001").length, 1);
+    await assert.rejects(() => regenerateImage("imgnothing99"), /image_prompt_missing/);
+
+    // Two clicks at once pay once: the second joins the first.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "gone2.png"));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      await held;
+      return new Response(JSON.stringify({ model: "flux", provider: "openrouter", data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const first = regenerateImage("imglost00001");
+    const second = regenerateImage("imglost00001");
+    release();
+    assert.deepEqual(await second, await first);
+    assert.equal(sent.length, 3);
+
+    // A timeout says it may have been billed.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "gone3.png"));
+    globalThis.fetch = (async () => {
+      throw new DOMException("timed out", "TimeoutError");
+    }) as typeof fetch;
+    await assert.rejects(() => regenerateImage("imglost00001"), /regenerate_timeout/);
+
+    // The folder cannot take the file: the paid bytes land in the app's own
+    // store under the same id, and the next migration puts them back.
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }))) as typeof fetch;
+    const blocked = join(dir, "blocked");
+    writeFileSync(blocked, "not a folder");
+    process.env.UB_MEDIA_DIR = blocked;
+    assert.deepEqual(await regenerateImage("imglost00001"), { path: "" });
+    assert.equal(readImage("imglost00001")?.prompt, "a red kite over dunes");
+    await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
+    process.env.UB_MEDIA_DIR = root;
+    assert.equal(migrateLegacyImages().moved, 1);
+    assert.equal(readImage("imglost00001"), null);
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+
+    // What the owner does while it is drawn wins. A file put back at its
+    // path (Locate) stays the one the entry names...
+    const home = findMedia("imglost00001", index)!.path;
+    renameSync(home, join(dir, "away.png"));
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { resume = resolve; });
+    globalThis.fetch = (async () => {
+      await paused;
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const drawing = regenerateImage("imglost00001");
+    renameSync(join(dir, "away.png"), home);
+    resume();
+    await drawing;
+    assert.equal(findMedia("imglost00001", index)?.path, home);
+    // ...and a Remove stays removed.
+    renameSync(home, join(dir, "away2.png"));
+    let resume2!: () => void;
+    const paused2 = new Promise<void>((resolve) => { resume2 = resolve; });
+    globalThis.fetch = (async () => {
+      await paused2;
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const drawing2 = regenerateImage("imglost00001");
+    assert.equal(forgetMedia("imglost00001", index), true);
+    resume2();
+    await assert.rejects(() => drawing2, /image_removed/);
+    assert.equal(findMedia("imglost00001", index)?.forgotten, true);
+    // Asked for again after the Remove, it comes back.
+    await regenerateImage("imglost00001");
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+    // Something that is not the image sitting at the old path does not
+    // count as the owner putting it back.
+    const junkHome = findMedia("imglost00001", index)!.path;
+    renameSync(junkHome, join(dir, "away3.png"));
+    writeFileSync(junkHome, "not an image");
+    assert.equal(readMediaBytes("imglost00001", index).status, "moved");
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }))) as typeof fetch;
+    await regenerateImage("imglost00001");
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+    // Bytes that are not an image, whatever their label, are refused.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "away4.png"));
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: Buffer.from("not an image").toString("base64"), mime: "image/png" }] }))) as typeof fetch;
+    await assert.rejects(() => regenerateImage("imglost00001"), /image_unusable/);
+    assert.equal(readMediaBytes("imglost00001", index).status, "moved");
+  } finally {
+    globalThis.fetch = realFetch;
     for (const key of keys) {
       if (previous[key] === undefined) delete process.env[key];
       else process.env[key] = previous[key];

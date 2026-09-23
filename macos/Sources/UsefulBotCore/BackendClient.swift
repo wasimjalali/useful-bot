@@ -33,6 +33,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case streamInterrupted
     /// The turn carried an image and the selected model is text-only.
     case modelNoVision
+    /// Regenerate on a lost image answered with its own error code.
+    case regenerate(String)
 
     public var errorDescription: String? {
         switch self {
@@ -78,6 +80,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return code
         case .shell(let code):
             return Self.shellCopy(code)
+        case .regenerate(let code):
+            return BackendClient.regenerateCopy(code)
         case .sessionEnded:
             return "This chat's session ended. Send again to start a new one."
         case .streamInterrupted:
@@ -1573,6 +1577,49 @@ public actor BackendClient {
             return request
         }
         try Self.expectOK(data, response)
+    }
+
+    /// Draw a lost image again from the prompt the server kept, in place under
+    /// the same id. Slow (an image model call), so the caller shows progress.
+    public func regenerateImage(id: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base
+                .appendingPathComponent("api/agent/image")
+                .appendingPathComponent(id)
+                .appendingPathComponent("regenerate"))
+            request.httpMethod = "POST"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.timeoutInterval = 180
+            return request
+        }
+        guard let http = response as? HTTPURLResponse else { throw BackendError.decoding }
+        guard (200...299).contains(http.statusCode) else {
+            throw Self.failure(status: http.statusCode, code: Self.errorCode(data), fallback: "regenerate_failed", typed: BackendError.regenerate)
+        }
+    }
+
+    /// What a failed Regenerate says, by the server's code.
+    public static func regenerateCopy(_ code: String) -> String {
+        switch code {
+        case "router_token_missing":
+            return "Image generation isn't connected. Restart Useful Bot, then try again."
+        case "image_present":
+            return "This image is already there."
+        case "rate_limited":
+            return "Too many regenerations just now. Wait a minute, then try again."
+        case "image_prompt_missing":
+            return "This image's prompt wasn't saved, so it can't be drawn again."
+        case "regenerate_timeout", "timeout":
+            return "The image model took too long. It may still have been billed, so check the Library before trying again."
+        case "image_removed":
+            return "This image was removed from the Library while it was drawn, so it stays removed."
+        case "image_unusable":
+            return "The image model sent back something that isn't a usable image."
+        case "image_not_saved":
+            return "The image was drawn but couldn't be saved on this Mac. Check disk space and access to Documents."
+        default:
+            return "The image couldn't be generated again (\(code))."
+        }
     }
 
     /// Forget an item after its file went to the Trash.

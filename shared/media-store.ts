@@ -291,13 +291,20 @@ function saveFile(input: {
   model: string;
   provider: string;
   createdAt?: Date;
+  /**
+   * Regenerate: the id's file is gone, and a new one takes its place under
+   * the same id (so the chat row that names it shows the new picture).
+   */
+  replace?: boolean;
+  /** The entry was removed when the owner asked for it again: bring it back. */
+  revive?: boolean;
 }, root = mediaRoot(), indexPath = mediaIndexPath()): MediaItem {
   if (!ID.test(input.id)) throw new Error("media_id");
-  // One file per id, ever. The app posts a drawing again whenever a chat
+  // One file per id, ever, unless this is a replacement. The app posts a drawing again whenever a chat
   // replays it, and a second file per replay would fill the folder with
   // copies; an owner who moved or trashed the file keeps that choice too.
   const existing = findMedia(input.id, indexPath);
-  if (existing) return existing;
+  if (existing && !input.replace) return existing;
   const when = input.createdAt ?? new Date();
   const { month, prefix } = stamp(when);
   const dir = join(root, safeName(input.botName, "Useful Bot"), month);
@@ -317,8 +324,27 @@ function saveFile(input: {
   };
   try {
     const kept = withIndex((index) => {
-      // A save racing this one for the same id won: keep its file, drop ours.
       const raced = index.items.find((row) => row.id === item.id);
+      if (raced && input.replace) {
+        // What the owner did while this was drawn wins: a Remove stays
+        // removed (unless it was removed when they asked), and a file they
+        // put back at its path stays the one the entry names.
+        if (raced.forgotten && !input.revive) return raced;
+        if (!raced.forgotten && raced.path !== item.path && readsAs(raced.path, raced.kind)) return raced;
+        // The replacement keeps the entry's prompt and bot id, and takes the
+        // new file and the folder name it was filed under.
+        Object.assign(raced, {
+          path: item.path,
+          mime: item.mime,
+          model: item.model || raced.model,
+          provider: item.provider || raced.provider,
+          botName: item.botName,
+          createdAt: item.createdAt,
+        });
+        delete raced.forgotten;
+        return null;
+      }
+      // A save racing this one for the same id won: keep its file, drop ours.
       if (raced) return raced;
       index.items.push(item);
       return null;
@@ -346,6 +372,8 @@ export function saveImage(input: {
   botId: string;
   botName: string;
   createdAt?: Date;
+  replace?: boolean;
+  revive?: boolean;
 }, root = mediaRoot(), indexPath = mediaIndexPath()): MediaItem {
   const ext = IMAGE_EXT[input.mime];
   if (!ext) throw new Error("image_type");
@@ -443,6 +471,16 @@ function isExcalidrawScene(bytes: Buffer): boolean {
  * Locate nor a file swapped in later can make the image route serve anything
  * else.
  */
+/** Whether the file at `path` is a readable item of this kind, the test readMediaBytes calls "ok". */
+function readsAs(path: string, kind: MediaKind): boolean {
+  try {
+    readVerified(path, kind);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readVerified(path: string, kind: MediaKind): { mime: string; bytes: Buffer } {
   if (!lstatSync(path).isFile()) throw new Error("media_type");
   const bytes = readFileSync(path);
@@ -482,7 +520,7 @@ export function readMediaBytes(id: string, indexPath = mediaIndexPath()): MediaB
     // Locate is the way back.
     if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { status: "moved", item };
     if (err instanceof Error && err.message === "media_type") return { status: "moved", item };
-    return { status: "error", item, code: err instanceof Error && err.message === "media_type" ? "media_type" : code ?? "media_read" };
+    return { status: "error", item, code: code ?? "media_read" };
   }
 }
 

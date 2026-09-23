@@ -26,6 +26,7 @@ struct LibraryView: View {
     @State private var filter: Filter = .all
     @State private var botFilter: String?
     @State private var selected: MediaItem?
+    @State private var regenerating: Set<String> = []
     @FocusState private var searchFocused: Bool
 
     private static let gridHeight: CGFloat = 560
@@ -67,6 +68,7 @@ struct LibraryView: View {
                 if let selected {
                     LibraryDetail(
                         item: selected,
+                        regenerating: regenerating.contains(selected.id),
                         onOpenChat: { openChat(selected) },
                         onLocate: { locate(selected) },
                         onRegenerate: { regenerate(selected) },
@@ -240,22 +242,25 @@ struct LibraryView: View {
         onClose()
     }
 
-    /// Put the saved prompt in the bot's composer, in its chat.
-    /// Put the saved prompt in the composer of the bot that made it, or of
-    /// the open chat when that bot is gone.
+    /// Draw it again in place from the prompt the server kept; the item comes
+    /// back with its new file.
     private func regenerate(_ item: MediaItem) {
         guard !item.prompt.isEmpty else { return }
-        // The composer draft is shared across chats: text typed for another
-        // bot must not ride along into this one.
-        if botExists(item.botId), item.botId != model.selectedBotId,
-           !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            error = "Send or clear your draft first, then Regenerate"
-            selected = nil
-            return
+        regenerating.insert(item.id)
+        Task {
+            do {
+                try await GeneratedImageCache.shared.regenerate(item.id)
+                await load()
+                // Only while the owner is still on this item's detail.
+                if selected?.id == item.id {
+                    selected = items.first { $0.id == item.id }
+                }
+            } catch {
+                self.error = GeneratedImageCache.regenerateMessage(error)
+                if selected?.id == item.id { selected = nil }
+            }
+            regenerating.remove(item.id)
         }
-        if botExists(item.botId) { model.select(item.botId) }
-        model.prefillDraft("Generate this image again: \(item.prompt)")
-        onClose()
     }
 
     private func botExists(_ id: String) -> Bool {
@@ -375,6 +380,7 @@ private struct LibraryTile: View {
 /// One item: the picture, what made it, and what the owner can do with it.
 struct LibraryDetail: View {
     let item: MediaItem
+    var regenerating = false
     let onOpenChat: () -> Void
     let onLocate: () -> Void
     let onRegenerate: () -> Void
@@ -469,7 +475,7 @@ struct LibraryDetail: View {
                         if !item.exists {
                             NativeButton("Locate", kind: .primary, small: true, action: onLocate)
                             if item.kind == "image", !item.prompt.isEmpty {
-                                NativeButton("Regenerate", kind: .secondary, small: true, action: onRegenerate)
+                                NativeButton(regenerating ? "Generating" : "Regenerate", kind: .secondary, small: true, enabled: !regenerating, action: onRegenerate)
                             }
                         }
                         if !item.botId.isEmpty {
