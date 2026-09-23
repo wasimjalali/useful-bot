@@ -324,10 +324,10 @@ function saveFile(input: {
     const kept = withIndex((index) => {
       const raced = index.items.find((row) => row.id === item.id);
       if (raced && input.replace) {
-        // The replacement keeps the entry's prompt and bot, takes the new
-        // file, and comes back if the owner had removed it: Regenerate is
+        // The replacement keeps the entry's prompt and bot id, takes the new
+        // file and the folder name it was filed under, and comes back if the owner had removed it: Regenerate is
         // them asking for it again.
-        Object.assign(raced, { path: item.path, mime: item.mime, model: item.model, provider: item.provider, createdAt: item.createdAt });
+        Object.assign(raced, { path: item.path, mime: item.mime, model: item.model, provider: item.provider, botName: item.botName, createdAt: item.createdAt });
         delete raced.forgotten;
         return null;
       }

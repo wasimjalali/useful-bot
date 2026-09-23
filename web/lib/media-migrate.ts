@@ -1,6 +1,6 @@
 import { readAgentStore } from "../../shared/agent-store.ts";
 import { deleteImage, legacyImageIds, readImage } from "../../shared/images-store.ts";
-import { findMedia, readMediaIndex, saveDrawing, saveImage } from "../../shared/media-store.ts";
+import { findMedia, readMediaBytes, readMediaIndex, saveDrawing, saveImage } from "../../shared/media-store.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import { readWidget, type WidgetRecord } from "../../shared/widgets-store.ts";
 
@@ -111,7 +111,12 @@ export function migrateLegacyImages(): { moved: number; failed: number } {
   let failed = 0;
   for (const id of ids) {
     try {
-      if (!findMedia(id)) {
+      // An entry whose file is gone takes the record's bytes in its place:
+      // that is a Regenerate the folder could not take at the time.
+      const entry = findMedia(id);
+      const status = entry ? readMediaBytes(id).status : "missing";
+      const lost = entry !== null && (status === "moved" || status === "missing");
+      if (!entry || lost) {
         const record = readImage(id);
         if (!record) continue;
         // A fallback record is written just before its chat event. One with
@@ -129,6 +134,7 @@ export function migrateLegacyImages(): { moved: number; failed: number } {
           botId,
           botName: bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot",
           createdAt: Number.isNaN(Date.parse(record.createdAt)) ? undefined : new Date(record.createdAt),
+          replace: lost,
         });
       }
       deleteImage(id);

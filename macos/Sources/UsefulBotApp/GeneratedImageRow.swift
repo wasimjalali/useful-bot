@@ -160,7 +160,7 @@ struct GeneratedImageRow: View {
                 attempt += 1
             } catch {
                 regenerating = false
-                locateError = "The image could not be generated again"
+                locateError = GeneratedImageCache.regenerateMessage(error)
             }
         }
     }
@@ -296,6 +296,15 @@ actor GeneratedImageCache {
         lost[id] = nil
         inFlight[id] = nil
         generation[id, default: 0] += 1
+    }
+
+    /// A failed Regenerate in words: the server's code when it sent one.
+    nonisolated static func regenerateMessage(_ error: Error) -> String {
+        if let urlError = error as? URLError, urlError.code == .timedOut {
+            return BackendClient.regenerateCopy("timeout")
+        }
+        if case BackendError.regenerate(let code) = error { return BackendClient.regenerateCopy(code) }
+        return (error as? LocalizedError)?.errorDescription ?? "The image couldn't be generated again."
     }
 
     func regenerate(_ id: String) async throws {

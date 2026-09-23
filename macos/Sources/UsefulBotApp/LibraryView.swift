@@ -254,7 +254,7 @@ struct LibraryView: View {
                 await load()
                 selected = items.first { $0.id == item.id }
             } catch {
-                self.error = "The image could not be generated again"
+                self.error = GeneratedImageCache.regenerateMessage(error)
             }
             regenerating = nil
         }

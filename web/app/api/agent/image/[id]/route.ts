@@ -42,8 +42,9 @@ export async function GET(
       console.error("[media] legacy migration failed", err);
     }
   }
-  if (found.status === "missing") {
-    // Still in the app's own store (the folder could not take it yet).
+  if (found.status === "missing" || found.status === "moved") {
+    // Still in the app's own store (the folder could not take it yet, or a
+    // Regenerate could not write its file there).
     // Checked like the media path: the bytes must be an image, and the type
     // served is what they are, not what the record says.
     const legacy = readImage(id);

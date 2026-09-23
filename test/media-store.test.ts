@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -13,7 +13,7 @@ import {
   saveImage,
   titleFromPrompt,
 } from "../shared/media-store.ts";
-import { writeImage } from "../shared/images-store.ts";
+import { readImage, writeImage } from "../shared/images-store.ts";
 import { appendAgentEvent } from "../shared/agent-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 import { isExcalidrawWidget, migrateDrawings, migrateLegacyImages } from "../web/lib/media-migrate.ts";
@@ -244,12 +244,57 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
     // It is there now: another click is refused before any paid call.
     await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
     assert.equal(sent.length, 1);
+    // An unreadable file is still there, not lost.
+    const kept = findMedia("imglost00001", index)!.path;
+    chmodSync(kept, 0o000);
+    try {
+      await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
+    } finally {
+      chmodSync(kept, 0o644);
+    }
+    assert.equal(sent.length, 1);
     // A moved file is replaced under the same id and entry.
     renameSync(findMedia("imglost00001", index)!.path, join(dir, "gone.png"));
     await regenerateImage("imglost00001");
     assert.equal(readMediaBytes("imglost00001", index).status, "ok");
     assert.equal(listMedia({}, index).filter((row) => row.id === "imglost00001").length, 1);
     await assert.rejects(() => regenerateImage("imgnothing99"), /image_prompt_missing/);
+
+    // Two clicks at once pay once: the second joins the first.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "gone2.png"));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      await held;
+      return new Response(JSON.stringify({ model: "flux", provider: "openrouter", data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const first = regenerateImage("imglost00001");
+    const second = regenerateImage("imglost00001");
+    release();
+    assert.deepEqual(await second, await first);
+    assert.equal(sent.length, 3);
+
+    // A timeout says it may have been billed.
+    renameSync(findMedia("imglost00001", index)!.path, join(dir, "gone3.png"));
+    globalThis.fetch = (async () => {
+      throw new DOMException("timed out", "TimeoutError");
+    }) as typeof fetch;
+    await assert.rejects(() => regenerateImage("imglost00001"), /regenerate_timeout/);
+
+    // The folder cannot take the file: the paid bytes land in the app's own
+    // store under the same id, and the next migration puts them back.
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }))) as typeof fetch;
+    const blocked = join(dir, "blocked");
+    writeFileSync(blocked, "not a folder");
+    process.env.UB_MEDIA_DIR = blocked;
+    assert.deepEqual(await regenerateImage("imglost00001"), { path: "" });
+    assert.equal(readImage("imglost00001")?.prompt, "a red kite over dunes");
+    await assert.rejects(() => regenerateImage("imglost00001"), /image_present/);
+    process.env.UB_MEDIA_DIR = root;
+    assert.equal(migrateLegacyImages().moved, 1);
+    assert.equal(readImage("imglost00001"), null);
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
   } finally {
     globalThis.fetch = realFetch;
     for (const key of keys) {
