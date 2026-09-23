@@ -328,6 +328,24 @@ test("responses error after headers becomes an error event with no done", async 
   assert.deepEqual(error, { message: "bad key", code: "invalid_api_key" });
 });
 
+test("a plan that runs out mid-stream gets the router's limit code", async () => {
+  const stub: typeof fetch = async () => new Response(sse([
+    { event: "response.output_text.delta", data: { type: "response.output_text.delta", output_index: 0, delta: "hi" } },
+    { event: "response.failed", data: { type: "response.failed", response: { error: { code: "insufficient_quota", message: "You exceeded your current quota" } } } },
+  ]), { headers: { "content-type": "text/event-stream" } });
+  const res = await postResponses({
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    model: "gpt-5.4-mini",
+    chatgpt: true,
+    body: { ...CHAT_BODY },
+    headers: {},
+    signal: AbortSignal.timeout(5000),
+    fetchImpl: stub,
+  });
+  const { error } = await readTranslated(res);
+  assert.deepEqual(error, { message: "upstream_quota_exhausted", code: "upstream_quota_exhausted" });
+});
+
 test("messages request maps system, tools, images and thinking", () => {
   const out = buildMessagesBody({
     ...CHAT_BODY,

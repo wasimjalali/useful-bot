@@ -271,6 +271,10 @@ import Testing
         #expect(used.reason?.hasSuffix("Pick another model to keep going.") == true)
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_usage_limit").reason
             == "Your plan's usage limit for this model is used up. Pick another model to keep going.")
+        // A reset already past (a failure reopened days later) names no time.
+        let past = Int(Date().addingTimeInterval(-86_400).timeIntervalSince1970)
+        #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_usage_limit resets_at=\(past)").reason
+            == "Your plan's usage limit for this model is used up. Pick another model to keep going.")
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_usage_not_included").reason
             == "Your plan doesn't include this model. Pick another model.")
         #expect(TurnFailure(code: "MODEL_CALL_FAILED", detail: "upstream_quota_exhausted").reason

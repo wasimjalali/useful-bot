@@ -242,7 +242,9 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         // The provider's own limits, from the 429 body: no wait lifts these
         // in a turn's time, so the copy says what ran out and what to do.
         if haystack.contains("upstream_usage_limit") {
-            if let resetsAt {
+            // A failure kept in the transcript outlives its reset; a time
+            // already past would read as the next such weekday.
+            if let resetsAt, resetsAt > Date() {
                 return "Your plan's usage limit for this model is used up. It resets at \(Self.resetCopy(resetsAt)). Pick another model to keep going."
             }
             return "Your plan's usage limit for this model is used up. Pick another model to keep going."

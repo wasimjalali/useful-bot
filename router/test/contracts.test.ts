@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { startRouter } from "../src/index.ts";
 import { LimitStore, estimateInputUnits } from "../src/limits.ts";
 import { CEILING_RETRY_AFTER_MS, ConcurrencyGate } from "../src/concurrency.ts";
-import { retryAfterMs } from "../src/retry-after.ts";
+import { retryAfterMs, upstreamLimitError } from "../src/retry-after.ts";
 import { AliasCircuit } from "../src/circuit.ts";
 import { RouterError } from "../src/errors.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
@@ -507,6 +507,44 @@ test("quota and plan limits get their own codes", async () => {
       res.end(JSON.stringify({ error }));
     });
   }
+});
+
+test("other vendors' used-up plans are read from their documented bodies", async () => {
+  const limit = (body: unknown) => upstreamLimitError(new Response(JSON.stringify(body), { status: 429 }));
+  // Z.ai sends its code as a string; a number is read the same way.
+  assert.equal((await limit({ error: { code: "1308", message: "Usage limit reached for 5 hour" } })).code, "upstream_usage_limit");
+  assert.equal((await limit({ error: { code: 1310 } })).code, "upstream_usage_limit");
+  assert.equal((await limit({ error: { code: "1311" } })).code, "upstream_usage_not_included");
+  assert.equal((await limit({ error: { code: "1113" } })).code, "upstream_quota_exhausted");
+  // Kimi.
+  assert.equal((await limit({ error: { type: "exceeded_current_quota_error" } })).code, "upstream_quota_exhausted");
+  // Google names a per-day quota, inside the array its OpenAI endpoint wraps errors in.
+  const perDay = await limit([{ error: { code: 429, status: "RESOURCE_EXHAUSTED", details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } }]);
+  assert.equal(perDay.code, "upstream_usage_limit");
+  assert.equal(perDay.status, 402);
+  // Real rate limits stay waitable.
+  for (const body of [
+    { error: { code: "1302" } },
+    { error: { type: "rate_limit_reached_error" } },
+    [{ error: { status: "RESOURCE_EXHAUSTED", details: [{ violations: [{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel" }] }] } }],
+  ]) {
+    const error = await limit(body);
+    assert.equal(error.code, "upstream_rate_limited");
+    assert.equal(error.status, 429);
+  }
+});
+
+test("a reset time that can't be one is left out of the message", async () => {
+  const now = Math.round(Date.now() / 1000);
+  const message = async (error: Record<string, unknown>) =>
+    (await upstreamLimitError(new Response(JSON.stringify({ error: { type: "usage_limit_reached", ...error } }), { status: 429 }))).message;
+  assert.equal(await message({ resets_at: 1e21 }), "upstream_usage_limit");
+  assert.equal(await message({ resets_at: now - 60 }), "upstream_usage_limit");
+  assert.equal(await message({ resets_in_seconds: -30 }), "upstream_usage_limit");
+  // Milliseconds read as the same moment in seconds.
+  assert.equal(await message({ resets_at: (now + 3600) * 1000 }), `upstream_usage_limit resets_at=${now + 3600}`);
+  const inTen = Number((await message({ resets_in_seconds: 600 })).split("resets_at=")[1]);
+  assert.ok(Math.abs(inTen - (now + 600)) <= 1);
 });
 
 test("upstream model 404 maps to model_unavailable", async () => {
