@@ -590,33 +590,6 @@ export function referencedWidgetIds(path = agentStorePath()): Set<string> | null
   return ids;
 }
 
-/**
- * Every image id a stored thread event still names, across every thread, or
- * null when the store cannot be read. Same contract as referencedWidgetIds:
- * null means "unknown", never "nothing references an image".
- */
-export function referencedImageIds(path = agentStorePath()): Set<string> | null {
-  if (!existsSync(path)) return new Set();
-  let store: AgentStore;
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    if (!raw || typeof raw !== "object") return null;
-    const rec = raw as Record<string, unknown>;
-    if (rec.schemaVersion !== AGENT_SCHEMA) return null;
-    if (!Array.isArray(rec.threads)) return null;
-    store = parseAgentStore(raw);
-  } catch {
-    return null;
-  }
-  const ids = new Set<string>();
-  for (const thread of store.threads) {
-    for (const event of thread.events) {
-      if (event.imageId) ids.add(event.imageId);
-    }
-  }
-  return ids;
-}
-
 export function appendAgentEvent(
   botId: string,
   input: {

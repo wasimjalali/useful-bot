@@ -28,6 +28,7 @@ struct RootView: View {
     @State private var renameBot: ShellBot?
     @State private var deleteBot: ShellBot?
     @State private var connectorsOpen = false
+    @State private var libraryOpen = false
 
     /// The launch view covers the wait for the local services and nothing
     /// more: once they answer, the app shows, even mid-animation. Holding it
@@ -76,6 +77,7 @@ struct RootView: View {
         }
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.searchOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
+        .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: libraryOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
     }
 
@@ -109,6 +111,11 @@ struct RootView: View {
 
             if connectorsOpen {
                 ConnectorsDialog(onClose: { connectorsOpen = false })
+                    .transition(.opacity)
+            }
+
+            if libraryOpen {
+                LibraryView(onClose: { libraryOpen = false })
                     .transition(.opacity)
             }
 
@@ -228,6 +235,7 @@ struct RootView: View {
                     promptForSection()
                 },
                 onConnectors: { connectorsOpen = true },
+                onLibrary: { libraryOpen = true },
                 onOpenAppSettings: { model.openAppSettings($0) },
                 newChatTriggerFrame: $newChatTrigger,
                 fullScreen: windowFullScreen

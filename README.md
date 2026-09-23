@@ -47,6 +47,10 @@ What you say is a right-aligned bubble; what a bot says is a left-aligned white 
 
 Anything a bot needs an answer to (an approval, a proposed bot or group) docks above the composer with its options on the same block, rather than scrolling away up the transcript.
 
+## Library
+
+What the bots make is the owner's, like the chats. Every generated image and every Excalidraw drawing is saved as a real file under `~/Documents/Useful Bot/<Bot>/<YYYY-MM>/`: images as PNG, JPEG or WebP, drawings as `.excalidraw` scenes. The index in `~/.useful-bot/media.json` keeps the prompt, model, bot and current path, and nothing deletes a file on its own. Library in the rail shows everything, filtered by kind and bot and searchable by prompt, with Open, Show in Finder, Copy, Open chat and Move to Trash. A file moved in Finder shows as moved, and Locate points the chat row and the Library at its new place. An image whose file is gone for good offers Regenerate from its saved prompt. To save a copy somewhere else, ask the bot: it copies the file there. Images from before the Library (base64 records in `~/.useful-bot/images`) move into the folder on first load.
+
 ## Routines
 
 A routine is a recurring instruction one bot runs on a schedule. Create and edit

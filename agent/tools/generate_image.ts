@@ -5,7 +5,7 @@ import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permissi
 import { activeBotId } from "../lib/active-bot.ts";
 import { toolRouterIds } from "../lib/router-identity.ts";
 import { appendAgentEvent, releaseSend, reserveSend } from "../../shared/agent-store.ts";
-import { writeImage } from "../../shared/images-store.ts";
+import { saveImage } from "../../shared/media-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
 
@@ -14,7 +14,7 @@ const GENERATE_TIMEOUT_MS = 150_000;
 
 export default defineTool({
   description:
-    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (an OpenAI, xAI, Z.ai or OpenRouter API key) is connected in Settings; when it is not, say so instead of retrying. It uses the owner's default image model; pass `model` (an image model id from list_models, with its `connectionId` when two providers offer the same id) only when the owner asks for a model or the job clearly needs a different one, since some models cost far more per image. The drawing lands in the transcript by itself: answer in text and do not link or embed the file.",
+    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (an OpenAI, xAI, Z.ai or OpenRouter API key) is connected in Settings; when it is not, say so instead of retrying. It uses the owner's default image model; pass `model` (an image model id from list_models, with its `connectionId` when two providers offer the same id) only when the owner asks for a model or the job clearly needs a different one, since some models cost far more per image. The drawing lands in the transcript by itself and is saved as a file under the owner's Useful Bot folder in Documents (the result gives its path): answer in text and do not link or embed the file. When the owner asks for it somewhere else too, copy that file there.",
   inputSchema: z.object({
     prompt: z.string().min(1).max(4000),
     size: z.enum(["square", "wide", "tall"]).optional(),
@@ -96,14 +96,17 @@ export default defineTool({
       return { status: "failed", error: "empty_image" };
     }
     const imageId = `img${randomUUID().replaceAll("-", "").slice(0, 24)}`;
-    const botId = activeBotId(readShell(), ctx);
-    writeImage({
+    const shell = readShell();
+    const botId = activeBotId(shell, ctx);
+    const saved = saveImage({
       id: imageId,
       mime: typeof item.mime === "string" ? item.mime : "image/png",
-      b64: item.b64_json,
+      bytes: Buffer.from(item.b64_json, "base64"),
       prompt: input.prompt,
       provider: typeof json?.provider === "string" ? json.provider : "",
       model: typeof json?.model === "string" ? json.model : "",
+      botId,
+      botName: shell.bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot",
     });
     appendAgentEvent(botId, {
       kind: "image",
@@ -114,6 +117,7 @@ export default defineTool({
     return {
       status: "generated",
       imageId,
+      path: saved.path,
       model: typeof json?.model === "string" ? json.model : undefined,
       note: "The image is in the chat now. Describe it in words if that helps, but the owner already sees it.",
     };

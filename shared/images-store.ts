@@ -4,16 +4,16 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Generated images, one JSON record each under ~/.useful-bot/images/. The
- * bytes are too large for the transcript (TEXT_MAX is 4000), so the event
- * carries the id and the app fetches the record through /api/agent/image.
+ * Legacy generated images, one JSON record each under ~/.useful-bot/images/.
+ * New images are files under the media folder (shared/media-store.ts); this
+ * store only reads the old records until they are migrated. The event
+ * carries the id either way and the app fetches through /api/agent/image.
  */
 export type ImageRecord = {
   id: string;
@@ -96,44 +96,20 @@ export function deleteImage(id: string, dir = imagesDir()): void {
   try { unlinkSync(pathFor(id, dir)); } catch { /* ignore */ }
 }
 
-/** How long a record is kept before a sweep may call it an orphan. */
-export const IMAGE_ORPHAN_GRACE_MS = 10 * 60 * 1000;
-
 /**
- * Delete every stored image no thread event names any more, and return the
- * ids it dropped. Same rule as the widget sweep: the record is written before
- * the event that references it, so anything younger than the grace window is
- * left alone.
+ * Ids of the records still in the legacy folder. Images now live as files
+ * under the media folder (shared/media-store.ts); these are migrated there
+ * and never swept: what the agent made is the owner's to delete.
  */
-export function sweepOrphanImages(
-  referencedIds: Iterable<string>,
-  dir = imagesDir(),
-  now = Date.now(),
-): string[] {
+export function legacyImageIds(dir = imagesDir()): string[] {
   let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
     return [];
   }
-  const keep = new Set(referencedIds);
-  const dropped: string[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    const id = name.slice(0, -".json".length);
-    if (!ID.test(id) || keep.has(id)) continue;
-    const path = join(dir, name);
-    try {
-      if (now - statSync(path).mtimeMs < IMAGE_ORPHAN_GRACE_MS) continue;
-    } catch {
-      continue;
-    }
-    try {
-      unlinkSync(path);
-      dropped.push(id);
-    } catch {
-      // Gone already, or not ours to remove. The next sweep tries again.
-    }
-  }
-  return dropped;
+  return names
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => name.slice(0, -".json".length))
+    .filter((id) => ID.test(id));
 }

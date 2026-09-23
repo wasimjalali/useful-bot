@@ -1,12 +1,10 @@
 import { createHmac } from "node:crypto";
 import {
   appendAgentEvent,
-  referencedImageIds,
   referencedWidgetIds,
   sweepOrphanThreads,
   type ThreadKind,
 } from "../../shared/agent-store.ts";
-import { sweepOrphanImages } from "../../shared/images-store.ts";
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
@@ -1126,11 +1124,12 @@ function pumpRoutinesOnce(limit: number): RoutinePumpResult {
  * Returns the routine ids it dropped.
  */
 export function sweepOrphanState(): string[] {
-  // Under the test runner the sweep only runs against temp media folders.
-  // A test that isolated the agent store but not these once deleted every
-  // real image and drawing on each run, so a miss fails the test instead.
-  if (process.env.NODE_TEST_CONTEXT && (!process.env.UB_IMAGES_DIR || !process.env.UB_WIDGETS_DIR)) {
-    throw new Error("sweep under test needs UB_IMAGES_DIR and UB_WIDGETS_DIR");
+  // Under the test runner the sweep only runs against a temp widgets folder.
+  // A test that isolated the agent store but not the media folders once
+  // deleted every real image and drawing on each run, so a miss fails the
+  // test instead. Images are no longer swept at all (shared/media-store.ts).
+  if (process.env.NODE_TEST_CONTEXT && !process.env.UB_WIDGETS_DIR) {
+    throw new Error("sweep under test needs UB_WIDGETS_DIR");
   }
   try {
     // `peekShell`, never `readShell`. A roster this process could not parse is
@@ -1154,8 +1153,6 @@ export function sweepOrphanState(): string[] {
     // sweep at all.
     const referenced = referencedWidgetIds();
     if (referenced) sweepOrphanWidgets(referenced);
-    const referencedImages = referencedImageIds();
-    if (referencedImages) sweepOrphanImages(referencedImages);
     return routines;
   } catch {
     // A locked or unreadable store is the next tick's problem, never this

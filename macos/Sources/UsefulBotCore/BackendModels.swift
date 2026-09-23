@@ -942,3 +942,45 @@ public struct ConnectorsPayload: Codable, Equatable, Sendable {
         case hasKey, last4, toolkits, error, total, nextOffset
     }
 }
+
+/// One saved image or drawing in the owner's media folder, as the Library
+/// lists it. `exists` is false when the file is no longer at `path`.
+public struct MediaItem: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    /// "image" or "drawing".
+    public let kind: String
+    public let path: String
+    public let botId: String
+    public let botName: String
+    public let title: String
+    public let prompt: String
+    public let model: String
+    public let provider: String
+    public let mime: String
+    public let createdAt: String
+    public let exists: Bool
+
+    public init(id: String, kind: String, path: String, botId: String, botName: String, title: String,
+                prompt: String, model: String, provider: String, mime: String, createdAt: String, exists: Bool) {
+        self.id = id
+        self.kind = kind
+        self.path = path
+        self.botId = botId
+        self.botName = botName
+        self.title = title
+        self.prompt = prompt
+        self.model = model
+        self.provider = provider
+        self.mime = mime
+        self.createdAt = createdAt
+        self.exists = exists
+    }
+}
+
+/// What `/api/agent/image/<id>` answered: the bytes, a file the owner moved
+/// (the row offers Locate), or nothing at all (the row offers Regenerate).
+public enum ImageFetch: Equatable, Sendable {
+    case loaded(Data)
+    case moved
+    case missing
+}

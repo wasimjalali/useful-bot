@@ -10,6 +10,22 @@ import {
 } from "../../../../../shared/mcp-apps.ts";
 import { readShell } from "../../../../../shared/shell-io.ts";
 import { writeWidget, type WidgetRecord } from "../../../../../shared/widgets-store.ts";
+import { saveDrawing } from "../../../../../shared/media-store.ts";
+
+/** The first label or text in the scene names the file; "Drawing" otherwise. */
+function drawingTitle(elements: unknown): string {
+  let list = elements;
+  if (typeof list === "string") {
+    try { list = JSON.parse(list) as unknown; } catch { return "Drawing"; }
+  }
+  if (!Array.isArray(list)) return "Drawing";
+  for (const el of list) {
+    const rec = el && typeof el === "object" ? el as { text?: unknown; label?: { text?: unknown } } : {};
+    const text = typeof rec.text === "string" ? rec.text : typeof rec.label?.text === "string" ? rec.label.text : "";
+    if (text.trim()) return `Drawing - ${text.trim()}`;
+  }
+  return "Drawing";
+}
 
 export async function POST(request: Request) {
   const gate = await requireOwner(request);
@@ -32,7 +48,8 @@ export async function POST(request: Request) {
     if (!draft || typeof body.botId !== "string" || typeof body.callId !== "string") {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
-    if (!readShell().bots.some((bot) => bot.id === body.botId)) {
+    const bot = readShell().bots.find((row) => row.id === body.botId);
+    if (!bot) {
       return NextResponse.json({ ok: false, error: "bot_missing" }, { status: 400 });
     }
     if (!findConnectionById(draft.connectionId)) {
@@ -58,6 +75,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
     writeWidget(record);
+    // A drawing is also the owner's file: an Excalidraw scene lands in the
+    // media folder and the Library. A failed save leaves the card in the
+    // chat and says why in the log; the drawing itself still shows.
+    if ("elements" in record.arguments) {
+      try {
+        saveDrawing({
+          id: record.id,
+          elements: record.arguments.elements,
+          title: drawingTitle(record.arguments.elements),
+          botId: body.botId,
+          botName: bot.name,
+          provider: record.connectionId,
+        });
+      } catch (err) {
+        console.error(`[media] could not save drawing ${record.id}`, err);
+      }
+    }
     appendAgentEvent(body.botId, {
       kind: "widget",
       text: "Drawing",

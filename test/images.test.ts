@@ -3,11 +3,8 @@ import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { appendAgentEvent, referencedImageIds } from "../shared/agent-store.ts";
 import {
-  IMAGE_ORPHAN_GRACE_MS,
   readImage,
-  sweepOrphanImages,
   writeImage,
 } from "../shared/images-store.ts";
 import {
@@ -78,37 +75,6 @@ test("an image record round-trips and bad ids and types are refused", () => {
   assert.equal(readImage("imgmissing1", dir), null);
   assert.throws(() => writeImage(record("../escape"), dir), /image_id/);
   assert.throws(() => writeImage({ ...record("imgabcdef124"), mime: "text/html" }, dir), /image_type/);
-});
-
-test("an image nothing names any more is swept, a fresh one survives", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-images-"));
-  writeImage(record("imgkept00001"), dir);
-  writeImage(record("imgorphan001"), dir);
-  writeImage(record("imgfresh0001"), dir);
-  age(dir, "imgkept00001", IMAGE_ORPHAN_GRACE_MS * 2);
-  age(dir, "imgorphan001", IMAGE_ORPHAN_GRACE_MS * 2);
-  const dropped = sweepOrphanImages(["imgkept00001"], dir);
-  assert.deepEqual(dropped, ["imgorphan001"]);
-  assert.deepEqual(readdirSync(dir).sort(), ["imgfresh0001.json", "imgkept00001.json"]);
-});
-
-test("referencedImageIds reads image events and refuses a store it cannot parse", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ub-images-"));
-  const storePath = join(dir, "agents.json");
-  const previous = process.env.UB_AGENT_STORE_PATH;
-  process.env.UB_AGENT_STORE_PATH = storePath;
-  try {
-    writeFileSync(storePath, "{ this is not json");
-    assert.equal(referencedImageIds(), null);
-    writeFileSync(storePath, JSON.stringify({ schemaVersion: 1, threads: [], proposals: [], reserves: [] }));
-    assert.deepEqual([...(referencedImageIds() ?? [])], []);
-
-    appendAgentEvent("b1", { kind: "image", text: "a lighthouse", imageId: "imgkept00001" });
-    assert.deepEqual([...(referencedImageIds() ?? [])], ["imgkept00001"]);
-  } finally {
-    if (previous === undefined) delete process.env.UB_AGENT_STORE_PATH;
-    else process.env.UB_AGENT_STORE_PATH = previous;
-  }
 });
 
 test("the image role resolves only a connection whose mode serves images", () => {

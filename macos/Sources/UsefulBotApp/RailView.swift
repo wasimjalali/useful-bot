@@ -13,6 +13,7 @@ struct RailView: View {
     var onDeleteRequest: (ShellBot) -> Void
     var onCreateSection: () -> Void
     var onConnectors: () -> Void
+    var onLibrary: () -> Void
     var onOpenAppSettings: (AppSettingsTab) -> Void
     /// Window frame of the New Bot plus button, so overlays outside the rail
     /// can treat clicks on it as the toggle rather than "outside".
@@ -358,6 +359,7 @@ struct RailView: View {
                     }
                 )
                 .padding(.bottom, 8)
+            libraryRow
             connectorsRow
             Button {
                 accountOpen.toggle()
@@ -425,6 +427,24 @@ struct RailView: View {
             }
             .padding(.horizontal, 10)
             .frame(minHeight: 32)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var libraryRow: some View {
+        MenuRowButton(action: onLibrary) {
+            HStack(spacing: 10) {
+                Image(systemName: "photo.on.rectangle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.C.ink)
+                    .frame(width: 16)
+                Text("Library")
+                    .font(.system(size: DesignTokens.FontSize.railName))
+                    .foregroundStyle(Theme.C.ink)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
