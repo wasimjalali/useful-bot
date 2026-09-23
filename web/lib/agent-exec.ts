@@ -1126,6 +1126,12 @@ function pumpRoutinesOnce(limit: number): RoutinePumpResult {
  * Returns the routine ids it dropped.
  */
 export function sweepOrphanState(): string[] {
+  // Under the test runner the sweep only runs against temp media folders.
+  // A test that isolated the agent store but not these once deleted every
+  // real image and drawing on each run, so a miss fails the test instead.
+  if (process.env.NODE_TEST_CONTEXT && (!process.env.UB_IMAGES_DIR || !process.env.UB_WIDGETS_DIR)) {
+    throw new Error("sweep under test needs UB_IMAGES_DIR and UB_WIDGETS_DIR");
+  }
   try {
     // `peekShell`, never `readShell`. A roster this process could not parse is
     // reseeded by `readShell` to a single default bot, and sweeping against
