@@ -35,12 +35,14 @@ function showPage(path: string, html: string, ctx: { session?: { id?: string } }
     const shell = readShell();
     const botId = activeBotId(shell, ctx);
     const botName = shell.bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot";
-    const { item, added } = recordPage({ path, html, botId, botName });
+    const { item } = recordPage({ path, html, botId, botName });
     if (item.forgotten) return "The owner removed this page from their Library, so it is not shown again.";
-    if (!added) return "The page's preview in the chat and the Library already shows this file.";
     if (!botId) return "The page is in the owner's Library. It could not be added to this chat.";
+    // Once per page per chat: the event id repeats, so a rewrite does not
+    // post a second card, and a card a failed write never posted is posted
+    // on the next one.
     appendAgentEvent(botId, { kind: "page", text: item.title, imageId: item.id, id: `page_${item.id}` });
-    return "The page is in the chat now as a preview the owner can open in their browser, and in their Library.";
+    return "The page is in the chat as a preview the owner can open in their browser (it shows the file as it is now), and in their Library.";
   } catch (err) {
     console.error(`[media] could not file page ${path}`, err);
     return "The file was written, but it could not be added to the owner's Library or this chat.";

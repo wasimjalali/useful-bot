@@ -16,6 +16,9 @@ struct PageRow: View {
 
     @SwiftUI.State private var state: State = .loading
     @SwiftUI.State private var hovering = false
+    /// Set by the Library's word that the item is gone, so a load still in
+    /// flight cannot bring the picture back.
+    @SwiftUI.State private var gone = false
 
     static let width: CGFloat = 448
     static let height: CGFloat = 280
@@ -39,7 +42,10 @@ struct PageRow: View {
         // The file can go while the picture stays: trashed from the Library,
         // or moved or deleted in Finder while the app was in the background.
         .onReceive(NotificationCenter.default.publisher(for: .mediaItemGone)) { note in
-            if note.object as? String == mediaId { state = .moved }
+            if note.object as? String == mediaId {
+                gone = true
+                state = .moved
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             recheck()
@@ -139,15 +145,22 @@ struct PageRow: View {
     }
 
     private func load() async {
+        guard !gone else { return }
         state = .loading
         do {
             guard let item = try await GeneratedImageCache.shared.mediaItem(mediaId), item.exists else {
                 state = .moved
                 return
             }
-            state = .ready(item, await PageThumbnails.shared.thumbnail(path: item.path))
+            let image = await PageThumbnails.shared.thumbnail(path: item.path)
+            // The file may have gone while the picture rendered.
+            guard !gone, FileManager.default.fileExists(atPath: item.path) else {
+                state = .moved
+                return
+            }
+            state = .ready(item, image)
         } catch {
-            state = .failed
+            state = gone ? .moved : .failed
         }
     }
 }

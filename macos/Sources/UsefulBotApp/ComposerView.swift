@@ -1304,6 +1304,9 @@ private struct ModelFlyout: View {
         let shut = !isOpen(group)
         let mark = group.label.prefix(1)
         return Button {
+            // A search holds every matching section open; a click then would
+            // only land later, as the opposite of what was meant.
+            guard !searching else { return }
             if expanded.contains(group.connectionId) {
                 expanded.remove(group.connectionId)
             } else {

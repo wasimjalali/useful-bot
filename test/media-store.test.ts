@@ -393,4 +393,15 @@ test("an HTML page is indexed where the bot wrote it, once per file, and stays r
   const after = recordPage({ path: join(dir, "moved.html"), html, botId: "b", botName: "B" }, index);
   assert.equal(after.added, false);
   assert.equal(after.item.forgotten, true);
+  // A new file at the path a relinked page left gets an entry of its own.
+  const other = join(dir, "other.html");
+  writeFileSync(other, "<title>Other</title>");
+  const second = recordPage({ path: other, html: "<title>Other</title>", botId: "b", botName: "B" }, index);
+  renameSync(other, join(dir, "other-moved.html"));
+  relinkMedia(second.item.id, join(dir, "other-moved.html"), index);
+  writeFileSync(other, "<title>Fresh</title>");
+  const fresh = recordPage({ path: other, html: "<title>Fresh</title>", botId: "b", botName: "B" }, index);
+  assert.equal(fresh.added, true);
+  assert.notEqual(fresh.item.id, second.item.id);
+  assert.equal(findMedia(second.item.id, index)?.title, "Other");
 });

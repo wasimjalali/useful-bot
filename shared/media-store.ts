@@ -113,6 +113,7 @@ function isItem(value: unknown): value is MediaItem {
   return typeof rec.id === "string" && ID.test(rec.id)
     && (rec.kind === "image" || rec.kind === "drawing" || rec.kind === "page")
     && typeof rec.path === "string" && isAbsolute(rec.path)
+    && (rec.kind !== "page" || isPagePath(rec.path))
     && typeof rec.botId === "string" && typeof rec.botName === "string"
     && typeof rec.title === "string" && typeof rec.prompt === "string"
     && typeof rec.model === "string" && typeof rec.provider === "string"
@@ -466,7 +467,8 @@ export function recordPage(input: {
   if (!isAbsolute(input.path) || !isPagePath(input.path)) throw new Error("media_type");
   const real = realOrSelf(input.path);
   if (!isRegularFile(real)) throw new Error("media_type");
-  const id = `page${createHash("sha256").update(real).digest("hex").slice(0, 24)}`;
+  const pageId = (seed: string) => `page${createHash("sha256").update(seed).digest("hex").slice(0, 24)}`;
+  let id = pageId(real);
   const item: MediaItem = {
     id,
     kind: "page",
@@ -483,8 +485,13 @@ export function recordPage(input: {
   return withIndex((index) => {
     // By where the file is now first: a page relinked after a move keeps
     // the id it was first saved under.
-    const existing = index.items.find((row) => row.kind === "page" && realOrSelf(row.path) === real)
-      ?? index.items.find((row) => row.id === id);
+    const existing = index.items.find((row) => row.kind === "page" && realOrSelf(row.path) === real);
+    // The id is taken by a page relinked away from this path: this file is
+    // a new page and gets an id of its own.
+    if (!existing && index.items.some((row) => row.id === id)) {
+      id = pageId(`${real}\n${item.createdAt}`);
+      item.id = id;
+    }
     if (existing) {
       // A rewrite can rename the page; the rest stays as first saved.
       if (!existing.forgotten) existing.title = item.title;
