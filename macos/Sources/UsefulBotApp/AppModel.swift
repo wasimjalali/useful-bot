@@ -1657,7 +1657,10 @@ final class AppModel: ObservableObject {
                     }
                     // The quote went with the text; it comes back with it. It
                     // names its chat, so it shows there whenever the owner is.
-                    if let quoteSnapshot, self.replyQuotes[bot.id] == nil { self.replyQuotes[bot.id] = quoteSnapshot }
+                    if let quoteSnapshot, self.replyQuotes[bot.id] == nil,
+                       self.store?.bots.contains(where: { $0.id == bot.id }) == true {
+                        self.replyQuotes[bot.id] = quoteSnapshot
+                    }
                     self.recordSendError(
                         bot.id,
                         (error as? LocalizedError)?.errorDescription ?? "Send failed.",
@@ -1707,7 +1710,7 @@ final class AppModel: ObservableObject {
     func reply(to text: String, author: String?, botId: String) {
         // The chat on screen, including the fallback the composer shows
         // before a selection is stored.
-        guard botId == (selectedBotId ?? selectedBot?.id) else { return }
+        guard botId == selectedBot?.id else { return }
         replyQuotes[botId] = ReplyQuote(botId: botId, text: text, author: author)
         composerFocusToken &+= 1
     }
@@ -2762,6 +2765,11 @@ final class AppModel: ObservableObject {
     /// Apply a store the server echoed and keep the local selection honest.
     /// Never echoes a select back: the store already carries the selection.
     private func applyStore(_ next: ShellStore) {
+        // A reply started in a chat the server has since removed goes with it.
+        if !replyQuotes.isEmpty {
+            let live = Set(next.bots.map(\.id))
+            replyQuotes = replyQuotes.filter { live.contains($0.key) }
+        }
         store = next
         reconcileSelection(next)
         rebuildTranscript()

@@ -762,7 +762,7 @@ struct ChatView: View {
                 .onChange(of: model.pending) { wasPending, nowPending in
                     guard wasPending, !nowPending, landedBotId == bot.id, pinnedToBottom,
                           !scrollProbe.dragging,
-                          replyHeight > viewportHeight - Self.replyAnchorSlack,
+                          replyHeight > viewportHeight - DesignTokens.Space.chatHead - Self.replyAnchorSlack,
                           let anchor = model.latestReplyAnchor else { return }
                     holdingReplyAnchor = true
                     scrollWithoutAnimation(proxy, to: anchor)
@@ -1188,7 +1188,7 @@ struct TranscriptRowView: View, Equatable {
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                MessageHoverActions(text: row.text, botId: bot.id, author: attributed ? (speaker?.name ?? row.author) : nil, enabled: !streaming) {
+                MessageHoverActions(text: row.text, botId: bot.id, author: row.authorBotId != nil && row.authorBotId != bot.id ? (speaker?.name ?? row.author) : nil, enabled: !streaming) {
                     ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
