@@ -53,7 +53,7 @@ struct PhoneSettingsView: View {
                 }
                 .frame(minHeight: 52)
             }
-            Section("General") {
+            Section {
                 TextField("Operator name", text: $operatorName)
                     .frame(minHeight: 44)
                 // The phone follows the Mac's interface language (spec
@@ -62,8 +62,10 @@ struct PhoneSettingsView: View {
                     .frame(minHeight: 44)
                 LabeledContent("Time zone", value: TimeZone.current.identifier)
                     .frame(minHeight: 44)
+            } header: {
+                tokenGroupHeader("General")
             }
-            Section("Appearance") {
+            Section {
                 TokenSegmented(
                     options: AppAppearance.allCases.map { (id: $0, label: $0.label) },
                     selection: Binding(
@@ -73,16 +75,20 @@ struct PhoneSettingsView: View {
                 )
                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 .listRowBackground(Color.clear)
+            } header: {
+                tokenGroupHeader("Appearance")
             }
-            Section("Bots") {
+            Section {
                 NavigationLink("Providers") { PhoneProvidersView() }
                     .frame(minHeight: 44)
                 NavigationLink("Connectors") { PhoneConnectorsView() }
                     .frame(minHeight: 44)
                 NavigationLink("Usage") { PhoneUsageView() }
                     .frame(minHeight: 44)
+            } header: {
+                tokenGroupHeader("Bots")
             }
-            Section("Devices") {
+            Section {
                 NavigationLink {
                     DevicesView()
                 } label: {
@@ -100,17 +106,27 @@ struct PhoneSettingsView: View {
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RowButtonStyle())
+            } header: {
+                tokenGroupHeader("Devices")
             }
-            Section("About") {
+            Section {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0")
                     .frame(minHeight: 44)
+            } header: {
+                tokenGroupHeader("About")
             }
             if let bot = phone.selectedBot {
                 BotRoutinesSection(bot: bot, editor: $routineEditor)
                 BotMemorySection(bot: bot)
             }
         }
+        // Grouped settings recipe: canvas under the groups, surface rows,
+        // fieldLabel headers, chatName row body (spec 1.11's anatomy).
+        .scrollContentBackground(.hidden)
+        .background(Theme.C.canvas)
+        .tokenFont(DesignTokens.FontSize.chatName, .regular)
+        .listRowBackground(Theme.C.surface)
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .floatingSheet(

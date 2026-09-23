@@ -29,10 +29,13 @@ struct TokenToggle: View {
         } label: {
             ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule()
-                    .fill(isOn ? Theme.C.brand : Theme.C.sunken)
+                    // Disabled reads as the A.2 recipe — sunken track,
+                    // faint thumb — not a blanket opacity halving; the
+                    // caller still renders the reason line.
+                    .fill(enabled ? (isOn ? Theme.C.brand : Theme.C.sunken) : Theme.C.sunken)
                     .overlay(Capsule().strokeBorder(Theme.C.border, lineWidth: 1))
                 Circle()
-                    .fill(Theme.C.surface)
+                    .fill(enabled ? Theme.C.surface : Theme.C.inkFaint)
                     .shadow(color: Theme.C.shadow.opacity(0.15), radius: 1, x: 0, y: 1)
                     .padding(2)
             }
@@ -44,7 +47,6 @@ struct TokenToggle: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.5)
         .accessibilityAddTraits(.isToggle)
         .accessibilityValue(Text(isOn ? "On" : "Off"))
         .animation(reduceMotion ? nil : .brandFast, value: isOn)
@@ -197,9 +199,10 @@ struct ConfirmSheet: View {
                     onConfirm()
                     onClose()
                 }
-                .buttonStyle(SecondaryAction())
+                // The danger token lives inside the style — an outside
+                // foregroundStyle loses to the style's own ink.
+                .buttonStyle(SecondaryAction(danger: true))
                 .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                .foregroundStyle(Theme.C.danger)
                 .frame(maxWidth: .infinity, minHeight: 44)
             }
         }
@@ -266,6 +269,9 @@ private struct FloatingSheetItemHost<Item: Identifiable, Sheet: View, Leading: V
     @Binding var item: Item?
     let detent: FloatingSheetDetent
     let showsHeader: Bool
+    /// Grouped content (a `List` of row cards) sits on `canvas` so its
+    /// surface rows read as cards — same rule as the bool host.
+    var canvas = false
     var title: (Item) -> String
     @ViewBuilder var leading: (Item) -> Leading
     @ViewBuilder var trailing: (Item) -> Trailing
@@ -280,6 +286,7 @@ private struct FloatingSheetItemHost<Item: Identifiable, Sheet: View, Leading: V
                         title: title(item),
                         detent: detent,
                         showsHeader: showsHeader,
+                        canvas: canvas,
                         onClose: { self.item = nil },
                         leading: { leading(item) },
                         trailing: { trailing(item) },
@@ -326,6 +333,7 @@ extension View {
         item: Binding<Item?>,
         detent: FloatingSheetDetent = .medium,
         showsHeader: Bool = true,
+        canvas: Bool = false,
         title: @escaping (Item) -> String,
         @ViewBuilder content: @escaping (Item) -> C
     ) -> some View {
@@ -333,6 +341,7 @@ extension View {
             item: item,
             detent: detent,
             showsHeader: showsHeader,
+            canvas: canvas,
             title: title,
             leading: { _ in EmptyView() },
             trailing: { _ in EmptyView() },
@@ -345,6 +354,7 @@ extension View {
         item: Binding<Item?>,
         detent: FloatingSheetDetent = .medium,
         showsHeader: Bool = true,
+        canvas: Bool = false,
         title: @escaping (Item) -> String,
         @ViewBuilder leading: @escaping (Item) -> L,
         @ViewBuilder trailing: @escaping (Item) -> T,
@@ -354,11 +364,81 @@ extension View {
             item: item,
             detent: detent,
             showsHeader: showsHeader,
+            canvas: canvas,
             title: title,
             leading: leading,
             trailing: trailing,
             sheet: content
         ))
+    }
+}
+
+/// Design spec 1.15's group titles: `fieldLabel` 13 medium in `inkMuted`,
+/// never iOS's large header style (adjudication V1). Shared by every
+/// grouped `List` that renders token section headers.
+func tokenGroupHeader(_ title: String) -> some View {
+    Text(title)
+        .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
+        .foregroundStyle(Theme.C.inkMuted)
+        .textCase(nil)
+}
+
+/// A left-to-right wrapping row — real `Layout`, not a horizontal
+/// ScrollView. Spec 1.3's chip rows wrap and 1.7's swatches wrap to two
+/// rows; both render through this.
+struct FlowRow: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var height: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                height += lineHeight + spacing
+                lineHeight = 0
+            }
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+        return CGSize(width: width, height: height + lineHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += lineHeight + spacing
+                lineHeight = 0
+            }
+            view.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
+}
+
+/// Spec baseline press on list rows (A.3): one tone step on the brand
+/// curve — `.plain` alone gives iOS rows no transient feedback at all.
+/// Under Reduce Motion the tone step stays and nothing else moves.
+struct RowButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = DesignTokens.Radius.md
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(configuration.isPressed ? Theme.C.sunken : .clear)
+            )
+            .animation(reduceMotion ? nil : .brandFast, value: configuration.isPressed)
     }
 }
 

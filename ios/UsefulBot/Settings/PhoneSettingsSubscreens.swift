@@ -22,7 +22,7 @@ struct PhoneProvidersView: View {
 
     var body: some View {
         List {
-            Section("Connected") {
+            Section {
                 let connections = payload?.connections ?? []
                 if connections.isEmpty {
                     Text("No providers connected.")
@@ -55,29 +55,32 @@ struct PhoneProvidersView: View {
                         .frame(minHeight: 52)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(RowButtonStyle())
                 }
                 Button("Add provider") { showCatalog = true }
                     .buttonStyle(SecondaryAction(enabled: blocked == nil))
                     .frame(minHeight: 44)
                     .disabled(blocked != nil)
-                    .listRowSeparator(.hidden)
+            } header: {
+                tokenGroupHeader("Connected")
             }
-            Section("Task models") {
+            Section {
                 if let role = payload?.defaultRole {
                     Button { roleTarget = .default } label: {
                         roleRow(title: "Chat model", role: role)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(RowButtonStyle())
                     .disabled(blocked != nil)
                 }
                 if let role = payload?.reviewerRole {
                     Button { roleTarget = .reviewer } label: {
                         roleRow(title: "Reviewer model", role: role)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(RowButtonStyle())
                     .disabled(blocked != nil)
                 }
+            } header: {
+                tokenGroupHeader("Task models")
             }
             if let error {
                 Section { Text(error).foregroundStyle(Theme.C.danger) }
@@ -173,7 +176,7 @@ struct PhoneProvidersView: View {
                             )
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(RowButtonStyle())
                     }
                     ForEach(role.models, id: \.id) { model in
                         Button {
@@ -197,19 +200,24 @@ struct PhoneProvidersView: View {
                             )
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(RowButtonStyle())
                     }
                     if !role.efforts.isEmpty {
-                        Section("Effort") {
+                        Section {
                             effortPicker(target, role: role)
                                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                                 .listRowBackground(Color.clear)
+                        } header: {
+                            tokenGroupHeader("Effort")
                         }
                     }
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
+            .tokenFont(DesignTokens.FontSize.chatName, .regular)
+            .listRowBackground(Theme.C.surface)
     }
 
     private func effortPicker(_ target: RoleTarget, role: RolePublic) -> some View {
@@ -250,12 +258,15 @@ struct PhoneProvidersView: View {
                         .frame(minHeight: 52)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(RowButtonStyle())
                     .disabled(blocked != nil)
                 }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
+            .tokenFont(DesignTokens.FontSize.chatName, .regular)
+            .listRowBackground(Theme.C.surface)
     }
 
     private var blocked: String? {
@@ -353,6 +364,9 @@ private struct ConnectionDetailView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
+            .tokenFont(DesignTokens.FontSize.chatName, .regular)
+            .listRowBackground(Theme.C.surface)
     }
 
     private func gate(_ reason: String) async -> Bool {
@@ -449,6 +463,9 @@ struct ProviderConnectView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
+            .tokenFont(DesignTokens.FontSize.chatName, .regular)
+            .listRowBackground(Theme.C.surface)
         .sheet(isPresented: Binding(get: { safariURL != nil }, set: { if !$0 { safariURL = nil } })) {
             if let url = safariURL {
                 SafariSheet(url: url)
@@ -515,11 +532,21 @@ struct ProviderConnectView: View {
                 ForEach(catalog.fields ?? [], id: \.id) { field in
                     Group {
                         if field.secret {
-                            SecureField(field.placeholder.isEmpty ? field.label : field.placeholder, text: binding(for: field.id))
+                            SecureField(
+                                text: binding(for: field.id),
+                                prompt: Text(field.placeholder.isEmpty ? field.label : field.placeholder).foregroundStyle(Theme.C.inkFaintText)
+                            ) {
+                                EmptyView()
+                            }
                         } else {
-                            TextField(field.placeholder.isEmpty ? field.label : field.placeholder, text: binding(for: field.id))
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
+                            TextField(
+                                text: binding(for: field.id),
+                                prompt: Text(field.placeholder.isEmpty ? field.label : field.placeholder).foregroundStyle(Theme.C.inkFaintText)
+                            ) {
+                                EmptyView()
+                            }
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
                         }
                     }
                     .frame(minHeight: 44)
@@ -559,7 +586,7 @@ struct ProviderConnectView: View {
         do {
             let started = try await client.startOAuth(providerId: catalog.providerId)
             flow = started
-            pollStatus = "Waiting for approval in the browser"
+            pollStatus = "Waiting for you to finish in Safari"
             error = nil
             // The phone turns this server string into an external
             // navigation: allow only a bare https URL (no userinfo), and
@@ -596,7 +623,7 @@ struct ProviderConnectView: View {
                         onClose()
                         return
                     case "pending":
-                        pollStatus = "Waiting for approval in the browser"
+                        pollStatus = "Waiting for you to finish in Safari"
                     case "expired":
                         pollStatus = "The code expired."
                         self.flow = nil
@@ -660,29 +687,60 @@ struct PhoneConnectorsView: View {
     @State private var shown = 20
 
     var body: some View {
-        List {
-            if showsKeyForm {
-                keySection
-            }
+        VStack(spacing: 0) {
             if payload?.hasKey == true || !showsKeyForm {
-                appSection
-            } else if let payload, payload.error != nil {
-                Section {
-                    HStack {
-                        Text(payload.error ?? "Connectors failed")
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                            .foregroundStyle(Theme.C.danger)
-                        Spacer()
-                        Button("Retry") { Task { await load() } }
-                            .frame(minHeight: 44)
+                // `.searchable` draws system chrome; the drawn pill carries
+                // the same recipe the model sheet's field does (1.13):
+                // 40 pt, sunken, full-radius, `borderStrong` edge.
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(Theme.C.inkMuted)
+                    TextField(
+                        text: $query,
+                        prompt: Text("Search apps").foregroundStyle(Theme.C.inkFaintText)
+                    ) {
+                        EmptyView()
+                    }
+                    .tokenFont(DesignTokens.FontSize.chatBody, .regular)
+                    .foregroundStyle(Theme.C.ink)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 40)
+                .background(Theme.C.sunken, in: Capsule())
+                .overlay(
+                    Capsule().strokeBorder(Theme.C.borderStrong, lineWidth: 1)
+                )
+                .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                .padding(.bottom, 8)
+            }
+            List {
+                if showsKeyForm {
+                    keySection
+                }
+                if payload?.hasKey == true || !showsKeyForm {
+                    appSection
+                } else if let payload, payload.error != nil {
+                    Section {
+                        HStack {
+                            Text(payload.error ?? "Connectors failed")
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.danger)
+                            Spacer()
+                            Button("Retry") { Task { await load() } }
+                                .frame(minHeight: 44)
+                        }
                     }
                 }
+                if let error {
+                    Section { Text(error).foregroundStyle(Theme.C.danger) }
+                }
             }
-            if let error {
-                Section { Text(error).foregroundStyle(Theme.C.danger) }
-            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
+            .listRowBackground(Theme.C.surface)
         }
-        .searchable(text: $query, prompt: "Search apps")
         .navigationTitle("Connectors")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
@@ -701,7 +759,7 @@ struct PhoneConnectorsView: View {
 
     @ViewBuilder
     private var keySection: some View {
-        Section("Composio API key") {
+        Section {
             if let payload, payload.hasKey {
                 HStack(spacing: 10) {
                     Image(systemName: "key")
@@ -710,9 +768,18 @@ struct PhoneConnectorsView: View {
                         .tokenFont(DesignTokens.FontSize.chatName, .regular)
                         .foregroundStyle(Theme.C.ink)
                     Spacer(minLength: 8)
+                    // A small trailing action, not the full-width
+                    // secondary recipe — 'Remove' competes with nothing.
                     Button("Remove") { Task { await removeKey() } }
-                        .buttonStyle(SecondaryAction(enabled: blocked == nil))
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                        .foregroundStyle(Theme.C.danger)
                         .frame(minHeight: 44)
+                        .padding(.horizontal, 12)
+                        .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                                .strokeBorder(Theme.C.edge, lineWidth: 1)
+                        )
                         .disabled(blocked != nil)
                 }
                 .frame(minHeight: 44)
@@ -759,6 +826,8 @@ struct PhoneConnectorsView: View {
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
             }
+        } header: {
+            tokenGroupHeader("Composio API key")
         }
     }
 
@@ -846,7 +915,7 @@ struct PhoneConnectorsView: View {
 
     private func statusLine(_ toolkit: ConnectorToolkit) -> String {
         if toolkit.connected { return "Connected" }
-        if connectingSlug == toolkit.slug { return "Waiting for approval in the browser" }
+        if connectingSlug == toolkit.slug { return "Waiting for you to finish in Safari" }
         if toolkit.noAuth { return "No sign-in needed" }
         return "Not connected"
     }
@@ -890,7 +959,11 @@ struct PhoneConnectorsView: View {
         connectingSlug = toolkit.slug
         do {
             let url = try await client.authorizeConnector(slug: toolkit.slug)
-            if let target = URL(string: url) {
+            // Same contract the proposal card enforces: a server-named
+            // authorize URL only opens when it is a bare https composio.dev
+            // redirect — anything else stays out of the trusted sheet.
+            if Proposal.connectRedirectAllowed(url, kind: .connectApp, expectedHost: nil),
+               let target = URL(string: url) {
                 safariURL = target
                 watchConnection(slug: toolkit.slug)
             } else {
@@ -962,7 +1035,7 @@ struct PhoneUsageView: View {
         List {
             if let usage {
                 if let budget = usage.budget {
-                    Section("Tokens a day") {
+                    Section {
                         Stepper(
                             value: Binding(
                                 get: { budget.tokens },
@@ -977,7 +1050,16 @@ struct PhoneUsageView: View {
                                     .foregroundStyle(Theme.C.ink)
                             }
                         }
+                        // Per-direction labels: 'Lower the daily limit' /
+                        // 'Raise the daily limit' on swipe, one hint for
+                        // the whole control.
+                        .accessibilityAdjustableAction { direction in
+                            let next = direction == .increment ? budget.tokens + budget.step : budget.tokens - budget.step
+                            guard budget.min...budget.max ~= next else { return }
+                            Task { await setBudget(next) }
+                        }
                         .accessibilityLabel("Tokens a day")
+                        .accessibilityValue("\(budget.tokens.formatted())")
                         .accessibilityHint("Lower the daily limit or raise the daily limit")
                         .frame(minHeight: 44)
                         .disabled(blocked != nil)
@@ -986,6 +1068,8 @@ struct PhoneUsageView: View {
                                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                                 .foregroundStyle(Theme.C.inkMuted)
                         }
+                    } header: {
+                        tokenGroupHeader("Tokens a day")
                     }
                 }
                 Section {
@@ -995,7 +1079,7 @@ struct PhoneUsageView: View {
                     }
                     LabeledContent("Requests", value: Self.format(usage.requests))
                 }
-                Section("This week by model") {
+                Section {
                     if usage.byModel.isEmpty {
                         Text("No model traffic this week yet.")
                             .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
@@ -1015,6 +1099,8 @@ struct PhoneUsageView: View {
                         }
                         .frame(minHeight: 44)
                     }
+                } header: {
+                    tokenGroupHeader("This week by model")
                 }
             } else {
                 // Row skeletons, not a spinner — the loading state keeps

@@ -37,6 +37,12 @@ final class PhoneModel {
     private var client: BackendClient?
     private var pairing: PairingStore?
     private var cache: PhoneCache?
+    /// The origin the current in-memory surface belongs to. When attach()
+    /// meets a different pairing — re-pair after unpair, or a different
+    /// credential — every piece of it must reset: spec 4.8 purges disk and
+    /// defaults, and the same boundary applies in memory (a stale draft or
+    /// transcript must never write into the next pairing's cache dir).
+    private var attachedOrigin: String?
     private var pollTask: Task<Void, Never>?
     private var foreground = false
     private let defaults = UserDefaults.standard
@@ -106,7 +112,46 @@ final class PhoneModel {
         chats[botId] = chat
     }
 
+    /// Clears the entire in-memory surface — called when the paired origin
+    /// changes (unpair, credential invalid, or a new pairing).
+    private func reset() {
+        pollTask?.cancel()
+        pollTask = nil
+        // Next setForeground(true) must start polling again — keep `was`
+        // false so its early-return guard passes.
+        foreground = false
+        biometrics.resetActivation()
+        shell = nil
+        loaded = false
+        loadError = nil
+        selectedBotId = nil
+        workingBotIds = []
+        approvals = []
+        proposalsByBot = [:]
+        chats = [:]
+        draft = ""
+        safariURL = nil
+        composer = nil
+        lastFetchAt = nil
+        passcodeMessage = nil
+        actionError = nil
+        pendingSettingsBot = nil
+        conflictNote = false
+        dismissedApprovalIds = []
+        pastRecent = nil
+        pastRows = []
+        cache = nil
+    }
+
     func attach(_ coordinator: PairingCoordinator) {
+        if coordinator.store.pairedOrigin != attachedOrigin {
+            reset()
+            attachedOrigin = coordinator.store.pairedOrigin
+            // reset() cancelled the poll; an app that never backgrounded
+            // through the re-pair gets no new setForeground(true), so the
+            // loop restarts here.
+            if foreground { startPolling() }
+        }
         client = coordinator.client
         pairing = coordinator.store
         if let origin = coordinator.store.pairedOrigin {
@@ -306,6 +351,10 @@ final class PhoneModel {
         let body = text
         guard canSend(body, readiness: readiness), let id = selectedBotId, let bot = bot(id) else { return }
         sending = true
+        // Capture the draft before the async hop: `draft` mirrors the
+        // selected bot, and a bot switch during the biometric prompt would
+        // make deliver() snapshot — then rewrite — the wrong bot's draft.
+        let draftAtSend = draft
         if bot.isFullAccess {
             Task {
                 defer { sending = false }
@@ -314,13 +363,13 @@ final class PhoneModel {
                     return
                 }
                 guard biometrics.unlocked else { return }
-                await deliver(body, botId: id)
+                await deliver(body, botId: id, draftAtSend: draftAtSend)
             }
             return
         }
         Task {
             defer { sending = false }
-            await deliver(body, botId: id)
+            await deliver(body, botId: id, draftAtSend: draftAtSend)
         }
     }
 
@@ -359,8 +408,13 @@ final class PhoneModel {
             guard current(generation) else { return }
             adopt(next)
             var chat = chats[id] ?? OpenChat()
+            chat.streamGeneration += 1
             chat.projection = StreamProjection()
             chat.cursor = nil
+            chat.windowStart = nil
+            chat.durable = []
+            chat.updating = false
+            chat.attachments = []
             chat.failedText = nil
             chat.confirmingId = nil
             chat.confirmingText = nil
@@ -370,6 +424,7 @@ final class PhoneModel {
             chat.error = nil
             chats[id] = chat
         } catch {
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
     }
@@ -386,10 +441,17 @@ final class PhoneModel {
         case .cancelledOrFailed:
             return
         }
-        await act(ShellActions.clearThread(botId: id))
+        // A refused clear leaves the server transcript in place — the
+        // local view only empties when the action actually landed.
+        guard await act(ShellActions.clearThread(botId: id)) else { return }
         var chat = chats[id] ?? OpenChat()
+        chat.streamGeneration += 1
         chat.projection = StreamProjection()
         chat.cursor = nil
+        chat.windowStart = nil
+        chat.durable = []
+        chat.updating = false
+        chat.attachments = []
         chat.failedText = nil
         chat.confirmingId = nil
         chat.confirmingText = nil
@@ -435,12 +497,15 @@ final class PhoneModel {
             return
         }
         guard let client else { return }
+        let generation = pairing?.dataGeneration ?? 0
         do {
             let next = try await client.shellAction(ShellActions.openRecent(recentId: recent.id, preserveSelection: true))
+            guard current(generation) else { return }
             adopt(next)
             pastRecent = nil
             select(recent.botId)
         } catch {
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
     }
@@ -469,6 +534,7 @@ final class PhoneModel {
                 select(created.id)
             }
         } catch {
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
     }
@@ -521,6 +587,7 @@ final class PhoneModel {
                 await reloadProposals(botId)
             }
         } catch {
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
     }
@@ -536,6 +603,7 @@ final class PhoneModel {
                 await reloadProposals(botId)
             }
         } catch {
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
     }
@@ -580,6 +648,7 @@ final class PhoneModel {
                 select(created.id)
             }
         } catch {
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "Your Mac refused this change"
         }
     }
@@ -650,8 +719,21 @@ final class PhoneModel {
     }
 
     func saveComposer(modelId: String? = nil, effort: String? = nil, speed: String? = nil) async {
+        // PUT /api/providers is class A on every write — the composer
+        // patch rides the same route (spec 4.4/5.1).
+        switch await OwnerGate.evaluate(reason: "Change the model or effort for this bot") {
+        case .approved:
+            break
+        case .unavailable:
+            actionError = OwnerGate.unavailableCopy
+            return
+        case .cancelledOrFailed:
+            return
+        }
         guard let client else { return }
+        let generation = pairing?.dataGeneration ?? 0
         if let next = try? await client.updateComposer(modelId: modelId, effort: effort, speed: speed) {
+            guard current(generation) else { return }
             if next != composer { composer = next }
         }
     }
@@ -719,23 +801,29 @@ final class PhoneModel {
         return moved
     }
 
-    private func act(_ action: [String: Any]) async {
-        guard let client else { return }
+    @discardableResult
+    private func act(_ action: [String: Any]) async -> Bool {
+        guard let client else { return false }
         let generation = pairing?.dataGeneration ?? 0
         do {
             let next = try await client.shellAction(action)
-            guard current(generation) else { return }
+            guard current(generation) else { return false }
             adopt(next)
             actionError = nil
+            return true
         } catch let error as BackendError {
+            guard current(generation) else { return false }
             if case .forbidden(let code) = error {
                 actionError = "Your Mac refused this change"
                 _ = code
             } else {
                 actionError = error.localizedDescription
             }
+            return false
         } catch {
+            guard current(generation) else { return false }
             actionError = "Your Mac refused this change"
+            return false
         }
     }
 
@@ -825,12 +913,12 @@ final class PhoneModel {
         do {
             let state = try await client.threadState(botId: id)
             let events = state.events
-            proposalsByBot[id] = state.proposals
             guard current(generation) else {
                 chat.updating = false
                 chats[id] = chat
                 return
             }
+            proposalsByBot[id] = state.proposals
             chat = chats[id] ?? chat
             if chat.durable != events { chat.durable = events }
             cache?.saveEvents(id, events)
@@ -867,7 +955,7 @@ final class PhoneModel {
         }
     }
 
-    private func resume(_ id: String) async {
+    func resume(_ id: String) async {
         guard let session = bot(id)?.sessionId else { return }
         await replay(botId: id, sessionId: session, cold: chats[id]?.cursor?.sessionId != session)
     }
@@ -1021,7 +1109,7 @@ final class PhoneModel {
         }
     }
 
-    private func deliver(_ text: String, botId: String) async {
+    private func deliver(_ text: String, botId: String, draftAtSend: String) async {
         guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
         passcodeMessage = nil
@@ -1038,7 +1126,7 @@ final class PhoneModel {
         chat.failedText = nil
         chat.showWorking = true
         chats[botId] = chat
-        let snapshot = chats[botId].map { _ in draft } ?? draft
+        let snapshot = draftAtSend
         updateDraft(ComposerDraft.remainder(snapshot, afterSending: text), forBot: botId)
         var postedSession: String?
         do {
@@ -1051,11 +1139,13 @@ final class PhoneModel {
             let pointer = bot(botId)?.sessionId
             let sessionId = try await post(botId: botId, sessionId: pointer, message: formatted, images: files)
             postedSession = sessionId
-            chats[botId]?.attachments = []
             guard current(generation) else {
-                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: false, files: files)
+                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: false, generation: generation, files: files)
                 return
             }
+            // Clearing staged attachments is a state write too — it must
+            // not run ahead of the generation guard.
+            chats[botId]?.attachments = []
             try await client.touchChat(
                 botId: botId,
                 preview: formatted,
@@ -1063,7 +1153,7 @@ final class PhoneModel {
                 expected: .pointer(pointer)
             )
             guard current(generation) else {
-                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: true, files: files)
+                await lost(text, needle: echo, botId: botId, error: InterruptedSend(), sessionId: sessionId, claimSession: true, generation: generation, files: files)
                 return
             }
             conflictNote = false
@@ -1075,7 +1165,7 @@ final class PhoneModel {
         } catch let error as BackendError {
             guard current(generation) else {
                 if postedSession != nil {
-                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, files: files)
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, generation: generation, files: files)
                 } else {
                     dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
@@ -1092,7 +1182,7 @@ final class PhoneModel {
                     // S11/adjudication 7: the Mac's pointer wins. Discard the
                     // session this send went into, replay the adopted one and
                     // let the confirming rule resolve the echo's absence.
-                    await lost(text, needle: echo, botId: botId, error: error, sessionId: currentPointer, claimSession: false, files: files)
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: currentPointer, claimSession: false, generation: generation, files: files)
                 } else {
                     var stuck = chats[botId] ?? OpenChat()
                     stuck.projection = priorProjection
@@ -1104,6 +1194,12 @@ final class PhoneModel {
                     chats[botId] = stuck
                     updateDraft(snapshot, forBot: botId)
                 }
+            case .credentialInvalid, .unauthorized, .deviceTokenMissing:
+                // The pairing died mid-send (§4.8): mark the credential
+                // and run the lost-send recovery — the pairing reset will
+                // discard the rest.
+                pairing?.markCredentialInvalid()
+                await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, generation: generation, files: files)
             case .sessionEnded:
                 // The send went into a retired session: nothing delivered.
                 // Restore the composer, drop the optimistic echo and surface
@@ -1119,34 +1215,35 @@ final class PhoneModel {
                 chats[botId] = chat
                 updateDraft(snapshot, forBot: botId)
             default:
-                await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, files: files)
+                await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, generation: generation, files: files)
             }
         } catch let url as URLError where url.code == .timedOut || url.code == .networkConnectionLost {
             guard current(generation) else {
                 if postedSession != nil {
-                    await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, claimSession: false, files: files)
+                    await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, claimSession: false, generation: generation, files: files)
                 } else {
                     dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
-            await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, files: files)
+            await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, generation: generation, files: files)
         } catch {
             guard current(generation) else {
                 if postedSession != nil {
-                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, files: files)
+                    await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, generation: generation, files: files)
                 } else {
                     dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
-            await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, files: files)
+            await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, generation: generation, files: files)
         }
     }
 
     /// The POST response never came back, or a later step failed after the
     /// message was accepted. Read that session. Do not send again.
-    private func lost(_ draftText: String, needle: String, botId: String, error: Error, sessionId: String?, claimSession: Bool = true, files: [Attachment] = []) async {
+    private func lost(_ draftText: String, needle: String, botId: String, error: Error, sessionId: String?, claimSession: Bool = true, generation: Int, files: [Attachment] = []) async {
+        guard current(generation) else { return }
         var chat = chats[botId] ?? OpenChat()
         chat.confirmingId = chat.projection.messages.last(where: { $0.id.hasPrefix(EveStream.optimisticUserPrefix) })?.id
         chat.confirmingText = needle
@@ -1275,7 +1372,9 @@ final class PhoneModel {
             actionError = "That photo could not be prepared."
             return
         }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("photo-\(UUID().uuidString).jpg")
+        // The ubattach- prefix lets the unpair purge sweep orphans a
+        // crash would leave behind (spec 4.8).
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ubattach-photo-\(UUID().uuidString).jpg")
         let generation = pairing?.dataGeneration ?? 0
         do {
             try jpeg.write(to: url, options: .completeFileProtection)
@@ -1325,7 +1424,7 @@ final class PhoneModel {
             actionError = "That file cannot be attached."
             return
         }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(safe)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ubattach-\(UUID().uuidString)-\(safe)")
         let generation = pairing?.dataGeneration ?? 0
         do {
             try data.write(to: url, options: .completeFileProtection)

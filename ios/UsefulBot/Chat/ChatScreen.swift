@@ -51,6 +51,10 @@ struct ChatScreen: View {
     @State private var transcriptHeight: CGFloat = 0
     @State private var repinTask: Task<Void, Never>?
     @State private var repinBudget = 24
+    // The mention list's keyboard highlight; Escape dismisses the card for
+    // the current query without eating the "@" that opened it.
+    @State private var mentionIndex = 0
+    @State private var mentionDismissed = false
 
     private var bot: ShellBot? { phone.bot(botId) }
     private var chat: PhoneModel.OpenChat? { phone.chats[botId] }
@@ -96,6 +100,13 @@ struct ChatScreen: View {
                 }
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
                 .padding(.bottom, 8)
+            }
+            // Spec 1.3: the mention card docks directly above the composer,
+            // above every docked ask.
+            if mentionVisible {
+                mentionList
+                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                    .padding(.bottom, 8)
             }
             if asksWaiting > 0 {
                 Button {
@@ -245,6 +256,9 @@ struct ChatScreen: View {
             isPresented: $showBotSettings,
             title: "Bot settings",
             detent: .large,
+            // Spec 1.5: the large-detent sheet paints `canvas` so its
+            // grouped rows read as `surface` cards.
+            canvas: true,
             trailing: { Button("Done") { showBotSettings = false } },
             content: { botSettings }
         )
@@ -254,6 +268,7 @@ struct ChatScreen: View {
             item: $routineEditor,
             detent: .large,
             showsHeader: false,
+            canvas: true,
             title: { $0.routine?.name.isEmpty == false ? $0.routine!.name : "New routine" },
             content: { request in
                 if let bot {
@@ -263,7 +278,7 @@ struct ChatScreen: View {
         )
         // Destructive confirms are floating sheets at the smallest detent
         // (1.5's confirm rule), stacked over the settings sheet.
-        .floatingSheet(isPresented: $confirmDelete, title: "Delete this bot?", detent: .fit) {
+        .floatingSheet(isPresented: $confirmDelete, title: "Delete \(bot?.name ?? "this bot")?", detent: .fit) {
             ConfirmSheet(
                 message: "Its conversation and routines are removed from your Mac.",
                 confirmTitle: "Delete bot",
@@ -324,6 +339,11 @@ struct ChatScreen: View {
                     }
                     if chat?.sessionEnded == true {
                         endedRow
+                    } else if chat?.catchUpIncomplete == true, chat?.failedText != nil {
+                        // A dropped stream mid-turn resolves "Interrupted"
+                        // with a Resume that re-attaches, never a resend
+                        // (spec 1.3's stream-error line).
+                        interruptedRow
                     } else if chat?.failedText == nil, let note = chat?.error {
                         Text(note)
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
@@ -332,7 +352,7 @@ struct ChatScreen: View {
                             .padding(.horizontal, DesignTokens.Space.phoneGutter)
                             .padding(.vertical, 4)
                     }
-                    if let failed = chat?.failedText {
+                    if let failed = chat?.failedText, chat?.catchUpIncomplete != true {
                         failedCard(failed)
                     }
                     Color.clear
@@ -396,13 +416,16 @@ struct ChatScreen: View {
             // scroll, and capped so a measurement bug can never spin the
             // main thread. The counter re-arms whenever the tail is home.
             .onPreferenceChange(BottomSentinelY.self) { minY in
-                guard pinnedToBottom, !window.blocks.isEmpty,
-                      transcriptHeight > 0 else { return }
+                guard !window.blocks.isEmpty, transcriptHeight > 0 else { return }
                 if minY <= transcriptHeight + 2 {
+                    // The tail is home: scrolling all the way back down
+                    // re-pins, the way the Mac's ScrollPinnedTracker does
+                    // (A.4). A pan only unpins while it is off the tail.
+                    pinnedToBottom = true
                     repinBudget = 96
                     return
                 }
-                guard repinBudget > 0 else { return }
+                guard pinnedToBottom, repinBudget > 0 else { return }
                 repinBudget -= 1
                 repinTask?.cancel()
                 repinTask = Task { @MainActor in
@@ -412,6 +435,27 @@ struct ChatScreen: View {
                 }
             }
         }
+    }
+
+    /// The interrupted stream's in-line marker: 'Resume' re-opens the
+    /// live read on the session the send already reached — it does not
+    /// post again (spec 1.3, parity with the draft-restore path).
+    private var interruptedRow: some View {
+        HStack(spacing: 12) {
+            Text("Interrupted")
+                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+            Spacer()
+            if let bot {
+                Button("Resume") { Task { await phone.resume(bot.id) } }
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                    .foregroundStyle(Theme.C.accent)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("stream-interrupted-resume")
+            }
+        }
+        .padding(.horizontal, DesignTokens.Space.phoneGutter)
+        .padding(.vertical, 4)
     }
 
     /// Spec 8.4: a send into a retired session resolves unsent — the echo is
@@ -455,16 +499,67 @@ struct ChatScreen: View {
                 Rectangle().fill(Theme.C.border).frame(height: 0.5)
             }
             .padding(.vertical, 8)
-        case .message(let row, _):
-            bubble(row)
-                .padding(.top, row.kind == .user ? DesignTokens.Space.phoneTranscriptGap : DesignTokens.Space.bubbleStackGap)
-        case .summary(let id, let count, _):
-            Text("\(count) messages")
+        case .message(let row, let recipients):
+            VStack(alignment: .leading, spacing: 8) {
+                // Spec 1.3's cross-bot strips: "Messaged X" over a handoff,
+                // "Message from X" over an attributed teammate post. The
+                // merged recipients ride the block; posts name their author.
+                if row.kind == .handoff {
+                    metaStrip(
+                        prefix: "Messaged",
+                        botIds: recipients.isEmpty ? row.targetBotIds : recipients,
+                        names: ["a teammate"]
+                    )
+                }
+                if row.kind == .post, row.authorBotId != nil || !(row.author ?? "").isEmpty {
+                    metaStrip(
+                        prefix: "Message from",
+                        botIds: row.authorBotId.map { [$0] } ?? [],
+                        names: [(row.author ?? "").isEmpty ? "a teammate" : (row.author ?? "")]
+                    )
+                }
+                bubble(row)
+            }
+            .padding(.top, continuationIds.contains(row.id)
+                     ? DesignTokens.Space.bubbleStackGap
+                     : DesignTokens.Space.phoneTranscriptGap)
+        case .summary(let id, let count, let botIds):
+            Text("\(count) messages with \(summaryNames(botIds))")
                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(maxWidth: .infinity)
                 .id(id)
         }
+    }
+
+    /// Same-speaker bubbles stack at 6 pt; a new speaker re-opens the 16 pt
+    /// gap (spec 1.3). `continuationIds` does the speaker-change math the
+    /// shared model already computes for the Mac.
+    private var continuationIds: Set<String> {
+        TranscriptBlocks.continuationIds(phone.rows(for: botId).blocks)
+    }
+
+    /// The centered 12 pt inkMuted meta strip (spec 1.3): "Messaged Growth",
+    /// "Message from CEO". Roster names win, then the stored names, then a
+    /// count — the same fallback chain the Mac's BotMetaRow uses.
+    private func metaStrip(prefix: String, botIds: [String], names: [String]) -> some View {
+        let roster = phone.shell?.bots ?? []
+        let resolved = botIds.compactMap { id in roster.first { $0.id == id }?.name }
+        return Text("\(prefix) \(ChatAttribution.metaLabel(idCount: botIds.count, resolved: resolved, names: names))")
+            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+            .foregroundStyle(Theme.C.inkMuted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 2)
+    }
+
+    /// "2 messages with QA Runner and Docs Writer" — roster names when the
+    /// ids still resolve, else the generic count label.
+    private func summaryNames(_ botIds: [String]) -> String {
+        let roster = phone.shell?.bots ?? []
+        let resolved = botIds.compactMap { id in roster.first { $0.id == id }?.name }
+        if resolved.isEmpty { return botIds.count == 1 ? "1 Bot" : "\(botIds.count) Bots" }
+        if resolved.count == 1 { return resolved[0] }
+        return resolved.dropLast().joined(separator: ", ") + " and " + (resolved.last ?? "")
     }
 
     @ViewBuilder
@@ -512,19 +607,35 @@ struct ChatScreen: View {
         }
     }
 
+    /// Search-hit chips: tap jumps to the hit through the same in-app
+    /// Safari sheet markdown links use, gated by the same http(s)/non-local
+    /// rule (spec 1.3 'chip rows wrap'; surface + borderStrong, 13 semibold).
     private func chips(_ hits: [SearchChip]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(hits.enumerated()), id: \.offset) { _, hit in
+        FlowRow(spacing: 8) {
+            ForEach(Array(hits.enumerated()), id: \.offset) { _, hit in
+                Button {
+                    if let target = PhoneMarkdown.linkTarget(hit.url, pairedHost: pairedHost) {
+                        phone.safariURL = target
+                    }
+                } label: {
                     Text(hit.title)
-                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                        .tokenFont(DesignTokens.FontSize.modeChip, .semibold)
                         .foregroundStyle(Theme.C.ink)
                         .padding(.horizontal, 10)
                         .frame(minHeight: 32)
-                        .background(Theme.C.sunken, in: Capsule())
+                        .background(Theme.C.surface, in: Capsule())
+                        .overlay(
+                            Capsule().strokeBorder(Theme.C.borderStrong, lineWidth: 1)
+                        )
                 }
             }
         }
+    }
+
+    /// The paired Mac's bare host — chip targets naming the credential's own
+    /// origin get the same block markdown links get (spec 4.7).
+    private var pairedHost: String? {
+        coordinator.store.pairedOrigin.flatMap { URL(string: $0)?.host }
     }
 
     /// After five quiet minutes the row names its age — "still working ·
@@ -584,7 +695,6 @@ struct ChatScreen: View {
                 .strokeBorder(Theme.C.danger.opacity(0.4), lineWidth: 1)
         )
         .accessibilityIdentifier("failed-turn")
-        .accessibilityLabel(text)
     }
 
     private var empty: some View {
@@ -592,6 +702,7 @@ struct ChatScreen: View {
             if let bot { BotFace(bot: bot, size: 64) }
             Text("What can I do for you?")
                 .tokenFont(DesignTokens.FontSize.emptyTitle, .semibold)
+                .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
             if let bot {
                 Text(Self.emptyCopy(bot, members: phone.shell?.bots ?? []))
@@ -606,10 +717,23 @@ struct ChatScreen: View {
     }
 
     private var skeleton: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let rows = VStack(alignment: .leading, spacing: 12) {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.md).fill(Theme.C.border).frame(width: 180, height: 36)
             RoundedRectangle(cornerRadius: DesignTokens.Radius.md).fill(Theme.C.border).frame(width: 220, height: 36)
             HStack { Spacer(); RoundedRectangle(cornerRadius: DesignTokens.Radius.md).fill(Theme.C.border).frame(width: 120, height: 36) }
+        }
+        // A.3's skeleton pulse — 1.6 s on the brand curve, static under
+        // Reduce Motion, same recipe as the roster's skeletonRows.
+        return Group {
+            if reduceMotion {
+                rows
+            } else {
+                rows.phaseAnimator([1.0, 0.45]) { content, phase in
+                    content.opacity(phase)
+                } animation: { _ in
+                    .timingCurve(0.22, 1, 0.36, 1, duration: 0.8)
+                }
+            }
         }
         .accessibilityIdentifier("chat-skeleton")
     }
@@ -619,10 +743,7 @@ struct ChatScreen: View {
         let streaming = chat?.showWorking == true
         let sendable = phone.canSend(phone.draft, readiness: coordinator.readiness)
         let locked = bot?.isFullAccess == true && !phone.biometrics.unlocked
-        return VStack(alignment: .leading, spacing: 6) {
-            if mentionQuery != nil {
-                mentionList
-            }
+        return VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 8) {
                 if !phone.attachments.isEmpty {
                     ForEach(phone.attachments) { file in
@@ -647,6 +768,28 @@ struct ChatScreen: View {
                     .tokenFont(DesignTokens.FontSize.chatBody, .regular)
                     .foregroundStyle(Theme.C.ink)
                     .focused($composerFocused)
+                    // Spec 1.3 mention keys: Up/Down move the highlight,
+                    // Return inserts the highlighted member, Escape closes.
+                    .onKeyPress(.upArrow) {
+                        guard mentionVisible else { return .ignored }
+                        mentionIndex = max(0, mentionIndex - 1)
+                        return .handled
+                    }
+                    .onKeyPress(.downArrow) {
+                        guard mentionVisible else { return .ignored }
+                        mentionIndex = min(max(0, mentionCandidates.count - 1), mentionIndex + 1)
+                        return .handled
+                    }
+                    .onKeyPress(.return) {
+                        guard mentionVisible, mentionCandidates.indices.contains(mentionIndex) else { return .ignored }
+                        insertMention(mentionCandidates[mentionIndex].name)
+                        return .handled
+                    }
+                    .onKeyPress(.escape) {
+                        guard mentionVisible else { return .ignored }
+                        mentionDismissed = true
+                        return .handled
+                    }
                 // The model chip wraps onto its own line above "+" and
                 // Send at accessibility sizes (design 5 §Dynamic Type);
                 // otherwise it right-aligns in the row.
@@ -679,20 +822,29 @@ struct ChatScreen: View {
                                 .font(Theme.font(14, .semibold))
                                 .foregroundStyle(sendable || streaming ? Theme.C.brandInk : Theme.C.inkFaint)
                                 .frame(width: 36, height: 36)
-                                .background(sendable || streaming ? Theme.C.brand : Theme.C.sunken, in: Circle())
+                                .background {
+                                    Circle()
+                                        .fill(sendable || streaming ? Theme.C.brand : Theme.C.sunken)
+                                        // Spec 1.3's 14% top sheen — the one
+                                        // decorative gradient A.1 permits,
+                                        // with the send shadow, like the
+                                        // Mac's ComposerView.
+                                        .overlay(
+                                            Circle().fill(LinearGradient(
+                                                colors: [Theme.C.white.opacity(sendable || streaming ? 0.14 : 0), .clear],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            ))
+                                        )
+                                        .shadow(color: Theme.C.shadow.opacity(sendable || streaming ? 0.18 : 0), radius: 3, x: 0, y: 1)
+                                }
                             if locked {
-                                // The lock badge sits on a contrast disc at
-                                // the button's corner so it reads on either
-                                // the brand or sunken fill beneath it.
+                                // Spec 1.3: a 14 pt lock badge sits inside
+                                // the Send circle's top-right corner.
                                 Image(systemName: "lock.fill")
-                                    .font(Theme.font(11, .semibold))
-                                    .foregroundStyle(Theme.C.ink)
-                                    .frame(width: 18, height: 18)
-                                    .background(Theme.C.surface, in: Circle())
-                                    .overlay(
-                                        Circle().strokeBorder(Theme.C.edge, lineWidth: 1)
-                                    )
-                                    .offset(x: 4, y: -4)
+                                    .font(Theme.font(14, .semibold))
+                                    .foregroundStyle(sendable || streaming ? Theme.C.brandInk : Theme.C.ink)
+                                    .offset(x: 11, y: -11)
                             }
                         }
                         .frame(width: 44, height: 44)
@@ -731,10 +883,17 @@ struct ChatScreen: View {
                     HStack(spacing: 6) {
                         Image(systemName: "folder")
                             .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
-                        Text(bot?.workspace?.path.split(separator: "/").last.map(String.init) ?? "No folder")
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.inkMuted)
+                        if let folder = bot?.workspace?.path.split(separator: "/").last.map(String.init) {
+                            Text(folder)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
+                                .foregroundStyle(Theme.C.ink)
+                        } else {
+                            Text("No folder")
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
                     }
-                    .foregroundStyle(Theme.C.inkMuted)
                     .frame(minWidth: 44, minHeight: 44)
                 }
                 Button { showPermission = true } label: {
@@ -822,6 +981,12 @@ struct ChatScreen: View {
         value.lowercased().split(whereSeparator: { $0 == " " || $0 == "-" }).contains { $0.hasPrefix(needle) }
     }
 
+    /// The card renders only while a query is live and not dismissed —
+    /// Escape hides it for this query without eating the "@".
+    private var mentionVisible: Bool {
+        mentionQuery != nil && !mentionDismissed
+    }
+
     private var mentionList: some View {
         // Long member lists scroll inside the card instead of truncating —
         // the cap is four rows (three at accessibility sizes).
@@ -835,26 +1000,35 @@ struct ChatScreen: View {
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .padding(.horizontal, 12)
                 }
-                // The first row is the default target — it sits on sunken so
-                // Enter-equivalent picks are guessable; a11y sizes get
-                // taller rows.
+                // The highlighted row is the default target — it sits on
+                // sunken so Enter-equivalent picks are guessable; a11y
+                // sizes get taller rows.
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, member in
                     Button {
                         insertMention(member.name)
                     } label: {
                         HStack(spacing: 12) {
                             BotFace(bot: member, size: 32)
-                            Text(member.name)
-                                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                                .foregroundStyle(Theme.C.ink)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(member.name)
+                                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                                    .foregroundStyle(Theme.C.ink)
+                                // The member label disambiguates same-name
+                                // bots (spec 1.3's mention row).
+                                if member.label != member.name && !member.label.isEmpty {
+                                    Text(member.label)
+                                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                        .foregroundStyle(Theme.C.inkMuted)
+                                }
+                            }
                             Spacer()
                         }
                         .padding(.horizontal, 12)
                         .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? 64 : 52)
-                        // The default-target wash is inset with Radius.sm
+                        // The highlight wash is inset with Radius.sm
                         // corners, not a square full-bleed band.
                         .background {
-                            if index == 0 {
+                            if index == mentionIndex {
                                 RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                                     .fill(Theme.C.sunken)
                                     .padding(.horizontal, 6)
@@ -862,7 +1036,7 @@ struct ChatScreen: View {
                         }
                     }
                     .contentShape(Rectangle())
-                    .buttonStyle(.plain)
+                    .buttonStyle(RowButtonStyle())
                     .accessibilityLabel("\(member.name), group member, double-tap to mention")
                     // VO gets the position it needs to skip through the
                     // list: "YT Producer, 2 of 5".
@@ -870,11 +1044,19 @@ struct ChatScreen: View {
                 }
             }
         }
+        .padding(.vertical, 6)
         .frame(maxHeight: dynamicTypeSize.isAccessibilitySize ? 196 : 212)
         .background(Theme.C.surface)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .cardLift(cornerRadius: DesignTokens.Radius.lg)
         .accessibilityElement(children: .contain)
+        .onAppear {
+            UIAccessibility.post(notification: .announcement, argument: "\(mentionCandidates.count) suggestions")
+        }
+        .onChange(of: mentionQuery) { _, _ in
+            mentionIndex = 0
+            mentionDismissed = false
+        }
     }
 
     private func insertMention(_ name: String) {
@@ -933,7 +1115,7 @@ struct ChatScreen: View {
                     }
                     BotProfileSection(bot: bot)
                     BotAvatarSection(bot: bot)
-                    Section("Defaults") {
+                    Section {
                         Button {
                             showBotSettings = false
                             showModel = true
@@ -957,10 +1139,12 @@ struct ChatScreen: View {
                         Text("Attach a folder from your Mac.")
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
+                    } header: {
+                        tokenGroupHeader("Defaults")
                     }
                     BotRoutinesSection(bot: bot, editor: $routineEditor)
                     BotMemorySection(bot: bot)
-                    Section("Past conversations") {
+                    Section {
                         let all = (phone.shell?.recents ?? []).filter { $0.botId == bot.id }
                         let recents = all.prefix(5)
                         if recents.isEmpty {
@@ -984,6 +1168,8 @@ struct ChatScreen: View {
                                     .frame(minHeight: 44)
                             }
                         }
+                    } header: {
+                        tokenGroupHeader("Past conversations")
                     }
                     Section {
                         Button("New chat") {
@@ -995,7 +1181,10 @@ struct ChatScreen: View {
                             .foregroundStyle(Theme.C.danger)
                             .disabled(writesBlocked != nil)
                             .frame(minHeight: 44)
-                        Button("Delete bot", role: .destructive) { confirmDelete = true }
+                        Button("Delete bot") { confirmDelete = true }
+                            // The token danger, not the system destructive
+                            // red — same treatment as 'Clear conversation'.
+                            .foregroundStyle(Theme.C.danger)
                             .disabled(writesBlocked != nil || (phone.shell?.bots.count ?? 0) <= 1)
                             .frame(minHeight: 44)
                         if (phone.shell?.bots.count ?? 0) <= 1 {
@@ -1014,6 +1203,11 @@ struct ChatScreen: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .scrollContentBackground(.hidden)
+        // Token canvas behind the rows; each row card paints `surface` so
+        // the grouped list stops using system grouped colors (1.5).
+        .background(Theme.C.canvas)
+        .tokenFont(DesignTokens.FontSize.chatName, .regular)
+        .listRowBackground(Theme.C.surface)
     }
 
     /// The model sheet (1.5's Model row → picker): provider-grouped rows
@@ -1065,7 +1259,7 @@ struct ChatScreen: View {
                         .background(bot?.permission == level ? Theme.C.sunken : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(RowButtonStyle())
                     .disabled(writesBlocked != nil)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 4, leading: 12, bottom: 4, trailing: 12))
@@ -1199,6 +1393,13 @@ private struct UserBubble: View {
 struct PhoneMarkdown: View {
     let text: String
     var streamingKey: String?
+    @EnvironmentObject private var coordinator: PairingCoordinator
+
+    /// The paired Mac's bare host — model-authored links naming the
+    /// credential's own origin must not become tap targets (spec 4.7).
+    private var pairedHost: String? {
+        coordinator.store.pairedOrigin.flatMap { URL(string: $0)?.host }
+    }
 
     var body: some View {
         let blocks = ChatMarkdownCache.blocks(from: text, streamingKey: streamingKey)
@@ -1224,18 +1425,92 @@ struct PhoneMarkdown: View {
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Theme.C.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+                        // Same affordance the Mac's CodeBlockView carries.
+                        .overlay(alignment: .topTrailing) {
+                            Button {
+                                UIPasteboard.general.string = code
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
+                                    .foregroundStyle(Theme.C.inkMuted)
+                                    .frame(width: 44, height: 44)
+                            }
+                            .accessibilityLabel("Copy code")
+                        }
                 case .quote(let inner):
-                    if case .paragraph(let paragraph) = inner.first {
-                        inline(paragraph)
+                    // The spec's quote recipe: a 2 pt borderStrong bar with
+                    // muted content, rendering every inner block — the way
+                    // the Mac's ChatMarkdownView recurses.
+                    HStack(alignment: .top, spacing: 10) {
+                        Rectangle().fill(Theme.C.borderStrong).frame(width: 2)
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(inner.enumerated()), id: \.offset) { _, nested in
+                                markdownBlock(nested)
+                            }
+                        }
+                        .foregroundStyle(Theme.C.inkMuted)
                     }
                 case .rule:
                     Rectangle().fill(Theme.C.border).frame(height: 0.5)
                 case .table(let table):
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(table.headers.joined(separator: " · "))
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
+                            .foregroundStyle(Theme.C.inkMuted)
+                        ForEach(Array(table.rows.enumerated()), id: \.offset) { _, cells in
+                            Text(cells.joined(separator: " · "))
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.ink)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One markdown block; extracted so block quotes can render their inner
+    /// blocks through the same pipeline the top level uses. `AnyView` —
+    /// opaque `some View` can't recurse through the quote case.
+    private func markdownBlock(_ block: MarkdownBlock) -> AnyView {
+        switch block {
+        case .paragraph(let paragraph):
+            return AnyView(inline(paragraph))
+        case .heading(_, let heading):
+            return AnyView(inline(heading).fontWeight(.semibold))
+        case .unorderedList(let items):
+            return AnyView(ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                inline("• \(item)")
+            })
+        case .orderedList(let items, let start):
+            return AnyView(ForEach(Array(items.enumerated()), id: \.offset) { offset, item in
+                inline("\(start + offset). \(item)")
+            })
+        case .code(_, let code):
+            return AnyView(
+                Text(code)
+                    .tokenFont(DesignTokens.FontSize.chatBody, .regular, design: .monospaced)
+                    .foregroundStyle(Theme.C.ink)
+            )
+        case .quote(let inner):
+            return AnyView(ForEach(Array(inner.enumerated()), id: \.offset) { _, nested in
+                markdownBlock(nested)
+            })
+        case .rule:
+            return AnyView(Rectangle().fill(Theme.C.border).frame(height: 0.5))
+        case .table(let table):
+            return AnyView(
+                VStack(alignment: .leading, spacing: 4) {
                     Text(table.headers.joined(separator: " · "))
                         .tokenFont(DesignTokens.FontSize.phoneChatMeta, .medium)
                         .foregroundStyle(Theme.C.inkMuted)
+                    ForEach(Array(table.rows.enumerated()), id: \.offset) { _, cells in
+                        Text(cells.joined(separator: " · "))
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                            .foregroundStyle(Theme.C.ink)
+                    }
                 }
-            }
+            )
         }
     }
 
@@ -1249,13 +1524,11 @@ struct PhoneMarkdown: View {
             // the 15 pt text style, so it still tracks Dynamic Type.
             case .code: piece = Text(span.text).font(.system(.subheadline, design: .monospaced, weight: .regular))
             case .link:
-                if let target = Self.linkTarget(span.href) {
+                if let target = Self.linkTarget(span.href, pairedHost: pairedHost) {
                     var run = AttributedString(span.text)
                     run.link = target
                     run.underlineStyle = .single
                     piece = Text(run)
-                } else {
-                    piece = piece.underline()
                 }
             case .text: break
             }
@@ -1264,14 +1537,14 @@ struct PhoneMarkdown: View {
         .foregroundStyle(Theme.C.ink)
     }
 
-    /// Model output may only link to the public web; `file://` and local
-    /// server links must not become tap targets (mirrors the Mac's
-    /// ChatMarkdownView.linkTarget).
-    private static func linkTarget(_ href: String) -> URL? {
+    /// Model output may only link to the public web; `file://`, local
+    /// server links, and the paired host itself must not become tap targets
+    /// (mirrors the Mac's ChatMarkdownView.linkTarget; spec 4.5/4.7).
+    static func linkTarget(_ href: String, pairedHost: String?) -> URL? {
         guard let url = URL(string: href),
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              !LocalHost.isLocal(url.host) else { return nil }
+              !LocalHost.isBlocked(url.host, pairedHost: pairedHost) else { return nil }
         return url
     }
 }

@@ -62,7 +62,7 @@ struct BotAvatarSection: View {
                             .frame(width: 44, height: 44)
                             .contentShape(Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(RowButtonStyle())
                         .accessibilityLabel("\(color) mascot")
                         .accessibilityAddTraits(FacePalette.displayColor(for: bot) == color ? .isSelected : [])
                     }
@@ -146,7 +146,13 @@ private struct CommitField: View {
     }
 
     var body: some View {
-        TextField(title, text: $value, axis: axis)
+        TextField(
+            text: $value,
+            prompt: Text(title).foregroundStyle(Theme.C.inkFaintText),
+            axis: axis
+        ) {
+            EmptyView()
+        }
             // Editable fields take the 15 pt field token, not the
             // platform default (§1.6).
             .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)

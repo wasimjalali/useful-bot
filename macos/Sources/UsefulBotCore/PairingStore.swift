@@ -199,6 +199,17 @@ public final class PairingStore: ObservableObject {
         for dir in dirs {
             try? FileManager.default.removeItem(at: dir)
         }
+        // Attachment staging lives in NSTemporaryDirectory (ubattach-*
+        // files, spec 4.8's purge list) — a crash between write and upload
+        // would orphan one past the dir purge.
+        if let staged = try? FileManager.default.contentsOfDirectory(
+            at: FileManager.default.temporaryDirectory,
+            includingPropertiesForKeys: nil
+        ) {
+            for file in staged where file.lastPathComponent.hasPrefix("ubattach-") {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
         // Purged alongside the file dirs: anything defaults-cached that is
         // pairing-scoped. PR-3+ cache keys list themselves here.
         defaults.removeObject(forKey: Key.sessionExpiresAt)

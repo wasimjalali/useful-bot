@@ -54,11 +54,16 @@ struct ModelSheet: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(Theme.C.inkMuted)
-                TextField("Search models", text: $search)
-                    .tokenFont(DesignTokens.FontSize.chatBody, .regular)
-                    .foregroundStyle(Theme.C.ink)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
+                TextField(
+                    text: $search,
+                    prompt: Text("Search models").foregroundStyle(Theme.C.inkFaintText)
+                ) {
+                    EmptyView()
+                }
+                .tokenFont(DesignTokens.FontSize.chatBody, .regular)
+                .foregroundStyle(Theme.C.ink)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
@@ -87,20 +92,23 @@ struct ModelSheet: View {
                             .padding(.vertical, 4)
                         }
                     }
+
                     if !composer.efforts.isEmpty {
-                        Section("Effort") {
+                        Section {
                             TokenSegmented(
                                 options: composer.efforts.map { (id: $0.id, label: $0.label) },
                                 selection: effortBinding(composer)
                             )
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             .listRowBackground(Color.clear)
+                        } header: {
+                            tokenGroupHeader("Effort")
                         }
                     }
                     // Spec 1.4: Speed is the "Fast" toggle — the drawn
                     // token switch, not another segmented row.
                     if composer.speeds.count == 2, let fast = composer.speeds.last {
-                        Section("Speed") {
+                        Section {
                             HStack {
                                 Text(fast.label)
                                     .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
@@ -109,15 +117,19 @@ struct ModelSheet: View {
                                 TokenToggle(isOn: speedToggle(fast, in: composer))
                             }
                             .frame(minHeight: 44)
+                        } header: {
+                            tokenGroupHeader("Speed")
                         }
                     } else if composer.speeds.count > 1 {
-                        Section("Speed") {
+                        Section {
                             TokenSegmented(
                                 options: composer.speeds.map { (id: $0.id, label: $0.label) },
                                 selection: speedBinding(composer)
                             )
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             .listRowBackground(Color.clear)
+                        } header: {
+                            tokenGroupHeader("Speed")
                         }
                     }
                 }
@@ -131,6 +143,9 @@ struct ModelSheet: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
+            .tokenFont(DesignTokens.FontSize.chatName, .regular)
+            .listRowBackground(Theme.C.surface)
         }
     }
 
@@ -157,14 +172,16 @@ struct ModelSheet: View {
             Task { await phone.saveComposer(modelId: model.id) }
         } label: {
             HStack(spacing: 10) {
+                // Spec baseline: constant weight — picked rows mark with
+                // the checkmark alone, no weight jump.
                 Text(model.label)
-                    .tokenFont(DesignTokens.FontSize.chatName, picked ? .semibold : .regular)
+                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
                     .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 if picked {
-                    Image(systemName: "checkmark")
-                        .font(Theme.font(DesignTokens.FontSize.chatName, .semibold))
+                    Image(systemName: "checkmark.circle")
+                        .font(Theme.font(DesignTokens.FontSize.chatName, .regular))
                         .foregroundStyle(Theme.C.accent)
                 }
             }
@@ -173,7 +190,7 @@ struct ModelSheet: View {
             .background(picked ? Theme.C.sunken : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(cornerRadius: DesignTokens.Radius.md))
         .disabled(blocked != nil)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
@@ -312,7 +329,7 @@ struct AddToMessageSheet: View {
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RowButtonStyle())
         } else {
             Button {
                 onClose()
@@ -331,7 +348,7 @@ struct AddToMessageSheet: View {
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RowButtonStyle())
         }
     }
 }
@@ -433,7 +450,7 @@ private struct RecentPhotoTile: View {
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle())
         .accessibilityLabel("Recent photo")
         .task {
             let options = PHImageRequestOptions()

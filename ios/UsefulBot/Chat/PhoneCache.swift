@@ -20,6 +20,13 @@ struct PhoneCache {
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
             ofItemAtPath: root.path
         )
+        // The use ledger once keyed raw ids that only events files
+        // resolved; entries from before filename-keying never evict, so
+        // drop them once rather than let their bytes crowd the budget.
+        if var uses = read([Use].self, name: "uses.json"), uses.contains(where: { !$0.id.hasSuffix(".json") }) {
+            uses.removeAll { !$0.id.hasSuffix(".json") }
+            write(uses, name: "uses.json")
+        }
     }
 
     func saveShell(_ store: ShellStore) {
@@ -32,8 +39,9 @@ struct PhoneCache {
 
     func saveEvents(_ botId: String, _ events: [AgentEvent]) {
         let tail = Array(events.suffix(Self.rowCap))
-        write(tail, name: "events-\(safe(botId)).json")
-        touch(botId, bytes: tail.reduce(0) { $0 + $1.text.utf8.count + 64 })
+        let name = "events-\(safe(botId)).json"
+        write(tail, name: name)
+        touch(name, bytes: tail.reduce(0) { $0 + $1.text.utf8.count + 64 })
         evict()
     }
 
@@ -42,7 +50,10 @@ struct PhoneCache {
     }
 
     func saveDraft(_ botId: String, _ text: String) {
-        write(text, name: "draft-\(safe(botId)).json")
+        let name = "draft-\(safe(botId)).json"
+        write(text, name: name)
+        touch(name, bytes: text.utf8.count)
+        evict()
     }
 
     func loadDraft(_ botId: String) -> String? {
@@ -50,7 +61,10 @@ struct PhoneCache {
     }
 
     func saveCursor(_ cursor: StreamCursor) {
-        write(cursor, name: "cursor-\(safe(cursor.sessionId)).json")
+        let name = "cursor-\(safe(cursor.sessionId)).json"
+        write(cursor, name: name)
+        touch(name, bytes: 256)
+        evict()
     }
 
     func loadCursor(_ sessionId: String) -> StreamCursor? {
@@ -77,8 +91,10 @@ struct PhoneCache {
             budget: Self.byteBudget
         )
         guard !dropped.isEmpty else { return }
+        // `id` is the file name itself — events, cursors and drafts all
+        // evict through the one budget.
         for id in dropped {
-            try? FileManager.default.removeItem(at: root.appendingPathComponent("events-\(safe(id)).json"))
+            try? FileManager.default.removeItem(at: root.appendingPathComponent(id))
         }
         write(uses.filter { !dropped.contains($0.id) }, name: "uses.json")
     }
@@ -98,9 +114,14 @@ struct PhoneCache {
         return try? decoder.decode(type, from: data)
     }
 
+    /// Collision-free: every non-alphanumeric scalar escapes to
+    /// `_<hex>` (`_` itself escapes), so two distinct ids can never fold
+    /// into the same file name.
     private func safe(_ value: String) -> String {
-        String(value.unicodeScalars.map { scalar in
-            CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : "-"
-        })
+        value.unicodeScalars.map { scalar in
+            CharacterSet.alphanumerics.contains(scalar)
+                ? String(scalar)
+                : "_" + String(scalar.value, radix: 16)
+        }.joined()
     }
 }

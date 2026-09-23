@@ -19,7 +19,12 @@ struct GlobalSearchSheet: View {
                     HStack(spacing: 8) {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(Theme.C.inkMuted)
-                        TextField("Search bots and chats", text: $query)
+                        TextField(
+                            text: $query,
+                            prompt: Text("Search bots and chats").foregroundStyle(Theme.C.inkFaintText)
+                        ) {
+                            EmptyView()
+                        }
                             .tokenFont(DesignTokens.FontSize.chatBody, .regular)
                             .foregroundStyle(Theme.C.ink)
                             .focused($fieldFocused)
@@ -182,7 +187,7 @@ struct GlobalSearchSheet: View {
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle())
     }
 
     @ViewBuilder
@@ -208,7 +213,7 @@ struct GlobalSearchSheet: View {
             } label: {
                 row.contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RowButtonStyle())
         } else {
             row
         }

@@ -18,7 +18,7 @@ struct BotRoutinesSection: View {
     @State private var error: String?
 
     var body: some View {
-        Section("Routines") {
+        Section {
             ForEach(routines) { routine in
                 Button {
                     editor = RoutineEditorRequest(routine: routine)
@@ -41,7 +41,7 @@ struct BotRoutinesSection: View {
                     .frame(minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RowButtonStyle())
             }
             Button {
                 editor = RoutineEditorRequest(routine: nil)
@@ -66,6 +66,8 @@ struct BotRoutinesSection: View {
             Text("Runs while Useful Bot is open on your Mac or this phone.")
                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                 .foregroundStyle(Theme.C.inkMuted)
+        } header: {
+            tokenGroupHeader("Routines")
         }
         .task { await load() }
         // Any dismissal of the hoisted editor (save, cancel, swipe) reloads.
@@ -109,7 +111,10 @@ struct RoutineEditorSheet: View {
     var onSaved: () async -> Void
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(PhoneModel.self) private var phone
-    @Environment(\.dismiss) private var dismiss
+    // This sheet is always a floating-sheet overlay, never a real
+    // presentation — `\.dismiss` would resolve to a pushed ancestor (the
+    // chat) and pop the user out of it. `onClose` is the only close path.
+    // (Do not reintroduce an env dismiss here.)
 
     enum When: String, CaseIterable { case weekly, daily, once }
 
@@ -187,18 +192,29 @@ struct RoutineEditorSheet: View {
                     }
                 }
                 Section {
-                    TextField("Name", text: $name)
+                    TextField(
+                        text: $name,
+                        prompt: Text("Name").foregroundStyle(Theme.C.inkFaintText)
+                    ) {
+                        EmptyView()
+                    }
                         .frame(minHeight: 44)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("What \(bot.name) should do each time")
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
-                        TextField("Instruction", text: $instruction, axis: .vertical)
-                            .lineLimit(3...)
-                            .frame(minHeight: 96, alignment: .topLeading)
+                        TextField(
+                            text: $instruction,
+                            prompt: Text("Instruction").foregroundStyle(Theme.C.inkFaintText),
+                            axis: .vertical
+                        ) {
+                            EmptyView()
+                        }
+                        .lineLimit(3...)
+                        .frame(minHeight: 96, alignment: .topLeading)
                     }
                 }
-                Section("When to run") {
+                Section {
                     TokenSegmented(
                         options: [
                             (id: When.weekly, label: "Every week"),
@@ -217,7 +233,12 @@ struct RoutineEditorSheet: View {
                             .frame(minHeight: 44)
                     }
                     LabeledContent("Time") {
-                        TextField("09:00", text: $time)
+                        TextField(
+                            text: $time,
+                            prompt: Text("09:00").foregroundStyle(Theme.C.inkFaintText)
+                        ) {
+                            EmptyView()
+                        }
                             .multilineTextAlignment(.trailing)
                             .keyboardType(.numbersAndPunctuation)
                             .tokenFont(DesignTokens.FontSize.phoneFieldInput, .semibold)
@@ -235,6 +256,8 @@ struct RoutineEditorSheet: View {
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
                     }
+                } header: {
+                    tokenGroupHeader("When to run")
                 }
                 if let routine {
                     Section {
@@ -245,7 +268,7 @@ struct RoutineEditorSheet: View {
                         .frame(minHeight: 44)
                         .disabled(blocked != nil)
                     }
-                    Section("Run history") {
+                    Section {
                         if routine.runHistory.isEmpty {
                             Text("No runs yet.")
                                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
@@ -274,10 +297,12 @@ struct RoutineEditorSheet: View {
                                 .frame(minHeight: 44)
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(RowButtonStyle())
                             .disabled(run.sessionId == nil)
                             .accessibilityHint(run.sessionId == nil ? "" : "Opens the run's session")
                         }
+                    } header: {
+                        tokenGroupHeader("Run history")
                     }
                 }
                 Section {
@@ -308,11 +333,13 @@ struct RoutineEditorSheet: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
+            .tokenFont(DesignTokens.FontSize.chatName, .regular)
+            .listRowBackground(Theme.C.surface)
         }
     }
 
     private func close() {
-        dismiss()
         onClose()
     }
 

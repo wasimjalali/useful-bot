@@ -1805,3 +1805,109 @@ testTwoClientPreserveSelection, testLiveSend, plus the five perf legs —
 all green across gates 32-34 on the fix build (`make -C macos test`
 322/322 after the PairingStore/PhoneCacheRoot changes). 46 shots
 regenerated into docs/audit/ios-shots on the fix build.
+
+## Round 4 (2026-09-22, head 7db1d74)
+
+All three roles returned request_changes on 7db1d74. Findings, fixes and
+verification below.
+
+### Correctness (max effort) — 2M + 7L, all applied
+
+- M1 send/deliver draft race: `deliver` read the live `draft` var after
+  the biometric await — a bot switch mid-prompt snapshotted (and then
+  overwrote) the wrong bot's draft. `send` now captures `draftAtSend`
+  before the async hop and passes it through.
+- M3 `lost()` had no generation guard: it mutates chat state after the
+  caller's replay read — now takes the caller's `generation` and guards
+  on `current(generation)` first. All nine call sites pass it.
+- L2 sweep: six catch arms wrote `actionError` without a generation
+  guard (newChat, continuePast, createBot, confirmProposal,
+  dismissProposal, createGroup) — guarded. `deliver` cleared staged
+  attachments ABOVE the generation guard — moved below. `saveComposer`
+  captured no generation — captured and guards the write.
+- L4 `streamRead`'s iOS branch mapped only 401/403 — 404/409 now throw
+  `BackendError.sessionEnded` so a retired session reads correctly.
+- L5 `deliver`'s BackendError switch had no credential arms — added
+  `.credentialInvalid`/`.unauthorized`/`.deviceTokenMissing` →
+  `pairing?.markCredentialInvalid()` plus the lost-send recovery.
+- L6 `newChat`/`clearThread` reset missed fields — now also reset
+  `windowStart`, `durable`, `attachments`, `updating`, and bump
+  `streamGeneration`.
+- L7 `PhoneCache`: `cursor-*.json` (and drafts) never joined the use
+  ledger so nothing evicted them — all three file kinds now track bytes
+  by file name through the shared budget, with a one-time migration
+  dropping stale raw-id entries. `safe()` folded `_`→`-` (colliding
+  ids) — now collision-free `_<hex>` escaping.
+- L9 test coverage: the extracted pure helpers
+  (`TranscriptBlocks.continuationIds`, `ChatAttribution.metaLabel`)
+  already carry pinned cases in TranscriptBlocksTests /
+  ChatAttributionTests — no new tests needed; recorded rather than
+  duplicated.
+
+### Security (max effort) — 4M + 4L, all applied
+
+- `attachedOrigin` recorded at pair time; `attach()` resets state when
+  the origin changes and restarts the poll loop. `reset()` clears the
+  past-conversation surface and the new fields.
+- `OwnerGate` now fronts `saveComposer`; `continuePast` guards on the
+  generation captured after the gate; `open()` no longer reads
+  `proposalsByBot` above the guard; `act()` returns Bool so callers can
+  bail before mutating; `clearThread` guarded.
+- `ubattach-` staging writes through the app container only;
+  `PairingStore.purgeData()` sweeps leftover `ubattach-` temp files.
+
+### Design-a11y (normal) — 4H + 16M + ~23L, all applied
+
+High: stacked reorder inside ChatScreen; continuationIds spacing;
+grouped-list canvas recipe; send sheen honouring the brand curve.
+
+Mediums: chips FlowRow wrap, skeleton 1.6s pulse, mention list with
+keyboard nav, `tokenGroupHeader` shared helper rolled across every
+grouped List (settings, subscreens, routines, model sheet, devices,
+bot settings), prompt-style placeholders everywhere a field's label
+was the placeholder, constant row weight + `checkmark.circle`
+selection marker, Connectors drawn-pill, PastConversationView
+principal toolbar + 0.90/0.82 frames, `SecondaryAction(danger:)`,
+roster subtitle labels, `RowButtonStyle` across every full-width row
+press (corner radius .md default, sunken tone step on press).
+
+Lows: cwd long-press reveal, card inner padding, stepper
+adjustable labels, "Cached N min ago" marker, VO row hints, hidden
+list separators, dropped the literal "Pinned" header, standalone
+WORKING state, skeleton timingCurve, small danger Remove pill,
+"Waiting for you to finish in Safari" copy, SecondaryAction tone
+step, pinned row padding, folder chip, `interruptedRow` (Interrupted
++ Resume → `phone.resume`), empty-state tracking, mid-line code
+block, link targets, 14 pt lock badge, delete-danger confirm,
+TokenToggle disabled recipe, swatch hit targets.
+
+### Real app bug found by the gate (round-4 fix batch)
+
+- Saving a routine kicked the user out of chat to the bots list:
+  `RoutineEditorSheet.close()` called env `dismiss()` inside a
+  floating-sheet overlay — the action resolved to the pushed
+  ChatScreen's nav destination and popped it (plus the settings
+  sheet). `close()` now only calls `onClose()`; a comment blocks
+  reintroducing an env dismiss in overlay-hosted sheets.
+  testRoutineCreate was green at gate34 by flake luck, then failed
+  deterministically once the hunt ran — XCUI failure screenshot
+  showed the app back on the bots list.
+
+### Harness fixes (not app changes)
+
+- `testRoutineCreate` hunted on `.exists`: the editor's own Name-field
+  value flickers through the AX tree as a staticText while the sheet
+  dismisses, exiting the hunt early — the loop now requires
+  `isHittable`, which a covered/stale element fails, so it scrolls
+  until the real row is on screen.
+- `testWidget` flake (45s hunt ends with no webview in the tree):
+  failed once at gate36, passed clean at gate37 on the same build —
+  probe stayed at 0 nav hits either way.
+
+### Re-run scope
+
+Full gate (gate36) on the round-4 fix build — every leg green except
+testWidget (flake, passed at gate37) and testRoutineCreate (the
+dismiss pop, fixed and passed at gate39). `make -C macos test`
+322/322 after the BackendClient change. `xcodebuild build` clean.
+46 shots regenerated into docs/audit/ios-shots on the fix build.

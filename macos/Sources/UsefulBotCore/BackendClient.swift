@@ -1877,7 +1877,12 @@ public actor BackendClient {
                         }
                         guard (200...299).contains(status) else {
                             // A 401/403 after the re-sign-in attempt is an
-                            // auth failure, not a generic HTTP error.
+                            // auth failure, not a generic HTTP error. A
+                            // 404/409 names a retired stream — the follow
+                            // loop's sessionEnded arm reads it (§8.4).
+                            if status == 404 || status == 409 {
+                                throw BackendError.sessionEnded
+                            }
                             throw status == 401 || status == 403
                                 ? BackendError.unauthorized
                                 : BackendError.http(status)

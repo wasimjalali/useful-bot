@@ -70,7 +70,7 @@ struct BotsListView: View {
             .cardLift(cornerRadius: DesignTokens.Radius.md)
         }
         .contentShape(Rectangle())
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle())
     }
     /// When `/api/shell` last answered — the "cached N min ago" the offline
     /// banner quotes.
@@ -115,7 +115,7 @@ struct BotsListView: View {
                                 .strokeBorder(Theme.C.edge, lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RowButtonStyle())
                 .listRowBackground(Color.clear)
                 .accessibilityLabel("Search")
                 if let loadError {
@@ -362,10 +362,9 @@ struct BotsListView: View {
     @ViewBuilder
     private func roster(_ shell: ShellStore) -> some View {
         let pinned = shell.pinnedBots
-        // Pinned reads as a group header like the named sections (1.2's
-        // ordering names pinned first but has no collapse for it).
+        // Spec 1.2 orders pinned first and gives the section no header —
+        // the lifted cards mark the group by themselves.
         if !pinned.isEmpty {
-            sectionHeader("Pinned", id: nil, collapsed: false)
             ForEach(pinned) { botRow($0, shell: shell) }
         }
         ForEach(shell.sections.sorted { $0.order < $1.order }) { section in
@@ -402,9 +401,24 @@ struct BotsListView: View {
             .frame(minHeight: 44)
         }
         .contentShape(Rectangle())
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(cornerRadius: DesignTokens.Radius.sm))
         .disabled(id == nil)
         .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    /// The row's subtitle: the uppercase tracked label, with 'Working'
+    /// appended while a Reduce Motion bot is mid-turn — and the whole line
+    /// standing alone as just 'WORKING' when the bot has no label.
+    private func rowSubtitle(_ bot: ShellBot) -> String? {
+        let label = bot.label == bot.name ? "" : bot.label
+        let working = phone.workingBotIds.contains(bot.id) && reduceMotion
+        switch (label.isEmpty, working) {
+        case (false, true): return "\(label) · Working".uppercased()
+        case (true, true): return "WORKING"
+        case (false, false): return label.uppercased()
+        case (true, false): return nil
+        }
     }
 
     private func botRow(_ bot: ShellBot, shell: ShellStore) -> some View {
@@ -423,15 +437,19 @@ struct BotsListView: View {
                     Text(bot.name)
                         .tokenFont(DesignTokens.FontSize.chatName, .semibold)
                         .foregroundStyle(Theme.C.ink)
-                    if bot.label != bot.name && !bot.label.isEmpty {
-                        Text(phone.workingBotIds.contains(bot.id) && reduceMotion ? "\(bot.label) · Working" : bot.label)
-                            .tokenFont(DesignTokens.FontSize.phoneRailLabel, .regular)
+                    if let subtitle = rowSubtitle(bot) {
+                        // 1.2's label recipe: uppercase, medium, tracked
+                        // out — not a second sentence-case text style.
+                        Text(subtitle)
+                            .tokenFont(DesignTokens.FontSize.phoneRailLabel, .medium)
+                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.phoneRailLabel)
                             .foregroundStyle(Theme.C.inkMuted)
                     }
                 }
                 Spacer()
             }
-            .padding(bot.pinned ? 12 : 0)
+            .padding(.horizontal, bot.pinned ? 12 : 0)
+            .padding(.vertical, bot.pinned ? 14 : 0)
             .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
             .background {
                 if bot.pinned {
@@ -443,9 +461,11 @@ struct BotsListView: View {
             .cardLift(cornerRadius: DesignTokens.Radius.lg, enabled: bot.pinned)
         }
         .contentShape(Rectangle())
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle(cornerRadius: bot.pinned ? DesignTokens.Radius.lg : DesignTokens.Radius.sm))
         .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
         .accessibilityLabel(phone.workingBotIds.contains(bot.id) ? "\(bot.name), working" : bot.name)
+        .accessibilityHint("Double-tap to open")
         .swipeActions(edge: .leading) {
             if createsBlocked == nil {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }
@@ -645,7 +665,9 @@ struct BotsListView: View {
                 rows.phaseAnimator([1.0, 0.45]) { content, phase in
                     content.opacity(phase)
                 } animation: { _ in
-                    .easeInOut(duration: 0.8)
+                    // The brand curve, not the default ease — the same
+                    // pulse the chat skeleton rows use.
+                    .timingCurve(0.22, 1, 0.36, 1, duration: 0.8)
                 }
             }
         }
@@ -761,15 +783,6 @@ struct DevicesView: View {
         }
     }
 
-    /// Design spec 1.15's group titles: `fieldLabel` 13 medium in
-    /// `inkMuted`, never iOS's large header style (adjudication V1).
-    private func groupHeader(_ title: String) -> some View {
-        Text(title)
-            .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
-            .foregroundStyle(Theme.C.inkMuted)
-            .textCase(nil)
-    }
-
     var body: some View {
         List {
             Section {
@@ -794,7 +807,7 @@ struct DevicesView: View {
                     statusPill
                 }
             } header: {
-                groupHeader("This Mac")
+                tokenGroupHeader("This Mac")
             }
             .foregroundStyle(Theme.C.ink)
 
@@ -824,7 +837,7 @@ struct DevicesView: View {
                     }
                 }
             } header: {
-                groupHeader("Expiry")
+                tokenGroupHeader("Expiry")
             }
             .foregroundStyle(Theme.C.ink)
 
@@ -836,7 +849,7 @@ struct DevicesView: View {
                     diagRow("TLS", diag.tls)
                     diagRow("HTTP status", diag.httpStatus)
                 } header: {
-                    groupHeader("Diagnostics")
+                    tokenGroupHeader("Diagnostics")
                 }
                 .foregroundStyle(Theme.C.ink)
             }
@@ -875,6 +888,11 @@ struct DevicesView: View {
                 }
             }
         }
+        // Grouped sheet recipe: canvas under the groups, surface rows,
+        // fieldLabel headers — the same tokens bot settings uses.
+        .scrollContentBackground(.hidden)
+        .background(Theme.C.canvas)
+        .listRowBackground(Theme.C.surface)
         .floatingSheet(isPresented: $confirmUnpair, title: "Unpair this iPhone?", detent: .fit) {
             ConfirmSheet(
                 message: "Your bots stay on your Mac.",
@@ -999,6 +1017,25 @@ struct PastConversationView: View {
         return phone.mutationBlocked(coordinator.readiness)
     }
 
+    /// `ShellRecent.updatedAt` is an ISO string — parse it for the
+    /// principal toolbar's date subtitle; nil falls back to no subtitle.
+    private var pastDate: Date? {
+        guard let raw = phone.pastRecent?.updatedAt else { return nil }
+        return Self.isoDate.date(from: raw) ?? Self.isoDatePlain.date(from: raw)
+    }
+
+    private static let isoDate: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let isoDatePlain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     var body: some View {
             List {
                 if phone.pastRows.isEmpty {
@@ -1020,6 +1057,10 @@ struct PastConversationView: View {
                                 .background(Theme.C.sunken)
                                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                         }
+                        // The same width caps the live transcript uses —
+                        // the archived bubble can't sprawl full width.
+                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.90 }
+                        .listRowSeparator(.hidden)
                     } else {
                         HStack {
                             PhoneMarkdown(text: row.text)
@@ -1027,18 +1068,37 @@ struct PastConversationView: View {
                                 .padding(.vertical, 10)
                                 .background(Theme.C.bubbleBot)
                                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                                        .strokeBorder(Theme.C.edge, lineWidth: 1)
-                                )
+                                // Bot bubbles lift like the live chat's,
+                                // not an outlined card.
+                                .cardLift(cornerRadius: DesignTokens.Radius.md)
                             Spacer(minLength: 24)
                         }
+                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.82 }
+                        .listRowSeparator(.hidden)
                     }
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Theme.C.canvas)
             .navigationTitle(phone.pastRecent?.title ?? "Past conversation")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // Title with the date under it — the nav pattern the
+                // design system uses where a title needs provenance.
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 1) {
+                        Text(phone.pastRecent?.title ?? "Past conversation")
+                            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                            .foregroundStyle(Theme.C.ink)
+                        if let updated = pastDate {
+                            Text(updated, format: .dateTime.month(.wide).day().year())
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
+                    }
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
                     if let blocked {
@@ -1087,10 +1147,16 @@ private struct CreateField: View {
             Text(title)
                 .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
                 .foregroundStyle(Theme.C.inkMuted)
-            TextField(placeholder ?? title, text: $text, axis: axis)
-                .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
-                .foregroundStyle(Theme.C.ink)
-                .padding(.horizontal, 12)
+            TextField(
+                text: $text,
+                prompt: Text(placeholder ?? title).foregroundStyle(Theme.C.inkFaintText),
+                axis: axis
+            ) {
+                EmptyView()
+            }
+            .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
+            .foregroundStyle(Theme.C.ink)
+            .padding(.horizontal, 12)
                 .frame(minHeight: 44, alignment: axis == .vertical ? .topLeading : .center)
                 .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                 .overlay(
@@ -1219,21 +1285,6 @@ private struct CreateBotSheet: View {
     }
 }
 
-/// A minimal wrap row for the swatches — enough for 11 chips on a phone and
-/// the two-row wrap at XXXL.
-private struct FlowRow<Content: View>: View {
-    var spacing: CGFloat = 8
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: spacing) {
-                content()
-            }
-        }
-    }
-}
-
 /// New group (spec 1.7): Name field, member multi-select with avatar + a
 /// trailing checkmark on the picked (sunken) row, "Create group" primary.
 private struct CreateGroupSheet: View {
@@ -1263,13 +1314,15 @@ private struct CreateGroupSheet: View {
                         } label: {
                             HStack(spacing: 10) {
                                 BotFace(bot: bot, size: 32)
+                                // Constant weight — the picked row marks
+                                // with the checkmark alone (spec baseline).
                                 Text(bot.name)
-                                    .tokenFont(DesignTokens.FontSize.chatName, picked ? .semibold : .regular)
+                                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
                                     .foregroundStyle(Theme.C.ink)
                                 Spacer(minLength: 8)
                                 if picked {
-                                    Image(systemName: "checkmark")
-                                        .font(Theme.font(DesignTokens.FontSize.chatName, .semibold))
+                                    Image(systemName: "checkmark.circle")
+                                        .font(Theme.font(DesignTokens.FontSize.chatName, .regular))
                                         .foregroundStyle(Theme.C.accent)
                                 }
                             }
@@ -1278,7 +1331,7 @@ private struct CreateGroupSheet: View {
                             .background(picked ? Theme.C.sunken : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(RowButtonStyle())
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                         .accessibilityAddTraits(picked ? .isSelected : [])
@@ -1401,12 +1454,12 @@ private struct MoveToSectionSheet: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Text(title)
-                    .tokenFont(DesignTokens.FontSize.chatName, picked ? .semibold : .regular)
+                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
                     .foregroundStyle(Theme.C.ink)
                 Spacer(minLength: 8)
                 if picked {
-                    Image(systemName: "checkmark")
-                        .font(Theme.font(DesignTokens.FontSize.chatName, .semibold))
+                    Image(systemName: "checkmark.circle")
+                        .font(Theme.font(DesignTokens.FontSize.chatName, .regular))
                         .foregroundStyle(Theme.C.accent)
                 }
             }
@@ -1415,7 +1468,7 @@ private struct MoveToSectionSheet: View {
             .background(picked ? Theme.C.sunken : Color.clear, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RowButtonStyle())
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
         .accessibilityAddTraits(picked ? .isSelected : [])

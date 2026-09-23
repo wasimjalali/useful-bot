@@ -1006,9 +1006,13 @@ final class SurfacesUITests: XCTestCase {
         // Back in the settings sheet the Routines section sits mid-list —
         // below the fold after the round-3 sections above it — so the lazy
         // List only materializes the new row once it scrolls into view.
+        // Hunt on isHittable, not exists: the editor's own Name field value
+        // flickers through the tree as the sheet dismisses (a covered or
+        // stale element fails isHittable), and an off-screen lazy row does
+        // too — the loop stops only once the real row is on screen.
         let createdRoutine = app.staticTexts["Morning check"]
         let createdDeadline = Date().addingTimeInterval(20)
-        while Date() < createdDeadline && !createdRoutine.exists {
+        while Date() < createdDeadline && !createdRoutine.isHittable {
             app.swipeUp()
             usleep(300_000)
         }

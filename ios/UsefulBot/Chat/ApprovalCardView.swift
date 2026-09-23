@@ -22,19 +22,27 @@ struct StatusPill: View {
 /// Secondary action recipe (A.2): tone fill with a whisper edge.
 struct SecondaryAction: ButtonStyle {
     var enabled = true
+    /// Destructive confirms ('Delete bot', 'Unpair') draw the label in the
+    /// danger token — the confirm sheet's only distinction from Cancel.
+    var danger = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .tokenFont(DesignTokens.FontSize.chatName, .medium)
-            .foregroundStyle(enabled ? Theme.C.ink : Theme.C.inkFaint)
+            .foregroundStyle(!enabled ? Theme.C.inkFaint : (danger ? Theme.C.danger : Theme.C.ink))
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
-            .background(enabled ? Theme.C.sunken : Theme.C.sunken.opacity(0.6))
+            // Spec baseline 'pressed: one tone step': the sunken fill
+            // deepens a tone on press instead of an opacity dim.
+            .background(configuration.isPressed
+                        ? Theme.C.border
+                        : (enabled ? Theme.C.sunken : Theme.C.sunken.opacity(0.6)))
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                     .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
-            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(reduceMotion ? nil : .brandFast, value: configuration.isPressed)
     }
 }
 
@@ -89,29 +97,26 @@ struct ApprovalCardView: View {
                 }
             }
             if !card.item.cwd.isEmpty {
-                Button {
-                    showFullPath = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "folder")
-                            .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
-                        Text(card.item.cwd)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular, design: .monospaced)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: 28)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Working directory \(card.item.cwd)")
-                .accessibilityHint("Double-tap to read the full path")
-                .alert("Working directory", isPresented: $showFullPath) {
-                    Button("OK", role: .cancel) {}
-                } message: {
+                // Spec: 'the full path on long press' — an in-place reveal
+                // of the wrapped path, not a modal; the row still reads
+                // truncated at rest.
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(Theme.font(DesignTokens.FontSize.phoneChatMeta, .regular))
                     Text(card.item.cwd)
+                        .lineLimit(showFullPath ? nil : 1)
+                        .truncationMode(.middle)
                 }
+                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular, design: .monospaced)
+                .foregroundStyle(Theme.C.inkMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                .onLongPressGesture {
+                    showFullPath.toggle()
+                }
+                .accessibilityLabel("Working directory \(card.item.cwd)")
+                .accessibilityHint("Long-press to read the full path")
             }
             ScrollView {
                 Text(card.item.preview)
@@ -134,25 +139,20 @@ struct ApprovalCardView: View {
                     .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
             }
             // Deny/Approve go vertical at accessibility sizes: two
-            // half-width buttons have no room for a 30 pt label.
+            // half-width buttons have no room for a 30 pt label — and the
+            // stack leads with the primary action (spec 1.3 'Approve on
+            // top').
             let actionLayout = dynamicTypeSize.isAccessibilitySize
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
                 : AnyLayout(HStackLayout(spacing: 8))
             actionLayout {
-                Button("Deny") { onDecide(false) }
-                    .buttonStyle(SecondaryAction(enabled: !actionsBlocked))
-                    .frame(minHeight: 44)
-                    .disabled(actionsBlocked)
-                Button(card.phase == .approving ? "Approving" : "Approve") { onDecide(true) }
-                    .buttonStyle(PressedScale(
-                        fill: actionsBlocked ? Theme.C.sunken : (card.phase == .approving ? Theme.C.accentStrong : Theme.C.brand),
-                        pressedFill: actionsBlocked ? Theme.C.sunken : Theme.C.accentStrong,
-                        shadowed: !actionsBlocked
-                    ))
-                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                    .foregroundStyle(actionsBlocked ? Theme.C.inkFaint : Theme.C.brandInk)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .disabled(actionsBlocked)
+                if dynamicTypeSize.isAccessibilitySize {
+                    approveButton
+                    denyButton
+                } else {
+                    denyButton
+                    approveButton
+                }
             }
             if let blockedReason {
                 Text(blockedReason)
@@ -164,6 +164,26 @@ struct ApprovalCardView: View {
 
     private var actionsBlocked: Bool {
         card.phase == .approving || blockedReason != nil
+    }
+
+    private var denyButton: some View {
+        Button("Deny") { onDecide(false) }
+            .buttonStyle(SecondaryAction(enabled: !actionsBlocked))
+            .frame(minHeight: 44)
+            .disabled(actionsBlocked)
+    }
+
+    private var approveButton: some View {
+        Button(card.phase == .approving ? "Approving" : "Approve") { onDecide(true) }
+            .buttonStyle(PressedScale(
+                fill: actionsBlocked ? Theme.C.sunken : (card.phase == .approving ? Theme.C.accentStrong : Theme.C.brand),
+                pressedFill: actionsBlocked ? Theme.C.sunken : Theme.C.accentStrong,
+                shadowed: !actionsBlocked
+            ))
+            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+            .foregroundStyle(actionsBlocked ? Theme.C.inkFaint : Theme.C.brandInk)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .disabled(actionsBlocked)
     }
 
     /// Terminal states collapse to a one-line status card (1.3): a pill on
@@ -199,8 +219,25 @@ struct ApprovalCardView: View {
 struct PendingApprovalsView: View {
     @Environment(PhoneModel.self) private var phone
 
+    /// Spec 1.10's offline marker — the same cached-age line the other
+    /// cached surfaces carry, quoting the shell's last fetch.
+    private var cachedAge: String? {
+        guard let last = phone.lastFetchAt else { return nil }
+        let age = Date().timeIntervalSince(last)
+        guard age > 15 else { return nil }
+        return "Cached \(max(1, Int(age / 60))) min ago"
+    }
+
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 0) {
+            if let cachedAge {
+                Text(cachedAge)
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
             if phone.approvals.isEmpty {
                 Text("Nothing is waiting for you.")
                     .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
@@ -273,7 +310,9 @@ struct PendingApprovalsView: View {
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
             .cardLift(cornerRadius: DesignTokens.Radius.md)
         }
-        .buttonStyle(.plain)
+        // The spec baseline's one-tone-step press — `.plain` alone gives
+        // the row no transient state (A.3).
+        .buttonStyle(RowButtonStyle(cornerRadius: DesignTokens.Radius.md))
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
@@ -320,21 +359,18 @@ struct ProposalCardView: View {
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
                 : AnyLayout(HStackLayout(spacing: 8))
             actionLayout {
+                // The primary action leads the vertical stack at
+                // accessibility sizes — Confirm sits on top, matching the
+                // approval card's Approve-first rule.
+                if dynamicTypeSize.isAccessibilitySize, proposal.kind != .unknown {
+                    confirmButton
+                }
                 Button("Dismiss") { onDecide(false) }
                     .buttonStyle(SecondaryAction(enabled: blockedReason == nil))
                     .frame(minHeight: 44)
                     .disabled(blockedReason != nil)
-                if proposal.kind != .unknown {
-                    Button("Confirm") { onDecide(true) }
-                        .buttonStyle(PressedScale(
-                            fill: blockedReason == nil ? Theme.C.brand : Theme.C.sunken,
-                            pressedFill: Theme.C.accentStrong,
-                            shadowed: blockedReason == nil
-                        ))
-                        .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                        .foregroundStyle(blockedReason == nil ? Theme.C.brandInk : Theme.C.inkFaint)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .disabled(blockedReason != nil)
+                if !dynamicTypeSize.isAccessibilitySize, proposal.kind != .unknown {
+                    confirmButton
                 }
             }
             if let blockedReason {
@@ -343,11 +379,25 @@ struct ProposalCardView: View {
                     .foregroundStyle(Theme.C.inkMuted)
             }
         }
-        .padding(14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.C.surface)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .cardLift(cornerRadius: DesignTokens.Radius.lg)
+    }
+
+    private var confirmButton: some View {
+        Button("Confirm") { onDecide(true) }
+            .buttonStyle(PressedScale(
+                fill: blockedReason == nil ? Theme.C.brand : Theme.C.sunken,
+                pressedFill: Theme.C.accentStrong,
+                shadowed: blockedReason == nil
+            ))
+            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+            .foregroundStyle(blockedReason == nil ? Theme.C.brandInk : Theme.C.inkFaint)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .disabled(blockedReason != nil)
     }
 
     private var title: String {
@@ -407,7 +457,8 @@ struct QuestionCardView: View {
                     .foregroundStyle(Theme.C.inkMuted)
             }
         }
-        .padding(14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.C.surface)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
