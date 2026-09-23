@@ -177,7 +177,7 @@ struct AppSettingsView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text(tab.label)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(Theme.C.ink)
                     Spacer(minLength: 0)
                     NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
@@ -193,7 +193,7 @@ struct AppSettingsView: View {
                 case .updates: updatesPane
                 }
             }
-            .padding(EdgeInsets(top: 20, leading: 24, bottom: 28, trailing: 24))
+            .padding(EdgeInsets(top: 20, leading: 32, bottom: 28, trailing: 28))
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .uvScroll()
@@ -593,7 +593,8 @@ struct AppSettingsView: View {
     private func usageMeter(fraction: Double) -> some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.C.sunken)
+                // The card is sunken grey, so the track takes the border tone.
+                Capsule().fill(Theme.C.border)
                 Capsule()
                     .fill(fraction >= 0.9 ? Theme.C.danger : Theme.C.ink)
                     .frame(width: max(fraction > 0 ? 2 : 0, proxy.size.width * fraction))
@@ -658,12 +659,13 @@ struct AppSettingsView: View {
 
     // MARK: - Rows
 
+    /// A quiet heading over a grey card, the way macOS and Grok group settings.
     private func section<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(label.uppercased())
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(DesignTokens.Tracking.label * 11)
-                .foregroundStyle(Theme.C.inkFaint)
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkMuted)
+                .padding(.leading, 4)
                 .padding(.bottom, 8)
             content()
         }
@@ -673,23 +675,19 @@ struct AppSettingsView: View {
         VStack(spacing: 0) {
             content()
         }
-        .background(Theme.C.canvas)
-        .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                .strokeBorder(Theme.C.edge, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .background(Theme.C.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func settingsRow<Content: View>(last: Bool = false, @ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 16) {
             content()
         }
-        .frame(minHeight: 52)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .frame(minHeight: 44)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .overlay(alignment: .bottom) {
-            if !last { Hairline() }
+            if !last { Hairline().padding(.horizontal, 12) }
         }
     }
 
@@ -701,42 +699,55 @@ struct AppSettingsView: View {
     }
 }
 
-/// System, Light and Dark as one pill track. Drawn by hand: the native
-/// segmented control fills the pick with the macOS accent color, not ours.
+/// System, Light and Dark as a pop-up button: the choice on a grey pill, a
+/// chevron, the system menu.
 private struct AppearancePicker: View {
     @Binding var selection: AppAppearance
 
-    /// The picked segment sits above its track in both appearances: white on
-    /// gray in light, a lighter gray on the dark track in dark.
-    private static let pickFill = Theme.adaptive(DesignTokens.Hex.surface, DesignTokens.DarkHex.borderStrong)
-
     var body: some View {
-        HStack(spacing: 2) {
+        Menu {
             ForEach(AppAppearance.allCases) { option in
-                let on = option == selection
                 Button {
                     selection = option
                 } label: {
-                    Text(option.label)
-                        .font(.system(size: 12, weight: on ? .semibold : .regular))
-                        .foregroundStyle(on ? Theme.C.ink : Theme.C.inkMuted)
-                        .padding(.horizontal, 12)
-                        .frame(height: 26)
-                        .background(on ? Self.pickFill : .clear)
-                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
-                        .shadow(color: Theme.C.shadow.opacity(on ? 0.1 : 0), radius: 1.5, x: 0, y: 1)
-                        .contentShape(Rectangle())
+                    if option == selection {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
                 }
-                .buttonStyle(.plain)
-                .pointerOnHover()
-                .accessibilityAddTraits(on ? .isSelected : [])
             }
+        } label: {
+            SettingsPopUpLabel(title: selection.label)
         }
-        .padding(2)
-        .background(Theme.C.border)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
-        .animation(.easeOut(duration: DesignTokens.Motion.fast), value: selection)
-        .accessibilityElement(children: .contain)
+        // The button style with a plain look draws the label as built; the
+        // borderless style flattens it to text and moves the chevron.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .pointerOnHover()
         .accessibilityLabel("Theme")
+        .accessibilityValue(selection.label)
+    }
+}
+
+/// The face of a settings pop-up: the value and a small chevron on a grey pill.
+struct SettingsPopUpLabel: View {
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(title)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.ink)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.C.inkMuted)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .background(Theme.C.border.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }

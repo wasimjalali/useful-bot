@@ -49,7 +49,7 @@ Anything a bot needs an answer to (an approval, a proposed bot or group) docks a
 
 ## Library
 
-What the bots make is the owner's, like the chats. Every generated image and every Excalidraw drawing is saved as a real file under `~/Documents/Useful Bot/<Bot>/<YYYY-MM>/`: images as PNG, JPEG or WebP, drawings as `.excalidraw` scenes. The index in `~/.useful-bot/media.json` keeps the prompt, model, bot and current path, and nothing deletes a file on its own. Library in the rail shows everything, filtered by kind and bot and searchable by prompt, with Open, Show in Finder, Copy, Open chat and Move to Trash. Drawing tiles show a native preview drawn from the saved scene; a drawing opens with that preview at once and hands over to the same live view the chat shows, with its own Edit and Open in Excalidraw. When a bot's Excalidraw camera does not cover its own drawing, the host widens it (4:3) so nothing is cut, in the chat and the Library alike. The Excalidraw app page is cached ten minutes per server, so drawings open without two network round trips each time. Every drawing still in a chat is listed, dated when it was first drawn. A file missing from its place offers Locate (point at where it went) and Regenerate, which draws it again in that row from the prompt the server kept, under the same id (each Regenerate is a paid image; the web service holds the router's desktop credential for it). The prompt under an image is one line with a copy button for the whole prompt. Locate only accepts a real file of the same kind, checked by content, never a link. If the folder cannot take a new image (no Documents access, a full disk), the app keeps it in its own store and moves it on the next Library load, so a billed image is never lost. To save a copy somewhere else, ask the bot: it copies the file there. Images from before the Library (base64 records in `~/.useful-bot/images`) move into the folder on first load.
+What the bots make is the owner's, like the chats. Every generated image and every Excalidraw drawing is saved as a real file under `~/Documents/Useful Bot/<Bot>/<YYYY-MM>/`: images as PNG, JPEG or WebP, drawings as `.excalidraw` scenes. The index in `~/.useful-bot/media.json` keeps the prompt, model, bot and current path, and nothing deletes a file on its own. Library (in the account menu under the owner's photo) shows everything, filtered by kind and bot and searchable by prompt, with Open, Show in Finder, Copy, Open chat and Move to Trash. Drawing tiles show a native preview drawn from the saved scene; a drawing opens with that preview at once and hands over to the same live view the chat shows, with its own Edit and Open in Excalidraw. When a bot's Excalidraw camera does not cover its own drawing, the host widens it (4:3) so nothing is cut, in the chat and the Library alike. The Excalidraw app page is cached ten minutes per server, so drawings open without two network round trips each time. Every drawing still in a chat is listed, dated when it was first drawn. A file missing from its place offers Locate (point at where it went) and Regenerate, which draws it again in that row from the prompt the server kept, under the same id (each Regenerate is a paid image; the web service holds the router's desktop credential for it). The prompt under an image is one line with a copy button for the whole prompt. Locate only accepts a real file of the same kind, checked by content, never a link. If the folder cannot take a new image (no Documents access, a full disk), the app keeps it in its own store and moves it on the next Library load, so a billed image is never lost. To save a copy somewhere else, ask the bot: it copies the file there. Images from before the Library (base64 records in `~/.useful-bot/images`) move into the folder on first load.
 
 ## Routines
 
@@ -135,14 +135,14 @@ its own process group so a timeout or a Stop takes down what the line started.
 
 Connectors let a bot act in the owner's apps (Gmail, Google Calendar, Slack,
 Notion, GitHub, Linear and the rest of Composio's catalogue). Open Connectors
-from the rail, paste a Composio API key once, then Connect an app: the hosted
-sign-in opens in the browser and the row turns Connected when Composio reports
-the account active. Disconnect revokes it.
+from the pill at the foot of the rail, paste a Composio API key once, then Add
+an app: the hosted sign-in opens in the browser and the app moves to Added when
+Composio reports the account active. Disconnect (in the Added menu) revokes it.
 
 Composio runs the OAuth app for most apps, and an app that takes an API key
 asks for it on the hosted page. A few dozen apps (TikTok, X, Spotify) have no
 Composio app at all: their row says "Needs your own app", and Connect opens a
-form for the credentials of an app you register in that provider's developer
+form (above the list) for the credentials of an app you register in that provider's developer
 portal, with the redirect URI to register there. The form asks for whatever
 Composio lists as required for that app (X also wants an application bearer
 token). The credentials go to Composio as an auth config named "Useful Bot",

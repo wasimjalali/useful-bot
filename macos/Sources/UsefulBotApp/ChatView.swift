@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UsefulBotCore
 
@@ -92,7 +93,9 @@ struct ChatView: View {
                         .padding(.vertical, 8)
                 }
                 if let bot = model.selectedBot {
-                    header(bot)
+                    // The header floats: the transcript runs under it, and
+                    // only the bot's pill and the panel control sit on top.
+                    ZStack(alignment: .top) {
                     if model.hasThreadContent || model.pending {
                         // Put back from a snapshot or a stash: it lands within
                         // a few frames, so the mascot would only flash and the
@@ -129,6 +132,8 @@ struct ChatView: View {
                     } else {
                         loadingState
                     }
+                        header(bot)
+                    }
                     // While the first load is still in flight the mascot waves
                     // in the middle of the chat: the empty copy belongs to a
                     // chat that is known empty, and flashing it in front of a
@@ -159,6 +164,11 @@ struct ChatView: View {
             }
         }
         .background(Theme.C.surface)
+        .onReceive(NotificationCenter.default.publisher(for: .replyToMessage)) { note in
+            guard let text = note.userInfo?["text"] as? String,
+                  let botId = note.userInfo?["botId"] as? String else { return }
+            model.reply(to: text, author: note.userInfo?["author"] as? String, botId: botId)
+        }
     }
 
     private func closePanes() {
@@ -356,30 +366,42 @@ struct ChatView: View {
 
     // MARK: - Header
 
+    /// The bot as a centered pill over a bare header, and one quiet control
+    /// on the right that opens the bot's panel.
     private func header(_ bot: ShellBot) -> some View {
-        HStack(spacing: DesignTokens.Space.headerGap) {
-            if bot.isGroup, !members(bot).isEmpty {
-                AvatarStackView(bots: members(bot), size: 24, maxVisible: 3)
-            } else {
-                BotAvatarView(bot: bot, size: 24)
+        ZStack {
+            HStack(spacing: 8) {
+                if bot.isGroup, !members(bot).isEmpty {
+                    AvatarStackView(bots: members(bot), size: 22, maxVisible: 3)
+                } else {
+                    BotAvatarView(bot: bot, size: 22)
+                }
+                Text(bot.name)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            Text(bot.name)
-                .font(.system(size: DesignTokens.FontSize.chatName, weight: .semibold))
-                .foregroundStyle(Theme.C.ink)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-            NativeIconButton(systemImage: "gearshape", size: 32, iconSize: 15) {
-                model.detailsOpen.toggle()
+            .padding(.leading, 6)
+            .padding(.trailing, 14)
+            .frame(height: 34)
+            .background(Theme.C.surface)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Theme.C.edge, lineWidth: 1))
+            .smShadow()
+            .padding(.horizontal, 56)
+            HStack {
+                Spacer(minLength: 0)
+                NativeIconButton(systemImage: "sidebar.right", size: 32, iconSize: 15) {
+                    model.detailsOpen.toggle()
+                }
+                .help("Bot settings")
+                .accessibilityLabel("Bot settings")
+                .trackWindowFrame($infoButtonFrame)
             }
-            .help("Bot settings")
-            .accessibilityLabel("Bot settings")
-            .trackWindowFrame($infoButtonFrame)
         }
         .padding(.horizontal, 16)
         .frame(minHeight: DesignTokens.Space.chatHead)
-        .background(Theme.C.surface)
-        .overlay(alignment: .bottom) { Hairline() }
     }
 
     private func members(_ bot: ShellBot) -> [ShellBot] {
@@ -599,7 +621,9 @@ struct ChatView: View {
                     // first message against the composer with the window
                     // empty above it. Once the chat outgrows the window this
                     // floor does nothing and the anchor takes over.
-                    .frame(maxWidth: .infinity, minHeight: viewportHeight, alignment: .top)
+                    // The container height includes the header's inset band,
+                    // which already adds its own scroll room.
+                    .frame(maxWidth: .infinity, minHeight: max(0, viewportHeight - DesignTokens.Space.chatHead), alignment: .top)
                     // The scroll target sits under the bottom padding. Inside
                     // the stack it sat 8 points above the end of the content,
                     // so every scroll to it stopped short, and the view slid
@@ -612,6 +636,11 @@ struct ChatView: View {
                     }
                 }
                 .uvScroll()
+                // The floating header's band is a safe-area inset: rows still
+                // scroll under it, and a scroll to a row's top stops below it.
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    Color.clear.frame(height: DesignTokens.Space.chatHead)
+                }
                 .modifier(TranscriptAnchor(pinned: pinnedToBottom))
                 .modifier(ScrollPinnedTracker(
                     pinned: $pinnedToBottom,
@@ -733,7 +762,7 @@ struct ChatView: View {
                 .onChange(of: model.pending) { wasPending, nowPending in
                     guard wasPending, !nowPending, landedBotId == bot.id, pinnedToBottom,
                           !scrollProbe.dragging,
-                          replyHeight > viewportHeight - Self.replyAnchorSlack,
+                          replyHeight > viewportHeight - DesignTokens.Space.chatHead - Self.replyAnchorSlack,
                           let anchor = model.latestReplyAnchor else { return }
                     holdingReplyAnchor = true
                     scrollWithoutAnimation(proxy, to: anchor)
@@ -960,6 +989,8 @@ private extension ShellBot {
 /// a row that leaves the window comes back folded.
 private struct UserBubbleView: View {
     let text: String
+    /// The bot message this one replies to, shown as a quote line on top.
+    var quote: String?
     @State private var expanded = false
     @State private var previewHeight: CGFloat = 0
     @State private var fullHeight: CGFloat = 0
@@ -976,6 +1007,20 @@ private struct UserBubbleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let quote {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "arrowshape.turn.up.left")
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.top, 3)
+                    Text(ReplyQuote.preview(quote))
+                        .font(.system(size: 13))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
+                .foregroundStyle(Theme.C.inkMuted)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Replying to: \(quote)")
+            }
             body(text)
                 .lineLimit(folds && !expanded ? LongMessage.previewLines : nil)
                 .background(alignment: .topLeading) {
@@ -1117,8 +1162,13 @@ struct TranscriptRowView: View, Equatable {
     private var userRow: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 60)
-            UserBubbleView(text: row.text)
-                .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
+            if let reply = ReplyQuote.split(row.text) {
+                UserBubbleView(text: reply.body, quote: reply.quote)
+                    .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
+            } else {
+                UserBubbleView(text: row.text)
+                    .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
+            }
         }
     }
 
@@ -1138,13 +1188,20 @@ struct TranscriptRowView: View, Equatable {
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Theme.C.bubbleBot)
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-                    .cardLift(cornerRadius: DesignTokens.Radius.md)
-                    .frame(maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth), alignment: .leading)
+                MessageHoverActions(text: row.text, botId: bot.id, author: row.authorBotId != nil && row.authorBotId != bot.id ? (speaker?.name ?? row.author) : nil, enabled: !streaming) {
+                    ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Theme.C.bubbleBot)
+                        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                        .cardLift(cornerRadius: DesignTokens.Radius.md)
+                }
+                // The cap holds the bubble plus its actions, so the actions sit
+                // right beside a short bubble instead of at the cap's far edge.
+                .frame(
+                    maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth) + MessageHoverActionsWidth.value,
+                    alignment: .leading
+                )
             }
             Spacer(minLength: 0)
         }
@@ -1597,6 +1654,97 @@ private struct ScrollPinnedTracker: ViewModifier {
             }
         } else {
             content
+        }
+    }
+}
+
+extension Notification.Name {
+    /// Reply on a bot message. Rows post it rather than observe AppModel, so
+    /// transcript rows stay cheap.
+    static let replyToMessage = Notification.Name("useful-bot.reply-to-message")
+}
+
+/// Reply, Copy and the gap before them.
+enum MessageHoverActionsWidth {
+    static let value: CGFloat = 8 + 28 + 2 + 28
+}
+
+private enum HoverActionsDebug {
+    /// `-ubShowHoverActions YES` at launch keeps them on screen, so a check
+    /// can capture them without moving the real pointer.
+    static let forced = UserDefaults.standard.bool(forKey: "ubShowHoverActions")
+}
+
+/// Reply and Copy beside a bot message, shown while the pointer is on
+/// its row. They keep their room when hidden, so the bubble never shifts.
+private struct MessageHoverActions<Content: View>: View {
+    let text: String
+    /// The chat the message is in, and who wrote it when that is a member.
+    let botId: String
+    var author: String?
+    var enabled = true
+    @ViewBuilder var content: Content
+
+    @State private var hovering = false
+    @State private var copied = false
+
+    var body: some View {
+        let hovering = hovering || HoverActionsDebug.forced
+        HStack(alignment: .center, spacing: 8) {
+            content
+            HStack(spacing: 2) {
+                Button(action: reply) {
+                    Image(systemName: "arrowshape.turn.up.left")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .help("Reply")
+                .accessibilityLabel("Reply")
+                Button(action: copy) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .help("Copy")
+                .accessibilityLabel(copied ? "Copied" : "Copy")
+            }
+            .opacity(hovering && enabled ? 1 : 0)
+            .allowsHitTesting(hovering && enabled)
+            .accessibilityHidden(!enabled)
+        }
+        .contentShape(Rectangle())
+        .onHover { self.hovering = $0 }
+        // Hidden buttons leave the accessibility tree, so the same two
+        // actions ride on the message for VoiceOver and keyboard users.
+        .accessibilityActions {
+            if enabled {
+                Button("Reply", action: reply)
+                Button("Copy", action: copy)
+            }
+        }
+    }
+
+    private func reply() {
+        var info: [String: String] = ["text": text, "botId": botId]
+        if let author { info["author"] = author }
+        NotificationCenter.default.post(name: .replyToMessage, object: nil, userInfo: info)
+    }
+
+    private func copy() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copied = false
         }
     }
 }
