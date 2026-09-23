@@ -434,8 +434,9 @@ struct LibraryDetail: View {
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
 
             VStack(alignment: .leading, spacing: 16) {
-                if !item.prompt.isEmpty {
-                    PromptFact(prompt: item.prompt)
+                let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !prompt.isEmpty {
+                    PromptFact(prompt: prompt)
                 }
                 fact("Bot", item.botName)
                 if !item.model.isEmpty {
@@ -534,20 +535,20 @@ struct LibraryDetail: View {
 /// The prompt's first paragraph, with all of it one click away: a long
 /// prompt no longer pushes the facts under it out of sight.
 private struct PromptFact: View {
+    /// Trimmed: what shows is what the copy button copies.
     let prompt: String
     @State private var showingAll = false
+    @State private var truncated = false
 
     /// Up to the first blank line.
     static func firstParagraph(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let gap = trimmed.range(of: #"\n\s*\n"#, options: .regularExpression) else { return trimmed }
-        return String(trimmed[..<gap.lowerBound])
+        guard let gap = text.range(of: #"\n\s*\n"#, options: .regularExpression) else { return text }
+        return String(text[..<gap.lowerBound])
     }
 
     var body: some View {
         let lead = Self.firstParagraph(prompt)
-        // Four lines of the side column hold about this much.
-        let more = lead != prompt.trimmingCharacters(in: .whitespacesAndNewlines) || lead.count > 240
+        let more = lead != prompt || truncated
         VStack(alignment: .leading, spacing: 4) {
             Text("Prompt")
                 .font(.system(size: 12))
@@ -559,6 +560,24 @@ private struct PromptFact: View {
                 .foregroundStyle(Theme.C.ink)
                 .lineLimit(4)
                 .truncationMode(.tail)
+                .background {
+                    // The paragraph at full height against the four lines
+                    // shown, so a narrow column still offers the rest.
+                    GeometryReader { shown in
+                        Text(lead)
+                            .font(.system(size: 13))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: shown.size.width, alignment: .leading)
+                            .hidden()
+                            .background(GeometryReader { full in
+                                Color.clear
+                                    .onAppear { truncated = full.size.height > shown.size.height + 1 }
+                                    .onChange(of: [full.size.height, shown.size.height]) { _, heights in
+                                        truncated = heights[0] > heights[1] + 1
+                                    }
+                            })
+                    }
+                }
             HStack(spacing: 4) {
                 if more {
                     Button("Show full prompt") { showingAll = true }
@@ -590,7 +609,7 @@ private struct FullPrompt: View {
                 CopyPromptButton(prompt: prompt)
             }
             ScrollView {
-                Text(prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+                Text(prompt)
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.ink)
                     .lineSpacing(2)
