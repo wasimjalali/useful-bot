@@ -381,7 +381,10 @@ export default function Page() {
           // A carry-over that does not land leaves the store on the old
           // session, so the page goes back to it and its follower instead
           // of sitting detached until a refresh.
+          // Not after Stop (the carry-over may have landed server-side), and
+          // not over a chat the owner switched to while it was in flight.
           const restore = () => {
+            if (controller.signal.aborted || projSession.current !== "") return;
             projSession.current = sessionId;
             setActive(sessionId);
           };

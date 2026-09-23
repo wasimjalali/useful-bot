@@ -734,15 +734,13 @@ struct ChatView: View {
                     if ready, landedBotId == bot.id { repinAfterBannerChange(proxy) }
                 }
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
-                // There is exactly one automatic scroll in this transcript, and
-                // it is the one below. Everything else stays at the newest turn
-                // because `defaultScrollAnchor(.bottom)` already holds the
-                // bottom as the content grows: opening a chat, switching bots,
-                // sending, streaming and the durable reload all keep their place
-                // without being told to. The explicit scrolls that used to sit
-                // here were not keeping the view there; they were what moved it,
-                // because scrolling to a bottom anchor repositions content that
-                // is shorter than the window and SwiftUI had already placed.
+                // `defaultScrollAnchor(.bottom)` holds the bottom as the content
+                // grows: opening a chat, switching bots, streaming and the
+                // durable reload keep their place without being told to.
+                // Explicit bottom scrolls are kept to the few places that need
+                // one (the send below, the banner and landing re-pins), because
+                // scrolling to a bottom anchor repositions content that is
+                // shorter than the window and SwiftUI had already placed.
                 // An explicit send is a request to watch the answer (see
                 // `AppModel.send`): the transcript goes to the newest turn
                 // whatever the reader was doing. The send's own frame (the
