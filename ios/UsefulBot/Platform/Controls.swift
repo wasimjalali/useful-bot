@@ -145,7 +145,13 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
                 }
                 .background(canvas ? Theme.C.canvas : Theme.C.surface)
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
-                .cardLift(cornerRadius: DesignTokens.Radius.xl)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
+                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                )
+                // Spec §4.3: floating sheets draw the `pop` shadow token —
+                // the macOS popover recipe, not the card lift.
+                .popShadow()
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
                 .frame(maxHeight: detent.maxHeight(in: geo.size.height))
@@ -371,6 +377,74 @@ extension View {
             sheet: content
         ))
     }
+}
+
+/// The stacked member faces for a group (spec 1.6): overlapping bot heads
+/// on opaque chips so the overlap stays legible, plus a "+N" overflow
+/// chip. iOS port of the macOS `AvatarStackView` used in the rail, the
+/// chat header and the meta strips — group rows, the chat header and the
+/// bot-settings identity block draw it.
+struct AvatarStackView: View {
+    let bots: [ShellBot]
+    var size: CGFloat = 24
+    var maxVisible: Int = 3
+    var overlap: CGFloat = 0.3
+
+    private var visible: [ShellBot] { Array(bots.prefix(max(1, maxVisible))) }
+    private var overflow: Int { max(0, bots.count - visible.count) }
+
+    var body: some View {
+        HStack(spacing: -size * overlap) {
+            ForEach(Array(visible.enumerated()), id: \.element.id) { index, bot in
+                chip {
+                    BotFace(bot: bot, size: size * 0.84)
+                }
+                .zIndex(Double(index))
+            }
+            if overflow > 0 {
+                chip(fill: Theme.C.sunken) {
+                    Text("+\(overflow)")
+                        .font(Theme.font(max(9, (size * 0.38).rounded()), .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                .zIndex(Double(visible.count + 1))
+            }
+        }
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+    }
+
+    private func chip<Content: View>(
+        fill: Color = Theme.C.surface,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(width: size, height: size)
+            .background(Circle().fill(fill))
+            .overlay(Circle().strokeBorder(Theme.C.edge, lineWidth: 1))
+            .clipShape(Circle())
+    }
+
+    private var label: String {
+        switch bots.count {
+        case 0: return "No members"
+        case 1: return bots[0].name
+        case 2, 3: return bots.map(\.name).joined(separator: ", ")
+        default:
+            let named = bots.prefix(3).map(\.name).joined(separator: ", ")
+            return "\(named), and \(bots.count - 3) more"
+        }
+    }
+}
+
+/// Resolve a group's member ids against the live store, in member order —
+/// the same helper the macOS stack uses.
+func groupMemberBots(_ bot: ShellBot, shell: ShellStore?) -> [ShellBot] {
+    guard bot.isGroup, let shell else { return [] }
+    return Threads.groupMembers(Threads.speakers(from: shell.bots), memberIds: bot.memberIds)
+        .compactMap { speaker in shell.bots.first { $0.id == speaker.id } }
 }
 
 /// Design spec 1.15's group titles: `fieldLabel` 13 medium in `inkMuted`,
@@ -624,6 +698,33 @@ extension View {
             cardLift(cornerRadius: cornerRadius)
         } else {
             self
+        }
+    }
+
+    /// The `pop` shadow token (§4.3: y24 blur56 spread-28 @28%) for
+    /// floating sheets — the macOS `popShadow` recipe, ported.
+    func popShadow() -> some View {
+        shadow(
+            color: Theme.shadow(DesignTokens.Shadow.pop),
+            radius: Theme.radius(DesignTokens.Shadow.pop),
+            x: 0,
+            y: DesignTokens.Shadow.pop.y
+        )
+    }
+
+    /// A.3's skeleton pulse — 1.6 s on the brand curve, static under
+    /// Reduce Motion. Apply once to the whole skeleton group (the same
+    /// recipe the roster and chat skeletons use), not per bar.
+    @ViewBuilder
+    func skeletonPulse(_ reduceMotion: Bool) -> some View {
+        if reduceMotion {
+            self
+        } else {
+            phaseAnimator([1.0, 0.45]) { content, phase in
+                content.opacity(phase)
+            } animation: { _ in
+                .timingCurve(0.22, 1, 0.36, 1, duration: 0.8)
+            }
         }
     }
 

@@ -58,6 +58,19 @@ function isDnsName(hostname: string): boolean {
 }
 
 /**
+ * Public DNS host names only — no IP literals, no loopback/private TLDs.
+ * Used for remote-declared CSP origins (mcp-app-host), which are admitted
+ * without DNS resolution; assertConnectionUrl stays the stricter gate for
+ * anything actually fetched.
+ */
+export function isPublicDomainName(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === "localhost") return false;
+  if (V4.test(host)) return false;
+  return isDnsName(host);
+}
+
+/**
  * Parse and accept a connection or discovery URL. Returns the normalised
  * href (hash dropped, trailing junk refused). Throws ConnectionUrlError.
  */

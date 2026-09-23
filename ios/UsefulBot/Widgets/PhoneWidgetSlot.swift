@@ -12,6 +12,7 @@ import WebKit
 struct PhoneWidgetSlot: View {
     let widgetId: String
     @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var html: String?
     @State private var failed = false
     @State private var reloaded = false
@@ -60,6 +61,7 @@ struct PhoneWidgetSlot: View {
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                     .fill(Theme.C.sunken)
                     .frame(height: height)
+                    .skeletonPulse(reduceMotion)
                     .accessibilityLabel("Loading drawing")
             }
         }

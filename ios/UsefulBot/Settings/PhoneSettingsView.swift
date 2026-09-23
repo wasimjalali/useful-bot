@@ -54,8 +54,13 @@ struct PhoneSettingsView: View {
                 .frame(minHeight: 52)
             }
             Section {
-                TextField("Operator name", text: $operatorName)
-                    .frame(minHeight: 44)
+                TextField(
+                    text: $operatorName,
+                    prompt: Text("Operator name").foregroundStyle(Theme.C.inkFaintText)
+                ) {
+                    EmptyView()
+                }
+                .frame(minHeight: 44)
                 // The phone follows the Mac's interface language (spec
                 // 1.11: the row mirrors the desktop's "System" value).
                 LabeledContent("Language", value: "System")

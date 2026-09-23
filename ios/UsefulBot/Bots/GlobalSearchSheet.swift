@@ -81,10 +81,12 @@ struct GlobalSearchSheet: View {
         }
         let bots = ordered.compactMap { id in shell?.bots.first { $0.id == id } }.prefix(5)
         return List {
-            Section("Recent") {
+            Section {
                 ForEach(bots) { bot in
                     botRow(bot)
                 }
+            } header: {
+                tokenGroupHeader("Recent")
             }
         }
         .listStyle(.plain)

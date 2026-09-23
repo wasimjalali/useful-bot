@@ -934,7 +934,24 @@ final class PhoneModel {
                 await replay(botId: id, sessionId: session, cold: chat.cursor == nil)
             } else {
                 chat = chats[id] ?? chat
+                // The pointer was cleared remotely (a second client's new
+                // chat or clear): discard everything that belonged to the
+                // dead session — the same reset newChat performs, except
+                // durable, which the fresh server events above already
+                // reflect (§8.3).
+                chat.streamGeneration += 1
+                chat.projection = StreamProjection()
+                chat.cursor = nil
+                chat.windowStart = nil
                 chat.updating = false
+                chat.attachments = []
+                chat.failedText = nil
+                chat.confirmingId = nil
+                chat.confirmingText = nil
+                chat.catchUpIncomplete = false
+                chat.sessionEnded = false
+                chat.showWorking = false
+                chat.error = nil
                 chats[id] = chat
             }
             conflictNote = false
@@ -985,6 +1002,7 @@ final class PhoneModel {
         var tail: Int?
         let tailBox = TailBox()
         var stoppedEarly = false
+        var ended = false
         do {
             for try await event in client.stream(
                 sessionId: sessionId,
@@ -1004,6 +1022,10 @@ final class PhoneModel {
                     }
                 }
             }
+        } catch let error as BackendError where error == .sessionEnded {
+            // 404/409 on a retired session: §8.4 marks the chat ended
+            // rather than leaving a permanent catching-up state.
+            ended = true
         } catch {
             stoppedEarly = true
         }
@@ -1022,11 +1044,18 @@ final class PhoneModel {
         chat = chats[botId] ?? chat
         chat.projection = assembly.state
         chat.updating = false
-        chat.catchUpIncomplete = !judged.claimsComplete
-        if !judged.claimsComplete {
-            chat.error = "This chat is still catching up."
+        if ended {
+            chat.sessionEnded = true
+            chat.catchUpIncomplete = false
+            chat.showWorking = false
+            chat.error = nil
+        } else {
+            chat.catchUpIncomplete = !judged.claimsComplete
+            if !judged.claimsComplete {
+                chat.error = "This chat is still catching up."
+            }
+            chat.showWorking = chat.projection.pending && judged.claimsComplete
         }
-        chat.showWorking = chat.projection.pending && judged.claimsComplete
         if case .complete(let end) = judged, persistCursor {
             var cursor = chat.cursor ?? StreamCursor(sessionId: sessionId, generation: 1)
             if cursor.sessionId != sessionId {
@@ -1043,7 +1072,7 @@ final class PhoneModel {
             chat.error = nil
         }
         chats[botId] = chat
-        if followLive, judged.claimsComplete {
+        if followLive, judged.claimsComplete, !ended {
             spawnFollow(botId: botId, sessionId: sessionId, token: token)
         }
     }
@@ -1131,10 +1160,9 @@ final class PhoneModel {
         var postedSession: String?
         do {
             let fresh = try await client.shell()
-            guard current(generation) else {
-                dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
-                return
-            }
+            // Stale pairing: nothing local is written back — the old
+            // pairing's bot id and draft belong to the discarded store.
+            guard current(generation) else { return }
             adopt(fresh)
             let pointer = bot(botId)?.sessionId
             let sessionId = try await post(botId: botId, sessionId: pointer, message: formatted, images: files)
@@ -1166,8 +1194,6 @@ final class PhoneModel {
             guard current(generation) else {
                 if postedSession != nil {
                     await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, generation: generation, files: files)
-                } else {
-                    dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
@@ -1221,8 +1247,6 @@ final class PhoneModel {
             guard current(generation) else {
                 if postedSession != nil {
                     await lost(text, needle: echo, botId: botId, error: url, sessionId: postedSession, claimSession: false, generation: generation, files: files)
-                } else {
-                    dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
@@ -1231,8 +1255,6 @@ final class PhoneModel {
             guard current(generation) else {
                 if postedSession != nil {
                     await lost(text, needle: echo, botId: botId, error: error, sessionId: postedSession, claimSession: false, generation: generation, files: files)
-                } else {
-                    dropUnsent(botId, prior: priorProjection, draft: snapshot, files: files)
                 }
                 return
             }
@@ -1302,18 +1324,6 @@ final class PhoneModel {
         if let followSession, !chat.catchUpIncomplete, chat.projection.pending, let token = chats[botId]?.streamGeneration {
             spawnFollow(botId: botId, sessionId: followSession, token: token)
         }
-    }
-
-    /// Pairing changed after the composer was cleared but before the turn was accepted.
-    private func dropUnsent(_ botId: String, prior: StreamProjection, draft snapshot: String, files: [Attachment] = []) {
-        var chat = chats[botId] ?? OpenChat()
-        chat.projection = prior
-        chat.showWorking = false
-        chat.confirmingId = nil
-        chat.confirmingText = nil
-        chat.attachments = files
-        chats[botId] = chat
-        updateDraft(snapshot, forBot: botId)
     }
 
     private struct InterruptedSend: LocalizedError {

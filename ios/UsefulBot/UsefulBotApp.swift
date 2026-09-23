@@ -6,6 +6,7 @@ struct UsefulBotApp: App {
     @StateObject private var coordinator = PairingCoordinator()
     @State private var phone = PhoneModel()
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var booted = false
 
     var body: some Scene {
@@ -23,11 +24,28 @@ struct UsefulBotApp: App {
             if !booted {
                 // Launch settles the stored state first: a persisted
                 // `paired` re-exchanges, a broken stored origin lands in
-                // credentialInvalid — before any screen renders.
-                ZStack {
-                    Theme.C.surface.ignoresSafeArea()
-                    ProgressView()
+                // credentialInvalid — before any screen renders. Boot
+                // draws the shell's skeleton (A.3: no spinners), at the
+                // roster's geometry so the swap-in reads as settle.
+                ZStack(alignment: .topLeading) {
+                    Theme.C.canvas.ignoresSafeArea()
+                    VStack(alignment: .leading, spacing: 16) {
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            .fill(Theme.C.border)
+                            .frame(height: 44)
+                        ForEach(0..<4, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                                .fill(Theme.C.border)
+                                .frame(height: 12)
+                                .frame(minHeight: 44)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                    .padding(.top, 96)
+                    .skeletonPulse(reduceMotion)
                 }
+                .accessibilityLabel("Loading")
             } else if isPad, coordinator.store.state == .paired {
                 // Spec 10: iPad is NavigationSplitView — the rail equivalent
                 // in the sidebar, the detail column holding pushes (Devices

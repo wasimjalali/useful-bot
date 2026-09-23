@@ -14,11 +14,24 @@ struct BotRoutinesSection: View {
     @Binding var editor: RoutineEditorRequest?
     @Environment(PhoneModel.self) private var phone
     @EnvironmentObject private var coordinator: PairingCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var routines: [Routine] = []
+    @State private var loaded = false
     @State private var error: String?
 
     var body: some View {
         Section {
+            if !loaded {
+                // Row skeletons at real geometry, not a spinner — the
+                // same recipe the group's other sections use.
+                ForEach(0..<2, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                        .fill(Theme.C.border)
+                        .frame(height: 12)
+                        .frame(minHeight: 44)
+                }
+                .skeletonPulse(reduceMotion)
+            }
             ForEach(routines) { routine in
                 Button {
                     editor = RoutineEditorRequest(routine: routine)
@@ -61,7 +74,18 @@ struct BotRoutinesSection: View {
                     .foregroundStyle(Theme.C.inkMuted)
             }
             if let error {
-                Text(error).foregroundStyle(Theme.C.danger)
+                HStack {
+                    Text(error)
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.danger)
+                    Spacer()
+                    Button("Retry") {
+                        loaded = false
+                        self.error = nil
+                        Task { await load() }
+                    }
+                    .frame(minHeight: 44)
+                }
             }
             Text("Runs while Useful Bot is open on your Mac or this phone.")
                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
@@ -81,13 +105,17 @@ struct BotRoutinesSection: View {
     }
 
     private func load() async {
-        guard let client = coordinator.client else { return }
+        guard let client = coordinator.client else {
+            loaded = true
+            return
+        }
         do {
             routines = try await client.routines(botId: bot.id)
             error = nil
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? "Routines could not be loaded."
         }
+        loaded = true
     }
 }
 

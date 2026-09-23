@@ -25,21 +25,26 @@ struct SecondaryAction: ButtonStyle {
     /// Destructive confirms ('Delete bot', 'Unpair') draw the label in the
     /// danger token — the confirm sheet's only distinction from Cancel.
     var danger = false
+    /// Row-trailing smalls (connector Connect/Disconnect) hug the label
+    /// instead of spanning the row — 36 pt visible inside the 44 pt
+    /// target the caller frames.
+    var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .tokenFont(DesignTokens.FontSize.chatName, .medium)
+            .tokenFont(compact ? DesignTokens.FontSize.phoneChatMeta : DesignTokens.FontSize.chatName, .medium)
             .foregroundStyle(!enabled ? Theme.C.inkFaint : (danger ? Theme.C.danger : Theme.C.ink))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
+            .frame(maxWidth: compact ? nil : .infinity)
+            .padding(.horizontal, compact ? 12 : 0)
+            .padding(.vertical, compact ? 8 : 10)
             // Spec baseline 'pressed: one tone step': the sunken fill
             // deepens a tone on press instead of an opacity dim.
             .background(configuration.isPressed
                         ? Theme.C.border
                         : (enabled ? Theme.C.sunken : Theme.C.sunken.opacity(0.6)))
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: compact ? DesignTokens.Radius.sm : DesignTokens.Radius.md, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                RoundedRectangle(cornerRadius: compact ? DesignTokens.Radius.sm : DesignTokens.Radius.md, style: .continuous)
                     .strokeBorder(Theme.C.edge, lineWidth: 1)
             )
             .animation(reduceMotion ? nil : .brandFast, value: configuration.isPressed)
@@ -174,16 +179,20 @@ struct ApprovalCardView: View {
     }
 
     private var approveButton: some View {
-        Button(card.phase == .approving ? "Approving" : "Approve") { onDecide(true) }
-            .buttonStyle(PressedScale(
-                fill: actionsBlocked ? Theme.C.sunken : (card.phase == .approving ? Theme.C.accentStrong : Theme.C.brand),
-                pressedFill: actionsBlocked ? Theme.C.sunken : Theme.C.accentStrong,
-                shadowed: !actionsBlocked
-            ))
-            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-            .foregroundStyle(actionsBlocked ? Theme.C.inkFaint : Theme.C.brandInk)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .disabled(actionsBlocked)
+        // The fill lives inside the label — a string-labelled PressedScale
+        // would paint the brand behind the text only, never the full cell.
+        Button { onDecide(true) } label: {
+            Text(card.phase == .approving ? "Approving" : "Approve")
+                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                .foregroundStyle(actionsBlocked ? Theme.C.inkFaint : Theme.C.brandInk)
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(PressedScale(
+            fill: actionsBlocked ? Theme.C.sunken : (card.phase == .approving ? Theme.C.accentStrong : Theme.C.brand),
+            pressedFill: actionsBlocked ? Theme.C.sunken : Theme.C.accentStrong,
+            shadowed: !actionsBlocked
+        ))
+        .disabled(actionsBlocked)
     }
 
     /// Terminal states collapse to a one-line status card (1.3): a pill on
@@ -256,7 +265,7 @@ struct PendingApprovalsView: View {
                                     BotFace(bot: shell, size: 20)
                                 }
                                 Text(name)
-                                    .tokenFont(DesignTokens.FontSize.railName, .medium)
+                                    .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
                                     .foregroundStyle(Theme.C.inkMuted)
                             }
                             .textCase(nil)
@@ -388,16 +397,18 @@ struct ProposalCardView: View {
     }
 
     private var confirmButton: some View {
-        Button("Confirm") { onDecide(true) }
-            .buttonStyle(PressedScale(
-                fill: blockedReason == nil ? Theme.C.brand : Theme.C.sunken,
-                pressedFill: Theme.C.accentStrong,
-                shadowed: blockedReason == nil
-            ))
-            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-            .foregroundStyle(blockedReason == nil ? Theme.C.brandInk : Theme.C.inkFaint)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .disabled(blockedReason != nil)
+        Button { onDecide(true) } label: {
+            Text("Confirm")
+                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                .foregroundStyle(blockedReason == nil ? Theme.C.brandInk : Theme.C.inkFaint)
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(PressedScale(
+            fill: blockedReason == nil ? Theme.C.brand : Theme.C.sunken,
+            pressedFill: Theme.C.accentStrong,
+            shadowed: blockedReason == nil
+        ))
+        .disabled(blockedReason != nil)
     }
 
     private var title: String {

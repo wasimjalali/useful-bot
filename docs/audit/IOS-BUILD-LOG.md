@@ -1911,3 +1911,110 @@ testWidget (flake, passed at gate37) and testRoutineCreate (the
 dismiss pop, fixed and passed at gate39). `make -C macos test`
 322/322 after the BackendClient change. `xcodebuild build` clean.
 46 shots regenerated into docs/audit/ios-shots on the fix build.
+
+## Round 5 (2026-09-22, head 664cbca)
+
+### Correctness (max effort) — request_changes, 1H + 1M + 3L, all applied
+
+- **H** — `BackendClient.swift` streamRead mapped 404/409 →
+  `BackendError.sessionEnded` only in the macOS `#else` branch, so iOS could
+  never raise it: a retired session left `follow()` re-polling a 404 every 2 s
+  forever and `open()`/`replay()` pinned "This chat is still catching up."
+  The iOS guard now maps 404/409 the same way, and `replay()` marks
+  `chat.sessionEnded` (ended row per §8.4) instead of stoppedEarly.
+- **M** — `PhoneModel.open()`'s nil-session branch (pointer cleared remotely
+  by a second client's new chat/clear) only stopped `updating`; §8.3 requires
+  discarding the projection. It now resets projection/cursor/windowStart/
+  sessionEnded/failedText/confirming/catchUpIncomplete/showWorking/error and
+  bumps `streamGeneration` — matching the local newChat/clearThread paths.
+- **L×3** — `agent-exec.ts` wraps `pumpRoutinesOnce` in `async` so a future
+  synchronous throw rejects through the pump instead of escaping the route;
+  `dropUnsent` calls removed on stale-generation paths (nothing local may be
+  written back after re-pairing); `PhoneCache.safe()` escapes became
+  fixed-width so the "collision-free" claim is true for any scalar.
+
+### Security (max effort) — approve, no blocker/high/medium; 5 lows applied
+
+- `shared/mcp-app-host.ts`: CSP_ORIGIN validation now rejects
+  loopback/private/ULA/CGNAT literals via the `isPublicDomainName` host check
+  used by connectRedirectAllowed — an MCP server cannot declare private
+  origins into its widget's CSP.
+- `web/app/api/routines/[id]/route.ts`: `PUT` exported as an alias of `PATCH`
+  (spec §5.1 route matrix lists PUT; both ends already agreed on PATCH).
+- Safari-sheet shots renamed `safari-sheet-gated-pending-*`: this stack has
+  no connectors key, so the connect confirm is refused and the card stays
+  pending — the filenames now reflect the refused-confirm state shown.
+- Remaining lows folded into the same files (no separate surface change).
+
+### Design-a11y (normal) — request_changes, 1H + 14M + 3L, all applied
+
+- **H** — string-labelled `Button("T"){}` + `PressedScale(fill:)` paints the
+  brand fill behind the label text only (Confirm/Approve read as narrow pills).
+  Every primary action moved to the label-frame pattern
+  (`Button { } label: { Text(…).frame(maxWidth: .infinity, minHeight: H) }`):
+  approval card Confirm/Approve, settings Sign-in/Connect/Save-key,
+  "Continue this conversation".
+- **M** — FloatingSheet used the `lift` token; new `popShadow` modifier applies
+  the spec's `pop` shadow (y 24 / blur 56 / spread −28 / 28%) to sheet cards.
+- **M** — search-hit chips: 32 pt visual kept, hit target raised to 44 pt
+  (`minHeight: 44` + `.contentShape(Rectangle())`).
+- **M** — five `Section("Title")` headers → `tokenGroupHeader` (Profile,
+  Avatar, Memory in BotProfileSection; Members in CreateGroupSheet; Recent in
+  GlobalSearchSheet).
+- **M** — title-string placeholders → `prompt:` + `inkFaintText`
+  (Paste key, catalog.hint, Operator name).
+- **M** — connector row rebuilt to spec 1.13: Connect = small primary
+  (36 pt visual inside 44 pt target, PressedScale), Disconnect /
+  Connecting-disabled = compact `SecondaryAction`; the row stacks vertically
+  at accessibility sizes.
+- **M** — connector status copy pinned: "Waiting for approval in the
+  browser", timed-out "Still not connected. Try again.", disabled reason
+  "Finish the other sign-in first"; a failed connector shows its state again
+  after the sheet dismisses.
+- **M** — connector loading state = 4 spec-anatomy skeleton rows (logo tile,
+  name bar, button block) driven by a new shared `.skeletonPulse` modifier
+  (phaseAnimator 1.0↔0.45, 1.6 s timingCurve, static under Reduce Motion);
+  the same pulse drives Bot Memory, Routines, Usage, the widget loading tile
+  and the new branded boot skeleton (replaces the system ProgressView).
+- **M** — group anatomy: `AvatarStackView` ported (roster 20 pt/maxVisible 2,
+  chat header 18/2, group-settings identity 36/3) via `groupMemberBots`;
+  group settings now read stack + Profile (Name) + Members + Delete group,
+  and member add/remove rides `patchBot(memberIds:)` through the new
+  GroupMembersSection + pushed picker (no nested sheet — iOS 26 collapse rule).
+- **M** — past-conversation bubble caps: user 82 %, bot 90 %; composer chips
+  sit 6 pt under the field (nested VStack, outer spacing 8).
+- **M** — paste-key rejection paints the danger stroke; Memory/Routines
+  subscreens surface load errors with Retry.
+- **L×3** — approval header label token railName → fieldLabel; compact
+  `SecondaryAction` variant; boot splash accessibility label.
+
+### Harness fixes (not app changes)
+
+- `openChat` roster hunt: alternating swipes only covered ±1 viewport —
+  Test Bot sits several screens away at XXXL. The hunt now sweeps one
+  direction to the end, then the other (testChatAccessibility).
+- `testApprovalResolved`: the ctl decide raced the 2.5 s ask poll — the card
+  resolved before Approve could be hit. The leg now taps Approve under
+  `UB_DECIDE_DELAY_MS` first so the phone's own POST 404s after the store
+  decision — the decide-404 path is exercised deterministically.
+- `testWidget`: the hunt scrolled only toward older rows while the seeded
+  widget event is the transcript's tail — scrolled away once, the row left
+  the lazy stack permanently. It now sweeps toward the tail first (also the
+  on-screen hunt for the shot).
+- `testSafariSheet`: XCUI snapshot-evaluation timeout, then a stale-row tap —
+  environment flake, green on rerun with no app change.
+
+### Environmental note
+
+- `test/cli-tools.test.ts` "no line reaches the keychain" reads the real
+  `$HOME`: this VM's first `gh` invocation wrote `~/.local/state/gh` with no
+  `~/.config/gh`, so the conditional assertion fired mid-suite. Created the
+  conventional `~/.config/gh` (what `gh` itself makes on first real use)
+  instead of touching the owner's test; suite + verify-release green.
+
+### Re-run scope
+
+Full gate (gate30) on the round-5 fix build plus targeted reruns (gate31/32):
+every leg green, widget nav-probe 0 hits. `npm test` 650/650,
+`verify-release.mjs` PASS, `make -C macos test` 322/322, `xcodebuild build`
+clean. 48 shots regenerated; PERFORMANCE-IOS.md re-measured on this build.

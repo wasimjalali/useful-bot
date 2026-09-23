@@ -114,14 +114,14 @@ struct PhoneCache {
         return try? decoder.decode(type, from: data)
     }
 
-    /// Collision-free: every non-alphanumeric scalar escapes to
-    /// `_<hex>` (`_` itself escapes), so two distinct ids can never fold
-    /// into the same file name.
+    /// Collision-free: every non-alphanumeric scalar escapes to a
+    /// fixed-width `_XXXXXX` (`_` itself escapes), so two distinct ids
+    /// can never fold into the same file name.
     private func safe(_ value: String) -> String {
         value.unicodeScalars.map { scalar in
             CharacterSet.alphanumerics.contains(scalar)
                 ? String(scalar)
-                : "_" + String(scalar.value, radix: 16)
+                : "_" + String(format: "%06x", scalar.value)
         }.joined()
     }
 }

@@ -1043,7 +1043,7 @@ export function scheduleRoutinePump(limit = 2): { coalesced: boolean; promise: P
 }
 
 function routinePump(): CoalescedPump<RoutinePumpResult> {
-  pumpState.routinePump ??= new CoalescedPump((limit) => Promise.resolve(pumpRoutinesOnce(limit)));
+  pumpState.routinePump ??= new CoalescedPump(async (limit) => pumpRoutinesOnce(limit));
   return pumpState.routinePump;
 }
 

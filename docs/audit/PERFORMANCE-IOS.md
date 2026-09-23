@@ -19,8 +19,8 @@ time wall-clock (XCUITest), that is what the number is — see Method caveats.
   the native timings below; it only backs the widget leg), eve on :4321 running
   the `UB_S2_FIXTURE=1` fixture.
 - Fixture dataset on Test Bot: 240 seeded durable events plus the live events
-  the legs appended (259 total at measure time), durable transcript cap 300
-  rows, replay stream of 3,500 events on `bot-long` for the cold-replay leg.
+  the legs appended (300 total at the durable cap), replay stream of 3,500
+  events on `bot-long` for the cold-replay leg.
 
 ## Method caveats
 
@@ -35,12 +35,12 @@ time wall-clock (XCUITest), that is what the number is — see Method caveats.
 
 | Metric | Budget (spec §16) | Measured | Verdict |
 |---|---|---|---|
-| Cold launch → interactive (bots list rooted) | report actual | 3.45 s median (7.71 s first launch, then 3.39, 3.37, 3.31, 3.35) | pass |
+| Cold launch → interactive (bots list rooted) | report actual | 4.44 s median (12.33 s first launch, then 4.44, 4.46, 4.25, 4.35) | pass |
 | Cold launch → first data paint | report actual | equals interactive — the roster skeleton never mounted; cached `shell.json` hydrates before first frame | pass |
-| Open chat, cached (240-event transcript) | report actual | 6.00 s median (5.93, 6.00, 6.31, 5.81, 5.93) | pass |
-| Open chat, cold replay (3,500-event stream on bot-long) | report actual | 6.21 s | pass |
+| Open chat, cached (~300-event transcript) | report actual | 5.22 s median (6.21, 5.22, 5.18, 5.35, 5.15) | pass |
+| Open chat, cold replay (3,500-event stream on bot-long) | report actual | 8.64 s | pass |
 | Send → reply rendered (fixture eve, includes Face ID match + round trip + stream) | report actual | ≈10 s wall-clock end-to-end | pass |
-| Scroll burst, 12 swipes through the transcript | sustained 60 fps | 14.4 s median per burst (14.3, 15.2, 13.9, 15.0, 13.4) — wall-clock including settle waits; XCTest cannot count frames, so this is throughput evidence, not a frame counter | pass with caveat |
+| Scroll burst, 12 swipes through the transcript | sustained 60 fps | 12.65 s median per burst (12.65, 12.94, 12.54, 12.25, 14.71) — wall-clock including settle waits; XCTest cannot count frames, so this is throughput evidence, not a frame counter | pass with caveat |
 | App memory, 240+ event chat open at tail | ≤150 MB | 44 MB footprint | pass |
 | WebKit per widget (WKWebView non-persistent store) | report actual; >80 MB is a finding | 15 MB footprint (129 MB ps RSS) | pass |
 | Idle foreground CPU, settled | <1% over 60 s | 0.57% over 60 s (0.34 s CPU / 60 s) | pass |

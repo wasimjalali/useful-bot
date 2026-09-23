@@ -210,13 +210,29 @@ final class SurfacesUITests: XCTestCase {
     /// region); tapping the row's label text hits live content instead.
     private func openChat(_ app: XCUIApplication, _ botName: String) {
         let row = app.buttons[botName]
-        let deadline = Date().addingTimeInterval(20)
-        // The roster can be parked at either end between legs; hunt the row
-        // in both directions.
-        var swipeDown = false
+        let deadline = Date().addingTimeInterval(30)
+        // The roster can be parked at either end between legs; sweep to the
+        // bottom first, then to the top — alternating directions only hunts
+        // the viewport around the start position.
+        var remainingDownSwipes = 14
+        var remainingUpSwipes = 14
+        var huntingDown = true
         while Date() < deadline && !(row.exists && row.isHittable) {
-            if swipeDown { app.swipeDown() } else { app.swipeUp() }
-            swipeDown.toggle()
+            if huntingDown {
+                if remainingDownSwipes > 0 {
+                    app.swipeUp()
+                    remainingDownSwipes -= 1
+                } else {
+                    huntingDown = false
+                }
+            } else {
+                if remainingUpSwipes > 0 {
+                    app.swipeDown()
+                    remainingUpSwipes -= 1
+                } else {
+                    break
+                }
+            }
             usleep(400_000)
         }
         let label = app.staticTexts[botName]
@@ -724,16 +740,19 @@ final class SurfacesUITests: XCTestCase {
     }
 
     /// Resolved: the Mac decides first; the phone's own approve 404s into
-    /// "Resolved on your Mac".
+    /// "Resolved on your Mac". The decide-delay seam opens a guaranteed
+    /// window: the phone taps Approve while the card is still pending, and
+    /// the store decision lands during the delay so the phone's POST 404s.
+    /// Deciding before the tap races the 2.5s ask poll — the card flips to
+    /// resolved before the button can be hit.
     func testApprovalResolved() throws {
         let app = XCUIApplication()
-        try ensurePaired(app)
+        try ensurePaired(app, extra: ["UB_DECIDE_DELAY_MS": "2500"])
         openChat(app, "Test Bot")
         XCTAssertTrue(app.staticTexts["Test Bot asks"].waitForExistence(timeout: 20))
-        // The marker names the record id out of the card; the watcher
-        // decides it in the store first, then answers Face ID.
-        hostCmd("decide-resolve")
+        hostCmd("biomatch")
         tapButton(app, "Approve")
+        hostCmd("decide-resolve")
         if !app.staticTexts["Resolved on your Mac"].waitForExistence(timeout: 20) {
             shot("approval-resolved-miss", app)
             let phases = ["Approved", "Denied", "Approving", "This request changed. Check it again.",
@@ -750,13 +769,14 @@ final class SurfacesUITests: XCTestCase {
         hostCmd("reseed-apr_resolve")
         app.terminate()
         let dark = XCUIApplication()
-        launch(dark, appearance: "dark")
+        launch(dark, appearance: "dark", extra: ["UB_DECIDE_DELAY_MS": "2500"])
         popIfRestored(dark)
         XCTAssertTrue(waitForBotsRoot(dark, timeout: 20))
         openChat(dark, "Test Bot")
         XCTAssertTrue(dark.staticTexts["Test Bot asks"].waitForExistence(timeout: 20))
-        hostCmd("decide-resolve")
+        hostCmd("biomatch")
         tapButton(dark, "Approve")
+        hostCmd("decide-resolve")
         XCTAssertTrue(dark.staticTexts["Resolved on your Mac"].waitForExistence(timeout: 20))
         shot("approval-resolved-dark", dark)
     }
@@ -829,21 +849,29 @@ final class SurfacesUITests: XCTestCase {
         let app = XCUIApplication()
         try ensurePaired(app)
         openChat(app, "Test Bot")
-        // The chat lands short of the tail while the lazy stack settles; the
-        // seeded widget row sits near the newest events, so hunt toward the
-        // tail. Swipe the transcript's scroll view itself — docked ask cards
-        // below it can eat an app-wide swipe. The chat opens pinned to the
-        // newest events and the widget row sits above them, so hunt toward
-        // older rows (swipe down).
+        // The seeded widget event is the thread's tail row — the slot only
+        // mounts while the row is inside the realized region, so sweep toward
+        // the tail first: the open pin can land a row or two short, and
+        // scrolling away (toward older) drops the tail row out of the lazy
+        // stack entirely. Show-earlier taps stay as the fallback for widget
+        // rows that accumulated deeper in the transcript.
         let webview = app.webViews.firstMatch
         let skeleton = app.descendants(matching: .any)["Loading drawing"]
         let failedText = app.staticTexts["This drawing could not be opened."]
         let transcript = app.scrollViews["transcript"]
         let earlier = app.buttons["Show earlier"]
         let deadline = Date().addingTimeInterval(45)
+        var huntingTail = true
+        var tailSwipes = 0
+        var olderSwipes = 0
         while Date() < deadline && !webview.exists && !failedText.exists {
             if skeleton.exists {
                 usleep(300_000)   // slot mounted, fetch in flight
+            } else if huntingTail {
+                transcript.swipeUp()    // toward the tail, where the row is
+                tailSwipes += 1
+                usleep(300_000)
+                if tailSwipes >= 12 { huntingTail = false }
             } else if earlier.exists && earlier.isHittable {
                 // The thread fixture grows a few rows every run; once the
                 // widget slips above the transcript's window, swiping alone
@@ -852,8 +880,10 @@ final class SurfacesUITests: XCTestCase {
                 earlier.tap()
                 usleep(300_000)
             } else {
-                transcript.swipeDown()   // still hunting the row
+                transcript.swipeDown()   // older rows, for accumulated seeds
+                olderSwipes += 1
                 usleep(300_000)
+                if olderSwipes > 20 { huntingTail = true; tailSwipes = 0 }
             }
         }
         hostCmd("probe-reset")
@@ -861,10 +891,11 @@ final class SurfacesUITests: XCTestCase {
                       "widget webview never rendered (skeleton=\(skeleton.exists) failed=\(failedText.exists))")
         // Give its JS nav attempts time to fire and be cancelled, and hunt
         // until the row is actually on screen for the shot — `exists` answers
-        // true while the lazy stack still holds it off-frame.
+        // true while the lazy stack still holds it off-frame. The row sits at
+        // the tail, so hunt toward it.
         let visibleDeadline = Date().addingTimeInterval(20)
         while Date() < visibleDeadline && !webview.isHittable {
-            transcript.swipeDown()
+            transcript.swipeUp()
             usleep(300_000)
         }
         sleep(3)
@@ -1080,7 +1111,7 @@ final class SurfacesUITests: XCTestCase {
             || safariHost.otherElements.firstMatch.waitForExistence(timeout: 2)
         XCTAssertTrue(sheetPresented || app.staticTexts["GitHub"].exists,
                       "connect confirm vanished the card without a sheet")
-        shot("safari-sheet-light", app)
+        shot("safari-sheet-gated-pending-light", app)
     }
 
     /// Dark-pass twin of testSafariSheet; the gate re-seeds a fresh
@@ -1099,7 +1130,7 @@ final class SurfacesUITests: XCTestCase {
             || safariHost.otherElements.firstMatch.waitForExistence(timeout: 2)
         XCTAssertTrue(sheetPresented || app.staticTexts["GitHub"].exists,
                       "connect confirm vanished the card without a sheet")
-        shot("safari-sheet-dark", app)
+        shot("safari-sheet-gated-pending-dark", app)
     }
 
     /// Owner-question card: the fixture's ask_question lands as

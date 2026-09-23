@@ -427,8 +427,13 @@ struct BotsListView: View {
         } label: {
             HStack(spacing: 12) {
                 // Working bots breathe with the brand motion layers (1.2);
-                // idle and Reduce Motion draw the static avatar.
-                if phone.workingBotIds.contains(bot.id) && !reduceMotion {
+                // idle and Reduce Motion draw the static avatar. A group
+                // row carries the two-face member stack instead of one
+                // mascot (spec 1.6), in the same slot.
+                if bot.isGroup {
+                    AvatarStackView(bots: groupMemberBots(bot, shell: shell), size: 20, maxVisible: 2)
+                        .frame(width: bot.pinned ? 44 : 40, height: bot.pinned ? 44 : 40)
+                } else if phone.workingBotIds.contains(bot.id) && !reduceMotion {
                     BrandMotionAvatar(size: bot.pinned ? 44 : 40, color: FacePalette.displayColor(for: bot), avatar: true)
                 } else {
                     BotFace(bot: bot, size: bot.pinned ? 44 : 40)
@@ -1059,7 +1064,7 @@ struct PastConversationView: View {
                         }
                         // The same width caps the live transcript uses —
                         // the archived bubble can't sprawl full width.
-                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.90 }
+                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.82 }
                         .listRowSeparator(.hidden)
                     } else {
                         HStack {
@@ -1073,7 +1078,7 @@ struct PastConversationView: View {
                                 .cardLift(cornerRadius: DesignTokens.Radius.md)
                             Spacer(minLength: 24)
                         }
-                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.82 }
+                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.90 }
                         .listRowSeparator(.hidden)
                     }
                 }
@@ -1108,16 +1113,19 @@ struct PastConversationView: View {
                     }
                     // "Continue this conversation" is class A — the gate
                     // runs inside `continuePast`.
-                    Button("Continue this conversation") {
+                    Button {
                         Task { await phone.continuePast() }
+                    } label: {
+                        Text("Continue this conversation")
+                            .tokenFont(DesignTokens.FontSize.button, .semibold)
+                            .foregroundStyle(blocked == nil ? Theme.C.brandInk : Theme.C.inkFaint)
+                            .frame(maxWidth: .infinity, minHeight: 50)
                     }
                     .buttonStyle(PressedScale(
                         fill: blocked == nil ? Theme.C.brand : Theme.C.sunken,
                         pressedFill: Theme.C.accentStrong,
                         shadowed: blocked == nil
                     ))
-                    .tokenFont(DesignTokens.FontSize.button, .semibold)
-                    .foregroundStyle(blocked == nil ? Theme.C.brandInk : Theme.C.inkFaint)
                     .frame(maxWidth: .infinity, minHeight: 50)
                     .disabled(blocked != nil)
                 }
@@ -1306,7 +1314,7 @@ private struct CreateGroupSheet: View {
             CreateField("Name", text: $name)
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
             List {
-                Section("Members") {
+                Section {
                     ForEach(bots) { bot in
                         let picked = members.contains(bot.id)
                         Button {
@@ -1336,6 +1344,8 @@ private struct CreateGroupSheet: View {
                         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                         .accessibilityAddTraits(picked ? .isSelected : [])
                     }
+                } header: {
+                    tokenGroupHeader("Members")
                 }
             }
             .listStyle(.plain)

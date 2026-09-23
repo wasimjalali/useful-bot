@@ -1,4 +1,5 @@
 import { findConnectionById } from "./connections-store.ts";
+import { isPublicDomainName } from "./connection-url.ts";
 import { readMcpResource } from "./mcp-http.ts";
 import type { WidgetRecord } from "./widgets-store.ts";
 
@@ -16,6 +17,10 @@ const MAX_CSP_DOMAINS = 8;
 function cspExtra(domains: string[]): string {
   const extra = domains
     .filter((d) => CSP_ORIGIN.test(d) && d.toLowerCase() !== ESM)
+    // A declared origin at a loopback/private literal would let the app's
+    // frame fetch unauthenticated private HTTPS endpoints; only public
+    // DNS names are admitted.
+    .filter((d) => isPublicDomainName(d.slice("https://".length)))
     .slice(0, MAX_CSP_DOMAINS);
   return [ESM, ...extra].join(" ");
 }

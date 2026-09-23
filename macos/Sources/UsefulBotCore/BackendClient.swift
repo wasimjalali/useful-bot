@@ -1863,6 +1863,12 @@ public actor BackendClient {
                             case 403:
                                 throw BackendError.forbidden(
                                     (try await Self.errorCode(bytes)) ?? "forbidden")
+                            case 404, 409:
+                                // A retired stream, as in the #else arm:
+                                // the follow loop's sessionEnded arm reads
+                                // it (§8.4), and without it the loop re-arms
+                                // a dead session forever.
+                                throw BackendError.sessionEnded
                             default:
                                 throw BackendError.http(status)
                             }

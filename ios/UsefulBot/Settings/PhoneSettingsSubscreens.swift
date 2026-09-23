@@ -511,12 +511,14 @@ struct ProviderConnectView: View {
             Section {
                 // Provider connect is a primary commit, not a secondary
                 // row (design spec: "Sign in"/"Connect" render brand).
-                Button(busy ? "Connecting" : (flow == nil ? "Sign in" : "Try again")) { Task { await startFlow() } }
-                    .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong, shadowed: !busy))
-                    .tokenFont(DesignTokens.FontSize.button, .semibold)
-                    .foregroundStyle(busy ? Theme.C.inkFaint : Theme.C.brandInk)
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .disabled(busy)
+                Button { Task { await startFlow() } } label: {
+                    Text(busy ? "Connecting" : (flow == nil ? "Sign in" : "Try again"))
+                        .tokenFont(DesignTokens.FontSize.button, .semibold)
+                        .foregroundStyle(busy ? Theme.C.inkFaint : Theme.C.brandInk)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong, shadowed: !busy))
+                .disabled(busy)
             }
             .listRowSeparator(.hidden)
         }
@@ -526,8 +528,13 @@ struct ProviderConnectView: View {
         Group {
             Section {
                 if catalog.fields == nil || catalog.fields?.isEmpty == true {
-                    SecureField(catalog.hint.isEmpty ? "API key" : catalog.hint, text: $key)
-                        .frame(minHeight: 44)
+                    SecureField(
+                        text: $key,
+                        prompt: Text(catalog.hint.isEmpty ? "API key" : catalog.hint).foregroundStyle(Theme.C.inkFaintText)
+                    ) {
+                        EmptyView()
+                    }
+                    .frame(minHeight: 44)
                 }
                 ForEach(catalog.fields ?? [], id: \.id) { field in
                     Group {
@@ -553,13 +560,13 @@ struct ProviderConnectView: View {
                 }
             }
             Section {
-                Button(busy ? "Connecting" : (catalog.fields == nil || catalog.fields?.isEmpty == true ? "Save key" : "Connect")) {
-                    Task { await connect() }
+                Button { Task { await connect() } } label: {
+                    Text(busy ? "Connecting" : (catalog.fields == nil || catalog.fields?.isEmpty == true ? "Save key" : "Connect"))
+                        .tokenFont(DesignTokens.FontSize.button, .semibold)
+                        .foregroundStyle(busy ? Theme.C.inkFaint : Theme.C.brandInk)
+                        .frame(maxWidth: .infinity, minHeight: 50)
                 }
                 .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong, shadowed: !busy))
-                .tokenFont(DesignTokens.FontSize.button, .semibold)
-                .foregroundStyle(busy ? Theme.C.inkFaint : Theme.C.brandInk)
-                .frame(maxWidth: .infinity, minHeight: 50)
                 .disabled(busy)
             }
             .listRowSeparator(.hidden)
@@ -683,8 +690,13 @@ struct PhoneConnectorsView: View {
     @State private var rejectedReason: String?
     @State private var error: String?
     @State private var connectingSlug: String?
+    /// Slugs whose authorize round trip ended without a connection —
+    /// the row's 'Still not connected. Try again.' state (spec 1.13).
+    @State private var failedConnect: Set<String> = []
     @State private var safariURL: URL?
     @State private var shown = 20
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(spacing: 0) {
@@ -716,20 +728,28 @@ struct PhoneConnectorsView: View {
                 .padding(.bottom, 8)
             }
             List {
-                if showsKeyForm {
-                    keySection
-                }
-                if payload?.hasKey == true || !showsKeyForm {
-                    appSection
-                } else if let payload, payload.error != nil {
+                if payload == nil {
+                    // Spec 1.13 loading state: four row skeletons (logo
+                    // tile, name bar, button block) — not the live form.
                     Section {
-                        HStack {
-                            Text(payload.error ?? "Connectors failed")
-                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                                .foregroundStyle(Theme.C.danger)
-                            Spacer()
-                            Button("Retry") { Task { await load() } }
-                                .frame(minHeight: 44)
+                        ForEach(0..<4, id: \.self) { _ in connectorSkeletonRow }
+                    }
+                } else {
+                    if showsKeyForm {
+                        keySection
+                    }
+                    if payload?.hasKey == true || !showsKeyForm {
+                        appSection
+                    } else if let payload, payload.error != nil {
+                        Section {
+                            HStack {
+                                Text(payload.error ?? "Connectors failed")
+                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                    .foregroundStyle(Theme.C.danger)
+                                Spacer()
+                                Button("Retry") { Task { await load() } }
+                                    .frame(minHeight: 44)
+                            }
                         }
                     }
                 }
@@ -748,8 +768,17 @@ struct PhoneConnectorsView: View {
         // the 3s watchConnection loop instead of polling into the void.
         .onDisappear { connectPoll?.cancel() }
         .sheet(isPresented: Binding(get: { safariURL != nil }, set: { if !$0 { safariURL = nil } }), onDismiss: {
+            // The sheet ended without a landing: a slug that still is not
+            // connected earns 'Still not connected. Try again.'.
+            let attempted = connectingSlug
             connectingSlug = nil
-            Task { await load() }
+            Task {
+                await load()
+                if let attempted,
+                   payload?.toolkits.first(where: { $0.slug == attempted })?.connected != true {
+                    failedConnect.insert(attempted)
+                }
+            }
         }) {
             if let url = safariURL {
                 SafariSheet(url: url)
@@ -784,19 +813,34 @@ struct PhoneConnectorsView: View {
                 }
                 .frame(minHeight: 44)
             } else {
-                SecureField("Paste key", text: $key)
-                    .frame(minHeight: 44)
+                SecureField(
+                    text: $key,
+                    prompt: Text("Paste key").foregroundStyle(Theme.C.inkFaintText)
+                ) {
+                    EmptyView()
+                }
+                .padding(.horizontal, 10)
+                .frame(minHeight: 44)
+                .overlay {
+                    // Key-rejected strokes the field danger (spec 1.13).
+                    if rejectedReason != nil {
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                            .strokeBorder(Theme.C.danger, lineWidth: 1)
+                    }
+                }
                 // The key commit is primary (spec 1.13 anatomy).
-                Button("Save key") { Task { await saveKey() } }
-                    .buttonStyle(PressedScale(
-                        fill: blocked == nil && !key.isEmpty ? Theme.C.brand : Theme.C.sunken,
-                        pressedFill: Theme.C.accentStrong,
-                        shadowed: blocked == nil && !key.isEmpty
-                    ))
-                    .tokenFont(DesignTokens.FontSize.button, .semibold)
-                    .foregroundStyle(blocked == nil && !key.isEmpty ? Theme.C.brandInk : Theme.C.inkFaint)
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .disabled(blocked != nil || key.isEmpty)
+                Button { Task { await saveKey() } } label: {
+                    Text("Save key")
+                        .tokenFont(DesignTokens.FontSize.button, .semibold)
+                        .foregroundStyle(blocked == nil && !key.isEmpty ? Theme.C.brandInk : Theme.C.inkFaint)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(PressedScale(
+                    fill: blocked == nil && !key.isEmpty ? Theme.C.brand : Theme.C.sunken,
+                    pressedFill: Theme.C.accentStrong,
+                    shadowed: blocked == nil && !key.isEmpty
+                ))
+                .disabled(blocked != nil || key.isEmpty)
                 if key.isEmpty {
                     Text("Paste a key to save it")
                         .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
@@ -847,6 +891,13 @@ struct PhoneConnectorsView: View {
                     .buttonStyle(SecondaryAction())
                     .frame(minHeight: 44)
             }
+            if connectingSlug != nil {
+                // Disabled-state reason (spec 1.13): every other Connect
+                // is quieted while one sign-in is pending.
+                Text("Finish the other sign-in first")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
         }
     }
 
@@ -857,41 +908,80 @@ struct PhoneConnectorsView: View {
         return all.filter { $0.name.lowercased().contains(needle) }
     }
 
-    private func connectorRow(_ toolkit: ConnectorToolkit) -> some View {
-        HStack(spacing: 12) {
-            logoTile(toolkit)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(toolkit.name)
-                    .tokenFont(DesignTokens.FontSize.chatName, .regular)
-                    .foregroundStyle(Theme.C.ink)
-                Text(statusLine(toolkit))
-                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                    .foregroundStyle(toolkit.connected ? Theme.C.success : Theme.C.inkMuted)
+    @ViewBuilder
+    private func connectorTrailing(_ toolkit: ConnectorToolkit) -> some View {
+        if connectingSlug == toolkit.slug {
+            // Spec: the pending row button reads 'Connecting', disabled.
+            Button("Connecting") {}
+                .buttonStyle(SecondaryAction(enabled: false, compact: true))
+                .frame(minHeight: 44)
+                .disabled(true)
+        } else if toolkit.connected {
+            Button("Disconnect") { Task { await disconnect(toolkit) } }
+                .buttonStyle(SecondaryAction(enabled: blocked == nil, compact: true))
+                .frame(minHeight: 44)
+                .disabled(blocked != nil)
+        } else if !toolkit.noAuth {
+            let connectDisabled = blocked != nil || connectingSlug != nil
+            // 'Connect' is primary small — 36 pt visible in the 44 pt
+            // target (spec 1.13 anatomy), not a full-width secondary.
+            Button { Task { await connect(toolkit) } } label: {
+                Text("Connect")
+                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
+                    .foregroundStyle(connectDisabled ? Theme.C.inkFaint : Theme.C.brandInk)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 36)
             }
-            Spacer(minLength: 8)
-            if connectingSlug == toolkit.slug {
-                Text("Connecting")
-                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .frame(minHeight: 44)
-            } else if toolkit.connected {
-                Button("Disconnect") { Task { await disconnect(toolkit) } }
-                    .buttonStyle(SecondaryAction(enabled: blocked == nil))
-                    .frame(minHeight: 44)
-                    .disabled(blocked != nil)
-            } else if !toolkit.noAuth {
-                Button("Connect") { Task { await connect(toolkit) } }
-                    .buttonStyle(SecondaryAction(enabled: blocked == nil && connectingSlug == nil))
-                    .frame(minHeight: 44)
-                    .disabled(blocked != nil || connectingSlug != nil)
-            } else {
-                Text("No sign-in needed")
-                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .frame(minHeight: 44)
-            }
+            .buttonStyle(PressedScale(
+                fill: connectDisabled ? Theme.C.sunken : Theme.C.brand,
+                pressedFill: Theme.C.accentStrong,
+                shadowed: !connectDisabled
+            ))
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+            .disabled(connectDisabled)
+        } else {
+            Text("No sign-in needed")
+                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                .foregroundStyle(Theme.C.inkMuted)
+                .frame(minHeight: 44)
         }
-        .frame(minHeight: 64)
+    }
+
+    @ViewBuilder
+    private func connectorRow(_ toolkit: ConnectorToolkit) -> some View {
+        // At accessibility sizes the trailing button drops under the name
+        // and status line (spec 1.13 Dynamic Type).
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    logoTile(toolkit)
+                    connectorCopy(toolkit)
+                    Spacer(minLength: 8)
+                }
+                connectorTrailing(toolkit)
+            }
+            .frame(minHeight: 64)
+        } else {
+            HStack(spacing: 12) {
+                logoTile(toolkit)
+                connectorCopy(toolkit)
+                Spacer(minLength: 8)
+                connectorTrailing(toolkit)
+            }
+            .frame(minHeight: 64)
+        }
+    }
+
+    private func connectorCopy(_ toolkit: ConnectorToolkit) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(toolkit.name)
+                .tokenFont(DesignTokens.FontSize.chatName, .regular)
+                .foregroundStyle(Theme.C.ink)
+            Text(statusLine(toolkit))
+                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                .foregroundStyle(toolkit.connected ? Theme.C.success : Theme.C.inkMuted)
+        }
     }
 
     /// The app logo tile. `toolkit.logo` is a remote URL — fetching it
@@ -913,10 +1003,35 @@ struct PhoneConnectorsView: View {
         name.first.map { String($0).uppercased() } ?? "?"
     }
 
+    /// Spec 1.13's loading skeleton: logo tile, name bar, button block at
+    /// row geometry — 1.6 s pulse via the shared skeletonPulse recipe.
+    private var connectorSkeletonRow: some View {
+        HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                .fill(Theme.C.border)
+                .frame(width: 36, height: 36)
+            VStack(alignment: .leading, spacing: 6) {
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                    .fill(Theme.C.border)
+                    .frame(width: 120, height: 12)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                    .fill(Theme.C.border)
+                    .frame(width: 80, height: 10)
+            }
+            Spacer(minLength: 8)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                .fill(Theme.C.border)
+                .frame(width: 64, height: 36)
+        }
+        .frame(minHeight: 64)
+        .skeletonPulse(reduceMotion)
+    }
+
     private func statusLine(_ toolkit: ConnectorToolkit) -> String {
         if toolkit.connected { return "Connected" }
-        if connectingSlug == toolkit.slug { return "Waiting for you to finish in Safari" }
+        if connectingSlug == toolkit.slug { return "Waiting for approval in the browser" }
         if toolkit.noAuth { return "No sign-in needed" }
+        if failedConnect.contains(toolkit.slug) { return "Still not connected. Try again." }
         return "Not connected"
     }
 
@@ -926,7 +1041,12 @@ struct PhoneConnectorsView: View {
 
     private func load() async {
         guard let client = coordinator.client else { return }
-        payload = try? await client.connectors()
+        do {
+            payload = try await client.connectors()
+            error = nil
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? "Connectors could not be loaded."
+        }
     }
 
     private func saveKey() async {
@@ -957,6 +1077,7 @@ struct PhoneConnectorsView: View {
         guard await gate("Connect \(toolkit.name)") else { return }
         guard let client = coordinator.client else { return }
         connectingSlug = toolkit.slug
+        failedConnect.remove(toolkit.slug)
         do {
             let url = try await client.authorizeConnector(slug: toolkit.slug)
             // Same contract the proposal card enforces: a server-named
@@ -971,6 +1092,7 @@ struct PhoneConnectorsView: View {
             }
         } catch {
             connectingSlug = nil
+            failedConnect.insert(toolkit.slug)
             self.error = (error as? LocalizedError)?.errorDescription
         }
     }
@@ -991,6 +1113,7 @@ struct PhoneConnectorsView: View {
                     if next.toolkits.first(where: { $0.slug == slug })?.connected == true {
                         safariURL = nil
                         connectingSlug = nil
+                        failedConnect.remove(slug)
                         return
                     }
                 }
@@ -1028,6 +1151,7 @@ struct PhoneConnectorsView: View {
 struct PhoneUsageView: View {
     @EnvironmentObject private var coordinator: PairingCoordinator
     @Environment(PhoneModel.self) private var phone
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var usage: UsagePayload?
     @State private var error: String?
 
@@ -1112,6 +1236,7 @@ struct PhoneUsageView: View {
                             .frame(height: 12)
                             .frame(minHeight: 44)
                     }
+                    .skeletonPulse(reduceMotion)
                 }
             }
             if let error {

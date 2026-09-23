@@ -43,6 +43,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
 }
 
+// The spec matrix names PUT for this route; the wire accepts both spellings.
+export { PATCH as PUT };
+
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
   const gate = await guard(request);
   if (gate instanceof NextResponse) return gate;

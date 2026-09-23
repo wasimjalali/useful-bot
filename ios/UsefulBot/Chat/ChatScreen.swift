@@ -136,7 +136,12 @@ struct ChatScreen: View {
                         showBotSettings = true
                     } label: {
                         HStack(spacing: 8) {
-                            BotFace(bot: bot, size: 28)
+                            if bot.isGroup {
+                                AvatarStackView(bots: groupMemberBots(bot, shell: phone.shell), size: 18, maxVisible: 2)
+                                    .frame(width: 28, height: 28)
+                            } else {
+                                BotFace(bot: bot, size: 28)
+                            }
                             Text(bot.name)
                                 .tokenFont(DesignTokens.FontSize.phoneNavTitle, .semibold)
                                 .foregroundStyle(Theme.C.ink)
@@ -281,7 +286,7 @@ struct ChatScreen: View {
         .floatingSheet(isPresented: $confirmDelete, title: "Delete \(bot?.name ?? "this bot")?", detent: .fit) {
             ConfirmSheet(
                 message: "Its conversation and routines are removed from your Mac.",
-                confirmTitle: "Delete bot",
+                confirmTitle: bot?.isGroup == true ? "Delete group" : "Delete bot",
                 onConfirm: {
                     let id = botId
                     showBotSettings = false
@@ -628,6 +633,9 @@ struct ChatScreen: View {
                             Capsule().strokeBorder(Theme.C.borderStrong, lineWidth: 1)
                         )
                 }
+                // The 32 pt pill keeps its look; the tap target fills 44.
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
         }
     }
@@ -744,6 +752,9 @@ struct ChatScreen: View {
         let sendable = phone.canSend(phone.draft, readiness: coordinator.readiness)
         let locked = bot?.isFullAccess == true && !phone.biometrics.unlocked
         return VStack(alignment: .leading, spacing: 8) {
+            // The chip row sits 6 pt under the field (spec 1.3); the
+            // reason lines keep the column's wider 8 pt rhythm.
+            VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 8) {
                 if !phone.attachments.isEmpty {
                     ForEach(phone.attachments) { file in
@@ -909,6 +920,7 @@ struct ChatScreen: View {
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(writesBlocked != nil)
+            }
             }
             if let blocked = writesBlocked {
                 Text(blocked)
@@ -1100,7 +1112,12 @@ struct ChatScreen: View {
                 if let bot {
                     Section {
                         VStack(spacing: 8) {
-                            BotFace(bot: bot, size: 72)
+                            if bot.isGroup {
+                                AvatarStackView(bots: groupMemberBots(bot, shell: phone.shell), size: 36, maxVisible: 3)
+                                    .frame(height: 72)
+                            } else {
+                                BotFace(bot: bot, size: 72)
+                            }
                             Text(bot.name)
                                 .tokenFont(DesignTokens.FontSize.phoneLargeTitle, .semibold)
                                 .foregroundStyle(Theme.C.ink)
@@ -1114,7 +1131,12 @@ struct ChatScreen: View {
                         .listRowBackground(Color.clear)
                     }
                     BotProfileSection(bot: bot)
-                    BotAvatarSection(bot: bot)
+                    if !bot.isGroup {
+                        BotAvatarSection(bot: bot)
+                    }
+                    if bot.isGroup {
+                        GroupMembersSection(bot: bot)
+                    }
                     Section {
                         Button {
                             showBotSettings = false
@@ -1181,7 +1203,7 @@ struct ChatScreen: View {
                             .foregroundStyle(Theme.C.danger)
                             .disabled(writesBlocked != nil)
                             .frame(minHeight: 44)
-                        Button("Delete bot") { confirmDelete = true }
+                        Button(bot.isGroup ? "Delete group" : "Delete bot") { confirmDelete = true }
                             // The token danger, not the system destructive
                             // red — same treatment as 'Clear conversation'.
                             .foregroundStyle(Theme.C.danger)
