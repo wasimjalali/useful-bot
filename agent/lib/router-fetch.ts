@@ -24,6 +24,24 @@ const MAX_SINGLE_WAIT_MS = 30_000;
 export const MAX_PROVIDER_TOTAL_WAIT_MS = 180_000;
 const MAX_PROVIDER_SINGLE_WAIT_MS = 90_000;
 const BASE_BACKOFF_MS = 1_000;
+/**
+ * A non-streaming call is eve's compaction and nothing else, and eve gives it
+ * no retry of its own: one transient 5xx or dropped connection during the
+ * summary ended the session outright. It gets two more tries here. Streaming
+ * steps are left alone, eve already retries those three times.
+ */
+export const NON_STREAM_RETRIES = 2;
+const TRANSIENT_STATUSES = new Set([502, 503, 504]);
+const MAX_TRANSIENT_WAIT_MS = 30_000;
+
+function isNonStreaming(body: RequestInit["body"]): boolean {
+  if (typeof body !== "string") return false;
+  try {
+    return (JSON.parse(body) as { stream?: unknown }).stream !== true;
+  } catch {
+    return false;
+  }
+}
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -87,6 +105,8 @@ export function routerFetch(options: RouterFetchOptions): FetchLike {
   const random = options.random ?? Math.random;
   return async (input, init) => {
     let waited = 0;
+    const retriesTransient = isNonStreaming(init?.body);
+    let transientTries = 0;
     for (let attempt = 0; ; attempt += 1) {
       const ids = options.ids();
       const headers = new Headers(init?.headers);
@@ -94,7 +114,22 @@ export function routerFetch(options: RouterFetchOptions): FetchLike {
       headers.set("x-useful-session-id", ids.sessionId);
       headers.set("x-useful-turn-id", ids.turnId);
       headers.set("x-useful-request-id", randomUUID());
-      const response = await doFetch(input, { ...init, headers });
+      let response: Response;
+      try {
+        response = await doFetch(input, { ...init, headers });
+      } catch (error) {
+        if (!retriesTransient || init?.signal?.aborted || transientTries >= NON_STREAM_RETRIES) throw error;
+        transientTries += 1;
+        await doSleep(BASE_BACKOFF_MS * 2 ** transientTries, init?.signal);
+        continue;
+      }
+      if (retriesTransient && TRANSIENT_STATUSES.has(response.status) && transientTries < NON_STREAM_RETRIES) {
+        transientTries += 1;
+        const hint = await waitHint(response);
+        await response.body?.cancel();
+        await doSleep(Math.min(hint.ms ?? BASE_BACKOFF_MS * 2 ** transientTries, MAX_TRANSIENT_WAIT_MS), init?.signal);
+        continue;
+      }
       if (response.status !== 429) return response;
       const hint = await waitHint(response);
       const provider = hint.code !== null && PROVIDER_CODES.has(hint.code);

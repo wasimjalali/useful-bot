@@ -57,6 +57,16 @@ export type ShellBot = {
   hidden: boolean;
   sectionId: string | null;
   sessionId: string | null;
+  /**
+   * Sessions this bot's chat was carried over from, newest first, recorded
+   * only when a replacement session was opened with a brief of the old one
+   * (see continuation-brief.ts). The proxy checks a `continueFrom` against
+   * the live pointer and this list before it reads an old session. A new
+   * chat or an opened recent is a deliberate fresh start and is not recorded.
+   */
+  previousSessionIds?: string[];
+  /** The session a carry-over opened; while it is still live the chat says so. */
+  continuedSessionId?: string;
   memberIds: string[];
   lastPreview: string;
   lastAt: string | null;
@@ -261,6 +271,16 @@ function parseBot(raw: unknown): ShellBot {
     hidden: rec.hidden,
     sectionId: rec.sectionId,
     sessionId: rec.sessionId,
+    ...(Array.isArray(rec.previousSessionIds)
+      ? {
+        previousSessionIds: rec.previousSessionIds
+          .filter((id): id is string => typeof id === "string" && SESSION_ID.test(id))
+          .slice(0, PREVIOUS_SESSIONS_MAX),
+      }
+      : {}),
+    ...(typeof rec.continuedSessionId === "string" && SESSION_ID.test(rec.continuedSessionId)
+      ? { continuedSessionId: rec.continuedSessionId }
+      : {}),
     memberIds: rec.memberIds.filter((id, index, all) => all.indexOf(id) === index),
     lastPreview: typeof rec.lastPreview === "string" ? clip(rec.lastPreview, PREVIEW_MAX) : "",
     lastAt: typeof rec.lastAt === "string" ? rec.lastAt : null,
@@ -341,6 +361,38 @@ function parseWorkspacePermissionStrict(value: unknown): WorkspacePermission {
  * held, so it survives. A detach keeps its session id, which the diff cannot
  * see, so that one case is named.
  */
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const PREVIOUS_SESSIONS_MAX = 5;
+
+/**
+ * Whether a turn may be carried over from `sessionId`: it has to be the bot's
+ * live session or one it was already carried over from. Fails closed on
+ * anything else, so a crafted id cannot read another bot's conversation.
+ */
+export function mayContinueFrom(bot: ShellBot, sessionId: string): boolean {
+  if (!SESSION_ID.test(sessionId)) return false;
+  return bot.sessionId === sessionId || (bot.previousSessionIds ?? []).includes(sessionId);
+}
+
+/**
+ * Record that `botId`'s chat moved on from `previous` into `continued`,
+ * newest first, bounded. The live pointer is the client's to move.
+ */
+export function recordSessionLineage(store: ShellStore, botId: string, previous: string, continued: string): ShellStore {
+  return {
+    ...store,
+    bots: store.bots.map((bot) => {
+      if (bot.id !== botId) return bot;
+      const rest = (bot.previousSessionIds ?? []).filter((id) => id !== previous);
+      return {
+        ...bot,
+        previousSessionIds: [previous, ...rest].slice(0, PREVIOUS_SESSIONS_MAX),
+        continuedSessionId: continued,
+      };
+    }),
+  };
+}
+
 export function staleSessionIds(
   action: ShellAction | undefined,
   before: ShellStore,

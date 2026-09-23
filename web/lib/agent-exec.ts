@@ -7,7 +7,8 @@ import {
 } from "../../shared/agent-store.ts";
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { libraryDrawingIds } from "../../shared/media-store.ts";
-import { parseEveStreamLine } from "../../shared/eve-stream.ts";
+import { parseEveStreamLine, type EveEvent as StreamEvent } from "../../shared/eve-stream.ts";
+import { buildContinuationBrief, withSessionNotes } from "../../shared/continuation-brief.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
 import {
@@ -36,7 +37,7 @@ import {
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
-import type { ShellBot } from "../../shared/shell-store.ts";
+import { recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 
 /**
  * Handoff delivery. The sending agent tool only writes a queue record, so a
@@ -340,6 +341,75 @@ async function sessionEventIds(sessionId: string, jwt: string): Promise<Set<stri
   return ids;
 }
 
+/** How much of an old session the carry-over reads before it stops. */
+const CARRY_READ = { idleMs: 2_000, hardMs: 20_000, maxEvents: 60_000, maxBytes: 48 * 1024 * 1024 };
+
+/**
+ * A session's recorded events, oldest first. eve keeps a retired session's
+ * stream readable. The stream stays open after the last event, so the read
+ * ends on a short quiet period, a hard deadline or the event and byte caps,
+ * whichever comes first: a 195k-token session must not stall the send.
+ */
+export async function readSessionEvents(sessionId: string, jwt: string): Promise<StreamEvent[]> {
+  const events: StreamEvent[] = [];
+  const controller = new AbortController();
+  let idle = setTimeout(() => controller.abort(), CARRY_READ.idleMs);
+  const hard = setTimeout(() => controller.abort(), CARRY_READ.hardMs);
+  const reset = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => controller.abort(), CARRY_READ.idleMs);
+  };
+  let bytes = 0;
+  try {
+    const res = await fetch(`${EVE}/eve/v1/session/${encodeURIComponent(sessionId)}/stream?startIndex=0`, {
+      headers: { authorization: `Bearer ${jwt}` },
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) throw new Error(`eve_stream_${res.status}`);
+    reset();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (events.length < CARRY_READ.maxEvents && bytes < CARRY_READ.maxBytes) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      reset();
+      bytes += chunk.value.byteLength;
+      buf += decoder.decode(chunk.value, { stream: true });
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const event = parseEveStreamLine(line);
+        if (event) events.push(event);
+      }
+    }
+    await reader.cancel().catch(() => undefined);
+  } catch (err) {
+    // The quiet period and the deadline both end the read by aborting it;
+    // what was read by then is the history. Anything else is a real failure.
+    if (!controller.signal.aborted) throw err;
+  } finally {
+    clearTimeout(idle);
+    clearTimeout(hard);
+  }
+  return events;
+}
+
+/**
+ * The brief a replacement session opens with. A stream that cannot be read
+ * still yields a brief that says so, so the bot tells the owner it lost the
+ * thread instead of acting as if there never was one.
+ */
+export async function continuationBriefFor(sessionId: string, jwt: string, reason?: string): Promise<string> {
+  try {
+    return buildContinuationBrief(await readSessionEvents(sessionId, jwt), { reason });
+  } catch {
+    return buildContinuationBrief([], {
+      reason: `${reason ?? "the previous session stopped"}; its conversation could not be read back, so tell the owner you lost the earlier context and ask what to pick up`,
+    });
+  }
+}
+
 function handoffEnvelope(handoff: HandoffRecord): string {
   const lines = [
     `Handoff from ${handoff.sourceName}.`,
@@ -449,8 +519,8 @@ async function runEveTurn(
     idleTimer = setTimeout(() => expire("turn_went_silent"), budget.idleMs);
   };
   feedIdle?.();
-  const follow = (stream: ReadableStream<Uint8Array>, ids: Set<string>) =>
-    readHandoffStream(stream, controller.signal, ids, sent, feedIdle);
+  const follow = (stream: ReadableStream<Uint8Array>, ids: Set<string>, armed = sent) =>
+    readHandoffStream(stream, controller.signal, ids, armed, feedIdle);
   let sessionId = bot.sessionId ?? "";
   let reply = "";
   try {
@@ -468,10 +538,15 @@ async function runEveTurn(
       // way the UI clients recover.
       const text = await res.text().catch(() => "");
       if (relayedEveCode(409, text) === "session_not_active") {
+        // The fresh session opens with a brief of the retired one, so the
+        // bot keeps the thread instead of starting over empty.
+        const retired = sessionId;
+        const brief = await continuationBriefFor(retired, jwt);
+        const carried = `${withSessionNotes(turnPrefixFor(bot), [brief])}${message}`;
         const retry = await fetch(`${EVE}/eve/v1/session`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
-          body: JSON.stringify({ message: sent, botId: bot.id }),
+          body: JSON.stringify({ message: carried, botId: bot.id }),
           signal: controller.signal,
         });
         if (!retry.ok) throw new Error(`eve_send_${retry.status}`);
@@ -481,14 +556,14 @@ async function runEveTurn(
         // Persist the fresh pointer now, so a crash before the reply still
         // leaves later handoffs and routines on the live session.
         const stamp = new Date().toISOString();
-        updateShell((current) => ({
+        updateShell((current) => recordSessionLineage({
           ...current,
           bots: current.bots.map((item) => (
             item.id === bot.id
               ? { ...item, sessionId, lastAt: stamp, updatedAt: stamp }
               : item
           )),
-        }));
+        }, bot.id, retired, sessionId));
         historyIds = new Set<string>();
         syncSessionWorkspaceFresh(sessionId, bot.id);
         const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
@@ -496,7 +571,7 @@ async function runEveTurn(
           signal: controller.signal,
         });
         if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-        reply = await follow(stream.body, historyIds);
+        reply = await follow(stream.body, historyIds, carried);
         return { sessionId, reply };
       }
       throw new Error(`eve_send_${res.status}`);

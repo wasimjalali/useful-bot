@@ -354,11 +354,36 @@ function validateMessages(messages: unknown[]): void {
   }
 }
 
+/**
+ * Sampling knobs the router accepts and throws away. eve's compaction call
+ * sends `temperature: 0`, and eve ends the whole session, not the turn, on
+ * any 4xx from here: refusing it retired every chat that grew past its
+ * model's window. Neither key moves spend, effort or where the call goes,
+ * and several upstream models refuse them, so they never travel on.
+ */
+const DISCARDED_SAMPLING_KEYS: Record<string, { min: number; max: number }> = {
+  temperature: { min: 0, max: 2 },
+  top_p: { min: 0, max: 1 },
+};
+
+/** Remove the discarded sampling keys, refusing a value out of range. */
+export function discardSamplingKeys(rec: Record<string, unknown>): void {
+  for (const [key, range] of Object.entries(DISCARDED_SAMPLING_KEYS)) {
+    if (!(key in rec)) continue;
+    const value = rec[key];
+    if (value !== null && (typeof value !== "number" || !Number.isFinite(value) || value < range.min || value > range.max)) {
+      throw validationError("unsupported_parameter", `${key}_range`);
+    }
+    delete rec[key];
+  }
+}
+
 function validateCompletion(body: unknown): { model: string; stream: boolean; max_tokens?: number } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw validationError("invalid_request");
   }
   const rec = body as Record<string, unknown>;
+  discardSamplingKeys(rec);
   for (const key of Object.keys(rec)) {
     if (!ALLOWED_COMPLETION_KEYS.has(key)) {
       // The key is caller input; only a safe alphabet reaches the log line.
@@ -847,7 +872,15 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           },
         };
       const status = error instanceof RouterError ? error.status : 500;
-      log({ request_id: requestId, status, code: error instanceof RouterError ? error.code : "internal_error" });
+      log({
+        request_id: requestId,
+        status,
+        code: error instanceof RouterError ? error.code : "internal_error",
+        // What the upstream said when it refused, already capped and
+        // stripped of prompt text: without it a dead model read as a bare
+        // upstream_protocol_error and nobody could tell which one or why.
+        ...(error instanceof RouterError && error.upstream ? { upstream: error.upstream } : {}),
+      });
       if (res.headersSent) {
         try {
           res.write(`data: ${JSON.stringify(body)}\n\n`);

@@ -310,6 +310,12 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         // The turn never reached a model, or reached one that answered with
         // nothing. Neither is the app's to fix, and both left the owner with a
         // bare "the turn failed" and no idea where to look.
+        // The router names what the provider refused with, as status and
+        // error type or code: "upstream_protocol_error (400 invalid_request_error)".
+        // A model that refuses every call is not one that did not answer.
+        if let refusal = providerRefusal {
+            return "The model provider refused the request (\(refusal)). Send again, or pick another model."
+        }
         if haystack.contains("upstream_protocol_error") || haystack.contains("upstream_timeout") {
             return "The model provider did not answer. Check its status or your usage limit, then send again."
         }
@@ -324,6 +330,18 @@ public struct TurnFailure: Codable, Equatable, Sendable {
             return "The model returned nothing. Send it again."
         }
         return nil
+    }
+
+    /// The provider's refusal the router put in brackets after
+    /// `upstream_protocol_error`: a 4xx status plus the provider's own error
+    /// type or code. A bare status, or a 5xx, is the provider not answering.
+    var providerRefusal: String? {
+        guard let range = detail.range(of: "upstream_protocol_error (") else { return nil }
+        let inside = detail[range.upperBound...].prefix { $0 != ")" }
+        let refusal = String(inside).trimmingCharacters(in: .whitespaces)
+        guard let status = Int(refusal.prefix { $0.isNumber }), (400..<500).contains(status) else { return nil }
+        guard refusal.count <= 140, refusal.allSatisfy({ $0.isLetter || $0.isNumber || " /._-".contains($0) }) else { return nil }
+        return refusal
     }
 
     /// What to show when this failure is the whole message.
@@ -492,6 +510,22 @@ public enum EveStream {
     private static let groupTurnPrefix = try! NSRegularExpression(
         pattern: "^Group chat: [^\\n]+\\.\\n"
     )
+    /// The default bot's hidden prefix, present only when the proxy folded
+    /// app notes into its turn (`shared/continuation-brief.ts`).
+    private static let sessionNotePrefix = try! NSRegularExpression(
+        pattern: "^Session note: [^\\n]+\\n"
+    )
+    /// Port of `BRIEF_MARKER`: the first turn of a session carried over from
+    /// an older one holds the old conversation in its hidden prefix.
+    static let continuationMarker = "Continued session brief:"
+
+    /// True when a stored user turn opened a session carried over from an
+    /// older one: its hidden prefix, the part before the first blank line,
+    /// holds the brief.
+    public static func isContinuationTurn(_ text: String) -> Bool {
+        let head = text.range(of: "\n\n").map { String(text[..<$0.lowerBound]) } ?? text
+        return head.contains(continuationMarker)
+    }
 
     /// Port of `handoffEnvelope` in `web/lib/agent-exec.ts`: a user turn the
     /// handoff pump sent on the owner's behalf. Its first two lines are fixed.
@@ -513,7 +547,8 @@ public enum EveStream {
         let whole = NSRange(text.startIndex..., in: text)
         let isBotPrefix = botTurnPrefix.firstMatch(in: text, range: whole) != nil
         let isGroupPrefix = groupTurnPrefix.firstMatch(in: text, range: whole) != nil
-        guard isBotPrefix || isGroupPrefix else { return text }
+        let isNotePrefix = sessionNotePrefix.firstMatch(in: text, range: whole) != nil
+        guard isBotPrefix || isGroupPrefix || isNotePrefix else { return text }
         guard let range = text.range(of: "\n\n") else { return text }
         return String(text[range.upperBound...])
     }

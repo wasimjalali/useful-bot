@@ -210,3 +210,51 @@ test("with no hint the wait backs off, and an abort during it ends the call", as
   setTimeout(() => controller.abort(new Error("stopped")), 20);
   await assert.rejects(pending, /stopped/);
 });
+
+function harnessWith(responses: Array<() => Response | Promise<Response>>) {
+  const sleeps: number[] = [];
+  let calls = 0;
+  const doFetch = routerFetch({
+    ids: () => ({ sessionId: "s", turnId: "t" }),
+    fetch: async () => {
+      calls += 1;
+      const next = responses.shift();
+      if (!next) throw new Error("no more responses");
+      return next();
+    },
+    sleep: async (ms) => { sleeps.push(ms); },
+    random: () => 0,
+  });
+  return { doFetch, sleeps, calls: () => calls };
+}
+
+test("a non-streaming call (eve's compaction) retries a transient 5xx and a dropped connection", async () => {
+  const h = harnessWith([
+    () => new Response("{}", { status: 502 }),
+    () => { throw new TypeError("fetch failed"); },
+    () => new Response("{}", { status: 200 }),
+  ]);
+  const res = await h.doFetch("http://router/v1/chat/completions", { method: "POST", body: JSON.stringify({ stream: false }) });
+  assert.equal(res.status, 200);
+  assert.equal(h.calls(), 3);
+  assert.equal(h.sleeps.length, 2);
+});
+
+test("a non-streaming call gives the 5xx back after its retries", async () => {
+  const h = harnessWith([
+    () => new Response("{}", { status: 503 }),
+    () => new Response("{}", { status: 503 }),
+    () => new Response("{}", { status: 503 }),
+  ]);
+  const res = await h.doFetch("http://router/v1/chat/completions", { method: "POST", body: JSON.stringify({}) });
+  assert.equal(res.status, 503);
+  assert.equal(h.calls(), 3);
+});
+
+test("a streaming step's 5xx goes straight back: eve retries those itself", async () => {
+  const h = harnessWith([() => new Response("{}", { status: 502 })]);
+  const res = await h.doFetch("http://router/v1/chat/completions", { method: "POST", body: JSON.stringify({ stream: true }) });
+  assert.equal(res.status, 502);
+  assert.equal(h.calls(), 1);
+  assert.deepEqual(h.sleeps, []);
+});

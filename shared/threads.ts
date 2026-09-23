@@ -230,6 +230,8 @@ export function threadPrefix(input: {
 
 const BOT_TURN_PREFIX = /^You are [^\n]+\.\nStanding instructions: /;
 const GROUP_TURN_PREFIX = /^Group chat: [^\n]+\.\n/;
+/** The default bot's hidden prefix, only present when it carries app notes (see continuation-brief.ts). */
+const SESSION_NOTE_PREFIX = /^Session note: [^\n]+\n/;
 
 /**
  * Remove the identity prefix injected into a stored user turn so the UI can
@@ -237,7 +239,7 @@ const GROUP_TURN_PREFIX = /^Group chat: [^\n]+\.\n/;
  * prefix shapes is stripped; an ordinary message is returned untouched.
  */
 export function stripThreadPrefix(text: string): string {
-  if (!BOT_TURN_PREFIX.test(text) && !GROUP_TURN_PREFIX.test(text)) return text;
+  if (!BOT_TURN_PREFIX.test(text) && !GROUP_TURN_PREFIX.test(text) && !SESSION_NOTE_PREFIX.test(text)) return text;
   const breakAt = text.indexOf("\n\n");
   return breakAt === -1 ? text : text.slice(breakAt + 2);
 }

@@ -17,6 +17,7 @@ import { postChatCompletions } from "./openai-chat.ts";
 import { postMessages } from "./anthropic-messages.ts";
 import { postResponses } from "./openai-responses.ts";
 import { upstreamLimitError } from "../retry-after.ts";
+import { readPrefix } from "../read-capped.ts";
 
 export function sessionHeader(callerId: string, sessionId: string, role: string): string {
   return createHash("sha256").update(`${callerId}:${sessionId}:${role}`).digest("hex");
@@ -237,10 +238,61 @@ export async function completeUpstream(input: {
       message: "model_unavailable",
     });
   }
+  const refusal = await upstreamRefusal(response);
   throw new RouterError({
     status: 502,
     type: "upstream_error",
     code: "upstream_protocol_error",
-    message: "upstream_protocol_error",
+    // eve folds this message into the failed turn's text. Only the status and
+    // the provider's error type and code travel: its free-text message can
+    // quote a masked key or the request, so that stays in the local log.
+    message: `upstream_protocol_error (${refusal.kind})`,
+    upstream: `${resolved.providerId}/${model} ${refusal.kind}${refusal.message ? `: ${refusal.message}` : ""}`,
   });
+}
+
+const REFUSAL_BODY_BYTES = 4096;
+const REFUSAL_MESSAGE_CHARS = 200;
+
+/** One line of printable text, capped. */
+function oneLineCapped(value: unknown, cap: number): string {
+  if (typeof value !== "string" && typeof value !== "number") return "";
+  return String(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, cap);
+}
+
+/** Anything shaped like a credential, masked or not, never reaches the log. */
+const KEY_LIKE = /\b(?:sk|pk|rk|ak|key|token|bearer)[-_][\w*.-]{6,}|\b[A-Za-z0-9_-]{32,}\b/gi;
+
+/**
+ * The provider's own words for a refusal, from at most 4 KiB of the body:
+ * `kind` is the status plus its error type and code, `message` its capped
+ * free text with key-like runs masked. Every model on every protocol lands
+ * here on a non-2xx, and until now the body was dropped unread, so a model
+ * that refused every call for a day (MiMo V2.6 Pro, 2026-09-23) looked the
+ * same as one that was down.
+ */
+export async function upstreamRefusal(response: Response): Promise<{ kind: string; message: string }> {
+  let raw = "";
+  try {
+    raw = await readPrefix(response, REFUSAL_BODY_BYTES);
+  } catch {
+    return { kind: String(response.status), message: "" };
+  }
+  let type = "";
+  let code = "";
+  let message = "";
+  try {
+    const parsed = JSON.parse(raw) as { error?: unknown; message?: unknown; type?: unknown; code?: unknown };
+    const inner = parsed.error && typeof parsed.error === "object" ? parsed.error as Record<string, unknown> : null;
+    // Type and code are the provider's enums; anything else in those fields
+    // is dropped rather than relayed.
+    type = /^[\w.-]{1,60}$/.test(String(inner?.type ?? parsed.type ?? "")) ? String(inner?.type ?? parsed.type) : "";
+    code = /^[\w.-]{1,60}$/.test(String(inner?.code ?? parsed.code ?? "")) ? String(inner?.code ?? parsed.code) : "";
+    message = oneLineCapped(inner?.message ?? (typeof parsed.error === "string" ? parsed.error : parsed.message), REFUSAL_MESSAGE_CHARS)
+      .replace(KEY_LIKE, "[redacted]");
+  } catch {
+    // Not JSON (a proxy's HTML page, a truncated body): the status says enough.
+  }
+  const detail = [type, code].filter((part) => part.length > 0).join("/");
+  return { kind: `${response.status}${detail ? ` ${detail}` : ""}`, message };
 }
