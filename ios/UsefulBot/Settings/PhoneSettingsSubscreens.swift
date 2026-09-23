@@ -102,6 +102,10 @@ struct PhoneProvidersView: View {
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
                             .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Button("Retry") { Task { await load() } }
+                            .buttonStyle(SecondaryAction(compact: true))
+                            .frame(minHeight: 44)
                     }
                 }
             }
@@ -518,7 +522,14 @@ struct ProviderConnectView: View {
                 SafariSheet(url: url)
             }
         }
-        .onDisappear { pollTask?.cancel() }
+        .onDisappear {
+            pollTask?.cancel()
+            // Parity with the Mac: a dismissed device flow is cancelled
+            // server-side instead of living until expiry.
+            if let flow, let client = coordinator.client {
+                Task { try? await client.cancelOAuth(pollId: flow.pollId) }
+            }
+        }
     }
 
     private var oauthSection: some View {
@@ -540,7 +551,7 @@ struct ProviderConnectView: View {
                                 .buttonStyle(SecondaryAction())
                                 .frame(minHeight: 44)
                                 Button("Open in Safari") {
-                                    if let url = URL(string: flow.verificationUrlComplete ?? flow.verificationUrl) {
+                                    if let url = Self.oauthSafariURL(flow) {
                                         safariURL = url
                                     }
                                 }
@@ -649,16 +660,25 @@ struct ProviderConnectView: View {
             // navigation: allow only a bare https URL (no userinfo), and
             // fall back to the plain verification URL when the complete
             // one fails that check.
-            for candidate in [started.verificationUrlComplete, started.verificationUrl] {
-                guard let raw = candidate, let url = URL(string: raw),
-                      url.scheme == "https", url.user == nil, url.password == nil else { continue }
+            if let url = Self.oauthSafariURL(started) {
                 safariURL = url
-                break
             }
             poll(started)
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription
         }
+    }
+
+    /// The phone turns this server string into an external navigation:
+    /// allow only a bare https URL (no userinfo), and fall back to the
+    /// plain verification URL when the complete one fails that check.
+    private static func oauthSafariURL(_ flow: DeviceFlowStart) -> URL? {
+        for candidate in [flow.verificationUrlComplete, flow.verificationUrl] {
+            guard let raw = candidate, let url = URL(string: raw),
+                  url.scheme == "https", url.user == nil, url.password == nil else { continue }
+            return url
+        }
+        return nil
     }
 
     /// The server names its own interval; follow it and stop on a terminal
@@ -673,6 +693,9 @@ struct ProviderConnectView: View {
                 guard !Task.isCancelled else { return }
                 do {
                     let (status, intervalMs, payload) = try await client.pollOAuth(pollId: flow.pollId)
+                    // A superseded poll can return a buffered response after
+                    // cancel lands — don't stamp it onto the fresh flow.
+                    guard !Task.isCancelled else { return }
                     if let intervalMs { interval = max(1, Double(intervalMs) / 1000) }
                     switch status {
                     case "complete":
@@ -824,6 +847,10 @@ struct PhoneConnectorsView: View {
                                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                                 .foregroundStyle(Theme.C.inkMuted)
                                 .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 8)
+                            Button("Retry") { Task { await load() } }
+                                .buttonStyle(SecondaryAction(compact: true))
+                                .frame(minHeight: 44)
                         }
                     }
                 }
@@ -893,6 +920,7 @@ struct PhoneConnectorsView: View {
                 .focused($keyFocused)
                 .padding(.horizontal, 10)
                 .frame(minHeight: 44)
+                .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
                 .overlay {
                     // `edge` at rest, `ink` on focus; key-rejected strokes
                     // the field danger (spec 1.13).

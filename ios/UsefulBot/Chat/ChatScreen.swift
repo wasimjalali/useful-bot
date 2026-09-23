@@ -177,7 +177,8 @@ struct ChatScreen: View {
             // One close affordance per header: the 'Done' word, not X+Done.
             showsClose: false,
             canvas: true,
-            trailing: { Button("Done") { showBotSettings = false } },
+            trailing: { Button("Done") { showBotSettings = false }
+                .frame(minWidth: 44, minHeight: 44) },
             content: { botSettings }
         )
         // The routine editor draws its own Cancel | title | Save row (1.8),
@@ -1107,13 +1108,6 @@ struct ChatScreen: View {
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
                 .padding(.bottom, 8)
             }
-            // Spec 1.3: the mention card docks directly above the composer,
-            // above every docked ask.
-            if mentionVisible {
-                mentionList
-                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
-                    .padding(.bottom, 8)
-            }
             if asksWaiting > 0 {
                 Button {
                     asksExpanded = true
@@ -1124,6 +1118,13 @@ struct ChatScreen: View {
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
+            }
+            // Spec 1.3: the mention card docks directly above the composer,
+            // above every docked ask — including the collapsed-ask row.
+            if mentionVisible {
+                mentionList
+                    .padding(.horizontal, DesignTokens.Space.phoneGutter)
+                    .padding(.bottom, 8)
             }
         }
     }
@@ -1167,6 +1168,7 @@ struct ChatScreen: View {
                                     BotFace(bot: bot, size: 72)
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel("Edit avatar")
                                 .accessibilityHint("Opens avatar editing")
                             }
                             Text(bot.name)
@@ -1194,7 +1196,11 @@ struct ChatScreen: View {
                             showBotSettings = false
                             showModel = true
                         } label: {
-                            defaultsRow("Model", value: phone.composer?.modelLabel ?? "Model")
+                            // Spec 1.5 item 4: the value reads
+                            // "model · effort" like the role rows.
+                            let model = [phone.composer?.modelLabel, phone.composer?.effortLabel]
+                                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                            defaultsRow("Model", value: model.isEmpty ? "Model" : model)
                         }
                         .disabled(writesBlocked != nil)
                         Button {

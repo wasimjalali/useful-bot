@@ -1042,7 +1042,7 @@ final class PhoneModel {
         var assembly = ReplayAssembly(seed)
         var applied: [Int] = []
         var tail: Int?
-        let tailBox = TailBox()
+        var tailBox = TailBox()
         var stoppedEarly = false
         var ended = false
         // eve funnels every stream-open failure through the same 404 —
@@ -1081,10 +1081,12 @@ final class PhoneModel {
                 try? await Task.sleep(for: .milliseconds(1500))
                 guard still(botId, token, generation) else { return }
                 // Rebuild the replay state so a retried open does not
-                // re-apply events it already collected.
+                // re-apply events it already collected — or advertise a
+                // tail index the failed attempt stamped.
                 assembly = ReplayAssembly(seed)
                 applied = []
                 tail = nil
+                tailBox = TailBox()
             } catch {
                 stoppedEarly = true
                 break replayLoop

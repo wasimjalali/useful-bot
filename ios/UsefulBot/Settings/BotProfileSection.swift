@@ -134,7 +134,7 @@ struct GroupMembersSection: View {
                     } label: {
                         Image(systemName: "minus.circle")
                             .font(Theme.font(DesignTokens.FontSize.chatBody, .regular))
-                            .foregroundStyle(Theme.C.inkMuted)
+                            .foregroundStyle(members.count > 2 ? Theme.C.inkMuted : Theme.C.inkFaint)
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .accessibilityLabel("Remove \(member.name)")

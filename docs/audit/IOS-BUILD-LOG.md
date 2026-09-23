@@ -2249,3 +2249,64 @@ build. The diff also required breaking ChatScreen's `body` into helpers
 on the enlarged expression; no behavior change. Onboarding card, model
 sheet, connectors, and avatar picker still have no shot legs — their
 fixes are code-verified only.
+
+## Round 8 (2026-09-23, head bc7269d)
+
+### Correctness (max effort) — approve, zero blocker/high/medium; 3 lows applied
+
+- OAuth poll `guard !Task.isCancelled` now also sits after the
+  successful `try await` — a superseded poll returning a buffered
+  response post-cancel can no longer stamp stale `pollStatus`/
+  `terminalStatus` (or `onClose`) onto the fresh flow.
+- `replay()` rebuilds `tailBox` inside the `.sessionEnded` retry arm —
+  a stale `x-eve-stream-tail-index` from a failed attempt could linger
+  into `advertisedTail` and over-report (conservative direction only).
+- `WidgetWebView.makeUIView` seeds `coordinator.loaded = html` — the
+  first `updateUIView` no longer re-loads identical markup once.
+
+### Security (max effort) — approve, zero blocker/high/medium; 3 lows applied
+
+- "Open in Safari" now routes through the same validation `startFlow`
+  uses (`https` + no userinfo, `verificationUrlComplete` →
+  `verificationUrl` fallback) via a shared `oauthSafariURL` helper —
+  the button can no longer offer a cleartext/exotic URL the auto-open
+  refused.
+- `assertResolvedPublic` (`shared/connection-url.ts`) resolves
+  `{all: true}` and validates every record — a host answering mixed
+  public+private A records can no longer pass the check-then-use race.
+- iOS now calls `client.cancelOAuth(pollId:)` on sheet dismiss —
+  a dropped device flow is cancelled server-side instead of living
+  until expiry (Mac parity).
+
+### Design-a11y (normal) — request_changes, 3M + 5L, all applied
+
+- **M** — Bot-settings "Done" (now the sheet's sole close affordance)
+  carried a ~20 pt hit area; `.frame(minWidth: 44, minHeight: 44)` like
+  RoutineEditor's Cancel/Save.
+- **M** — The "N more waiting" row sat between the mention card and the
+  composer; moved ahead of `mentionVisible` so the mention card stays
+  docked directly above the composer per §1.3.
+- **M** — Providers and Connectors load-error rows had no retry path;
+  both carry the §1.0 Error anatomy's `SecondaryAction(compact:)` Retry
+  (glyph + `inkMuted` sentence + action, 44 pt).
+- **L×5** — Create/rename sheet "Cancel" buttons `.frame(minHeight: 44)`;
+  Defaults "Model" value joins `modelLabel · effortLabel` per §1.5 item
+  4; identity-block avatar tap gets `.accessibilityLabel("Edit avatar")`
+  (BotFace is accessibilityHidden); Composio key `SecureField` gets the
+  §1.7 `sunken` fill under its stroke; member remove `minus.circle`
+  quiets to `inkFaint` at the two-member floor.
+
+### Re-run scope
+
+`xcodebuild build` green; every gate leg the diff touches re-run and
+green on one pass: testBotsList, testChat (dock-order + Done-frame
+change), testApprovalPending, testApprovalExpired, testWidget
+(loaded-seed), testSettings (error-Retry rows + SecureField fill +
+OAuth helpers), testReduceMotion (chat/bots re-shots). The
+`connection-url.ts` change is server-side, so npm test (650/650) and
+`verify-release.mjs` (all PASS) re-ran too; `make -C macos test` was
+not re-run (no macos/ diff this round). Shots refreshed for the
+affected surfaces (bots list, chat, approval pending/expired,
+settings, widget, reduce-motion). The OAuth "Open in Safari"/cancel
+paths have no simulator leg — device-flow helpers are code-verified
+only, same caveat as prior rounds.

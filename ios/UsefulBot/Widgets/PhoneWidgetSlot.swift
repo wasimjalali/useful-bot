@@ -118,6 +118,9 @@ private struct WidgetWebView: UIViewRepresentable {
         view.backgroundColor = .clear
         context.coordinator.attachHeightProbe(to: view)
         view.loadHTMLString(html, baseURL: nil)
+        // Seed `loaded` so the first updateUIView doesn't re-load the
+        // identical markup once.
+        context.coordinator.loaded = html
         return view
     }
 

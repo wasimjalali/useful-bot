@@ -174,15 +174,19 @@ export async function assertResolvedPublic(raw: string): Promise<string> {
   const href = assertConnectionUrl(raw);
   const host = new URL(href).hostname.toLowerCase();
   if (host === "127.0.0.1") return href;
-  let address: string;
+  let addresses: string[];
   try {
-    address = injectedLookup
-      ? await injectedLookup(host)
-      : (await lookup(host, { family: 4 })).address;
+    addresses = injectedLookup
+      ? [await injectedLookup(host)]
+      : (await lookup(host, { all: true, family: 4 })).map((entry) => entry.address);
   } catch {
     throw new ConnectionUrlError("url_resolve");
   }
-  if (address.includes(":")) throw new ConnectionUrlError("url_host");
-  if (address === "127.0.0.1" || isBlockedV4(address)) throw new ConnectionUrlError("url_resolved");
+  // Check-then-use: fetch re-resolves on connect, so every advertised
+  // answer must be public — one private record is enough to refuse.
+  for (const address of addresses) {
+    if (address.includes(":")) throw new ConnectionUrlError("url_host");
+    if (address === "127.0.0.1" || isBlockedV4(address)) throw new ConnectionUrlError("url_resolved");
+  }
   return href;
 }

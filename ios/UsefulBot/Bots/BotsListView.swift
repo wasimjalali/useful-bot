@@ -269,7 +269,7 @@ struct BotsListView: View {
                     isPresented: $showCreate,
                     title: "New bot",
                     detent: .large,
-                    leading: { Button("Cancel") { showCreate = false } }
+                    leading: { Button("Cancel") { showCreate = false }.frame(minHeight: 44) }
                 ) {
                     CreateBotSheet(blocked: createsBlocked) { name, label, brief, color in
                         showCreate = false
@@ -280,7 +280,7 @@ struct BotsListView: View {
                     isPresented: $showSection,
                     title: "Create section",
                     detent: .fit,
-                    leading: { Button("Cancel") { showSection = false } }
+                    leading: { Button("Cancel") { showSection = false }.frame(minHeight: 44) }
                 ) {
                     CreateSectionSheet(blocked: createsBlocked) { name in
                         showSection = false
@@ -291,7 +291,7 @@ struct BotsListView: View {
                     isPresented: $showGroup,
                     title: "New group",
                     detent: .large,
-                    leading: { Button("Cancel") { showGroup = false } }
+                    leading: { Button("Cancel") { showGroup = false }.frame(minHeight: 44) }
                 ) {
                     CreateGroupSheet(bots: bots.filter { $0.kind == "bot" && !$0.hidden && $0.id != Threads.defaultBotId }, blocked: createsBlocked) { name, members in
                         showGroup = false
@@ -302,7 +302,7 @@ struct BotsListView: View {
                     item: $renameTarget,
                     detent: .fit,
                     title: { _ in "Rename" },
-                    leading: { _ in Button("Cancel") { renameTarget = nil } },
+                    leading: { _ in Button("Cancel") { renameTarget = nil }.frame(minHeight: 44) },
                     trailing: { _ in EmptyView() },
                     content: { bot in
                         RenameSheet(bot: bot, blocked: createsBlocked) { name in
