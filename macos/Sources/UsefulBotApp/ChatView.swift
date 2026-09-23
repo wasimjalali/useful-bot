@@ -743,7 +743,24 @@ struct ChatView: View {
                 // here were not keeping the view there; they were what moved it,
                 // because scrolling to a bottom anchor repositions content that
                 // is shorter than the window and SwiftUI had already placed.
-                .onChange(of: model.sendTick) { holdingReplyAnchor = false }
+                // An explicit send is a request to watch the answer (see
+                // `AppModel.send`): the transcript goes to the newest turn
+                // whatever the reader was doing. The send's own frame (the
+                // composer shrinking, a banner leaving, the row landing) is
+                // the app's doing, not the reader scrolling.
+                .onChange(of: model.sendTick) {
+                    holdingReplyAnchor = false
+                    pinnedToBottom = true
+                    scrollProbe.markAppScroll()
+                    scrollToBottom(proxy)
+                    // Once more after this layout pass, when the new row and
+                    // the shorter composer have their final heights.
+                    DispatchQueue.main.async {
+                        guard pinnedToBottom else { return }
+                        scrollProbe.markAppScroll()
+                        scrollToBottom(proxy)
+                    }
+                }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
                 .onChange(of: holdingReplyAnchor) { _, holding in scrollProbe.holding = holding }
                 // The two banners sit above this scroll view, so they take
@@ -1638,15 +1655,21 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // down, except for its own anchor scrolls, so a move up
                     // that the app did not make, and that took the reader
                     // further from the bottom, is the reader's, however small
-                    // and even when a size change lands in the same frame. The
-                    // bottom anchor lowering the offset for a shrink keeps the
-                    // distance, and a clamp at the bottom leaves none, so
-                    // neither is mistaken for one.
+                    // and even when the content changes size in the same
+                    // frame. The bottom anchor lowering the offset for a
+                    // shrink keeps the distance, and a clamp at the bottom
+                    // leaves none, so neither is mistaken for one.
                     let appScroll = Date() < probe.appScrollUntil
                     let resized = new.contentHeight != old.contentHeight || new.viewport != old.viewport
+                    // A taller window (the composer shrinking after a send, a
+                    // banner leaving) clamps a reader at the bottom back by
+                    // the same amount, and a row landing in that frame then
+                    // looks like a move up. That frame is the app's; the drift
+                    // check below puts the reader back at the bottom.
+                    let viewportGrew = new.viewport > old.viewport
                     // While the view is parked at the top of a finished reply,
                     // a resize frame is the reload settling, not the reader.
-                    if !appScroll, !(probe.holding && resized),
+                    if !appScroll, !viewportGrew, !(probe.holding && resized),
                        Self.movedAway(old, new) {
                         if pinned { pinned = false }
                         return
