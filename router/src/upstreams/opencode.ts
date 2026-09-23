@@ -230,6 +230,9 @@ export async function completeUpstream(input: {
   if (response.status === 429) {
     throw await upstreamLimitError(response);
   }
+  if (response.status === 402) {
+    throw await upstreamOutOfCredit(response, `${resolved.providerId}/${model}`);
+  }
   if (response.status === 404) {
     throw new RouterError({
       status: 502,
@@ -258,6 +261,25 @@ const REFUSAL_MESSAGE_CHARS = 200;
 function oneLineCapped(value: unknown, cap: number): string {
   if (typeof value !== "string" && typeof value !== "number") return "";
   return String(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, cap);
+}
+
+/**
+ * 402 Payment Required is how DeepSeek and OpenRouter say the account is out
+ * of credit. A top-up is the only fix and it works at once, so it is answered
+ * as the used-up credit it is: 402, never retried, and no circuit, where it
+ * used to read as a protocol error that also counted toward one. The body is
+ * read only for the local log.
+ */
+export async function upstreamOutOfCredit(response: Response, target: string): Promise<RouterError> {
+  const refusal = await upstreamRefusal(response);
+  return new RouterError({
+    status: 402,
+    type: "rate_limit_error",
+    code: "upstream_quota_exhausted",
+    message: "upstream_quota_exhausted",
+    retryable: false,
+    upstream: `${target} ${refusal.kind}${refusal.message ? `: ${refusal.message}` : ""}`,
+  });
 }
 
 /** Anything shaped like a credential, masked or not, never reaches the log. */
