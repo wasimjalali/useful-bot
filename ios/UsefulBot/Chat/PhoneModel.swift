@@ -312,7 +312,9 @@ final class PhoneModel {
         case .runtimeDown:
             return "Agent runtime is down on your Mac"
         case .unsupportedVersion:
-            return "This phone doesn't speak this Mac's protocol."
+            // The readiness banner's own words — writes stay off while
+            // the Mac speaks a version this build doesn't know.
+            return "Your Mac runs an unsupported version"
         case .ready, nil:
             return sendBlockReason
         }
@@ -543,6 +545,25 @@ final class PhoneModel {
         (proposalsByBot[botId] ?? []).filter { $0.isOpen() }
     }
 
+    /// §1.3's fresh-bot onboarding card — same rule as the Mac's
+    /// `showOnboarding` and the same per-device dismissal key.
+    func onboardingDismissed(for botId: String) -> Bool {
+        UserDefaults.standard.bool(forKey: "ub-onboarding:\(botId)")
+    }
+
+    func dismissOnboarding(botId: String) {
+        UserDefaults.standard.set(true, forKey: "ub-onboarding:\(botId)")
+    }
+
+    func showOnboarding(for bot: ShellBot, transcriptEmpty: Bool) -> Bool {
+        guard bot.kind == "bot", bot.id != Threads.defaultBotId else { return false }
+        guard !onboardingDismissed(for: bot.id) else { return false }
+        return bot.label.trimmingCharacters(in: .whitespaces).isEmpty
+            && bot.description.trimmingCharacters(in: .whitespaces).isEmpty
+            && transcriptEmpty
+            && proposals(for: bot.id).isEmpty
+    }
+
     func questions(for botId: String) -> [OwnerQuestion] {
         chats[botId]?.projection.questions ?? []
     }
@@ -582,6 +603,12 @@ final class PhoneModel {
                Proposal.connectRedirectAllowed(raw, kind: proposal.kind, expectedHost: result.redirectHost ?? proposal.redirectHost) {
                 safariURL = url
                 watchProposal(proposal)
+            } else if result.redirectUrl != nil {
+                // A link the trusted sheet will not open surfaces the
+                // refusal like the Mac's card does — never a silent drop.
+                actionError = proposal.kind == .connectApp
+                    ? "Composio sent a sign-in link this app will not open."
+                    : "The server sent a sign-in link this app will not open."
             }
             if let botId = proposal.botId ?? proposal.sourceBotId {
                 await reloadProposals(botId)
@@ -1003,31 +1030,50 @@ final class PhoneModel {
         let tailBox = TailBox()
         var stoppedEarly = false
         var ended = false
-        do {
-            for try await event in client.stream(
-                sessionId: sessionId,
-                startIndex: resumeAt,
-                untilTail: true,
-                markHistory: true,
-                tailBox: tailBox
-            ) {
-                guard still(botId, token, generation) else { return }
-                assembly.collect { state in
-                    state.apply(event, live: false)
-                }
-                if let index = event.index {
-                    applied.append(index)
-                    if let remaining = event.historyRemaining {
-                        tail = index + remaining
+        // eve funnels every stream-open failure through the same 404 —
+        // including the transient window where the run exists but its
+        // readable is not open yet — so a single .sessionEnded is not an
+        // ended signal. Retry a bounded number of times before latching
+        // §8.4's ended row.
+        var endedAttempts = 0
+        replayLoop: while true {
+            do {
+                for try await event in client.stream(
+                    sessionId: sessionId,
+                    startIndex: resumeAt,
+                    untilTail: true,
+                    markHistory: true,
+                    tailBox: tailBox
+                ) {
+                    guard still(botId, token, generation) else { return }
+                    assembly.collect { state in
+                        state.apply(event, live: false)
+                    }
+                    if let index = event.index {
+                        applied.append(index)
+                        if let remaining = event.historyRemaining {
+                            tail = index + remaining
+                        }
                     }
                 }
+                break replayLoop
+            } catch let error as BackendError where error == .sessionEnded {
+                endedAttempts += 1
+                if endedAttempts >= 4 {
+                    ended = true
+                    break replayLoop
+                }
+                try? await Task.sleep(for: .milliseconds(1500))
+                guard still(botId, token, generation) else { return }
+                // Rebuild the replay state so a retried open does not
+                // re-apply events it already collected.
+                assembly = ReplayAssembly(seed)
+                applied = []
+                tail = nil
+            } catch {
+                stoppedEarly = true
+                break replayLoop
             }
-        } catch let error as BackendError where error == .sessionEnded {
-            // 404/409 on a retired session: §8.4 marks the chat ended
-            // rather than leaving a permanent catching-up state.
-            ended = true
-        } catch {
-            stoppedEarly = true
         }
         guard still(botId, token, generation) else { return }
         assembly.publish()
@@ -1050,6 +1096,10 @@ final class PhoneModel {
             chat.showWorking = false
             chat.error = nil
         } else {
+            // A successful replay clears a latch a transient stream-open
+            // 404 may have left; the only ended signal that survives is a
+            // failure the replayed history itself carries.
+            chat.sessionEnded = chat.projection.failed
             chat.catchUpIncomplete = !judged.claimsComplete
             if !judged.claimsComplete {
                 chat.error = "This chat is still catching up."
@@ -1095,6 +1145,12 @@ final class PhoneModel {
     private func follow(botId: String, sessionId: String, token: Int) async {
         guard let client else { return }
         let generation = pairing?.dataGeneration ?? 0
+        // A stream-open 404 is not proof the session retired — eve's
+        // endpoint funnels its transient not-yet-readable window through
+        // the same code and its own client retries ~12 opens. Count
+        // consecutive strikes and only latch §8.4's ended after the same
+        // budget; a clean stream run resets the count.
+        var endedStrikes = 0
         while still(botId, token, generation) {
             guard let cursor = chats[botId]?.cursor, cursor.sessionId == sessionId else { return }
             do {
@@ -1122,15 +1178,23 @@ final class PhoneModel {
                     resolveConfirming(&chat)
                     chats[botId] = chat
                 }
+                endedStrikes = 0
             } catch is CancellationError {
                 return
             } catch {
                 guard still(botId, token, generation) else { return }
                 var chat = chats[botId] ?? OpenChat()
                 chat.showWorking = false
-                if (error as? BackendError) == .sessionEnded { chat.sessionEnded = true }
+                var latch = false
+                if (error as? BackendError) == .sessionEnded {
+                    endedStrikes += 1
+                    if endedStrikes >= 12 {
+                        chat.sessionEnded = true
+                        latch = true
+                    }
+                }
                 chats[botId] = chat
-                if (error as? BackendError) == .sessionEnded { return }
+                if latch { return }
             }
             guard still(botId, token, generation) else { return }
             if chats[botId]?.sessionEnded == true { return }

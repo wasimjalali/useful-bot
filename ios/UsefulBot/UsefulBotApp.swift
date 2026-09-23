@@ -29,15 +29,43 @@ struct UsefulBotApp: App {
                 // roster's geometry so the swap-in reads as settle.
                 ZStack(alignment: .topLeading) {
                     Theme.C.canvas.ignoresSafeArea()
-                    VStack(alignment: .leading, spacing: 16) {
+                    // The Bots list's own skeleton anatomy (1.2 Loading):
+                    // status line, pinned card, section bar, five rows.
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(Theme.C.inkFaint)
+                                .frame(width: 6, height: 6)
+                            Text("Connecting to \(coordinator.store.pairedName ?? "your Mac")")
+                                .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                            Spacer()
+                        }
+                        .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
                         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                             .fill(Theme.C.border)
-                            .frame(height: 44)
-                        ForEach(0..<4, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
-                                .fill(Theme.C.border)
-                                .frame(height: 12)
-                                .frame(minHeight: 44)
+                            .frame(height: DesignTokens.Space.phoneRowMinHeight)
+                            .padding(.vertical, 8)
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
+                            .fill(Theme.C.border)
+                            .frame(width: 90, height: 10)
+                            .padding(.vertical, 10)
+                        ForEach(0..<5, id: \.self) { _ in
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(Theme.C.border)
+                                    .frame(width: 40, height: 40)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
+                                        .fill(Theme.C.border)
+                                        .frame(width: 110, height: 12)
+                                    RoundedRectangle(cornerRadius: DesignTokens.Radius.xs)
+                                        .fill(Theme.C.border)
+                                        .frame(width: 170, height: 10)
+                                }
+                                Spacer()
+                            }
+                            .frame(minHeight: DesignTokens.Space.phoneRowMinHeight)
                         }
                         Spacer()
                     }
@@ -87,6 +115,9 @@ struct UsefulBotApp: App {
         // The accent is monochrome: `accent` token (#171717/#EDEDED) so
         // carets, selection and the back chevron never leak system blue.
         .tint(Theme.C.accent)
+        // LabeledContent values take the `inkMuted` token, not the
+        // system secondary (§1.0 token law).
+        .labeledContentStyle(.token)
         .preferredColorScheme(Self.testAppearance ?? AppAppearance(rawValue: UserDefaults.standard.string(forKey: AppAppearance.storageKey) ?? "")?.colorScheme)
         .task {
             await coordinator.bootstrap()

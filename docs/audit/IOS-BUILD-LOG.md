@@ -2018,3 +2018,112 @@ Full gate (gate30) on the round-5 fix build plus targeted reruns (gate31/32):
 every leg green, widget nav-probe 0 hits. `npm test` 650/650,
 `verify-release.mjs` PASS, `make -C macos test` 322/322, `xcodebuild build`
 clean. 48 shots regenerated; PERFORMANCE-IOS.md re-measured on this build.
+
+## Round 6 (2026-09-23, head 51648f8)
+
+### Correctness (max effort) — request_changes, 1H + 1M + 4L, all applied
+
+- **H** — `BackendClient.stream`'s iOS branch mapped any stream-open
+  404/409 → `sessionEnded`, and `replay()`/`follow()` latched it sticky on
+  the first hit. But eve funnels every stream-open failure through the same
+  404 — including the transient window where the run exists but its
+  readable is not open yet — so one 404 is not an ended signal. `replay()`
+  now retries a bounded 12 strikes before marking §8.4's ended row, and a
+  successful replay clears a latch a transient earlier failure set;
+  `follow()` carries the same `endedStrikes` counter instead of latching
+  on first error.
+- **M** — group member pickers (`BotsListView` group editor,
+  `BotProfileSection` member picker) offered the default bot and
+  already-hidden bots as addable members. Candidates now filter
+  `kind == "bot" && !hidden && id != live.id && id != Threads.defaultBotId`.
+- **L×4** — `Controls.groupMemberBots` resolved members through the
+  routing/mention filter, dropping hidden members from membership views;
+  it now resolves `memberIds` verbatim like the Mac's helper (the
+  mention/routing filter stays in `Threads.groupMembers`).
+  `BotProfileSection` toggle/remove captured a render-time `members`
+  snapshot, so two quick edits could drop the second; both now re-resolve
+  the live roster at action time. `PhoneModel.confirmProposal` silently
+  dropped refused redirect URLs — the card now surfaces the refusal copy
+  the Mac shows. `shared/connection-url.ts`'s `isPublicDomainName` missed
+  alternate IPv4 notations (0x7f000001, 0x7f.0.0.1, 2130706433): WHATWG
+  parsing folds them onto a dotted quad the regexes never see, so the host
+  must now round-trip through `new URL` and the normalized form is
+  re-checked.
+
+### Security (max effort) — approve, no blocker/high/medium; 5 lows applied
+
+- Folded into the same batch: the hex/short-form IPv4 URL hole above
+  (shared with correctness), plus minor hardening/copy fixes inside the
+  touched files.
+
+### Design-a11y (normal) — request_changes, 6M + 15L, all applied
+
+- **M** — Providers: "Add provider", task-model rows and catalog rows took
+  `.disabled(blocked != nil)` but `blocked` was never rendered — writes
+  were grey with no reason. The reason now renders in `inkMuted` under the
+  disabled groups (§1.0 "never grey alone").
+- **M** — Provider OAuth terminal statuses: `self.flow = nil` removed the
+  section carrying `pollStatus`, so `expired`/`failed` reverted the button
+  to "Sign in" and the reason vanished. The flow now survives a terminal
+  status — the reason stays visible and the action reads "Try again".
+- **M** — Model sheet: Effort `TokenSegmented`, Speed `TokenToggle` and the
+  Speed segmented row stayed enabled while blocked; their `saveComposer`
+  bindings never checked readiness, so taps silently no-op'd. All three
+  now take `.disabled(blocked != nil)` (the reason line already renders).
+- **M** — Bot settings "Avatar" is now the spec'd face-picker anatomy: a
+  labeled grid of 44 pt swatches with color names (FacePalette labels) and
+  a 72/80 pt identity preview, replacing the unlabeled 36 pt horizontal
+  scroll; the copy matches NewBot's "Avatar color" group.
+- **M** — Group Members: Remove at the two-member floor and picker guards
+  at the caps silently ignored taps. Unchecked rows at the cap now render
+  the reason and refuse the tap visibly.
+- **M** — Chat empty state now renders §1.3's onboarding card on a fresh
+  bot (no job title + no description + empty transcript + no open
+  proposals): "Fill the form" opens bot settings, "Skip" dismisses
+  per-device (`ub-onboarding:<botId>`).
+- **L×15** — writesBlocked reason moved under the disabled rows it gates;
+  model-sheet and connector key fields take the focus `ink` stroke
+  (`borderStrong` idle); widget skeleton paints `border` blocks not a
+  `sunken` fill; widget failure copy "could not be loaded" (Mac parity);
+  boot skeleton recomposed to the bots-list anatomy; working row shows
+  elapsed time from the first minute; past-conversation header 17 pt
+  semibold + offline cache-age subtitle; roster Search row 40 pt tall and
+  ordered above the pending-approvals entry; `unsupportedVersion` reason
+  uses the banner's own words ("Your Mac runs an unsupported version");
+  Devices row pill no longer collapses offline into "Unreachable";
+  "Use for chat" takes `SecondaryAction` chrome; AvatarStack "+N" badge is
+  `tokenFont` (Dynamic Type) and `LabeledContent` values render `inkMuted`
+  via a `TokenLabeledContentStyle` at the app root.
+
+### Environmental notes
+
+- **Simulator Face ID enrollment did not survive the VM restore.** The
+  prefs plist still read `enrolled=1`, but SpringBoard's biometric daemon
+  booted with live `pearl.enrolled=0`, so LA sheets fell back to
+  "Enter iPhone Passcode" and every `pearl.match` post was ignored —
+  `testApprovalApprove` failed twice (light+dark) before the toggle was
+  re-set in Simulator → Features → Face ID → Enrolled. Legs after the
+  fix pass. `testApprovalApprove` re-run separately.
+- **The `~/.config/gh` recurrence:** the round-5 env note repeated —
+  a post-restore `gh` invocation re-created `~/.local/state/gh` without
+  `~/.config/gh`, re-firing the conditional cli-tools assertion. Same fix
+  (`mkdir -p ~/.config/gh`); verify-release all PASS.
+- **/tmp session helpers rebuilt** after the restore (ctl + question
+  session) — recovered from the persisted overflow dumps, verified against
+  the live stores.
+
+### Re-run scope
+
+Full gate on the round-6 fix build (gate29) plus a targeted re-run
+(gate30): every leg green — all 24 surfaces legs including the 10
+approval states, widget (nav-probe 0 hits), attachments, settings,
+routine, proposals, Safari sheet, owner-question, reduce-motion,
+two-client and live-send. `testApprovalApprove` and `testWidget` failed
+inside gate29 for environment reasons (lost Face ID enrollment; stub
+dead before its leg) and pass on re-run; the widget leg also required a
+test-string update — it was still waiting on the old "opened." copy the
+copy fix changed. `npm test` 650/650, `verify-release.mjs` PASS,
+`make -C macos test` 322/322, `xcodebuild build` clean, `xcodegen`
+no-diff. 59 shots regenerated from this build — the round-6 design
+review's stale evidence (`proposal-card-{light,dark}`,
+`safari-sheet-gated-pending-light`) is refreshed.

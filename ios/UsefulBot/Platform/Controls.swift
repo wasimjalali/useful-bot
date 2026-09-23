@@ -404,7 +404,7 @@ struct AvatarStackView: View {
             if overflow > 0 {
                 chip(fill: Theme.C.sunken) {
                     Text("+\(overflow)")
-                        .font(Theme.font(max(9, (size * 0.38).rounded()), .semibold))
+                        .tokenFont(max(9, (size * 0.38).rounded()), .semibold)
                         .monospacedDigit()
                         .foregroundStyle(Theme.C.inkMuted)
                 }
@@ -443,8 +443,10 @@ struct AvatarStackView: View {
 /// the same helper the macOS stack uses.
 func groupMemberBots(_ bot: ShellBot, shell: ShellStore?) -> [ShellBot] {
     guard bot.isGroup, let shell else { return [] }
-    return Threads.groupMembers(Threads.speakers(from: shell.bots), memberIds: bot.memberIds)
-        .compactMap { speaker in shell.bots.first { $0.id == speaker.id } }
+    // Resolve verbatim like the Mac's helper: membership views and the
+    // avatar stack show who is on the group even when a member was hidden
+    // afterwards. The routing/mention filter stays in Threads.groupMembers.
+    return bot.memberIds.compactMap { id in shell.bots.first { $0.id == id } }
 }
 
 /// Design spec 1.15's group titles: `fieldLabel` 13 medium in `inkMuted`,
@@ -744,4 +746,23 @@ extension View {
             y: DesignTokens.Shadow.raise.y
         )
     }
+}
+
+/// `LabeledContent` values in `inkMuted`, not the system secondary — the
+/// token the spec pairs with `ink` labels everywhere the value is prose.
+/// Applied once at the app root so every LabeledContent inherits it.
+struct TokenLabeledContentStyle: LabeledContentStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack {
+            configuration.label
+                .foregroundStyle(Theme.C.ink)
+            Spacer()
+            configuration.content
+                .foregroundStyle(Theme.C.inkMuted)
+        }
+    }
+}
+
+extension LabeledContentStyle where Self == TokenLabeledContentStyle {
+    static var token: TokenLabeledContentStyle { TokenLabeledContentStyle() }
 }

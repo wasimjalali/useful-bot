@@ -67,6 +67,17 @@ export function isPublicDomainName(hostname: string): boolean {
   const host = hostname.toLowerCase();
   if (host === "localhost") return false;
   if (V4.test(host)) return false;
+  // WHATWG parsing folds alternate IPv4 notations — 0x7f000001,
+  // 0x7f.0x0.0x0.0x1, 2130706433 — onto a dotted quad the regexes never
+  // see. Reject anything that does not round-trip through URL parsing.
+  let normalized: string;
+  try {
+    normalized = new URL("https://" + host).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (normalized !== host) return false;
+  if (V4.test(normalized)) return false;
   return isDnsName(host);
 }
 

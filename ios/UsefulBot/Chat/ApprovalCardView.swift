@@ -476,3 +476,52 @@ struct QuestionCardView: View {
         .cardLift(cornerRadius: DesignTokens.Radius.lg)
     }
 }
+
+/// §1.3's fresh-bot onboarding card — the same card the Mac draws under
+/// its empty state: "Fill the form" opens the bot's settings, "Skip"
+/// dismisses it on this device.
+struct OnboardingCardView: View {
+    let name: String
+    var onFillForm: () -> Void
+    var onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("NEW BOT")
+                .tokenFont(DesignTokens.FontSize.proposalTitle, .semibold)
+                .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.proposalTitle)
+                .foregroundStyle(Theme.C.inkFaint)
+            Text("\(name) has no job yet. What should I own? Give me a job title, standing rules, and anything I must never do without asking.")
+                .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                .lineSpacing(6)
+                .foregroundStyle(Theme.C.ink)
+                .padding(.top, 6)
+            Text("Answer here and I will propose a profile for you to confirm, or fill the form.")
+                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                .lineSpacing(3)
+                .foregroundStyle(Theme.C.inkMuted)
+                .padding(.top, 8)
+            HStack(spacing: 8) {
+                Button { onFillForm() } label: {
+                    Text("Fill the form")
+                        .tokenFont(DesignTokens.FontSize.button, .semibold)
+                        .foregroundStyle(Theme.C.brandInk)
+                        .frame(minHeight: 36)
+                        .padding(.horizontal, 12)
+                }
+                .buttonStyle(PressedScale(fill: Theme.C.brand, pressedFill: Theme.C.accentStrong))
+                Button("Skip") { onDismiss() }
+                    .tokenFont(DesignTokens.FontSize.chatName, .medium)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.C.surface)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        .cardLift(cornerRadius: DesignTokens.Radius.md)
+    }
+}

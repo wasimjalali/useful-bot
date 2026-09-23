@@ -46,11 +46,13 @@ struct ModelSheet: View {
     @Environment(PhoneModel.self) private var phone
     @EnvironmentObject private var coordinator: PairingCoordinator
     @State private var search = ""
+    @FocusState private var fieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             // `.searchable` needs system sheet chrome; the floating sheet
-            // draws its own field with the same sunken-pill recipe (1.13).
+            // draws its own field with the same sunken recipe as the global
+            // search field (1.4: `edge` at rest, `ink` on focus).
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(Theme.C.inkMuted)
@@ -64,13 +66,14 @@ struct ModelSheet: View {
                 .foregroundStyle(Theme.C.ink)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
+                .focused($fieldFocused)
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
             .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    .strokeBorder(Theme.C.borderStrong, lineWidth: 1)
+                    .strokeBorder(fieldFocused ? Theme.C.ink : Theme.C.edge, lineWidth: 1)
             )
             .padding(.horizontal, DesignTokens.Space.phoneGutter)
             .padding(.bottom, 8)
@@ -99,6 +102,7 @@ struct ModelSheet: View {
                                 options: composer.efforts.map { (id: $0.id, label: $0.label) },
                                 selection: effortBinding(composer)
                             )
+                            .disabled(blocked != nil)
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             .listRowBackground(Color.clear)
                         } header: {
@@ -117,6 +121,7 @@ struct ModelSheet: View {
                                 TokenToggle(isOn: speedToggle(fast, in: composer))
                             }
                             .frame(minHeight: 44)
+                            .disabled(blocked != nil)
                         } header: {
                             tokenGroupHeader("Speed")
                         }
@@ -126,6 +131,7 @@ struct ModelSheet: View {
                                 options: composer.speeds.map { (id: $0.id, label: $0.label) },
                                 selection: speedBinding(composer)
                             )
+                            .disabled(blocked != nil)
                             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             .listRowBackground(Color.clear)
                         } header: {

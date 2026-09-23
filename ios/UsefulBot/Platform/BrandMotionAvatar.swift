@@ -65,6 +65,7 @@ struct BrandMotionAvatar: View {
 /// The bundled brand timing + tint palette and the motion layer PNGs.
 enum BrandLayers {
     struct AvatarColor: Decodable {
+        let label: String
         let fill: String
     }
 

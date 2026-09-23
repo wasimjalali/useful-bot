@@ -94,19 +94,14 @@ struct BotsListView: View {
                 expiryBanner
             }
             Section {
-                if !phone.approvals.isEmpty {
-                    approvalsCard
-                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
-                }
+                // §1.2 order: Search field (3), then the approvals entry (4).
                 Button {
                     showSearch = true
                 } label: {
                     Text("Search")
                         .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                         .foregroundStyle(Theme.C.inkFaintText)
-                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
                         .padding(.horizontal, 12)
                         .background(Theme.C.surface)
                         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
@@ -118,6 +113,12 @@ struct BotsListView: View {
                 .buttonStyle(RowButtonStyle())
                 .listRowBackground(Color.clear)
                 .accessibilityLabel("Search")
+                if !phone.approvals.isEmpty {
+                    approvalsCard
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
                 if let loadError {
                     loadErrorRow(loadError)
                 }
@@ -292,7 +293,7 @@ struct BotsListView: View {
                     detent: .large,
                     leading: { Button("Cancel") { showGroup = false } }
                 ) {
-                    CreateGroupSheet(bots: bots.filter { !$0.isGroup }, blocked: createsBlocked) { name, members in
+                    CreateGroupSheet(bots: bots.filter { $0.kind == "bot" && !$0.hidden && $0.id != Threads.defaultBotId }, blocked: createsBlocked) { name, members in
                         showGroup = false
                         await phone.createGroup(name: name, memberIds: members)
                     }
@@ -1029,6 +1030,16 @@ struct PastConversationView: View {
         return Self.isoDate.date(from: raw) ?? Self.isoDatePlain.date(from: raw)
     }
 
+    /// §1.4 offline: the header subtitle trades the date for the cached
+    /// transcript's age — the same "Cached N min ago" the other cached
+    /// surfaces carry.
+    private var cachedAge: String? {
+        guard coordinator.readiness != .ready, let last = phone.lastFetchAt else { return nil }
+        let age = Date().timeIntervalSince(last)
+        guard age > 15 else { return nil }
+        return "Cached \(max(1, Int(age / 60))) min ago"
+    }
+
     private static let isoDate: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1094,9 +1105,13 @@ struct PastConversationView: View {
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
                         Text(phone.pastRecent?.title ?? "Past conversation")
-                            .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                            .tokenFont(DesignTokens.FontSize.phoneNavTitle, .semibold)
                             .foregroundStyle(Theme.C.ink)
-                        if let updated = pastDate {
+                        if let cachedAge {
+                            Text(cachedAge)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        } else if let updated = pastDate {
                             Text(updated, format: .dateTime.month(.wide).day().year())
                                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                                 .foregroundStyle(Theme.C.inkMuted)

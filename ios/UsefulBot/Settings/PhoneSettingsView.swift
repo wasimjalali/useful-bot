@@ -160,7 +160,10 @@ struct PhoneSettingsView: View {
         switch coordinator.readiness {
         case .ready: return ("Connected", Theme.C.success, Theme.C.successSoft)
         case .none: return nil
-        default: return ("Unreachable", Theme.C.warning, Theme.C.warningSoft)
+        case .noNetwork: return ("Offline", Theme.C.warning, Theme.C.warningSoft)
+        case .macUnreachable: return ("Unreachable", Theme.C.warning, Theme.C.warningSoft)
+        case .runtimeDown: return ("Runtime down", Theme.C.warning, Theme.C.warningSoft)
+        case .unsupportedVersion: return ("Unsupported version", Theme.C.warning, Theme.C.warningSoft)
         }
     }
 }

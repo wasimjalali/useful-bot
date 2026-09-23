@@ -655,10 +655,10 @@ struct ChatScreen: View {
             // scale pulse; Reduce Motion draws the rest frame.
             BrandMotionAvatar(size: 28, color: FacePalette.displayColor(for: bot), avatar: true)
             TimelineView(.periodic(from: start, by: 30)) { context in
-                let minutes = Int(context.date.timeIntervalSince(start) / 60)
-                Text(minutes >= 5
-                     ? "\(chat?.projection.activity.label ?? "Thinking") · still working, \(minutes) min"
-                     : (chat?.projection.activity.label ?? "Thinking"))
+                // Spec 1.3: the activity label carries its elapsed time.
+                let seconds = Int(context.date.timeIntervalSince(start))
+                let elapsed = seconds >= 60 ? "\(seconds / 60) min" : "just started"
+                Text("\(chat?.projection.activity.label ?? "Thinking") · \(elapsed)")
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
             }
@@ -718,6 +718,19 @@ struct ChatScreen: View {
                     .foregroundStyle(Theme.C.inkMuted)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 448)
+            }
+            // §1.3: on a fresh bot the onboarding card sits under the
+            // empty state — same card the Mac draws.
+            if let bot, phone.showOnboarding(for: bot, transcriptEmpty: true) {
+                OnboardingCardView(
+                    name: bot.name,
+                    onFillForm: {
+                        phone.dismissOnboarding(botId: bot.id)
+                        showBotSettings = true
+                    },
+                    onDismiss: { phone.dismissOnboarding(botId: bot.id) }
+                )
+                .padding(.top, 16)
             }
         }
         .frame(maxWidth: .infinity)
@@ -1108,6 +1121,7 @@ struct ChatScreen: View {
     /// the sheet's title row owns the title and the Done.
     private var botSettings: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             List {
                 if let bot {
                     Section {
@@ -1116,7 +1130,13 @@ struct ChatScreen: View {
                                 AvatarStackView(bots: groupMemberBots(bot, shell: phone.shell), size: 36, maxVisible: 3)
                                     .frame(height: 72)
                             } else {
-                                BotFace(bot: bot, size: 72)
+                                // §1.5: tap the identity face to reach its
+                                // Avatar section — the Mac's tap-to-edit.
+                                Button { withAnimation { proxy.scrollTo("bot-avatar", anchor: .top) } } label: {
+                                    BotFace(bot: bot, size: 72)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("Opens avatar editing")
                             }
                             Text(bot.name)
                                 .tokenFont(DesignTokens.FontSize.phoneLargeTitle, .semibold)
@@ -1133,6 +1153,7 @@ struct ChatScreen: View {
                     BotProfileSection(bot: bot)
                     if !bot.isGroup {
                         BotAvatarSection(bot: bot)
+                            .id("bot-avatar")
                     }
                     if bot.isGroup {
                         GroupMembersSection(bot: bot)
@@ -1161,6 +1182,11 @@ struct ChatScreen: View {
                         Text("Attach a folder from your Mac.")
                             .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                             .foregroundStyle(Theme.C.inkMuted)
+                        if let reason = writesBlocked {
+                            Text(reason)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
                     } header: {
                         tokenGroupHeader("Defaults")
                     }
@@ -1214,13 +1240,14 @@ struct ChatScreen: View {
                                 .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                                 .foregroundStyle(Theme.C.inkMuted)
                         }
-                    }
-                    if let reason = writesBlocked {
-                        Text(reason)
-                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                            .foregroundStyle(Theme.C.inkMuted)
+                        if let reason = writesBlocked {
+                            Text(reason)
+                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                                .foregroundStyle(Theme.C.inkMuted)
+                        }
                     }
                 }
+            }
             }
             .toolbar(.hidden, for: .navigationBar)
         }

@@ -857,7 +857,7 @@ final class SurfacesUITests: XCTestCase {
         // rows that accumulated deeper in the transcript.
         let webview = app.webViews.firstMatch
         let skeleton = app.descendants(matching: .any)["Loading drawing"]
-        let failedText = app.staticTexts["This drawing could not be opened."]
+        let failedText = app.staticTexts["This drawing could not be loaded."]
         let transcript = app.scrollViews["transcript"]
         let earlier = app.buttons["Show earlier"]
         let deadline = Date().addingTimeInterval(45)

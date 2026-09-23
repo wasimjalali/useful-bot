@@ -61,6 +61,11 @@ struct PhoneProvidersView: View {
                     .buttonStyle(SecondaryAction(enabled: blocked == nil))
                     .frame(minHeight: 44)
                     .disabled(blocked != nil)
+                if let blocked {
+                    Text(blocked)
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
             } header: {
                 tokenGroupHeader("Connected")
             }
@@ -81,6 +86,12 @@ struct PhoneProvidersView: View {
                 }
             } header: {
                 tokenGroupHeader("Task models")
+            } footer: {
+                // §1.0/§1.12: writes disabled while the Mac is not ready
+                // carry the reason under them, never grey alone.
+                if let blocked {
+                    Text(blocked)
+                }
             }
             if let error {
                 Section { Text(error).foregroundStyle(Theme.C.danger) }
@@ -267,6 +278,17 @@ struct PhoneProvidersView: View {
             .background(Theme.C.canvas)
             .tokenFont(DesignTokens.FontSize.chatName, .regular)
             .listRowBackground(Theme.C.surface)
+            .safeAreaInset(edge: .bottom) {
+                if let blocked {
+                    Text(blocked)
+                        .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .background(Theme.C.canvas)
+                }
+            }
     }
 
     private var blocked: String? {
@@ -348,7 +370,8 @@ private struct ConnectionDetailView: View {
                     }
                     if !connection.active {
                         Button("Use for chat") { Task { await activate() } }
-                            .frame(minHeight: 44)
+                            .buttonStyle(SecondaryAction(enabled: !busy))
+                            .frame(maxWidth: .infinity, minHeight: 44)
                             .disabled(busy)
                     }
                 }
@@ -424,6 +447,9 @@ struct ProviderConnectView: View {
     @State private var busy = false
     @State private var flow: DeviceFlowStart?
     @State private var pollStatus = ""
+    // Terminal poll states keep `flow` so the reason line and the
+    // 'Try again' commit survive (§1.12); the stale code hides instead.
+    @State private var terminalStatus = false
     @State private var safariURL: URL?
     @State private var pollTask: Task<Void, Never>?
 
@@ -479,25 +505,27 @@ struct ProviderConnectView: View {
             if let flow {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        // Spec: the OAuth code is SF Mono 20, Dynamic Type
-                        // scales it — no minimumScaleFactor cramp.
-                        Text(flow.userCode)
-                            .tokenFont(20, .semibold, design: .monospaced)
-                            .foregroundStyle(Theme.C.ink)
-                            .lineLimit(2)
-                        HStack(spacing: 12) {
-                            Button("Copy code") {
-                                UIPasteboard.general.string = flow.userCode
-                            }
-                            .buttonStyle(SecondaryAction())
-                            .frame(minHeight: 44)
-                            Button("Open in Safari") {
-                                if let url = URL(string: flow.verificationUrlComplete ?? flow.verificationUrl) {
-                                    safariURL = url
+                        if !terminalStatus {
+                            // Spec: the OAuth code is SF Mono 20, Dynamic Type
+                            // scales it — no minimumScaleFactor cramp.
+                            Text(flow.userCode)
+                                .tokenFont(20, .semibold, design: .monospaced)
+                                .foregroundStyle(Theme.C.ink)
+                                .lineLimit(2)
+                            HStack(spacing: 12) {
+                                Button("Copy code") {
+                                    UIPasteboard.general.string = flow.userCode
                                 }
+                                .buttonStyle(SecondaryAction())
+                                .frame(minHeight: 44)
+                                Button("Open in Safari") {
+                                    if let url = URL(string: flow.verificationUrlComplete ?? flow.verificationUrl) {
+                                        safariURL = url
+                                    }
+                                }
+                                .buttonStyle(SecondaryAction())
+                                .frame(minHeight: 44)
                             }
-                            .buttonStyle(SecondaryAction())
-                            .frame(minHeight: 44)
                         }
                         if !pollStatus.isEmpty {
                             Text(pollStatus)
@@ -593,6 +621,7 @@ struct ProviderConnectView: View {
         do {
             let started = try await client.startOAuth(providerId: catalog.providerId)
             flow = started
+            terminalStatus = false
             pollStatus = "Waiting for you to finish in Safari"
             error = nil
             // The phone turns this server string into an external
@@ -633,17 +662,18 @@ struct ProviderConnectView: View {
                         pollStatus = "Waiting for you to finish in Safari"
                     case "expired":
                         pollStatus = "The code expired."
-                        self.flow = nil
+                        terminalStatus = true
                         return
                     case "failed":
                         pollStatus = "Sign-in failed. Try again."
-                        self.flow = nil
+                        terminalStatus = true
                         return
                     default:
                         pollStatus = status
                     }
                 } catch {
                     pollStatus = "Lost the connection to your Mac."
+                    terminalStatus = true
                     return
                 }
             }
@@ -695,6 +725,8 @@ struct PhoneConnectorsView: View {
     @State private var failedConnect: Set<String> = []
     @State private var safariURL: URL?
     @State private var shown = 20
+    @FocusState private var fieldFocused: Bool
+    @FocusState private var keyFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -703,7 +735,8 @@ struct PhoneConnectorsView: View {
             if payload?.hasKey == true || !showsKeyForm {
                 // `.searchable` draws system chrome; the drawn pill carries
                 // the same recipe the model sheet's field does (1.13):
-                // 40 pt, sunken, full-radius, `borderStrong` edge.
+                // 40 pt, sunken, full-radius, `borderStrong` edge, `ink`
+                // on focus (1.13 anatomy).
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(Theme.C.inkMuted)
@@ -717,12 +750,13 @@ struct PhoneConnectorsView: View {
                     .foregroundStyle(Theme.C.ink)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                    .focused($fieldFocused)
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 40)
                 .background(Theme.C.sunken, in: Capsule())
                 .overlay(
-                    Capsule().strokeBorder(Theme.C.borderStrong, lineWidth: 1)
+                    Capsule().strokeBorder(fieldFocused ? Theme.C.ink : Theme.C.borderStrong, lineWidth: 1)
                 )
                 .padding(.horizontal, DesignTokens.Space.phoneGutter)
                 .padding(.bottom, 8)
@@ -819,14 +853,14 @@ struct PhoneConnectorsView: View {
                 ) {
                     EmptyView()
                 }
+                .focused($keyFocused)
                 .padding(.horizontal, 10)
                 .frame(minHeight: 44)
                 .overlay {
-                    // Key-rejected strokes the field danger (spec 1.13).
-                    if rejectedReason != nil {
-                        RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
-                            .strokeBorder(Theme.C.danger, lineWidth: 1)
-                    }
+                    // `edge` at rest, `ink` on focus; key-rejected strokes
+                    // the field danger (spec 1.13).
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                        .strokeBorder(rejectedReason != nil ? Theme.C.danger : (keyFocused ? Theme.C.ink : Theme.C.edge), lineWidth: 1)
                 }
                 // The key commit is primary (spec 1.13 anatomy).
                 Button { Task { await saveKey() } } label: {
@@ -1089,6 +1123,10 @@ struct PhoneConnectorsView: View {
                 watchConnection(slug: toolkit.slug)
             } else {
                 connectingSlug = nil
+                failedConnect.insert(toolkit.slug)
+                // The Mac surfaces the refused link (AppModel's
+                // connectorsError) rather than silently resetting.
+                self.error = "Composio sent a sign-in link this app will not open."
             }
         } catch {
             connectingSlug = nil

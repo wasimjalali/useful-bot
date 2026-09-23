@@ -43,7 +43,7 @@ struct PhoneWidgetSlot: View {
                 .frame(height: height)
             } else if failed {
                 HStack(spacing: 8) {
-                    Text("This drawing could not be opened.")
+                    Text("This drawing could not be loaded.")
                         .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
                         .foregroundStyle(Theme.C.inkMuted)
                     Spacer(minLength: 0)
@@ -59,7 +59,7 @@ struct PhoneWidgetSlot: View {
                 .frame(minHeight: 120)
             } else {
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    .fill(Theme.C.sunken)
+                    .fill(Theme.C.border)
                     .frame(height: height)
                     .skeletonPulse(reduceMotion)
                     .accessibilityLabel("Loading drawing")
