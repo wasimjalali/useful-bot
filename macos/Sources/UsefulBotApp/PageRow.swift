@@ -36,6 +36,15 @@ struct PageRow: View {
             .frame(maxWidth: Self.width, alignment: .leading)
         }
         .task(id: mediaId) { await load() }
+        // The file can go while the picture stays: trashed from the Library,
+        // or moved or deleted in Finder while the app was in the background.
+        .onReceive(NotificationCenter.default.publisher(for: .mediaItemGone)) { note in
+            if note.object as? String == mediaId { state = .moved }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            recheck()
+        }
+        .onAppear { recheck() }
     }
 
     @ViewBuilder private var content: some View {
@@ -45,7 +54,11 @@ struct PageRow: View {
         case .ready(let item, let image):
             let url = URL(fileURLWithPath: item.path)
             Button {
-                PageOpener.open(url)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    PageOpener.open(url)
+                } else {
+                    state = .moved
+                }
             } label: {
                 ZStack(alignment: .topTrailing) {
                     Group {
@@ -107,6 +120,12 @@ struct PageRow: View {
         }
     }
 
+    /// A picture of a file that is no longer there turns into the moved row.
+    private func recheck() {
+        guard case .ready(let item, _) = state else { return }
+        if !FileManager.default.fileExists(atPath: item.path) { state = .moved }
+    }
+
     private var isMoved: Bool {
         if case .moved = state { return true }
         return false
@@ -131,6 +150,12 @@ struct PageRow: View {
             state = .failed
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted with the media id as the object when the Library trashes or
+    /// forgets an item, so a chat row still showing it can let go.
+    static let mediaItemGone = Notification.Name("ai.useful.bot.mediaItemGone")
 }
 
 /// The hover chip on a page's picture.
@@ -228,9 +253,12 @@ final class PageThumbnails {
     }
 }
 
-/// One off-screen render. The page may read only its own folder, keeps no
-/// cookies or storage, and cannot navigate anywhere: a link or a redirect is
-/// refused, so the picture is always of the file itself.
+/// One off-screen render. The page may read only its own file (not its
+/// folder: a bot can write a page into the home folder, and a script in it
+/// must not reach the files around it), keeps no cookies or storage, and
+/// cannot navigate anywhere: a link or a redirect is refused, so the picture
+/// is always of the file itself. Scripts run, so a chart draws; assets in
+/// other files do not load here, only in the browser.
 @MainActor
 private final class PageSnapshot: NSObject, WKNavigationDelegate {
     private let url: URL
@@ -250,10 +278,13 @@ private final class PageSnapshot: NSObject, WKNavigationDelegate {
         let snapshot = PageSnapshot(url: url, viewport: viewport)
         return await withCheckedContinuation { continuation in
             snapshot.continuation = continuation
-            snapshot.webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            snapshot.webView.loadFileURL(url, allowingReadAccessTo: url)
             // A page that never finishes loading still gets a picture of what
-            // it drew, or none, but never holds the queue.
+            // it drew, or none, but never holds the queue: a script that
+            // hangs the page can stall the snapshot itself, so a hard stop
+            // follows the capture.
             DispatchQueue.main.asyncAfter(deadline: .now() + 10) { snapshot.capture() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { snapshot.finish(nil) }
         }
     }
 
@@ -295,8 +326,11 @@ private final class PageSnapshot: NSObject, WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
     ) {
+        let target = navigationAction.request.url
+        let isThePage = target?.isFileURL == true && target?.standardizedFileURL == url.standardizedFileURL
+        // An embedded frame may show web content, never another local file.
         let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
-        let isThePage = navigationAction.request.url?.standardizedFileURL == url.standardizedFileURL
-        decisionHandler(!isMainFrame || isThePage ? .allow : .cancel)
+        let isWebFrame = !isMainFrame && (target?.scheme == "https" || target?.scheme == "http" || target?.scheme == "about")
+        decisionHandler(isThePage || isWebFrame ? .allow : .cancel)
     }
 }

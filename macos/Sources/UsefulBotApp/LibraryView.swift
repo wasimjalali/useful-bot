@@ -306,6 +306,8 @@ struct LibraryView: View {
                     return
                 }
             }
+            // The file is gone either way: a chat row showing it lets go now.
+            NotificationCenter.default.post(name: .mediaItemGone, object: item.id)
             do {
                 try await GeneratedImageCache.shared.forget(item.id)
             } catch {

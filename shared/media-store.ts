@@ -551,10 +551,10 @@ function readsAs(path: string, kind: MediaKind): boolean {
 function readVerified(path: string, kind: MediaKind): { mime: string; bytes: Buffer } {
   if (!lstatSync(path).isFile()) throw new Error("media_type");
   if (kind === "page") {
-    // Only the name says a page; its bytes are never served, the app opens
-    // the file itself.
+    // Only the name says a page. Its bytes are never read here, so no route
+    // can serve a bot's HTML from the app's origin; the app opens the file.
     if (!isPagePath(path)) throw new Error("media_type");
-    return { mime: PAGE_MIME, bytes: readFileSync(path) };
+    return { mime: PAGE_MIME, bytes: Buffer.alloc(0) };
   }
   const bytes = readFileSync(path);
   if (kind === "drawing") {
