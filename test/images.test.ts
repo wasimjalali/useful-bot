@@ -15,11 +15,14 @@ import {
   publicProviders,
   resolveUpstream,
   setActiveConnection,
+  setComposer,
   setProviderKey,
   setRole,
   writeProviderStore,
 } from "../shared/providers.ts";
 import { generateImage } from "../router/src/upstreams/images.ts";
+import listModels from "../agent/tools/list_models.ts";
+import { modelContext } from "../agent/instructions/model.ts";
 import { RouterError } from "../router/src/errors.ts";
 import { setConnectionLookup } from "../shared/connection-url.ts";
 import { IMAGE_BYTES_MAX } from "../shared/images-store.ts";
@@ -51,12 +54,17 @@ async function withImageStore<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "ub-images-"));
   const storePath = join(dir, "providers.json");
   const previous = process.env.UB_PROVIDERS_PATH;
+  const previousCache = process.env.UB_MODELS_CACHE_PATH;
   process.env.UB_PROVIDERS_PATH = storePath;
+  // The machine's own models cache stays out of it too.
+  process.env.UB_MODELS_CACHE_PATH = join(dir, "models-cache.json");
   try {
     return await run(dir);
   } finally {
     if (previous === undefined) delete process.env.UB_PROVIDERS_PATH;
     else process.env.UB_PROVIDERS_PATH = previous;
+    if (previousCache === undefined) delete process.env.UB_MODELS_CACHE_PATH;
+    else process.env.UB_MODELS_CACHE_PATH = previousCache;
   }
 }
 
@@ -187,6 +195,41 @@ test("OpenRouter image models fill the image picker and stay out of the chat lis
   }
 });
 
+test("list_models shows chat and image models and the bot knows its model", async () => {
+  await withImageStore(async (dir) => {
+    const store = setActiveConnection(setProviderKey(emptyProviderStore(), "openrouter", "api", "sk-or-12345678"), "openrouter:api");
+    writeProviderStore(setComposer(store, { modelId: "openai/gpt-4.1-mini" }), join(dir, "providers.json"));
+    writeModelsCache({
+      schemaVersion: 3,
+      providers: {
+        "openrouter:api": {
+          fetchedAt: Date.now(),
+          models: [
+            { ...hydrateModel("openrouter:api", "black-forest-labs/flux.2-pro"), outputs: ["image"], imageGen: true },
+            { ...hydrateModel("openrouter:api", "google/gemini-3.1-flash-image"), outputs: ["image", "text"], imageGen: true },
+            { ...hydrateModel("openrouter:api", "openai/gpt-4.1-mini"), outputs: ["text"] },
+          ],
+        },
+      },
+    }, join(dir, "models-cache.json"));
+    const out = await listModels.execute({ query: "flux" } as never, {} as never) as {
+      current: { chat: { id: string } | null; image: { id: string } | null };
+      chat: { total: number; models: Array<{ id: string }> };
+      image: { total: number; models: Array<{ id: string; connectionId: string }> };
+    };
+    assert.equal(out.current.chat?.id, "openai/gpt-4.1-mini");
+    assert.equal(out.current.image?.id, "google/gemini-3.1-flash-image");
+    assert.equal(out.chat.total, 0);
+    assert.deepEqual(out.image.models, [{ id: "black-forest-labs/flux.2-pro", label: "Flux.2 Pro", provider: "OpenRouter", connectionId: "openrouter:api" }]);
+    const onlyChat = await listModels.execute({ kind: "chat" } as never, {} as never) as Record<string, unknown>;
+    assert.equal("image" in onlyChat, false);
+
+    const context = modelContext() ?? "";
+    assert.match(context, /runs on .*\(openai\/gpt-4\.1-mini\) through OpenRouter/);
+    assert.match(context, /generate_image draws with .*google\/gemini-3\.1-flash-image/);
+  });
+});
+
 test("modelIsImageGenerator tells generators from chat models that list image output", () => {
   assert.equal(modelIsImageGenerator({ id: "recraft/recraft-v4", outputs: ["image"] }), true);
   assert.equal(modelIsImageGenerator({ id: "openai/gpt-5-image", outputs: ["image", "text"] }), true);
@@ -208,6 +251,41 @@ test("generateImage posts to OpenRouter's /images with an aspect ratio", async (
     assert.equal(seen[0]?.url, "https://openrouter.ai/api/v1/images");
     assert.deepEqual(seen[0]?.body, { model: "google/gemini-3.1-flash-image", prompt: "a fox", n: 1, aspect_ratio: "16:9" });
     assert.equal(out.images[0]?.mime, "image/png");
+  });
+});
+
+test("a picked image model must be one the owner has, and gets its nearest ratio", async () => {
+  await withImageStore(async (dir) => {
+    writeProviderStore(setProviderKey(emptyProviderStore(), "openrouter", "api", "sk-or-12345678"), join(dir, "providers.json"));
+    writeModelsCache({
+      schemaVersion: 3,
+      providers: {
+        "openrouter:api": {
+          fetchedAt: Date.now(),
+          models: [
+            { ...hydrateModel("openrouter:api", "openai/gpt-image-1"), outputs: ["image"], imageGen: true, aspectRatios: ["1:1", "3:2", "2:3", "auto"] },
+            { ...hydrateModel("openrouter:api", "openai/gpt-4.1-mini"), outputs: ["text"] },
+          ],
+        },
+      },
+    }, join(dir, "models-cache.json"));
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG_B64 }] }), { status: 200 });
+    }) as typeof fetch;
+    const out = await generateImage({ prompt: "a fox", size: "wide", n: 1, pick: { modelId: "openai/gpt-image-1" }, signal: AbortSignal.timeout(5_000), fetchImpl });
+    assert.equal(out.model, "openai/gpt-image-1");
+    // gpt-image takes 3:2, not 16:9.
+    assert.equal(seen[0]?.aspect_ratio, "3:2");
+
+    // A chat model, or a model on no connected provider, is refused before any call.
+    for (const pick of [{ modelId: "openai/gpt-4.1-mini" }, { modelId: "dall-e-3" }, { modelId: "openai/gpt-image-1", connectionId: "openai:api" }]) {
+      const err = await generateImage({ prompt: "x", n: 1, pick, signal: AbortSignal.timeout(5_000), fetchImpl }).catch((e) => e);
+      assert.ok(err instanceof RouterError);
+      assert.equal(err.code, "image_model_unknown");
+    }
+    assert.equal(seen.length, 1);
   });
 });
 

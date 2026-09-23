@@ -4,7 +4,9 @@ import { readCappedBytes } from "../read-capped.ts";
 import {
   readProviderStore,
   resolveUpstream,
+  withImagePick,
 } from "../../../shared/providers.ts";
+import { catalogFor } from "../../../shared/live-models.ts";
 import { IMAGE_BYTES_MAX, IMAGE_MIME } from "../../../shared/images-store.ts";
 import {
   assertPublicHttpsUrl,
@@ -46,6 +48,18 @@ const SIZE_ASPECT: Record<ImageSize, string> = {
   tall: "9:16",
 };
 
+/** The next best ratio when a model does not take the first choice (gpt-image takes 3:2, not 16:9). */
+const SIZE_ASPECT_FALLBACK: Record<ImageSize, string[]> = {
+  square: [],
+  wide: ["3:2", "4:3"],
+  tall: ["2:3", "3:4"],
+};
+
+function aspectFor(size: ImageSize, supported: string[] | undefined): string | null {
+  if (!supported) return SIZE_ASPECT[size];
+  return [SIZE_ASPECT[size], ...SIZE_ASPECT_FALLBACK[size]].find((ratio) => supported.includes(ratio)) ?? null;
+}
+
 /**
  * The generations answer can carry up to four base64 images plus framing;
  * each is capped at IMAGE_BYTES_MAX decoded, so the body cannot exceed this.
@@ -66,12 +80,17 @@ export interface NormalizedImage {
   mime: string;
 }
 
-function sizeParams(providerId: string, model: string, size: ImageSize | undefined): Record<string, unknown> {
+function sizeParams(providerId: string, model: string, size: ImageSize | undefined, ratios?: string[]): Record<string, unknown> {
   if (!size) return {};
   // xAI and OpenRouter take aspect_ratio instead of a pixel size (docs.x.ai
   // images generation, openrouter.ai image generation); OpenAI and Z.AI both
-  // take WxH on `size`.
-  if (providerId === "xai" || providerId === "openrouter") return { aspect_ratio: SIZE_ASPECT[size] };
+  // take WxH on `size`. OpenRouter lists each model's ratios, so a shape the
+  // model cannot take goes to its nearest one, or to the model default.
+  if (providerId === "xai") return { aspect_ratio: SIZE_ASPECT[size] };
+  if (providerId === "openrouter") {
+    const ratio = aspectFor(size, ratios);
+    return ratio ? { aspect_ratio: ratio } : {};
+  }
   const family = imageFamily(providerId, model);
   const dims = family ? SIZE_DIMENSIONS[family] : undefined;
   return dims ? { size: dims[size] } : {};
@@ -144,12 +163,23 @@ export async function generateImage(input: {
   prompt: string;
   size?: ImageSize;
   n: number;
+  /** One call's choice among the owner's image models; the saved role otherwise. */
+  pick?: { connectionId?: string; modelId: string };
   signal: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<{ providerId: string; model: string; images: NormalizedImage[] }> {
+  let store = readProviderStore();
+  if (input.pick) {
+    try {
+      store = withImagePick(store, input.pick, process.env);
+    } catch (error) {
+      const code = error instanceof Error && error.message === "image_model_ambiguous" ? "image_model_ambiguous" : "image_model_unknown";
+      throw new RouterError({ status: 400, type: "invalid_request_error", code, message: code });
+    }
+  }
   let resolved: ReturnType<typeof resolveUpstream>;
   try {
-    resolved = resolveUpstream(readProviderStore(), "image", process.env);
+    resolved = resolveUpstream(store, "image", process.env);
   } catch (error) {
     throw upstreamConfigError(error);
   }
@@ -177,7 +207,8 @@ export async function generateImage(input: {
       // dall-e-3 refuses anything but n=1; the response then carries one
       // image and the route bills for what arrived, not what was asked.
       n: imageFamily(resolved.providerId, resolved.model) === "dall-e-3" ? 1 : input.n,
-      ...sizeParams(resolved.providerId, resolved.model, input.size),
+      ...sizeParams(resolved.providerId, resolved.model, input.size,
+        catalogFor(resolved.connection.id).find((item) => item.id === resolved.model)?.aspectRatios),
     }),
     redirect: "manual",
     signal: input.signal,

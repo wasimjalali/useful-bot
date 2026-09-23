@@ -161,6 +161,44 @@ export function parseListedMeta(raw: unknown): Record<string, ModelMeta> {
   return out;
 }
 
+/** Formats the image store keeps (shared/images-store.ts IMAGE_MIME). */
+const STORABLE_IMAGE_FORMATS = new Set(["png", "jpeg", "jpg", "webp", "gif"]);
+
+/**
+ * The vendor's image endpoint list (OpenRouter GET /images/models). Every row
+ * is a model POST /images serves, so each is marked an image generator, with
+ * its aspect ratios. A model whose only formats this app cannot store (the
+ * SVG-only Recraft vector models) is left out: every call to it would bill
+ * and then be refused.
+ */
+export function parseImageModels(raw: unknown): { ids: string[]; meta: Record<string, ModelMeta> } {
+  const ids: string[] = [];
+  const meta: Record<string, ModelMeta> = {};
+  const listed = parseListedMeta(raw);
+  for (const row of rowsOf(raw)) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    if (typeof rec.id !== "string" || !rec.id.trim()) continue;
+    const id = rec.id.trim();
+    const params = rec.supported_parameters && typeof rec.supported_parameters === "object"
+      ? rec.supported_parameters as Record<string, { values?: unknown }>
+      : {};
+    const formats = Array.isArray(params.output_format?.values) ? params.output_format.values : null;
+    if (formats && !formats.some((format) => typeof format === "string" && STORABLE_IMAGE_FORMATS.has(format))) continue;
+    const ratios = Array.isArray(params.aspect_ratio?.values)
+      ? params.aspect_ratio.values.filter((value): value is string => typeof value === "string")
+      : [];
+    ids.push(id);
+    meta[id] = {
+      ...listed[id],
+      outputs: listed[id]?.outputs ?? ["image"],
+      imageGen: true,
+      ...(ratios.length > 0 ? { aspectRatios: ratios } : {}),
+    };
+  }
+  return { ids, meta };
+}
+
 function idsFromRows(rows: unknown[]): string[] {
   const ids: string[] = [];
   for (const row of rows) {
@@ -250,6 +288,7 @@ export async function fetchProviderModels(
   keyHeader: KeyHeader = "bearer",
   headers: Record<string, string> = {},
   query: Record<string, string> = {},
+  path = "models",
 ): Promise<{ ids: string[]; meta: Record<string, ModelMeta> }> {
   const out: Record<string, string> = {
     accept: "application/json",
@@ -262,12 +301,13 @@ export async function fetchProviderModels(
     else out.authorization = `Bearer ${key}`;
   }
   const search = new URLSearchParams(query).toString();
-  const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/models${search ? `?${search}` : ""}`, {
+  const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/${path}${search ? `?${search}` : ""}`, {
     headers: out,
     signal: AbortSignal.timeout(4000),
   });
   if (!res.ok) return { ids: [], meta: {} };
   const raw = await res.json();
+  if (path !== "models") return parseImageModels(raw);
   return { ids: parseModelList(raw), meta: parseListedMeta(raw) };
 }
 
@@ -299,8 +339,8 @@ export async function refreshProviderModels(input: {
   keyHeader?: KeyHeader;
   headers?: Record<string, string>;
   query?: Record<string, string>;
-  /** A second /models query merged into the list (OpenRouter's image models). */
-  imagesQuery?: Record<string, string>;
+  /** The vendor's image model list, merged into the list (OpenRouter's images/models). */
+  imagesPath?: string;
   modelsDevId?: string | null;
   force?: boolean;
   path?: string;
@@ -314,14 +354,27 @@ export async function refreshProviderModels(input: {
   try {
     const listed = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, input.query);
     if (listed.ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
-    if (input.imagesQuery) {
-      // The image list is a separate call; if it fails, the chat list still
-      // lands and the image picker shows the mode's static ids.
-      const images = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, { ...input.query, ...input.imagesQuery })
+    if (input.imagesPath) {
+      // The image list is a separate call. If it fails or comes back empty,
+      // the chat list still lands and the image rows from the last good
+      // refresh stay, so one bad fetch does not empty the picker for 30 min.
+      let images = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, {}, input.imagesPath)
         .catch((err) => {
           console.error(`[models] image list ${input.providerId} failed`, err);
           return { ids: [] as string[], meta: {} as Record<string, ModelMeta> };
         });
+      if (images.ids.length === 0) {
+        const kept = (current?.models ?? []).filter((item) => item.imageGen);
+        images = {
+          ids: kept.map((item) => item.id),
+          meta: Object.fromEntries(kept.map((item) => [item.id, {
+            outputs: item.outputs,
+            inputs: item.inputs,
+            imageGen: true,
+            ...(item.aspectRatios ? { aspectRatios: item.aspectRatios } : {}),
+          } satisfies ModelMeta])),
+        };
+      }
       listed.ids.push(...images.ids);
       for (const [id, meta] of Object.entries(images.meta)) listed.meta[id] = { ...listed.meta[id], ...meta };
     }

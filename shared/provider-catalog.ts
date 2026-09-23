@@ -47,10 +47,10 @@ export interface ProviderMode {
    * shaped, and these are the model ids it takes. The vendor /models list
    * does not name them, so the image picker reads this static list.
    * `path` overrides the endpoint (OpenRouter serves POST /images), and
-   * `listQuery` is a second /models query whose rows name the image models
-   * the default list leaves out (OpenRouter hides image-only models).
+   * `listPath` is the vendor's own list of the models that endpoint serves,
+   * fetched next to /models (OpenRouter's /models hides image-only models).
    */
-  images?: { models: string[]; path?: string; listQuery?: Record<string, string> };
+  images?: { models: string[]; path?: string; listPath?: string };
   /** models.dev provider key used for context window / modality facts (shared/live-models.ts). null when models.dev has no entry. */
   modelsDevId: string | null;
   /** Extra static headers on inference calls (OpenRouter attribution, Copilot editor headers). */
@@ -565,12 +565,13 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
         defaults: { workhorse: "openai/gpt-4.1-mini", reviewer: "anthropic/claude-sonnet-4" },
         modelsDevId: "openrouter",
         // OpenRouter image generation per openrouter.ai/docs/features/multimodal/image-generation:
-        // POST /images answers b64_json. The live list fills the picker; the
-        // static id is the pick when nothing is chosen yet.
+        // POST /images answers b64_json, and GET /images/models lists what it
+        // serves with each model's formats and aspect ratios. That list fills
+        // the picker; the static id is the pick when nothing is chosen yet.
         images: {
           models: ["google/gemini-3.1-flash-image"],
           path: "images",
-          listQuery: { output_modalities: "image" },
+          listPath: "images/models",
         },
         headers: {
           "HTTP-Referer": "https://usefulbot.app",

@@ -19,6 +19,10 @@ export type ModelOption = {
   inputs?: string[];
   /** Output modalities from the catalog ("text", "image", ...); absent when unknown. */
   outputs?: string[];
+  /** Listed by the vendor's image endpoint (OpenRouter /images/models): an image generator for certain. */
+  imageGen?: boolean;
+  /** Aspect ratios the image endpoint takes for this model ("16:9", ...); absent when unknown. */
+  aspectRatios?: string[];
 };
 
 /** Catalog facts about one model that the live list cannot tell on its own. */
@@ -26,6 +30,8 @@ export type ModelMeta = {
   contextTokens?: number;
   inputs?: string[];
   outputs?: string[];
+  imageGen?: boolean;
+  aspectRatios?: string[];
   /** Set only when the vendor's own list names them (the ChatGPT Codex list does); they beat the guess by name. */
   label?: string;
   efforts?: EffortId[];
@@ -63,13 +69,15 @@ export function modelChats(model: Pick<ModelOption, "outputs"> | null | undefine
 }
 
 /**
- * Whether the model is an image generator rather than a chat model: it
- * answers with images, and either never with text or its id names it as an
- * image model (gemini-*-image, gpt-5-image). Chat models that also list image
- * output (gpt-5.1, openrouter/auto) stay chat models. The composer leaves
- * these out; the image picker offers only these.
+ * Whether the model is an image generator rather than a chat model: the
+ * vendor's image endpoint lists it, or it answers with images and either
+ * never with text or its id names it as an image model (gemini-*-image,
+ * gpt-5-image). Chat models that also list image output (gpt-5.1,
+ * openrouter/auto) stay chat models. The composer leaves these out; the
+ * image picker offers only these.
  */
-export function modelIsImageGenerator(model: Pick<ModelOption, "id" | "outputs"> | null | undefined): boolean {
+export function modelIsImageGenerator(model: Pick<ModelOption, "id" | "outputs" | "imageGen"> | null | undefined): boolean {
+  if (model?.imageGen) return true;
   if (!model || modelMakesImages(model) !== true) return false;
   return modelChats(model) === false || /image|imagine/i.test(model.id);
 }
@@ -322,6 +330,8 @@ export function hydrateModel(providerId: string, id: string, label?: string, met
   if (meta?.contextTokens) base.contextTokens = meta.contextTokens;
   if (meta?.inputs) base.inputs = meta.inputs;
   if (meta?.outputs) base.outputs = meta.outputs;
+  if (meta?.imageGen) base.imageGen = true;
+  if (meta?.aspectRatios) base.aspectRatios = meta.aspectRatios;
   if (meta?.label) base.label = meta.label;
   if (meta?.efforts) {
     base.efforts = meta.efforts;

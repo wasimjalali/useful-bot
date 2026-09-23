@@ -1006,6 +1006,25 @@ export function publicProviders(
 }
 
 /**
+ * The store with one call's image model in place of the saved image role.
+ * The pick must be a row the image picker offers right now (a connected,
+ * image-capable connection's generator), so a bot can choose among the
+ * owner's image models but never reach a model or connection outside them.
+ * Without a connection id the model id must name exactly one row.
+ */
+export function withImagePick(
+  store: ProviderStore,
+  pick: { connectionId?: string; modelId: string },
+  env: NodeJS.ProcessEnv = process.env,
+): ProviderStore {
+  const rows = publicProviders(store, env).roles.image.models
+    .filter((row) => row.id === pick.modelId && (!pick.connectionId || row.connectionId === pick.connectionId));
+  if (rows.length === 0) throw new Error("image_model_unknown");
+  if (rows.length > 1) throw new Error("image_model_ambiguous");
+  return { ...store, roles: { ...store.roles, image: { connectionId: rows[0].connectionId, modelId: rows[0].id, effort: null } } };
+}
+
+/**
  * @deprecated Slice 2 builds the settings payload from publicProviders.
  * One row per connection in the old shape.
  */

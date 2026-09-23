@@ -269,33 +269,43 @@ test("the parsed models cache is reused until another process replaces the file"
   assert.equal(catalogFor("opencode-go:plan", path)[0]?.id, "kimi-k4");
 });
 
-test("an images query merges the image-only rows the default list hides", async () => {
+test("the image list merges generators, drops SVG-only ones and survives a failed fetch", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "ub-models-")), "models-cache.json");
-  const models = await refreshProviderModels({
+  const chat = { data: [{ id: "openai/gpt-4.1-mini", architecture: { output_modalities: ["text"] } }, { id: "openai/gpt-5-image", architecture: { output_modalities: ["image", "text"] } }] };
+  const images = {
+    data: [
+      { id: "black-forest-labs/flux.2-pro", architecture: { output_modalities: ["image"] }, supported_parameters: { output_format: { values: ["png", "jpeg"] }, aspect_ratio: { values: ["1:1", "16:9"] } } },
+      { id: "recraft/recraft-v4-vector", architecture: { output_modalities: ["image"] }, supported_parameters: { output_format: { values: ["svg"] } } },
+      { id: "openai/gpt-5-image", architecture: { output_modalities: ["image", "text"] }, supported_parameters: { aspect_ratio: { values: ["1:1", "3:2", "2:3"] } } },
+    ],
+  };
+  let imagesUp = true;
+  const refresh = () => refreshProviderModels({
     providerId: "openrouter:api",
     baseUrl: "https://openrouter.ai/api/v1",
     key: "sk-or-12345678",
-    imagesQuery: { output_modalities: "image" },
+    imagesPath: "images/models",
     modelsDevId: null,
     force: true,
     path,
     fetchImpl: async (input) => {
-      const url = String(input);
-      if (url.endsWith("?output_modalities=image")) {
-        return new Response(JSON.stringify({
-          data: [
-            { id: "black-forest-labs/flux.2-pro", architecture: { output_modalities: ["image"] } },
-            { id: "openai/gpt-5-image", output_modalities: ["image", "text"] },
-          ],
-        }));
+      if (String(input).endsWith("/images/models")) {
+        return imagesUp ? new Response(JSON.stringify(images)) : new Response("down", { status: 503 });
       }
-      return new Response(JSON.stringify({
-        data: [{ id: "openai/gpt-4.1-mini", output_modalities: ["text"] }, { id: "openai/gpt-5-image", output_modalities: ["image", "text"] }],
-      }));
+      return new Response(JSON.stringify(chat));
     },
   });
-  const byId = new Map(models.map((item) => [item.id, item]));
-  assert.equal(models.length, 3);
-  assert.deepEqual(byId.get("black-forest-labs/flux.2-pro")?.outputs, ["image"]);
+  let byId = new Map((await refresh()).map((item) => [item.id, item]));
+  assert.deepEqual([...byId.keys()].sort(), ["black-forest-labs/flux.2-pro", "openai/gpt-4.1-mini", "openai/gpt-5-image"]);
+  assert.equal(byId.get("black-forest-labs/flux.2-pro")?.imageGen, true);
+  assert.deepEqual(byId.get("black-forest-labs/flux.2-pro")?.aspectRatios, ["1:1", "16:9"]);
+  assert.equal(byId.get("openai/gpt-5-image")?.imageGen, true);
+  assert.equal(byId.get("openai/gpt-4.1-mini")?.imageGen, undefined);
   assert.deepEqual(byId.get("openai/gpt-4.1-mini")?.outputs, ["text"]);
+
+  // The image list goes down: the chat list refreshes and the image rows stay.
+  imagesUp = false;
+  byId = new Map((await refresh()).map((item) => [item.id, item]));
+  assert.equal(byId.get("black-forest-labs/flux.2-pro")?.imageGen, true);
+  assert.deepEqual(byId.get("black-forest-labs/flux.2-pro")?.aspectRatios, ["1:1", "16:9"]);
 });
