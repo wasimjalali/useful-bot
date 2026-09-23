@@ -435,7 +435,7 @@ struct LibraryDetail: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 if !item.prompt.isEmpty {
-                    fact("Prompt", item.prompt)
+                    PromptFact(prompt: item.prompt)
                 }
                 fact("Bot", item.botName)
                 if !item.model.isEmpty {
@@ -528,6 +528,108 @@ struct LibraryDetail: View {
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = parser.date(from: iso) else { return iso }
         return date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+/// The prompt's first paragraph, with all of it one click away: a long
+/// prompt no longer pushes the facts under it out of sight.
+private struct PromptFact: View {
+    let prompt: String
+    @State private var showingAll = false
+
+    /// Up to the first blank line.
+    static func firstParagraph(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let gap = trimmed.range(of: #"\n\s*\n"#, options: .regularExpression) else { return trimmed }
+        return String(trimmed[..<gap.lowerBound])
+    }
+
+    var body: some View {
+        let lead = Self.firstParagraph(prompt)
+        // Four lines of the side column hold about this much.
+        let more = lead != prompt.trimmingCharacters(in: .whitespacesAndNewlines) || lead.count > 240
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Prompt")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.inkMuted)
+            // Not selectable here: a click swaps selectable text for an
+            // editor that drops the ellipsis. The full prompt selects.
+            Text(lead)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(4)
+                .truncationMode(.tail)
+            HStack(spacing: 4) {
+                if more {
+                    Button("Show full prompt") { showingAll = true }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.C.accent)
+                        .pointerOnHover()
+                        .popover(isPresented: $showingAll, arrowEdge: .bottom) {
+                            FullPrompt(prompt: prompt)
+                        }
+                }
+                CopyPromptButton(prompt: prompt)
+            }
+        }
+    }
+}
+
+/// The whole prompt, scrollable and selectable.
+private struct FullPrompt: View {
+    let prompt: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Prompt")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                Spacer()
+                CopyPromptButton(prompt: prompt)
+            }
+            ScrollView {
+                Text(prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineSpacing(2)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(16)
+        .frame(width: 480, height: 420)
+        // Opaque: the default material lets the detail's text show through.
+        .presentationBackground(Theme.C.surface)
+    }
+}
+
+/// Copies the whole prompt, the same icon the chat's image row uses.
+private struct CopyPromptButton: View {
+    let prompt: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(prompt, forType: .string)
+            copied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.C.inkMuted)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .help("Copy prompt")
+        .accessibilityLabel(copied ? "Prompt copied" : "Copy prompt")
     }
 }
 
