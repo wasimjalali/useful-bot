@@ -54,6 +54,7 @@
   --radius-xl: 22px;   /* expanded composer */
   --radius-2xl: 24px;  /* main stage / shell */
   --radius-pill: 999px;
+  --container-bubble: 640px; /* one cap for every chat bubble and host card */
 }
 
 @theme inline {
