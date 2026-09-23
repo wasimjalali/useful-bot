@@ -582,7 +582,7 @@ struct ComposerView: View {
         // sends, to tell the agent something it already knew. The chip under
         // the composer is where the owner sees which folder is attached.
         let formatted = Attachments.formatMessage(model.draft, files: model.attachments)
-        let message = replying?.wrap(formatted) ?? formatted
+        let message = replying?.wrap(formatted, group: bot.isGroup) ?? formatted
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.

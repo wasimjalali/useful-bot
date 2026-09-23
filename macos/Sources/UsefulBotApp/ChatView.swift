@@ -621,7 +621,9 @@ struct ChatView: View {
                     // first message against the composer with the window
                     // empty above it. Once the chat outgrows the window this
                     // floor does nothing and the anchor takes over.
-                    .frame(maxWidth: .infinity, minHeight: viewportHeight, alignment: .top)
+                    // The container height includes the header's inset band,
+                    // which already adds its own scroll room.
+                    .frame(maxWidth: .infinity, minHeight: max(0, viewportHeight - DesignTokens.Space.chatHead), alignment: .top)
                     // The scroll target sits under the bottom padding. Inside
                     // the stack it sat 8 points above the end of the content,
                     // so every scroll to it stopped short, and the view slid
@@ -1186,7 +1188,7 @@ struct TranscriptRowView: View, Equatable {
                         .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
                         .foregroundStyle(Theme.C.inkFaint)
                 }
-                MessageHoverActions(text: row.text, botId: bot.id, author: speaker?.name, enabled: !streaming) {
+                MessageHoverActions(text: row.text, botId: bot.id, author: attributed ? (speaker?.name ?? row.author) : nil, enabled: !streaming) {
                     ChatMarkdownView(text: row.text, expandsWidth: false, streamingKey: streaming ? row.id : nil)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -1722,8 +1724,12 @@ private struct MessageHoverActions<Content: View>: View {
         .onHover { self.hovering = $0 }
         // Hidden buttons leave the accessibility tree, so the same two
         // actions ride on the message for VoiceOver and keyboard users.
-        .accessibilityAction(named: "Reply", reply)
-        .accessibilityAction(named: "Copy", copy)
+        .accessibilityActions {
+            if enabled {
+                Button("Reply", action: reply)
+                Button("Copy", action: copy)
+            }
+        }
     }
 
     private func reply() {

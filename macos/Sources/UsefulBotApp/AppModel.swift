@@ -1705,7 +1705,9 @@ final class AppModel: ObservableObject {
     /// Reply to a bot message: the chip goes above the composer of this chat
     /// and the caret into the field.
     func reply(to text: String, author: String?, botId: String) {
-        guard botId == selectedBotId else { return }
+        // The chat on screen, including the fallback the composer shows
+        // before a selection is stored.
+        guard botId == (selectedBotId ?? selectedBot?.id) else { return }
         replyQuotes[botId] = ReplyQuote(botId: botId, text: text, author: author)
         composerFocusToken &+= 1
     }
@@ -2880,6 +2882,7 @@ final class AppModel: ObservableObject {
     }
 
     func delete(botId: String) {
+        replyQuotes[botId] = nil
         transcriptCache[botId] = nil
         // Gone from disk now; blocked for good once the store drops the bot,
         // so a delete the server refuses leaves the chat able to save again.
@@ -3883,13 +3886,14 @@ struct ReplyQuote: Equatable {
     /// by its opening; the whole of it is already in the conversation.
     static let maxQuoted = 600
 
-    /// The quoted text, with every @ swapped for a full-width ＠: routing and
-    /// attribution read @name anywhere in a message, and a name inside the
-    /// quote must not send the reply to that bot.
-    var quoted: String {
+    /// The quoted text, clipped. In a group every @ becomes a full-width ＠:
+    /// routing and attribution read @name anywhere in a message, and a name
+    /// inside the quote must not send the reply to that bot. Elsewhere the
+    /// quote stays exactly as the bot wrote it.
+    func quoted(guardingMentions: Bool) -> String {
         let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let clipped = flat.count > Self.maxQuoted ? String(flat.prefix(Self.maxQuoted)) + "…" : flat
-        return clipped.replacingOccurrences(of: "@", with: "＠")
+        return guardingMentions ? clipped.replacingOccurrences(of: "@", with: "＠") : clipped
     }
 
     /// The line that marks a message as a reply, so a message the owner
@@ -3904,8 +3908,8 @@ struct ReplyQuote: Equatable {
         line.hasPrefix("Replying to ") && line.hasSuffix("message:")
     }
 
-    func wrap(_ message: String) -> String {
-        let lines = quoted.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
+    func wrap(_ message: String, group: Bool) -> String {
+        let lines = quoted(guardingMentions: group).split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
         return marker + "\n" + lines.joined(separator: "\n") + "\n\n" + message
     }
 

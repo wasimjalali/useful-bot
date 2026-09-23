@@ -365,13 +365,14 @@ struct RailView: View {
         .popShadow()
     }
 
-    /// How close today is to a stop: the router caps input and output
-    /// separately, so this is the fuller of the two.
+    /// How close today is to a stop: the router caps input, output and
+    /// requests separately, so this is the fullest of the three.
     private var usagePercent: String? {
         guard let usage = model.usage else { return nil }
         let shares = [
             (usage.chargedInputTokens, usage.caps.input24h),
             (usage.chargedOutputTokens, usage.caps.output24h),
+            (usage.requests, usage.caps.requests24h),
         ].compactMap { used, cap in cap > 0 ? Double(used) / Double(cap) : nil }
         guard let fullest = shares.max() else { return nil }
         return "\(min(100, Int((fullest * 100).rounded())))%"
