@@ -295,6 +295,38 @@ test("Regenerate redraws a lost image from the stored prompt under the same id, 
     assert.equal(migrateLegacyImages().moved, 1);
     assert.equal(readImage("imglost00001"), null);
     assert.equal(readMediaBytes("imglost00001", index).status, "ok");
+
+    // What the owner does while it is drawn wins. A file put back at its
+    // path (Locate) stays the one the entry names...
+    const home = findMedia("imglost00001", index)!.path;
+    renameSync(home, join(dir, "away.png"));
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { resume = resolve; });
+    globalThis.fetch = (async () => {
+      await paused;
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const drawing = regenerateImage("imglost00001");
+    renameSync(join(dir, "away.png"), home);
+    resume();
+    await drawing;
+    assert.equal(findMedia("imglost00001", index)?.path, home);
+    // ...and a Remove stays removed.
+    renameSync(home, join(dir, "away2.png"));
+    let resume2!: () => void;
+    const paused2 = new Promise<void>((resolve) => { resume2 = resolve; });
+    globalThis.fetch = (async () => {
+      await paused2;
+      return new Response(JSON.stringify({ data: [{ b64_json: PNG.toString("base64"), mime: "image/png" }] }));
+    }) as typeof fetch;
+    const drawing2 = regenerateImage("imglost00001");
+    assert.equal(forgetMedia("imglost00001", index), true);
+    resume2();
+    await drawing2;
+    assert.equal(findMedia("imglost00001", index)?.forgotten, true);
+    // Asked for again after the Remove, it comes back.
+    await regenerateImage("imglost00001");
+    assert.equal(readMediaBytes("imglost00001", index).status, "ok");
   } finally {
     globalThis.fetch = realFetch;
     for (const key of keys) {

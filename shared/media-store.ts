@@ -296,6 +296,8 @@ function saveFile(input: {
    * the same id (so the chat row that names it shows the new picture).
    */
   replace?: boolean;
+  /** The entry was removed when the owner asked for it again: bring it back. */
+  revive?: boolean;
 }, root = mediaRoot(), indexPath = mediaIndexPath()): MediaItem {
   if (!ID.test(input.id)) throw new Error("media_id");
   // One file per id, ever, unless this is a replacement. The app posts a drawing again whenever a chat
@@ -324,9 +326,13 @@ function saveFile(input: {
     const kept = withIndex((index) => {
       const raced = index.items.find((row) => row.id === item.id);
       if (raced && input.replace) {
-        // The replacement keeps the entry's prompt and bot id, takes the new
-        // file and the folder name it was filed under, and comes back if the owner had removed it: Regenerate is
-        // them asking for it again.
+        // What the owner did while this was drawn wins: a Remove stays
+        // removed (unless it was removed when they asked), and a file they
+        // put back at its path stays the one the entry names.
+        if (raced.forgotten && !input.revive) return raced;
+        if (!raced.forgotten && raced.path !== item.path && isFile(raced.path)) return raced;
+        // The replacement keeps the entry's prompt and bot id, and takes the
+        // new file and the folder name it was filed under.
         Object.assign(raced, { path: item.path, mime: item.mime, model: item.model, provider: item.provider, botName: item.botName, createdAt: item.createdAt });
         delete raced.forgotten;
         return null;
@@ -360,6 +366,7 @@ export function saveImage(input: {
   botName: string;
   createdAt?: Date;
   replace?: boolean;
+  revive?: boolean;
 }, root = mediaRoot(), indexPath = mediaIndexPath()): MediaItem {
   const ext = IMAGE_EXT[input.mime];
   if (!ext) throw new Error("image_type");
@@ -433,6 +440,14 @@ function realOrSelf(path: string): string {
 }
 
 /** The image type the bytes themselves say, never the file name. */
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export function sniffImage(bytes: Buffer): string | null {
   if (bytes.length > 8 && bytes[0] === 0x89 && bytes.subarray(1, 4).toString("ascii") === "PNG") return "image/png";
   if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
@@ -496,7 +511,7 @@ export function readMediaBytes(id: string, indexPath = mediaIndexPath()): MediaB
     // Locate is the way back.
     if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { status: "moved", item };
     if (err instanceof Error && err.message === "media_type") return { status: "moved", item };
-    return { status: "error", item, code: err instanceof Error && err.message === "media_type" ? "media_type" : code ?? "media_read" };
+    return { status: "error", item, code: code ?? "media_read" };
   }
 }
 

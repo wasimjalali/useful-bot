@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readAgentStore } from "../../shared/agent-store.ts";
 import { readImage, writeImage } from "../../shared/images-store.ts";
-import { readMediaBytes, saveImage } from "../../shared/media-store.ts";
+import { findMedia, readMediaBytes, saveImage, sniffImage } from "../../shared/media-store.ts";
 import { ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import { ApiError } from "./api-guard.ts";
@@ -25,12 +25,12 @@ const inflight: Map<string, Promise<{ path: string }>> =
  * never comes from the caller, so this route can only redraw what the owner
  * already had.
  */
-function source(id: string): { prompt: string; botId: string } | null {
+function source(id: string): { prompt: string; botId: string; botName?: string } | null {
   const read = readMediaBytes(id);
-  if (read.status === "moved") return { prompt: read.item.prompt, botId: read.item.botId };
+  if (read.status === "moved") return { prompt: read.item.prompt, botId: read.item.botId, botName: read.item.botName };
   for (const thread of readAgentStore().threads) {
     const event = thread.events.find((row) => row.imageId === id && row.kind === "image");
-    if (event?.text) return { prompt: event.text, botId: thread.botId };
+    if (event?.text) return { prompt: event.text, botId: thread.botId, botName: findMedia(id)?.botName };
   }
   return null;
 }
@@ -53,6 +53,9 @@ export function regenerateImage(id: string): Promise<{ path: string }> {
 async function redraw(id: string): Promise<{ path: string }> {
   const status = readMediaBytes(id).status;
   if ((status !== "moved" && status !== "missing") || readImage(id)) throw new ApiError(409, "image_present");
+  // Removed from the Library when the owner asked for it again: the redraw
+  // brings it back. One removed while it is drawn stays removed.
+  const revive = findMedia(id)?.forgotten === true;
   const from = source(id);
   if (!from?.prompt.trim()) throw new ApiError(404, "image_prompt_missing");
   const token = process.env.UB_ROUTER_DESKTOP_TOKEN;
@@ -87,13 +90,18 @@ async function redraw(id: string): Promise<{ path: string }> {
     if (err instanceof ApiError) throw err;
     throw new ApiError(502, "router_unreachable");
   }
-  const item = json?.data?.find((row) => typeof row?.b64_json === "string" && row.b64_json.length > 0);
+  const item = Array.isArray(json?.data)
+    ? json.data.find((row) => typeof row?.b64_json === "string" && row.b64_json.length > 0)
+    : undefined;
   if (!item || typeof item.b64_json !== "string") throw new ApiError(502, "empty_image");
   // Billed from here on, so the bytes must land somewhere: the media folder
   // first, else the app's own store under the same id (the image route
   // serves it from there, and the next Library load moves it into the
   // folder), the way the generate_image tool does.
-  const mime = typeof item.mime === "string" ? item.mime : "image/png";
+  // The type is what the bytes are, not what the router said they are, so a
+  // mislabelled image still has a folder and a store that take it.
+  const bytes = Buffer.from(item.b64_json, "base64");
+  const mime = sniffImage(bytes) ?? (typeof item.mime === "string" ? item.mime : "image/png");
   const model = typeof json?.model === "string" ? json.model : "";
   const provider = typeof json?.provider === "string" ? json.provider : "";
   try {
@@ -101,13 +109,14 @@ async function redraw(id: string): Promise<{ path: string }> {
     const saved = saveImage({
       id,
       mime,
-      bytes: Buffer.from(item.b64_json, "base64"),
+      bytes,
       prompt: from.prompt,
       model,
       provider,
       botId: from.botId,
-      botName: bot?.name ?? "Useful Bot",
+      botName: bot?.name ?? from.botName ?? "Useful Bot",
       replace: true,
+      revive,
     });
     return { path: saved.path };
   } catch (err) {

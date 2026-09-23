@@ -255,6 +255,7 @@ struct LibraryView: View {
                 selected = items.first { $0.id == item.id }
             } catch {
                 self.error = GeneratedImageCache.regenerateMessage(error)
+                selected = nil
             }
             regenerating = nil
         }

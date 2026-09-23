@@ -112,18 +112,22 @@ export function migrateLegacyImages(): { moved: number; failed: number } {
   for (const id of ids) {
     try {
       // An entry whose file is gone takes the record's bytes in its place:
-      // that is a Regenerate the folder could not take at the time.
+      // that is a Regenerate the folder could not take at the time. One the
+      // owner removed, or whose file is there but unreadable, keeps its
+      // record untouched: a Remove is not undone behind their back, and the
+      // record may be the only readable copy.
       const entry = findMedia(id);
       const status = entry ? readMediaBytes(id).status : "missing";
-      const lost = entry !== null && (status === "moved" || status === "missing");
+      if (entry && (entry.forgotten || status === "error")) continue;
+      const lost = entry !== null && status === "moved";
       if (!entry || lost) {
         const record = readImage(id);
         if (!record) continue;
         // A fallback record is written just before its chat event. One with
         // no event yet waits a little, so it is filed under its bot rather
-        // than under no bot for good.
-        if (!owners.has(id) && Date.now() - Date.parse(record.createdAt) < LEGACY_OWNER_WAIT_MS) continue;
-        const botId = owners.get(id) ?? "";
+        // than under no bot for good. An entry already names its bot.
+        if (!entry && !owners.has(id) && Date.now() - Date.parse(record.createdAt) < LEGACY_OWNER_WAIT_MS) continue;
+        const botId = entry?.botId ?? owners.get(id) ?? "";
         saveImage({
           id,
           mime: record.mime,
@@ -132,7 +136,7 @@ export function migrateLegacyImages(): { moved: number; failed: number } {
           model: record.model,
           provider: record.provider,
           botId,
-          botName: bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot",
+          botName: bots.find((bot) => bot.id === botId)?.name ?? entry?.botName ?? "Useful Bot",
           createdAt: Number.isNaN(Date.parse(record.createdAt)) ? undefined : new Date(record.createdAt),
           replace: lost,
         });
