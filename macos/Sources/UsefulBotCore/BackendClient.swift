@@ -1714,6 +1714,63 @@ public actor BackendClient {
         return HistorySnapshot(turnIds: ids, nextIndex: next)
     }
 
+    /// The id of the newest event the session has recorded, or nil when it has
+    /// none, cannot be read, or does not answer within `timeout`.
+    ///
+    /// Read with a negative `startIndex`, which eve documents as relative to
+    /// the tail: it opens only the last chunk file. Asking for the tail index
+    /// instead (`includeTailIndex`) makes eve open every chunk file of the
+    /// session before it answers, 1.25 s for a 12,554-event chat, and a load
+    /// only needs to know which event is the last one it will call history.
+    public func newestEventId(sessionId: String, timeout: TimeInterval = 0.8) async -> String? {
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask { try? await self.readNewestEventId(sessionId: sessionId, timeout: timeout) }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private func readNewestEventId(sessionId: String, timeout: TimeInterval) async throws -> String? {
+        var components = URLComponents(
+            url: base.appendingPathComponent("eve/v1/session/\(Self.pathComponent(sessionId))/stream"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "startIndex", value: "-1")]
+        guard let url = components?.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        for attempt in 0..<2 {
+            let (bytes, response, sentCookie, sentEpoch) = try await sendBytes(request)
+            // The read follows the live stream after that one event; it is
+            // dropped as soon as the event is in.
+            defer { bytes.task.cancel() }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+#if os(macOS)
+            // The same one re-sign-in the stream makes after a server restart
+            // rotated the session. Without it every first open after one fell
+            // back to the whole-session scan.
+            if status == 401 || status == 403, attempt == 0 {
+                try await reauth(unlessRotatedFrom: sentCookie, signedOutSince: sentEpoch)
+                continue
+            }
+#else
+            _ = (attempt, sentCookie, sentEpoch)
+#endif
+            guard (200...299).contains(status) else { return nil }
+            for try await line in bytes.lines {
+                guard let payload = EveStream.payload(of: line) else { continue }
+                return EveStream.eventId(ofPayload: payload)
+            }
+            return nil
+        }
+        return nil
+    }
+
     /// Replay the session and yield events live. With `expectedSuffix` set, the
     /// stream ignores replay until it sees the turn carrying that text with a
     /// turn id not in `historyTurnIds`, then finishes on that turn's completion.
@@ -1735,6 +1792,11 @@ public actor BackendClient {
     /// With `markHistory` the server is asked for the same tail but the read
     /// carries on past it: each event says how far it sat from the end of the
     /// history, and the caller tells a replay from a live turn by that.
+    /// With `markHistory` and a `historyMarker` (from `newestEventId`) the
+    /// tail is not asked for: every event up to the one carrying that id is
+    /// history (`historyRemaining` 1, then 0 on the marker) and the read
+    /// finishes there. A read that ends any other way throws, so a caller
+    /// that finishes the loop knows it reached the marker.
     public nonisolated func stream(
         sessionId: String,
         expectedSuffix: String? = nil,
@@ -1742,6 +1804,7 @@ public actor BackendClient {
         startIndex: Int = 0,
         untilTail: Bool = false,
         markHistory: Bool = false,
+        historyMarker: String? = nil,
         allowUntaggedTurn: Bool = true
     ) -> AsyncThrowingStream<EveEvent, Error> {
         stream(
@@ -1751,6 +1814,7 @@ public actor BackendClient {
             startIndex: startIndex,
             untilTail: untilTail,
             markHistory: markHistory,
+            historyMarker: historyMarker,
             allowUntaggedTurn: allowUntaggedTurn,
             tailBox: nil
         )
@@ -1763,9 +1827,14 @@ public actor BackendClient {
         startIndex: Int,
         untilTail: Bool,
         markHistory: Bool = false,
+        historyMarker: String? = nil,
         allowUntaggedTurn: Bool = true,
         tailBox: TailBox?
     ) -> AsyncThrowingStream<EveEvent, Error> {
+        // A marker stands in for the tail index; without one, the tail is
+        // asked for as before.
+        let marker = markHistory ? historyMarker : nil
+        let wantsTail = untilTail || (markHistory && marker == nil)
         let base = self.base
         let client = self
         return AsyncThrowingStream { continuation in
@@ -1789,7 +1858,7 @@ public actor BackendClient {
                             resolvingAgainstBaseURL: false
                         )
                         components?.queryItems = [URLQueryItem(name: "startIndex", value: String(max(0, startIndex)))]
-                        if untilTail || markHistory {
+                        if wantsTail {
                             components?.queryItems?.append(URLQueryItem(name: "includeTailIndex", value: "1"))
                         }
                         guard let url = components?.url else { throw BackendError.decoding }
@@ -1841,7 +1910,7 @@ public actor BackendClient {
 #endif
                         // Zero-based index of the last recorded event, or -1
                         // for an empty stream. Nil when the server did not say.
-                        let tail = untilTail || markHistory
+                        let tail = wantsTail
                             ? (response as? HTTPURLResponse)?
                                 .value(forHTTPHeaderField: "x-eve-stream-tail-index")
                                 .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
@@ -1876,11 +1945,23 @@ public actor BackendClient {
                                     continuation.finish()
                                     return
                                 }
+                                // A marker this build cannot decode still ends
+                                // the history where it sits.
+                                if let marker, let payload = EveStream.payload(of: line),
+                                   EveStream.eventId(ofPayload: payload) == marker {
+                                    continuation.finish()
+                                    return
+                                }
                                 continue
                             }
                             event.index = index
                             event.sessionId = sessionId
-                            if markHistory, let tail { event.historyRemaining = tail - index }
+                            let reachedMarker = marker != nil && event.id == marker
+                            if markHistory, let tail {
+                                event.historyRemaining = tail - index
+                            } else if marker != nil {
+                                event.historyRemaining = reachedMarker ? 0 : 1
+                            }
                             if !armed {
                                 if event.type == "message.received",
                                    let message = event.message,
@@ -1913,6 +1994,10 @@ public actor BackendClient {
                                 continue
                             }
                             continuation.yield(event)
+                            if reachedMarker {
+                                continuation.finish()
+                                return
+                            }
                             if ["turn.completed", "turn.cancelled", "turn.failed",
                                 "session.completed", "session.failed", "session.cancelled"].contains(event.type) {
                                 sawTerminal = true
@@ -1927,6 +2012,11 @@ public actor BackendClient {
                             }
                         }
                         if expectedSuffix != nil, armed, !sawTerminal {
+                            throw BackendError.streamInterrupted
+                        }
+                        // The server closed the read before the marker: the
+                        // history is not known to be whole.
+                        if marker != nil {
                             throw BackendError.streamInterrupted
                         }
                         continuation.finish()
