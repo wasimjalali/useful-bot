@@ -1517,6 +1517,77 @@ public actor BackendClient {
         return (data, mime)
     }
 
+    /// One generated image, telling a moved file from a missing one: a 404
+    /// names which in its body, so the row can offer Locate or Regenerate.
+    public func imageFetch(id: String) async throws -> ImageFetch {
+        let (data, response) = try await perform { client, _ in
+            URLRequest(url: client.base
+                .appendingPathComponent("api/agent/image")
+                .appendingPathComponent(id))
+        }
+        if (response as? HTTPURLResponse)?.statusCode == 404 {
+            // Only the route's own answers count: any other 404 (a route
+            // missing mid-upgrade) must not read as "gone for good".
+            switch String(data: data, encoding: .utf8) {
+            case "moved": return .moved
+            case "missing": return .missing
+            default: throw BackendError.http(404)
+            }
+        }
+        try Self.expectOK(data, response)
+        return .loaded(data)
+    }
+
+    /// The Library: every saved image and drawing, newest first, and the
+    /// folder they live in.
+    public func mediaList(kind: String? = nil, botId: String? = nil, query: String? = nil) async throws -> (root: String, items: [MediaItem], held: Int) {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/agent/media"),
+                resolvingAgainstBaseURL: false
+            )
+            var items: [URLQueryItem] = []
+            if let kind { items.append(URLQueryItem(name: "kind", value: kind)) }
+            if let botId { items.append(URLQueryItem(name: "botId", value: botId)) }
+            if let query, !query.isEmpty { items.append(URLQueryItem(name: "q", value: query)) }
+            components?.queryItems = items.isEmpty ? nil : items
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        try Self.expectOK(data, response)
+        struct Response: Decodable { let root: String; let items: [MediaItem]; let held: Int? }
+        guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else { throw BackendError.decoding }
+        return (decoded.root, decoded.items, decoded.held ?? 0)
+    }
+
+    /// Point a moved item at the file the owner picked.
+    public func relinkMedia(id: String, path: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base
+                .appendingPathComponent("api/agent/media")
+                .appendingPathComponent(id))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["path": path])
+            return request
+        }
+        try Self.expectOK(data, response)
+    }
+
+    /// Forget an item after its file went to the Trash.
+    public func forgetMedia(id: String) async throws {
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base
+                .appendingPathComponent("api/agent/media")
+                .appendingPathComponent(id))
+            request.httpMethod = "DELETE"
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            return request
+        }
+        try Self.expectOK(data, response)
+    }
+
     /// One of a drawing's own tool calls (Excalidraw's export). The server
     /// runs only tools the MCP server marked for its app; the result goes
     /// back to the app as JSON.

@@ -11,6 +11,8 @@ import UsefulBotCore
 /// twice does not load it twice.
 struct WidgetSlot: View {
     let widgetId: String
+    /// The drawing's page has loaded: a caller showing a stand-in can hand over.
+    var onLoaded: (() -> Void)?
     /// How far outside the window a box still counts as near, so the page is
     /// loading by the time it scrolls in.
     private static let margin: CGFloat = 800
@@ -26,7 +28,7 @@ struct WidgetSlot: View {
                 if unavailable {
                     WidgetUnavailableRow(onRetry: { unavailable = false })
                 } else if near {
-                    WidgetWebView(widgetId: widgetId, onUnavailable: { unavailable = true })
+                    WidgetWebView(widgetId: widgetId, onUnavailable: { unavailable = true }, onLoaded: onLoaded)
                 } else {
                     Color.clear
                 }
@@ -45,7 +47,7 @@ struct WidgetSlot: View {
                     .frame(height: WidgetUnavailableRow.height)
                     .frame(maxWidth: .infinity)
             } else {
-                WidgetWebView(widgetId: widgetId, onUnavailable: { unavailable = true })
+                WidgetWebView(widgetId: widgetId, onUnavailable: { unavailable = true }, onLoaded: onLoaded)
                     .frame(height: 480)
                     .frame(maxWidth: .infinity)
             }
@@ -91,6 +93,7 @@ struct WidgetWebView: NSViewRepresentable {
     /// The page fetch failed, or the host page itself said the drawing cannot
     /// be shown. The slot swaps in its compact row.
     var onUnavailable: (() -> Void)?
+    var onLoaded: (() -> Void)?
 
     func makeNSView(context: Context) -> NSView {
         let config = WKWebViewConfiguration()
@@ -108,6 +111,7 @@ struct WidgetWebView: NSViewRepresentable {
         context.coordinator.webView = view
         context.coordinator.container = container
         context.coordinator.onUnavailable = onUnavailable
+        context.coordinator.onLoaded = onLoaded
         // The page is not fetched until the view has a width. The host page's
         // frame is `width: 100%`, and a drawing that laid itself out in a
         // zero-width frame, which is what a view created mid-scroll had for
@@ -124,6 +128,7 @@ struct WidgetWebView: NSViewRepresentable {
         // A row whose id changes before its first size loads the new id.
         context.coordinator.wantedId = widgetId
         context.coordinator.onUnavailable = onUnavailable
+        context.coordinator.onLoaded = onLoaded
         guard let view = context.coordinator.webView else { return }
         if view.sized, context.coordinator.loadedId != widgetId {
             context.coordinator.load(widgetId: widgetId, into: view)
@@ -218,6 +223,7 @@ struct WidgetWebView: NSViewRepresentable {
         private var loading: Task<Void, Never>?
         private var overlay: FullscreenOverlay?
         var onUnavailable: (() -> Void)?
+        var onLoaded: (() -> Void)?
         private var lastLinkOpen = Date.distantPast
         /// When a tool call that the reader's click started came back. The
         /// export's link follows that round trip, well after the click.
@@ -422,6 +428,9 @@ struct WidgetWebView: NSViewRepresentable {
             if let pendingId {
                 shownId = pendingId
                 self.pendingId = nil
+                // The frame is in, the app inside it draws a beat later.
+                let loaded = onLoaded
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { loaded?() }
             }
         }
 

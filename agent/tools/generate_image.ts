@@ -6,6 +6,7 @@ import { activeBotId } from "../lib/active-bot.ts";
 import { toolRouterIds } from "../lib/router-identity.ts";
 import { appendAgentEvent, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { writeImage } from "../../shared/images-store.ts";
+import { saveImage } from "../../shared/media-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
 
@@ -14,7 +15,7 @@ const GENERATE_TIMEOUT_MS = 150_000;
 
 export default defineTool({
   description:
-    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (an OpenAI, xAI, Z.ai or OpenRouter API key) is connected in Settings; when it is not, say so instead of retrying. It uses the owner's default image model; pass `model` (an image model id from list_models, with its `connectionId` when two providers offer the same id) only when the owner asks for a model or the job clearly needs a different one, since some models cost far more per image. The drawing lands in the transcript by itself: answer in text and do not link or embed the file.",
+    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (an OpenAI, xAI, Z.ai or OpenRouter API key) is connected in Settings; when it is not, say so instead of retrying. It uses the owner's default image model; pass `model` (an image model id from list_models, with its `connectionId` when two providers offer the same id) only when the owner asks for a model or the job clearly needs a different one, since some models cost far more per image. The drawing lands in the transcript by itself and is saved as a file under the owner's Useful Bot folder in Documents (the result gives its path): answer in text and do not link or embed the file. When the owner asks for it somewhere else too, copy that file there.",
   inputSchema: z.object({
     prompt: z.string().min(1).max(4000),
     size: z.enum(["square", "wide", "tall"]).optional(),
@@ -96,26 +97,76 @@ export default defineTool({
       return { status: "failed", error: "empty_image" };
     }
     const imageId = `img${randomUUID().replaceAll("-", "").slice(0, 24)}`;
-    const botId = activeBotId(readShell(), ctx);
-    writeImage({
-      id: imageId,
-      mime: typeof item.mime === "string" ? item.mime : "image/png",
-      b64: item.b64_json,
-      prompt: input.prompt,
-      provider: typeof json?.provider === "string" ? json.provider : "",
-      model: typeof json?.model === "string" ? json.model : "",
-    });
-    appendAgentEvent(botId, {
-      kind: "image",
-      text: input.prompt,
-      imageId,
-      id: `img_${imageId}`,
-    });
+    // Everything from here runs after the provider billed. Each failure ends
+    // in a plain, final answer the bot relays, never a thrown error it would
+    // retry (and pay for again).
+    let botId = "";
+    let botName = "Useful Bot";
+    try {
+      const shell = readShell();
+      botId = activeBotId(shell, ctx);
+      botName = shell.bots.find((bot) => bot.id === botId)?.name ?? botName;
+    } catch (err) {
+      console.error(`[media] could not read the roster for image ${imageId}`, err);
+    }
+    const mime = typeof item.mime === "string" ? item.mime : "image/png";
+    const provider = typeof json?.provider === "string" ? json.provider : "";
+    const model = typeof json?.model === "string" ? json.model : "";
+    // The provider has billed by now, so the bytes must land somewhere. The
+    // media folder first; if it cannot take them (no Documents access, a
+    // locked or unreadable index, a full disk) the app's own store keeps
+    // them, and they move into the folder on the next Library load.
+    let savedPath: string | undefined;
+    try {
+      savedPath = saveImage({
+        id: imageId,
+        mime,
+        bytes: Buffer.from(item.b64_json, "base64"),
+        prompt: input.prompt,
+        provider,
+        model,
+        botId,
+        botName,
+      }).path;
+    } catch (err) {
+      console.error(`[media] could not save image ${imageId} to the media folder`, err);
+      try {
+        writeImage({ id: imageId, mime, b64: item.b64_json, prompt: input.prompt, provider, model });
+      } catch (fallbackErr) {
+        console.error(`[media] could not keep image ${imageId} at all`, fallbackErr);
+        if (requestId) releaseSend("image", requestId);
+        return {
+          status: "failed",
+          error: "image_not_saved",
+          hint: "The image was generated and billed but could not be saved on this Mac. Tell the owner why (disk full or no access to Documents) and do not retry until they fix it.",
+        };
+      }
+    }
+    let shown = Boolean(botId);
+    if (shown) {
+      try {
+        appendAgentEvent(botId, {
+          kind: "image",
+          text: input.prompt,
+          imageId,
+          id: `img_${imageId}`,
+        });
+      } catch (err) {
+        console.error(`[media] could not add image ${imageId} to the chat`, err);
+        shown = false;
+      }
+    }
+    const where = savedPath
+      ? `Saved as ${savedPath}.`
+      : "Kept in the app's own store for now; it moves into the Useful Bot folder in Documents on the next Library load, so there is no file path to copy yet.";
     return {
       status: "generated",
       imageId,
-      model: typeof json?.model === "string" ? json.model : undefined,
-      note: "The image is in the chat now. Describe it in words if that helps, but the owner already sees it.",
+      ...(savedPath ? { path: savedPath } : {}),
+      model: model || undefined,
+      note: shown
+        ? `The image is in the chat now. ${where} Describe it in words if that helps, but the owner already sees it.`
+        : `The image was generated and kept, but it could not be added to this chat. ${where} Tell the owner it is in the Library; do not generate it again.`,
     };
   },
 });

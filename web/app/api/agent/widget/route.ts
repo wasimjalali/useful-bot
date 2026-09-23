@@ -10,6 +10,7 @@ import {
 } from "../../../../../shared/mcp-apps.ts";
 import { readShell } from "../../../../../shared/shell-io.ts";
 import { writeWidget, type WidgetRecord } from "../../../../../shared/widgets-store.ts";
+import { saveWidgetDrawing } from "../../../../lib/media-migrate";
 
 export async function POST(request: Request) {
   const gate = await requireOwner(request);
@@ -32,7 +33,8 @@ export async function POST(request: Request) {
     if (!draft || typeof body.botId !== "string" || typeof body.callId !== "string") {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
-    if (!readShell().bots.some((bot) => bot.id === body.botId)) {
+    const bot = readShell().bots.find((row) => row.id === body.botId);
+    if (!bot) {
       return NextResponse.json({ ok: false, error: "bot_missing" }, { status: 400 });
     }
     if (!findConnectionById(draft.connectionId)) {
@@ -57,7 +59,18 @@ export async function POST(request: Request) {
     if (record.id.length < 8) {
       return NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
     }
+    // The app posts a drawing again whenever a chat replays it; the event it
+    // already has says when it was first drawn.
+    const drawnAt = listThreadEvents(body.botId).find((event) => event.widgetId === record.id)?.at;
     writeWidget(record);
+    // A drawing is also the owner's file: an Excalidraw scene lands in the
+    // media folder and the Library. A failed save leaves the card in the
+    // chat and says why in the log; the next Library load tries again.
+    try {
+      saveWidgetDrawing(record, body.botId, bot.name, drawnAt);
+    } catch (err) {
+      console.error(`[media] could not save drawing ${record.id}`, err);
+    }
     appendAgentEvent(body.botId, {
       kind: "widget",
       text: "Drawing",
