@@ -256,7 +256,17 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const previous = carriedFrom;
         const botId = route.threadId;
         try {
-          updateShell((current) => recordSessionLineage(current, botId, previous, created));
+          updateShell((current) => {
+            // Only over the session this carry-over came from: if another
+            // client moved the pointer meanwhile, its session is the chat.
+            const now = current.bots.find((item) => item.id === botId);
+            if (now && now.sessionId && now.sessionId !== previous) {
+              console.error("carry-over lost the race; pointer left on the newer session");
+              return current;
+            }
+            return recordSessionLineage(current, botId, previous, created);
+          });
+          removeSessionGrant(previous);
         } catch (err) {
           // The new session already holds the brief; only a second carry-over
           // from this old session would be refused. Not worth failing the send,

@@ -342,6 +342,7 @@ async function sessionEventIds(sessionId: string, jwt: string): Promise<Set<stri
 }
 
 /** How much of an old session the carry-over reads before it stops. */
+const SETTLE_TAIL_EVENTS = 200;
 const CARRY_READ = { headEvents: 400, tailEvents: 20_000, idleMs: 3_000, hardMs: 15_000, maxBytes: 48 * 1024 * 1024 };
 
 /**
@@ -455,8 +456,19 @@ export async function readSessionEvents(
  * step-zero failure. Reads only the opening of the stream.
  */
 export async function sessionHasCompletedTurn(sessionId: string, jwt: string, signal?: AbortSignal): Promise<boolean> {
+  // A completed step commits the prompt, opening message included, to eve's
+  // history; a cancelled turn keeps its accepted input too.
+  const settles = (events: StreamEvent[]) => events.some((event) => (
+    event.type === "step.completed" || event.type === "turn.completed" || event.type === "turn.cancelled"
+  ));
   const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents, signal);
-  return head.events.some((event) => event.type === "turn.completed");
+  if (settles(head.events)) return true;
+  if (head.tail === null || head.tail + 1 <= head.events.length) return false;
+  // A long first turn streams hundreds of deltas before its step completes,
+  // so the newest stretch is read as well; that is where it lands.
+  const start = Math.max(head.events.length, head.tail + 1 - SETTLE_TAIL_EVENTS);
+  const tail = await readStreamRange(sessionId, jwt, start, head.tail + 1 - start, signal);
+  return settles(tail.events);
 }
 
 /**
@@ -655,6 +667,12 @@ async function runEveTurn(
           }, bot.id, retired, created);
         });
         historyIds = new Set<string>();
+        // The retired session's workspace grant goes with it.
+        try {
+          removeSessionGrant(retired);
+        } catch (err) {
+          console.error("retired session grant not removed", err instanceof Error ? err.message : err);
+        }
         syncSessionWorkspaceFresh(sessionId, bot.id);
         const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
           headers: { authorization: `Bearer ${jwt}` },
