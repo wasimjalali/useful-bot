@@ -1107,18 +1107,17 @@ struct TranscriptRowView: View, Equatable {
             }
         case .post:
             let author = row.author ?? ""
-            let attributed = row.authorBotId != nil || !author.isEmpty
             VStack(alignment: .leading, spacing: 8) {
-                if attributed {
-                    BotMetaRow(
-                        prefix: "Message from",
-                        botIds: row.authorBotId.map { [$0] } ?? [],
-                        // A deleted bot that stored no name still reads as a
-                        // teammate rather than as "1 Bot".
-                        names: [author.isEmpty ? "a teammate" : author],
-                        roster: bots
-                    )
-                }
+                // Always labelled: an unattributed post on the bot side would
+                // read as the chat's own bot speaking.
+                BotMetaRow(
+                    prefix: "Message from",
+                    botIds: row.authorBotId.map { [$0] } ?? [],
+                    // A deleted bot that stored no name still reads as a
+                    // teammate rather than as "1 Bot".
+                    names: [author.isEmpty ? "a teammate" : author],
+                    roster: bots
+                )
                 // Whatever a teammate posts, a question to this bot or an
                 // answer, is a bot speaking: it sits on the left in the bot
                 // bubble, under the "Message from" line that names it. Only
