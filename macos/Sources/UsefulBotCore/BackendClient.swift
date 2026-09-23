@@ -28,6 +28,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// eve retired the session this chat pointed at (a failed turn ends a
     /// session for good), so nothing can be sent to it again.
     case sessionEnded
+    /// The chat was already carried over into a newer session elsewhere.
+    case sessionMoved
     /// The event stream ended before the turn did, so the reply on screen
     /// may be missing its tail.
     case streamInterrupted
@@ -84,6 +86,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return BackendClient.regenerateCopy(code)
         case .sessionEnded:
             return "This chat's session ended. Send again to start a new one."
+        case .sessionMoved:
+            return "This chat just continued in a newer session. Send again."
         case .streamInterrupted:
             return "The connection dropped before the reply finished."
         case .modelNoVision:
@@ -1378,6 +1382,13 @@ public actor BackendClient {
            let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
            failure.code == "session_not_active" {
             throw BackendError.sessionEnded
+        }
+        // The carry-over this send asked for already happened elsewhere (the
+        // handoff pump, another window): the chat lives in a newer session.
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
+           failure.code == "session_moved" {
+            throw BackendError.sessionMoved
         }
         // The proxy refuses a picture for a model that cannot look at it
         // before the turn exists, so the draft and its files come back.

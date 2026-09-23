@@ -355,9 +355,13 @@ async function readStreamRange(
   jwt: string,
   start: number,
   count: number,
+  outer?: AbortSignal,
 ): Promise<{ events: StreamEvent[]; tail: number | null; cut: boolean }> {
   const events: StreamEvent[] = [];
   const controller = new AbortController();
+  // The caller gave up (the owner's request went away): stop reading too.
+  if (outer?.aborted) controller.abort();
+  outer?.addEventListener("abort", () => controller.abort(), { once: true });
   const hard = setTimeout(() => controller.abort(), CARRY_READ.hardMs);
   let idle: ReturnType<typeof setTimeout> | undefined;
   const reset = () => {
@@ -424,8 +428,9 @@ async function readStreamRange(
 export async function readSessionEvents(
   sessionId: string,
   jwt: string,
+  signal?: AbortSignal,
 ): Promise<{ events: StreamEvent[]; skipped: number; cut: boolean }> {
-  const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents);
+  const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents, signal);
   if (head.events.length === 0) throw new Error("eve_stream_empty");
   if (head.tail === null) {
     // No tail index: only the opening is certain, and the end may be missing.
@@ -434,7 +439,7 @@ export async function readSessionEvents(
   const total = head.tail + 1;
   if (total <= head.events.length) return { events: head.events, skipped: 0, cut: head.cut };
   const start = Math.max(head.events.length, total - CARRY_READ.tailEvents);
-  const rest = await readStreamRange(sessionId, jwt, start, total - start);
+  const rest = await readStreamRange(sessionId, jwt, start, total - start, signal);
   return {
     events: [...head.events, ...rest.events],
     skipped: start - head.events.length,
@@ -449,9 +454,14 @@ export async function readSessionEvents(
  * still yields a brief that says so, so the bot tells the owner it lost the
  * thread instead of acting as if there never was one.
  */
-export async function continuationBriefFor(sessionId: string, jwt: string, reason?: string): Promise<string> {
+export async function continuationBriefFor(
+  sessionId: string,
+  jwt: string,
+  reason?: string,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
-    const read = await readSessionEvents(sessionId, jwt);
+    const read = await readSessionEvents(sessionId, jwt, signal);
     return buildContinuationBrief(read.events, { reason, skipped: read.skipped, cut: read.cut });
   } catch {
     return buildContinuationBrief([], {
@@ -591,6 +601,15 @@ async function runEveTurn(
         // The fresh session opens with a brief of the retired one, so the
         // bot keeps the thread instead of starting over empty.
         const retired = sessionId;
+        // The owner's app may have carried this session over already. Then
+        // the live session holds the thread, and a second carry-over would
+        // fork the chat: this delivery joins the live one instead.
+        const live = readShell().bots.find((item) => item.id === bot.id) ?? null;
+        if (live?.sessionId && live.sessionId !== retired) {
+          clearTimeout(timer);
+          if (idleTimer) clearTimeout(idleTimer);
+          return await runEveTurn(live, message, budget);
+        }
         const brief = await continuationBriefFor(retired, jwt);
         const carried = `${withSessionNotes(turnPrefixFor(bot), [brief])}${message}`;
         const retry = await fetch(`${EVE}/eve/v1/session`, {
@@ -605,15 +624,26 @@ async function runEveTurn(
         if (!sessionId) throw new Error("eve_session_missing");
         // Persist the fresh pointer now, so a crash before the reply still
         // leaves later handoffs and routines on the live session.
+        // Only over the retired pointer: if the owner's app replaced it in
+        // the meantime, its session is the chat and this one stays a side
+        // conversation holding this single delivery.
         const stamp = new Date().toISOString();
-        updateShell((current) => recordSessionLineage({
-          ...current,
-          bots: current.bots.map((item) => (
-            item.id === bot.id
-              ? { ...item, sessionId, lastAt: stamp, updatedAt: stamp }
-              : item
-          )),
-        }, bot.id, retired, sessionId));
+        const created = sessionId;
+        updateShell((current) => {
+          const now = current.bots.find((item) => item.id === bot.id);
+          if (now && now.sessionId && now.sessionId !== retired) {
+            console.error("pump carry-over lost the race; pointer left on the owner's session");
+            return current;
+          }
+          return recordSessionLineage({
+            ...current,
+            bots: current.bots.map((item) => (
+              item.id === bot.id
+                ? { ...item, sessionId: created, lastAt: stamp, updatedAt: stamp }
+                : item
+            )),
+          }, bot.id, retired, created);
+        });
         historyIds = new Set<string>();
         syncSessionWorkspaceFresh(sessionId, bot.id);
         const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {

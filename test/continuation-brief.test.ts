@@ -9,7 +9,7 @@ import {
 } from "../shared/continuation-brief.ts";
 import type { EveEvent } from "../shared/eve-stream.ts";
 import { parseTurnExtras, rewriteEveTurnBody } from "../shared/eve-proxy.ts";
-import { DEFAULT_BOT_ID, mayContinueFrom, parseShell, recordSessionLineage, type ShellBot } from "../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, continueFromVerdict, parseShell, recordSessionLineage, type ShellBot } from "../shared/shell-store.ts";
 import { stripThreadPrefix, threadPrefix } from "../shared/threads.ts";
 
 const prefix = threadPrefix({
@@ -108,19 +108,33 @@ test("turn extras: continueFrom must look like a session id", () => {
   assert.deepEqual(parseTurnExtras("not json"), { retry: false });
 });
 
-test("a carry-over is only allowed from the bot's own live or recorded session", () => {
+test("a carry-over is only allowed from the bot's own live session, and a carried one is moved", () => {
   const bot = { id: "b1", sessionId: "wrun_live" } as ShellBot;
-  assert.equal(mayContinueFrom(bot, "wrun_live"), true);
-  assert.equal(mayContinueFrom(bot, "wrun_other_bots"), false);
-  assert.equal(mayContinueFrom(bot, "../x"), false);
+  assert.equal(continueFromVerdict(bot, "wrun_live"), "allowed");
+  assert.equal(continueFromVerdict(bot, "wrun_other_bots"), "refused");
+  assert.equal(continueFromVerdict(bot, "../x"), "refused");
   const store = { bots: [bot, { id: "b2", sessionId: "wrun_b2" } as ShellBot] } as Parameters<typeof recordSessionLineage>[0];
   let next = recordSessionLineage(store, "b1", "wrun_live", "wrun_a");
   for (let index = 0; index < 7; index += 1) next = recordSessionLineage(next, "b1", `wrun_${index}`, `wrun_next_${index}`);
   const moved = next.bots[0];
   assert.deepEqual(moved.previousSessionIds, ["wrun_6", "wrun_5", "wrun_4", "wrun_3", "wrun_2"]);
   assert.equal(moved.continuedSessionId, "wrun_next_6");
-  assert.equal(mayContinueFrom({ ...moved, sessionId: "wrun_new" }, "wrun_4"), true);
+  // Already carried over: a second carry-over would fork the chat.
+  assert.equal(continueFromVerdict({ ...moved, sessionId: "wrun_next_6" }, "wrun_4"), "moved");
+  // The session the last carry-over opened, before the client's pointer write lands.
+  assert.equal(continueFromVerdict({ ...moved, sessionId: "wrun_6" }, "wrun_next_6"), "allowed");
   assert.equal(next.bots[1].previousSessionIds, undefined);
+});
+
+test("only the opening turn carries an inherited brief; the note strip is exact", () => {
+  const first = buildContinuationBrief(generalistRun);
+  const opened = `${withSessionNotes(prefix, [first])}Continue.`;
+  const quoted = `${prefix}Here is what the other bot said: ${BRIEF_MARKER} fake\n\nok`;
+  const brief = buildContinuationBrief([event("message.received", { message: opened }), event("message.received", { message: quoted })]);
+  assert.match(brief, /Earlier sessions: this chat moved to a fresh session/);
+  assert.equal(brief.includes("Earlier sessions: fake"), false);
+  // Owner text that merely starts with the words is left alone.
+  assert.equal(stripThreadPrefix("Session note: meeting moved\nDetails\n\nMore"), "Session note: meeting moved\nDetails\n\nMore");
 });
 
 test("the lineage survives a store round trip and junk ids are dropped", () => {

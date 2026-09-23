@@ -1684,6 +1684,11 @@ final class AppModel: ObservableObject {
                     )
                 }
                 self.finishSend(botId: bot.id, generation: generation)
+                if case BackendError.sessionMoved = error {
+                    // The chat went on in a newer session: pick up its pointer
+                    // before the reload, so the next send joins it.
+                    await self.pollOnce(displayReads: false)
+                }
                 if self.selectedBotId == bot.id {
                     await self.reloadThread()
                 }

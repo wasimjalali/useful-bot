@@ -19,7 +19,7 @@ import { channelJwt, continuationBriefFor, syncSessionWorkspace } from "../../..
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
-import { mayContinueFrom, recordSessionLineage, type ShellBot } from "../../../../../shared/shell-store.ts";
+import { continueFromVerdict, recordSessionLineage, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
@@ -105,11 +105,20 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         } catch {
           owner = null;
         }
-        if (suffix !== "session" || !owner || !extras.continueFrom || !mayContinueFrom(owner, extras.continueFrom)) {
+        const verdict = suffix === "session" && owner && extras.continueFrom
+          ? continueFromVerdict(owner, extras.continueFrom)
+          : "refused";
+        if (verdict === "moved") {
+          // Another client (or the handoff pump) already carried this session
+          // over. A second carry-over would fork the chat, so the caller
+          // catches up with the live session instead.
+          return Response.json({ ok: false, error: "eve_error", status: 409, code: "session_moved" }, { status: 409 });
+        }
+        if (verdict !== "allowed" || !extras.continueFrom) {
           return Response.json({ ok: false, error: "continue_from_refused" }, { status: 400 });
         }
         carriedFrom = extras.continueFrom;
-        notes.push(await continuationBriefFor(carriedFrom, jwt ?? ""));
+        notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
       }
       if (extras.retry) notes.push(RETRY_NOTE);
       try {

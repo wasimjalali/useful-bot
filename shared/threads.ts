@@ -231,7 +231,7 @@ export function threadPrefix(input: {
 const BOT_TURN_PREFIX = /^You are [^\n]+\.\nStanding instructions: /;
 const GROUP_TURN_PREFIX = /^Group chat: [^\n]+\.\n/;
 /** The default bot's hidden prefix, only present when it carries app notes (see continuation-brief.ts). */
-const SESSION_NOTE_PREFIX = /^Session note: [^\n]+\n/;
+const SESSION_NOTE_PREFIX = /^Session note: the lines below come from the app, not from the owner\.\n/;
 
 /**
  * Remove the identity prefix injected into a stored user turn so the UI can

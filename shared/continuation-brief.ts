@@ -103,8 +103,12 @@ export function buildContinuationBrief(
       case "message.received": {
         flushDraft();
         const raw = typeof data.message === "string" ? data.message : "";
-        const carried = inheritedBrief(raw);
-        if (carried) inherited = carried;
+        // Only the session's opening turn can carry an inherited brief; a
+        // later message quoting the marker is conversation, not context.
+        if (!task) {
+          const carried = inheritedBrief(raw);
+          if (carried) inherited = carried;
+        }
         const text = stripThreadPrefix(raw).trim();
         if (!text) break;
         if (!task) task = text;

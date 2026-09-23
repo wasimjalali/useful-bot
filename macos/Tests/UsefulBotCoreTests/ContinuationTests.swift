@@ -38,4 +38,17 @@ import Testing
         let plain = try JSONDecoder().decode(ShellBot.self, from: Data(#"{"id":"b2","sessionId":"wrun_x"}"#.utf8))
         #expect(!plain.continuesEarlierSession)
     }
+
+    @Test func compactionShowsInTheWorkingRow() {
+        var projection = StreamProjection()
+        projection.apply(EveEvent(type: "turn.started", id: "1"))
+        let requested = #"{"type":"compaction.requested","meta":{"id":"2"},"data":{"modelId":"workhorse","sequence":3,"sessionId":"s","turnId":"t1","usageInputTokens":120000}}"#
+        projection.apply(EveStream.parseLine(requested)!)
+        #expect(projection.activity == .compacting)
+        #expect(projection.activity.label == "Compacting the conversation")
+        #expect(projection.pending)
+        let completed = #"{"type":"compaction.completed","meta":{"id":"3"},"data":{"modelId":"workhorse","sequence":3,"sessionId":"s","turnId":"t1"}}"#
+        projection.apply(EveStream.parseLine(completed)!)
+        #expect(projection.activity == .thinking)
+    }
 }

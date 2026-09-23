@@ -365,13 +365,20 @@ const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const PREVIOUS_SESSIONS_MAX = 5;
 
 /**
- * Whether a turn may be carried over from `sessionId`: it has to be the bot's
- * live session or one it was already carried over from. Fails closed on
- * anything else, so a crafted id cannot read another bot's conversation.
+ * Whether a turn may be carried over from `sessionId`:
+ * - "allowed": it is the bot's live session, or the session the last
+ *   carry-over opened (the client may hold that one before its pointer write
+ *   lands).
+ * - "moved": it was already carried over into a newer session. Carrying it
+ *   over again would fork the chat, so the client is told to catch up.
+ * - "refused": anything else. Fails closed, so a crafted id cannot read
+ *   another bot's conversation.
  */
-export function mayContinueFrom(bot: ShellBot, sessionId: string): boolean {
-  if (!SESSION_ID.test(sessionId)) return false;
-  return bot.sessionId === sessionId || (bot.previousSessionIds ?? []).includes(sessionId);
+export function continueFromVerdict(bot: ShellBot, sessionId: string): "allowed" | "moved" | "refused" {
+  if (!SESSION_ID.test(sessionId)) return "refused";
+  if (bot.sessionId === sessionId || bot.continuedSessionId === sessionId) return "allowed";
+  if ((bot.previousSessionIds ?? []).includes(sessionId)) return "moved";
+  return "refused";
 }
 
 /**

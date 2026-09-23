@@ -100,6 +100,10 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     /// command, the query, the path. "Running a command" names the step;
     /// "Running a command: npm test" is the step.
     case tool(String, detail: String? = nil)
+    /// eve is summarizing older messages so the chat fits the model's window.
+    /// It can take a while on a long chat, and a bare "Thinking" through it
+    /// read as a hang.
+    case compacting
 
     /// Sentence case, no trailing period: the row swaps between these while
     /// the turn runs, and a period on every one of them reads as a stutter.
@@ -109,6 +113,7 @@ public enum TurnActivity: Codable, Equatable, Sendable {
         // Only reached while text is streaming in, and the row now stays up
         // under the bubble being written.
         case .working: return "Writing"
+        case .compacting: return "Compacting the conversation"
         case .tool(let name, let detail):
             guard let detail else { return Self.toolLabel(name) }
             return "\(Self.toolLabel(name)): \(detail)"
@@ -513,7 +518,7 @@ public enum EveStream {
     /// The default bot's hidden prefix, present only when the proxy folded
     /// app notes into its turn (`shared/continuation-brief.ts`).
     private static let sessionNotePrefix = try! NSRegularExpression(
-        pattern: "^Session note: [^\\n]+\\n"
+        pattern: "^Session note: the lines below come from the app, not from the owner\\.\\n"
     )
 
     /// Port of `handoffEnvelope` in `web/lib/agent-exec.ts`: a user turn the
@@ -1327,6 +1332,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // as the record of an attempt, and nothing folds into it again.
             discardedUserMessageId = nil
             pending = true
+            activity = .thinking
+        case "compaction.requested":
+            // Not work: a turn that fails here left nothing under its message.
+            guard case .current = turnOwner(of: event) else { break }
+            activity = .compacting
+        case "compaction.completed":
+            guard case .current = turnOwner(of: event) else { break }
             activity = .thinking
         case "reasoning.appended", "reasoning.completed":
             // Thinking shows in the working row and nowhere else, so a turn
