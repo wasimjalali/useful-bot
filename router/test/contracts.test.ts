@@ -8,12 +8,16 @@ import { join } from "node:path";
 import { startRouter } from "../src/index.ts";
 import { LimitStore, estimateInputUnits } from "../src/limits.ts";
 import { CEILING_RETRY_AFTER_MS, ConcurrencyGate } from "../src/concurrency.ts";
-import { retryAfterMs } from "../src/retry-after.ts";
+import { retryAfterMs, upstreamLimitError } from "../src/retry-after.ts";
 import { AliasCircuit } from "../src/circuit.ts";
 import { RouterError } from "../src/errors.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
+
+// The caps scale with the owner's daily budget; these tests assume the
+// default one, never the budget set on this Mac.
+process.env.UB_LIMITS_PATH = join(mkdtempSync(join(tmpdir(), "ub-limits-file-")), "limits.json");
 
 type UpstreamHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -462,6 +466,89 @@ test("upstream 429 maps to a retryable rate limit", async () => {
   });
 });
 
+test("a used-up plan answers 402 upstream_usage_limit with its reset, and is not retried", async () => {
+  let calls = 0;
+  const resetsAt = Math.round(Date.now() / 1000) + 3600;
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 402);
+    const body = await res.json();
+    assert.equal(body.error.code, "upstream_usage_limit");
+    assert.equal(body.error.message, `upstream_usage_limit resets_at=${resetsAt}`);
+    assert.equal(body.error.retryable, false);
+    assert.equal(calls, 1);
+  }, (_req, res) => {
+    calls += 1;
+    res.writeHead(429, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { type: "usage_limit_reached", message: "The usage limit has been reached", plan_type: "plus", resets_at: resetsAt } }));
+  });
+});
+
+test("quota and plan limits get their own codes", async () => {
+  for (const [error, code] of [
+    [{ type: "usage_not_included" }, "upstream_usage_not_included"],
+    [{ type: "insufficient_quota" }, "upstream_quota_exhausted"],
+    [{ code: "organization_spend_limit_exceeded" }, "upstream_quota_exhausted"],
+  ] as const) {
+    await withRouter(async (base, tokens) => {
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+        body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+      });
+      assert.equal(res.status, 402);
+      assert.equal((await res.json()).error.code, code);
+    }, (_req, res) => {
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error }));
+    });
+  }
+});
+
+test("other vendors' used-up plans are read from their documented bodies", async () => {
+  const limit = (body: unknown) => upstreamLimitError(new Response(JSON.stringify(body), { status: 429 }));
+  // Z.ai sends its code as a string; a number is read the same way.
+  assert.equal((await limit({ error: { code: "1308", message: "Usage limit reached for 5 hour" } })).code, "upstream_usage_limit");
+  assert.equal((await limit({ error: { code: 1310 } })).code, "upstream_usage_limit");
+  assert.equal((await limit({ error: { code: "1311" } })).code, "upstream_usage_not_included");
+  assert.equal((await limit({ error: { code: "1113" } })).code, "upstream_quota_exhausted");
+  // A code named like an Object method is not a Z.ai code.
+  assert.equal((await limit({ error: { code: "constructor" } })).code, "upstream_rate_limited");
+  // Kimi.
+  assert.equal((await limit({ error: { type: "exceeded_current_quota_error" } })).code, "upstream_quota_exhausted");
+  // Google names a per-day quota, inside the array its OpenAI endpoint wraps errors in.
+  const perDay = await limit([{ error: { code: 429, status: "RESOURCE_EXHAUSTED", details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } }]);
+  assert.equal(perDay.code, "upstream_usage_limit");
+  assert.equal(perDay.status, 402);
+  // Real rate limits stay waitable.
+  for (const body of [
+    { error: { code: "1302" } },
+    { error: { type: "rate_limit_reached_error" } },
+    [{ error: { status: "RESOURCE_EXHAUSTED", details: [{ violations: [{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel" }] }] } }],
+  ]) {
+    const error = await limit(body);
+    assert.equal(error.code, "upstream_rate_limited");
+    assert.equal(error.status, 429);
+  }
+});
+
+test("a reset time that can't be one is left out of the message", async () => {
+  const now = Math.round(Date.now() / 1000);
+  const message = async (error: Record<string, unknown>) =>
+    (await upstreamLimitError(new Response(JSON.stringify({ error: { type: "usage_limit_reached", ...error } }), { status: 429 }))).message;
+  assert.equal(await message({ resets_at: 1e21 }), "upstream_usage_limit");
+  assert.equal(await message({ resets_at: now - 60 }), "upstream_usage_limit");
+  assert.equal(await message({ resets_in_seconds: -30 }), "upstream_usage_limit");
+  // Milliseconds read as the same moment in seconds.
+  assert.equal(await message({ resets_at: (now + 3600) * 1000 }), `upstream_usage_limit resets_at=${now + 3600}`);
+  const inTen = Number((await message({ resets_in_seconds: 600 })).split("resets_at=")[1]);
+  assert.ok(Math.abs(inTen - (now + 600)) <= 1);
+});
+
 test("upstream model 404 maps to model_unavailable", async () => {
   await withRouter(async (base, tokens) => {
     const res = await fetch(`${base}/v1/chat/completions`, {
@@ -638,6 +725,40 @@ test("a model the upstream does not have opens the alias for a while, not for go
   // The alias used to stay dead for the life of the process, so the only way
   // back was restarting the services.
   circuit.assertClosed("workhorse", at + 300_001);
+});
+
+test("a provider rate limit pauses the alias as a rate limit, with the time left", () => {
+  const circuit = new AliasCircuit();
+  const at = 3_000_000;
+  circuit.recordFailure("workhorse", new RouterError({
+    status: 429,
+    type: "rate_limit_error",
+    code: "upstream_rate_limited",
+    message: "upstream_rate_limited",
+    retryable: true,
+    retryAfterMs: 45_000,
+  }), at);
+  try {
+    circuit.assertClosed("workhorse", at + 5_000);
+    assert.fail("the alias should be paused");
+  } catch (err) {
+    // Not circuit_open: the agent waits out a rate limit, never a cool-down.
+    assert.equal((err as RouterError).code, "upstream_rate_limited");
+    assert.equal((err as RouterError).status, 429);
+    assert.equal((err as RouterError).retryAfterMs, 40_000);
+  }
+  circuit.assertClosed("workhorse", at + 45_001);
+});
+
+test("failures inside a longer rate-limit pause keep it a rate-limit pause", () => {
+  const circuit = new AliasCircuit();
+  const at = 4_000_000;
+  circuit.recordFailure("workhorse", new RouterError({
+    status: 429, type: "rate_limit_error", code: "upstream_rate_limited", message: "upstream_rate_limited", retryable: true, retryAfterMs: 120_000,
+  }), at);
+  const protocolError = new RouterError({ status: 502, type: "upstream_error", code: "upstream_protocol_error", message: "upstream_protocol_error" });
+  for (let i = 0; i < 3; i += 1) circuit.recordFailure("workhorse", protocolError, at + 1_000);
+  assert.throws(() => circuit.assertClosed("workhorse", at + 60_000), /upstream_rate_limited/);
 });
 
 test("a reservation overrun keeps the alias shut, because a spend guard on a timer is not one", () => {

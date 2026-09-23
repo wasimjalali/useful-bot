@@ -1613,6 +1613,10 @@ public actor BackendClient {
             return "The image model took too long. It may still have been billed, so check the Library before trying again."
         case "image_removed":
             return "This image was removed from the Library while it was drawn, so it stays removed."
+        case "upstream_usage_limit", "upstream_usage_not_included", "upstream_quota_exhausted":
+            return "The image provider's plan or credit limit is used up. Pick another image model in Settings."
+        case "upstream_rate_limited":
+            return "The image provider is rate limiting. Wait a minute, then try again."
         case "image_unusable":
             return "The image model sent back something that isn't a usable image."
         case "image_not_saved":

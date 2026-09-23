@@ -22,6 +22,8 @@ const MISSING_MODEL_OPEN_MS = 300_000;
 
 interface CircuitState {
   openUntil: number;
+  /** Open because the provider said to slow down, not because it failed. */
+  rateLimited: boolean;
   disabled: boolean;
   failures: number[];
 }
@@ -37,7 +39,7 @@ export class AliasCircuit {
   private state(alias: string): CircuitState {
     let current = this.states.get(alias);
     if (!current) {
-      current = { openUntil: 0, disabled: false, failures: [] };
+      current = { openUntil: 0, rateLimited: false, disabled: false, failures: [] };
       this.states.set(alias, current);
     }
     return current;
@@ -57,6 +59,19 @@ export class AliasCircuit {
         alias: alias as "workhorse" | "reviewer",
       });
     }
+    // Paused because the provider said to slow down: every bot hears that,
+    // with the time left, rather than a generic cool-down. The agent's fetch
+    // waits out this code; it does not wait out a circuit_open.
+    if (current.openUntil > now && current.rateLimited) {
+      throw new RouterError({
+        status: 429,
+        type: "rate_limit_error",
+        code: "upstream_rate_limited",
+        message: "upstream_rate_limited",
+        retryable: true,
+        retryAfterMs: current.openUntil - now,
+      });
+    }
     if (current.openUntil > now) {
       throw new RouterError({
         status: 503,
@@ -74,6 +89,7 @@ export class AliasCircuit {
     const current = this.state(alias);
     current.failures = [];
     current.openUntil = 0;
+    current.rateLimited = false;
   }
 
   /**
@@ -89,11 +105,19 @@ export class AliasCircuit {
     const current = this.state(alias);
     if (error.code === "upstream_rate_limited") {
       const retryAfter = clampRetryAfter(error.retryAfterMs);
-      current.openUntil = Math.max(current.openUntil, now + retryAfter);
+      if (now + retryAfter > current.openUntil) {
+        current.openUntil = now + retryAfter;
+        current.rateLimited = true;
+      }
       return;
     }
     if (error.code === "model_unavailable") {
-      current.openUntil = Math.max(current.openUntil, now + MISSING_MODEL_OPEN_MS);
+      // The later deadline decides what the pause is: a rate-limit pause that
+      // outlasts this one keeps its label, so the agent still waits it out.
+      if (now + MISSING_MODEL_OPEN_MS >= current.openUntil) {
+        current.openUntil = now + MISSING_MODEL_OPEN_MS;
+        current.rateLimited = false;
+      }
       return;
     }
     // A timeout is a 5xx-class failure too: three in the window open the
@@ -102,7 +126,10 @@ export class AliasCircuit {
       current.failures = current.failures.filter((at) => now - at < FAILURE_WINDOW_MS);
       current.failures.push(now);
       if (current.failures.length >= FAILURE_THRESHOLD) {
-        current.openUntil = Math.max(current.openUntil, now + FAILURE_OPEN_MS);
+        if (now + FAILURE_OPEN_MS >= current.openUntil) {
+          current.openUntil = now + FAILURE_OPEN_MS;
+          current.rateLimited = false;
+        }
       }
     }
   }

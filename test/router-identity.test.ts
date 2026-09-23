@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { routerFetch, MAX_TOTAL_WAIT_MS } from "../agent/lib/router-fetch.ts";
+import { routerFetch, MAX_PROVIDER_TOTAL_WAIT_MS, MAX_TOTAL_WAIT_MS } from "../agent/lib/router-fetch.ts";
 import { routerIds, stableUuid, toolRouterIds, turnIdOf } from "../agent/lib/router-identity.ts";
 import { perSessionModel } from "../agent/lib/session-model.ts";
 
@@ -154,6 +154,41 @@ test("the wait is bounded: a long hint fails at once, and the total is capped", 
   const total = forever.sleeps.reduce((sum, ms) => sum + ms, 0);
   assert.equal(total <= MAX_TOTAL_WAIT_MS, true);
   assert.equal(forever.sleeps.length, 6);
+});
+
+test("a provider rate limit pauses the call for its retry-after instead of failing the turn", async () => {
+  const h = harness([
+    () => refusal("upstream_rate_limited", 60_000),
+    () => refusal("upstream_rate_limited", 45_000),
+    () => new Response("{}", { status: 200 }),
+  ]);
+  assert.equal((await h.doFetch("http://router/x")).status, 200);
+  assert.deepEqual(h.sleeps, [60_000, 45_000]);
+
+  // Bounded all the same: past the provider allowance the 429 goes back.
+  const forever = harness(Array.from({ length: 20 }, () => () => refusal("upstream_rate_limited", 60_000)));
+  assert.equal((await forever.doFetch("http://router/x")).status, 429);
+  assert.equal(forever.sleeps.reduce((sum, ms) => sum + ms, 0) <= MAX_PROVIDER_TOTAL_WAIT_MS, true);
+  assert.equal(forever.sleeps.length, 3);
+
+  // A pause longer than one slice is waited a slice at a time.
+  const long = harness([
+    () => refusal("upstream_rate_limited", 120_000),
+    () => refusal("upstream_rate_limited", 30_000),
+    () => new Response("{}", { status: 200 }),
+  ]);
+  assert.equal((await long.doFetch("http://router/x")).status, 200);
+  assert.deepEqual(long.sleeps, [90_000, 30_000]);
+
+  // One longer than the whole allowance goes back at once.
+  const hours = harness([() => refusal("upstream_rate_limited", 3_600_000)]);
+  assert.equal((await hours.doFetch("http://router/x")).status, 429);
+  assert.deepEqual(hours.sleeps, []);
+
+  // A used-up plan is not a wait.
+  const used = harness([() => new Response(JSON.stringify({ error: { code: "upstream_usage_limit", retryable: false } }), { status: 402 })]);
+  assert.equal((await used.doFetch("http://router/x")).status, 402);
+  assert.deepEqual(used.sleeps, []);
 });
 
 test("with no hint the wait backs off, and an abort during it ends the call", async () => {
