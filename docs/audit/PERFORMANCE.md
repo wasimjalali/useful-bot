@@ -46,24 +46,38 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
-## Batch 10: chats open from a snapshot (PR: perf/instant-chat-open)
+## Batch 10: chats open from a snapshot (PR #118, perf/instant-chat-open)
 
-Measured on the installed build, frame by frame at 30 fps (see "How to measure"), cold launch then
-Test Bot, Generalist, Test Bot, Generalist, YT Producer, Test Bot, YT Producer. "First open" means
-the first open of that chat after a launch; before this batch every first open replayed the chat's
-whole eve session.
+Measured end to end, from the moment the app handles the switch to the last frame that changes.
+Both builds carried a temporary hook (never committed) that selects a chat by name when a
+distributed notification arrives, so no Accessibility client was involved; the app's own log
+timed select to landing and a 30 fps recording gave the final frame and the visual check. Same
+machine, same sessions, same sequence: cold launch, then Test Bot, Generalist, Test Bot,
+Generalist, YT Producer, Test Bot, YT Producer. "First open" is the first open of that chat after
+the launch.
 
 | Case (events in the session) | Before (main @ 9465724) | After |
 |---|---|---|
-| Launch, window to first chat (Job Scout, 749) | 1.44 to 1.67 s | 1.16 s |
-| First open, Test Bot (7,659) | 4.35 to 4.69 s | 0.06 s |
-| First open, Generalist (10,794) | 5.41 s | 0.19 s |
-| First open, YT Producer (12,554) | 4.53 s; one run still on the mascot at 7 s | 0.13 s |
-| Switch back, Test Bot | 0.47 s | 0.09 to 0.11 s |
-| Switch back, Generalist | 0.87 s | 0.18 s |
-| Switch back, YT Producer | 0.61 s | 0.15 s |
+| Launch, window to first chat (Job Scout, 749) | 1.48 s | 0.67 s |
+| First open, Test Bot (7,659) | 4.57 s | 0.32 s |
+| First open, Generalist (10,794) | 4.70 s | 0.47 s |
+| First open, YT Producer (12,554) | 6.35 s | 0.45 s |
+| Switch back, Test Bot | 0.69 to 0.70 s | 0.36 s |
+| Switch back, Generalist | 0.95 s | 0.42 s |
+| Switch back, YT Producer | 0.82 s | 0.37 s |
 | eve CPU for one YT Producer open | 4.8 s | none when nothing is new; one chunk file per new event |
 
+- **A number that was wrong, caught.** The first "after" run timed from the first frame that
+  changed after an Accessibility click and read 0.02 to 0.09 s. That clock starts only after the
+  main thread has built the new chat, about 300 ms after the click is handled, and Accessibility
+  makes that build slower still. The before numbers had the same blind spot. The table above is
+  the end-to-end measure; the frame recordings are kept for what they are good at, showing that no
+  mascot, blank or jump appears.
+- **What is left: SwiftUI building the rows.** With the data work gone, a switch back is about
+  300 ms of SwiftUI creating the transcript's views (text layout, one text-selection view per
+  text, view graph setup; `sample` on a switch with no Accessibility client). Under 100 ms needs
+  chats kept mounted across switches, so a switch shows a view that already exists. Proposed as
+  the next step, not done here.
 - **Where the time went.** Chat turns live only in the eve session, so every first open replayed
   it from event 0. eve's local world opens every chunk file of the session before it sends a byte
   when asked for the tail index (1.25 s for YT Producer's 12,554 files, measured in isolation),
@@ -88,12 +102,13 @@ whole eve session.
 - **Fix 4: prebuilt snapshots.** Three seconds after launch the app builds the snapshot of every
   chat that has none, one at a time and off the main thread. All seven chats here had one within
   45 s of the first launch; every later first open is a restore.
-- **Fix 5: land at once.** A restored chat skips the mascot and the fade and lands as soon as layout
-  reads the true bottom at one height on two frames in a row, checked every frame. It waits up to
-  150 ms for the reload to confirm nothing was recorded since the snapshot, so a chat that gained a
-  turn while the app was closed opens on that turn instead of showing it arrive.
+- **Fix 5: land at once.** A restored chat skips the mascot and the fade and lands as soon as its
+  reload confirms the rows (about 70 ms: a durable read and a one-file probe) and layout reads the
+  true bottom at one height on two frames in a row, checked every frame. A chat that gained a turn
+  while the app was closed opens on that turn instead of showing it arrive; if the confirmation
+  takes over 0.6 s the mascot comes back until it does.
 - **Fix 6: the newest rows first.** With the replay gone, building the transcript's views was most
-  of what was left (about 150 ms on Generalist, whose 60 mounted blocks are 8,669 points tall). A
+  of what was left (Generalist mounts 60 blocks, 8,669 points tall). A
   restored chat mounts the newest 14 blocks (the newest turn always whole) for its first frame and
   the rest of the window two frames after it has landed, above the fold, where the bottom anchor
   keeps the rows on screen still. If the newest rows do not fill the window, the rest mounts before
@@ -108,10 +123,21 @@ whole eve session.
   through the snapshot, reads on from the cursor and requires the result to equal a replay from
   zero, private state included. It also pins the projection's stored property names to
   `ChatSnapshot.formatVersion`: adding a property fails the test until the version is bumped, and a
-  snapshot of another version is never restored. `HistoryMarkerTests` pins the marker read (no tail
+  snapshot of another version or build, or older than a week, is never restored. `HistoryMarkerTests` pins the marker read (no tail
   index asked for, history ends at the marker, a read that ends before it throws). A resume that
   never reaches its marker falls back to a replay from zero.
-- **Found in review (Opus 5.5, high effort).** Pending.
+- **Found in review (Opus 5.5, high effort, four passes).** Pass 1: a snapshot could be taken
+  mid in-place reload with the cursor rewound under the old projection (high), and a restored chat
+  landed at 150 ms whether or not its reload had confirmed the rows (high); plus eleven lows (the
+  probe never re-signed in, damaged files could crash, files outlived New Chat and deletes, and
+  others). Pass 2: rows restored from the in-memory stash waited for a full replay where main
+  showed them at once (high); the resume read could never end if a snapshot sat past the end of
+  its session, so it now starts one event early and checks that event is the one the snapshot
+  ended on. Pass 3: a snapshot never healed a later fix to the fold logic (high), so snapshots are
+  now tied to the app build and last at most a week, and a projection holding a turn painted by a
+  local send is never saved. Pass 4: no critical or high findings; its four lows are listed in the
+  PR (a rebuild makes the prewarm replay every chat once, a send in the first ~70 ms of an open,
+  events without `meta.at`, a purged cache directory mid-run).
 
 ## Batch 9: the tick sweeps orphans once a minute (PR: perf/server-stores)
 
