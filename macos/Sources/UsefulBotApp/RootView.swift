@@ -750,7 +750,8 @@ struct ConnectorsDialog: View {
     @ViewBuilder
     private func addedSummary(_ payload: ConnectorsPayload) -> some View {
         let added = payload.toolkits.filter(\.connected)
-        if !added.isEmpty {
+        // A search narrows the list it counts, so the count waits for it to clear.
+        if !added.isEmpty, search.trimmingCharacters(in: .whitespaces).isEmpty {
             HStack(spacing: 8) {
                 HStack(spacing: -6) {
                     ForEach(added.prefix(4)) { row in
@@ -807,13 +808,24 @@ struct ConnectorsDialog: View {
                 .padding(.horizontal, 28)
                 .padding(.top, 12)
             }
-            ScrollView {
-                catalogueList(payload)
-                    .padding(.horizontal, 28)
-                    .padding(.bottom, 16)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    catalogueList(payload)
+                        .padding(.horizontal, 28)
+                        .padding(.bottom, 16)
+                }
+                .uvScroll()
+                // The own-app form opens at the top of the list; the owner may
+                // have pressed Add far below it.
+                .onChange(of: model.connectorOwnApp?.toolkit) { _, toolkit in
+                    guard toolkit != nil else { return }
+                    withAnimation(.easeOut(duration: DesignTokens.Motion.fast)) {
+                        proxy.scrollTo("own-app-form", anchor: .top)
+                    }
+                }
             }
-            .uvScroll()
-            .frame(height: Self.listHeight)
+            // A failed load with nothing to list leaves only the error line.
+            .frame(height: payload.toolkits.isEmpty && model.connectorsError != nil ? 0 : Self.listHeight)
             keyFooter(payload)
         }
     }
@@ -936,9 +948,11 @@ struct ConnectorsDialog: View {
                     .disabled(busy || row.accountId == nil)
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("Added")
+                        if !busy {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        Text(busy ? "Removing" : "Added")
                             .font(.system(size: 13))
                     }
                     .foregroundStyle(Theme.C.inkMuted)
@@ -971,6 +985,7 @@ struct ConnectorsDialog: View {
         .padding(16)
         .background(Theme.C.sunken)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .id("own-app-form")
     }
 
     /// The owner's own OAuth app for a connector Composio has no app for.

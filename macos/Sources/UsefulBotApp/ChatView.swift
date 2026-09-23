@@ -612,8 +612,7 @@ struct ChatView: View {
                         if width > 0, abs(width - columnWidth) > 1 { columnWidth = width }
                     }
                     .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
-                    // Clear of the floating header at the top of the history.
-                    .padding(.top, DesignTokens.Space.chatPaddingVertical + DesignTokens.Space.chatHead)
+                    .padding(.top, DesignTokens.Space.chatPaddingVertical)
                     // The working row's slot is most of the bottom margin.
                     .padding(.bottom, DesignTokens.Space.chatPaddingVertical - WorkingRow.height)
                     // A chat shorter than the window reads from the top, like
@@ -634,6 +633,11 @@ struct ChatView: View {
                     }
                 }
                 .uvScroll()
+                // The floating header's band is a safe-area inset: rows still
+                // scroll under it, and a scroll to a row's top stops below it.
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    Color.clear.frame(height: DesignTokens.Space.chatHead)
+                }
                 .modifier(TranscriptAnchor(pinned: pinnedToBottom))
                 .modifier(ScrollPinnedTracker(
                     pinned: $pinnedToBottom,
@@ -1657,7 +1661,7 @@ extension Notification.Name {
     static let replyToMessage = Notification.Name("useful-bot.reply-to-message")
 }
 
-/// Reply, the ⋯ menu and the gap before them.
+/// Reply, Copy and the gap before them.
 enum MessageHoverActionsWidth {
     static let value: CGFloat = 8 + 28 + 2 + 28
 }

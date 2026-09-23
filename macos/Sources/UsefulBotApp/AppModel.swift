@@ -1410,7 +1410,9 @@ final class AppModel: ObservableObject {
         sendBotId = bot.id
         markWorking(bot.id, true)
         let draftSnapshot = retrying ? "" : draft
-        let quoteSnapshot = retrying ? nil : replyQuote
+        // Only this chat's reply rides with this send; one started in
+        // another chat stays there.
+        let quoteSnapshot = retrying ? nil : replyQuote.flatMap { $0.botId == bot.id ? $0 : nil }
         let sentAttachments = retrying ? [] : attachments
         let sentAttachmentIds = Set(sentAttachments.map(\.id))
         // Pictures ride beside the text as file parts; the composed string
@@ -1559,7 +1561,8 @@ final class AppModel: ObservableObject {
                 }
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
-                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: echo)
+                // A reply's preview is what the owner wrote, not the quote.
+                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: ReplyQuote.split(echo)?.body ?? echo)
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                     self.finishSend(botId: bot.id, generation: generation)
                     return
@@ -1647,12 +1650,14 @@ final class AppModel: ObservableObject {
                     if self.selectedBotId == bot.id {
                         self.restoreUnsentDraft(draftSnapshot, sentAttachments: sentAttachments)
                         // The quote went with the text; it comes back with it.
-                        if let quoteSnapshot, self.replyQuote == nil { self.replyQuote = quoteSnapshot }
                     } else if !draftSnapshot.isEmpty || !sentAttachments.isEmpty {
                         // The owner is in another chat, so there is no composer
                         // to put this back into yet. Hold it for their return.
                         self.unsentDrafts[bot.id] = (draftSnapshot, sentAttachments)
                     }
+                    // The quote went with the text; it comes back with it. It
+                    // names its chat, so it shows there whenever the owner is.
+                    if let quoteSnapshot, self.replyQuote == nil { self.replyQuote = quoteSnapshot }
                     self.recordSendError(
                         bot.id,
                         (error as? LocalizedError)?.errorDescription ?? "Send failed.",
@@ -3881,9 +3886,13 @@ struct ReplyQuote: Equatable {
         return flat.count > Self.maxQuoted ? String(flat.prefix(Self.maxQuoted)) + "…" : flat
     }
 
+    /// The line that marks a message as a reply, so a message the owner
+    /// simply starts with a blockquote is never taken for one.
+    static let marker = "Replying to your message:"
+
     func wrap(_ message: String) -> String {
         let lines = quoted.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
-        return lines.joined(separator: "\n") + "\n\n" + message
+        return Self.marker + "\n" + lines.joined(separator: "\n") + "\n\n" + message
     }
 
     /// One line of the message as it reads, for the chip and the quote line:
@@ -3901,9 +3910,10 @@ struct ReplyQuote: Equatable {
     /// A sent message that opens with a quote, split into the quote and the
     /// rest, so the bubble can show the quote as a quote.
     static func split(_ text: String) -> (quote: String, body: String)? {
+        guard text.hasPrefix(marker + "\n") else { return nil }
         let lines = text.components(separatedBy: "\n")
         var quote: [String] = []
-        var index = 0
+        var index = 1
         while index < lines.count, lines[index].hasPrefix(">") {
             quote.append(String(lines[index].dropFirst(lines[index].hasPrefix("> ") ? 2 : 1)))
             index += 1

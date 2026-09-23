@@ -22,8 +22,8 @@ struct RailView: View {
     var fullScreen = false
 
     @State private var accountOpen = false
-    /// The hairline above Connectors, in rail space. The account menu sits
-    /// on it so it never covers the Connectors row.
+    /// The footer row (photo and Connectors pill), in rail space. The account
+    /// menu opens just above it.
     @State private var accountDivider: CGRect = .zero
     @State private var accountMenuHeight: CGFloat = 0
     @State private var accountButtonFrame = CGRect.zero
@@ -42,7 +42,8 @@ struct RailView: View {
                 RoundRailButton(systemImage: "plus", label: "New Bot", help: "New Bot", action: onNewChat)
                     .trackWindowFrame($newChatTriggerFrame)
             }
-            .padding(.top, 10)
+            // Full screen hides the lights, so the band tightens.
+            .padding(.top, fullScreen ? 4 : 10)
 
             HStack {
                 UsefulBotLogoView()
@@ -364,13 +365,16 @@ struct RailView: View {
         .popShadow()
     }
 
-    /// Today's tokens against the day's limit, the number the router stops at.
+    /// How close today is to a stop: the router caps input and output
+    /// separately, so this is the fuller of the two.
     private var usagePercent: String? {
         guard let usage = model.usage else { return nil }
-        let cap = usage.budget?.tokens ?? usage.totalCap
-        guard cap > 0 else { return nil }
-        let used = usage.chargedInputTokens + usage.chargedOutputTokens
-        return "\(min(100, Int((Double(used) / Double(cap) * 100).rounded())))%"
+        let shares = [
+            (usage.chargedInputTokens, usage.caps.input24h),
+            (usage.chargedOutputTokens, usage.caps.output24h),
+        ].compactMap { used, cap in cap > 0 ? Double(used) / Double(cap) : nil }
+        guard let fullest = shares.max() else { return nil }
+        return "\(min(100, Int((fullest * 100).rounded())))%"
     }
 
     private func popItem(

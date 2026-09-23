@@ -31,10 +31,6 @@ struct WindowChrome: NSViewRepresentable {
     /// sidebar, not the middle of the header row, which put them beside the
     /// logo.
     static let lightsCenterY: CGFloat = 20
-    /// How far the rail's first row starts below the rail's own top padding,
-    /// so the logo clears the lights instead of sharing their row. Kept at
-    /// the header row's middle so the rail's own layout does not move.
-    static let railTopInset: CGFloat = DesignTokens.Space.stageMargin + DesignTokens.Space.chatHead / 2
 
     final class ChromeView: NSView {
         private var observers: [NSObjectProtocol] = []
