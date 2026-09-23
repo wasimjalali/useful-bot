@@ -40,19 +40,40 @@ test("discovery URLs must be public https, never loopback http", () => {
 });
 
 test("resolved private answers are refused before fetch", async () => {
-  setConnectionLookup(async () => "10.0.0.4");
+  setConnectionLookup(async () => ["10.0.0.4"]);
   try {
     await assert.rejects(() => assertResolvedPublic("https://mcp.example.com/mcp"), /url_resolved/);
   } finally {
     setConnectionLookup(null);
   }
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
   try {
     assert.equal(await assertResolvedPublic("https://mcp.example.com/mcp"), "https://mcp.example.com/mcp");
   } finally {
     setConnectionLookup(null);
   }
   assert.equal(await assertResolvedPublic("http://127.0.0.1:3333/mcp"), "http://127.0.0.1:3333/mcp");
+});
+
+test("one private record among public answers is enough to refuse", async () => {
+  setConnectionLookup(async () => ["8.8.8.8", "fd00::8"]);
+  try {
+    await assert.rejects(() => assertResolvedPublic("https://mcp.example.com/mcp"), /url_resolved/);
+  } finally {
+    setConnectionLookup(null);
+  }
+  setConnectionLookup(async () => ["8.8.8.8", "::ffff:10.0.0.4"]);
+  try {
+    await assert.rejects(() => assertResolvedPublic("https://mcp.example.com/mcp"), /url_resolved/);
+  } finally {
+    setConnectionLookup(null);
+  }
+  setConnectionLookup(async () => ["8.8.8.8", "2606:4700:4700::1111"]);
+  try {
+    assert.equal(await assertResolvedPublic("https://mcp.example.com/mcp"), "https://mcp.example.com/mcp");
+  } finally {
+    setConnectionLookup(null);
+  }
 });
 
 test("hash is dropped and the card host is the hostname", () => {

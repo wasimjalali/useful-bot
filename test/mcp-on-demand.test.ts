@@ -47,7 +47,7 @@ function paths(): void {
   const dir = mkdtempSync(join(tmpdir(), "ub-ctools-"));
   process.env.UB_CONNECTIONS_PATH = join(dir, "connections.json");
   process.env.UB_CONNECTION_TOOLS_PATH = join(dir, "connection-tools.json");
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
 }
 
 function entry(overrides: Partial<ConnectionEntry> = {}): ConnectionEntry {

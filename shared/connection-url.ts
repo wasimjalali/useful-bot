@@ -159,7 +159,21 @@ export function assertPublicHttpsUrl(raw: string): string {
   return href;
 }
 
-type LookupFn = (hostname: string) => Promise<string>;
+function isBlockedV6(address: string): boolean {
+  const a = address.toLowerCase();
+  if (a === "::" || a === "::1") return true;                    // unspecified, loopback
+  if (a.startsWith("fc") || a.startsWith("fd")) return true;    // fc00::/7 unique-local
+  if (a.startsWith("ff")) return true;                          // ff00::/8 multicast
+  if (/^fe[89a-f]/.test(a)) return true;                        // fe80::/10 link-local, fec0::/10 site-local
+  if (a.startsWith("64:ff9b::")) return true;                   // NAT64 embeds v4
+  if (a.startsWith("::ffff:") || /^(?:0+:){5}ffff:/.test(a)) return true; // v4-mapped
+  if (/^::\d+\.\d+\.\d+\.\d+$/.test(a)) return true;            // v4-compatible
+  if (a.startsWith("2002:")) return true;                      // 6to4 embeds v4
+  if (a.startsWith("2001:0:") || a.startsWith("2001:0000:")) return true; // Teredo embeds v4
+  return false;
+}
+
+type LookupFn = (hostname: string) => Promise<string[]>;
 let injectedLookup: LookupFn | null = null;
 
 export function setConnectionLookup(next: LookupFn | null): void {
@@ -177,16 +191,20 @@ export async function assertResolvedPublic(raw: string): Promise<string> {
   let addresses: string[];
   try {
     addresses = injectedLookup
-      ? [await injectedLookup(host)]
-      : (await lookup(host, { all: true, family: 4 })).map((entry) => entry.address);
+      ? await injectedLookup(host)
+      : (await lookup(host, { all: true })).map((entry) => entry.address);
   } catch {
     throw new ConnectionUrlError("url_resolve");
   }
-  // Check-then-use: fetch re-resolves on connect, so every advertised
-  // answer must be public — one private record is enough to refuse.
+  // Check-then-use: fetch re-resolves on connect over both families, so
+  // every advertised answer must be public — one private record (A or
+  // AAAA, including v4-embedded forms) is enough to refuse.
   for (const address of addresses) {
-    if (address.includes(":")) throw new ConnectionUrlError("url_host");
-    if (address === "127.0.0.1" || isBlockedV4(address)) throw new ConnectionUrlError("url_resolved");
+    if (address.includes(":")) {
+      if (isBlockedV6(address)) throw new ConnectionUrlError("url_resolved");
+    } else if (address === "127.0.0.1" || isBlockedV4(address)) {
+      throw new ConnectionUrlError("url_resolved");
+    }
   }
   return href;
 }

@@ -2310,3 +2310,64 @@ affected surfaces (bots list, chat, approval pending/expired,
 settings, widget, reduce-motion). The OAuth "Open in Safari"/cancel
 paths have no simulator leg — device-flow helpers are code-verified
 only, same caveat as prior rounds.
+
+## Round 9 (2026-09-23, head 817e05f) — clean round, lows batched
+
+All three roles returned **approve** with zero blocker/high/medium —
+the exit condition is met. Lows found this round are fixed in the
+cleanup commit that follows this record.
+
+### Correctness (max effort) — approve, 3 lows
+
+- Verified-clean: tailBox rebuild semantics, all-records validation
+  fail-closed posture, cancelOAuth teardown + Mac parity, oauthSafariURL
+  filter, post-await isCancelled guards, widget loaded-seed, dockedAsks
+  order, error-Retry rows, 2-member floor, 44 pt Cancels, §8.3/§8.4
+  contracts, Appendix B traps, second-client concurrency.
+- **L** — AAAA records bypassed the resolved-IP validation
+  (`family:4`): fixed — `lookup({all:true})` now validates every A and
+  AAAA answer; new `isBlockedV6` refuses loopback/unspecified, ULA
+  fc00::/7, multicast ff00::/8, link-local fe80::/10 + site-local
+  fec0::/10, NAT64 64:ff9b::/96, v4-mapped/v4-compatible, 6to4 and
+  Teredo embeds. Public v6 still passes.
+- **L** — the `setConnectionLookup` test seam wrapped a single string
+  so the multi-record branch was unreachable in CI: widened
+  `LookupFn` to `Promise<string[]>`; all call sites updated; added a
+  mixed-record test (public A + private AAAA → url_resolved;
+  public A + public v6 → pass).
+- **L** — OAuth poll `default:` showed raw status text and `denied`
+  degraded to a connectivity error: statuses now mirror
+  `AppModel.pollOAuthOnce` — `denied` → terminal "That sign-in was
+  denied.", `error` → streak-limited transient (6, same as the Mac)
+  then "The sign-in server is not answering. Try again.", `slow_down`
+  folds into pending, unknown → "Could not finish sign-in."
+
+### Security (max effort) — approve, 1 low
+
+- Verified-clean: pairing payload/token validation, Keychain
+  accessibility class, ephemeral transport + csrf + no-redirect,
+  WebView policy (nonPersistent, about:-only, no script handlers, CSP),
+  biometric class-A/B gating, injection/markdown/links, attachments.
+- **L** — the same AAAA-bypass finding as correctness's #1; the single
+  fix covers both.
+
+### Design-a11y (normal) — approve, 2 lows
+
+- Verified-clean: all 8 round-8 fixes confirmed at 817e05f (Done 44 pt,
+  mention card re-anchored, error Retry anatomy, Cancel frames,
+  model·effort row, Edit-avatar label, sunken SecureField, member-cap
+  glyph); surrounding sweep — inkFaint legality, sheens, tokenFont,
+  scrim, sheet chrome, VO labels, mention-card a11y, disabled-reason
+  coverage.
+- **L** — mention highlight inset was horizontal-only: now
+  `.padding(6)` per §1.3 "inset 6 pt".
+- **L** — mention card had no close-on-focus-loss path: composer
+  blur now sets `mentionDismissed`, same semantics as Escape.
+
+### Re-run scope
+
+npm test 651/651, verify-release all PASS (connection-url + test
+sites changed), `xcodebuild build` green, and the two Swift-touched
+legs re-run green: testChat (mention highlight/focus) and
+testSettings (poll-status copy). No macos/ diff → `make -C macos
+test` not re-run. Chat + settings shots refreshed.

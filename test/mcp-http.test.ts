@@ -5,7 +5,7 @@ import { MCP_READ_TIMEOUT_MS, callMcpTool, listMcpTools, modelToolNames, readMcp
 import { parseWidgetDraft } from "../shared/mcp-apps.ts";
 
 test("tools/list parses SSE, drops app-only names from the model list", async () => {
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
   const calls: string[] = [];
   setMcpFetch(async (_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
@@ -56,7 +56,7 @@ test("a private MCP URL is refused before fetch", async () => {
 });
 
 test("tools/call runs one tool and hands back its result", async () => {
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
   const sent: Array<{ method?: string; params?: unknown }> = [];
   setMcpFetch(async (_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { method?: string; params?: unknown };
@@ -88,7 +88,7 @@ test("tools/call runs one tool and hands back its result", async () => {
 });
 
 test("a listing and a resource read carry a deadline of their own", async () => {
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
   const signals: Array<AbortSignal | null> = [];
   // A server that answers `initialize` and then never comes back. Without a
   // deadline this held the connect card and the widget host open for as long
@@ -149,7 +149,7 @@ test("a listing and a resource read carry a deadline of their own", async () => 
 });
 
 test("a server that answers with more than this side will take is cut off", async () => {
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
   // `res.text()` reads whatever arrives before any size check can run, so a
   // server answering with gigabytes took the app down on the way to being
   // rejected. The limit is enforced while reading now.

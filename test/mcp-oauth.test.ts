@@ -9,7 +9,7 @@ import { setOauthFetch, startMcpOAuth } from "../shared/mcp-oauth.ts";
 function box() {
   const dir = mkdtempSync(join(tmpdir(), "ub-oauth-"));
   process.env.UB_OAUTH_PENDING_PATH = join(dir, "oauth.json");
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
 }
 
 test.afterEach(() => {
@@ -43,7 +43,7 @@ test("oauth probe of the MCP URL refuses a host that resolves private", async ()
   let n = 0;
   setConnectionLookup(async () => {
     n += 1;
-    return n === 1 ? "8.8.8.8" : "169.254.169.254";
+    return n === 1 ? ["8.8.8.8"] : ["169.254.169.254"];
   });
   setOauthFetch(async () => new Response("no", { status: 404 }));
   await assert.rejects(() => startMcpOAuth({

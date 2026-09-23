@@ -38,7 +38,7 @@ function paths() {
   process.env.UB_OAUTH_PENDING_PATH = join(dir, "oauth.json");
   process.env.UB_CONNECTION_TOOLS_PATH = join(dir, "connection-tools.json");
   resetConnectionMemo();
-  setConnectionLookup(async () => "8.8.8.8");
+  setConnectionLookup(async () => ["8.8.8.8"]);
   const shell = seedStore();
   shell.bots.push({ ...shell.bots[0], id: "b1", name: "Drawer" });
   shell.selectedBotId = "b1";

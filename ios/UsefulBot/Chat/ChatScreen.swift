@@ -728,6 +728,11 @@ struct ChatScreen: View {
                         mentionDismissed = true
                         return .handled
                     }
+                    // §1.3 also closes the card when the field loses
+                    // focus — same semantics as Escape for this query.
+                    .onChange(of: composerFocused) { _, focused in
+                        if !focused { mentionDismissed = true }
+                    }
                 // The model chip wraps onto its own line above "+" and
                 // Send at accessibility sizes (design 5 §Dynamic Type);
                 // otherwise it right-aligns in the row.
@@ -970,7 +975,7 @@ struct ChatScreen: View {
                             if index == mentionIndex {
                                 RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                                     .fill(Theme.C.sunken)
-                                    .padding(.horizontal, 6)
+                                    .padding(6)
                             }
                         }
                     }

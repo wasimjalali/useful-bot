@@ -688,6 +688,10 @@ struct ProviderConnectView: View {
         pollTask?.cancel()
         pollTask = Task {
             var interval = max(1, Double(flow.intervalMs) / 1000)
+            // Mac parity (AppModel.pollOAuthOnce): a run of "error"
+            // statuses ends the flow rather than flashing raw enum text.
+            var errorStreak = 0
+            let errorLimit = 6
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { return }
@@ -702,10 +706,23 @@ struct ProviderConnectView: View {
                         if let payload { onChange(payload) }
                         onClose()
                         return
-                    case "pending":
+                    case "pending", "slow_down":
+                        errorStreak = 0
                         pollStatus = "Waiting for you to finish in Safari"
+                    case "error":
+                        errorStreak += 1
+                        if errorStreak >= errorLimit {
+                            pollStatus = "The sign-in server is not answering. Try again."
+                            terminalStatus = true
+                            return
+                        }
+                        pollStatus = "The sign-in server did not answer. Still waiting."
                     case "expired":
                         pollStatus = "The code expired."
+                        terminalStatus = true
+                        return
+                    case "denied":
+                        pollStatus = "That sign-in was denied."
                         terminalStatus = true
                         return
                     case "failed":
@@ -713,7 +730,9 @@ struct ProviderConnectView: View {
                         terminalStatus = true
                         return
                     default:
-                        pollStatus = status
+                        pollStatus = "Could not finish sign-in."
+                        terminalStatus = true
+                        return
                     }
                 } catch {
                     // A cancelled poll (Try again started a new flow)
