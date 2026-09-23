@@ -438,7 +438,9 @@ export async function readSessionEvents(
   return {
     events: [...head.events, ...rest.events],
     skipped: start - head.events.length,
-    cut: head.cut || rest.cut || rest.events.length < total - start,
+    // A live session can grow between the two reads; what came after the
+    // first tail index was not read, so the brief says its end may be missing.
+    cut: head.cut || rest.cut || rest.events.length < total - start || (rest.tail !== null && rest.tail > head.tail),
   };
 }
 
