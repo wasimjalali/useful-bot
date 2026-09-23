@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import UsefulBotCore
 
@@ -11,12 +10,7 @@ struct PhoneCache {
     let root: URL
 
     init(origin: String) {
-        let digest = SHA256.hash(data: Data(origin.utf8))
-            .prefix(8)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        root = caches.appendingPathComponent(digest, isDirectory: true)
+        root = PhoneCacheRoot.directory(forOrigin: origin)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true

@@ -76,7 +76,10 @@ struct UsefulBotApp: App {
         }
         // Spec 8.5: returning to active runs one resync — a status probe
         // plus the shell re-fetch the Bots list drives off `resyncAt`.
-        .onChange(of: scenePhase) { _, phase in
+        // `initial:` fires it on the cold-launch value too — without it the
+        // 2.5s loop and the chat resume never start until the app first
+        // backgrounds.
+        .onChange(of: scenePhase, initial: true) { _, phase in
             phone.attach(coordinator)
             phone.setForeground(phase == .active)
             if phase == .active {

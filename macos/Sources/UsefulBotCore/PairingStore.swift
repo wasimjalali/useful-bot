@@ -1,6 +1,22 @@
 #if os(iOS)
 import Foundation
 import Combine
+import CryptoKit
+
+/// Spec §13's cache path, shared so the lifecycle layer can name the
+/// directory the app layer writes: Caches/<sha256(origin).prefix(8)>.
+/// It sits as a sibling of Caches/UsefulBot, so the unpair purge must
+/// compute it explicitly — walking purgeDirs never reaches it.
+public enum PhoneCacheRoot {
+    public static func directory(forOrigin origin: String) -> URL {
+        let digest = SHA256.hash(data: Data(origin.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        return caches.appendingPathComponent(digest, isDirectory: true)
+    }
+}
 
 /// The phone's lifecycle states (spec 4.8). Persisted in UserDefaults: the
 /// enum and the non-secret pairing metadata carry nothing sensitive — the
@@ -137,6 +153,10 @@ public final class PairingStore: ObservableObject {
     public func markCredentialInvalid() {
         guard state != .unpaired else { return }
         state = .credentialInvalid
+        // The terminal state must retire in-flight work the same way unpair
+        // and sign-out do: without the bump a parked stream loop keeps
+        // hammering the revoked credential on every reconnect cycle.
+        dataGeneration &+= 1
         persist()
     }
 
@@ -168,13 +188,21 @@ public final class PairingStore: ObservableObject {
 
     private func purgeData() {
         dataGeneration &+= 1
-        for dir in purgeDirs {
+        var dirs = purgeDirs
+        // Spec 13 roots the phone cache at Caches/<sha256(origin)[:8]> — a
+        // sibling of Caches/UsefulBot, not a child — so it joins the purge
+        // by name. Shell, transcripts, drafts and cursors are "cached
+        // data" under 4.8.
+        if let origin = pairedOrigin {
+            dirs.append(PhoneCacheRoot.directory(forOrigin: origin))
+        }
+        for dir in dirs {
             try? FileManager.default.removeItem(at: dir)
         }
         // Purged alongside the file dirs: anything defaults-cached that is
-        // pairing-scoped. Only the pairing keys exist today; PR-3+ cache keys
-        // list themselves here.
+        // pairing-scoped. PR-3+ cache keys list themselves here.
         defaults.removeObject(forKey: Key.sessionExpiresAt)
+        defaults.removeObject(forKey: "phone.selectedBotId")
     }
 
     private func persist() {

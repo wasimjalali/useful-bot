@@ -960,7 +960,9 @@ final class SurfacesUITests: XCTestCase {
         try ensurePaired(app)
         openChat(app, "Test Bot")
         tapButton(app, "Bot settings")
-        XCTAssertTrue(app.navigationBars["Bot settings"].waitForExistence(timeout: 10),
+        // The floating sheet hides its inner nav bar and carries the title in
+        // its own header — the trailing Done button only exists while it's up.
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 15),
                       "bot settings sheet never opened")
         // The editor lives behind the "New routine" row — the settings form's
         // own Name field would otherwise swallow the routine's name.
@@ -1001,7 +1003,16 @@ final class SurfacesUITests: XCTestCase {
         type(app, instructionField, "Ping the morning status")
         hostCmd("biomatch")
         tapButton(app, "Save")
-        XCTAssertTrue(app.staticTexts["Morning check"].waitForExistence(timeout: 15),
+        // Back in the settings sheet the Routines section sits mid-list —
+        // below the fold after the round-3 sections above it — so the lazy
+        // List only materializes the new row once it scrolls into view.
+        let createdRoutine = app.staticTexts["Morning check"]
+        let createdDeadline = Date().addingTimeInterval(20)
+        while Date() < createdDeadline && !createdRoutine.exists {
+            app.swipeUp()
+            usleep(300_000)
+        }
+        XCTAssertTrue(createdRoutine.waitForExistence(timeout: 5),
                       "created routine never listed")
         shot("settings-routine-created-light", app)
     }

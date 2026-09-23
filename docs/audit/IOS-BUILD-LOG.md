@@ -1730,3 +1730,78 @@ testSafariSheet(+Dark), testOwnerQuestion(+Dark), testReduceMotion,
 testTwoClientPreserveSelection, testLiveSend, LongChatPerf, PerfColdLaunch,
 PerfChatOpenCached, PerfChatOpenColdReplay, PerfScroll — all green on
 the fix build.
+
+##### Round 3 — head `f3a4cb0`
+
+All three roles returned `request_changes`; fixes are the round-3
+commit. Correctness: the blocker — the send stream loop detached so an
+awaited send parked the UI and stalled resync — is reattached; the
+high, `echoDelivered` resolving on an echoed earlier message, is now
+fold-tolerant; medium: every post-response writer (transcript merge,
+approval adopt, question card, proposal adopt) checks `dataGeneration`
+before mutating, so a stale poll can't write into a fresh chat; lows:
+`spawnFollow` live-read detached and `setForeground(false)` cancels the
+poll task plus `biometrics.resetActivation()`.
+
+Security: remote `AsyncImage` provider logos dropped for monograms
+(one-host rule — the phone never fetches third-party art); OAuth start
+URL validated https + no user-info before handoff; the connect-status
+poll cancels on disappear; `PhoneWidgetSlot`'s dead `blockedHost` check
+removed — the blanket cancel already covers every non-`about:`
+navigation including the paired host (the probe stays at 0 hits);
+markdown `.link` spans route through `openURL` into the Safari sheet
+with the same non-local http(s) check the Mac uses.
+
+Design-a11y: the failed-send card collapses to one VO element; session
+chips (model/mode) stack vertically at a11y sizes via `AnyLayout`;
+routine day picker is a `LazyVGrid`; the composer carries the spec'd
+bottom gradient + raise shadow; approval and proposal card footers wrap
+at a11y sizes; `TokenSegmented` goes vertical at a11y; bubble caps use
+`containerRelativeFrame` (18%/10%); `createsBlocked` shows the reason;
+the mention list announces "N of M"; grouped floating sheets paint the
+canvas background; section headers use the section token; profile
+fields use token fonts; remaining lows folded into the cleanup.
+
+Round-3 infrastructure findings (environment, not app bugs):
+
+- Two gates ran concurrently ~11 min apart; competing xcodebuild
+  invocations on one sim caused runner force-quits ("Termination
+  requested by simulator host"), early-bootstrap kills, and biomatch
+  train races — the true root cause of the perf/approval FAIL streak.
+  Single clean gate: all legs pass. One gate at a time, always.
+- After `simctl shutdown`+`boot` the simulator's biometry is locked
+  pending passcode: `evaluatePolicy(.deviceOwnerAuthentication)` mounts
+  a passcode sheet (coreauthd: `MechanismPasscode`, `biometry
+  available: 0`), and pearl.match/nomatch posts do nothing on the
+  keypad. Fix: Simulator.app → Features → Face ID → Enrolled toggle off
+  then on — a fresh post-boot enrollment restores Face ID sheets.
+  (`xcrun simctl biometric` does not exist in Xcode 26.6.)
+- An `only`-mode gate leaves its cmd watcher alive after legs finish;
+  it kept consuming `/tmp/ub-cmd-*` and racing the next gate's watcher
+  — killed before each run now.
+- The bot-test fixture thread is capped at 300 events; the seeded
+  widget event sinks as live-send/question legs append, ending deeper
+  than the test's scroll budget. The gate now re-seeds a fresh widget
+  event at the thread tail per run (`seed-widget`), matching the
+  per-leg approval seeding.
+- `xcodebuild` stalls ~10 min per failed leg collecting `simctl
+  diagnose` output; `pkill -f 'simctl diagnose'` frees the leg without
+  losing the FAIL record.
+
+Test-harness updates matching the shipped design (not app changes):
+`testRoutineCreate` asserted the inner `NavigationStack`'s nav bar, but
+the floating sheet now hides it and carries the title in its own header
+— the leg asserts the header's Done button instead; and after Save the
+Routines section sits below the fold, so the leg scroll-hunts the new
+row like the "New routine" hunt. `testWidget` keeps its 45 s hunt but
+now starts from a tail-seeded row.
+
+Re-run scope (legs the round-3 diff touches): testChat,
+testChatAccessibility, all nine approval legs, testApprovalExpired,
+testWidget, testAttachPhoto, testTextFileCap, testSettings,
+testRoutineCreate, testProposalCard, testProposalConfirm,
+testSafariSheet(+Dark), testOwnerQuestion(+Dark), testReduceMotion,
+testTwoClientPreserveSelection, testLiveSend, plus the five perf legs —
+all green across gates 32-34 on the fix build (`make -C macos test`
+322/322 after the PairingStore/PhoneCacheRoot changes). 46 shots
+regenerated into docs/audit/ios-shots on the fix build.

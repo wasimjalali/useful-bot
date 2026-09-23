@@ -131,6 +131,7 @@ final class PhoneModel {
         }
         if let id = selectedBotId, bot(id) == nil, loaded, shell != nil {
             selectedBotId = nil
+            defaults.removeObject(forKey: Self.selectionKey)
         }
         // A relaunch restores straight into the last chat without a row
         // tap, so open() never ran; fetch the durable transcript here or
@@ -211,19 +212,24 @@ final class PhoneModel {
            let delay = Double(ms), delay > 0 {
             try? await Task.sleep(for: .milliseconds(delay))
         }
+        let generation = pairing?.dataGeneration ?? 0
         do {
             try await client.decideApproval(
                 id: card.item.id,
                 decision: approve ? .approve : .deny,
                 hash: card.item.actionSha256
             )
+            guard current(generation) else { return }
             setApproval(card.id, approve ? .approved : .denied)
         } catch BackendError.approvalChanged {
+            guard current(generation) else { return }
             setApproval(card.id, .changed)
             await loadApprovals()
         } catch BackendError.approvalResolved {
+            guard current(generation) else { return }
             setApproval(card.id, .resolved)
         } catch {
+            guard current(generation) else { return }
             setApproval(card.id, .pending)
             actionError = (error as? LocalizedError)?.errorDescription
         }
@@ -401,15 +407,18 @@ final class PhoneModel {
         pastRecent = recent
         pastRows = []
         guard let session = recent.sessionId, let client else { return }
+        let generation = pairing?.dataGeneration ?? 0
         var assembly = ReplayAssembly(StreamProjection())
         do {
             for try await event in client.stream(sessionId: session, startIndex: 0, untilTail: true, markHistory: true) {
                 assembly.collect { $0.apply(event, live: false) }
             }
         } catch {
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "This conversation could not be opened."
             return
         }
+        guard current(generation) else { return }
         assembly.publish()
         pastRows = Transcript.merge(events: [], messages: assembly.state.messages)
     }
@@ -577,9 +586,10 @@ final class PhoneModel {
 
     private func reloadProposals(_ botId: String) async {
         guard let client else { return }
-        if let state = try? await client.threadState(botId: botId) {
-            proposalsByBot[botId] = state.proposals
-        }
+        let generation = pairing?.dataGeneration ?? 0
+        guard let state = try? await client.threadState(botId: botId) else { return }
+        guard current(generation) else { return }
+        proposalsByBot[botId] = state.proposals
     }
 
     private var proposalWatch: Task<Void, Never>?
@@ -731,9 +741,10 @@ final class PhoneModel {
 
     private func refreshComposer() async {
         guard let client else { return }
-        if let next = try? await client.composer(), next != composer {
-            composer = next
-        }
+        let generation = pairing?.dataGeneration ?? 0
+        guard let next = try? await client.composer(), next != composer else { return }
+        guard current(generation) else { return }
+        composer = next
     }
 
     private func loadApprovals() async {
@@ -782,10 +793,11 @@ final class PhoneModel {
 
     private func tick() async {
         guard let client, foreground else { return }
-        if let ids = await client.tick() {
-            let next = Set(ids)
-            if next != workingBotIds { workingBotIds = next }
-        }
+        let generation = pairing?.dataGeneration ?? 0
+        guard let ids = await client.tick() else { return }
+        guard current(generation) else { return }
+        let next = Set(ids)
+        if next != workingBotIds { workingBotIds = next }
     }
 
     private func startPolling() {
@@ -944,7 +956,19 @@ final class PhoneModel {
         }
         chats[botId] = chat
         if followLive, judged.claimsComplete {
-            await follow(botId: botId, sessionId: sessionId, token: token)
+            spawnFollow(botId: botId, sessionId: sessionId, token: token)
+        }
+    }
+
+    /// The live read runs detached: awaiting it would park the caller for
+    /// the stream's whole life (the loop only exits when still() goes
+    /// false), which latched `sending` after one send and stalled the §8.5
+    /// poll behind resume(). The Mac's AppModel keeps the same shape — a
+    /// freestanding stream task retired by the generation counters, never
+    /// an awaited pipeline step.
+    private func spawnFollow(botId: String, sessionId: String, token: Int) {
+        Task { [weak self] in
+            await self?.follow(botId: botId, sessionId: sessionId, token: token)
         }
     }
 
@@ -971,7 +995,7 @@ final class PhoneModel {
                         chat.projection.apply(event, live: true)
                         chat.showWorking = chat.projection.pending
                     }
-                    if let index = event.index, var cursor = chat.cursor, !replaying {
+                    if let index = event.index, var cursor = chat.cursor {
                         cursor.applied(index)
                         chat.cursor = cursor
                     }
@@ -1179,7 +1203,7 @@ final class PhoneModel {
         }
         chats[botId] = chat
         if let followSession, !chat.catchUpIncomplete, chat.projection.pending, let token = chats[botId]?.streamGeneration {
-            await follow(botId: botId, sessionId: followSession, token: token)
+            spawnFollow(botId: botId, sessionId: followSession, token: token)
         }
     }
 
@@ -1204,11 +1228,19 @@ final class PhoneModel {
     /// never resolve a lost one as delivered.
     private func echoDelivered(_ chat: OpenChat, needle: String) -> Bool {
         let messages = chat.projection.messages
-        guard let anchor = chat.confirmingId,
-              let position = messages.firstIndex(where: { $0.id == anchor }) else { return false }
-        return messages[messages.index(after: position)...].contains {
-            $0.role == .user && $0.text == needle && !$0.id.hasPrefix(EveStream.optimisticUserPrefix)
+        let durable = { (row: ChatMessage) in
+            row.role == .user && row.text == needle
+                && !row.id.hasPrefix(EveStream.optimisticUserPrefix)
         }
+        guard let anchor = chat.confirmingId else { return false }
+        guard let position = messages.firstIndex(where: { $0.id == anchor }) else {
+            // The anchored row vanished only by folding into its durable
+            // echo (EveStream swaps the local id for the event id in place).
+            // That fold is delivery proof; the newest durable match is the
+            // echo — a stale identical send can only sit before it.
+            return messages.last(where: durable) != nil
+        }
+        return messages[messages.index(after: position)...].contains(where: durable)
     }
 
     private func resolveConfirming(_ chat: inout OpenChat) {
@@ -1244,15 +1276,18 @@ final class PhoneModel {
             return
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("photo-\(UUID().uuidString).jpg")
+        let generation = pairing?.dataGeneration ?? 0
         do {
             try jpeg.write(to: url, options: .completeFileProtection)
             let uploaded = try await client.uploadAttachment(fileURL: url, mimeType: "image/jpeg")
             try? FileManager.default.removeItem(at: url)
+            guard current(generation) else { return }
             var chat = chats[botId] ?? OpenChat()
             chat.attachments.append(uploaded)
             chats[botId] = chat
         } catch {
             try? FileManager.default.removeItem(at: url)
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "That photo was not attached."
         }
     }
@@ -1291,15 +1326,18 @@ final class PhoneModel {
             return
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(safe)
+        let generation = pairing?.dataGeneration ?? 0
         do {
             try data.write(to: url, options: .completeFileProtection)
             let uploaded = try await client.uploadAttachment(fileURL: url, mimeType: "text/plain")
             try? FileManager.default.removeItem(at: url)
+            guard current(generation) else { return }
             var chat = chats[botId] ?? OpenChat()
             chat.attachments.append(uploaded)
             chats[botId] = chat
         } catch {
             try? FileManager.default.removeItem(at: url)
+            guard current(generation) else { return }
             actionError = (error as? LocalizedError)?.errorDescription ?? "That file was not attached."
         }
     }

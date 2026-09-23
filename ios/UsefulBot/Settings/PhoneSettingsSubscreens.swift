@@ -561,8 +561,15 @@ struct ProviderConnectView: View {
             flow = started
             pollStatus = "Waiting for approval in the browser"
             error = nil
-            if let url = URL(string: started.verificationUrlComplete ?? started.verificationUrl) {
+            // The phone turns this server string into an external
+            // navigation: allow only a bare https URL (no userinfo), and
+            // fall back to the plain verification URL when the complete
+            // one fails that check.
+            for candidate in [started.verificationUrlComplete, started.verificationUrl] {
+                guard let raw = candidate, let url = URL(string: raw),
+                      url.scheme == "https", url.user == nil, url.password == nil else { continue }
                 safariURL = url
+                break
             }
             poll(started)
         } catch {
@@ -679,6 +686,9 @@ struct PhoneConnectorsView: View {
         .navigationTitle("Connectors")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        // A connect poll is scoped to this screen: leaving mid-flow cancels
+        // the 3s watchConnection loop instead of polling into the void.
+        .onDisappear { connectPoll?.cancel() }
         .sheet(isPresented: Binding(get: { safariURL != nil }, set: { if !$0 { safariURL = nil } }), onDismiss: {
             connectingSlug = nil
             Task { await load() }
@@ -815,25 +825,16 @@ struct PhoneConnectorsView: View {
         .frame(minHeight: 64)
     }
 
-    /// The app logo tile; a remote mark falls back to the name's monogram.
+    /// The app logo tile. `toolkit.logo` is a remote URL — fetching it
+    /// would take the phone off the one allowed host, so the tile always
+    /// renders the name's monogram instead.
     private func logoTile(_ toolkit: ConnectorToolkit) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
                 .fill(Theme.C.sunken)
-            if let logo = toolkit.logo, let url = URL(string: logo) {
-                AsyncImage(url: url) { image in
-                    image.resizable().scaledToFit()
-                } placeholder: {
-                    Text(monogram(toolkit.name))
-                        .font(Theme.font(13, .semibold))
-                        .foregroundStyle(Theme.C.ink)
-                }
-                .padding(6)
-            } else {
-                Text(monogram(toolkit.name))
-                    .font(Theme.font(13, .semibold))
-                    .foregroundStyle(Theme.C.ink)
-            }
+            Text(monogram(toolkit.name))
+                .font(Theme.font(13, .semibold))
+                .foregroundStyle(Theme.C.ink)
         }
         .frame(width: 36, height: 36)
         .accessibilityHidden(true)

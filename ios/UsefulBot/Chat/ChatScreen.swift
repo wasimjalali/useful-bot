@@ -111,6 +111,12 @@ struct ChatScreen: View {
             composer
         }
         .background(Theme.C.surface)
+        // Model output links open through the in-app Safari sheet, never
+        // the external browser (spec 9.2).
+        .environment(\.openURL, OpenURLAction(handler: { url in
+            phone.safariURL = url
+            return .handled
+        }))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -162,6 +168,9 @@ struct ChatScreen: View {
             // List content can't hug (ideal height collapses), so the
             // picker runs at the fixed medium detent, not .fit.
             detent: attachConnectors ? .large : .medium,
+            // The connectors list is grouped content: it draws on the
+            // sheet's canvas so its surface rows read as cards.
+            canvas: attachConnectors,
             leading: {
                 Group {
                     if attachConnectors {
@@ -465,7 +474,10 @@ struct ChatScreen: View {
             PhoneWidgetSlot(widgetId: row.text)
         } else if row.kind == .user {
             HStack {
-                Spacer(minLength: 48)
+                // Max 82% bubble width (spec 1.3): the spacer holds the
+                // other 18% proportional to the row, not a fixed point.
+                Spacer(minLength: 0)
+                    .containerRelativeFrame(.horizontal) { width, _ in width * 0.18 }
                 UserBubble(text: row.text)
                     .opacity(confirming ? 0.6 : 1)
             }
@@ -490,7 +502,9 @@ struct ChatScreen: View {
                         }
                         ShareLink(item: row.text) { Label("Share", systemImage: "square.and.arrow.up") }
                     }
-                Spacer(minLength: 24)
+                // Max 90% bubble width: the spacer holds the trailing 10%.
+                Spacer(minLength: 0)
+                    .containerRelativeFrame(.horizontal) { width, _ in width * 0.10 }
             }
         }
         if let chat, row.id == chat.projection.messages.last?.id {
@@ -537,14 +551,20 @@ struct ChatScreen: View {
 
     private func failedCard(_ text: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("The model didn't answer")
-                .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                .foregroundStyle(Theme.C.ink)
-            if let reason = chat?.error {
-                Text(reason)
-                    .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
-                    .foregroundStyle(Theme.C.inkMuted)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("The model didn't answer")
+                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                    .foregroundStyle(Theme.C.ink)
+                if let reason = chat?.error {
+                    Text(reason)
+                        .tokenFont(DesignTokens.FontSize.emptyBody, .regular)
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
             }
+            // One read for the card's text (title + reason); Retry stays
+            // its own element below instead of being swallowed by a
+            // container-level label.
+            .accessibilityElement(children: .combine)
             Button("Retry") { phone.retrySend(readiness: coordinator.readiness) }
                 .buttonStyle(SecondaryAction(enabled: writesBlocked == nil))
                 .disabled(writesBlocked != nil)
@@ -627,6 +647,12 @@ struct ChatScreen: View {
                     .tokenFont(DesignTokens.FontSize.chatBody, .regular)
                     .foregroundStyle(Theme.C.ink)
                     .focused($composerFocused)
+                // The model chip wraps onto its own line above "+" and
+                // Send at accessibility sizes (design 5 §Dynamic Type);
+                // otherwise it right-aligns in the row.
+                if dynamicTypeSize.isAccessibilitySize {
+                    modelChip
+                }
                 HStack(spacing: 8) {
                     // '+' opens the attach sheet (photo / text file /
                     // folder context), not the photo picker directly.
@@ -640,25 +666,10 @@ struct ChatScreen: View {
                     }
                     .accessibilityLabel("Add to message")
                     .disabled(writesBlocked != nil)
-                    Button { showModel = true } label: {
-                        HStack(spacing: 4) {
-                            Text(phone.composer?.modelLabel.isEmpty == false ? phone.composer!.modelLabel : "Model")
-                                .tokenFont(DesignTokens.FontSize.phoneChatMeta, .semibold)
-                            if let effort = phone.composer?.effortLabel, !effort.isEmpty {
-                                Text(effort)
-                                    .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
-                                    // The effort is the muted second half
-                                    // of the chip, not another accent.
-                                    .foregroundStyle(writesBlocked == nil ? Theme.C.inkMuted : Theme.C.inkFaint)
-                            }
-                        }
-                        .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
-                        .lineLimit(1)
-                    }
-                    .frame(minWidth: 44, minHeight: 44)
-                    .disabled(writesBlocked != nil)
-                    .accessibilityLabel("Model and effort")
                     Spacer()
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        modelChip
+                    }
                     Button {
                         if streaming { phone.cancelSend() }
                         else { phone.send(phone.draft, readiness: coordinator.readiness) }
@@ -693,14 +704,29 @@ struct ChatScreen: View {
             .padding(.top, 12)
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
-            .background(Theme.C.bubbleBot)
+            // A 2% fall from the top edge: enough to read as a raised
+            // field, not enough to read as a gradient (design 5 §5).
+            .background(
+                LinearGradient(
+                    colors: [Theme.C.bubbleBot, Theme.C.bubbleBot.opacity(0.98)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .background(Theme.C.sunken)
+            )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
             .overlay(
                 // Edge at rest, borderStrong while the field has focus.
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
                     .strokeBorder(composerFocused ? Theme.C.borderStrong : Theme.C.edge, lineWidth: 1)
             )
-            HStack(spacing: 8) {
+            .raiseShadow()
+            // The chip row goes vertical at accessibility type sizes —
+            // side-by-side chips leave neither label room to wrap.
+            let chipLayout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 8))
+            chipLayout {
                 Button { showFolder = true } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "folder")
@@ -748,6 +774,29 @@ struct ChatScreen: View {
         .padding(.horizontal, DesignTokens.Space.phoneGutter)
         .padding(.bottom, 8)
         .background(Theme.C.surface)
+    }
+
+    /// The model+effort chip: model semibold ink, effort muted, 13 pt
+    /// `modeChip` (design 5 row 2).
+    private var modelChip: some View {
+        Button { showModel = true } label: {
+            HStack(spacing: 4) {
+                Text(phone.composer?.modelLabel.isEmpty == false ? phone.composer!.modelLabel : "Model")
+                    .tokenFont(DesignTokens.FontSize.modeChip, .semibold)
+                if let effort = phone.composer?.effortLabel, !effort.isEmpty {
+                    Text(effort)
+                        .tokenFont(DesignTokens.FontSize.modeChip, .regular)
+                        // The effort is the muted second half
+                        // of the chip, not another accent.
+                        .foregroundStyle(writesBlocked == nil ? Theme.C.inkMuted : Theme.C.inkFaint)
+                }
+            }
+            .foregroundStyle(writesBlocked == nil ? Theme.C.ink : Theme.C.inkFaint)
+            .lineLimit(1)
+        }
+        .frame(minWidth: 44, minHeight: 44)
+        .disabled(writesBlocked != nil)
+        .accessibilityLabel("Model and effort")
     }
 
     private var mentionQuery: String? {
@@ -802,11 +851,22 @@ struct ChatScreen: View {
                         }
                         .padding(.horizontal, 12)
                         .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? 64 : 52)
-                        .background(index == 0 ? Theme.C.sunken : Color.clear)
+                        // The default-target wash is inset with Radius.sm
+                        // corners, not a square full-bleed band.
+                        .background {
+                            if index == 0 {
+                                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                                    .fill(Theme.C.sunken)
+                                    .padding(.horizontal, 6)
+                            }
+                        }
                     }
                     .contentShape(Rectangle())
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(member.name), group member, double-tap to mention")
+                    // VO gets the position it needs to skip through the
+                    // list: "YT Producer, 2 of 5".
+                    .accessibilityValue("\(index + 1) of \(rows.count)")
                 }
             }
         }
@@ -815,7 +875,6 @@ struct ChatScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .cardLift(cornerRadius: DesignTokens.Radius.lg)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(mentionCandidates.count) suggestions")
     }
 
     private func insertMention(_ name: String) {
@@ -1036,11 +1095,19 @@ struct ChatScreen: View {
                 Image(systemName: "folder")
                     .font(Theme.font(DesignTokens.FontSize.chatName, .regular))
                     .foregroundStyle(Theme.C.inkMuted)
-                Text(bot?.workspace?.path ?? "No folder attached")
-                    .tokenFont(DesignTokens.FontSize.chatName, .semibold)
-                    .foregroundStyle(bot?.workspace == nil ? Theme.C.inkMuted : Theme.C.ink)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bot?.workspace?.path.split(separator: "/").last.map(String.init) ?? "No folder attached")
+                        .tokenFont(DesignTokens.FontSize.chatName, .semibold)
+                        .foregroundStyle(bot?.workspace == nil ? Theme.C.inkMuted : Theme.C.ink)
+                        .lineLimit(1)
+                    if let path = bot?.workspace?.path {
+                        Text(path)
+                            .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular, design: .monospaced)
+                            .foregroundStyle(Theme.C.inkMuted)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 0)
             }
             .padding(12)
@@ -1181,12 +1248,31 @@ struct PhoneMarkdown: View {
             // Inline code is mono 15 like the chat body; `.subheadline` is
             // the 15 pt text style, so it still tracks Dynamic Type.
             case .code: piece = Text(span.text).font(.system(.subheadline, design: .monospaced, weight: .regular))
-            case .link: piece = piece.underline()
+            case .link:
+                if let target = Self.linkTarget(span.href) {
+                    var run = AttributedString(span.text)
+                    run.link = target
+                    run.underlineStyle = .single
+                    piece = Text(run)
+                } else {
+                    piece = piece.underline()
+                }
             case .text: break
             }
             return partial + piece
         }
         .foregroundStyle(Theme.C.ink)
+    }
+
+    /// Model output may only link to the public web; `file://` and local
+    /// server links must not become tap targets (mirrors the Mac's
+    /// ChatMarkdownView.linkTarget).
+    private static func linkTarget(_ href: String) -> URL? {
+        guard let url = URL(string: href),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              !LocalHost.isLocal(url.host) else { return nil }
+        return url
     }
 }
 

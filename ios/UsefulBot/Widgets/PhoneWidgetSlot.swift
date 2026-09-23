@@ -28,7 +28,6 @@ struct PhoneWidgetSlot: View {
             if let html, !failed {
                 WidgetWebView(
                     html: html,
-                    blockedHost: coordinator.store.pairedOrigin,
                     onHeight: { h in height = min(Self.heightRange.upperBound, max(Self.heightRange.lowerBound, h)) },
                     onProcessGone: {
                         // WebKit crash: reload once automatically, then the
@@ -97,12 +96,11 @@ struct PhoneWidgetSlot: View {
 
 private struct WidgetWebView: UIViewRepresentable {
     let html: String
-    var blockedHost: String?
     var onHeight: (CGFloat) -> Void
     var onProcessGone: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(blockedHost: blockedHost, onHeight: onHeight, onProcessGone: onProcessGone)
+        Coordinator(onHeight: onHeight, onProcessGone: onProcessGone)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -136,14 +134,12 @@ private struct WidgetWebView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
-        var blockedHost: String?
         var onHeight: (CGFloat) -> Void
         var onProcessGone: () -> Void
         var loaded: String?
         private var heightObservation: NSKeyValueObservation?
 
-        init(blockedHost: String?, onHeight: @escaping (CGFloat) -> Void, onProcessGone: @escaping () -> Void) {
-            self.blockedHost = blockedHost
+        init(onHeight: @escaping (CGFloat) -> Void, onProcessGone: @escaping () -> Void) {
             self.onHeight = onHeight
             self.onProcessGone = onProcessGone
         }
@@ -171,13 +167,11 @@ private struct WidgetWebView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            // Every navigation but about: cancels — the paired host,
+            // localhost and remote links alike (spec: the widget draws, it
+            // never navigates).
             if url.scheme == "about" {
                 decisionHandler(.allow)
-                return
-            }
-            let host = url.host ?? ""
-            if LocalHost.isLocal(host) || host == blockedHost {
-                decisionHandler(.cancel)
                 return
             }
             decisionHandler(.cancel)

@@ -364,7 +364,12 @@ struct RoutineEditorSheet: View {
     private var dayPicker: some View {
         let labels = ["S", "M", "T", "W", "T", "F", "S"]
         let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-        return HStack(spacing: 8) {
+        // Seven fixed circles can't share one row once the labels grow:
+        // the grid wraps them to a second row at accessibility sizes.
+        return LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 44), spacing: 8)],
+            spacing: 8
+        ) {
             ForEach(0..<7, id: \.self) { day in
                 Button {
                     if days.contains(day) { days.remove(day) } else { days.insert(day) }
@@ -381,7 +386,6 @@ struct RoutineEditorSheet: View {
                 .accessibilityAddTraits(days.contains(day) ? .isSelected : [])
             }
         }
-        .frame(maxWidth: .infinity)
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)
         .accessibilityElement(children: .contain)

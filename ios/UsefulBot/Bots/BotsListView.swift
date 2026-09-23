@@ -160,7 +160,7 @@ struct BotsListView: View {
                 .fixedSize()
             }
             // iOS 26 collapses a third topBarTrailing item into the overflow
-            // menu; one HStack keeps Settings, New, and Devices visible.
+            // menu; one HStack keeps Settings and New visible.
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 0) {
                     NavigationLink {
@@ -395,7 +395,7 @@ struct BotsListView: View {
                         .foregroundStyle(Theme.C.inkMuted)
                 }
                 Text(title)
-                    .tokenFont(DesignTokens.FontSize.phoneRailLabel, .medium)
+                    .tokenFont(DesignTokens.FontSize.fieldLabel, .medium)
                     .foregroundStyle(Theme.C.inkMuted)
                 Spacer()
             }
@@ -446,7 +446,6 @@ struct BotsListView: View {
         .buttonStyle(.plain)
         .listRowBackground(Color.clear)
         .accessibilityLabel(phone.workingBotIds.contains(bot.id) ? "\(bot.name), working" : bot.name)
-        .accessibilityHint(createsBlocked ?? "")
         .swipeActions(edge: .leading) {
             if createsBlocked == nil {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await phone.pin(bot.id, !bot.pinned) } }

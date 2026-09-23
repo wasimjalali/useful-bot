@@ -147,6 +147,9 @@ private struct CommitField: View {
 
     var body: some View {
         TextField(title, text: $value, axis: axis)
+            // Editable fields take the 15 pt field token, not the
+            // platform default (§1.6).
+            .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
             .frame(minHeight: 44, alignment: .topLeading)
             .focused($focused)
             .onSubmit(commit)

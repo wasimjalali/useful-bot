@@ -272,6 +272,12 @@ run testApprovalChanged
 "$NODE" "$CTL" seed-approval apr_exp 12
 run testApprovalExpired
 
+# The widget row must sit inside the transcript window the leg can reach:
+# the original seeded event sinks below older turns as the fixture thread
+# fills to its cap, so re-seed a fresh widget event at the tail each run.
+if [ -z "$ONLY" ] || [[ " $ONLY " == *" testWidget "* ]]; then
+  "$NODE" "$CTL" seed-widget
+fi
 run testWidget
 echo "widget nav-probe hits: $(cat /tmp/ub-probe-count 2>/dev/null || echo '?')"
 run testAttachPhoto

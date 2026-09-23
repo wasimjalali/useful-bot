@@ -37,6 +37,10 @@ struct TokenToggle: View {
                     .padding(2)
             }
             .frame(width: 51, height: 31)
+            // The 31 pt thumb row needs the rest of the 44 pt target:
+            // invisible padding owns the taps above and below the track.
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -74,6 +78,9 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
     /// Cancel/Save pair); the standard header still draws grabber, title
     /// and the close affordance.
     var showsHeader = true
+    /// Grouped content (a `List` of row cards) sits on `canvas` so its
+    /// `surface` rows read as cards; plain content keeps the sheet `surface`.
+    var canvas = false
     var onClose: () -> Void
     @ViewBuilder var leading: () -> Leading
     @ViewBuilder var trailing: () -> Trailing
@@ -85,6 +92,7 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
         title: String,
         detent: FloatingSheetDetent = .medium,
         showsHeader: Bool = true,
+        canvas: Bool = false,
         onClose: @escaping () -> Void,
         @ViewBuilder leading: @escaping () -> Leading = { EmptyView() },
         @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() },
@@ -93,6 +101,7 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
         self.title = title
         self.detent = detent
         self.showsHeader = showsHeader
+        self.canvas = canvas
         self.onClose = onClose
         self.leading = leading
         self.trailing = trailing
@@ -132,7 +141,7 @@ struct FloatingSheet<Content: View, Leading: View, Trailing: View>: View {
                     content()
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
-                .background(Theme.C.surface)
+                .background(canvas ? Theme.C.canvas : Theme.C.surface)
                 .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
                 .cardLift(cornerRadius: DesignTokens.Radius.xl)
                 .padding(.horizontal, 8)
@@ -223,6 +232,7 @@ private struct FloatingSheetBoolHost<Sheet: View, Leading: View, Trailing: View>
     let title: String
     let detent: FloatingSheetDetent
     let showsHeader: Bool
+    let canvas: Bool
     @ViewBuilder var leading: () -> Leading
     @ViewBuilder var trailing: () -> Trailing
     @ViewBuilder var sheet: () -> Sheet
@@ -236,6 +246,7 @@ private struct FloatingSheetBoolHost<Sheet: View, Leading: View, Trailing: View>
                         title: title,
                         detent: detent,
                         showsHeader: showsHeader,
+                        canvas: canvas,
                         onClose: { isPresented = false },
                         leading: leading,
                         trailing: trailing,
@@ -292,6 +303,7 @@ extension View {
         title: String,
         detent: FloatingSheetDetent = .medium,
         showsHeader: Bool = true,
+        canvas: Bool = false,
         @ViewBuilder leading: @escaping () -> L = { EmptyView() },
         @ViewBuilder trailing: @escaping () -> T = { EmptyView() },
         @ViewBuilder content: @escaping () -> C
@@ -301,6 +313,7 @@ extension View {
             title: title,
             detent: detent,
             showsHeader: showsHeader,
+            canvas: canvas,
             leading: leading,
             trailing: trailing,
             sheet: content
@@ -401,9 +414,15 @@ struct TokenSegmented<Option: Hashable>: View {
     let options: [(id: Option, label: String)]
     @Binding var selection: Option
     var enabled = true
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 4) {
+        // Equal columns can't hold two 30 pt labels side by side: at
+        // accessibility sizes the options become a vertical list.
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 4))
+        layout {
             ForEach(options, id: \.id) { option in
                 Button {
                     selection = option.id
@@ -526,5 +545,22 @@ extension View {
         } else {
             self
         }
+    }
+
+    /// The composer's raise: a 1 pt top whisper over a deep soft drop
+    /// (Shadow.raiseTop + Shadow.raise — the macOS `raiseShadow` recipe).
+    func raiseShadow() -> some View {
+        shadow(
+            color: Theme.shadow(DesignTokens.Shadow.raiseTop),
+            radius: 0.5,
+            x: 0,
+            y: DesignTokens.Shadow.raiseTop.y
+        )
+        .shadow(
+            color: Theme.shadow(DesignTokens.Shadow.raise),
+            radius: Theme.radius(DesignTokens.Shadow.raise),
+            x: 0,
+            y: DesignTokens.Shadow.raise.y
+        )
     }
 }

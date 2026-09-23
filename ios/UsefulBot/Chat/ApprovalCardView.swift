@@ -43,6 +43,7 @@ struct ApprovalCardView: View {
     var blockedReason: String? = nil
     var onDecide: (Bool) -> Void
     @Environment(PhoneModel.self) private var phone
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showFullPath = false
 
     var body: some View {
@@ -132,7 +133,12 @@ struct ApprovalCardView: View {
                     .background(Theme.C.warningSoft)
                     .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
             }
-            HStack(spacing: 8) {
+            // Deny/Approve go vertical at accessibility sizes: two
+            // half-width buttons have no room for a 30 pt label.
+            let actionLayout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 8))
+            actionLayout {
                 Button("Deny") { onDecide(false) }
                     .buttonStyle(SecondaryAction(enabled: !actionsBlocked))
                     .frame(minHeight: 44)
@@ -285,6 +291,7 @@ struct ProposalCardView: View {
     let proposal: Proposal
     var blockedReason: String? = nil
     var onDecide: (Bool) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -309,7 +316,10 @@ struct ProposalCardView: View {
                     .tokenFont(DesignTokens.FontSize.phoneChatMeta, .regular)
                     .foregroundStyle(Theme.C.inkMuted)
             }
-            HStack(spacing: 8) {
+            let actionLayout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 8))
+            actionLayout {
                 Button("Dismiss") { onDecide(false) }
                     .buttonStyle(SecondaryAction(enabled: blockedReason == nil))
                     .frame(minHeight: 44)

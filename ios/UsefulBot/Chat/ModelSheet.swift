@@ -97,7 +97,20 @@ struct ModelSheet: View {
                             .listRowBackground(Color.clear)
                         }
                     }
-                    if composer.speeds.count > 1 {
+                    // Spec 1.4: Speed is the "Fast" toggle — the drawn
+                    // token switch, not another segmented row.
+                    if composer.speeds.count == 2, let fast = composer.speeds.last {
+                        Section("Speed") {
+                            HStack {
+                                Text(fast.label)
+                                    .tokenFont(DesignTokens.FontSize.phoneFieldInput, .regular)
+                                    .foregroundStyle(Theme.C.ink)
+                                Spacer()
+                                TokenToggle(isOn: speedToggle(fast, in: composer))
+                            }
+                            .frame(minHeight: 44)
+                        }
+                    } else if composer.speeds.count > 1 {
                         Section("Speed") {
                             TokenSegmented(
                                 options: composer.speeds.map { (id: $0.id, label: $0.label) },
@@ -177,6 +190,16 @@ struct ModelSheet: View {
         Binding(
             get: { composer.speed },
             set: { next in Task { await phone.saveComposer(speed: next) } }
+        )
+    }
+
+    /// The two-speed case drawn as the spec's "Fast" toggle: on means the
+    /// fast option is picked, off is the other.
+    private func speedToggle(_ fast: ComposerState.Option, in composer: ComposerState) -> Binding<Bool> {
+        let normal = composer.speeds.first { $0.id != fast.id } ?? fast
+        return Binding(
+            get: { composer.speed == fast.id },
+            set: { on in Task { await phone.saveComposer(speed: on ? fast.id : normal.id) } }
         )
     }
 }
