@@ -308,4 +308,12 @@ test("the image list merges generators, drops SVG-only ones and survives a faile
   byId = new Map((await refresh()).map((item) => [item.id, item]));
   assert.equal(byId.get("black-forest-labs/flux.2-pro")?.imageGen, true);
   assert.deepEqual(byId.get("black-forest-labs/flux.2-pro")?.aspectRatios, ["1:1", "16:9"]);
+  // A dual model keeps its chat-side facts through the kept rows.
+  assert.deepEqual(byId.get("openai/gpt-5-image")?.outputs, ["image", "text"]);
+
+  // A real answer with nothing storable replaces the rows: retired models age out.
+  imagesUp = true;
+  images.data = [images.data[1]];
+  byId = new Map((await refresh()).map((item) => [item.id, item]));
+  assert.equal(byId.has("black-forest-labs/flux.2-pro"), false);
 });

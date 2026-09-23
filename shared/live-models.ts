@@ -189,9 +189,10 @@ export function parseImageModels(raw: unknown): { ids: string[]; meta: Record<st
       ? params.aspect_ratio.values.filter((value): value is string => typeof value === "string")
       : [];
     ids.push(id);
+    // No `outputs` default: imageGen alone marks the generator, and a made-up
+    // ["image"] would overwrite a dual model's chat-side modalities.
     meta[id] = {
       ...listed[id],
-      outputs: listed[id]?.outputs ?? ["image"],
       imageGen: true,
       ...(ratios.length > 0 ? { aspectRatios: ratios } : {}),
     };
@@ -305,6 +306,9 @@ export async function fetchProviderModels(
     headers: out,
     signal: AbortSignal.timeout(4000),
   });
+  // The image list fails loud so the caller can keep the last good rows; an
+  // answer with no storable models is a real empty list and replaces them.
+  if (!res.ok && path !== "models") throw new Error(`image list ${res.status}`);
   if (!res.ok) return { ids: [], meta: {} };
   const raw = await res.json();
   if (path !== "models") return parseImageModels(raw);
@@ -355,23 +359,24 @@ export async function refreshProviderModels(input: {
     const listed = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, input.query);
     if (listed.ids.length === 0) return current?.models?.length ? current.models : modelsFor(input.providerId);
     if (input.imagesPath) {
-      // The image list is a separate call. If it fails or comes back empty,
-      // the chat list still lands and the image rows from the last good
-      // refresh stay, so one bad fetch does not empty the picker for 30 min.
-      let images = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, {}, input.imagesPath)
-        .catch((err) => {
-          console.error(`[models] image list ${input.providerId} failed`, err);
-          return { ids: [] as string[], meta: {} as Record<string, ModelMeta> };
-        });
-      if (images.ids.length === 0) {
+      // The image list is a separate call. If it fails, the chat list still
+      // lands and the image rows from the last good refresh stay with all
+      // their facts, so one bad fetch does not empty the picker for 30 min.
+      let images: { ids: string[]; meta: Record<string, ModelMeta> };
+      try {
+        images = await fetchProviderModels(input.baseUrl, input.key, input.fetchImpl, input.keyHeader, input.headers, {}, input.imagesPath);
+      } catch (err) {
+        console.error(`[models] image list ${input.providerId} failed`, err);
         const kept = (current?.models ?? []).filter((item) => item.imageGen);
         images = {
           ids: kept.map((item) => item.id),
-          meta: Object.fromEntries(kept.map((item) => [item.id, {
-            outputs: item.outputs,
-            inputs: item.inputs,
+          meta: Object.fromEntries(kept.map(({ id, label, contextTokens, inputs, outputs, aspectRatios }) => [id, {
+            label,
             imageGen: true,
-            ...(item.aspectRatios ? { aspectRatios: item.aspectRatios } : {}),
+            ...(contextTokens ? { contextTokens } : {}),
+            ...(inputs ? { inputs } : {}),
+            ...(outputs ? { outputs } : {}),
+            ...(aspectRatios ? { aspectRatios } : {}),
           } satisfies ModelMeta])),
         };
       }

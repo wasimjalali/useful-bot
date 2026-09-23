@@ -238,7 +238,7 @@ test("modelIsImageGenerator tells generators from chat models that list image ou
   assert.equal(modelIsImageGenerator({ id: "gpt-image-1" }), false);
 });
 
-test("generateImage posts to OpenRouter's /images with an aspect ratio", async () => {
+test("generateImage posts to OpenRouter's /images, with no ratio while the model's ratios are unknown", async () => {
   await withImageStore(async (dir) => {
     const store = setProviderKey(emptyProviderStore(), "openrouter", "api", "sk-or-12345678");
     writeProviderStore(store, join(dir, "providers.json"));
@@ -249,7 +249,7 @@ test("generateImage posts to OpenRouter's /images with an aspect ratio", async (
     }) as typeof fetch;
     const out = await generateImage({ prompt: "a fox", size: "wide", n: 1, signal: AbortSignal.timeout(5_000), fetchImpl });
     assert.equal(seen[0]?.url, "https://openrouter.ai/api/v1/images");
-    assert.deepEqual(seen[0]?.body, { model: "google/gemini-3.1-flash-image", prompt: "a fox", n: 1, aspect_ratio: "16:9" });
+    assert.deepEqual(seen[0]?.body, { model: "google/gemini-3.1-flash-image", prompt: "a fox", n: 1 });
     assert.equal(out.images[0]?.mime, "image/png");
   });
 });

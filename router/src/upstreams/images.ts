@@ -56,7 +56,9 @@ const SIZE_ASPECT_FALLBACK: Record<ImageSize, string[]> = {
 };
 
 function aspectFor(size: ImageSize, supported: string[] | undefined): string | null {
-  if (!supported) return SIZE_ASPECT[size];
+  // Unknown ratios (a cold cache) send none: the model default beats a guess
+  // the upstream may refuse after the call is made.
+  if (!supported) return null;
   return [SIZE_ASPECT[size], ...SIZE_ASPECT_FALLBACK[size]].find((ratio) => supported.includes(ratio)) ?? null;
 }
 
@@ -173,7 +175,10 @@ export async function generateImage(input: {
     try {
       store = withImagePick(store, input.pick, process.env);
     } catch (error) {
-      const code = error instanceof Error && error.message === "image_model_ambiguous" ? "image_model_ambiguous" : "image_model_unknown";
+      const code = error instanceof Error ? error.message : "";
+      // Anything else (a store that cannot be read) is a real fault, not a
+      // wrong id, and goes up as one.
+      if (code !== "image_model_unknown" && code !== "image_model_ambiguous") throw upstreamConfigError(error);
       throw new RouterError({ status: 400, type: "invalid_request_error", code, message: code });
     }
   }
