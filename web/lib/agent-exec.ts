@@ -341,8 +341,9 @@ async function sessionEventIds(sessionId: string, jwt: string): Promise<Set<stri
   return ids;
 }
 
-/** How much of an old session the carry-over reads before it stops. */
+/** How far back from the tail the settle check looks for a completed step. */
 const SETTLE_TAIL_EVENTS = 200;
+/** How much of an old session the carry-over reads before it stops. */
 const CARRY_READ = { headEvents: 400, tailEvents: 20_000, idleMs: 3_000, hardMs: 15_000, maxBytes: 48 * 1024 * 1024 };
 
 /**
@@ -453,7 +454,7 @@ export async function readSessionEvents(
 /**
  * Whether a session has finished a turn yet. Until it has, the message that
  * opened it (and the brief that rode on it) may have been dropped by a
- * step-zero failure. Reads only the opening of the stream.
+ * step-zero failure. Reads the opening and the newest stretch of the stream.
  */
 export async function sessionHasCompletedTurn(sessionId: string, jwt: string, signal?: AbortSignal): Promise<boolean> {
   // A completed step commits the prompt, opening message included, to eve's
