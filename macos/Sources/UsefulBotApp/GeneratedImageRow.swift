@@ -39,7 +39,9 @@ struct GeneratedImageRow: View {
             }
         }
         .task(id: attempt) {
-            switch await GeneratedImageCache.shared.fetch(imageId) {
+            let outcome = await GeneratedImageCache.shared.fetch(imageId)
+            locateError = nil
+            switch outcome {
             case .image(let loaded):
                 image = loaded
                 lost = nil
@@ -80,17 +82,11 @@ struct GeneratedImageRow: View {
                 Spacer(minLength: 0)
                 switch lost {
                 case .moved:
+                    // The server cannot tell moved from deleted: both ways out.
                     rowAction("Locate") { locate() }
+                    regenerateAction
                 case .missing:
-                    if !prompt.isEmpty {
-                        rowAction("Regenerate") {
-                            NotificationCenter.default.post(
-                                name: .prefillComposer,
-                                object: nil,
-                                userInfo: ["text": "Generate this image again: \(prompt)"]
-                            )
-                        }
-                    }
+                    regenerateAction
                 case .failed:
                     rowAction("Retry") {
                         self.lost = nil
@@ -107,6 +103,18 @@ struct GeneratedImageRow: View {
             RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .fill(Theme.C.sunken)
                 .frame(width: 320, height: 320)
+        }
+    }
+
+    @ViewBuilder private var regenerateAction: some View {
+        if !prompt.isEmpty {
+            rowAction("Regenerate") {
+                NotificationCenter.default.post(
+                    name: .prefillComposer,
+                    object: nil,
+                    userInfo: ["text": "Generate this image again: \(prompt)"]
+                )
+            }
         }
     }
 
@@ -166,6 +174,9 @@ actor GeneratedImageCache {
     static let shared = GeneratedImageCache()
     private static let maxEntries = 16
     private var images: [String: NSImage] = [:]
+    /// Moved or missing answers, kept a minute so rows scrolling back into
+    /// view do not ask the server again each time. Locate clears its id.
+    private var lost: [String: (outcome: Outcome, at: Date)] = [:]
     private var inFlight: [String: Task<Outcome, Never>] = [:]
 
     /// One client for every fetch. Each `BackendClient` owns a private cookie
@@ -182,6 +193,7 @@ actor GeneratedImageCache {
 
     func fetch(_ id: String) async -> Outcome {
         if let cached = images[id] { return .image(cached) }
+        if let known = lost[id], Date().timeIntervalSince(known.at) < 60 { return known.outcome }
         if let running = inFlight[id] { return await running.value }
         let task = Task<Outcome, Never> {
             do {
@@ -201,9 +213,15 @@ actor GeneratedImageCache {
         inFlight[id] = task
         let result = await task.value
         inFlight[id] = nil
-        if case .image(let image) = result {
+        switch result {
+        case .image(let image):
             if images.count >= Self.maxEntries { images.removeAll() }
             images[id] = image
+            lost[id] = nil
+        case .moved, .missing:
+            lost[id] = (result, Date())
+        case .failed:
+            break
         }
         return result
     }
@@ -211,6 +229,7 @@ actor GeneratedImageCache {
     func relink(_ id: String, path: String) async throws {
         try await Self.client.relinkMedia(id: id, path: path)
         images[id] = nil
+        lost[id] = nil
     }
 
     /// The Library's calls ride the same signed-in client as the rows.
@@ -221,5 +240,6 @@ actor GeneratedImageCache {
     func forget(_ id: String) async throws {
         try await Self.client.forgetMedia(id: id)
         images[id] = nil
+        lost[id] = nil
     }
 }

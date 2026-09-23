@@ -4,7 +4,9 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  lstatSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   statSync,
@@ -44,7 +46,12 @@ export type MediaItem = {
   forgotten?: boolean;
 };
 
-type MediaIndex = { schemaVersion: 1; items: MediaItem[] };
+/**
+ * `extra` holds entries this version cannot read (malformed, or from a newer
+ * build). They are written back untouched, so a save never drops what it
+ * does not understand.
+ */
+type MediaIndex = { schemaVersion: 1; items: MediaItem[]; extra: unknown[] };
 
 const ID = /^[a-zA-Z0-9_-]{8,80}$/;
 const IMAGE_EXT: Record<string, string> = {
@@ -85,7 +92,7 @@ export function mediaIndexPath(path = process.env.UB_MEDIA_INDEX_PATH): string {
 }
 
 function emptyIndex(): MediaIndex {
-  return { schemaVersion: 1, items: [] };
+  return { schemaVersion: 1, items: [], extra: [] };
 }
 
 function isItem(value: unknown): value is MediaItem {
@@ -111,7 +118,11 @@ function readIndexOrNull(path: string): MediaIndex | null {
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as { schemaVersion?: unknown; items?: unknown };
     if (raw?.schemaVersion !== 1 || !Array.isArray(raw.items)) return null;
-    return { schemaVersion: 1, items: raw.items.filter(isItem) };
+    return {
+      schemaVersion: 1,
+      items: raw.items.filter(isItem),
+      extra: raw.items.filter((row) => !isItem(row)),
+    };
   } catch {
     return null;
   }
@@ -121,11 +132,19 @@ export function readMediaIndex(path = mediaIndexPath()): MediaItem[] {
   return readIndexOrNull(path)?.items ?? [];
 }
 
+/** Drawing ids the Library holds, or null when the index will not parse (a sweep must then stand down). */
+export function libraryDrawingIds(path = mediaIndexPath()): Set<string> | null {
+  const index = readIndexOrNull(path);
+  if (!index) return null;
+  return new Set(index.items.filter((item) => item.kind === "drawing" && !item.forgotten).map((item) => item.id));
+}
+
 function writeIndex(index: MediaIndex, path: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   try {
-    writeFileSync(tmp, `${JSON.stringify(index)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    const body = { schemaVersion: 1, items: [...index.items, ...index.extra] };
+    writeFileSync(tmp, `${JSON.stringify(body)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     const fd = openSync(tmp, "r");
     fsyncSync(fd);
     closeSync(fd);
@@ -208,7 +227,15 @@ function writeNewFile(dir: string, base: string, ext: string, bytes: Buffer): st
   for (let n = 1; n < 1000; n += 1) {
     const path = join(dir, `${base}${n === 1 ? "" : ` ${n}`}.${ext}`);
     try {
-      writeFileSync(path, bytes, { flag: "wx", mode: 0o644 });
+      // Durable before the index names it: a crash must not leave an entry
+      // pointing at a half-written file.
+      const fd = openSync(path, "wx", 0o644);
+      try {
+        writeFileSync(fd, bytes);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
       return path;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
@@ -264,7 +291,7 @@ function saveFile(input: {
       return null;
     }, indexPath);
     if (kept) {
-      unlinkSync(path);
+      try { unlinkSync(path); } catch { /* a stray copy; the index names the winner */ }
       return kept;
     }
   } catch (err) {
@@ -338,6 +365,43 @@ export function saveDrawing(input: {
   }, root, indexPath);
 }
 
+/** The image type the bytes themselves say, never the file name. */
+function sniffImage(bytes: Buffer): string | null {
+  if (bytes.length > 8 && bytes[0] === 0x89 && bytes.subarray(1, 4).toString("ascii") === "PNG") return "image/png";
+  if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length > 6 && /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString("ascii"))) return "image/gif";
+  if (bytes.length > 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return null;
+}
+
+function isExcalidrawScene(bytes: Buffer): boolean {
+  try {
+    const scene = JSON.parse(bytes.toString("utf8")) as { type?: unknown; elements?: unknown };
+    return scene?.type === "excalidraw" && Array.isArray(scene.elements);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The bytes at a path, only when the path is a regular file (never a symlink)
+ * whose content is the kind the entry says: a real image for an image, a real
+ * Excalidraw scene for a drawing. The name alone proves nothing, so neither
+ * Locate nor a file swapped in later can make the image route serve anything
+ * else.
+ */
+function readVerified(path: string, kind: MediaKind): { mime: string; bytes: Buffer } {
+  if (!lstatSync(path).isFile()) throw new Error("media_type");
+  const bytes = readFileSync(path);
+  if (kind === "drawing") {
+    if (!isExcalidrawScene(bytes)) throw new Error("media_type");
+    return { mime: DRAWING_MIME, bytes };
+  }
+  const mime = sniffImage(bytes);
+  if (!mime) throw new Error("media_type");
+  return { mime, bytes };
+}
+
 export function findMedia(id: string, indexPath = mediaIndexPath()): MediaItem | null {
   return readMediaIndex(indexPath).find((item) => item.id === id) ?? null;
 }
@@ -345,16 +409,23 @@ export function findMedia(id: string, indexPath = mediaIndexPath()): MediaItem |
 export type MediaBytes =
   | { status: "ok"; item: MediaItem; mime: string; bytes: Buffer }
   | { status: "moved"; item: MediaItem }
-  | { status: "missing" };
+  | { status: "missing" }
+  | { status: "error"; item: MediaItem; code: string };
 
-/** The file behind an id: "moved" when the index names it but the file is gone from its path. */
+/**
+ * The file behind an id. "moved" only when nothing is at the path any more
+ * (the owner moved or deleted it); a file that is there but unreadable, or is
+ * not the kind it claims, is an error, which Locate could not fix.
+ */
 export function readMediaBytes(id: string, indexPath = mediaIndexPath()): MediaBytes {
   const item = findMedia(id, indexPath);
   if (!item || item.forgotten) return { status: "missing" };
   try {
-    return { status: "ok", item, mime: item.mime, bytes: readFileSync(item.path) };
-  } catch {
-    return { status: "moved", item };
+    return { status: "ok", item, ...readVerified(item.path, item.kind) };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { status: "moved", item };
+    return { status: "error", item, code: err instanceof Error && err.message === "media_type" ? "media_type" : code ?? "media_read" };
   }
 }
 
@@ -379,15 +450,20 @@ export function listMedia(
  */
 export function relinkMedia(id: string, newPath: string, indexPath = mediaIndexPath()): MediaItem {
   if (!isAbsolute(newPath)) throw new Error("media_path");
-  const path = resolve(newPath);
-  const mime = EXT_MIME[extname(path).toLowerCase()];
-  if (!mime) throw new Error("media_type");
-  if (!statSync(path).isFile()) throw new Error("media_path");
+  let path: string;
+  try {
+    // The real file, links followed once here and never again: the entry
+    // stores where the bytes actually are.
+    path = realpathSync(resolve(newPath));
+  } catch {
+    throw new Error("media_path");
+  }
+  if (!EXT_MIME[extname(path).toLowerCase()]) throw new Error("media_type");
   return withIndex((index) => {
     const item = index.items.find((row) => row.id === id);
     if (!item || item.forgotten) throw new Error("media_missing");
-    const sameKind = item.kind === "drawing" ? mime === DRAWING_MIME : mime !== DRAWING_MIME;
-    if (!sameKind) throw new Error("media_type");
+    const { mime } = readVerified(path, item.kind);
+    if (index.items.some((row) => row.id !== id && !row.forgotten && row.path === path)) throw new Error("media_in_use");
     item.path = path;
     item.mime = mime;
     return { ...item };

@@ -614,6 +614,7 @@ test("the sweep stands down while the roster is a recovery stub", () => {
     agents: process.env.UB_AGENT_STORE_PATH,
     images: process.env.UB_IMAGES_DIR,
     widgets: process.env.UB_WIDGETS_DIR,
+    media: process.env.UB_MEDIA_INDEX_PATH,
   };
   process.env.UB_SHELL_PATH = shellPath;
   process.env.UB_ROUTINES_PATH = routinesPath;
@@ -623,6 +624,7 @@ test("the sweep stands down while the roster is a recovery stub", () => {
   // pointing at the real ones deleted the owner's images on every test run.
   process.env.UB_IMAGES_DIR = join(dir, "images");
   process.env.UB_WIDGETS_DIR = join(dir, "widgets");
+  process.env.UB_MEDIA_INDEX_PATH = join(dir, "media.json");
   try {
     const shell = readShell(shellPath);
     shell.bots = [...shell.bots, { ...shell.bots[0], id: "bot-second", name: "Second" }];
@@ -666,6 +668,7 @@ test("the sweep stands down while the roster is a recovery stub", () => {
       ["UB_AGENT_STORE_PATH", previous.agents],
       ["UB_IMAGES_DIR", previous.images],
       ["UB_WIDGETS_DIR", previous.widgets],
+      ["UB_MEDIA_INDEX_PATH", previous.media],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

@@ -1,7 +1,72 @@
 import { readAgentStore } from "../../shared/agent-store.ts";
 import { deleteImage, legacyImageIds, readImage } from "../../shared/images-store.ts";
-import { findMedia, saveImage } from "../../shared/media-store.ts";
+import { findMedia, readMediaIndex, saveDrawing, saveImage } from "../../shared/media-store.ts";
 import { peekShell } from "../../shared/shell-io.ts";
+import { readWidget, type WidgetRecord } from "../../shared/widgets-store.ts";
+
+/** Only Excalidraw scenes are drawings; another MCP app's `elements` argument is not. */
+export function isExcalidrawWidget(record: Pick<WidgetRecord, "connectionId" | "toolName" | "arguments">): boolean {
+  return (record.connectionId === "excalidraw" || record.toolName.startsWith("excalidraw__"))
+    && "elements" in record.arguments;
+}
+
+/** The first label or text in the scene names the file; "Drawing" otherwise. */
+export function drawingTitle(elements: unknown): string {
+  let list = elements;
+  if (typeof list === "string") {
+    try { list = JSON.parse(list) as unknown; } catch { return "Drawing"; }
+  }
+  if (!Array.isArray(list)) return "Drawing";
+  for (const el of list) {
+    const rec = el && typeof el === "object" ? el as { text?: unknown; label?: { text?: unknown } } : {};
+    const text = typeof rec.text === "string" ? rec.text : typeof rec.label?.text === "string" ? rec.label.text : "";
+    if (text.trim()) return `Drawing - ${text.trim()}`;
+  }
+  return "Drawing";
+}
+
+/** Save one Excalidraw widget to the media folder, dated when it was first drawn. */
+export function saveWidgetDrawing(record: WidgetRecord, botId: string, botName: string, drawnAt?: string): void {
+  if (!isExcalidrawWidget(record)) return;
+  const when = drawnAt && !Number.isNaN(Date.parse(drawnAt)) ? new Date(drawnAt) : undefined;
+  saveDrawing({
+    id: record.id,
+    elements: record.arguments.elements,
+    title: drawingTitle(record.arguments.elements),
+    botId,
+    botName,
+    provider: record.connectionId,
+    createdAt: when,
+  });
+}
+
+/**
+ * Every Excalidraw drawing still in a chat gets its file, dated by the event
+ * that first showed it. Drawings made before the Library existed, and any
+ * whose save failed when they were drawn, land here on the next load.
+ */
+export function migrateDrawings(): { saved: number; failed: number } {
+  const known = new Set(readMediaIndex().map((item) => item.id));
+  const bots = peekShell()?.bots ?? [];
+  let saved = 0;
+  let failed = 0;
+  for (const thread of readAgentStore().threads) {
+    for (const event of thread.events) {
+      if (!event.widgetId || known.has(event.widgetId)) continue;
+      known.add(event.widgetId);
+      try {
+        const record = readWidget(event.widgetId);
+        if (!record || !isExcalidrawWidget(record)) continue;
+        saveWidgetDrawing(record, thread.botId, bots.find((bot) => bot.id === thread.botId)?.name ?? "Useful Bot", event.at);
+        saved += 1;
+      } catch (err) {
+        failed += 1;
+        console.error(`[media] could not save drawing ${event.widgetId}`, err);
+      }
+    }
+  }
+  return { saved, failed };
+}
 
 /**
  * Move the images stored as base64 records in ~/.useful-bot/images into the

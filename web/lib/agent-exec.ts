@@ -6,6 +6,7 @@ import {
   type ThreadKind,
 } from "../../shared/agent-store.ts";
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
+import { libraryDrawingIds } from "../../shared/media-store.ts";
 import { parseEveStreamLine } from "../../shared/eve-stream.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
@@ -1128,8 +1129,8 @@ export function sweepOrphanState(): string[] {
   // A test that isolated the agent store but not the media folders once
   // deleted every real image and drawing on each run, so a miss fails the
   // test instead. Images are no longer swept at all (shared/media-store.ts).
-  if (process.env.NODE_TEST_CONTEXT && !process.env.UB_WIDGETS_DIR) {
-    throw new Error("sweep under test needs UB_WIDGETS_DIR");
+  if (process.env.NODE_TEST_CONTEXT && (!process.env.UB_WIDGETS_DIR || !process.env.UB_MEDIA_INDEX_PATH)) {
+    throw new Error("sweep under test needs UB_WIDGETS_DIR and UB_MEDIA_INDEX_PATH");
   }
   try {
     // `peekShell`, never `readShell`. A roster this process could not parse is
@@ -1151,8 +1152,11 @@ export function sweepOrphanState(): string[] {
     // A null keep set means the store would not parse. Sweeping on that would
     // read every drawing on the machine as an orphan, so this tick does not
     // sweep at all.
+    // A drawing in the Library keeps its record too: the Library shows it
+    // live (Edit, Open in Excalidraw) after its chat is cleared.
     const referenced = referencedWidgetIds();
-    if (referenced) sweepOrphanWidgets(referenced);
+    const inLibrary = libraryDrawingIds();
+    if (referenced && inLibrary) sweepOrphanWidgets([...referenced, ...inLibrary]);
     return routines;
   } catch {
     // A locked or unreadable store is the next tick's problem, never this

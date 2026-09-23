@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -16,7 +16,8 @@ import {
 import { writeImage } from "../shared/images-store.ts";
 import { appendAgentEvent } from "../shared/agent-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
-import { migrateLegacyImages } from "../web/lib/media-migrate.ts";
+import { isExcalidrawWidget, migrateDrawings, migrateLegacyImages } from "../web/lib/media-migrate.ts";
+import { writeWidget } from "../shared/widgets-store.ts";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
@@ -59,8 +60,22 @@ test("a moved file reads as moved, Locate relinks it, and only to the same kind"
   writeFileSync(drawingPath, "{}");
   assert.throws(() => relinkMedia("imgmove00001", drawingPath, index), /media_type/);
   assert.throws(() => relinkMedia("imgmove00001", "relative.png", index), /media_path/);
+  // The name is not proof: a text file called .png, or a link to another
+  // file, is refused.
+  const fake = join(dir, "notes.png");
+  writeFileSync(fake, "not an image");
+  assert.throws(() => relinkMedia("imgmove00001", fake, index), /media_type/);
   relinkMedia("imgmove00001", moved, index);
   assert.equal(readMediaBytes("imgmove00001", index).status, "ok");
+  // Two entries never share one file: trashing one would break the other.
+  const other = saveImage({ id: "imgother0001", mime: "image/png", bytes: PNG, prompt: "dog", model: "", provider: "", botId: "b", botName: "B" }, root, index);
+  renameSync(other.path, join(dir, "gone.png"));
+  assert.throws(() => relinkMedia("imgother0001", moved, index), /media_in_use/);
+  // A file swapped for a link, or for something that is not an image, stops
+  // serving instead of reading as moved.
+  renameSync(moved, join(dir, "real.png"));
+  symlinkSync(join(dir, "real.png"), moved);
+  assert.equal(readMediaBytes("imgmove00001", index).status, "error");
   assert.equal(readMediaBytes("imgnothing01", index).status, "missing");
 });
 
@@ -104,7 +119,15 @@ test("an unreadable index refuses writes instead of dropping every entry", () =>
   assert.throws(() => saveImage({ id: "imgbad000001", mime: "image/png", bytes: PNG, prompt: "x", model: "", provider: "", botId: "b", botName: "B" }, root, index), /media_index_unreadable/);
   assert.equal(readFileSync(index, "utf8"), "{ not json");
   // The file written before the index refused is undone.
-  assert.equal(existsSync(join(root, "B")) && listMedia({}, index).length > 0, false);
+  assert.deepEqual(readdirSync(join(root, "B"), { recursive: true }).filter((name) => String(name).endsWith(".png")), []);
+});
+
+test("entries this version cannot read survive a save", () => {
+  const { root, index } = box();
+  writeFileSync(index, JSON.stringify({ schemaVersion: 1, items: [{ id: "future000001", kind: "video", path: "/x.mp4" }] }));
+  saveImage({ id: "imgnow000001", mime: "image/png", bytes: PNG, prompt: "x", model: "", provider: "", botId: "b", botName: "B" }, root, index);
+  const raw = JSON.parse(readFileSync(index, "utf8")) as { items: Array<{ id: string }> };
+  assert.deepEqual(raw.items.map((row) => row.id).sort(), ["future000001", "imgnow000001"]);
 });
 
 test("titles come from the prompt's first clause", () => {
@@ -148,6 +171,39 @@ test("legacy base64 records move into the media folder under their bot, keeping 
     })) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
+    }
+  }
+});
+
+test("drawings still in a chat backfill into the Library, dated when first drawn, Excalidraw only", () => {
+  const { root, index, dir } = box();
+  const keys = ["UB_MEDIA_DIR", "UB_MEDIA_INDEX_PATH", "UB_WIDGETS_DIR", "UB_AGENT_STORE_PATH", "UB_SHELL_PATH"] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env.UB_MEDIA_DIR = root;
+  process.env.UB_MEDIA_INDEX_PATH = index;
+  process.env.UB_WIDGETS_DIR = join(dir, "widgets");
+  process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
+  process.env.UB_SHELL_PATH = join(dir, "shell.json");
+  try {
+    const shell = readShell();
+    const bot = shell.bots[0]!;
+    writeShell(shell);
+    const drawing = { connectionId: "excalidraw", toolName: "excalidraw__create_view", resourceUri: null, result: null, createdAt: new Date().toISOString() };
+    writeWidget({ ...drawing, id: "call_old00001", arguments: { elements: JSON.stringify([{ type: "rectangle", label: { text: "Old" } }]) } });
+    writeWidget({ ...drawing, id: "call_chart0001", connectionId: "charts", toolName: "charts__plot", arguments: { elements: [] } });
+    appendAgentEvent(bot.id, { kind: "widget", text: "Drawing", widgetId: "call_old00001", id: "wgt_call_old00001" });
+    appendAgentEvent(bot.id, { kind: "widget", text: "Drawing", widgetId: "call_chart0001", id: "wgt_call_chart0001" });
+    assert.deepEqual(migrateDrawings(), { saved: 1, failed: 0 });
+    const item = findMedia("call_old00001", index)!;
+    assert.equal(item.title, "Drawing - Old");
+    assert.equal(item.botId, bot.id);
+    assert.equal(findMedia("call_chart0001", index), null);
+    assert.deepEqual(migrateDrawings(), { saved: 0, failed: 0 });
+    assert.equal(isExcalidrawWidget({ connectionId: "other", toolName: "other__x", arguments: { elements: [] } }), false);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
     }
   }
 });

@@ -68,6 +68,7 @@ struct LibraryView: View {
                         item: selected,
                         onOpenChat: { openChat(selected) },
                         onLocate: { locate(selected) },
+                        onRegenerate: { regenerate(selected) },
                         onTrash: { trash(selected) }
                     )
                         .padding(20)
@@ -220,6 +221,14 @@ struct LibraryView: View {
         onClose()
     }
 
+    /// Put the saved prompt in the bot's composer, in its chat.
+    private func regenerate(_ item: MediaItem) {
+        guard !item.botId.isEmpty, !item.prompt.isEmpty else { return }
+        model.select(item.botId)
+        model.prefillDraft("Generate this image again: \(item.prompt)")
+        onClose()
+    }
+
     /// Point a moved item at where its file went, then show it from there.
     private func locate(_ item: MediaItem) {
         let panel = NSOpenPanel()
@@ -245,17 +254,24 @@ struct LibraryView: View {
     /// only then does the Library forget it.
     private func trash(_ item: MediaItem) {
         Task {
-            do {
-                if item.exists {
+            if item.exists {
+                do {
                     try FileManager.default.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: nil)
+                } catch {
+                    self.error = "That file could not be moved to the Trash"
+                    selected = nil
+                    return
                 }
-                try await GeneratedImageCache.shared.forget(item.id)
-                selected = nil
-                await load()
-            } catch {
-                self.error = "That item could not be moved to the Trash"
-                selected = nil
             }
+            do {
+                try await GeneratedImageCache.shared.forget(item.id)
+            } catch {
+                self.error = item.exists
+                    ? "The file is in the Trash, but the Library could not forget it"
+                    : "The Library could not remove that item"
+            }
+            selected = nil
+            await load()
         }
     }
 }
@@ -290,7 +306,7 @@ private struct LibraryTile: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
-                Text(item.exists ? item.botName : "Moved or deleted")
+                Text(item.exists ? "\(item.botName) · \(LibraryDetail.shortDate(item.createdAt))" : "Moved or deleted")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkMuted)
                     .lineLimit(1)
@@ -309,29 +325,40 @@ private struct LibraryTile: View {
 }
 
 /// One item: the picture, what made it, and what the owner can do with it.
-private struct LibraryDetail: View {
+struct LibraryDetail: View {
     let item: MediaItem
     let onOpenChat: () -> Void
     let onLocate: () -> Void
+    let onRegenerate: () -> Void
     let onTrash: () -> Void
     @State private var preview: NSImage?
 
     var body: some View {
         HStack(alignment: .top, spacing: 24) {
-            ZStack {
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-                    .fill(Theme.C.sunken)
-                if let preview {
-                    Image(nsImage: preview)
-                        .resizable()
-                        .scaledToFit()
+            Group {
+                if item.kind == "drawing" {
+                    // The same live drawing the chat shows, with its own Edit
+                    // and Open in Excalidraw: a .excalidraw file has no app
+                    // on a Mac to open it.
+                    WidgetSlot(widgetId: item.id)
+                        .frame(width: 520)
                 } else {
-                    Image(systemName: item.kind == "drawing" ? "scribble.variable" : "photo")
-                        .font(.system(size: 32))
-                        .foregroundStyle(Theme.C.inkFaint)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+                            .fill(Theme.C.sunken)
+                        if let preview {
+                            Image(nsImage: preview)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            Image(systemName: "photo")
+                                .font(.system(size: 32))
+                                .foregroundStyle(Theme.C.inkFaint)
+                        }
+                    }
+                    .frame(width: 520, height: 520)
                 }
             }
-            .frame(width: 520, height: 520)
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
 
             VStack(alignment: .leading, spacing: 16) {
@@ -347,16 +374,23 @@ private struct LibraryDetail: View {
                 VStack(alignment: .leading, spacing: 8) {
                     if item.exists {
                         HStack(spacing: 8) {
-                            NativeButton("Open", kind: .primary, small: true) {
-                                NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
+                            // Images open in the default viewer; a drawing
+                            // opens from its live view's own buttons.
+                            if item.kind == "image" {
+                                NativeButton("Open", kind: .primary, small: true) {
+                                    NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
+                                }
                             }
                             NativeButton("Show in Finder", kind: .secondary, small: true) {
                                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
                             }
-                            if item.kind == "image", let preview {
+                            if item.kind == "image" {
                                 NativeButton("Copy", kind: .secondary, small: true) {
+                                    // The original file, not the downsampled preview.
+                                    let url = URL(fileURLWithPath: item.path)
+                                    guard let full = NSImage(contentsOf: url) else { return }
                                     NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.writeObjects([preview])
+                                    NSPasteboard.general.writeObjects([full, url as NSURL])
                                 }
                             }
                         }
@@ -364,6 +398,9 @@ private struct LibraryDetail: View {
                     HStack(spacing: 8) {
                         if !item.exists {
                             NativeButton("Locate", kind: .primary, small: true, action: onLocate)
+                            if item.kind == "image", !item.prompt.isEmpty, !item.botId.isEmpty {
+                                NativeButton("Regenerate", kind: .secondary, small: true, action: onRegenerate)
+                            }
                         }
                         if !item.botId.isEmpty {
                             NativeButton("Open chat", kind: .secondary, small: true, action: onOpenChat)
@@ -392,6 +429,18 @@ private struct LibraryDetail: View {
                 .lineLimit(8)
                 .textSelection(.enabled)
         }
+    }
+
+    /// "Sep 19" on a tile: enough to tell an old drawing from a new one.
+    static func shortDate(_ iso: String) -> String {
+        guard let date = parseDate(iso) else { return "" }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private static func parseDate(_ iso: String) -> Date? {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return parser.date(from: iso)
     }
 
     private static func dateText(_ iso: String) -> String {

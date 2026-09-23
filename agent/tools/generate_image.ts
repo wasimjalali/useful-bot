@@ -5,6 +5,7 @@ import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permissi
 import { activeBotId } from "../lib/active-bot.ts";
 import { toolRouterIds } from "../lib/router-identity.ts";
 import { appendAgentEvent, releaseSend, reserveSend } from "../../shared/agent-store.ts";
+import { writeImage } from "../../shared/images-store.ts";
 import { saveImage } from "../../shared/media-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
@@ -98,16 +99,39 @@ export default defineTool({
     const imageId = `img${randomUUID().replaceAll("-", "").slice(0, 24)}`;
     const shell = readShell();
     const botId = activeBotId(shell, ctx);
-    const saved = saveImage({
-      id: imageId,
-      mime: typeof item.mime === "string" ? item.mime : "image/png",
-      bytes: Buffer.from(item.b64_json, "base64"),
-      prompt: input.prompt,
-      provider: typeof json?.provider === "string" ? json.provider : "",
-      model: typeof json?.model === "string" ? json.model : "",
-      botId,
-      botName: shell.bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot",
-    });
+    const mime = typeof item.mime === "string" ? item.mime : "image/png";
+    const provider = typeof json?.provider === "string" ? json.provider : "";
+    const model = typeof json?.model === "string" ? json.model : "";
+    // The provider has billed by now, so the bytes must land somewhere. The
+    // media folder first; if it cannot take them (no Documents access, a
+    // locked or unreadable index, a full disk) the app's own store keeps
+    // them, and they move into the folder on the next Library load.
+    let savedPath: string | undefined;
+    try {
+      savedPath = saveImage({
+        id: imageId,
+        mime,
+        bytes: Buffer.from(item.b64_json, "base64"),
+        prompt: input.prompt,
+        provider,
+        model,
+        botId,
+        botName: shell.bots.find((bot) => bot.id === botId)?.name ?? "Useful Bot",
+      }).path;
+    } catch (err) {
+      console.error(`[media] could not save image ${imageId} to the media folder`, err);
+      try {
+        writeImage({ id: imageId, mime, b64: item.b64_json, prompt: input.prompt, provider, model });
+      } catch (fallbackErr) {
+        console.error(`[media] could not keep image ${imageId} at all`, fallbackErr);
+        if (requestId) releaseSend("image", requestId);
+        return {
+          status: "failed",
+          error: "image_not_saved",
+          hint: "The image was generated and billed but could not be saved on this Mac. Tell the owner why (disk full or no access to Documents) and do not retry until they fix it.",
+        };
+      }
+    }
     appendAgentEvent(botId, {
       kind: "image",
       text: input.prompt,
@@ -117,7 +141,7 @@ export default defineTool({
     return {
       status: "generated",
       imageId,
-      path: saved.path,
+      path: savedPath,
       model: typeof json?.model === "string" ? json.model : undefined,
       note: "The image is in the chat now. Describe it in words if that helps, but the owner already sees it.",
     };

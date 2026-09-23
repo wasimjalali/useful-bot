@@ -42,6 +42,8 @@ const PROMPT_MAX = 2_000;
 
 export function imagesDir(root = process.env.UB_IMAGES_DIR): string {
   if (root) return root;
+  // Migration deletes from here, so a test must never reach the real folder.
+  if (process.env.NODE_TEST_CONTEXT) throw new Error("images under test needs UB_IMAGES_DIR");
   return join(process.env.HOME ?? "/tmp", ".useful-bot/images");
 }
 

@@ -1526,7 +1526,13 @@ public actor BackendClient {
                 .appendingPathComponent(id))
         }
         if (response as? HTTPURLResponse)?.statusCode == 404 {
-            return String(data: data, encoding: .utf8) == "moved" ? .moved : .missing
+            // Only the route's own answers count: any other 404 (a route
+            // missing mid-upgrade) must not read as "gone for good".
+            switch String(data: data, encoding: .utf8) {
+            case "moved": return .moved
+            case "missing": return .missing
+            default: throw BackendError.http(404)
+            }
         }
         try Self.expectOK(data, response)
         return .loaded(data)
