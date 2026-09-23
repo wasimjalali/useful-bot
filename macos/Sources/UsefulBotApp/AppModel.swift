@@ -222,6 +222,11 @@ final class AppModel: ObservableObject {
     /// left: the doubled transcript. Model-to-view writes now happen only when
     /// this token changes.
     @Published private(set) var draftWriteToken: UInt64 = 0
+    /// A bot message the owner is replying to: it rides above the composer
+    /// as a chip and goes out quoted above the next message to that bot.
+    @Published var replyQuote: ReplyQuote?
+    /// Bumped when Reply wants the caret in the composer.
+    @Published private(set) var composerFocusToken: UInt64 = 0
     @Published var attachments: [Attachment] = []
     @Published var attachError: String?
     @Published private(set) var onboardingDismissedFor: Set<String> = []
@@ -1405,6 +1410,7 @@ final class AppModel: ObservableObject {
         sendBotId = bot.id
         markWorking(bot.id, true)
         let draftSnapshot = retrying ? "" : draft
+        let quoteSnapshot = retrying ? nil : replyQuote
         let sentAttachments = retrying ? [] : attachments
         let sentAttachmentIds = Set(sentAttachments.map(\.id))
         // Pictures ride beside the text as file parts; the composed string
@@ -1436,6 +1442,7 @@ final class AppModel: ObservableObject {
         // send fails below.
         if !retrying {
             clearSentComposer(draft: draftSnapshot, attachmentIds: sentAttachmentIds)
+            if let quoteSnapshot, replyQuote == quoteSnapshot { replyQuote = nil }
         }
         // An explicit send is an explicit request to watch the answer, so the
         // transcript follows it whatever the reader was doing before.
@@ -1639,6 +1646,8 @@ final class AppModel: ObservableObject {
                     // kept.
                     if self.selectedBotId == bot.id {
                         self.restoreUnsentDraft(draftSnapshot, sentAttachments: sentAttachments)
+                        // The quote went with the text; it comes back with it.
+                        if let quoteSnapshot, self.replyQuote == nil { self.replyQuote = quoteSnapshot }
                     } else if !draftSnapshot.isEmpty || !sentAttachments.isEmpty {
                         // The owner is in another chat, so there is no composer
                         // to put this back into yet. Hold it for their return.
@@ -1686,6 +1695,14 @@ final class AppModel: ObservableObject {
                 _ = try? await self.client.cancel(sessionId: target)
             }
         }
+    }
+
+    /// Reply to a bot message: the chip goes above the composer of this chat
+    /// and the caret into the field.
+    func reply(to text: String) {
+        guard let botId = selectedBotId else { return }
+        replyQuote = ReplyQuote(botId: botId, text: text)
+        composerFocusToken &+= 1
     }
 
     /// Clear the composer only for the text and files this send owned, so
@@ -3845,5 +3862,54 @@ final class AppModel: ObservableObject {
             }
             await self.loadWorkspaceProjects()
         }
+    }
+}
+
+/// The bot message a reply points at, and how it rides in the sent text: a
+/// markdown quote above what the owner wrote, which the model reads as
+/// context and the transcript shows as a quote line.
+struct ReplyQuote: Equatable {
+    let botId: String
+    let text: String
+
+    /// How much of the message goes into the quote. A long reply is quoted
+    /// by its opening; the whole of it is already in the conversation.
+    static let maxQuoted = 600
+
+    var quoted: String {
+        let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return flat.count > Self.maxQuoted ? String(flat.prefix(Self.maxQuoted)) + "…" : flat
+    }
+
+    func wrap(_ message: String) -> String {
+        let lines = quoted.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
+        return lines.joined(separator: "\n") + "\n\n" + message
+    }
+
+    /// One line of the message as it reads, for the chip and the quote line:
+    /// markdown marks and line breaks dropped.
+    static func preview(_ text: String) -> String {
+        var line = text.replacingOccurrences(of: "\n", with: " ")
+        for mark in ["**", "__", "`", "~~"] {
+            line = line.replacingOccurrences(of: mark, with: "")
+        }
+        line = line.replacingOccurrences(of: #"(^|\s)#{1,6}\s"#, with: "$1", options: .regularExpression)
+        return line.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A sent message that opens with a quote, split into the quote and the
+    /// rest, so the bubble can show the quote as a quote.
+    static func split(_ text: String) -> (quote: String, body: String)? {
+        let lines = text.components(separatedBy: "\n")
+        var quote: [String] = []
+        var index = 0
+        while index < lines.count, lines[index].hasPrefix(">") {
+            quote.append(String(lines[index].dropFirst(lines[index].hasPrefix("> ") ? 2 : 1)))
+            index += 1
+        }
+        let body = lines[index...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !quote.isEmpty, !body.isEmpty else { return nil }
+        return (quote.joined(separator: "\n"), body)
     }
 }

@@ -21,7 +21,6 @@ struct RailView: View {
     /// This window is in full screen, where the traffic lights are hidden.
     var fullScreen = false
 
-    @State private var searchHovering = false
     @State private var accountOpen = false
     /// The hairline above Connectors, in rail space. The account menu sits
     /// on it so it never covers the Connectors row.
@@ -35,29 +34,21 @@ struct RailView: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            // Search and New Bot on the traffic lights' band, on its right,
+            // sitting a little lower than the lights the way Grok sets them.
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+                RoundRailButton(systemImage: "magnifyingglass", label: "Search", help: "Search (⌘K)", action: onSearch)
+                RoundRailButton(systemImage: "plus", label: "New Bot", help: "New Bot", action: onNewChat)
+                    .trackWindowFrame($newChatTriggerFrame)
+            }
+            .padding(.top, 10)
+
             HStack {
                 UsefulBotLogoView()
                 Spacer(minLength: 0)
-                // The New Bot affordance is one minimal plus beside the logo.
-                Button(action: onNewChat) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(Theme.C.ink)
-                        .frame(width: 28, height: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pointerOnHover()
-                .trackWindowFrame($newChatTriggerFrame)
-                .accessibilityLabel("New Bot")
             }
             .padding(.horizontal, 4)
-            // The traffic lights own the row above (`WindowChrome`); the
-            // logo sits under them, on the left. Full screen hides the
-            // lights, so the band goes with them.
-            .padding(.top, fullScreen ? 4 : WindowChrome.railTopInset)
-
-            searchTrigger
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -77,7 +68,7 @@ struct RailView: View {
             operatorRow
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 16)
+        .padding(.bottom, 16)
         .frame(width: DesignTokens.Space.railWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.C.rail)
@@ -125,9 +116,9 @@ struct RailView: View {
         .overlay(alignment: .topLeading) {
             if accountOpen {
                 accountPopover
-                    .frame(width: 220)
+                    .frame(width: 214)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { accountMenuHeight = $0 }
-                    .offset(x: 12, y: accountDivider.minY - accountMenuHeight - 6)
+                    .offset(x: 12, y: accountDivider.minY - accountMenuHeight - 8)
                     // Hidden for the one frame before its height is known.
                     .opacity(accountMenuHeight == 0 ? 0 : 1)
                     .dismissOnOutsideClick(triggers: { [accountButtonFrame] }) { accountOpen = false }
@@ -155,43 +146,6 @@ struct RailView: View {
         rowMenuTrigger = trigger
         rowMenuBot = bot
         rowMenuPage = .root
-    }
-
-    // MARK: - Triggers
-
-    private var searchTrigger: some View {
-        Button(action: onSearch) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(Theme.C.inkFaint)
-                Text("Search")
-                    .font(.system(size: DesignTokens.FontSize.searchTrigger))
-                    .foregroundStyle(Theme.C.inkFaint)
-                Spacer(minLength: 0)
-                Text("⌘K")
-                    .font(.system(size: DesignTokens.FontSize.kbd, weight: .semibold))
-                    .tracking(0.02 * DesignTokens.FontSize.kbd)
-                    .foregroundStyle(Theme.C.inkFaint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 1)
-                    .background(Theme.C.sunken)
-                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous))
-            }
-            .padding(.horizontal, 10)
-            .frame(minHeight: DesignTokens.Control.searchTrigger)
-            .background(searchHovering ? Theme.C.accentSoft : Theme.C.surface)
-            .overlay(
-                Capsule().strokeBorder(Theme.C.edge, lineWidth: 1)
-            )
-            .clipShape(Capsule())
-            .smShadow()
-            .contentShape(Capsule())
-            .animation(.easeOut(duration: DesignTokens.Motion.fast), value: searchHovering)
-        }
-        .buttonStyle(.plain)
-        .pointerOnHover()
-        .onHover { searchHovering = $0 }
     }
 
     // MARK: - Groups
@@ -346,52 +300,49 @@ struct RailView: View {
 
     // MARK: - Account
 
+    /// The owner's face, which opens the account menu, beside one wide pill
+    /// for Connectors.
     private var operatorRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Hairline()
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .onAppear { accountDivider = proxy.frame(in: .named("rail")) }
-                            .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
-                                accountDivider = next
-                            }
-                    }
-                )
-                .padding(.bottom, 8)
-            libraryRow
-            connectorsRow
+        HStack(spacing: 10) {
             Button {
                 accountOpen.toggle()
+                if accountOpen { Task { await model.loadUsage() } }
             } label: {
-                HStack(spacing: 10) {
-                    OperatorAvatarView(initials: model.operatorInitials)
-                    Text(model.operatorName)
-                        .font(.system(size: DesignTokens.FontSize.railName, weight: .medium))
-                        .foregroundStyle(Theme.C.ink)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                OperatorAvatarView(initials: model.operatorInitials, size: 36)
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .pointerOnHover()
             .trackWindowFrame($accountButtonFrame)
+            .help(model.operatorName)
             .accessibilityLabel("Account")
             .accessibilityIdentifier("account-row")
+            FooterPillButton(title: "Connectors", action: onConnectors)
+                .accessibilityIdentifier("rail-connectors")
         }
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { accountDivider = proxy.frame(in: .named("rail")) }
+                    .onChange(of: proxy.frame(in: .named("rail"))) { _, next in
+                        accountDivider = next
+                    }
+            }
+        )
     }
 
     private var accountPopover: some View {
         VStack(alignment: .leading, spacing: 2) {
-            popItem(icon: "chart.bar", title: "Token usage") {
+            popItem(icon: "gauge.with.dots.needle.33percent", title: "Token usage", value: usagePercent, chevron: true) {
                 accountOpen = false
                 onOpenAppSettings(.usage)
             }
             .accessibilityIdentifier("account-usage")
+            popItem(icon: "photo.on.rectangle", title: "Library") {
+                accountOpen = false
+                onLibrary()
+            }
+            .accessibilityIdentifier("account-library")
             popItem(icon: "server.rack", title: "Providers") {
                 accountOpen = false
                 onOpenAppSettings(.providers)
@@ -406,65 +357,106 @@ struct RailView: View {
         .padding(6)
         .background(Theme.C.surface)
         .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Theme.C.edge, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .popShadow()
     }
 
-    private func popItem(icon: String, title: String, action: @escaping () -> Void) -> some View {
+    /// Today's tokens against the day's limit, the number the router stops at.
+    private var usagePercent: String? {
+        guard let usage = model.usage else { return nil }
+        let cap = usage.budget?.tokens ?? usage.totalCap
+        guard cap > 0 else { return nil }
+        let used = usage.chargedInputTokens + usage.chargedOutputTokens
+        return "\(min(100, Int((Double(used) / Double(cap) * 100).rounded())))%"
+    }
+
+    private func popItem(
+        icon: String,
+        title: String,
+        value: String? = nil,
+        chevron: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         MenuRowButton(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundStyle(Theme.C.ink)
-                    .frame(width: 16)
+                    .frame(width: 18)
                 Text(title)
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundStyle(Theme.C.ink)
                 Spacer(minLength: 0)
+                if let value {
+                    Text(value)
+                        .font(.system(size: 13).monospacedDigit())
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
+                if chevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.C.inkMuted)
+                }
             }
             .padding(.horizontal, 10)
-            .frame(minHeight: 32)
+            .frame(minHeight: 34)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+}
 
-    private var libraryRow: some View {
-        MenuRowButton(action: onLibrary) {
-            HStack(spacing: 10) {
-                Image(systemName: "photo.on.rectangle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Theme.C.ink)
-                    .frame(width: 16)
-                Text("Library")
-                    .font(.system(size: DesignTokens.FontSize.railName))
-                    .foregroundStyle(Theme.C.ink)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
+/// The rail footer's wide pill.
+private struct FooterPillButton: View {
+    let title: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Theme.C.ink)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+                .background(hovering ? Theme.C.sunken : Theme.C.surface)
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Theme.C.edge, lineWidth: 1))
+                .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
     }
+}
 
-    private var connectorsRow: some View {
-        MenuRowButton(action: onConnectors) {
-            HStack(spacing: 10) {
-                Image(systemName: "shippingbox")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Theme.C.ink)
-                    .frame(width: 16)
-                Text("Connectors")
-                    .font(.system(size: DesignTokens.FontSize.railName))
-                    .foregroundStyle(Theme.C.ink)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
+private struct RoundRailButton: View {
+    let systemImage: String
+    let label: String
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(Theme.C.ink)
+                .frame(width: 34, height: 34)
+                .background(hovering ? Theme.C.sunken : Theme.C.surface)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(Theme.C.edge, lineWidth: 1))
+                .contentShape(Circle())
         }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
+        .help(help)
+        .accessibilityLabel(label)
     }
 }
 

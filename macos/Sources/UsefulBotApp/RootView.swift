@@ -645,22 +645,26 @@ struct ConnectorsDialog: View {
     /// What the owner has typed into the own-app form, by field name. Cleared
     /// when the form closes; it never outlives the dialog.
     @State private var ownAppDraft: [String: String] = [:]
-    private static let rowHeight: CGFloat = 72
-    private static let listMaxHeight: CGFloat = 460
+    /// The catalogue scrolls inside a fixed height, so the dialog keeps one
+    /// size while a search narrows or widens the list.
+    private static let listHeight: CGFloat = 470
     @FocusState private var keyFocused: Bool
     @FocusState private var searchFocused: Bool
     @FocusState private var ownAppFocused: String?
 
     var body: some View {
-        NativeDialog(maxWidth: 720, ariaLabel: "Connectors", onClose: close) {
+        NativeDialog(maxWidth: 760, ariaLabel: "Connectors", onClose: close) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
+                HStack(spacing: 10) {
                     Text("Connectors")
-                        .font(.system(size: DesignTokens.FontSize.settingsTitle, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(Theme.C.ink)
                     Spacer(minLength: 0)
+                    if let payload = model.connectors, payload.hasKey {
+                        addedSummary(payload)
+                    }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 28)
                 .padding(.top, 4)
                 if let payload = model.connectors {
                     if payload.hasKey {
@@ -742,43 +746,53 @@ struct ConnectorsDialog: View {
 
     // MARK: - Catalogue
 
-    private func catalogue(_ payload: ConnectorsPayload) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(Theme.C.inkFaint)
-                    TextField("Search apps", text: $search)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.C.ink)
-                        .focused($searchFocused)
-                        .accessibilityLabel("Search apps")
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 36)
-                .background(Theme.C.surface)
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(searchFocused ? Theme.C.ink : Theme.C.borderStrong, lineWidth: 1)
-                )
-                .clipShape(Capsule(style: .continuous))
-                .smShadow()
-                HStack(spacing: 8) {
-                    Text("Key ·…\(payload.last4 ?? "")")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkMuted)
-                        .lineLimit(1)
-                    NativeButton("Remove", kind: .secondary, small: true, enabled: model.connectorBusy != "key") {
-                        Task {
-                            await model.removeConnectorsKey()
-                            search = ""
-                        }
+    /// The apps already added, as a row of overlapping logos and a count.
+    @ViewBuilder
+    private func addedSummary(_ payload: ConnectorsPayload) -> some View {
+        let added = payload.toolkits.filter(\.connected)
+        if !added.isEmpty {
+            HStack(spacing: 8) {
+                HStack(spacing: -6) {
+                    ForEach(added.prefix(4)) { row in
+                        AppLogo(name: row.name, url: row.logo, size: 22)
+                            .background(Theme.C.surface, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+                                    .strokeBorder(Theme.C.surface, lineWidth: 1.5)
+                            )
                     }
                 }
+                Text("\(added.count) added")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
             }
-            .padding(.horizontal, 20)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(added.count) added")
+        }
+    }
+
+    private func catalogue(_ payload: ConnectorsPayload) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(Theme.C.inkFaint)
+                TextField("Search apps", text: $search)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.ink)
+                    .focused($searchFocused)
+                    .accessibilityLabel("Search apps")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 38)
+            .background(Theme.C.sunken)
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(searchFocused ? Theme.C.borderStrong : Theme.C.edge, lineWidth: 1)
+            )
+            .clipShape(Capsule(style: .continuous))
+            .padding(.horizontal, 24)
             .padding(.top, 16)
             if let error = model.connectorsError {
                 HStack(spacing: 12) {
@@ -790,126 +804,173 @@ struct ConnectorsDialog: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 28)
                 .padding(.top, 12)
             }
-            // Short lists size the dialog to their content; long ones scroll
-            // inside a fixed height, so the dialog never grows past the window.
-            // Rows have a fixed height, so the list height is arithmetic rather
-            // than a measurement, which a collapsed scroll view never reports.
             ScrollView {
                 catalogueList(payload)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 16)
             }
-            .frame(height: catalogueHeight(payload))
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 20)
+            .uvScroll()
+            .frame(height: Self.listHeight)
+            keyFooter(payload)
         }
     }
 
-    private func catalogueHeight(_ payload: ConnectorsPayload) -> CGFloat {
-        if payload.toolkits.isEmpty { return model.connectorsError != nil ? 0 : 100 }
-        let more: CGFloat = payload.nextOffset != nil ? 48 : 0
-        var form: CGFloat = 0
-        if let open = model.connectorOwnApp, payload.toolkits.contains(where: { $0.slug == open.toolkit }) {
-            form = Self.ownAppFormHeight(fields: open.fields.count)
+    /// Which Composio key the catalogue runs on, and the way to take it out.
+    private func keyFooter(_ payload: ConnectorsPayload) -> some View {
+        HStack(spacing: 8) {
+            Text("Composio key ·…\(payload.last4 ?? "")")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.inkMuted)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            NativeButton("Remove key", kind: .ghost, small: true, enabled: model.connectorBusy != "key") {
+                Task {
+                    await model.removeConnectorsKey()
+                    search = ""
+                }
+            }
         }
-        return min(CGFloat(payload.toolkits.count) * Self.rowHeight + 2 + more + form, Self.listMaxHeight)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) { Hairline() }
     }
 
-    /// The own-app form's height, arithmetic like the rows: the note and
-    /// redirect line, one labelled field per credential, and the buttons.
-    static func ownAppFormHeight(fields: Int) -> CGFloat {
-        92 + CGFloat(fields) * 66 + 54
-    }
+    private static let columns = [
+        GridItem(.flexible(), spacing: 32, alignment: .leading),
+        GridItem(.flexible(), spacing: 32, alignment: .leading),
+    ]
 
     @ViewBuilder
     private func catalogueList(_ payload: ConnectorsPayload) -> some View {
+        let query = search.trimmingCharacters(in: .whitespaces)
         if payload.toolkits.isEmpty && model.connectorsError != nil {
             EmptyView()
         } else if payload.toolkits.isEmpty {
-            Text(search.trimmingCharacters(in: .whitespaces).isEmpty
-                ? "No apps to show."
-                : "No apps match \u{201C}\(search.trimmingCharacters(in: .whitespaces))\u{201D}.")
+            Text(query.isEmpty ? "No apps to show." : "No apps match \u{201C}\(query)\u{201D}.")
                 .font(.system(size: 14))
                 .foregroundStyle(Theme.C.inkMuted)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
         } else {
-            VStack(spacing: 0) {
-                ForEach(Array(payload.toolkits.enumerated()), id: \.element.id) { index, row in
-                    connectorRow(row, last: index == payload.toolkits.count - 1)
+            VStack(alignment: .leading, spacing: 24) {
+                // The own-app form needs the full width, so it opens above
+                // the grid rather than under its row.
+                if let form = model.connectorOwnApp,
+                   let row = payload.toolkits.first(where: { $0.slug == form.toolkit }) {
+                    ownAppCard(row, form)
                 }
-            }
-            .background(Theme.C.canvas)
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous)
-                    .strokeBorder(Theme.C.edge, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
-            if let next = payload.nextOffset, next > 0 {
-                HStack {
-                    Spacer(minLength: 0)
-                    NativeButton(
-                        model.connectorMoreBusy ? "Loading" : "Show more (\(max(payload.total - payload.toolkits.count, 0)) left)",
-                        kind: .secondary,
-                        small: true,
-                        enabled: !model.connectorMoreBusy
-                    ) {
-                        Task { await model.loadMoreConnectors(search: search) }
+                let added = payload.toolkits.filter(\.connected)
+                let rest = payload.toolkits.filter { !$0.connected }
+                if !query.isEmpty {
+                    catalogueSection("Results", payload.toolkits)
+                } else {
+                    if !added.isEmpty { catalogueSection("Added", added) }
+                    if !rest.isEmpty { catalogueSection("All apps", rest) }
+                }
+                if let next = payload.nextOffset, next > 0 {
+                    HStack {
+                        Spacer(minLength: 0)
+                        NativeButton(
+                            model.connectorMoreBusy ? "Loading" : "Show more (\(max(payload.total - payload.toolkits.count, 0)) left)",
+                            kind: .secondary,
+                            small: true,
+                            enabled: !model.connectorMoreBusy
+                        ) {
+                            Task { await model.loadMoreConnectors(search: search) }
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
                 }
-                .padding(.top, 12)
+            }
+            .padding(.top, 20)
+        }
+    }
+
+    private func catalogueSection(_ title: String, _ rows: [ConnectorToolkit]) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.C.ink)
+            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 18) {
+                ForEach(rows) { row in
+                    connectorTile(row)
+                }
             }
         }
     }
 
-    private func connectorRow(_ row: ConnectorToolkit, last: Bool) -> some View {
-        VStack(spacing: 0) {
-            connectorRowLine(row)
-            if let form = model.connectorOwnApp, form.toolkit == row.slug {
-                ownAppForm(row, form)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if !last { Hairline() }
-        }
-    }
-
-    private func connectorRowLine(_ row: ConnectorToolkit) -> some View {
+    private func connectorTile(_ row: ConnectorToolkit) -> some View {
         let pending = model.connectorPending == row.slug
         let busy = model.connectorBusy == row.slug
-        // The form under the row carries its own Connect; two would be one too many.
         let formOpen = model.connectorOwnApp?.toolkit == row.slug
-        return HStack(spacing: 16) {
-            HStack(spacing: 12) {
-                AppLogo(name: row.name, url: row.logo)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.name)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.C.ink)
-                        .lineLimit(1)
-                    Text(statusCopy(row, pending: pending))
-                        .font(.system(size: 12))
-                        .foregroundStyle(row.connected ? Theme.C.success : Theme.C.inkMuted)
-                        .lineLimit(1)
-                }
+        return HStack(spacing: 12) {
+            AppLogo(name: row.name, url: row.logo, size: 26)
+                .frame(width: 40, height: 40)
+                .background(Theme.C.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Theme.C.edge, lineWidth: 1)
+                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.name)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                Text(statusCopy(row, pending: pending))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .lineLimit(1)
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
             if row.connected {
-                NativeButton("Disconnect", kind: .secondary, small: true, enabled: !busy && row.accountId != nil) {
-                    Task { await model.disconnectConnector(row, search: search) }
+                // Added is a state, not a button: its menu holds the one
+                // thing to do with it.
+                Menu {
+                    Button("Disconnect") {
+                        Task { await model.disconnectConnector(row, search: search) }
+                    }
+                    .disabled(busy || row.accountId == nil)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Added")
+                            .font(.system(size: 13))
+                    }
+                    .foregroundStyle(Theme.C.inkMuted)
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .pointerOnHover()
+                .accessibilityLabel("\(row.name) added")
             } else if !formOpen {
-                NativeButton(pending ? "Connecting" : "Connect", kind: .primary, small: true, enabled: !busy && model.connectorPending == nil) {
+                AddPillButton(title: pending ? "Adding" : "Add", enabled: !busy && model.connectorPending == nil) {
                     Task { await model.connectConnector(row, search: search) }
                 }
+                .accessibilityLabel("Add \(row.name)")
             }
         }
-        .frame(minHeight: 52)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .frame(minHeight: 48)
+    }
+
+    private func ownAppCard(_ row: ConnectorToolkit, _ form: OwnAppForm) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                AppLogo(name: row.name, url: row.logo, size: 24)
+                Text(row.name)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.C.ink)
+            }
+            ownAppForm(row, form)
+        }
+        .padding(16)
+        .background(Theme.C.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
     }
 
     /// The owner's own OAuth app for a connector Composio has no app for.
@@ -965,8 +1026,6 @@ struct ConnectorsDialog: View {
                 Spacer(minLength: 0)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 14)
         .onAppear { ownAppFocused = form.fields.first?.name }
     }
 
@@ -989,7 +1048,7 @@ struct ConnectorsDialog: View {
     }
 
     private func statusCopy(_ row: ConnectorToolkit, pending: Bool) -> String {
-        if row.connected { return "Connected" }
+        if row.connected { return "Ready to use" }
         if pending { return "Waiting for approval in the browser" }
         if model.connectorTimedOut == row.slug { return "Still not connected. Try again." }
         if row.noAuth { return "No sign-in needed" }
@@ -1027,5 +1086,32 @@ struct ConnectorsDialog: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.settingsGroup, style: .continuous))
         .accessibilityLabel("Loading connectors")
+    }
+}
+
+/// Grok's small grey "Add" capsule.
+private struct AddPillButton: View {
+    let title: String
+    var enabled = true
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.C.ink)
+                .padding(.horizontal, 14)
+                .frame(height: 30)
+                .background(hovering && enabled ? Theme.C.border : Theme.C.sunken)
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.6)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
     }
 }

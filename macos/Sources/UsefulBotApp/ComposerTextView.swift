@@ -36,6 +36,8 @@ struct ComposerTextView: NSViewRepresentable {
     /// pastes the path as text, which is not an attachment; this hands the
     /// URLs to the composer instead.
     var onDropFiles: ([URL]) -> Void = { _ in }
+    /// Bumped to put the caret in the field (Reply on a message).
+    var focusToken: UInt64 = 0
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -99,6 +101,10 @@ struct ComposerTextView: NSViewRepresentable {
         context.coordinator.onDropFiles = onDropFiles
         context.coordinator.returnSends = returnSends
         context.coordinator.syncFromModel(into: textView, text: text, writeToken: writeToken)
+        if focusToken != context.coordinator.focusToken {
+            context.coordinator.focusToken = focusToken
+            DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) }
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
@@ -126,6 +132,7 @@ struct ComposerTextView: NSViewRepresentable {
         var onFocusChange: (Bool) -> Void = { _ in }
         var onClip: () -> Void = {}
         var onDropFiles: ([URL]) -> Void = { _ in }
+        var focusToken: UInt64 = 0
         init(text: Binding<String>) {
             self._text = text
         }

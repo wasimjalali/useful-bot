@@ -8,6 +8,7 @@ import UsefulBotCore
 struct AppLogo: View {
     let name: String
     let url: String?
+    var size: CGFloat = 28
 
     @State private var image: NSImage?
 
@@ -21,7 +22,7 @@ struct AppLogo: View {
                 initial
             }
         }
-        .frame(width: 28, height: 28)
+        .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
         .accessibilityHidden(true)
         .task(id: url) {

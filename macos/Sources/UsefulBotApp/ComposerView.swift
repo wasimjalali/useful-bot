@@ -85,7 +85,14 @@ struct ComposerView: View {
     }
 
     private var placeholder: String {
-        bot.isGroup ? "Message this group. @name to direct one bot" : "Message \(bot.name)"
+        if replying != nil { return "Reply…" }
+        return bot.isGroup ? "Message this group. @name to direct one bot" : "Message \(bot.name)"
+    }
+
+    /// The reply chip belongs to the chat it was started in.
+    private var replying: ReplyQuote? {
+        guard let quote = model.replyQuote, quote.botId == bot.id else { return nil }
+        return quote
     }
 
     /// Whether `Attachments.formatMessage` would come back non-empty, without
@@ -102,12 +109,13 @@ struct ComposerView: View {
     /// Only per-message files stack above the field. The working folder is a
     /// setting of the conversation, and the project chip under the field is
     /// where it shows; a second chip inside the field said the same thing.
-    private var stacked: Bool { !model.attachments.isEmpty }
+    private var stacked: Bool { !model.attachments.isEmpty || replying != nil }
 
     private var field: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
-                if stacked { attachmentsRow }
+                if let replying { replyChip(replying) }
+                if !model.attachments.isEmpty { attachmentsRow }
                 HStack(alignment: .bottom, spacing: 8) {
                     plusButton
                     input
@@ -318,7 +326,8 @@ struct ComposerView: View {
                 pending: { model.pending },
                 onSend: { send() },
                 onFocusChange: { focused = $0 },
-                onDropFiles: { model.addAttachments($0) }
+                onDropFiles: { model.addAttachments($0) },
+                focusToken: model.composerFocusToken
             )
             .accessibilityLabel(placeholder)
         }
@@ -510,6 +519,43 @@ struct ComposerView: View {
         .padding(.top, 2)
     }
 
+    /// The message being replied to: an arrow, its opening words, and a way
+    /// to drop it.
+    private func replyChip(_ quote: ReplyQuote) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrowshape.turn.up.left")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.C.inkMuted)
+            Text(ReplyQuote.preview(quote.text))
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 360, alignment: .leading)
+            Button {
+                model.replyQuote = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .accessibilityLabel("Cancel reply")
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 6)
+        .frame(height: 28)
+        .background(Theme.C.sunken)
+        .clipShape(Capsule())
+        .padding(.horizontal, 4)
+        .padding(.top, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Replying to a message")
+    }
+
     /// The native open panel, for files. Not `fileImporter`: see `body`.
     private func pickFiles() {
         let panel = NSOpenPanel()
@@ -536,7 +582,8 @@ struct ComposerView: View {
         // Restating it here put a long absolute path in every bubble the owner
         // sends, to tell the agent something it already knew. The chip under
         // the composer is where the owner sees which folder is attached.
-        let message = Attachments.formatMessage(model.draft, files: model.attachments)
+        let formatted = Attachments.formatMessage(model.draft, files: model.attachments)
+        let message = replying?.wrap(formatted) ?? formatted
         modeOpen = false
         // The model clears the composer once the turn is accepted, so a send
         // that fails before that keeps the draft.
