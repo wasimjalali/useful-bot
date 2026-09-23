@@ -167,6 +167,11 @@ if (!FIXTURE_MODEL && !process.env.UB_ROUTER_DESKTOP_TOKEN) {
 }
 
 export default defineAgent({
+  // Compact at three quarters of the window rather than eve's 0.9. eve sizes
+  // the history with a character estimate, and JSON tool results tokenize
+  // heavier than that, so at 0.9 the summary call itself could overrun a
+  // small window after the owner switched models mid-task.
+  compaction: { thresholdPercent: 0.75 },
   // Selected per model step rather than once per session, because the window
   // follows whatever model the owner picked in the composer, and that can
   // change between two steps of one turn. `step.started` is also the only

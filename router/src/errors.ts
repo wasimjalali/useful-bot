@@ -14,6 +14,13 @@ export class RouterError extends Error {
    * was reading it. A local app on the loopback is the only caller.
    */
   readonly detail?: string;
+  /**
+   * The upstream's own refusal, for the router log only: provider, model,
+   * status and the provider's error type, code and message, capped, with
+   * key-like runs masked. A provider can quote part of the request in its
+   * message, so this stays in the local log and is never sent to a caller.
+   */
+  readonly upstream?: string;
 
   constructor(input: {
     status: number;
@@ -24,6 +31,7 @@ export class RouterError extends Error {
     alias?: Alias;
     retryAfterMs?: number;
     detail?: string;
+    upstream?: string;
   }) {
     super(input.message);
     this.status = input.status;
@@ -33,6 +41,7 @@ export class RouterError extends Error {
     this.alias = input.alias;
     this.retryAfterMs = input.retryAfterMs;
     this.detail = input.detail;
+    this.upstream = input.upstream;
   }
 }
 

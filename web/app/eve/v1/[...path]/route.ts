@@ -4,6 +4,7 @@ import {
   evePostAllowed,
   eveSessionRoute,
   isEveSessionPost,
+  parseTurnExtras,
   parseTurnMessage,
   relayedEveCode,
   rewriteEveTurnBody,
@@ -14,10 +15,11 @@ import {
 import { catalogFor } from "../../../../../shared/live-models.ts";
 import { modelOption, modelSeesImages } from "../../../../../shared/models.ts";
 import { composerState, readProviderStore } from "../../../../../shared/providers.ts";
-import { channelJwt, syncSessionWorkspace } from "../../../../lib/agent-exec";
+import { channelJwt, continuationBriefFor, sessionHasCompletedTurn, syncSessionWorkspace } from "../../../../lib/agent-exec";
+import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
-import { readShell } from "../../../../../shared/shell-io.ts";
-import type { ShellBot } from "../../../../../shared/shell-store.ts";
+import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
+import { continueFromVerdict, recordSessionLineage, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
@@ -77,6 +79,8 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   if (jwt) headers.set("authorization", `Bearer ${jwt}`);
   let body: Uint8Array | undefined;
   let route: SessionRoute | null = null;
+  // The session a replacement carries over from, once verified.
+  let carriedFrom: string | null = null;
   if (method !== "GET") {
     try {
       body = await readBody(request, EVE_BODY_MAX);
@@ -87,6 +91,68 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
     }
     if (isEveSessionPost(suffix)) {
       let bot: ShellBot | null = null;
+      // Outside the rewrite's catch on purpose: that one forwards the original
+      // body when anything throws, and a carry-over that failed its check must
+      // be refused, never relayed. Only a new session carries over, and only
+      // from the bot's own live session or one it already carried over from.
+      const extras = parseTurnExtras(new TextDecoder().decode(body));
+      const notes: string[] = [];
+      if (extras.continueFrom !== undefined) {
+        let owner: ShellBot | null = null;
+        try {
+          const botId = (JSON.parse(new TextDecoder().decode(body)) as { botId?: unknown }).botId;
+          owner = readShell().bots.find((item) => item.id === botId) ?? null;
+        } catch {
+          owner = null;
+        }
+        const verdict = suffix === "session" && owner && extras.continueFrom
+          ? continueFromVerdict(owner, extras.continueFrom)
+          : "refused";
+        if (verdict === "moved") {
+          // Another client (or the handoff pump) already carried this session
+          // over. A second carry-over would fork the chat, so the caller
+          // catches up with the live session instead.
+          return Response.json({ ok: false, error: "eve_error", status: 409, code: "session_moved" }, { status: 409 });
+        }
+        if (verdict !== "allowed" || !extras.continueFrom) {
+          return Response.json({ ok: false, error: "continue_from_refused" }, { status: 400 });
+        }
+        carriedFrom = extras.continueFrom;
+        notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
+      }
+      if (suffix !== "session") {
+        // A send into the session a carry-over opened, before that session
+        // has finished a turn: a step-zero failure (a rate limit, say) drops
+        // the opening message and the brief with it, so it rides again.
+        const target = suffix.split("/")[1] ?? "";
+        let owner: ShellBot | null = null;
+        try {
+          const botId = (JSON.parse(new TextDecoder().decode(body)) as { botId?: unknown }).botId;
+          owner = readShell().bots.find((item) => item.id === botId) ?? null;
+        } catch {
+          owner = null;
+        }
+        const previous = owner?.previousSessionIds?.[0];
+        if (owner && previous && owner.continuedSessionId === target && owner.continuationSettled !== true) {
+          let settled = false;
+          try {
+            settled = await sessionHasCompletedTurn(target, jwt ?? "", request.signal);
+          } catch (err) {
+            console.error("carry-over settle check failed", err instanceof Error ? err.message : err);
+          }
+          if (settled) {
+            const botId = owner.id;
+            try {
+              updateShell((current) => settleContinuation(current, botId, target));
+            } catch (err) {
+              console.error("carry-over settle not recorded", err instanceof Error ? err.message : err);
+            }
+          } else {
+            notes.push(await continuationBriefFor(previous, jwt ?? "", undefined, request.signal));
+          }
+        }
+      }
+      if (extras.retry) notes.push(RETRY_NOTE);
       try {
         const raw = new TextDecoder().decode(body);
         const shell = readShell();
@@ -106,9 +172,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
           return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
         }
-        body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members));
+        body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members, notes));
         headers.set("content-type", "application/json");
       } catch {
+        // A carry-over or a retry note that could not be folded in is refused
+        // here: forwarding the original body would relay those fields to eve
+        // and record a carry-over the new session does not hold.
+        if (notes.length > 0) {
+          return Response.json({ ok: false, error: "eve_message_invalid" }, { status: 400 });
+        }
         /* keep the original body: a malformed turn must fail at eve, not here */
       }
       // Outside the body-rewrite try on purpose. The tools that run during
@@ -176,6 +248,31 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         created = (JSON.parse(text) as { sessionId?: string }).sessionId ?? "";
       } catch {
         /* a body this build cannot parse still belongs to the caller */
+      }
+      if (created && carriedFrom) {
+        // Recorded here, not by the client: this is the one place that knows
+        // the carry-over was verified and the new session exists. The client
+        // moves the live pointer with its usual touchChat.
+        const previous = carriedFrom;
+        const botId = route.threadId;
+        try {
+          updateShell((current) => {
+            // Only over the session this carry-over came from: if another
+            // client moved the pointer meanwhile, its session is the chat.
+            const now = current.bots.find((item) => item.id === botId);
+            if (now && now.sessionId && now.sessionId !== previous) {
+              console.error("carry-over lost the race; pointer left on the newer session");
+              return current;
+            }
+            return recordSessionLineage(current, botId, previous, created);
+          });
+          removeSessionGrant(previous);
+        } catch (err) {
+          // The new session already holds the brief; only a second carry-over
+          // from this old session would be refused. Not worth failing the send,
+          // but it is said.
+          console.error("session lineage not recorded", err instanceof Error ? err.message : err);
+        }
       }
       if (created) {
         try {

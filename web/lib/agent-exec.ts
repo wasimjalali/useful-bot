@@ -7,7 +7,8 @@ import {
 } from "../../shared/agent-store.ts";
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { libraryDrawingIds } from "../../shared/media-store.ts";
-import { parseEveStreamLine } from "../../shared/eve-stream.ts";
+import { parseEveStreamLine, type EveEvent as StreamEvent } from "../../shared/eve-stream.ts";
+import { buildContinuationBrief, withSessionNotes } from "../../shared/continuation-brief.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
 import {
@@ -36,7 +37,7 @@ import {
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
-import type { ShellBot } from "../../shared/shell-store.ts";
+import { recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 
 /**
  * Handoff delivery. The sending agent tool only writes a queue record, so a
@@ -340,6 +341,158 @@ async function sessionEventIds(sessionId: string, jwt: string): Promise<Set<stri
   return ids;
 }
 
+/** How far back from the tail the settle check looks for a completed step. */
+const SETTLE_TAIL_EVENTS = 200;
+/** How much of an old session the carry-over reads before it stops. */
+const CARRY_READ = { headEvents: 400, tailEvents: 20_000, idleMs: 3_000, hardMs: 15_000, maxBytes: 48 * 1024 * 1024 };
+
+/**
+ * Up to `count` events from absolute index `start`, plus the stream's tail
+ * index from eve's catch-up header. The stream stays open after its last
+ * event, so the read stops at the count; the quiet period only guards a
+ * stream that stalls, and is armed once the headers are in.
+ */
+async function readStreamRange(
+  sessionId: string,
+  jwt: string,
+  start: number,
+  count: number,
+  outer?: AbortSignal,
+): Promise<{ events: StreamEvent[]; tail: number | null; cut: boolean }> {
+  const events: StreamEvent[] = [];
+  const controller = new AbortController();
+  // The caller gave up (the owner's request went away): stop reading too.
+  if (outer?.aborted) controller.abort();
+  outer?.addEventListener("abort", () => controller.abort(), { once: true });
+  const hard = setTimeout(() => controller.abort(), CARRY_READ.hardMs);
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  const reset = () => {
+    if (idle) clearTimeout(idle);
+    idle = setTimeout(() => controller.abort(), CARRY_READ.idleMs);
+  };
+  let tail: number | null = null;
+  let cut = false;
+  let bytes = 0;
+  try {
+    const url = `${EVE}/eve/v1/session/${encodeURIComponent(sessionId)}/stream?startIndex=${start}&includeTailIndex=1`;
+    const res = await fetch(url, { headers: { authorization: `Bearer ${jwt}` }, signal: controller.signal });
+    if (!res.ok || !res.body) throw new Error(`eve_stream_${res.status}`);
+    const header = Number(res.headers.get("x-eve-stream-tail-index"));
+    tail = res.headers.has("x-eve-stream-tail-index") && Number.isInteger(header) ? header : null;
+    // Nothing recorded past `start`: no need to wait on a live stream.
+    const wanted = tail === null ? count : Math.min(count, tail + 1 - start);
+    if (wanted <= 0) {
+      await res.body.cancel().catch(() => undefined);
+      return { events, tail, cut };
+    }
+    reset();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (events.length < wanted) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      reset();
+      bytes += chunk.value.byteLength;
+      if (bytes > CARRY_READ.maxBytes) {
+        cut = true;
+        break;
+      }
+      buf += decoder.decode(chunk.value, { stream: true });
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const event = parseEveStreamLine(line);
+        if (event && events.length < wanted) events.push(event);
+      }
+    }
+    await reader.cancel().catch(() => undefined);
+  } catch (err) {
+    // The deadline or a stalled stream ended the read. What came in is kept
+    // and marked cut; anything else is a real failure.
+    if (!controller.signal.aborted) throw err;
+    cut = true;
+  } finally {
+    if (idle) clearTimeout(idle);
+    clearTimeout(hard);
+  }
+  return { events, tail, cut };
+}
+
+/**
+ * A session's recorded events for the carry-over brief: its opening (the
+ * original request, any brief it inherited) and its newest stretch (the
+ * latest work, the todo list and the failure that ended it). On a long
+ * session the middle is skipped and counted, never the end. An empty read
+ * throws, so the brief says the context was lost instead of pretending
+ * there was none.
+ */
+export async function readSessionEvents(
+  sessionId: string,
+  jwt: string,
+  signal?: AbortSignal,
+): Promise<{ events: StreamEvent[]; skipped: number; cut: boolean }> {
+  const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents, signal);
+  if (head.events.length === 0) throw new Error("eve_stream_empty");
+  if (head.tail === null) {
+    // No tail index: only the opening is certain, and the end may be missing.
+    return { events: head.events, skipped: 0, cut: true };
+  }
+  const total = head.tail + 1;
+  if (total <= head.events.length) return { events: head.events, skipped: 0, cut: head.cut };
+  const start = Math.max(head.events.length, total - CARRY_READ.tailEvents);
+  const rest = await readStreamRange(sessionId, jwt, start, total - start, signal);
+  return {
+    events: [...head.events, ...rest.events],
+    skipped: start - head.events.length,
+    // A live session can grow between the two reads; what came after the
+    // first tail index was not read, so the brief says its end may be missing.
+    cut: head.cut || rest.cut || rest.events.length < total - start || (rest.tail !== null && rest.tail > head.tail),
+  };
+}
+
+/**
+ * Whether a session has finished a turn yet. Until it has, the message that
+ * opened it (and the brief that rode on it) may have been dropped by a
+ * step-zero failure. Reads the opening and the newest stretch of the stream.
+ */
+export async function sessionHasCompletedTurn(sessionId: string, jwt: string, signal?: AbortSignal): Promise<boolean> {
+  // A completed step commits the prompt, opening message included, to eve's
+  // history; a cancelled turn keeps its accepted input too.
+  const settles = (events: StreamEvent[]) => events.some((event) => (
+    event.type === "step.completed" || event.type === "turn.completed" || event.type === "turn.cancelled"
+  ));
+  const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents, signal);
+  if (settles(head.events)) return true;
+  if (head.tail === null || head.tail + 1 <= head.events.length) return false;
+  // A long first turn streams hundreds of deltas before its step completes,
+  // so the newest stretch is read as well; that is where it lands.
+  const start = Math.max(head.events.length, head.tail + 1 - SETTLE_TAIL_EVENTS);
+  const tail = await readStreamRange(sessionId, jwt, start, head.tail + 1 - start, signal);
+  return settles(tail.events);
+}
+
+/**
+ * The brief a replacement session opens with. A stream that cannot be read
+ * still yields a brief that says so, so the bot tells the owner it lost the
+ * thread instead of acting as if there never was one.
+ */
+export async function continuationBriefFor(
+  sessionId: string,
+  jwt: string,
+  reason?: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const read = await readSessionEvents(sessionId, jwt, signal);
+    return buildContinuationBrief(read.events, { reason, skipped: read.skipped, cut: read.cut });
+  } catch {
+    return buildContinuationBrief([], {
+      reason: `${reason ?? "the previous session stopped"}; its conversation could not be read back, so tell the owner you lost the earlier context and ask what to pick up`,
+    });
+  }
+}
+
 function handoffEnvelope(handoff: HandoffRecord): string {
   const lines = [
     `Handoff from ${handoff.sourceName}.`,
@@ -449,8 +602,8 @@ async function runEveTurn(
     idleTimer = setTimeout(() => expire("turn_went_silent"), budget.idleMs);
   };
   feedIdle?.();
-  const follow = (stream: ReadableStream<Uint8Array>, ids: Set<string>) =>
-    readHandoffStream(stream, controller.signal, ids, sent, feedIdle);
+  const follow = (stream: ReadableStream<Uint8Array>, ids: Set<string>, armed = sent) =>
+    readHandoffStream(stream, controller.signal, ids, armed, feedIdle);
   let sessionId = bot.sessionId ?? "";
   let reply = "";
   try {
@@ -468,10 +621,24 @@ async function runEveTurn(
       // way the UI clients recover.
       const text = await res.text().catch(() => "");
       if (relayedEveCode(409, text) === "session_not_active") {
+        // The fresh session opens with a brief of the retired one, so the
+        // bot keeps the thread instead of starting over empty.
+        const retired = sessionId;
+        // The owner's app may have carried this session over already. Then
+        // the live session holds the thread, and a second carry-over would
+        // fork the chat: this delivery joins the live one instead.
+        const live = readShell().bots.find((item) => item.id === bot.id) ?? null;
+        if (live?.sessionId && live.sessionId !== retired) {
+          clearTimeout(timer);
+          if (idleTimer) clearTimeout(idleTimer);
+          return await runEveTurn(live, message, budget);
+        }
+        const brief = await continuationBriefFor(retired, jwt);
+        const carried = `${withSessionNotes(turnPrefixFor(bot), [brief])}${message}`;
         const retry = await fetch(`${EVE}/eve/v1/session`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
-          body: JSON.stringify({ message: sent, botId: bot.id }),
+          body: JSON.stringify({ message: carried, botId: bot.id }),
           signal: controller.signal,
         });
         if (!retry.ok) throw new Error(`eve_send_${retry.status}`);
@@ -480,23 +647,40 @@ async function runEveTurn(
         if (!sessionId) throw new Error("eve_session_missing");
         // Persist the fresh pointer now, so a crash before the reply still
         // leaves later handoffs and routines on the live session.
+        // Only over the retired pointer: if the owner's app replaced it in
+        // the meantime, its session is the chat and this one stays a side
+        // conversation holding this single delivery.
         const stamp = new Date().toISOString();
-        updateShell((current) => ({
-          ...current,
-          bots: current.bots.map((item) => (
-            item.id === bot.id
-              ? { ...item, sessionId, lastAt: stamp, updatedAt: stamp }
-              : item
-          )),
-        }));
+        const created = sessionId;
+        updateShell((current) => {
+          const now = current.bots.find((item) => item.id === bot.id);
+          if (now && now.sessionId && now.sessionId !== retired) {
+            console.error("pump carry-over lost the race; pointer left on the owner's session");
+            return current;
+          }
+          return recordSessionLineage({
+            ...current,
+            bots: current.bots.map((item) => (
+              item.id === bot.id
+                ? { ...item, sessionId: created, lastAt: stamp, updatedAt: stamp }
+                : item
+            )),
+          }, bot.id, retired, created);
+        });
         historyIds = new Set<string>();
+        // The retired session's workspace grant goes with it.
+        try {
+          removeSessionGrant(retired);
+        } catch (err) {
+          console.error("retired session grant not removed", err instanceof Error ? err.message : err);
+        }
         syncSessionWorkspaceFresh(sessionId, bot.id);
         const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
           headers: { authorization: `Bearer ${jwt}` },
           signal: controller.signal,
         });
         if (!stream.ok || !stream.body) throw new Error(`eve_stream_${stream.status}`);
-        reply = await follow(stream.body, historyIds);
+        reply = await follow(stream.body, historyIds, carried);
         return { sessionId, reply };
       }
       throw new Error(`eve_send_${res.status}`);

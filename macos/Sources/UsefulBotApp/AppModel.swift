@@ -66,6 +66,9 @@ final class AppModel: ObservableObject {
     /// stack and has to stay one: the reply-height sum and the tall-reply
     /// anchor both need the newest reply mounted whole.
     @Published private(set) var transcriptWindow = TranscriptBlocks.Window(blocks: [], hidden: 0)
+    /// The owner row that opened a carried-over session, where the chat says
+    /// the conversation continues from an earlier one.
+    @Published private(set) var continuationRowId: String?
     /// Per bot, the first block the reader expanded the window back to. Held
     /// for the session so a chat comes back the way it was left.
     private var windowStarts: [String: String] = [:]
@@ -1469,10 +1472,15 @@ final class AppModel: ObservableObject {
                 // no turn ids at all, which is what an empty set used to mean.
                 var untaggedMayArm = true
                 var sendSessionId = bot.sessionId
+                // The session a fresh one carries over from. The proxy folds a
+                // brief of it into the new session's first turn, so the bot
+                // keeps the thread instead of starting over empty.
+                var continueFrom: String?
                 if freshSession {
                     // Posted as a new session. The old pointer stays until the
                     // new one replaces it, so a post that fails leaves the
                     // broken chat readable rather than gone.
+                    continueFrom = sendSessionId
                     sendSessionId = nil
                 }
                 if let sessionId = sendSessionId, !sessionId.isEmpty {
@@ -1492,9 +1500,16 @@ final class AppModel: ObservableObject {
                         history = snapshot.turnIds.union(known)
                         untaggedMayArm = held == 0 && history.isEmpty
                         streamStart = snapshot.nextIndex ?? 0
-                    } catch {
+                    } catch BackendError.http(404) {
+                        // eve no longer has the session at all: there is
+                        // nothing to join or carry over, so a fresh one starts.
                         sendSessionId = nil
                     }
+                    // Any other read failure is not a reason to leave the
+                    // session: it may be alive and holding the whole
+                    // conversation, and starting a new one here dropped all of
+                    // it without a word. It throws, the send fails before
+                    // delivery and the draft comes back.
                 }
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                     self.finishSend(botId: bot.id, generation: generation)
@@ -1509,22 +1524,19 @@ final class AppModel: ObservableObject {
                         botId: bot.id,
                         sessionId: sendSessionId,
                         message: message,
-                        images: images
+                        images: images,
+                        continueFrom: continueFrom,
+                        retry: retrying
                     )
                 } catch BackendError.sessionEnded where sendSessionId != nil {
                     // eve retires a session whose turn failed, and the stored
                     // pointer kept sending every later message to it: 409 on
-                    // each, a chat that looked dead. Drop the pointer and
-                    // start a fresh session with this same message. The turn
-                    // ids snapshot belongs to the old session, so it is
-                    // cleared too.
-                    guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
-                        self.finishSend(botId: bot.id, generation: generation)
-                        return
-                    }
-                    await self.dropSession(botId: bot.id)
-                    // Stop pressed while the pointer was being dropped: no
-                    // second session gets created only to be cancelled.
+                    // each, a chat that looked dead. Start a fresh session
+                    // with this same message, carried over from the retired
+                    // one. The pointer is not dropped first: the proxy checks
+                    // the carry-over against it, and the new session replaces
+                    // it below. The turn ids snapshot belongs to the old
+                    // session, so it is cleared too.
                     guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                         self.finishSend(botId: bot.id, generation: generation)
                         return
@@ -1533,7 +1545,14 @@ final class AppModel: ObservableObject {
                     streamStart = 0
                     untaggedMayArm = true
                     createdSession = true
-                    sessionId = try await self.postSession(botId: bot.id, sessionId: nil, message: message, images: images)
+                    sessionId = try await self.postSession(
+                        botId: bot.id,
+                        sessionId: nil,
+                        message: message,
+                        images: images,
+                        continueFrom: sendSessionId,
+                        retry: retrying
+                    )
                 }
                 delivered = true
                 if createdSession, self.selectedBotId == bot.id {
@@ -1668,6 +1687,11 @@ final class AppModel: ObservableObject {
                     )
                 }
                 self.finishSend(botId: bot.id, generation: generation)
+                if case BackendError.sessionMoved = error {
+                    // The chat went on in a newer session: pick up its pointer
+                    // before the reload, so the next send joins it.
+                    await self.pollOnce()
+                }
                 if self.selectedBotId == bot.id {
                     await self.reloadThread()
                 }
@@ -1885,25 +1909,21 @@ final class AppModel: ObservableObject {
         botId: String,
         sessionId: String?,
         message: String,
-        images: [Attachment] = []
+        images: [Attachment] = [],
+        continueFrom: String? = nil,
+        retry: Bool = false
     ) async throws -> String {
         let client = client
         return try await Task.detached {
-            try await client.send(botId: botId, sessionId: sessionId, message: message, images: images)
+            try await client.send(
+                botId: botId,
+                sessionId: sessionId,
+                message: message,
+                images: images,
+                continueFrom: continueFrom,
+                retry: retry
+            )
         }.value
-    }
-
-    /// Forget a session eve has retired, locally and in the stored shell, so
-    /// the next send creates a new one. A failed shell write is not fatal
-    /// here: the send that follows stamps the fresh pointer through
-    /// `updateSession`, which overwrites the stale one either way.
-    private func dropSession(botId: String) async {
-        if var current = store, let index = current.bots.firstIndex(where: { $0.id == botId }) {
-            forgetTurnIds(of: current.bots[index].sessionId)
-            current.bots[index].sessionId = nil
-            store = current
-        }
-        _ = try? await client.shellAction(ShellActions.setSession(botId: botId, sessionId: nil))
     }
 
     private func updateSession(botId: String, sessionId: String, preview: String) async {
@@ -2101,6 +2121,7 @@ final class AppModel: ObservableObject {
     }
 
     private func rebuildTranscript() {
+        if continuationRowId != projection.continuationRowId { continuationRowId = projection.continuationRowId }
         var rows = Transcript.merge(
             events: durableEvents,
             messages: projection.messages

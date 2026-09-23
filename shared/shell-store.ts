@@ -57,6 +57,22 @@ export type ShellBot = {
   hidden: boolean;
   sectionId: string | null;
   sessionId: string | null;
+  /**
+   * Sessions this bot's chat was carried over from, newest first, recorded
+   * only when a replacement session was opened with a brief of the old one
+   * (see continuation-brief.ts). The proxy checks a `continueFrom` against
+   * the live pointer and this list before it reads an old session. A new
+   * chat or an opened recent is a deliberate fresh start and is not recorded.
+   */
+  previousSessionIds?: string[];
+  /** The session the last carry-over opened. */
+  continuedSessionId?: string;
+  /**
+   * True once that session has finished a turn, so its brief is in eve's
+   * history. Until then a step-zero failure can have dropped the message that
+   * carried it, and sends into the session attach the brief again.
+   */
+  continuationSettled?: boolean;
   memberIds: string[];
   lastPreview: string;
   lastAt: string | null;
@@ -261,6 +277,17 @@ function parseBot(raw: unknown): ShellBot {
     hidden: rec.hidden,
     sectionId: rec.sectionId,
     sessionId: rec.sessionId,
+    ...(Array.isArray(rec.previousSessionIds)
+      ? {
+        previousSessionIds: rec.previousSessionIds
+          .filter((id): id is string => typeof id === "string" && SESSION_ID.test(id))
+          .slice(0, PREVIOUS_SESSIONS_MAX),
+      }
+      : {}),
+    ...(typeof rec.continuedSessionId === "string" && SESSION_ID.test(rec.continuedSessionId)
+      ? { continuedSessionId: rec.continuedSessionId }
+      : {}),
+    ...(rec.continuationSettled === true ? { continuationSettled: true } : {}),
     memberIds: rec.memberIds.filter((id, index, all) => all.indexOf(id) === index),
     lastPreview: typeof rec.lastPreview === "string" ? clip(rec.lastPreview, PREVIEW_MAX) : "",
     lastAt: typeof rec.lastAt === "string" ? rec.lastAt : null,
@@ -341,6 +368,61 @@ function parseWorkspacePermissionStrict(value: unknown): WorkspacePermission {
  * held, so it survives. A detach keeps its session id, which the diff cannot
  * see, so that one case is named.
  */
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const PREVIOUS_SESSIONS_MAX = 5;
+
+/**
+ * Whether a turn may be carried over from `sessionId`:
+ * - "allowed": it is the bot's live session, or the session the last
+ *   carry-over opened (the client may hold that one before its pointer write
+ *   lands).
+ * - "moved": it was already carried over into a newer session. Carrying it
+ *   over again would fork the chat, so the client is told to catch up.
+ * - "refused": anything else. Fails closed, so a crafted id cannot read
+ *   another bot's conversation.
+ */
+export function continueFromVerdict(bot: ShellBot, sessionId: string): "allowed" | "moved" | "refused" {
+  if (!SESSION_ID.test(sessionId)) return "refused";
+  // First: a session already carried over stays moved even while some
+  // client's pointer still names it.
+  if ((bot.previousSessionIds ?? []).includes(sessionId)) return "moved";
+  if (bot.sessionId === sessionId || bot.continuedSessionId === sessionId) return "allowed";
+  return "refused";
+}
+
+/**
+ * Record that `botId`'s chat moved on from `previous` into `continued`,
+ * newest first, bounded, and move the live pointer in the same locked write:
+ * a gap between the lineage and the pointer let a second client carry the
+ * same session over again and fork the chat.
+ */
+export function recordSessionLineage(store: ShellStore, botId: string, previous: string, continued: string): ShellStore {
+  return {
+    ...store,
+    bots: store.bots.map((bot) => {
+      if (bot.id !== botId) return bot;
+      const rest = (bot.previousSessionIds ?? []).filter((id) => id !== previous);
+      return {
+        ...bot,
+        sessionId: continued,
+        previousSessionIds: [previous, ...rest].slice(0, PREVIOUS_SESSIONS_MAX),
+        continuedSessionId: continued,
+        continuationSettled: false,
+      };
+    }),
+  };
+}
+
+/** The carried-over session finished a turn: its brief is in eve's history. */
+export function settleContinuation(store: ShellStore, botId: string, sessionId: string): ShellStore {
+  return {
+    ...store,
+    bots: store.bots.map((bot) => (
+      bot.id === botId && bot.continuedSessionId === sessionId ? { ...bot, continuationSettled: true } : bot
+    )),
+  };
+}
+
 export function staleSessionIds(
   action: ShellAction | undefined,
   before: ShellStore,

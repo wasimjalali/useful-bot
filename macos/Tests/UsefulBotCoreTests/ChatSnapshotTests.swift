@@ -94,10 +94,10 @@ import Testing
     /// one changes what an old file means. This list failing is the reminder
     /// to bump `ChatSnapshot.formatVersion` and then update it.
     @Test func theStoredShapeIsPinnedToTheFormatVersion() {
-        #expect(ChatSnapshot.formatVersion == 1)
+        #expect(ChatSnapshot.formatVersion == 2)
         let stored = Mirror(reflecting: StreamProjection()).children.compactMap(\.label).sorted()
         #expect(stored == [
-            "activity", "currentTurnId", "discardedUserMessageId", "failed", "failure", "indexById",
+            "activity", "continuationRowId", "currentTurnId", "discardedUserMessageId", "failed", "failure", "firstSession", "indexById",
             "journalBase", "journalSession", "journalTop", "messages", "minted", "newestTurnStart",
             "pending", "questions", "rowJournal", "searchHits", "seen", "seenCursor", "seenOrder",
             "turn", "turnOrder", "turns", "widgets",
@@ -111,7 +111,7 @@ import Testing
         func labels(_ value: Any) -> [String] {
             Mirror(reflecting: value).children.compactMap(\.label).sorted()
         }
-        #expect(ChatSnapshot.formatVersion == 1)
+        #expect(ChatSnapshot.formatVersion == 2)
         let turn = try #require(Mirror(reflecting: StreamProjection()).children.first { $0.label == "turn" }?.value)
         #expect(labels(turn) == [
             "assistantId", "carriedUserMessageId", "ended", "lastRowId", "openUserRows",

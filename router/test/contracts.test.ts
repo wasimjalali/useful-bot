@@ -667,6 +667,73 @@ test("ops sees every registry model", async () => {
   });
 });
 
+test("compaction's temperature and top_p are accepted and never reach the upstream", async () => {
+  // eve's compaction sends temperature: 0, and eve retires the session on any
+  // 4xx from here: every chat past its model's window died this way.
+  let forwarded: Record<string, unknown> = {};
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], temperature: 0, top_p: 1 }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal("temperature" in forwarded, false);
+    assert.equal("top_p" in forwarded, false);
+  }, (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        id: "cmpl_test",
+        object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+      }));
+    });
+  });
+});
+
+test("a sampling value out of range is still refused", async () => {
+  await withRouter(async (base, tokens) => {
+    for (const extra of [{ temperature: 9 }, { top_p: "high" }]) {
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+        body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }], ...extra }),
+      });
+      assert.equal(res.status, 400);
+      assert.equal((await res.json()).error.code, "unsupported_parameter");
+    }
+  });
+});
+
+test("an upstream refusal names its status, type and code, never its free text", async () => {
+  await withRouter(async (base, tokens) => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 502);
+    const text = await res.text();
+    const error = JSON.parse(text).error;
+    assert.equal(error.code, "upstream_protocol_error");
+    assert.equal(error.message, "upstream_protocol_error (400 invalid_request_error/context_length_exceeded)");
+    assert.equal(text.includes("sk-proj"), false);
+    assert.equal(text.includes("maximum context"), false);
+  }, (_req, res) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: {
+      type: "invalid_request_error",
+      code: "context_length_exceeded",
+      message: "This model's maximum context length is 128000 tokens (key sk-proj-abcdefgh1234)",
+    } }));
+  });
+});
+
 test("unknown completion options are rejected", async () => {
   await withRouter(async (base, tokens) => {
     const res = await fetch(`${base}/v1/chat/completions`, {

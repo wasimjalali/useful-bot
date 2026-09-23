@@ -11,6 +11,7 @@ import {
 } from "./attachments.ts";
 
 import { resolveRoute, speakersFrom, threadPrefix, type Route, type Speaker } from "./threads.ts";
+import { withSessionNotes } from "./continuation-brief.ts";
 import type { ThreadKind } from "./agent-store.ts";
 
 /**
@@ -160,14 +161,16 @@ export function rewriteEveTurnBody(
   bot: ShellBot | null,
   route: SessionRoute | null,
   members: Speaker[] = [],
+  /** App notes for the hidden prefix: a carry-over brief, a retry note. */
+  notes: string[] = [],
 ): string {
   const json = JSON.parse(raw) as { message?: unknown };
   const message = parseTurnMessage(json.message);
   if (message === null) throw new Error("eve_message");
-  if (!bot || bot.id === DEFAULT_BOT_ID) {
+  if ((!bot || bot.id === DEFAULT_BOT_ID) && notes.length === 0) {
     return JSON.stringify({ message });
   }
-  const prefix = threadPrefix({
+  const identity = !bot || bot.id === DEFAULT_BOT_ID ? "" : threadPrefix({
     bot: {
       id: bot.id,
       kind: bot.kind,
@@ -178,6 +181,7 @@ export function rewriteEveTurnBody(
     members: members.length > 0 ? members : undefined,
     mentionNames: route?.mentionNames ?? [],
   });
+  const prefix = withSessionNotes(identity, notes);
   if (typeof message === "string") {
     return JSON.stringify({ message: `${prefix}${message}` });
   }
@@ -191,6 +195,28 @@ export function rewriteEveTurnBody(
     ? [{ ...head, text: `${prefix}${head.text}` }, ...message.slice(1)]
     : [{ type: "text" as const, text: `${prefix.trimEnd()}\n` }, ...message];
   return JSON.stringify({ message: prefixed });
+}
+
+const CONTINUE_FROM = new RegExp(`^${SESSION_ID}$`);
+
+/**
+ * The turn fields only this proxy reads: `continueFrom` names the session a
+ * replacement carries over from, `retry` marks the owner's Retry. Neither is
+ * relayed to eve. `continueFrom` is null when present but not an id.
+ */
+export function parseTurnExtras(raw: string): { continueFrom?: string | null; retry: boolean } {
+  try {
+    const json = JSON.parse(raw) as { continueFrom?: unknown; retry?: unknown };
+    const out: { continueFrom?: string | null; retry: boolean } = { retry: json.retry === true };
+    if (json.continueFrom !== undefined) {
+      out.continueFrom = typeof json.continueFrom === "string" && CONTINUE_FROM.test(json.continueFrom)
+        ? json.continueFrom
+        : null;
+    }
+    return out;
+  } catch {
+    return { retry: false };
+  }
 }
 
 export function sessionRouteHeader(route: SessionRoute | null): string | null {

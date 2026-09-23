@@ -100,6 +100,10 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     /// command, the query, the path. "Running a command" names the step;
     /// "Running a command: npm test" is the step.
     case tool(String, detail: String? = nil)
+    /// eve is summarizing older messages so the chat fits the model's window.
+    /// It can take a while on a long chat, and a bare "Thinking" through it
+    /// read as a hang.
+    case compacting
 
     /// Sentence case, no trailing period: the row swaps between these while
     /// the turn runs, and a period on every one of them reads as a stutter.
@@ -109,6 +113,7 @@ public enum TurnActivity: Codable, Equatable, Sendable {
         // Only reached while text is streaming in, and the row now stays up
         // under the bubble being written.
         case .working: return "Writing"
+        case .compacting: return "Compacting the conversation"
         case .tool(let name, let detail):
             guard let detail else { return Self.toolLabel(name) }
             return "\(Self.toolLabel(name)): \(detail)"
@@ -310,6 +315,12 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         // The turn never reached a model, or reached one that answered with
         // nothing. Neither is the app's to fix, and both left the owner with a
         // bare "the turn failed" and no idea where to look.
+        // The router names what the provider refused with, as status and
+        // error type or code: "upstream_protocol_error (400 invalid_request_error)".
+        // A model that refuses every call is not one that did not answer.
+        if let refusal = providerRefusal {
+            return "The model provider refused the request (\(refusal)). Send again, or pick another model."
+        }
         if haystack.contains("upstream_protocol_error") || haystack.contains("upstream_timeout") {
             return "The model provider did not answer. Check its status or your usage limit, then send again."
         }
@@ -324,6 +335,18 @@ public struct TurnFailure: Codable, Equatable, Sendable {
             return "The model returned nothing. Send it again."
         }
         return nil
+    }
+
+    /// The provider's refusal the router put in brackets after
+    /// `upstream_protocol_error`: a 4xx status plus the provider's own error
+    /// type or code. A bare status, or a 5xx, is the provider not answering.
+    var providerRefusal: String? {
+        guard let range = detail.range(of: "upstream_protocol_error (") else { return nil }
+        let inside = detail[range.upperBound...].prefix { $0 != ")" }
+        let refusal = String(inside).trimmingCharacters(in: .whitespaces)
+        guard let status = Int(refusal.prefix { $0.isNumber }), (400..<500).contains(status) else { return nil }
+        guard refusal.count <= 140, refusal.allSatisfy({ $0.isLetter || $0.isNumber || " /._-".contains($0) }) else { return nil }
+        return refusal
     }
 
     /// What to show when this failure is the whole message.
@@ -367,7 +390,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     public let metaAt: String?
     public let message: String?
     public let messageDelta: String?
-    public let turnId: String?
+    public var turnId: String?
     public let data: JSONValue?
     /// The event's absolute position in its session stream, stamped by the
     /// reader rather than decoded: eve's `startIndex` counts events from zero,
@@ -492,6 +515,22 @@ public enum EveStream {
     private static let groupTurnPrefix = try! NSRegularExpression(
         pattern: "^Group chat: [^\\n]+\\.\\n"
     )
+    /// The default bot's hidden prefix, present only when the proxy folded
+    /// app notes into its turn (`shared/continuation-brief.ts`).
+    private static let sessionNotePrefix = try! NSRegularExpression(
+        pattern: "^Session note: the lines below come from the app, not from the owner\\.\\n"
+    )
+
+    /// Port of `BRIEF_MARKER` in `shared/continuation-brief.ts`.
+    static let continuationMarker = "Continued session brief:"
+
+    /// True when a stored user turn opened a session carried over from an
+    /// older one: its hidden prefix, the part before the first blank line,
+    /// holds the brief. Text the owner typed sits after it and never counts.
+    public static func isContinuationTurn(_ text: String) -> Bool {
+        guard let blank = text.range(of: "\n\n") else { return false }
+        return text[..<blank.lowerBound].contains(continuationMarker)
+    }
 
     /// Port of `handoffEnvelope` in `web/lib/agent-exec.ts`: a user turn the
     /// handoff pump sent on the owner's behalf. Its first two lines are fixed.
@@ -513,7 +552,8 @@ public enum EveStream {
         let whole = NSRange(text.startIndex..., in: text)
         let isBotPrefix = botTurnPrefix.firstMatch(in: text, range: whole) != nil
         let isGroupPrefix = groupTurnPrefix.firstMatch(in: text, range: whole) != nil
-        guard isBotPrefix || isGroupPrefix else { return text }
+        let isNotePrefix = sessionNotePrefix.firstMatch(in: text, range: whole) != nil
+        guard isBotPrefix || isGroupPrefix || isNotePrefix else { return text }
         guard let range = text.range(of: "\n\n") else { return text }
         return String(text[range.upperBound...])
     }
@@ -635,6 +675,9 @@ public enum EveStream {
 /// `ChatSnapshot.formatVersion`, which `ChatSnapshotTests` enforces.
 public struct StreamProjection: Codable, Equatable, Sendable {
     public private(set) var messages: [ChatMessage] = []
+    /// The owner row that opened a session carried over from an older one:
+    /// its hidden prefix held the brief. The chat marks where that happened.
+    public private(set) var continuationRowId: String?
     public private(set) var pending = false
     /// Set when the turn or session failed, so callers can surface it instead
     /// of treating the empty turn as a delivered reply.
@@ -725,6 +768,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// has placed, and a later session reads as later.
     private var journalSession: String?
     private var journalBase = 0
+    /// The first session any event here named. Turn ids are per session in
+    /// eve, so a turn of any other session is keyed by its session too.
+    private var firstSession: String?
     /// The highest position placed so far, in the projection's count: where
     /// the next session's positions start after.
     private var journalTop: Int?
@@ -1039,6 +1085,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         // redeliver that event once the bounded id cache has evicted it, and
         // this mapping is then the only thing that still recognises it.
         if indexById[id] == nil { indexById[id] = messages.count - 1 }
+        // A retried carry-over re-keys its row; the divider follows it.
+        if continuationRowId == messages[messages.count - 1].id { continuationRowId = id }
         messages[messages.count - 1] = ChatMessage(id: id, role: .user, text: text, at: at)
         // The echo is where the journal placed the row the app put up early.
         if let journal { rowJournal[messages.count - 1] = journal }
@@ -1098,6 +1146,21 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         // Every journal comparison below reads this, so it is the one place a
         // session's positions are put in the projection's count.
         event.index = journalPosition(of: event)
+        // eve numbers turns per session, so a fresh session's first turn is
+        // `turn_0` again, and here that id already belonged to an old turn
+        // that ended: every event of the new turn was dropped as a replay of
+        // it, and a chat moved to a new session showed nothing until it was
+        // reopened ("it doesn't refresh"). Turns of any session after this
+        // projection's first are keyed by their session too. The first stays
+        // raw, so a saved one-session snapshot keeps matching its events.
+        // Keyed off the first session named, not off a switch having been
+        // seen, so a late event of the first session stays raw too.
+        if let session = event.sessionId {
+            if firstSession == nil { firstSession = session }
+            if session != firstSession, let turnId = event.turnId, !turnId.isEmpty {
+                event.turnId = "\(session)/\(turnId)"
+            }
+        }
         // A server stamp wins; otherwise a turn that is happening now is
         // stamped from the client clock, while a replay of old history is not
         // (the durable events already carry their own times).
@@ -1185,6 +1248,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // ahead of it is never applied and the id would stay unknown for
             // the whole live turn.
             let text = EveStream.stripThreadPrefix(event.message ?? "")
+            if let id = event.id, EveStream.isContinuationTurn(event.message ?? "") {
+                continuationRowId = id
+            }
             if let named = event.turnId, named != currentTurnId {
                 if let known = turns[named] {
                     // A message for a turn that is over is a rewind re-sending
@@ -1303,6 +1369,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // as the record of an attempt, and nothing folds into it again.
             discardedUserMessageId = nil
             pending = true
+            activity = .thinking
+        case "compaction.requested":
+            // Not work: a turn that fails here left nothing under its message.
+            guard case .current = turnOwner(of: event) else { break }
+            activity = .compacting
+        case "compaction.completed":
+            guard case .current = turnOwner(of: event) else { break }
             activity = .thinking
         case "reasoning.appended", "reasoning.completed":
             // Thinking shows in the working row and nowhere else, so a turn

@@ -361,23 +361,24 @@ export default function Page() {
     try {
       const sessionId = selected.sessionId ?? active;
       const csrf = await csrfHeaders();
-      const post = (sid: string | null) => fetch(sid ? `/eve/v1/session/${sid}` : "/eve/v1/session", {
+      const post = (sid: string | null, continueFrom?: string) => fetch(sid ? `/eve/v1/session/${sid}` : "/eve/v1/session", {
         method: "POST",
         credentials: "include",
         signal: controller.signal,
         headers: { "content-type": "application/json", ...csrf },
-        body: JSON.stringify({ message, botId: selected.id }),
+        body: JSON.stringify({ message, botId: selected.id, ...(continueFrom ? { continueFrom } : {}) }),
       });
       let res = await post(sessionId);
       if (res.status === 409 && sessionId) {
         // eve retired the stored session (a failed turn ends it for good), so
-        // drop the pointer and start a fresh one with this same message.
+        // a fresh one starts with this same message and a brief of the old
+        // one. The pointer stays until the new session replaces it: the proxy
+        // checks the carry-over against it.
         const failure = (await res.json().catch(() => ({}))) as { code?: string };
         if (failure.code === "session_not_active") {
-          dispatch({ type: "setSession", botId: selected.id, sessionId: null });
           projSession.current = "";
           setActive("");
-          res = await post(null);
+          res = await post(null, sessionId);
         }
       }
       if (!res.ok) {

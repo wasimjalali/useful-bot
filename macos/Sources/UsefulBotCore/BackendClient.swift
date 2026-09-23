@@ -28,6 +28,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// eve retired the session this chat pointed at (a failed turn ends a
     /// session for good), so nothing can be sent to it again.
     case sessionEnded
+    /// The chat was already carried over into a newer session elsewhere.
+    case sessionMoved
     /// The event stream ended before the turn did, so the reply on screen
     /// may be missing its tail.
     case streamInterrupted
@@ -84,6 +86,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return BackendClient.regenerateCopy(code)
         case .sessionEnded:
             return "This chat's session ended. Send again to start a new one."
+        case .sessionMoved:
+            return "This chat just continued in a newer session. Send again."
         case .streamInterrupted:
             return "The connection dropped before the reply finished."
         case .modelNoVision:
@@ -1341,7 +1345,18 @@ public actor BackendClient {
 
     /// Post a turn. `images` ride beside the text as file parts; with none
     /// the body is the plain string the text path has always sent.
-    public func send(botId: String, sessionId: String?, message: String, images: [Attachment] = []) async throws -> String {
+    /// `continueFrom` names the session a fresh one carries over from: the
+    /// proxy folds a brief of it into the new session's first turn. `retry`
+    /// marks the owner's Retry, so the bot checks what already happened
+    /// before repeating any step.
+    public func send(
+        botId: String,
+        sessionId: String?,
+        message: String,
+        images: [Attachment] = [],
+        continueFrom: String? = nil,
+        retry: Bool = false
+    ) async throws -> String {
         // An empty stored session means "start one", not a trailing-slash path
         // the proxy rejects.
         let normalized = sessionId.flatMap { $0.isEmpty ? nil : $0 }
@@ -1352,10 +1367,13 @@ public actor BackendClient {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
-            request.httpBody = try JSONSerialization.data(withJSONObject: [
+            var body: [String: Any] = [
                 "message": turn,
                 "botId": botId,
-            ])
+            ]
+            if let continueFrom, !continueFrom.isEmpty, normalized == nil { body["continueFrom"] = continueFrom }
+            if retry { body["retry"] = true }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
             return request
         }
         // A 409 with the relayed code means the stored session is gone, not
@@ -1364,6 +1382,13 @@ public actor BackendClient {
            let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
            failure.code == "session_not_active" {
             throw BackendError.sessionEnded
+        }
+        // The carry-over this send asked for already happened elsewhere (the
+        // handoff pump, another window): the chat lives in a newer session.
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let failure = try? JSONDecoder().decode(EveErrorResponse.self, from: data),
+           failure.code == "session_moved" {
+            throw BackendError.sessionMoved
         }
         // The proxy refuses a picture for a model that cannot look at it
         // before the turn exists, so the draft and its files come back.

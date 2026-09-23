@@ -541,6 +541,11 @@ struct ChatView: View {
                             case .dayDivider(_, let label):
                                 DayDividerRow(label: label)
                             case .message(let row, let recipients):
+                                if row.id == model.continuationRowId {
+                                    // The earlier session could not go on, so
+                                    // this one opened with a brief of it.
+                                    DayDividerRow(label: "Continued from an earlier session")
+                                }
                                 TranscriptRowView(
                                     row: row,
                                     bot: rowBot,

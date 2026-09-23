@@ -29,6 +29,7 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
 
     public var isGroup: Bool { kind == "group" }
 
+
     public var isReadOnly: Bool { permission == "read_only" }
     public var isFullAccess: Bool { permission == "full_access" }
 
