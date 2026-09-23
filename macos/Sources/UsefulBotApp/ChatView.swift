@@ -544,7 +544,7 @@ struct ChatView: View {
                                     bot: rowBot,
                                     bots: rowRoster,
                                     recipients: recipients,
-                                    maxBubbleWidth: columnWidth * 0.85,
+                                    maxBubbleWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85),
                                     // The reply still being written parses
                                     // into one replaceable slot. Part of the
                                     // row's equality, so the turn finishing
@@ -1119,15 +1119,11 @@ struct TranscriptRowView: View, Equatable {
                         roster: bots
                     )
                 }
-                // An incoming teammate question (it names this bot) sits in
-                // the same bubble as an owner message, so the receiving bot's
-                // chat reads as a turn. A teammate's answer is a reply, and
-                // keeps its markdown.
-                if row.targetBotIds.contains(bot.id) {
-                    userRow
-                } else {
-                    replyRow(showsSpeaker: false)
-                }
+                // Whatever a teammate posts, a question to this bot or an
+                // answer, is a bot speaking: it sits on the left in the bot
+                // bubble, under the "Message from" line that names it. Only
+                // the owner's words go on the right.
+                replyRow(showsSpeaker: false)
             }
         case .note where row.connectedName != nil:
             connectedCard(name: row.connectedName ?? "")
@@ -1198,10 +1194,10 @@ struct TranscriptRowView: View, Equatable {
                 }
                 // The cap holds the bubble plus its actions, so the actions sit
                 // right beside a short bubble instead of at the cap's far edge.
-                .frame(
-                    maxWidth: holdsWideBlock ? .infinity : max(160, maxBubbleWidth) + MessageHoverActionsWidth.value,
-                    alignment: .leading
-                )
+                // One cap for every bubble, code and tables included: a wide
+                // block scrolls or wraps inside it rather than going full
+                // column.
+                .frame(maxWidth: max(160, maxBubbleWidth) + MessageHoverActionsWidth.value, alignment: .leading)
             }
             Spacer(minLength: 0)
         }
@@ -1240,11 +1236,6 @@ struct TranscriptRowView: View, Equatable {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(name) added")
-    }
-
-    /// A table or a code block gets the whole column; prose keeps the cap.
-    private var holdsWideBlock: Bool {
-        row.text.contains("```") || row.text.contains("\n|")
     }
 
     /// A note's face: the speaker's, the chat owner's for its own note, and
