@@ -97,7 +97,7 @@ import Testing
         #expect(ChatSnapshot.formatVersion == 2)
         let stored = Mirror(reflecting: StreamProjection()).children.compactMap(\.label).sorted()
         #expect(stored == [
-            "activity", "continuationRowId", "currentTurnId", "discardedUserMessageId", "failed", "failure", "indexById",
+            "activity", "continuationRowId", "currentTurnId", "discardedUserMessageId", "failed", "failure", "firstSession", "indexById",
             "journalBase", "journalSession", "journalTop", "messages", "minted", "newestTurnStart",
             "pending", "questions", "rowJournal", "searchHits", "seen", "seenCursor", "seenOrder",
             "turn", "turnOrder", "turns", "widgets",

@@ -15,11 +15,11 @@ import {
 import { catalogFor } from "../../../../../shared/live-models.ts";
 import { modelOption, modelSeesImages } from "../../../../../shared/models.ts";
 import { composerState, readProviderStore } from "../../../../../shared/providers.ts";
-import { channelJwt, continuationBriefFor, syncSessionWorkspace } from "../../../../lib/agent-exec";
+import { channelJwt, continuationBriefFor, sessionHasCompletedTurn, syncSessionWorkspace } from "../../../../lib/agent-exec";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
-import { continueFromVerdict, recordSessionLineage, type ShellBot } from "../../../../../shared/shell-store.ts";
+import { continueFromVerdict, recordSessionLineage, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
@@ -119,6 +119,38 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
         carriedFrom = extras.continueFrom;
         notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
+      }
+      if (suffix !== "session") {
+        // A send into the session a carry-over opened, before that session
+        // has finished a turn: a step-zero failure (a rate limit, say) drops
+        // the opening message and the brief with it, so it rides again.
+        const target = suffix.split("/")[1] ?? "";
+        let owner: ShellBot | null = null;
+        try {
+          const botId = (JSON.parse(new TextDecoder().decode(body)) as { botId?: unknown }).botId;
+          owner = readShell().bots.find((item) => item.id === botId) ?? null;
+        } catch {
+          owner = null;
+        }
+        const previous = owner?.previousSessionIds?.[0];
+        if (owner && previous && owner.continuedSessionId === target && owner.continuationSettled !== true) {
+          let settled = false;
+          try {
+            settled = await sessionHasCompletedTurn(target, jwt ?? "", request.signal);
+          } catch (err) {
+            console.error("carry-over settle check failed", err instanceof Error ? err.message : err);
+          }
+          if (settled) {
+            const botId = owner.id;
+            try {
+              updateShell((current) => settleContinuation(current, botId, target));
+            } catch (err) {
+              console.error("carry-over settle not recorded", err instanceof Error ? err.message : err);
+            }
+          } else {
+            notes.push(await continuationBriefFor(previous, jwt ?? "", undefined, request.signal));
+          }
+        }
       }
       if (extras.retry) notes.push(RETRY_NOTE);
       try {

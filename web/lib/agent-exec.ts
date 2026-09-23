@@ -450,6 +450,16 @@ export async function readSessionEvents(
 }
 
 /**
+ * Whether a session has finished a turn yet. Until it has, the message that
+ * opened it (and the brief that rode on it) may have been dropped by a
+ * step-zero failure. Reads only the opening of the stream.
+ */
+export async function sessionHasCompletedTurn(sessionId: string, jwt: string, signal?: AbortSignal): Promise<boolean> {
+  const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents, signal);
+  return head.events.some((event) => event.type === "turn.completed");
+}
+
+/**
  * The brief a replacement session opens with. A stream that cannot be read
  * still yields a brief that says so, so the bot tells the owner it lost the
  * thread instead of acting as if there never was one.

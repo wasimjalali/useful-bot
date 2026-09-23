@@ -65,8 +65,14 @@ export type ShellBot = {
    * chat or an opened recent is a deliberate fresh start and is not recorded.
    */
   previousSessionIds?: string[];
-  /** The session a carry-over opened; while it is still live the chat says so. */
+  /** The session the last carry-over opened. */
   continuedSessionId?: string;
+  /**
+   * True once that session has finished a turn, so its brief is in eve's
+   * history. Until then a step-zero failure can have dropped the message that
+   * carried it, and sends into the session attach the brief again.
+   */
+  continuationSettled?: boolean;
   memberIds: string[];
   lastPreview: string;
   lastAt: string | null;
@@ -281,6 +287,7 @@ function parseBot(raw: unknown): ShellBot {
     ...(typeof rec.continuedSessionId === "string" && SESSION_ID.test(rec.continuedSessionId)
       ? { continuedSessionId: rec.continuedSessionId }
       : {}),
+    ...(rec.continuationSettled === true ? { continuationSettled: true } : {}),
     memberIds: rec.memberIds.filter((id, index, all) => all.indexOf(id) === index),
     lastPreview: typeof rec.lastPreview === "string" ? clip(rec.lastPreview, PREVIEW_MAX) : "",
     lastAt: typeof rec.lastAt === "string" ? rec.lastAt : null,
@@ -376,14 +383,18 @@ const PREVIOUS_SESSIONS_MAX = 5;
  */
 export function continueFromVerdict(bot: ShellBot, sessionId: string): "allowed" | "moved" | "refused" {
   if (!SESSION_ID.test(sessionId)) return "refused";
-  if (bot.sessionId === sessionId || bot.continuedSessionId === sessionId) return "allowed";
+  // First: a session already carried over stays moved even while some
+  // client's pointer still names it.
   if ((bot.previousSessionIds ?? []).includes(sessionId)) return "moved";
+  if (bot.sessionId === sessionId || bot.continuedSessionId === sessionId) return "allowed";
   return "refused";
 }
 
 /**
  * Record that `botId`'s chat moved on from `previous` into `continued`,
- * newest first, bounded. The live pointer is the client's to move.
+ * newest first, bounded, and move the live pointer in the same locked write:
+ * a gap between the lineage and the pointer let a second client carry the
+ * same session over again and fork the chat.
  */
 export function recordSessionLineage(store: ShellStore, botId: string, previous: string, continued: string): ShellStore {
   return {
@@ -393,10 +404,22 @@ export function recordSessionLineage(store: ShellStore, botId: string, previous:
       const rest = (bot.previousSessionIds ?? []).filter((id) => id !== previous);
       return {
         ...bot,
+        sessionId: continued,
         previousSessionIds: [previous, ...rest].slice(0, PREVIOUS_SESSIONS_MAX),
         continuedSessionId: continued,
+        continuationSettled: false,
       };
     }),
+  };
+}
+
+/** The carried-over session finished a turn: its brief is in eve's history. */
+export function settleContinuation(store: ShellStore, botId: string, sessionId: string): ShellStore {
+  return {
+    ...store,
+    bots: store.bots.map((bot) => (
+      bot.id === botId && bot.continuedSessionId === sessionId ? { ...bot, continuationSettled: true } : bot
+    )),
   };
 }
 

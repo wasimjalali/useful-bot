@@ -768,6 +768,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// has placed, and a later session reads as later.
     private var journalSession: String?
     private var journalBase = 0
+    /// The first session any event here named. Turn ids are per session in
+    /// eve, so a turn of any other session is keyed by its session too.
+    private var firstSession: String?
     /// The highest position placed so far, in the projection's count: where
     /// the next session's positions start after.
     private var journalTop: Int?
@@ -1082,6 +1085,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         // redeliver that event once the bounded id cache has evicted it, and
         // this mapping is then the only thing that still recognises it.
         if indexById[id] == nil { indexById[id] = messages.count - 1 }
+        // A retried carry-over re-keys its row; the divider follows it.
+        if continuationRowId == messages[messages.count - 1].id { continuationRowId = id }
         messages[messages.count - 1] = ChatMessage(id: id, role: .user, text: text, at: at)
         // The echo is where the journal placed the row the app put up early.
         if let journal { rowJournal[messages.count - 1] = journal }
@@ -1148,9 +1153,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         // reopened ("it doesn't refresh"). Turns of any session after this
         // projection's first are keyed by their session too. The first stays
         // raw, so a saved one-session snapshot keeps matching its events.
-        if journalBase > 0, let session = event.sessionId, session == journalSession,
-           let turnId = event.turnId, !turnId.isEmpty {
-            event.turnId = "\(session)/\(turnId)"
+        // Keyed off the first session named, not off a switch having been
+        // seen, so a late event of the first session stays raw too.
+        if let session = event.sessionId {
+            if firstSession == nil { firstSession = session }
+            if session != firstSession, let turnId = event.turnId, !turnId.isEmpty {
+                event.turnId = "\(session)/\(turnId)"
+            }
         }
         // A server stamp wins; otherwise a turn that is happening now is
         // stamped from the client clock, while a replay of old history is not

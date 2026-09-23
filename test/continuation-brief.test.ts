@@ -9,7 +9,7 @@ import {
 } from "../shared/continuation-brief.ts";
 import type { EveEvent } from "../shared/eve-stream.ts";
 import { parseTurnExtras, rewriteEveTurnBody } from "../shared/eve-proxy.ts";
-import { DEFAULT_BOT_ID, continueFromVerdict, parseShell, recordSessionLineage, type ShellBot } from "../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, continueFromVerdict, parseShell, recordSessionLineage, settleContinuation, type ShellBot } from "../shared/shell-store.ts";
 import { stripThreadPrefix, threadPrefix } from "../shared/threads.ts";
 
 const prefix = threadPrefix({
@@ -121,8 +121,16 @@ test("a carry-over is only allowed from the bot's own live session, and a carrie
   assert.equal(moved.continuedSessionId, "wrun_next_6");
   // Already carried over: a second carry-over would fork the chat.
   assert.equal(continueFromVerdict({ ...moved, sessionId: "wrun_next_6" }, "wrun_4"), "moved");
-  // The session the last carry-over opened, before the client's pointer write lands.
+  // The lineage write moves the live pointer too, so there is no window
+  // where the carried session still reads as live.
+  assert.equal(moved.sessionId, "wrun_next_6");
+  assert.equal(moved.continuationSettled, false);
+  // A client still holding the carried session is told it moved, never forked.
+  assert.equal(continueFromVerdict({ ...moved, sessionId: "wrun_6" }, "wrun_6"), "moved");
   assert.equal(continueFromVerdict({ ...moved, sessionId: "wrun_6" }, "wrun_next_6"), "allowed");
+  const settled = settleContinuation(next, "b1", "wrun_next_6").bots[0];
+  assert.equal(settled.continuationSettled, true);
+  assert.equal(settleContinuation(next, "b1", "wrun_other").bots[0].continuationSettled, false);
   assert.equal(next.bots[1].previousSessionIds, undefined);
 });
 

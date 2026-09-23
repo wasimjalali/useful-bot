@@ -1690,7 +1690,7 @@ final class AppModel: ObservableObject {
                 if case BackendError.sessionMoved = error {
                     // The chat went on in a newer session: pick up its pointer
                     // before the reload, so the next send joins it.
-                    await self.pollOnce(displayReads: false)
+                    await self.pollOnce()
                 }
                 if self.selectedBotId == bot.id {
                     await self.reloadThread()
