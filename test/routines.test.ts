@@ -612,10 +612,17 @@ test("the sweep stands down while the roster is a recovery stub", () => {
     shell: process.env.UB_SHELL_PATH,
     routines: process.env.UB_ROUTINES_PATH,
     agents: process.env.UB_AGENT_STORE_PATH,
+    images: process.env.UB_IMAGES_DIR,
+    widgets: process.env.UB_WIDGETS_DIR,
   };
   process.env.UB_SHELL_PATH = shellPath;
   process.env.UB_ROUTINES_PATH = routinesPath;
   process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
+  // The sweep also clears images and drawings no event names. Against this
+  // empty store that is every one of them, so they must be temp dirs too:
+  // pointing at the real ones deleted the owner's images on every test run.
+  process.env.UB_IMAGES_DIR = join(dir, "images");
+  process.env.UB_WIDGETS_DIR = join(dir, "widgets");
   try {
     const shell = readShell(shellPath);
     shell.bots = [...shell.bots, { ...shell.bots[0], id: "bot-second", name: "Second" }];
@@ -657,6 +664,8 @@ test("the sweep stands down while the roster is a recovery stub", () => {
       ["UB_SHELL_PATH", previous.shell],
       ["UB_ROUTINES_PATH", previous.routines],
       ["UB_AGENT_STORE_PATH", previous.agents],
+      ["UB_IMAGES_DIR", previous.images],
+      ["UB_WIDGETS_DIR", previous.widgets],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
