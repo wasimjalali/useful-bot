@@ -378,7 +378,18 @@ export default function Page() {
         if (failure.code === "session_not_active") {
           projSession.current = "";
           setActive("");
-          res = await post(null, sessionId);
+          // A carry-over that does not land leaves the store on the old
+          // session, so the page goes back to it and its follower instead
+          // of sitting detached until a refresh.
+          const restore = () => {
+            projSession.current = sessionId;
+            setActive(sessionId);
+          };
+          res = await post(null, sessionId).catch((err: unknown) => {
+            restore();
+            throw err;
+          });
+          if (!res.ok) restore();
         }
       }
       if (!res.ok) {
