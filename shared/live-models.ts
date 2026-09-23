@@ -370,8 +370,10 @@ export async function refreshProviderModels(input: {
         const kept = (current?.models ?? []).filter((item) => item.imageGen);
         images = {
           ids: kept.map((item) => item.id),
-          meta: Object.fromEntries(kept.map(({ id, label, contextTokens, inputs, outputs, aspectRatios }) => [id, {
+          meta: Object.fromEntries(kept.map(({ id, label, contextTokens, inputs, outputs, aspectRatios, efforts, defaultEffort }) => [id, {
             label,
+            efforts,
+            defaultEffort,
             imageGen: true,
             ...(contextTokens ? { contextTokens } : {}),
             ...(inputs ? { inputs } : {}),
