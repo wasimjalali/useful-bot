@@ -66,6 +66,9 @@ final class AppModel: ObservableObject {
     /// stack and has to stay one: the reply-height sum and the tall-reply
     /// anchor both need the newest reply mounted whole.
     @Published private(set) var transcriptWindow = TranscriptBlocks.Window(blocks: [], hidden: 0)
+    /// The owner row that opened a carried-over session, where the chat says
+    /// the conversation continues from an earlier one.
+    @Published private(set) var continuationRowId: String?
     /// Per bot, the first block the reader expanded the window back to. Held
     /// for the session so a chat comes back the way it was left.
     private var windowStarts: [String: String] = [:]
@@ -2118,6 +2121,7 @@ final class AppModel: ObservableObject {
     }
 
     private func rebuildTranscript() {
+        if continuationRowId != projection.continuationRowId { continuationRowId = projection.continuationRowId }
         var rows = Transcript.merge(
             events: durableEvents,
             messages: projection.messages

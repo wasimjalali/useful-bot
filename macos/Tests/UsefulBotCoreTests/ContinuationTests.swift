@@ -28,15 +28,14 @@ import Testing
         #expect(bare.message.hasPrefix("The model provider did not answer."))
     }
 
-    @Test func shellBotKnowsWhenItsLiveSessionWasCarriedOver() throws {
-        let json = #"{"id":"b1","kind":"bot","name":"Generalist","sessionId":"wrun_new","continuedSessionId":"wrun_new"}"#
-        let bot = try JSONDecoder().decode(ShellBot.self, from: Data(json.utf8))
-        #expect(bot.continuesEarlierSession)
-        var moved = bot
-        moved.sessionId = "wrun_later"
-        #expect(!moved.continuesEarlierSession)
-        let plain = try JSONDecoder().decode(ShellBot.self, from: Data(#"{"id":"b2","sessionId":"wrun_x"}"#.utf8))
-        #expect(!plain.continuesEarlierSession)
+    @Test func theCarriedOverTurnIsMarkedForTheDivider() {
+        var projection = StreamProjection()
+        let opened = "You are Scout.\nStanding instructions: Survey.\nContinued session brief: moved.\nEnd of brief.\n\nContinue the task"
+        projection.apply(EveEvent(type: "message.received", id: "m1", message: opened))
+        #expect(projection.continuationRowId == "m1")
+        #expect(projection.messages.last?.text == "Continue the task")
+        // The owner typing the marker after the prefix does not count.
+        #expect(!EveStream.isContinuationTurn("You are Scout.\nStanding instructions: x\n\nContinued session brief: hi"))
     }
 
     @Test func compactionShowsInTheWorkingRow() {
@@ -50,5 +49,23 @@ import Testing
         let completed = #"{"type":"compaction.completed","meta":{"id":"3"},"data":{"modelId":"workhorse","sequence":3,"sessionId":"s","turnId":"t1"}}"#
         projection.apply(EveStream.parseLine(completed)!)
         #expect(projection.activity == .thinking)
+    }
+
+    /// eve restarts turn ids at `turn_0` in every session. A chat that moved
+    /// to a fresh session must still show the new session's turn live.
+    @Test func aFreshSessionsFirstTurnShowsLive() {
+        var projection = StreamProjection()
+        func event(_ json: String, session: String, index: Int) -> EveEvent {
+            var parsed = EveStream.parseLine(json)!
+            parsed.sessionId = session
+            parsed.index = index
+            return parsed
+        }
+        projection.apply(event(#"{"type":"message.received","meta":{"id":"a1"},"data":{"message":"Remember BLUE-HERON-7","turnId":"turn_0"}}"#, session: "old", index: 0))
+        projection.apply(event(#"{"type":"message.completed","meta":{"id":"a2"},"data":{"message":"DONE","turnId":"turn_0"}}"#, session: "old", index: 1))
+        projection.apply(event(#"{"type":"turn.completed","meta":{"id":"a3"},"data":{"turnId":"turn_0"}}"#, session: "old", index: 2))
+        projection.apply(event(#"{"type":"message.received","meta":{"id":"b1"},"data":{"message":"Continue the task","turnId":"turn_0"}}"#, session: "new", index: 0))
+        projection.apply(event(#"{"type":"message.completed","meta":{"id":"b2"},"data":{"message":"step 1 done","turnId":"turn_0"}}"#, session: "new", index: 1))
+        #expect(projection.messages.map(\.text) == ["Remember BLUE-HERON-7", "DONE", "Continue the task", "step 1 done"])
     }
 }

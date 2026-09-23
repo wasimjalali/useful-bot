@@ -390,7 +390,7 @@ public struct EveEvent: Decodable, Equatable, Sendable {
     public let metaAt: String?
     public let message: String?
     public let messageDelta: String?
-    public let turnId: String?
+    public var turnId: String?
     public let data: JSONValue?
     /// The event's absolute position in its session stream, stamped by the
     /// reader rather than decoded: eve's `startIndex` counts events from zero,
@@ -520,6 +520,17 @@ public enum EveStream {
     private static let sessionNotePrefix = try! NSRegularExpression(
         pattern: "^Session note: the lines below come from the app, not from the owner\\.\\n"
     )
+
+    /// Port of `BRIEF_MARKER` in `shared/continuation-brief.ts`.
+    static let continuationMarker = "Continued session brief:"
+
+    /// True when a stored user turn opened a session carried over from an
+    /// older one: its hidden prefix, the part before the first blank line,
+    /// holds the brief. Text the owner typed sits after it and never counts.
+    public static func isContinuationTurn(_ text: String) -> Bool {
+        guard let blank = text.range(of: "\n\n") else { return false }
+        return text[..<blank.lowerBound].contains(continuationMarker)
+    }
 
     /// Port of `handoffEnvelope` in `web/lib/agent-exec.ts`: a user turn the
     /// handoff pump sent on the owner's behalf. Its first two lines are fixed.
@@ -664,6 +675,9 @@ public enum EveStream {
 /// `ChatSnapshot.formatVersion`, which `ChatSnapshotTests` enforces.
 public struct StreamProjection: Codable, Equatable, Sendable {
     public private(set) var messages: [ChatMessage] = []
+    /// The owner row that opened a session carried over from an older one:
+    /// its hidden prefix held the brief. The chat marks where that happened.
+    public private(set) var continuationRowId: String?
     public private(set) var pending = false
     /// Set when the turn or session failed, so callers can surface it instead
     /// of treating the empty turn as a delivered reply.
@@ -1127,6 +1141,17 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         // Every journal comparison below reads this, so it is the one place a
         // session's positions are put in the projection's count.
         event.index = journalPosition(of: event)
+        // eve numbers turns per session, so a fresh session's first turn is
+        // `turn_0` again, and here that id already belonged to an old turn
+        // that ended: every event of the new turn was dropped as a replay of
+        // it, and a chat moved to a new session showed nothing until it was
+        // reopened ("it doesn't refresh"). Turns of any session after this
+        // projection's first are keyed by their session too. The first stays
+        // raw, so a saved one-session snapshot keeps matching its events.
+        if journalBase > 0, let session = event.sessionId, session == journalSession,
+           let turnId = event.turnId, !turnId.isEmpty {
+            event.turnId = "\(session)/\(turnId)"
+        }
         // A server stamp wins; otherwise a turn that is happening now is
         // stamped from the client clock, while a replay of old history is not
         // (the durable events already carry their own times).
@@ -1214,6 +1239,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // ahead of it is never applied and the id would stay unknown for
             // the whole live turn.
             let text = EveStream.stripThreadPrefix(event.message ?? "")
+            if let id = event.id, EveStream.isContinuationTurn(event.message ?? "") {
+                continuationRowId = id
+            }
             if let named = event.turnId, named != currentTurnId {
                 if let known = turns[named] {
                     // A message for a turn that is over is a rewind re-sending

@@ -26,18 +26,9 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
     /// server's value survives the decode.
     public var permission: String
     public var workspace: BotWorkspace?
-    /// The session a carry-over opened after the old one could not go on
-    /// (`shared/continuation-brief.ts`). While it is the live session, the
-    /// chat says the conversation continues from an earlier one.
-    public var continuedSessionId: String?
 
     public var isGroup: Bool { kind == "group" }
 
-    /// True while the live session is one a carry-over opened.
-    public var continuesEarlierSession: Bool {
-        guard let continuedSessionId, !continuedSessionId.isEmpty else { return false }
-        return continuedSessionId == sessionId
-    }
 
     public var isReadOnly: Bool { permission == "read_only" }
     public var isFullAccess: Bool { permission == "full_access" }
@@ -54,7 +45,7 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
         case id, kind, name, petname, label, description, notify, pinned, hidden
         case sectionId, sessionId, memberIds, lastPreview, lastAt
         case avatarShape, avatarColor, avatarImage, avatarCustom
-        case permission, workspace, continuedSessionId
+        case permission, workspace
     }
 
     public init(from decoder: Decoder) throws {
@@ -81,7 +72,6 @@ public struct ShellBot: Codable, Identifiable, Equatable, Sendable {    public l
         // An older server carried the permission on the folder only.
         let decoded = (try? c.decode(String.self, forKey: .permission)) ?? workspace?.permission ?? "auto"
         permission = decoded == "guard" ? "auto" : decoded
-        continuedSessionId = try? c.decodeIfPresent(String.self, forKey: .continuedSessionId)
     }
 }
 
