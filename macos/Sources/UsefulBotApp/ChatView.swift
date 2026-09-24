@@ -1501,8 +1501,11 @@ struct TranscriptRowView: View, Equatable {
 
     /// A note's author when it is not the chat's own bot.
     private var noteAuthorName: String? {
-        guard let id = row.authorBotId, id != bot.id else { return nil }
+        // A note with only a stored name still says whose it is, unless the
+        // name is the chat's own bot.
+        guard row.authorBotId != bot.id else { return nil }
         let name = speaker?.name ?? row.author ?? ""
+        if row.authorBotId == nil, name == bot.name { return nil }
         return name.isEmpty ? nil : name
     }
 

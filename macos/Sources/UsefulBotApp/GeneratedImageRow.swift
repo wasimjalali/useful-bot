@@ -155,7 +155,8 @@ struct GeneratedImageRow: View {
                     .font(.system(size: 12))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(locateError == nil ? Theme.C.inkMuted : Theme.C.danger)
-                HStack(spacing: 10) {
+                // Stacked: three actions side by side do not fit the tile.
+                VStack(spacing: 4) {
                     lostActions(lost)
                 }
             }
