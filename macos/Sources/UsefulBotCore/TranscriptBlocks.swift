@@ -15,12 +15,17 @@ public enum TranscriptBlock: Equatable, Sendable, Identifiable {
     case message(row: TranscriptRow, recipients: [String])
     /// The "N messages with <bots>" strip after a turn that involved teammates.
     case summary(id: String, messageCount: Int, botIds: [String])
+    /// Pictures posted one after another, laid out side by side in rows
+    /// instead of stacked. Keyed to the first, so a picture that joins the
+    /// run does not remount the ones already on screen.
+    case images(rows: [TranscriptRow])
 
     public var id: String {
         switch self {
         case .dayDivider(let id, _): return id
         case .message(let row, _): return row.id
         case .summary(let id, _, _): return id
+        case .images(let rows): return rows.first?.id ?? "images"
         }
     }
 
@@ -30,8 +35,10 @@ public enum TranscriptBlock: Equatable, Sendable, Identifiable {
     }
 
     var isMessage: Bool {
-        if case .message = self { return true }
-        return false
+        switch self {
+        case .message, .images: return true
+        case .dayDivider, .summary: return false
+        }
     }
 }
 
@@ -131,6 +138,21 @@ public enum TranscriptBlocks {
                 )
                 noteInvolvement(row)
                 continue
+            }
+
+            // A picture straight after another joins its row. A single
+            // picture stays a message and keeps its full size.
+            if row.kind == .image, let index = lastMessageBlockIndex, index == blocks.count - 1 {
+                if case .images(let run) = blocks[index] {
+                    blocks[index] = .images(rows: run + [row])
+                    lastTurnRow = row
+                    continue
+                }
+                if case .message(let previous, _) = blocks[index], previous.kind == .image {
+                    blocks[index] = .images(rows: [previous, row])
+                    lastTurnRow = row
+                    continue
+                }
             }
 
             blocks.append(.message(
