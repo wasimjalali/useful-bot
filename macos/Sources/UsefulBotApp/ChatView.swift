@@ -1377,6 +1377,11 @@ private struct WorkingRow: View {
                     .opacity(1 - 0.5 * wave)
                     .contentTransition(.opacity)
                     .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: activity)
+                    // The label's own crossfade only. The first reply pushes
+                    // the row down in the same update that turns "Thinking"
+                    // into "Writing", and without this the label slid down
+                    // from under the new bubble while its face jumped.
+                    .geometryGroup()
                 Spacer(minLength: 0)
             }
         }
