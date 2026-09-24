@@ -19,6 +19,7 @@ import {
   noteConnectionError,
   tokenFor,
   upstreamConfigError,
+  upstreamOutOfCredit,
 } from "./opencode.ts";
 
 /**
@@ -232,6 +233,8 @@ export async function generateImage(input: {
     throw authFailed();
   } else if (response.status === 429) {
     throw await upstreamLimitError(response);
+  } else if (response.status === 402) {
+    throw await upstreamOutOfCredit(response, `${resolved.providerId}/${resolved.model}`);
   } else if (response.status === 404) {
     throw new RouterError({
       status: 502,

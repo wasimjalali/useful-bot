@@ -509,6 +509,40 @@ test("quota and plan limits get their own codes", async () => {
   }
 });
 
+test("an upstream 402 is an account out of credit: 402 upstream_quota_exhausted, not retried, no circuit", async () => {
+  // DeepSeek's and OpenRouter's documented bodies, then a proxy's HTML page
+  // and an empty body: the status alone says the account has no credit.
+  for (const body of [
+    JSON.stringify({ error: { message: "Insufficient Balance", type: "unknown_error", param: null, code: "invalid_request_error" } }),
+    JSON.stringify({ error: { code: 402, message: "Insufficient credits. Add more using https://openrouter.ai/settings/credits" } }),
+    "<html>Payment Required</html>",
+    "",
+  ]) {
+    let calls = 0;
+    await withRouter(async (base, tokens) => {
+      // More refusals than the circuit's failure threshold: every one still
+      // reaches the provider, since a top-up works at once.
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        const res = await fetch(`${base}/v1/chat/completions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+          body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+        });
+        assert.equal(res.status, 402);
+        const error = (await res.json()).error;
+        assert.equal(error.code, "upstream_quota_exhausted");
+        assert.equal(error.message, "upstream_quota_exhausted");
+        assert.equal(error.retryable, false);
+        assert.equal(calls, attempt);
+      }
+    }, (_req, res) => {
+      calls += 1;
+      res.writeHead(402, { "content-type": body.startsWith("{") ? "application/json" : "text/html" });
+      res.end(body);
+    });
+  }
+});
+
 test("other vendors' used-up plans are read from their documented bodies", async () => {
   const limit = (body: unknown) => upstreamLimitError(new Response(JSON.stringify(body), { status: 429 }));
   // Z.ai sends its code as a string; a number is read the same way.

@@ -102,6 +102,13 @@ struct ChatView: View {
                         // fade would only delay it. macOS 14 has no scroll
                         // geometry to land it that fast and keeps both.
                         let restored = model.restoredFromCache && Self.fastLanding
+                        // A chat known to be empty that the owner has just
+                        // sent into has nothing to wait for: its only rows are
+                        // the send's own. It shows them from its first frame,
+                        // with no mascot and no fade; the mascot used to wave
+                        // for a fifth of a second between the empty state and
+                        // the owner's message.
+                        let landed = landedBotId == bot.id || sentIntoReadyChat
                         transcript(bot)
                             // The landing belongs to this mount. Without this a
                             // chat left for an empty one, or remounted before
@@ -116,16 +123,16 @@ struct ChatView: View {
                             // transaction also animated any layout still moving
                             // in it, and the rows drifted while they faded in.
                             .animation(restored ? nil : .easeOut(duration: 0.15)) {
-                                $0.opacity(landedBotId == bot.id ? 1 : 0)
+                                $0.opacity(landed ? 1 : 0)
                             }
-                            .accessibilityHidden(landedBotId != bot.id)
+                            .accessibilityHidden(!landed)
                             .overlay {
-                                ZStack { if landedBotId != bot.id, !restored || slowRestoreBotId == bot.id { loadingState } }
+                                ZStack { if !landed, !restored || slowRestoreBotId == bot.id { loadingState } }
                                     // A restored chat's rows show at once, so
                                     // its mascot must not fade out over them.
                                     // A slow one fades, so a confirmation just past
                                     // the wait does not pop the mascot for a frame.
-                                    .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landedBotId == bot.id)
+                                    .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landed)
                             }
                     } else if model.transcriptReady {
                         emptyState(bot)
@@ -169,6 +176,12 @@ struct ChatView: View {
                   let botId = note.userInfo?["botId"] as? String else { return }
             model.reply(to: text, author: note.userInfo?["author"] as? String, botId: botId)
         }
+    }
+
+    /// The owner sent into a chat whose load had already finished, in this
+    /// visit. The transcript mounts on that send with its rows ready.
+    private var sentIntoReadyChat: Bool {
+        model.transcriptReady && model.pending && model.sentSinceOpen
     }
 
     private func closePanes() {
@@ -683,6 +696,14 @@ struct ChatView: View {
                     // geometry must not stand in for this one's.
                     scrollProbe.reset()
                     scrollToBottom(proxy)
+                    // Shown from its first frame (see `sentIntoReadyChat`);
+                    // this only records it, so the rows stay up once the turn
+                    // ends and the condition no longer holds.
+                    if sentIntoReadyChat {
+                        landedBotId = bot.id
+                        model.finishFirstPaint()
+                        return
+                    }
                     if #available(macOS 15.0, *), model.restoredFromCache {
                         await landRestored(proxy, botId: bot.id)
                         return
@@ -734,16 +755,31 @@ struct ChatView: View {
                     if ready, landedBotId == bot.id { repinAfterBannerChange(proxy) }
                 }
                 .onPreferenceChange(ReplyHeightKey.self) { replyHeight = $0 }
-                // There is exactly one automatic scroll in this transcript, and
-                // it is the one below. Everything else stays at the newest turn
-                // because `defaultScrollAnchor(.bottom)` already holds the
-                // bottom as the content grows: opening a chat, switching bots,
-                // sending, streaming and the durable reload all keep their place
-                // without being told to. The explicit scrolls that used to sit
-                // here were not keeping the view there; they were what moved it,
-                // because scrolling to a bottom anchor repositions content that
-                // is shorter than the window and SwiftUI had already placed.
-                .onChange(of: model.sendTick) { holdingReplyAnchor = false }
+                // `defaultScrollAnchor(.bottom)` holds the bottom as the content
+                // grows: opening a chat, switching bots, streaming and the
+                // durable reload keep their place without being told to.
+                // Explicit bottom scrolls are kept to the few places that need
+                // one (the send below, the banner and landing re-pins), because
+                // scrolling to a bottom anchor repositions content that is
+                // shorter than the window and SwiftUI had already placed.
+                // An explicit send is a request to watch the answer (see
+                // `AppModel.send`): the transcript goes to the newest turn
+                // whatever the reader was doing. The send's own frame (the
+                // composer shrinking, a banner leaving, the row landing) is
+                // the app's doing, not the reader scrolling.
+                .onChange(of: model.sendTick) {
+                    holdingReplyAnchor = false
+                    pinnedToBottom = true
+                    scrollProbe.markAppScroll()
+                    scrollToBottom(proxy)
+                    // Once more after this layout pass, when the new row and
+                    // the shorter composer have their final heights.
+                    DispatchQueue.main.async {
+                        guard pinnedToBottom else { return }
+                        scrollProbe.markAppScroll()
+                        scrollToBottom(proxy)
+                    }
+                }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
                 .onChange(of: holdingReplyAnchor) { _, holding in scrollProbe.holding = holding }
                 // The two banners sit above this scroll view, so they take
@@ -1341,6 +1377,11 @@ private struct WorkingRow: View {
                     .opacity(1 - 0.5 * wave)
                     .contentTransition(.opacity)
                     .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: activity)
+                    // The label's own crossfade only. The first reply pushes
+                    // the row down in the same update that turns "Thinking"
+                    // into "Writing", and without this the label slid down
+                    // from under the new bubble while its face jumped.
+                    .geometryGroup()
                 Spacer(minLength: 0)
             }
         }
@@ -1638,15 +1679,21 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // down, except for its own anchor scrolls, so a move up
                     // that the app did not make, and that took the reader
                     // further from the bottom, is the reader's, however small
-                    // and even when a size change lands in the same frame. The
-                    // bottom anchor lowering the offset for a shrink keeps the
-                    // distance, and a clamp at the bottom leaves none, so
-                    // neither is mistaken for one.
+                    // and even when the content changes size in the same
+                    // frame. The bottom anchor lowering the offset for a
+                    // shrink keeps the distance, and a clamp at the bottom
+                    // leaves none, so neither is mistaken for one.
                     let appScroll = Date() < probe.appScrollUntil
                     let resized = new.contentHeight != old.contentHeight || new.viewport != old.viewport
+                    // A taller window (the composer shrinking after a send, a
+                    // banner leaving) clamps a reader at the bottom back by
+                    // the same amount, and a row landing in that frame then
+                    // looks like a move up. That frame is the app's; the drift
+                    // check below puts the reader back at the bottom.
+                    let viewportGrew = new.viewport > old.viewport
                     // While the view is parked at the top of a finished reply,
                     // a resize frame is the reload settling, not the reader.
-                    if !appScroll, !(probe.holding && resized),
+                    if !appScroll, !viewportGrew, !(probe.holding && resized),
                        Self.movedAway(old, new) {
                         if pinned { pinned = false }
                         return
