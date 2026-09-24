@@ -12,6 +12,10 @@ import UsefulBotCore
 struct GeneratedImageRow: View {
     let imageId: String
     let prompt: String
+    /// Set when the picture is one of a run laid out side by side: it shows
+    /// as a tile of this height, and its prompt moves to the tooltip and the
+    /// context menu.
+    var tileHeight: CGFloat?
 
     private enum Lost { case moved, missing, failed }
 
@@ -26,7 +30,7 @@ struct GeneratedImageRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             content
-            if !prompt.isEmpty {
+            if !prompt.isEmpty, tileHeight == nil {
                 promptLine
             }
         }
@@ -56,13 +60,7 @@ struct GeneratedImageRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(prompt, forType: .string)
-                copied = true
-                Task {
-                    try? await Task.sleep(for: .seconds(1.5))
-                    copied = false
-                }
+                copyPrompt()
             } label: {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 11))
@@ -78,12 +76,26 @@ struct GeneratedImageRow: View {
         .frame(maxWidth: 448, alignment: .leading)
     }
 
+    private func copyPrompt() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(prompt, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copied = false
+        }
+    }
+
+    /// The footprint of a picture not drawn yet: square, at the tile's height
+    /// in a run.
+    private var placeholderSide: CGFloat { tileHeight ?? 320 }
+
     @ViewBuilder private var content: some View {
         if regenerating {
             // The footprint the new picture will take, with the work shown.
             RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .fill(Theme.C.sunken)
-                .frame(width: 320, height: 320)
+                .frame(width: placeholderSide, height: placeholderSide)
                 .overlay {
                     VStack(spacing: 10) {
                         ProgressView().controlSize(.small)
@@ -92,6 +104,31 @@ struct GeneratedImageRow: View {
                             .foregroundStyle(Theme.C.inkMuted)
                     }
                 }
+        } else if let image, let tileHeight {
+            // A tile keeps the picture's shape within bounds, so a run of
+            // mixed shapes still reads as one row.
+            let aspect = image.size.height > 0 ? image.size.width / image.size.height : 1
+            Button {
+                open(image)
+            } label: {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: tileHeight * min(max(aspect, 0.75), 1.6), height: tileHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .cardLift(cornerRadius: DesignTokens.Radius.md)
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .help(prompt)
+            .contextMenu {
+                if !prompt.isEmpty {
+                    Button("Copy Prompt") { copyPrompt() }
+                }
+            }
+            .accessibilityLabel(Text(prompt.isEmpty ? "Generated image" : prompt))
+            .accessibilityHint("Opens the image in your viewer")
         } else if let image {
             Button {
                 open(image)
@@ -107,6 +144,26 @@ struct GeneratedImageRow: View {
             .pointerOnHover()
             .accessibilityLabel(Text(prompt.isEmpty ? "Generated image" : prompt))
             .accessibilityHint("Opens the image in your viewer")
+        } else if let lost, let tileHeight {
+            // The same words and ways out as the full row, stacked to fit
+            // the tile.
+            VStack(spacing: 8) {
+                Image(systemName: "photo")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.C.inkMuted)
+                Text(locateError ?? (lost == .moved ? "Image moved or deleted" : "Image unavailable"))
+                    .font(.system(size: 12))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(locateError == nil ? Theme.C.inkMuted : Theme.C.danger)
+                // Stacked: three actions side by side do not fit the tile.
+                VStack(spacing: 4) {
+                    lostActions(lost)
+                }
+            }
+            .padding(12)
+            .frame(width: tileHeight, height: tileHeight)
+            .background(Theme.C.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
         } else if let lost {
             HStack(spacing: 8) {
                 Image(systemName: "photo")
@@ -116,18 +173,7 @@ struct GeneratedImageRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(locateError == nil ? Theme.C.inkMuted : Theme.C.danger)
                 Spacer(minLength: 0)
-                switch lost {
-                case .moved:
-                    // The server cannot tell moved from deleted: both ways
-                    // out, and Retry for a file put back where it was.
-                    rowAction("Retry") { retry() }
-                    rowAction("Locate") { locate() }
-                    regenerateAction
-                case .missing:
-                    regenerateAction
-                case .failed:
-                    rowAction("Retry") { retry() }
-                }
+                lostActions(lost)
             }
             .padding(.horizontal, 14)
             .frame(height: 52)
@@ -138,7 +184,22 @@ struct GeneratedImageRow: View {
             // take so the transcript does not jump when it lands.
             RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .fill(Theme.C.sunken)
-                .frame(width: 320, height: 320)
+                .frame(width: placeholderSide, height: placeholderSide)
+        }
+    }
+
+    @ViewBuilder private func lostActions(_ lost: Lost) -> some View {
+        switch lost {
+        case .moved:
+            // The server cannot tell moved from deleted: both ways
+            // out, and Retry for a file put back where it was.
+            rowAction("Retry") { retry() }
+            rowAction("Locate") { locate() }
+            regenerateAction
+        case .missing:
+            regenerateAction
+        case .failed:
+            rowAction("Retry") { retry() }
         }
     }
 
@@ -331,5 +392,26 @@ actor GeneratedImageCache {
     func forget(_ id: String) async throws {
         try await Self.client.forgetMedia(id: id)
         invalidate(id)
+    }
+}
+
+/// Pictures posted one after another: tiles side by side, wrapping onto a
+/// new row when the bubble width runs out, so a set reads as one set.
+struct GeneratedImageRun: View {
+    let rows: [TranscriptRow]
+    let maxWidth: CGFloat
+
+    static let tileHeight: CGFloat = 180
+
+    var body: some View {
+        HStack(spacing: 0) {
+            WrapHStack(spacing: 8) {
+                ForEach(rows) { row in
+                    GeneratedImageRow(imageId: row.imageId ?? "", prompt: row.text, tileHeight: Self.tileHeight)
+                }
+            }
+            .frame(maxWidth: maxWidth, alignment: .leading)
+            Spacer(minLength: 0)
+        }
     }
 }

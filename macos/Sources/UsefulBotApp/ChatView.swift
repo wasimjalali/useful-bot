@@ -62,6 +62,8 @@ struct ChatView: View {
     /// How long a send's own scrolls are not read as the reader's: the few
     /// frames the composer shrinks and the row lands in.
     private static let sendScrollWindow: TimeInterval = 0.1
+    /// How far above the composer the transcript fades out.
+    private static let bottomFade: CGFloat = 28
     /// The chat whose landing gate is running. A send while it runs does not
     /// land the chat early: the gate is already waiting for the rows.
     @State private var gatingBotId: String?
@@ -618,6 +620,11 @@ struct ChatView: View {
                                         }
                                     }
                                 }
+                            case .images(let rows):
+                                GeneratedImageRun(
+                                    rows: rows,
+                                    maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85)
+                                )
                             case .summary(_, let count, let botIds):
                                 BotMetaRow(
                                     prefix: "\(count) messages with",
@@ -662,7 +669,7 @@ struct ChatView: View {
                     .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
                     .padding(.top, DesignTokens.Space.chatPaddingVertical)
                     // The working row's slot is most of the bottom margin.
-                    .padding(.bottom, DesignTokens.Space.chatPaddingVertical - WorkingRow.height)
+                    .padding(.bottom, DesignTokens.Space.chatPaddingVertical - WorkingRow.height + Self.bottomFade)
                     // A chat shorter than the window reads from the top, like
                     // a page. The bottom anchor below would otherwise sit a
                     // first message against the composer with the window
@@ -683,6 +690,17 @@ struct ChatView: View {
                     }
                 }
                 .uvScroll()
+                // Rows fade out over the last stretch above the composer
+                // instead of being cut at a hard line, the way Claude's
+                // transcript slides under its composer. The content's bottom
+                // padding keeps a chat at rest clear of it.
+                .mask {
+                    VStack(spacing: 0) {
+                        Color.black
+                        LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: Self.bottomFade)
+                    }
+                }
                 // The floating header's band is a safe-area inset: rows still
                 // scroll under it, and a scroll to a row's top stops below it.
                 .safeAreaInset(edge: .top, spacing: 0) {
@@ -960,23 +978,29 @@ private struct FailureRow: View {
     }
 
     private func row(_ copy: String, canRetry: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 12, weight: .regular))
-                .foregroundStyle(Theme.C.inkMuted)
-                .accessibilityHidden(true)
-            Text(copy)
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.C.inkMuted)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if retryable {
-                NativeButton("Retry", kind: .secondary, small: true, enabled: canRetry, action: retry)
-                    .accessibilityIdentifier("failure-retry")
+        // Centered with the other event lines: it says what happened to the
+        // turn, it is not the bot speaking.
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .accessibilityHidden(true)
+                Text(copy)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if retryable {
+                    NativeButton("Retry", kind: .secondary, small: true, enabled: canRetry, action: retry)
+                        .accessibilityIdentifier("failure-retry")
+                }
             }
+            .frame(maxWidth: max(160, maxWidth))
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: max(160, maxWidth), alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("failure-row")
     }
@@ -1122,16 +1146,14 @@ private struct DayDividerRow: View {
 }
 
 /// The centered cross-bot strip: "Messaged Growth", "Message from CEO",
-/// "2 messages with 2 Bots". Avatars come from the live roster; a deleted bot
+/// "2 messages with 2 Bots". Centered over a bubble too, the way Grok sets
+/// every event line apart from what was said. Avatars come from the live roster; a deleted bot
 /// falls back to a plain count.
 private struct BotMetaRow: View {
     let prefix: String
     let botIds: [String]
     var names: [String] = []
     let roster: [ShellBot]
-    /// A label over a bot-side bubble sits on the left with it; a strip that
-    /// stands alone stays centered.
-    var leading = false
 
     private var bots: [ShellBot] {
         botIds.compactMap { id in roster.first { $0.id == id } }
@@ -1143,9 +1165,7 @@ private struct BotMetaRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if !leading {
-                Spacer(minLength: 0)
-            }
+            Spacer(minLength: 0)
             HStack(spacing: 6) {
                 Text(prefix)
                 if !bots.isEmpty {
@@ -1296,8 +1316,7 @@ struct TranscriptRowView: View, Equatable {
                     prefix: "Messaged",
                     botIds: recipients.isEmpty ? row.targetBotIds : recipients,
                     names: ["a teammate"],
-                    roster: bots,
-                    leading: true
+                    roster: bots
                 )
                 replyRow(showsSpeaker: false)
             }
@@ -1312,8 +1331,7 @@ struct TranscriptRowView: View, Equatable {
                     // A deleted bot that stored no name still reads as a
                     // teammate rather than as "1 Bot".
                     names: [author.isEmpty ? "a teammate" : author],
-                    roster: bots,
-                    leading: true
+                    roster: bots
                 )
                 // Whatever a teammate posts, a question to this bot or an
                 // answer, is a bot speaking: it sits on the left in the bot
@@ -1324,22 +1342,30 @@ struct TranscriptRowView: View, Equatable {
         case .note where row.connectedName != nil:
             connectedCard(name: row.connectedName ?? "")
         case .note:
-            HStack(alignment: .top, spacing: 12) {
-                noteAvatar
-                VStack(alignment: .leading, spacing: 2) {
-                    if let label = ChatAttribution.label(speakerName: speaker?.name, author: row.author) {
-                        Text(label)
-                            .font(.system(size: DesignTokens.FontSize.chatMeta, weight: .semibold))
-                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.chatMeta)
-                            .foregroundStyle(Theme.C.inkFaint)
+            // An event, not something said: one centered line with the
+            // face of whoever did it, like the cross-bot strips.
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    noteAvatar
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                    // The chat's own bot needs only its face; a teammate's
+                    // note says whose it is.
+                    if let name = noteAuthorName {
+                        Text(name).fontWeight(.semibold)
                     }
                     Text(row.text)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.C.inkMuted)
+                        .multilineTextAlignment(.center)
                 }
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.C.inkMuted)
+                .frame(maxWidth: max(160, maxBubbleWidth))
+                .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            .frame(maxWidth: max(160, maxBubbleWidth))
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel([noteAuthorName, row.text].compactMap { $0 }.joined(separator: ": "))
         case .assistant:
             replyRow(showsSpeaker: true)
         case .widget:
@@ -1457,12 +1483,12 @@ struct TranscriptRowView: View, Equatable {
             speakerResolved: speaker != nil
         ) {
         case .speaker:
-            if let speaker { BotAvatarView(bot: speaker, size: 20) }
+            if let speaker { BotAvatarView(bot: speaker, size: 16) }
         case .owner:
-            BotAvatarView(bot: bot, size: 20)
+            BotAvatarView(bot: bot, size: 16)
         case .unknown:
-            // Keep the gutter so the note still lines up with its neighbours.
-            Color.clear.frame(width: 20, height: 20)
+            // Centered, a missing face just leaves the line shorter.
+            EmptyView()
         }
     }
 
@@ -1471,6 +1497,16 @@ struct TranscriptRowView: View, Equatable {
     private var speaker: ShellBot? {
         guard let id = row.authorBotId, id != bot.id else { return nil }
         return bots.first { $0.id == id }
+    }
+
+    /// A note's author when it is not the chat's own bot.
+    private var noteAuthorName: String? {
+        // A note with only a stored name still says whose it is, unless the
+        // name is the chat's own bot.
+        guard row.authorBotId != bot.id else { return nil }
+        let name = speaker?.name ?? row.author ?? ""
+        if row.authorBotId == nil, name == bot.name { return nil }
+        return name.isEmpty ? nil : name
     }
 
     private var speakerLabel: String? {
