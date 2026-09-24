@@ -1016,15 +1016,16 @@ final class AppModel: ObservableObject {
             // recorded background error wins over the replay's generic line.
             // A failed turn is a row in the replayed transcript, so only a
             // failure with no turn to sit under becomes the note.
-            // A turn failure the replay no longer ends on was answered since.
-            if let recorded = sendErrors[bot.id], recorded.resendable, !projection.failed, sendTasks[bot.id] == nil {
+            // A failure the replay answers (a turn failure it no longer ends
+            // on, a reply that could not be read and is here now) goes.
+            if let recorded = sendErrors[bot.id], !recorded.survivesReload,
+               !projection.failed, sendTasks[bot.id] == nil {
                 sendErrors[bot.id] = nil
             }
             if let recorded = sendErrors[bot.id], !recorded.resendable {
-                // A failure with no turn stays said until the owner dismisses
-                // it or sends again. The reload that follows it succeeding is
-                // no answer to it: a send that never arrived put its draft
-                // back, and without this the note went with the reload.
+                // The rest stay said until the owner dismisses them or sends
+                // again: a send that never arrived put its draft back, and
+                // without this the note went with the reload that followed.
                 stickyThreadError = recorded.message
                 threadError = recorded.message
             } else {
@@ -1696,7 +1697,8 @@ final class AppModel: ObservableObject {
                         bot.id,
                         (error is URLError ? nil : (error as? LocalizedError)?.errorDescription)
                             ?? "Couldn't reach the local server. Your message is back in the composer.",
-                        resendable: false
+                        resendable: false,
+                        survivesReload: true
                     )
                 }
                 self.finishSend(botId: bot.id, generation: generation)
@@ -1838,8 +1840,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func recordSendError(_ botId: String, _ message: String, resendable: Bool, retryAfter: Int? = nil) {
-        sendErrors[botId] = SendFailure(message: message, resendable: resendable)
+    private func recordSendError(
+        _ botId: String,
+        _ message: String,
+        resendable: Bool,
+        retryAfter: Int? = nil,
+        survivesReload: Bool = false
+    ) {
+        sendErrors[botId] = SendFailure(message: message, resendable: resendable, survivesReload: survivesReload)
         // A router cool-down is the one failure with a time on it. Holding the
         // deadline keeps Retry from firing back into the closed window, where
         // it fails in milliseconds and leaves a second copy of the owner's
@@ -1975,7 +1983,7 @@ final class AppModel: ObservableObject {
             guard generation == (sendGenerations[botId] ?? 0) else { return }
             // The turn still runs; only the stored pointer failed. Surface it
             // so the next poll's revert is not a mystery.
-            recordSendError(botId, "The session pointer could not be saved.", resendable: false)
+            recordSendError(botId, "The session pointer could not be saved.", resendable: false, survivesReload: true)
             unsavedSessionBots.insert(botId)
         }
     }
@@ -2203,7 +2211,9 @@ final class AppModel: ObservableObject {
         coolDownTask?.cancel()
         if let deadline = until {
             coolDownTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(max(0, deadline.timeIntervalSinceNow) * 1_000_000_000) + 50_000_000)
+                // Bounded: a stamp from a skewed clock must not overflow this.
+                let wait = min(86_400, max(0, deadline.timeIntervalSinceNow))
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000) + 50_000_000)
                 guard !Task.isCancelled else { return }
                 self?.publishFailureRetry()
             }
@@ -2904,7 +2914,9 @@ final class AppModel: ObservableObject {
         restoreChat(id)
         sendBotId = sendTasks[id] != nil ? id : nil
         sendTask = sendTasks[id]
-        if let err = sendErrors[id] {
+        // A turn that failed shows as its row; only a failure with no turn
+        // to sit under is a note (the same rule `select` keeps).
+        if let err = sendErrors[id], !err.resendable {
             stickyThreadError = err.message
             threadError = err.message
         }

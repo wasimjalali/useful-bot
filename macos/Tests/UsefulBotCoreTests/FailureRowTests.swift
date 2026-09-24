@@ -214,7 +214,7 @@ import Testing
             code: "MODEL_CALL_FAILED",
             detail: "Failed after 3 attempts. Last error: AI_APICallError: Cannot connect to API: other side closed"
         )
-        #expect(dropped.message == "The bot lost its connection to the local router. Retry, or restart the local services if it keeps happening.")
+        #expect(dropped.message == "The bot lost its connection to the local router. If it keeps happening, restart the local services.")
         #expect(!dropped.coolingDown)
     }
 
@@ -230,6 +230,40 @@ import Testing
         p.apply(EveEvent(type: "turn.cancelled", id: "x2", turnId: "t2", index: 5, sessionId: "s"), live: true)
         #expect(p.failureMarks.map(\.id) == ["f1"])
         #expect(p.failureMarks.allSatisfy { mark in p.messages.contains { $0.id == mark.anchorId } })
+    }
+
+    /// eve fails the turn, then the session, the second without a turn id.
+    /// That is one failure, one row, and it stays the live one.
+    @Test func aFailedTurnThenItsSessionIsOneRow() {
+        var p = StreamProjection()
+        p.apply(EveEvent(type: "message.received", id: "u1", message: "run it", turnId: "t1", index: 1, sessionId: "s"))
+        p.apply(EveEvent(type: "message.completed", id: "a1", message: "Working", turnId: "t1", index: 2, sessionId: "s"))
+        p.apply(EveEvent(type: "turn.failed", id: "f1", message: Self.refused, turnId: "t1", index: 3, sessionId: "s"))
+        p.apply(EveEvent(type: "session.failed", id: "f1s", message: Self.refused, index: 4, sessionId: "s"))
+        #expect(p.failureMarks.count == 1)
+        #expect(p.retryableMarkId == p.failureMarks.first?.id)
+        #expect(p.failureMarks.first?.anchorId == "a1")
+    }
+
+    /// An older failure under the same last row is not this one's to
+    /// replace when this turn made no row of its own.
+    @Test func aRowlessFailureDoesNotReplaceAnOlderOne() {
+        var p = StreamProjection()
+        p.apply(EveEvent(type: "message.received", id: "u1", message: "run it", turnId: "t1", index: 1, sessionId: "s"))
+        p.apply(EveEvent(type: "message.completed", id: "a1", message: "Working", turnId: "t1", index: 2, sessionId: "s"))
+        p.apply(EveEvent(type: "turn.failed", id: "f1", message: Self.refused, turnId: "t1", index: 3, sessionId: "s"))
+        // A routine's turn starts and fails before it says anything.
+        p.apply(EveEvent(type: "turn.started", id: "s2", turnId: "t2", index: 5, sessionId: "s"))
+        p.apply(EveEvent(type: "turn.failed", id: "f2", message: Self.refused, turnId: "t2", index: 6, sessionId: "s"))
+        #expect(p.failureMarks.map(\.id) == ["f1", "f2"])
+        #expect(p.retryableMarkId == "f2")
+    }
+
+    /// A wait no router sends (a garbled number in provider text) must not
+    /// hold Retry for years or overflow the timer.
+    @Test func aCoolDownIsClampedToADay() {
+        let wild = TurnFailure(code: "turn.failed", detail: "circuit_open retry_after_ms=99999999999999999")
+        #expect(wild.coolDownSeconds == 86_400)
     }
 
     /// The row survives the snapshot a chat is put back from.

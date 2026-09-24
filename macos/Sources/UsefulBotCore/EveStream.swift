@@ -214,7 +214,9 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         guard let range = detail.range(of: "retry_after_ms") else { return nil }
         let digits = detail[range.upperBound...].drop { !$0.isNumber }.prefix { $0.isNumber }
         guard let ms = Int(digits), ms > 0 else { return nil }
-        return max(1, Int((Double(ms) / 1000).rounded(.up)))
+        // No router cool-down lasts a day. A bigger number is garbled
+        // provider text, and taken as it stands it held Retry for years.
+        return min(86_400, max(1, Int((Double(ms) / 1000).rounded(.up))))
     }
 
     /// When the provider said a used-up plan limit resets, from the router's
@@ -335,7 +337,7 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         // on it: the local services, not the provider, and a retry is the
         // first thing to try.
         if haystack.contains("cannot connect to api") {
-            return "The bot lost its connection to the local router. Retry, or restart the local services if it keeps happening."
+            return "The bot lost its connection to the local router. If it keeps happening, restart the local services."
         }
         if haystack.contains("empty-model-response") || haystack.contains("did not return a response") {
             return "The model returned nothing. Send it again."
@@ -402,10 +404,16 @@ public struct SendFailure: Equatable, Sendable {
     /// POST was taken but its echo never arrived, and a send that failed
     /// before delivery hands its text back to the composer instead.
     public let resendable: Bool
+    /// Whether the note stays when the chat is read again. A send that never
+    /// arrived put its draft back, and a pointer that did not save still is
+    /// not saved; a reload answers neither. "The reply could not be read" and
+    /// "The turn did not start" are answered by the reload showing the turn.
+    public let survivesReload: Bool
 
-    public init(message: String, resendable: Bool) {
+    public init(message: String, resendable: Bool, survivesReload: Bool = false) {
         self.message = message
         self.resendable = resendable
+        self.survivesReload = survivesReload
     }
 
     /// Whether the failure banner on screen may be answered by resending the
@@ -1084,16 +1092,29 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// Put a failure row in the transcript under the last row its turn
     /// made. A failure already under that same row is an earlier attempt of
     /// the same message, and this one replaces it rather than stacking.
-    /// A stepped-off turn's late failure never takes the live row: the turn
-    /// in flight is somebody else's, and its Retry is the one that works.
-    private mutating func markFailure(_ failure: TurnFailure, event: EveEvent, record: TurnRecord, at stamp: Date?, live: Bool) -> String {
-        // The id map keeps ids of rows that were folded or re-keyed, pointing
-        // at whatever row took their place; only a row that still carries the
-        // id is somewhere this failure can sit.
-        let own = record.lastRowId.flatMap { id in indexById[id].flatMap { messages[$0].id == id ? id : nil } }
+    /// `standing` is the failure that was live before this one arrived, if
+    /// any. A stepped-off turn's late failure never takes it: the turn in
+    /// flight is somebody else's, and its Retry is the one that works. A
+    /// failure with no row of its own replaces only that one: it is eve
+    /// failing the session right after the turn, the same failure twice.
+    private mutating func markFailure(
+        _ failure: TurnFailure,
+        event: EveEvent,
+        record: TurnRecord,
+        at stamp: Date?,
+        live: Bool,
+        standing: String?
+    ) -> String {
+        // The id map keeps a folded or re-keyed row's id pointing at the row
+        // that took its place, which is where this failure belongs now.
+        let own = record.lastRowId.flatMap { id in indexById[id].map { messages[$0].id } }
         let anchor = own ?? messages.last?.id
         let id = event.id ?? mintId("f")
-        failureMarks.removeAll { $0.anchorId == anchor && anchor != nil && (live || $0.id != liveFailureMarkId) }
+        failureMarks.removeAll { mark in
+            guard let anchor, mark.anchorId == anchor else { return false }
+            if own != nil { return live || mark.id != standing }
+            return live && mark.id == standing
+        }
         failureMarks.append(FailureMark(id: id, anchorId: anchor, failure: failure, at: stamp))
         if let live = liveFailureMarkId, !failureMarks.contains(where: { $0.id == live }) { liveFailureMarkId = nil }
         return id
@@ -1651,7 +1672,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                         event: event,
                         record: stepped,
                         at: stamp,
-                        live: false
+                        live: false,
+                        standing: retryableMarkId
                     )
                 }
             case .current:
@@ -1662,6 +1684,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 // keeps the card: the session lives on, so the label still
                 // lands beside the question.
                 if event.type == "session.failed" { questions = [] }
+                let standing = retryableMarkId
                 pending = false
                 failed = true
                 let reported = TurnFailure(
@@ -1670,7 +1693,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 )
                 failure = reported
                 discardMessage(of: turn)
-                liveFailureMarkId = markFailure(reported, event: event, record: turn, at: stamp, live: true)
+                liveFailureMarkId = markFailure(reported, event: event, record: turn, at: stamp, live: true, standing: standing)
                 // A turn that ended takes its id with it. Left behind, it
                 // makes the next turn's work look like somebody else's and
                 // stops it counting, which is the direction that folds a
