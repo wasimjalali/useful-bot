@@ -15,11 +15,11 @@ import {
 import { catalogFor } from "../../../../../shared/live-models.ts";
 import { modelOption, modelSeesImages } from "../../../../../shared/models.ts";
 import { composerState, readProviderStore } from "../../../../../shared/providers.ts";
-import { channelJwt, continuationBriefFor, sessionHasCompletedTurn, syncSessionWorkspace } from "../../../../lib/agent-exec";
+import { cancelEveTurn, channelJwt, continuationBriefFor, sessionHasCompletedTurn, syncSessionWorkspace } from "../../../../lib/agent-exec";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
-import { continueFromVerdict, recordSessionLineage, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
+import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 
@@ -97,6 +97,21 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // from the bot's own live session or one it already carried over from.
       const extras = parseTurnExtras(new TextDecoder().decode(body));
       const notes: string[] = [];
+      // The cheap refusals come first. A carry-over reads the old session
+      // back for its brief, thousands of events on a long chat, and a turn
+      // refused here needed none of it.
+      // A picture for a model that cannot look at it is refused before the
+      // turn exists: eve would stage the bytes, the upstream would reject
+      // the call, and the session would retire on the failed turn. A model
+      // the catalog does not know goes through, and the upstream decides.
+      try {
+        const parsed = parseTurnMessage((JSON.parse(new TextDecoder().decode(body)) as { message?: unknown }).message);
+        if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
+          return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
+        }
+      } catch {
+        /* a malformed body is judged by the rewrite below, as before */
+      }
       if (extras.continueFrom !== undefined) {
         let owner: ShellBot | null = null;
         try {
@@ -164,14 +179,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const members = bot && bot.kind === "group"
           ? groupMembers(speakersFrom(shell.bots), bot.memberIds)
           : [];
-        // A picture for a model that cannot look at it is refused before the
-        // turn exists: eve would stage the bytes, the upstream would reject
-        // the call, and the session would retire on the failed turn. A model
-        // the catalog does not know goes through, and the upstream decides.
-        const parsed = parseTurnMessage((JSON.parse(raw) as { message?: unknown }).message);
-        if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
-          return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
-        }
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members, notes));
         headers.set("content-type", "application/json");
       } catch {
@@ -255,23 +262,30 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         // moves the live pointer with its usual touchChat.
         const previous = carriedFrom;
         const botId = route.threadId;
+        let lost = false;
         try {
           updateShell((current) => {
             // Only over the session this carry-over came from: if another
             // client moved the pointer meanwhile, its session is the chat.
-            const now = current.bots.find((item) => item.id === botId);
-            if (now && now.sessionId && now.sessionId !== previous) {
-              console.error("carry-over lost the race; pointer left on the newer session");
-              return current;
-            }
-            return recordSessionLineage(current, botId, previous, created);
+            const outcome = carryOverLineage(current, botId, previous, created);
+            lost = outcome.lost;
+            return outcome.store;
           });
-          removeSessionGrant(previous);
+          if (!lost) removeSessionGrant(previous);
         } catch (err) {
           // The new session already holds the brief; only a second carry-over
           // from this old session would be refused. Not worth failing the send,
           // but it is said.
           console.error("session lineage not recorded", err instanceof Error ? err.message : err);
+        }
+        if (lost) {
+          // Two clients carried the same session over at once and the other
+          // one's session is the chat now. This one's would fork it, so its
+          // turn is stopped and the client told to catch up, the same answer
+          // a carry-over from an already-moved session gets.
+          console.error("carry-over lost the race; its session is cancelled");
+          await cancelEveTurn(created, jwt ?? "");
+          return Response.json({ ok: false, error: "eve_error", status: 409, code: "session_moved" }, { status: 409 });
         }
       }
       if (created) {

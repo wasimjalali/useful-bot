@@ -59,6 +59,12 @@ struct ChatView: View {
     /// Room for the user's message above the reply, so an answer that only
     /// just fits is left where it is.
     private static let replyAnchorSlack: CGFloat = 120
+    /// How long a send's own scrolls are not read as the reader's: the few
+    /// frames the composer shrinks and the row lands in.
+    private static let sendScrollWindow: TimeInterval = 0.1
+    /// The chat whose landing gate is running. A send while it runs does not
+    /// land the chat early: the gate is already waiting for the rows.
+    @State private var gatingBotId: String?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -79,12 +85,19 @@ struct ChatView: View {
                         // with no mascot and no fade; the mascot used to wave
                         // for a fifth of a second between the empty state and
                         // the owner's message.
-                        let landed = landedBotId == bot.id || sentIntoReadyChat
+                        // Decided when the chat mounted: a send made while a
+                        // first load's gate is running waits for that gate.
+                        // Read live, the load finishing mid-gate flipped it and
+                        // showed the rows before their geometry settled.
+                        let landed = landedBotId == bot.id || (sentIntoReadyChat && gatingBotId != bot.id)
                         transcript(bot)
                             // The landing belongs to this mount. Without this a
                             // chat left for an empty one, or remounted before
                             // its replay, came back shown before it landed.
-                            .onDisappear { if landedBotId == bot.id { landedBotId = nil } }
+                            .onDisappear {
+                                if landedBotId == bot.id { landedBotId = nil }
+                                if gatingBotId == bot.id { gatingBotId = nil }
+                            }
                             // A new chat gets a new scroll view. Reusing one
                             // across bots hands the next chat the offset the
                             // last one was left at, which then has to be
@@ -714,6 +727,8 @@ struct ChatView: View {
                         model.finishFirstPaint()
                         return
                     }
+                    gatingBotId = bot.id
+                    defer { if gatingBotId == bot.id { gatingBotId = nil } }
                     if #available(macOS 15.0, *), model.restoredFromCache {
                         await landRestored(proxy, botId: bot.id)
                         return
@@ -780,13 +795,17 @@ struct ChatView: View {
                 .onChange(of: model.sendTick) {
                     holdingReplyAnchor = false
                     pinnedToBottom = true
-                    scrollProbe.markAppScroll()
+                    // Covers the send's own frames and no more. The default
+                    // window, marked twice, ignored the reader's wheel for a
+                    // third of a second after Return, and the drift check then
+                    // pulled a reader who had scrolled up back down.
+                    scrollProbe.markAppScroll(for: Self.sendScrollWindow)
                     scrollToBottom(proxy)
                     // Once more after this layout pass, when the new row and
                     // the shorter composer have their final heights.
                     DispatchQueue.main.async {
                         guard pinnedToBottom else { return }
-                        scrollProbe.markAppScroll()
+                        scrollProbe.markAppScroll(for: Self.sendScrollWindow)
                         scrollToBottom(proxy)
                     }
                 }
@@ -1667,8 +1686,8 @@ private final class ScrollProbe {
         holding = false
     }
 
-    func markAppScroll() {
-        appScrollUntil = Date().addingTimeInterval(0.35)
+    func markAppScroll(for seconds: TimeInterval = 0.35) {
+        appScrollUntil = Date().addingTimeInterval(seconds)
     }
 }
 
@@ -1817,7 +1836,11 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // the same amount, and a row landing in that frame then
                     // looks like a move up. That frame is the app's; the drift
                     // check below puts the reader back at the bottom.
-                    let viewportGrew = new.viewport > old.viewport
+                    // Only as far as it grew: a clamp moves the offset up by
+                    // at most the growth, so a move past that is the reader's
+                    // own wheel in the same frame, and it unpins.
+                    let growth = max(0, new.viewport - old.viewport)
+                    let viewportGrew = growth > 0 && old.offset - new.offset <= growth + 0.5
                     // While the view is parked at the top of a finished reply,
                     // a resize frame is the reload settling, not the reader.
                     if !appScroll, !viewportGrew, !(probe.holding && resized),

@@ -231,6 +231,9 @@ export async function completeUpstream(input: {
     throw await upstreamLimitError(response);
   }
   if (response.status === 402) {
+    // Marked on the connection too, so the providers pane flags the account
+    // rather than leaving the owner to find it from a failed turn.
+    noteConnectionError(resolved.connection.id, "upstream_quota_exhausted");
     throw await upstreamOutOfCredit(response, `${resolved.providerId}/${model}`);
   }
   if (response.status === 404) {

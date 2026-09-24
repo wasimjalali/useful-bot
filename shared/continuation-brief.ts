@@ -213,3 +213,29 @@ export function withSessionNotes(prefix: string, notes: string[]): string {
 export function isContinuationTurn(raw: string): boolean {
   return inheritedBrief(raw) !== null;
 }
+
+/**
+ * Whether a carried session's brief is in eve's history: a step completed
+ * (or the turn was cancelled with its input kept) in a turn whose message
+ * carried the brief. Another turn completing, a handoff the pump sent
+ * straight to eve, says nothing about a brief a step-zero failure dropped.
+ * A brief message with no turn id counts any completion after it.
+ */
+export function settledByBriefTurn(events: EveEvent[]): boolean {
+  const briefTurns = new Set<string>();
+  let untaggedBrief = false;
+  for (const event of events) {
+    const data = event.data as Record<string, unknown> | undefined;
+    const turnId = typeof data?.turnId === "string" ? data.turnId : null;
+    if (event.type === "message.received") {
+      const message = typeof data?.message === "string" ? data.message : "";
+      if (!isContinuationTurn(message)) continue;
+      if (turnId) briefTurns.add(turnId);
+      else untaggedBrief = true;
+      continue;
+    }
+    if (event.type !== "step.completed" && event.type !== "turn.completed" && event.type !== "turn.cancelled") continue;
+    if (untaggedBrief || (turnId !== null && briefTurns.has(turnId))) return true;
+  }
+  return false;
+}

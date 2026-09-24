@@ -12,6 +12,8 @@ import { retryAfterMs, upstreamLimitError } from "../src/retry-after.ts";
 import { AliasCircuit } from "../src/circuit.ts";
 import { RouterError } from "../src/errors.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
+import { readPrefix } from "../src/read-capped.ts";
+import { emptyProviderStore, readProviderStore, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
 
@@ -541,6 +543,65 @@ test("an upstream 402 is an account out of credit: 402 upstream_quota_exhausted,
       res.end(body);
     });
   }
+});
+
+test("an upstream 402 marks the connection, so its row says the account is out of credit", async () => {
+  await withRouter(async (base, tokens) => {
+    const path = process.env.UB_PROVIDERS_PATH!;
+    writeProviderStore(setProviderKey(emptyProviderStore(), "opencode-go", "plan", "test-upstream-key"), path);
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${tokens.desktop}`, "content-type": "application/json", ...ids() },
+      body: JSON.stringify({ model: "workhorse", messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(res.status, 402);
+    await res.text();
+    const marked = Object.values(readProviderStore(path).connections).map((conn) => conn.lastError?.code);
+    assert.deepEqual(marked, ["upstream_quota_exhausted"]);
+  }, (_req, res) => {
+    res.writeHead(402, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "Insufficient Balance" } }));
+  });
+});
+
+test("Kimi's spent day is a used-up limit, its per-minute limits stay waitable", async () => {
+  const limit = (message: string) => upstreamLimitError(new Response(
+    JSON.stringify({ error: { type: "rate_limit_reached_error", message } }),
+    { status: 429 },
+  ));
+  const day = await limit("Your account org-1 request reached organization TPD rate limit, current: 1500001, limit: 1500000");
+  assert.equal(day.code, "upstream_usage_limit");
+  assert.equal(day.status, 402);
+  for (const message of [
+    "Your account org-1 request reached organization max RPM: 3, please try again after 1 seconds",
+    "Your account org-1 request reached organization TPM rate limit, current: 64001, limit: 64000",
+    "Organization-level concurrency limit reached",
+  ]) {
+    assert.equal((await limit(message)).code, "upstream_rate_limited");
+  }
+});
+
+test("Z.ai's reset, given only in its message in China time, is named", async () => {
+  const at = new Date(Date.now() + 3 * 3600_000);
+  // The wall clock in UTC+8, the way Z.ai writes it: no zone.
+  const shanghai = new Date(at.getTime() + 8 * 3600_000).toISOString().slice(0, 19).replace("T", " ");
+  const error = await upstreamLimitError(new Response(JSON.stringify({
+    error: { code: "1308", message: `Usage limit reached for 5 hour. Your limit will reset at ${shanghai}` },
+  }), { status: 429 }));
+  assert.equal(error.code, "upstream_usage_limit");
+  assert.equal(error.message, `upstream_usage_limit resets_at=${Math.floor(at.getTime() / 1000)}`);
+  // A time already past, or junk, names none.
+  const stale = await upstreamLimitError(new Response(JSON.stringify({
+    error: { code: "1310", message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2001-01-01 00:00:00" },
+  }), { status: 429 }));
+  assert.equal(stale.message, "upstream_usage_limit");
+});
+
+test("an error body cut at its cap never ends in half a character", async () => {
+  // Three bytes of a four-byte emoji fall inside the cap.
+  const body = Buffer.concat([Buffer.from("x".repeat(9)), Buffer.from("😀")]);
+  const text = await readPrefix(new Response(body), 12);
+  assert.equal(text, "x".repeat(9));
 });
 
 test("other vendors' used-up plans are read from their documented bodies", async () => {

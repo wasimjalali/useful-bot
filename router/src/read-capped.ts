@@ -59,5 +59,7 @@ export async function readPrefix(response: Response, limit: number): Promise<str
   } finally {
     await reader.cancel().catch(() => undefined);
   }
-  return Buffer.concat(chunks).subarray(0, limit).toString("utf8");
+  // A streaming decode holds back a character the cap cut in half, where
+  // toString would end the text in a replacement mark.
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, limit), { stream: true });
 }

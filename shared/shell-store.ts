@@ -413,6 +413,23 @@ export function recordSessionLineage(store: ShellStore, botId: string, previous:
   };
 }
 
+/**
+ * Record a verified carry-over, unless another one got there first: the
+ * pointer no longer names the session this one came from. Then nothing is
+ * recorded and `lost` says so, so the caller can answer `session_moved`
+ * instead of handing back a session the chat will not use.
+ */
+export function carryOverLineage(
+  store: ShellStore,
+  botId: string,
+  previous: string,
+  created: string,
+): { store: ShellStore; lost: boolean } {
+  const now = store.bots.find((item) => item.id === botId);
+  if (now && now.sessionId && now.sessionId !== previous) return { store, lost: true };
+  return { store: recordSessionLineage(store, botId, previous, created), lost: false };
+}
+
 /** The carried-over session finished a turn: its brief is in eve's history. */
 export function settleContinuation(store: ShellStore, botId: string, sessionId: string): ShellStore {
   return {
@@ -959,7 +976,13 @@ export function applyShellAction(
               ? touch(bot, stamp, {
                 lastPreview: preview,
                 lastAt: stamp,
-                sessionId: action.sessionId !== undefined ? action.sessionId : bot.sessionId,
+                // A session the chat was carried over from is behind it for
+                // good: a late write naming one must not pull the pointer
+                // back off the newer session.
+                sessionId: action.sessionId !== undefined
+                  && !(action.sessionId && (bot.previousSessionIds ?? []).includes(action.sessionId))
+                  ? action.sessionId
+                  : bot.sessionId,
               })
               : bot
           )),
