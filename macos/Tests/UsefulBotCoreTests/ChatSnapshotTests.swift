@@ -94,11 +94,11 @@ import Testing
     /// one changes what an old file means. This list failing is the reminder
     /// to bump `ChatSnapshot.formatVersion` and then update it.
     @Test func theStoredShapeIsPinnedToTheFormatVersion() {
-        #expect(ChatSnapshot.formatVersion == 2)
+        #expect(ChatSnapshot.formatVersion == 3)
         let stored = Mirror(reflecting: StreamProjection()).children.compactMap(\.label).sorted()
         #expect(stored == [
-            "activity", "continuationRowId", "currentTurnId", "discardedUserMessageId", "failed", "failure", "firstSession", "indexById",
-            "journalBase", "journalSession", "journalTop", "messages", "minted", "newestTurnStart",
+            "activity", "continuationRowId", "currentTurnId", "discardedUserMessageId", "failed", "failure", "failureMarks", "firstSession",
+            "indexById", "journalBase", "journalSession", "journalTop", "liveFailureMarkId", "messages", "minted", "newestTurnStart",
             "pending", "questions", "rowJournal", "searchHits", "seen", "seenCursor", "seenOrder",
             "turn", "turnOrder", "turns", "widgets",
         ])
@@ -111,7 +111,7 @@ import Testing
         func labels(_ value: Any) -> [String] {
             Mirror(reflecting: value).children.compactMap(\.label).sorted()
         }
-        #expect(ChatSnapshot.formatVersion == 2)
+        #expect(ChatSnapshot.formatVersion == 3)
         let turn = try #require(Mirror(reflecting: StreamProjection()).children.first { $0.label == "turn" }?.value)
         #expect(labels(turn) == [
             "assistantId", "carriedUserMessageId", "ended", "lastRowId", "openUserRows",
@@ -120,6 +120,8 @@ import Testing
         #expect(labels(ChatMessage(id: "m", role: .user, text: "t")) == ["at", "id", "role", "text"])
         #expect(labels(SearchChip(title: "t", url: "u", snippet: "s")) == ["snippet", "title", "url"])
         #expect(labels(TurnFailure(code: "c", detail: "d")) == ["code", "detail"])
+        #expect(labels(FailureMark(id: "f", anchorId: nil, failure: TurnFailure(code: "c", detail: "d"), at: nil))
+            == ["anchorId", "at", "failure", "id"])
         #expect(labels(LiveWidget(id: "w", connectionId: "c", toolName: "t", arguments: [:], callId: "k"))
             == ["arguments", "callId", "connectionId", "id", "toolName"])
         #expect(labels(OwnerQuestion(id: "q", prompt: "p", options: [], allowFreeform: true))
