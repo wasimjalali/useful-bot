@@ -411,10 +411,9 @@ export default function Page() {
               // Another client carried this session over first, and its
               // session is the chat now. Follow it rather than the retired
               // one, and hand the text back to send there.
-              // Not after Stop, and not over a chat the owner switched to.
-              if (!controller.signal.aborted && projSession.current === "") {
-                await followMovedSession(selected.id);
-              }
+              // Not over a chat the owner switched to. After Stop it is still
+              // right: the moved session is this chat's live one.
+              if (projSession.current === "") await followMovedSession(selected.id);
               throw new Error("This chat just continued in a newer session. Send again.");
             }
           }

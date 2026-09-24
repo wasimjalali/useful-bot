@@ -59,9 +59,10 @@ export function usedLimitCode(type: string, code: string, message = ""): string 
   // Kimi's tokens-per-day limit shares `rate_limit_reached_error` with its
   // per-minute and concurrency ones; only the message names it, and its
   // docs say it resets the next day, which no wait inside a turn reaches.
-  // The limit's own words, not the bare token: the message also carries the
-  // caller's organisation name.
-  if (type === "rate_limit_reached_error" && /\bTPD (?:rate )?limit\b/.test(message)) return "upstream_usage_limit";
+  // Anchored on the limit's own wording ("reached organization TPD rate
+  // limit", "Organization-level TPD limit reached"), not the bare token: the
+  // message also carries the caller's organisation name.
+  if (type === "rate_limit_reached_error" && /\borganization(?:-level)? (?:max )?TPD\b/i.test(message)) return "upstream_usage_limit";
   return ZAI_CODES.get(code) ?? null;
 }
 

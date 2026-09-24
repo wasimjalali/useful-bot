@@ -572,12 +572,15 @@ test("Kimi's spent day is a used-up limit, its per-minute limits stay waitable",
   const day = await limit("Your account org-1 request reached organization TPD rate limit, current: 1500001, limit: 1500000");
   assert.equal(day.code, "upstream_usage_limit");
   assert.equal(day.status, 402);
+  // The wording in Kimi's error table.
+  assert.equal((await limit("Organization-level TPD limit reached")).code, "upstream_usage_limit");
   for (const message of [
     "Your account org-1 request reached organization max RPM: 3, please try again after 1 seconds",
     "Your account org-1 request reached organization TPM rate limit, current: 64001, limit: 64000",
     "Organization-level concurrency limit reached",
     // An organisation whose name holds the token is still on a minute limit.
     "Your account TPD-2 request reached organization max RPM: 3, please try again after 1 seconds",
+    "Your account TPD rate limit request reached organization max RPM: 3, please try again after 1 seconds",
   ]) {
     assert.equal((await limit(message)).code, "upstream_rate_limited");
   }
