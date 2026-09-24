@@ -102,6 +102,13 @@ struct ChatView: View {
                         // fade would only delay it. macOS 14 has no scroll
                         // geometry to land it that fast and keeps both.
                         let restored = model.restoredFromCache && Self.fastLanding
+                        // A chat known to be empty that the owner has just
+                        // sent into has nothing to wait for: its only rows are
+                        // the send's own. It shows them from its first frame,
+                        // with no mascot and no fade; the mascot used to wave
+                        // for a fifth of a second between the empty state and
+                        // the owner's message.
+                        let landed = landedBotId == bot.id || sentIntoReadyChat
                         transcript(bot)
                             // The landing belongs to this mount. Without this a
                             // chat left for an empty one, or remounted before
@@ -116,16 +123,16 @@ struct ChatView: View {
                             // transaction also animated any layout still moving
                             // in it, and the rows drifted while they faded in.
                             .animation(restored ? nil : .easeOut(duration: 0.15)) {
-                                $0.opacity(landedBotId == bot.id ? 1 : 0)
+                                $0.opacity(landed ? 1 : 0)
                             }
-                            .accessibilityHidden(landedBotId != bot.id)
+                            .accessibilityHidden(!landed)
                             .overlay {
-                                ZStack { if landedBotId != bot.id, !restored || slowRestoreBotId == bot.id { loadingState } }
+                                ZStack { if !landed, !restored || slowRestoreBotId == bot.id { loadingState } }
                                     // A restored chat's rows show at once, so
                                     // its mascot must not fade out over them.
                                     // A slow one fades, so a confirmation just past
                                     // the wait does not pop the mascot for a frame.
-                                    .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landedBotId == bot.id)
+                                    .animation(restored && slowRestoreBotId != bot.id ? nil : .easeOut(duration: 0.15), value: landed)
                             }
                     } else if model.transcriptReady {
                         emptyState(bot)
@@ -169,6 +176,12 @@ struct ChatView: View {
                   let botId = note.userInfo?["botId"] as? String else { return }
             model.reply(to: text, author: note.userInfo?["author"] as? String, botId: botId)
         }
+    }
+
+    /// The owner sent into a chat whose load had already finished, in this
+    /// visit. The transcript mounts on that send with its rows ready.
+    private var sentIntoReadyChat: Bool {
+        model.transcriptReady && model.pending && model.sentSinceOpen
     }
 
     private func closePanes() {
@@ -683,6 +696,14 @@ struct ChatView: View {
                     // geometry must not stand in for this one's.
                     scrollProbe.reset()
                     scrollToBottom(proxy)
+                    // Shown from its first frame (see `sentIntoReadyChat`);
+                    // this only records it, so the rows stay up once the turn
+                    // ends and the condition no longer holds.
+                    if sentIntoReadyChat {
+                        landedBotId = bot.id
+                        model.finishFirstPaint()
+                        return
+                    }
                     if #available(macOS 15.0, *), model.restoredFromCache {
                         await landRestored(proxy, botId: bot.id)
                         return
