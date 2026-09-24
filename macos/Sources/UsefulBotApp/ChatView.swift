@@ -63,35 +63,6 @@ struct ChatView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                if let error = model.threadError {
-                    HStack(spacing: 8) {
-                        Text(error)
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.C.danger)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        // A failed turn is retried by sending it again; any
-                        // other banner just needs the thread re-read.
-                        if !model.pending {
-                            NativeButton("Retry", kind: .secondary, small: true) {
-                                model.retryLastTurn()
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 8)
-                }
-                // Rail and dialog writes (rename, delete, create section, the
-                // New Bot picker, recents) close their dialog and show nothing
-                // when the save fails; this row is visible behind all of them.
-                // The message carries its own copy, already plain.
-                if let save = model.saveError {
-                    Text(save)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.C.danger)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 8)
-                }
                 if let bot = model.selectedBot {
                     // The header floats: the transcript runs under it, and
                     // only the bot's pill and the panel control sit on top.
@@ -148,6 +119,23 @@ struct ChatView: View {
                     // Anything the bot needs an answer to docks here, between
                     // the transcript and the composer, so the question sits
                     // where the reply is typed instead of scrolling away.
+                    // Hangs above the column from a line of no height, so it
+                    // floats over the transcript's bottom edge and never takes
+                    // the transcript's height the way the banner did.
+                    Color.clear
+                        .frame(height: 0)
+                        .frame(maxWidth: .infinity)
+                        .overlay(alignment: .bottom) {
+                            if let note = model.threadError ?? model.saveError {
+                                ComposerNote(text: note) { model.dismissNote() }
+                                    .frame(maxWidth: DesignTokens.Space.chatColumnMax)
+                                    .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
+                                    .padding(.bottom, 8)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .transition(.opacity)
+                            }
+                        }
+                        .zIndex(1)
                     askColumn(bot)
                     composerColumn(bot)
                 }
@@ -553,6 +541,17 @@ struct ChatView: View {
                             switch block {
                             case .dayDivider(_, let label):
                                 DayDividerRow(label: label)
+                            case .message(let row, _) where row.kind == .failure:
+                                // Only the newest failed turn keeps a live
+                                // Retry; older ones are the record.
+                                let live = row.id == model.retryableFailureRowId
+                                FailureRow(
+                                    text: row.text,
+                                    retryable: live,
+                                    enabled: !model.pending,
+                                    until: live ? model.failureRetryUntil : nil,
+                                    maxWidth: min(DesignTokens.Space.bubbleMax, columnWidth * 0.85)
+                                ) { model.retryLastTurn() }
                             case .message(let row, let recipients):
                                 if row.id == model.continuationRowId {
                                     // The earlier session could not go on, so
@@ -782,16 +781,6 @@ struct ChatView: View {
                 }
                 .onChange(of: pinnedToBottom) { holdingReplyAnchor = false }
                 .onChange(of: holdingReplyAnchor) { _, holding in scrollProbe.holding = holding }
-                // The two banners sit above this scroll view, so they take
-                // their height off the top of the viewport. The content kept
-                // its offset from the top and slid down by that much, which
-                // put the failed message half under the composer. A reader at
-                // the newest turn is kept there; one reading history is not
-                // moved. Any change counts, not only appearing and clearing:
-                // a longer message wraps to a second line and shrinks the
-                // viewport the same way.
-                .onChange(of: model.threadError) { repinAfterBannerChange(proxy) }
-                .onChange(of: model.saveError) { repinAfterBannerChange(proxy) }
                 // The reader asked for earlier messages. Those mount above
                 // the row they were reading, and the scroll offset stays
                 // where it was, which would now be the top of the new rows;
@@ -898,6 +887,104 @@ struct ChatView: View {
         .frame(maxWidth: DesignTokens.Space.chatColumnMax)
         .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// A failed turn, where its reply would have been: a small caution glyph and
+/// the reason in secondary text, with Retry on the newest one. Quiet on
+/// purpose: the chat goes on, and a red slab over it read as the app broken.
+private struct FailureRow: View {
+    let text: String
+    let retryable: Bool
+    let enabled: Bool
+    /// A router cool-down's end: the row counts down to it and holds Retry.
+    let until: Date?
+    let maxWidth: CGFloat
+    let retry: () -> Void
+
+    var body: some View {
+        if let until, until > Date() {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let left = Int(until.timeIntervalSince(context.date).rounded(.up))
+                if left > 0 {
+                    row(
+                        "The model provider failed repeatedly, so sending is paused for \(left) more \(left == 1 ? "second" : "seconds").",
+                        canRetry: false
+                    )
+                } else {
+                    row(text, canRetry: enabled)
+                }
+            }
+        } else {
+            row(text, canRetry: enabled)
+        }
+    }
+
+    private func row(_ copy: String, canRetry: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(Theme.C.inkMuted)
+                .accessibilityHidden(true)
+            Text(copy)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if retryable {
+                NativeButton("Retry", kind: .secondary, small: true, enabled: canRetry, action: retry)
+                    .accessibilityIdentifier("failure-retry")
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: max(160, maxWidth), alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("failure-row")
+    }
+}
+
+/// One line over the composer for a failure no turn can hold: a send that
+/// never reached the server, a load that failed, a write that was refused.
+private struct ComposerNote: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(Theme.C.inkMuted)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(text)
+            Spacer(minLength: 0)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .frame(height: 30)
+        .background(Theme.C.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
+                .strokeBorder(Theme.C.edge, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
+        .popShadow()
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("composer-note")
     }
 }
 
@@ -1215,6 +1302,9 @@ struct TranscriptRowView: View, Equatable {
         case .page:
             // The row's text is the page title; the id names the Library item.
             PageRow(mediaId: row.imageId ?? "", title: row.text)
+        case .failure:
+            // Drawn by the transcript itself, which owns its Retry.
+            EmptyView()
         }
     }
 

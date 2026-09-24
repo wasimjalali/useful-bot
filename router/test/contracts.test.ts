@@ -915,7 +915,12 @@ test("three protocol failures open the alias circuit", async () => {
     }
     const opened = await call();
     assert.equal(opened.status, 503);
-    assert.equal((await opened.json()).error.code, "circuit_open");
+    const body = (await opened.json()).error;
+    assert.equal(body.code, "circuit_open");
+    // eve keeps only the message of a failed call, so the wait has to be
+    // readable there for the app's countdown.
+    const waited = Number(/retry_after_ms=(\d+)/.exec(body.message)?.[1]);
+    assert.ok(waited > 0 && waited <= body.retry_after_ms + 5);
   }, (_req, res) => {
     res.writeHead(500, { "content-type": "application/json" });
     res.end("{}");

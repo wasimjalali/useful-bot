@@ -81,8 +81,16 @@ final class AppModel: ObservableObject {
     /// handoff, a connect resume, a routine). Drives the working row the same
     /// way `pending` does; the follower keeps it in step with the stream.
     @Published private(set) var backgroundWorking = false
-    /// Thread load and send failures surface in the chat column.
+    /// Failures with no turn to put them under (a send that never reached
+    /// the server, a load that failed, a write that was refused), shown as a
+    /// one-line note over the composer. A turn that failed is a row in the
+    /// transcript instead.
     @Published private(set) var threadError: String?
+    /// The failure row whose Retry is live: the newest failed turn's, while
+    /// nothing has started since.
+    @Published private(set) var retryableFailureRowId: String?
+    /// When that row's Retry unlocks, for a router cool-down that said.
+    @Published private(set) var failureRetryUntil: Date?
     /// Profile save failures surface inside the settings pane.
     @Published private(set) var saveError: String?
     /// Proposals waiting on the owner for the open thread.
@@ -659,7 +667,9 @@ final class AppModel: ObservableObject {
         restoreChat(botId)
         sendBotId = sendTasks[botId] != nil ? botId : nil
         sendTask = sendTasks[botId]
-        if let err = sendErrors[botId] {
+        // A turn that failed shows as its row once the replay is in; only a
+        // failure with no turn to sit under is a note.
+        if let err = sendErrors[botId], !err.resendable {
             stickyThreadError = err.message
             threadError = err.message
         }
@@ -1004,19 +1014,19 @@ final class AppModel: ObservableObject {
             // A send's own failure banner belongs to the bot that sent it; a
             // switch in the meantime must not show it on the new bot. A
             // recorded background error wins over the replay's generic line.
+            // A failed turn is a row in the replayed transcript, so only a
+            // failure with no turn to sit under becomes the note.
             if let recorded = sendErrors[bot.id], projection.failed || sendTasks[bot.id] != nil {
-                stickyThreadError = recorded.message
-                threadError = recorded.message
+                stickyThreadError = recorded.resendable ? nil : recorded.message
+                threadError = stickyThreadError
             } else {
                 if sendErrors[bot.id] != nil, !projection.failed {
                     sendErrors[bot.id] = nil
                 }
                 let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
-                threadError = sticky ?? (projection.failed
-                    ? ["The last turn failed.", projection.failure?.reason].compactMap { $0 }.joined(separator: " ")
-                    // A drawing that could not be saved while this chat was in
-                    // the background says so when the owner comes back.
-                    : widgetSaveErrors[bot.id])
+                // A drawing that could not be saved while this chat was in
+                // the background says so when the owner comes back.
+                threadError = sticky ?? widgetSaveErrors[bot.id]
             }
             // The replay above ends once the stream has been idle a few
             // seconds, and nothing reopened it. Hand the transcript over to
@@ -1034,7 +1044,9 @@ final class AppModel: ObservableObject {
         } catch {
             guard generation == loadGeneration else { return }
             transcriptReady = true
-            threadError = (error as? LocalizedError)?.errorDescription ?? "Thread failed to load."
+            // A send that failed says why on its own; the reload it triggers
+            // failing for the same reason must not replace that with this.
+            threadError = stickyThreadError ?? (error as? LocalizedError)?.errorDescription ?? "Thread failed to load."
             // No replay ran to confirm a restored turn is still going, so do
             // not leave its working row and rail pulse up on a guess.
             if sendTasks[bot.id] == nil {
@@ -1113,9 +1125,7 @@ final class AppModel: ObservableObject {
                     if event.type == "turn.failed" || event.type == "session.failed", projection.failed {
                         recordSendError(
                             current.id,
-                            ["The last turn failed.", projection.failure?.reason]
-                                .compactMap { $0 }
-                                .joined(separator: " "),
+                            projection.failure?.message ?? "The turn failed.",
                             resendable: true,
                             retryAfter: projection.failure?.coolDownSeconds
                         )
@@ -1333,14 +1343,8 @@ final class AppModel: ObservableObject {
         // now is refused before it reaches a model, so the only thing a resend
         // achieves is another copy of the owner's message in the chat. Say how
         // long is left instead, and let them press it again after that.
-        if let botId = selectedBotId, let until = retryNotBefore[botId], until > Date() {
-            let seconds = max(1, Int(until.timeIntervalSinceNow.rounded(.up)))
-            let message = "Sending is paused for \(seconds) more \(seconds == 1 ? "second" : "seconds"). Retry after that."
-            sendErrors[botId] = SendFailure(message: message, resendable: true)
-            stickyThreadError = message
-            threadError = message
-            return
-        }
+        // The row counts the pause down and holds its button until then.
+        if let until = failureRetryUntil, until > Date() { return }
         // Only a turn that never ran may be sent again. "The reply could not be
         // read" and "The session pointer could not be saved" both leave the
         // turn with the server, and resending those files a second copy of a
@@ -1680,9 +1684,13 @@ final class AppModel: ObservableObject {
                        self.store?.bots.contains(where: { $0.id == bot.id }) == true {
                         self.replyQuotes[bot.id] = quoteSnapshot
                     }
+                    // A connection that never opened has no description of
+                    // its own, and "Send failed." left the owner guessing
+                    // whether the message went anywhere.
                     self.recordSendError(
                         bot.id,
-                        (error as? LocalizedError)?.errorDescription ?? "Send failed.",
+                        (error is URLError ? nil : (error as? LocalizedError)?.errorDescription)
+                            ?? "Couldn't reach the local server. Your message is back in the composer.",
                         resendable: false
                     )
                 }
@@ -1841,10 +1849,12 @@ final class AppModel: ObservableObject {
         } else {
             retryNotBefore.removeValue(forKey: botId)
         }
-        if selectedBotId == botId {
+        // A turn that ran and failed is its own row in the transcript.
+        if selectedBotId == botId, !resendable {
             stickyThreadError = message
             threadError = message
         }
+        if selectedBotId == botId { publishFailureRetry() }
     }
 
     /// When the router's cool-down lifts, per bot. A deadline in the past is
@@ -2124,8 +2134,10 @@ final class AppModel: ObservableObject {
         if continuationRowId != projection.continuationRowId { continuationRowId = projection.continuationRowId }
         var rows = Transcript.merge(
             events: durableEvents,
-            messages: projection.messages
+            messages: projection.messages,
+            failures: projection.failureMarks
         )
+        publishFailureRetry()
         let seenWidgets = Set(rows.filter { $0.kind == .widget }.compactMap { $0.text })
         for widget in projection.widgets where !seenWidgets.contains(widget.id) && !refusedWidgets.contains(widget.id) {
             rows.append(TranscriptRow(id: "live-\(widget.id)", kind: .widget, text: widget.id, at: Date()))
@@ -2165,6 +2177,30 @@ final class AppModel: ObservableObject {
         if let selectedBotId, transcriptReady || !rows.isEmpty {
             transcriptCache[selectedBotId] = (rows, transcriptBlocks, durableEvents)
         }
+    }
+
+    private func publishFailureRetry() {
+        let mark = projection.retryableMarkId.flatMap { id in projection.failureMarks.first { $0.id == id } }
+        let rowId = mark?.rowId
+        if retryableFailureRowId != rowId { retryableFailureRowId = rowId }
+        // The router said how long its cool-down lasts. A send that hit it
+        // armed the deadline here; a replay reads it off the failure's time.
+        var until: Date?
+        if let mark, let seconds = mark.failure.coolDownSeconds {
+            let fromSend = selectedBotId.flatMap { retryNotBefore[$0] }
+            let fromMark = mark.at.map { $0.addingTimeInterval(TimeInterval(seconds)) }
+            until = [fromSend, fromMark].compactMap { $0 }.max()
+        }
+        if failureRetryUntil != until { failureRetryUntil = until }
+    }
+
+    /// The owner closed the note over the composer.
+    func dismissNote() {
+        threadError = nil
+        stickyThreadError = nil
+        saveError = nil
+        if let botId = selectedBotId, sendErrors[botId]?.resendable == false { sendErrors[botId] = nil }
+        if let botId = selectedBotId { widgetSaveErrors[botId] = nil }
     }
 
     /// Only on a real change: the label is read off every streamed event, and
@@ -3567,7 +3603,7 @@ final class AppModel: ObservableObject {
                     anchor = row.id
                     awaitingReply = false
                 }
-            case .handoff, .note, .widget, .image, .page:
+            case .handoff, .note, .widget, .image, .page, .failure:
                 continue
             }
         }

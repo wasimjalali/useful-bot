@@ -244,7 +244,7 @@ public enum TranscriptBlocks {
             switch row.kind {
             case .user, .post: run = []
             case .assistant: run.insert(row.id)
-            case .handoff, .note, .widget, .image, .page: continue
+            case .handoff, .note, .widget, .image, .page, .failure: continue
             }
         }
         return run

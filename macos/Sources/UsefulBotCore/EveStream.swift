@@ -331,6 +331,12 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         if haystack.contains("ended without a finish reason") {
             return "The model's answer was cut off before it finished. Send it again."
         }
+        // The agent's call never reached the router, or the router hung up
+        // on it: the local services, not the provider, and a retry is the
+        // first thing to try.
+        if haystack.contains("cannot connect to api") {
+            return "The bot lost its connection to the local router. Retry, or restart the local services if it keeps happening."
+        }
         if haystack.contains("empty-model-response") || haystack.contains("did not return a response") {
             return "The model returned nothing. Send it again."
         }
@@ -351,6 +357,37 @@ public struct TurnFailure: Codable, Equatable, Sendable {
 
     /// What to show when this failure is the whole message.
     public var message: String { reason ?? "The turn failed." }
+
+    /// What a failure row says once the moment has passed. A cool-down's
+    /// copy counts seconds that were only true when it happened, so a row
+    /// kept in the transcript says what happened instead; the live row
+    /// counts down on its own.
+    public var rowMessage: String {
+        guard coolingDown else { return message }
+        return "The model provider failed repeatedly, so sending was paused."
+    }
+}
+
+/// A failed turn's place in the transcript: the row it goes under, and what
+/// went wrong. Kept beside the messages rather than among them, because the
+/// retry folds key on the owner's row being the last message.
+public struct FailureMark: Identifiable, Codable, Equatable, Sendable {
+    public var id: String
+    /// The row the failure sits under: the last thing the failed turn put in
+    /// the transcript, or the owner's message when it put nothing.
+    public var anchorId: String?
+    public var failure: TurnFailure
+    public var at: Date?
+
+    public init(id: String, anchorId: String?, failure: TurnFailure, at: Date?) {
+        self.id = id
+        self.anchorId = anchorId
+        self.failure = failure
+        self.at = at
+    }
+
+    /// The transcript row id this mark renders as.
+    public var rowId: String { "failure-\(id)" }
 }
 
 /// How a send ended, and whether the banner it put up may be retried by
@@ -686,6 +723,14 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// that the day's token budget ran out rather than just that something
     /// went wrong.
     public private(set) var failure: TurnFailure?
+    /// Every failed turn still worth showing, in the order they failed. A
+    /// retry that gets somewhere takes its failure's mark away.
+    public private(set) var failureMarks: [FailureMark] = []
+    /// The mark of the failure `failed` is about, while it is.
+    private var liveFailureMarkId: String?
+    /// The one failure row that may still be retried: the newest turn's, and
+    /// only while nothing has started since.
+    public var retryableMarkId: String? { failed ? liveFailureMarkId : nil }
     /// Web results the turn surfaced, shown as chips under the transcript.
     public private(set) var searchHits: [SearchChip] = []
     /// What the turn is doing right now. Reasoning and tool calls both reach
@@ -713,6 +758,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // A stepped-off turn's record, its id held twice: in the map and
             // in the eviction order.
             + turns.count * 128
+            + failureMarks.reduce(0) { $0 + $1.failure.detail.utf8.count + 128 }
     }
     /// The one session every positioned event here was read from, or nil when
     /// there were none or more than one. A send that moved to a fresh session
@@ -733,6 +779,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             && (seenOrder.count < Self.seenCap ? seenCursor == 0 : seenCursor < seenOrder.count)
             && turnOrder.count == turns.count
             && turnOrder.allSatisfy { turns[$0] != nil }
+            && (liveFailureMarkId == nil || failureMarks.contains { $0.id == liveFailureMarkId })
     }
 
     /// Ids minted for rows whose events carried none. A count, not the row's
@@ -1014,17 +1061,65 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// then the row goes now, and its id keeps pointing at the retry, the way
     /// a fold leaves it, so a redelivery of the failed message still lands
     /// nowhere.
-    private mutating func discardMessage(of record: TurnRecord) {
+    /// Returns true when the row went, because the retry under it replaced it.
+    @discardableResult
+    private mutating func discardMessage(of record: TurnRecord) -> Bool {
         guard record.sawMessage, !record.producedWork,
               let carried = record.carriedUserMessageId,
-              let index = indexById[carried], messages[index].id == carried else { return }
+              let index = indexById[carried], messages[index].id == carried else { return false }
         if index == messages.count - 1 {
             discardedUserMessageId = carried
         } else if messages[index + 1].role == .user, messages[index + 1].text == messages[index].text {
             messages.remove(at: index)
             rowJournal.remove(at: index)
             for (id, held) in indexById where held > index { indexById[id] = held - 1 }
+            // A failure row under the removed message belongs under the
+            // retry that took its place.
+            reanchorFailures(from: carried, to: messages[index].id)
+            return true
         }
+        return false
+    }
+
+    /// Put a failure row in the transcript under the last row its turn
+    /// made. A failure already under that same row is an earlier attempt of
+    /// the same message, and this one replaces it rather than stacking.
+    private mutating func markFailure(_ failure: TurnFailure, event: EveEvent, record: TurnRecord, at stamp: Date?) -> String {
+        let anchor = record.lastRowId.flatMap { indexById[$0] != nil ? $0 : nil } ?? messages.last?.id
+        let id = event.id ?? mintId("f")
+        failureMarks.removeAll { $0.anchorId == anchor && anchor != nil }
+        failureMarks.append(FailureMark(id: id, anchorId: anchor, failure: failure, at: stamp))
+        if let live = liveFailureMarkId, !failureMarks.contains(where: { $0.id == live }) { liveFailureMarkId = nil }
+        return id
+    }
+
+    private mutating func reanchorFailures(from old: String, to new: String) {
+        for index in failureMarks.indices where failureMarks[index].anchorId == old {
+            failureMarks[index].anchorId = new
+        }
+    }
+
+    /// The turn in flight got somewhere, so a failure it was the retry of is
+    /// behind it. A retry is the same words as the failed turn's message,
+    /// sent again with nothing but other attempts at them in between: a
+    /// different question after a failure leaves that failure standing.
+    private mutating func foldRetriedFailures() {
+        guard !failureMarks.isEmpty,
+              let carried = turn.carriedUserMessageId,
+              let carriedIndex = indexById[carried], messages[carriedIndex].role == .user else { return }
+        let text = messages[carriedIndex].text
+        failureMarks.removeAll { mark in
+            guard let anchor = mark.anchorId, let anchorIndex = indexById[anchor],
+                  anchorIndex <= carriedIndex,
+                  // The message the failed turn answered: its anchor, or the
+                  // owner's row above whatever the turn wrote.
+                  let asked = messages[...anchorIndex].last(where: { $0.role == .user }),
+                  asked.text == text else { return false }
+            // The folded retry: its message is the failed one's row.
+            guard anchorIndex < carriedIndex else { return true }
+            return messages[(anchorIndex + 1)..<carriedIndex].allSatisfy { $0.role != .user || $0.text == text }
+        }
+        if let live = liveFailureMarkId, !failureMarks.contains(where: { $0.id == live }) { liveFailureMarkId = nil }
     }
 
     /// Whether an event names a turn this projection never recorded that
@@ -1085,8 +1180,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         // redeliver that event once the bounded id cache has evicted it, and
         // this mapping is then the only thing that still recognises it.
         if indexById[id] == nil { indexById[id] = messages.count - 1 }
-        // A retried carry-over re-keys its row; the divider follows it.
+        // A retried carry-over re-keys its row; the divider follows it, and
+        // so does a failure row under it.
         if continuationRowId == messages[messages.count - 1].id { continuationRowId = id }
+        reanchorFailures(from: messages[messages.count - 1].id, to: id)
         messages[messages.count - 1] = ChatMessage(id: id, role: .user, text: text, at: at)
         // The echo is where the journal placed the row the app put up early.
         if let journal { rowJournal[messages.count - 1] = journal }
@@ -1394,6 +1491,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             guard var record = record(of: owner) else { break }
             record.producedWork = true
             store(record, for: owner)
+            if case .current = owner { foldRetriedFailures() }
             if case .current = owner, let name = EveStream.requestedToolName(event.data) {
                 activity = .tool(name, detail: EveStream.requestedToolDetail(event.data))
             }
@@ -1450,9 +1548,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // text counts as this turn's work; a redelivery of an old block
             // returned above, and letting it through would make an untouched
             // turn look like one that got somewhere.
+            let firstWork = !record.producedWork
             record.producedWork = true
             record.openUserRows = 0
-            if case .current = owner { activity = .working }
+            if case .current = owner {
+                activity = .working
+                if firstWork { foldRetriedFailures() }
+            }
             if let current = record.assistantId,
                let index = indexById[current] {
                 messages[index].text += delta
@@ -1495,6 +1597,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 }
                 record.producedWork = true
                 record.openUserRows = 0
+                if case .current = owner { foldRetriedFailures() }
                 if let current = record.assistantId,
                    let index = indexById[current] {
                     messages[index].text = full
@@ -1533,7 +1636,17 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 guard var stepped = turns[id] else { break }
                 stepped.ended = true
                 turns[id] = stepped
-                discardMessage(of: stepped)
+                // Its rows stay unless the retry under them replaced them,
+                // and a failure under rows that stay is still news. Never
+                // the live one: the turn in flight is somebody else's.
+                if !discardMessage(of: stepped) {
+                    _ = markFailure(
+                        TurnFailure(code: event.data?["code"]?.stringValue ?? event.type, detail: event.message ?? ""),
+                        event: event,
+                        record: stepped,
+                        at: stamp
+                    )
+                }
             case .current:
                 // eve retires a session that failed, and the next message
                 // opens a fresh one with none of this history. A question
@@ -1544,11 +1657,13 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 if event.type == "session.failed" { questions = [] }
                 pending = false
                 failed = true
-                failure = TurnFailure(
+                let reported = TurnFailure(
                     code: event.data?["code"]?.stringValue ?? event.type,
                     detail: event.message ?? ""
                 )
+                failure = reported
                 discardMessage(of: turn)
+                liveFailureMarkId = markFailure(reported, event: event, record: turn, at: stamp)
                 // A turn that ended takes its id with it. Left behind, it
                 // makes the next turn's work look like somebody else's and
                 // stops it counting, which is the direction that folds a
@@ -1560,6 +1675,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // Another turn's results are not this turn's chips.
             guard case .current = turnOwner(of: event) else { break }
             turn.producedWork = true
+            foldRetriedFailures()
             let chips = EveStream.parseSearchChips(event.data)
             if !chips.isEmpty { searchHits = chips }
             if event.type == "action.result" { activity = .thinking }
@@ -1575,6 +1691,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             record.producedWork = true
             record.openUserRows = 0
             store(record, for: owner)
+            if case .current = owner { foldRetriedFailures() }
             // A question journaled before the newest turn began is not open:
             // eve waits on a question, and the message that began that turn
             // is what answered it. A backfilled turn's question came up as a
@@ -1615,7 +1732,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 // failure too, and the fold already requires the discarded
                 // row to still be the last one, which any answer pushes it
                 // out of.
-                if turn.sawMessage, event.type != "session.waiting" { discardedUserMessageId = nil }
+                if turn.sawMessage, event.type != "session.waiting" {
+                    discardedUserMessageId = nil
+                    foldRetriedFailures()
+                }
                 pending = false
                 turn.ended = true
                 leaveCurrentTurn()

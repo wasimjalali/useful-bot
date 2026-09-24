@@ -3,6 +3,8 @@ import Foundation
 public struct TranscriptRow: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
         case user, assistant, handoff, post, note, widget, image, page
+        /// A failed turn, where its reply would have been.
+        case failure
     }
 
     public var id: String
@@ -61,7 +63,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 public enum Transcript {
     public static func merge(
         events: [AgentEvent],
-        messages: [ChatMessage]
+        messages: [ChatMessage],
+        failures: [FailureMark] = []
     ) -> [TranscriptRow] {
         var durable: [TranscriptRow] = []
         var durableUserCounts: [String: Int] = [:]
@@ -95,7 +98,27 @@ public enum Transcript {
             }
         }
         var live: [TranscriptRow] = []
+        // Each failure goes under the row it names, whether or not that row
+        // renders from this side: one the durable side holds still places it.
+        var failuresByAnchor: [String: [FailureMark]] = [:]
+        var unplaced: [FailureMark] = []
+        let messageIds = Set(messages.map(\.id))
+        for mark in failures {
+            if let anchor = mark.anchorId, messageIds.contains(anchor) {
+                failuresByAnchor[anchor, default: []].append(mark)
+            } else {
+                unplaced.append(mark)
+            }
+        }
+        func failureRow(_ mark: FailureMark, after message: ChatMessage?) -> TranscriptRow {
+            TranscriptRow(id: mark.rowId, kind: .failure, text: mark.failure.rowMessage, at: mark.at ?? message?.at)
+        }
         for message in messages {
+            defer {
+                for mark in failuresByAnchor.removeValue(forKey: message.id) ?? [] {
+                    live.append(failureRow(mark, after: message))
+                }
+            }
             // The same event id must never render twice, even if the stream
             // rewrote its text between the delta and the completion.
             if durableIds.contains(message.id) { continue }
@@ -116,6 +139,8 @@ public enum Transcript {
                 ))
             }
         }
+        // A mark whose row is gone still says what happened, at the end.
+        live.append(contentsOf: unplaced.map { failureRow($0, after: nil) })
         return interleave(durable: durable, live: live)
     }
 
