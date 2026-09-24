@@ -3040,6 +3040,10 @@ final class AppModel: ObservableObject {
             }
             guard generation == (self.chatGenerations[id] ?? 0), epoch == self.storeEpoch else { return }
             self.resetThread()
+            // Cleared means empty, which is already known: nothing is left to
+            // load for its rows. Left unready, the loading mascot flashed for
+            // a frame between the old rows and the empty chat.
+            self.transcriptReady = true
             // The old conversation is gone server-side; it must not come back
             // from the cache on the next switch.
             self.transcriptCache[id] = nil

@@ -7,8 +7,8 @@ import {
 } from "../../shared/agent-store.ts";
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { libraryDrawingIds } from "../../shared/media-store.ts";
-import { parseEveStreamLine, type EveEvent as StreamEvent } from "../../shared/eve-stream.ts";
-import { buildContinuationBrief, withSessionNotes } from "../../shared/continuation-brief.ts";
+import { parseEveStreamLine, takeStreamLines, type EveEvent as StreamEvent } from "../../shared/eve-stream.ts";
+import { buildContinuationBrief, settledByBriefTurn, withSessionNotes } from "../../shared/continuation-brief.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
 import {
@@ -341,8 +341,6 @@ async function sessionEventIds(sessionId: string, jwt: string): Promise<Set<stri
   return ids;
 }
 
-/** How far back from the tail the settle check looks for a completed step. */
-const SETTLE_TAIL_EVENTS = 200;
 /** How much of an old session the carry-over reads before it stops. */
 const CARRY_READ = { headEvents: 400, tailEvents: 20_000, idleMs: 3_000, hardMs: 15_000, maxBytes: 48 * 1024 * 1024 };
 
@@ -358,8 +356,12 @@ async function readStreamRange(
   start: number,
   count: number,
   outer?: AbortSignal,
-): Promise<{ events: StreamEvent[]; tail: number | null; cut: boolean }> {
+): Promise<{ events: StreamEvent[]; tail: number | null; cut: boolean; next: number }> {
   const events: StreamEvent[] = [];
+  // Stream positions taken, counted per event line whether or not it parsed:
+  // `start + consumed` is where the next read begins, with no line skipped or
+  // read twice at the seam.
+  let consumed = 0;
   const controller = new AbortController();
   // The caller gave up (the owner's request went away): stop reading too.
   if (outer?.aborted) controller.abort();
@@ -383,13 +385,13 @@ async function readStreamRange(
     const wanted = tail === null ? count : Math.min(count, tail + 1 - start);
     if (wanted <= 0) {
       await res.body.cancel().catch(() => undefined);
-      return { events, tail, cut };
+      return { events, tail, cut, next: start };
     }
     reset();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    while (events.length < wanted) {
+    while (consumed < wanted) {
       const chunk = await reader.read();
       if (chunk.done) break;
       reset();
@@ -401,10 +403,9 @@ async function readStreamRange(
       buf += decoder.decode(chunk.value, { stream: true });
       const lines = buf.split(/\r?\n/);
       buf = lines.pop() ?? "";
-      for (const line of lines) {
-        const event = parseEveStreamLine(line);
-        if (event && events.length < wanted) events.push(event);
-      }
+      const taken = takeStreamLines(lines, wanted - consumed);
+      consumed += taken.consumed;
+      events.push(...taken.events);
     }
     await reader.cancel().catch(() => undefined);
   } catch (err) {
@@ -416,7 +417,7 @@ async function readStreamRange(
     if (idle) clearTimeout(idle);
     clearTimeout(hard);
   }
-  return { events, tail, cut };
+  return { events, tail, cut, next: start + consumed };
 }
 
 /**
@@ -439,15 +440,15 @@ export async function readSessionEvents(
     return { events: head.events, skipped: 0, cut: true };
   }
   const total = head.tail + 1;
-  if (total <= head.events.length) return { events: head.events, skipped: 0, cut: head.cut };
-  const start = Math.max(head.events.length, total - CARRY_READ.tailEvents);
+  if (total <= head.next) return { events: head.events, skipped: 0, cut: head.cut };
+  const start = Math.max(head.next, total - CARRY_READ.tailEvents);
   const rest = await readStreamRange(sessionId, jwt, start, total - start, signal);
   return {
     events: [...head.events, ...rest.events],
-    skipped: start - head.events.length,
+    skipped: start - head.next,
     // A live session can grow between the two reads; what came after the
     // first tail index was not read, so the brief says its end may be missing.
-    cut: head.cut || rest.cut || rest.events.length < total - start || (rest.tail !== null && rest.tail > head.tail),
+    cut: head.cut || rest.cut || rest.next < total || (rest.tail !== null && rest.tail > head.tail),
   };
 }
 
@@ -458,18 +459,18 @@ export async function readSessionEvents(
  */
 export async function sessionHasCompletedTurn(sessionId: string, jwt: string, signal?: AbortSignal): Promise<boolean> {
   // A completed step commits the prompt, opening message included, to eve's
-  // history; a cancelled turn keeps its accepted input too.
-  const settles = (events: StreamEvent[]) => events.some((event) => (
-    event.type === "step.completed" || event.type === "turn.completed" || event.type === "turn.cancelled"
-  ));
+  // history; a cancelled turn keeps its accepted input too. Only a turn that
+  // carried the brief counts: a handoff completing in the unsettled window
+  // left the dropped brief dropped.
   const head = await readStreamRange(sessionId, jwt, 0, CARRY_READ.headEvents, signal);
-  if (settles(head.events)) return true;
-  if (head.tail === null || head.tail + 1 <= head.events.length) return false;
-  // A long first turn streams hundreds of deltas before its step completes,
-  // so the newest stretch is read as well; that is where it lands.
-  const start = Math.max(head.events.length, head.tail + 1 - SETTLE_TAIL_EVENTS);
+  if (settledByBriefTurn(head.events)) return true;
+  if (head.tail === null || head.tail + 1 <= head.next) return false;
+  // The rest is read from where the head stopped, as far back as the brief
+  // read goes, so a head cut short cannot leave a gap the settling step sat
+  // in. The brief turn's message may be in the head, so both are judged.
+  const start = Math.max(head.next, head.tail + 1 - CARRY_READ.tailEvents);
   const tail = await readStreamRange(sessionId, jwt, start, head.tail + 1 - start, signal);
-  return settles(tail.events);
+  return settledByBriefTurn([...head.events, ...tail.events]);
 }
 
 /**
@@ -561,7 +562,7 @@ function withSession(err: unknown, sessionId: string): unknown {
  * far as the caller is concerned, and a cancel that fails must not replace the
  * timeout it is cleaning up with an error of its own.
  */
-async function cancelEveTurn(sessionId: string, jwt: string): Promise<void> {
+export async function cancelEveTurn(sessionId: string, jwt: string): Promise<void> {
   try {
     await fetch(`${EVE}/eve/v1/session/${sessionId}/cancel`, {
       method: "POST",

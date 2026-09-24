@@ -5,11 +5,22 @@ import {
   RETRY_NOTE,
   buildContinuationBrief,
   isContinuationTurn,
+  settledByBriefTurn,
   withSessionNotes,
 } from "../shared/continuation-brief.ts";
-import type { EveEvent } from "../shared/eve-stream.ts";
+import { takeStreamLines, type EveEvent } from "../shared/eve-stream.ts";
 import { parseTurnExtras, rewriteEveTurnBody } from "../shared/eve-proxy.ts";
-import { DEFAULT_BOT_ID, continueFromVerdict, parseShell, recordSessionLineage, settleContinuation, type ShellBot } from "../shared/shell-store.ts";
+import {
+  DEFAULT_BOT_ID,
+  applyShellAction,
+  carryOverLineage,
+  continueFromVerdict,
+  parseShell,
+  recordSessionLineage,
+  settleContinuation,
+  type ShellBot,
+  type ShellStore,
+} from "../shared/shell-store.ts";
 import { stripThreadPrefix, threadPrefix } from "../shared/threads.ts";
 
 const prefix = threadPrefix({
@@ -167,4 +178,95 @@ test("a partial read is said in the brief, never passed off as the whole session
   assert.match(brief, /1200 events from the middle of the earlier session were not read back/);
   assert.match(brief, /could not be read to its end/);
   assert.equal(/\n\s*\n/.test(brief), false);
+});
+
+test("stream positions count every event line, including ones this build cannot read", () => {
+  const lines = [
+    'data: {"type":"turn.started","meta":{"id":"e0"}}',
+    "",
+    ": keep-alive",
+    'data: {"type":"message.received","meta":{"id":"e1"}',
+    'data: {"type":"turn.completed","meta":{"id":"e2"}}',
+    'data: {"type":"session.waiting","meta":{"id":"e3"}}',
+  ];
+  const taken = takeStreamLines(lines, 3);
+  // The cut-off line is an event in eve's count: three taken, two read.
+  assert.equal(taken.consumed, 3);
+  assert.deepEqual(taken.events.map((event) => event.type), ["turn.started", "turn.completed"]);
+});
+
+test("a carried session is settled only by a turn that carried the brief", () => {
+  const brief = `${BRIEF_MARKER}\n- the task`;
+  const events = (list: Array<[string, string, string?]>) =>
+    list.map(([type, turnId, message]) => ({ type, data: { turnId, ...(message ? { message } : {}) } }) as EveEvent);
+  // The opening turn failed at step zero; a handoff turn then completed.
+  // Its completion says nothing about the brief, which eve dropped.
+  assert.equal(settledByBriefTurn(events([
+    ["message.received", "turn_0", `${brief}\n\nhello`],
+    ["turn.failed", "turn_0"],
+    ["message.received", "turn_1", "Handoff from CEO.\nThis arrives in your own chat.\nDo it"],
+    ["turn.completed", "turn_1"],
+  ])), false);
+  // The resend carried the brief again, and its step completed.
+  assert.equal(settledByBriefTurn(events([
+    ["message.received", "turn_0", `${brief}\n\nhello`],
+    ["turn.failed", "turn_0"],
+    ["message.received", "turn_2", `${brief}\n\nhello`],
+    ["step.completed", "turn_2"],
+  ])), true);
+});
+
+test("a carry-over that lost the race records nothing and says so", () => {
+  const store = { bots: [{ id: "b1", sessionId: "wrun_old" } as ShellBot] } as ShellStore;
+  const first = carryOverLineage(store, "b1", "wrun_old", "wrun_a");
+  assert.equal(first.lost, false);
+  assert.equal(first.store.bots[0].sessionId, "wrun_a");
+  // The second client carried the same session over a moment later.
+  const second = carryOverLineage(first.store, "b1", "wrun_old", "wrun_b");
+  assert.equal(second.lost, true);
+  assert.equal(second.store, first.store);
+});
+
+test("a pointer write naming a session the chat already moved on from is ignored", () => {
+  const moved = recordSessionLineage(
+    { bots: [{ id: "b1", sessionId: "wrun_old" } as ShellBot] } as ShellStore,
+    "b1",
+    "wrun_old",
+    "wrun_new",
+  );
+  const stale = applyShellAction(moved, { type: "touchChat", botId: "b1", preview: "hi", sessionId: "wrun_old" });
+  assert.equal(stale.store.bots[0].sessionId, "wrun_new");
+  assert.equal(stale.store.bots[0].lastPreview, "hi");
+  const fresh = applyShellAction(moved, { type: "touchChat", botId: "b1", preview: "yo", sessionId: "wrun_next" });
+  assert.equal(fresh.store.bots[0].sessionId, "wrun_next");
+});
+
+test("a page reloaded from before a carry-over cannot put the retired session back", () => {
+  const moved = recordSessionLineage(
+    { bots: [{ id: "b1", sessionId: "wrun_old" } as ShellBot] } as ShellStore,
+    "b1",
+    "wrun_old",
+    "wrun_new",
+  );
+  const stale = applyShellAction(moved, { type: "setSession", botId: "b1", sessionId: "wrun_old" });
+  assert.equal(stale.store.bots[0].sessionId, "wrun_new");
+  const cleared = applyShellAction(moved, { type: "setSession", botId: "b1", sessionId: null });
+  assert.equal(cleared.store.bots[0].sessionId, null);
+});
+
+test("an untagged brief is settled only by its own turn's completion, not a later turn's", () => {
+  const brief = `${BRIEF_MARKER}\n- the task`;
+  const at = (type: string, message?: string, turnId?: string) =>
+    ({ type, data: { ...(turnId ? { turnId } : {}), ...(message ? { message } : {}) } }) as EveEvent;
+  // The brief turn failed at step zero; a handoff turn then completed.
+  assert.equal(settledByBriefTurn([
+    at("message.received", `${brief}\n\nhello`),
+    at("turn.failed"),
+    at("message.received", "Handoff from CEO.\nThis arrives in your own chat.\nDo it"),
+    at("turn.completed"),
+  ]), false);
+  assert.equal(settledByBriefTurn([
+    at("message.received", `${brief}\n\nhello`),
+    at("step.completed"),
+  ]), true);
 });

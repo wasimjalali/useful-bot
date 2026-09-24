@@ -22,7 +22,7 @@ import {
   createProjection,
   type StreamProjection,
 } from "../../shared/eve-stream.ts";
-import { DEFAULT_BOT_ID, PREVIEW_MAX, selectedBot, type ShellBot } from "../../shared/shell-store.ts";
+import { DEFAULT_BOT_ID, PREVIEW_MAX, parseShell, selectedBot, type ShellBot } from "../../shared/shell-store.ts";
 import { groupMembers, parseMentions, speakerLabel, speakersFrom } from "../../shared/threads.ts";
 import { useShell } from "../lib/use-shell.ts";
 import { useAgentThread } from "../lib/use-agent-thread.ts";
@@ -294,6 +294,19 @@ export default function Page() {
     dispatch({ type: "touchChat", botId: selected.id, preview: last.text });
   }, [active, dispatch, proj.messages, proj.pending, selected]);
 
+  /** Re-read the pointer the server moved and attach to it. */
+  async function followMovedSession(botId: string) {
+    try {
+      const res = await fetch("/api/shell", { credentials: "include" });
+      if (!res.ok) return;
+      const body = (await res.json()) as { store?: unknown };
+      const bot = parseShell(body.store).bots.find((item) => item.id === botId);
+      if (bot?.sessionId && projSession.current === "") attachBot(bot);
+    } catch {
+      /* the shell poll catches up within a few seconds */
+    }
+  }
+
   function attachBot(bot: ShellBot) {
     setPickerOpen(false);
     setRailOpen(false);
@@ -392,6 +405,18 @@ export default function Page() {
             restore();
             throw err;
           });
+          if (res.status === 409) {
+            const moved = (await res.clone().json().catch(() => ({}))) as { code?: string };
+            if (moved.code === "session_moved") {
+              // Another client carried this session over first, and its
+              // session is the chat now. Follow it rather than the retired
+              // one, and hand the text back to send there.
+              // Not over a chat the owner switched to. After Stop it is still
+              // right: the moved session is this chat's live one.
+              if (projSession.current === "") await followMovedSession(selected.id);
+              throw new Error("This chat just continued in a newer session. Send again.");
+            }
+          }
           if (!res.ok) restore();
         }
       }

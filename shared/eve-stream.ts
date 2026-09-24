@@ -42,11 +42,39 @@ export function createProjection(): StreamProjection {
   };
 }
 
-export function parseEveStreamLine(line: string): EveEvent | null {
+/**
+ * The event text a stream line carries, or null for a blank line, a comment
+ * or the end marker. Every line with a payload is one event in eve's count,
+ * whether or not it parses, so a reader keeping positions counts these.
+ */
+export function eveStreamPayload(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed || trimmed.startsWith(":")) return null;
   const payload = trimmed.startsWith("data:") ? trimmed.slice(5).trim() : trimmed;
   if (!payload || payload === "[DONE]") return null;
+  return payload;
+}
+
+/**
+ * Up to `room` events' worth of lines: `consumed` is how many stream
+ * positions they took, `events` the ones this build could read.
+ */
+export function takeStreamLines(lines: string[], room: number): { events: EveEvent[]; consumed: number } {
+  const events: EveEvent[] = [];
+  let consumed = 0;
+  for (const line of lines) {
+    if (consumed >= room) break;
+    if (eveStreamPayload(line) === null) continue;
+    consumed += 1;
+    const event = parseEveStreamLine(line);
+    if (event) events.push(event);
+  }
+  return { events, consumed };
+}
+
+export function parseEveStreamLine(line: string): EveEvent | null {
+  const payload = eveStreamPayload(line);
+  if (payload === null) return null;
   try {
     const parsed = JSON.parse(payload) as EveEvent;
     if (!parsed || typeof parsed !== "object" || typeof parsed.type !== "string") return null;

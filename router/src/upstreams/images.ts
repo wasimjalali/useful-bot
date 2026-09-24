@@ -234,6 +234,8 @@ export async function generateImage(input: {
   } else if (response.status === 429) {
     throw await upstreamLimitError(response);
   } else if (response.status === 402) {
+    // Marked on the connection, as the chat path does.
+    noteConnectionError(resolved.connection.id, "upstream_quota_exhausted");
     throw await upstreamOutOfCredit(response, `${resolved.providerId}/${resolved.model}`);
   } else if (response.status === 404) {
     throw new RouterError({
