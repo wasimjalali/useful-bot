@@ -127,7 +127,11 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity)
                         .overlay(alignment: .bottom) {
                             if let note = model.threadError ?? model.saveError {
-                                ComposerNote(text: note) { model.dismissNote() }
+                                ComposerNote(
+                                    text: note,
+                                    // A rail write that failed has nothing to re-read.
+                                    reload: model.threadError != nil ? { model.reloadFromNote() } : nil
+                                ) { model.dismissNote() }
                                     .frame(maxWidth: DesignTokens.Space.chatColumnMax)
                                     .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
                                     .padding(.bottom, 8)
@@ -138,6 +142,13 @@ struct ChatView: View {
                         .zIndex(1)
                     askColumn(bot)
                     composerColumn(bot)
+                } else if let note = model.threadError ?? model.saveError {
+                    // No bot to chat with (the last one was deleted, or the
+                    // first create failed): the note still says what went wrong.
+                    Spacer(minLength: 0)
+                    ComposerNote(text: note) { model.dismissNote() }
+                        .frame(maxWidth: DesignTokens.Space.chatColumnMax)
+                        .padding(DesignTokens.Space.chatColumnPadding)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -902,6 +913,15 @@ private struct FailureRow: View {
     let maxWidth: CGFloat
     let retry: () -> Void
 
+    /// A row without the button says what happened, not to press Retry.
+    private var shown: String {
+        guard !retryable else { return text }
+        let kept = text.components(separatedBy: ". ").filter { !$0.contains("Retry") }
+        guard !kept.isEmpty else { return text }
+        let joined = kept.joined(separator: ". ")
+        return joined.hasSuffix(".") ? joined : joined + "."
+    }
+
     var body: some View {
         if let until, until > Date() {
             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -912,11 +932,11 @@ private struct FailureRow: View {
                         canRetry: false
                     )
                 } else {
-                    row(text, canRetry: enabled)
+                    row(shown, canRetry: enabled)
                 }
             }
         } else {
-            row(text, canRetry: enabled)
+            row(shown, canRetry: enabled)
         }
     }
 
@@ -947,6 +967,9 @@ private struct FailureRow: View {
 /// never reached the server, a load that failed, a write that was refused.
 private struct ComposerNote: View {
     let text: String
+    /// Reads the chat again, the way the banner's Retry did for a failure
+    /// it could not resend.
+    var reload: (() -> Void)?
     let dismiss: () -> Void
 
     var body: some View {
@@ -962,6 +985,20 @@ private struct ComposerNote: View {
                 .truncationMode(.tail)
                 .help(text)
             Spacer(minLength: 0)
+            if let reload {
+                // Plain text, not a button slab: the note stays one quiet line.
+                Button(action: reload) {
+                    Text("Reload")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .accessibilityIdentifier("composer-note-reload")
+            }
             Button(action: dismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .medium))
@@ -975,7 +1012,7 @@ private struct ComposerNote: View {
         }
         .padding(.leading, 12)
         .padding(.trailing, 6)
-        .frame(height: 30)
+        .frame(minHeight: 32)
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)

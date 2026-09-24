@@ -218,6 +218,20 @@ import Testing
         #expect(!dropped.coolingDown)
     }
 
+    /// Stop on a retry is not the retry getting anywhere: the failure it
+    /// was retrying is still the last word on that message.
+    @Test func aCancelledRetryKeepsTheRow() {
+        var p = StreamProjection()
+        send(&p, "hi")
+        p.apply(EveEvent(type: "message.received", id: "u1", message: "hi", turnId: "t1", index: 1, sessionId: "s"), live: true)
+        p.apply(EveEvent(type: "turn.failed", id: "f1", message: Self.refused, turnId: "t1", index: 2, sessionId: "s"), live: true)
+        send(&p, "hi")
+        p.apply(EveEvent(type: "message.received", id: "u2", message: "hi", turnId: "t2", index: 4, sessionId: "s"), live: true)
+        p.apply(EveEvent(type: "turn.cancelled", id: "x2", turnId: "t2", index: 5, sessionId: "s"), live: true)
+        #expect(p.failureMarks.map(\.id) == ["f1"])
+        #expect(p.failureMarks.allSatisfy { mark in p.messages.contains { $0.id == mark.anchorId } })
+    }
+
     /// The row survives the snapshot a chat is put back from.
     @Test func theRowSurvivesASnapshot() throws {
         var p = StreamProjection()

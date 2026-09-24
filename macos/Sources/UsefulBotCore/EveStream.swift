@@ -1084,10 +1084,16 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// Put a failure row in the transcript under the last row its turn
     /// made. A failure already under that same row is an earlier attempt of
     /// the same message, and this one replaces it rather than stacking.
-    private mutating func markFailure(_ failure: TurnFailure, event: EveEvent, record: TurnRecord, at stamp: Date?) -> String {
-        let anchor = record.lastRowId.flatMap { indexById[$0] != nil ? $0 : nil } ?? messages.last?.id
+    /// A stepped-off turn's late failure never takes the live row: the turn
+    /// in flight is somebody else's, and its Retry is the one that works.
+    private mutating func markFailure(_ failure: TurnFailure, event: EveEvent, record: TurnRecord, at stamp: Date?, live: Bool) -> String {
+        // The id map keeps ids of rows that were folded or re-keyed, pointing
+        // at whatever row took their place; only a row that still carries the
+        // id is somewhere this failure can sit.
+        let own = record.lastRowId.flatMap { id in indexById[id].flatMap { messages[$0].id == id ? id : nil } }
+        let anchor = own ?? messages.last?.id
         let id = event.id ?? mintId("f")
-        failureMarks.removeAll { $0.anchorId == anchor && anchor != nil }
+        failureMarks.removeAll { $0.anchorId == anchor && anchor != nil && (live || $0.id != liveFailureMarkId) }
         failureMarks.append(FailureMark(id: id, anchorId: anchor, failure: failure, at: stamp))
         if let live = liveFailureMarkId, !failureMarks.contains(where: { $0.id == live }) { liveFailureMarkId = nil }
         return id
@@ -1644,7 +1650,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                         TurnFailure(code: event.data?["code"]?.stringValue ?? event.type, detail: event.message ?? ""),
                         event: event,
                         record: stepped,
-                        at: stamp
+                        at: stamp,
+                        live: false
                     )
                 }
             case .current:
@@ -1663,7 +1670,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 )
                 failure = reported
                 discardMessage(of: turn)
-                liveFailureMarkId = markFailure(reported, event: event, record: turn, at: stamp)
+                liveFailureMarkId = markFailure(reported, event: event, record: turn, at: stamp, live: true)
                 // A turn that ended takes its id with it. Left behind, it
                 // makes the next turn's work look like somebody else's and
                 // stops it counting, which is the direction that folds a
@@ -1734,7 +1741,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 // out of.
                 if turn.sawMessage, event.type != "session.waiting" {
                     discardedUserMessageId = nil
-                    foldRetriedFailures()
+                    // Only an answer: Stop on a retry leaves its failure the
+                    // last word on that message.
+                    if event.type == "turn.completed" { foldRetriedFailures() }
                 }
                 pending = false
                 turn.ended = true

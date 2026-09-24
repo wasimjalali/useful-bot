@@ -1016,13 +1016,18 @@ final class AppModel: ObservableObject {
             // recorded background error wins over the replay's generic line.
             // A failed turn is a row in the replayed transcript, so only a
             // failure with no turn to sit under becomes the note.
-            if let recorded = sendErrors[bot.id], projection.failed || sendTasks[bot.id] != nil {
-                stickyThreadError = recorded.resendable ? nil : recorded.message
-                threadError = stickyThreadError
+            // A turn failure the replay no longer ends on was answered since.
+            if let recorded = sendErrors[bot.id], recorded.resendable, !projection.failed, sendTasks[bot.id] == nil {
+                sendErrors[bot.id] = nil
+            }
+            if let recorded = sendErrors[bot.id], !recorded.resendable {
+                // A failure with no turn stays said until the owner dismisses
+                // it or sends again. The reload that follows it succeeding is
+                // no answer to it: a send that never arrived put its draft
+                // back, and without this the note went with the reload.
+                stickyThreadError = recorded.message
+                threadError = recorded.message
             } else {
-                if sendErrors[bot.id] != nil, !projection.failed {
-                    sendErrors[bot.id] = nil
-                }
                 let sticky = selectedBotId == sendBotId ? stickyThreadError : nil
                 // A drawing that could not be saved while this chat was in
                 // the background says so when the owner comes back.
@@ -1249,7 +1254,7 @@ final class AppModel: ObservableObject {
             // Never leave the shell silently stuck on a rejected session.
             pollAuthFailures += 1
             if pollAuthFailures >= 2 {
-                threadError = "The local server rejected this app. Retry or restart it."
+                threadError = "The local server rejected this app. Reload, or restart the app."
             }
         } catch {
             pollAuthFailures = 0
@@ -2191,14 +2196,37 @@ final class AppModel: ObservableObject {
             let fromMark = mark.at.map { $0.addingTimeInterval(TimeInterval(seconds)) }
             until = [fromSend, fromMark].compactMap { $0 }.max()
         }
+        // A deadline already past is no deadline: published as one, the
+        // row's once-a-second timeline kept running on an idle chat.
+        if let deadline = until, deadline <= Date() { until = nil }
         if failureRetryUntil != until { failureRetryUntil = until }
+        coolDownTask?.cancel()
+        if let deadline = until {
+            coolDownTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, deadline.timeIntervalSinceNow) * 1_000_000_000) + 50_000_000)
+                guard !Task.isCancelled else { return }
+                self?.publishFailureRetry()
+            }
+        }
+    }
+    private var coolDownTask: Task<Void, Never>?
+
+    /// The note's Reload: read the chat again, the way the banner's Retry did
+    /// for a failure it could not resend.
+    func reloadFromNote() {
+        dismissNote()
+        Task { await reloadThread() }
     }
 
     /// The owner closed the note over the composer.
+    /// Only the one on screen: a save error behind a thread note shows next.
     func dismissNote() {
+        guard threadError != nil else {
+            saveError = nil
+            return
+        }
         threadError = nil
         stickyThreadError = nil
-        saveError = nil
         if let botId = selectedBotId, sendErrors[botId]?.resendable == false { sendErrors[botId] = nil }
         if let botId = selectedBotId { widgetSaveErrors[botId] = nil }
     }
