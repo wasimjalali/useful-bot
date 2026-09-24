@@ -899,7 +899,15 @@ export function applyShellAction(
         store: {
           ...store,
           bots: store.bots.map((bot) => (
-            bot.id === action.botId ? touch(bot, stamp, { sessionId: action.sessionId }) : bot
+            // A page loaded before a carry-over names the retired session in
+            // its address; it must not put that back over the live one.
+            bot.id === action.botId
+              ? touch(bot, stamp, {
+                sessionId: action.sessionId && (bot.previousSessionIds ?? []).includes(action.sessionId)
+                  ? bot.sessionId
+                  : action.sessionId,
+              })
+              : bot
           )),
         },
       };

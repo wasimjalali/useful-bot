@@ -240,3 +240,33 @@ test("a pointer write naming a session the chat already moved on from is ignored
   const fresh = applyShellAction(moved, { type: "touchChat", botId: "b1", preview: "yo", sessionId: "wrun_next" });
   assert.equal(fresh.store.bots[0].sessionId, "wrun_next");
 });
+
+test("a page reloaded from before a carry-over cannot put the retired session back", () => {
+  const moved = recordSessionLineage(
+    { bots: [{ id: "b1", sessionId: "wrun_old" } as ShellBot] } as ShellStore,
+    "b1",
+    "wrun_old",
+    "wrun_new",
+  );
+  const stale = applyShellAction(moved, { type: "setSession", botId: "b1", sessionId: "wrun_old" });
+  assert.equal(stale.store.bots[0].sessionId, "wrun_new");
+  const cleared = applyShellAction(moved, { type: "setSession", botId: "b1", sessionId: null });
+  assert.equal(cleared.store.bots[0].sessionId, null);
+});
+
+test("an untagged brief is settled only by its own turn's completion, not a later turn's", () => {
+  const brief = `${BRIEF_MARKER}\n- the task`;
+  const at = (type: string, message?: string, turnId?: string) =>
+    ({ type, data: { ...(turnId ? { turnId } : {}), ...(message ? { message } : {}) } }) as EveEvent;
+  // The brief turn failed at step zero; a handoff turn then completed.
+  assert.equal(settledByBriefTurn([
+    at("message.received", `${brief}\n\nhello`),
+    at("turn.failed"),
+    at("message.received", "Handoff from CEO.\nThis arrives in your own chat.\nDo it"),
+    at("turn.completed"),
+  ]), false);
+  assert.equal(settledByBriefTurn([
+    at("message.received", `${brief}\n\nhello`),
+    at("step.completed"),
+  ]), true);
+});

@@ -59,7 +59,9 @@ export function usedLimitCode(type: string, code: string, message = ""): string 
   // Kimi's tokens-per-day limit shares `rate_limit_reached_error` with its
   // per-minute and concurrency ones; only the message names it, and its
   // docs say it resets the next day, which no wait inside a turn reaches.
-  if (type === "rate_limit_reached_error" && /\bTPD\b/.test(message)) return "upstream_usage_limit";
+  // The limit's own words, not the bare token: the message also carries the
+  // caller's organisation name.
+  if (type === "rate_limit_reached_error" && /\bTPD (?:rate )?limit\b/.test(message)) return "upstream_usage_limit";
   return ZAI_CODES.get(code) ?? null;
 }
 
@@ -80,16 +82,20 @@ export function resetOf(error: Record<string, unknown>): number | undefined {
   if (typeof error.resets_in_seconds === "number" && Number.isFinite(error.resets_in_seconds)) {
     return plausibleReset(nowS + error.resets_in_seconds, nowS);
   }
-  // Z.ai says it only in words, "Your limit will reset at 2026-09-24
-  // 18:00:00", a wall clock in China Standard Time with no zone on it.
-  const said = typeof error.message === "string"
-    ? /reset(?:s)? at (\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/i.exec(error.message)
-    : null;
-  if (said) {
-    const at = Date.parse(`${said[1]}T${said[2]}+08:00`);
-    if (Number.isFinite(at)) return plausibleReset(at / 1000, nowS);
-  }
   return undefined;
+}
+
+/**
+ * Z.ai names its reset only in words, "Your limit will reset at 2026-09-24
+ * 18:00:00": a wall clock in China Standard Time with no zone on it. Read
+ * for Z.ai's own codes only; another vendor's time is not in that zone.
+ */
+export function zaiResetOf(code: string, message: string): number | undefined {
+  if (!ZAI_CODES.has(code)) return undefined;
+  const said = /\bresets? at (\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/i.exec(message);
+  if (!said) return undefined;
+  const at = Date.parse(`${said[1]}T${said[2]}+08:00`);
+  return Number.isFinite(at) ? plausibleReset(at / 1000, Date.now() / 1000) : undefined;
 }
 
 /** A used-up limit's message: the code, and the reset when there is one. */
@@ -121,7 +127,7 @@ export async function upstreamLimitError(response: Response): Promise<RouterErro
       code = typeof error.code === "string" ? error.code
         : typeof error.code === "number" ? String(error.code) : "";
       message = typeof error.message === "string" ? error.message : "";
-      resetsAt = resetOf(error);
+      resetsAt = resetOf(error) ?? zaiResetOf(code, message);
     }
   } catch { /* not JSON: an ordinary rate limit */ }
   // Google names the quota that ran out (google.rpc.QuotaFailure); a per-day

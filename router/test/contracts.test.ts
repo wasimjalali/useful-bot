@@ -576,6 +576,8 @@ test("Kimi's spent day is a used-up limit, its per-minute limits stay waitable",
     "Your account org-1 request reached organization max RPM: 3, please try again after 1 seconds",
     "Your account org-1 request reached organization TPM rate limit, current: 64001, limit: 64000",
     "Organization-level concurrency limit reached",
+    // An organisation whose name holds the token is still on a minute limit.
+    "Your account TPD-2 request reached organization max RPM: 3, please try again after 1 seconds",
   ]) {
     assert.equal((await limit(message)).code, "upstream_rate_limited");
   }
@@ -595,6 +597,12 @@ test("Z.ai's reset, given only in its message in China time, is named", async ()
     error: { code: "1310", message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2001-01-01 00:00:00" },
   }), { status: 429 }));
   assert.equal(stale.message, "upstream_usage_limit");
+  // Another vendor's used-up limit that words a time the same way is not
+  // read in China time: only Z.ai's codes are.
+  const other = await upstreamLimitError(new Response(JSON.stringify({
+    error: { type: "usage_limit_reached", message: `Your limit will reset at ${shanghai}` },
+  }), { status: 429 }));
+  assert.equal(other.message, "upstream_usage_limit");
 });
 
 test("an error body cut at its cap never ends in half a character", async () => {

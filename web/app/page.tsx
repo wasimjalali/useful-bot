@@ -301,7 +301,7 @@ export default function Page() {
       if (!res.ok) return;
       const body = (await res.json()) as { store?: unknown };
       const bot = parseShell(body.store).bots.find((item) => item.id === botId);
-      if (bot?.sessionId) attachBot(bot);
+      if (bot?.sessionId && projSession.current === "") attachBot(bot);
     } catch {
       /* the shell poll catches up within a few seconds */
     }
@@ -411,7 +411,10 @@ export default function Page() {
               // Another client carried this session over first, and its
               // session is the chat now. Follow it rather than the retired
               // one, and hand the text back to send there.
-              await followMovedSession(selected.id);
+              // Not after Stop, and not over a chat the owner switched to.
+              if (!controller.signal.aborted && projSession.current === "") {
+                await followMovedSession(selected.id);
+              }
               throw new Error("This chat just continued in a newer session. Send again.");
             }
           }

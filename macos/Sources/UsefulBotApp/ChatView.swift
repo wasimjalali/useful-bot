@@ -1686,8 +1686,10 @@ private final class ScrollProbe {
         holding = false
     }
 
+    /// Extends, never shortens: a send's short window must not cut off a
+    /// longer one an anchor scroll is still inside.
     func markAppScroll(for seconds: TimeInterval = 0.35) {
-        appScrollUntil = Date().addingTimeInterval(seconds)
+        appScrollUntil = max(appScrollUntil, Date().addingTimeInterval(seconds))
     }
 }
 

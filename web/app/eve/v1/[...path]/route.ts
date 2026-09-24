@@ -97,21 +97,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // from the bot's own live session or one it already carried over from.
       const extras = parseTurnExtras(new TextDecoder().decode(body));
       const notes: string[] = [];
-      // The cheap refusals come first. A carry-over reads the old session
-      // back for its brief, thousands of events on a long chat, and a turn
-      // refused here needed none of it.
-      // A picture for a model that cannot look at it is refused before the
-      // turn exists: eve would stage the bytes, the upstream would reject
-      // the call, and the session would retire on the failed turn. A model
-      // the catalog does not know goes through, and the upstream decides.
-      try {
-        const parsed = parseTurnMessage((JSON.parse(new TextDecoder().decode(body)) as { message?: unknown }).message);
-        if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
-          return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
-        }
-      } catch {
-        /* a malformed body is judged by the rewrite below, as before */
-      }
       if (extras.continueFrom !== undefined) {
         let owner: ShellBot | null = null;
         try {
@@ -133,8 +118,23 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           return Response.json({ ok: false, error: "continue_from_refused" }, { status: 400 });
         }
         carriedFrom = extras.continueFrom;
-        notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
       }
+      // The cheap refusals come before any read of an old session. A
+      // carry-over reads one back for its brief, thousands of events on a
+      // long chat, and a turn refused here needed none of it.
+      // A picture for a model that cannot look at it is refused before the
+      // turn exists: eve would stage the bytes, the upstream would reject
+      // the call, and the session would retire on the failed turn. A model
+      // the catalog does not know goes through, and the upstream decides.
+      try {
+        const parsed = parseTurnMessage((JSON.parse(new TextDecoder().decode(body)) as { message?: unknown }).message);
+        if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
+          return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
+        }
+      } catch {
+        /* a malformed body is judged by the rewrite below, as before */
+      }
+      if (carriedFrom) notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
       if (suffix !== "session") {
         // A send into the session a carry-over opened, before that session
         // has finished a turn: a step-zero failure (a rate limit, say) drops

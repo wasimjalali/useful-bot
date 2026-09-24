@@ -229,9 +229,15 @@ export function settledByBriefTurn(events: EveEvent[]): boolean {
     const turnId = typeof data?.turnId === "string" ? data.turnId : null;
     if (event.type === "message.received") {
       const message = typeof data?.message === "string" ? data.message : "";
-      if (!isContinuationTurn(message)) continue;
-      if (turnId) briefTurns.add(turnId);
-      else untaggedBrief = true;
+      const brief = isContinuationTurn(message);
+      if (brief && turnId) briefTurns.add(turnId);
+      // Untagged, only the turn this message opened counts, so a message
+      // after it ends the claim.
+      if (!turnId) untaggedBrief = brief;
+      continue;
+    }
+    if (event.type === "turn.failed" || event.type === "session.failed") {
+      if (!turnId) untaggedBrief = false;
       continue;
     }
     if (event.type !== "step.completed" && event.type !== "turn.completed" && event.type !== "turn.cancelled") continue;
