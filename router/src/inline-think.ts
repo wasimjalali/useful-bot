@@ -11,7 +11,7 @@
 // (MiniMax's docs: keep the thinking in `content`, unmodified), so a model
 // seen doing this gets its reasoning re-wrapped into the content it sends.
 
-import { THINK_TAGS, splitLeadingThink } from "../../shared/inline-think.ts";
+import { THINK_TAGS, scanThink, splitLeadingThink, type ThinkTag } from "../../shared/inline-think.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,7 +28,9 @@ type Mode = "start" | "inside" | "gap" | "text";
 interface ChoiceState {
   mode: Mode;
   held: string;
-  close: string;
+  tag: ThinkTag;
+  /** Open think tags of this kind, counting quoted ones inside the thinking. */
+  depth: number;
 }
 
 export interface ThinkStream {
@@ -65,7 +67,8 @@ function feed(stream: ThinkStream, state: ChoiceState, piece: string): Split {
       const tag = THINK_TAGS.find((candidate) => trimmed.startsWith(candidate.open));
       if (tag) {
         state.mode = "inside";
-        state.close = tag.close;
+        state.tag = tag;
+        state.depth = 1;
         state.held = "";
         rest = trimmed.slice(tag.open.length);
         // A model that already fills the reasoning field and opens one
@@ -84,23 +87,17 @@ function feed(stream: ThinkStream, state: ChoiceState, piece: string): Split {
     } else if (state.mode === "inside") {
       const text = state.held + rest;
       rest = "";
-      const end = text.indexOf(state.close);
-      if (end >= 0) {
-        out.reasoning += text.slice(0, end);
+      const scan = scanThink(text, state.tag, state.depth, false);
+      if (scan.closed) {
+        out.reasoning += text.slice(0, scan.end);
         state.held = "";
         state.mode = "gap";
-        rest = text.slice(end + state.close.length);
+        rest = text.slice(scan.after);
       } else {
-        // Hold back the longest tail that could still become the closing tag.
-        let keep = 0;
-        for (let length = Math.min(state.close.length - 1, text.length); length > 0; length -= 1) {
-          if (state.close.startsWith(text.slice(-length))) {
-            keep = length;
-            break;
-          }
-        }
-        out.reasoning += text.slice(0, text.length - keep);
-        state.held = text.slice(text.length - keep);
+        // A tag, or a close still waiting on what follows it, is held back.
+        out.reasoning += text.slice(0, scan.safe);
+        state.held = text.slice(scan.safe);
+        state.depth = scan.depth;
       }
     } else if (state.mode === "gap") {
       const trimmed = rest.trimStart();
@@ -121,7 +118,15 @@ function feed(stream: ThinkStream, state: ChoiceState, piece: string): Split {
 function flush(state: ChoiceState): Split {
   const out: Split = { content: "", reasoning: "" };
   if (state.mode === "start") out.content = state.held;
-  else if (state.mode === "inside") out.reasoning = state.held;
+  else if (state.mode === "inside") {
+    const scan = scanThink(state.held, state.tag, state.depth, true);
+    if (scan.closed) {
+      out.reasoning = state.held.slice(0, scan.end);
+      out.content = state.held.slice(scan.after).trimStart();
+    } else {
+      out.reasoning = state.held;
+    }
+  }
   state.mode = "text";
   state.held = "";
   return out;
@@ -195,7 +200,7 @@ export function splitThinkBlock(block: string, stream: ThinkStream): string {
       const index = typeof choice.index === "number" ? choice.index : 0;
       let state = stream.choices.get(index);
       if (!state) {
-        state = { mode: "start", held: "", close: "" };
+        state = { mode: "start", held: "", tag: THINK_TAGS[0], depth: 0 };
         stream.choices.set(index, state);
       }
       if (state.mode === "text") continue;

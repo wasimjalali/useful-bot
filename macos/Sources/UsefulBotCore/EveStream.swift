@@ -612,11 +612,42 @@ public enum EveStream {
         let trimmed = text.drop { $0.isWhitespace || $0.isNewline }
         for (open, close) in thinkTags where trimmed.hasPrefix(open) {
             let body = trimmed.dropFirst(open.count)
-            guard let end = body.range(of: close) else { return "" }
-            return String(body[end.upperBound...].drop { $0.isWhitespace || $0.isNewline })
+            guard let after = thinkEnd(body, open: open, close: close) else { return "" }
+            return String(body[after...].drop { $0.isWhitespace || $0.isNewline })
         }
         guard trimmed.hasPrefix("<") else { return text }
         return thinkTags.contains { $0.open.hasPrefix(trimmed) } ? "" : text
+    }
+
+    /// Port of `scanThink` in `shared/inline-think.ts`, for a whole message:
+    /// where the text after the closing tag starts, or nil when the block
+    /// never closes. The same tag quoted inside the thinking is counted in
+    /// pairs; a close followed by a blank line, or by nothing, ends it
+    /// whatever the count.
+    private static func thinkEnd(_ body: Substring, open: String, close: String) -> Substring.Index? {
+        var depth = 1
+        var index = body.startIndex
+        while index < body.endIndex {
+            let rest = body[index...]
+            if rest.hasPrefix(close) {
+                let after = body.index(index, offsetBy: close.count)
+                let tail = body[after...]
+                if depth <= 1 || tail.hasPrefix("\n\n")
+                    || tail.allSatisfy({ $0.isWhitespace || $0.isNewline }) {
+                    return after
+                }
+                depth -= 1
+                index = after
+                continue
+            }
+            if rest.hasPrefix(open) {
+                depth += 1
+                index = body.index(index, offsetBy: open.count)
+                continue
+            }
+            index = body.index(after: index)
+        }
+        return nil
     }
 
     private static let thinkTags: [(open: String, close: String)] = [

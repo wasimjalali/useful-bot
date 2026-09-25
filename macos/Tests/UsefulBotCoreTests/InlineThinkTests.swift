@@ -15,6 +15,12 @@ import Testing
         #expect(EveStream.withoutLeadingThink("<div>html</div>") == "<div>html</div>")
         #expect(EveStream.withoutLeadingThink("Plain answer") == "Plain answer")
         #expect(EveStream.withoutLeadingThink("") == "")
+        // A quoted tag pair inside the thinking does not end it.
+        #expect(EveStream.withoutLeadingThink("<think>it handles `<think>…</think>` blocks</think>\n\nThe file has 298 lines.") == "The file has 298 lines.")
+        // A lone quoted opening tag does not swallow the answer.
+        #expect(EveStream.withoutLeadingThink("<think>The tag <think> opens it.</think>\n\nAnswer") == "Answer")
+        #expect(EveStream.withoutLeadingThink("<think>use <think>x</think> here</think>Done") == "Done")
+        #expect(EveStream.withoutLeadingThink("<think>mention <think> only</think>") == "")
     }
 
     @Test func storedReplyShowsItsAnswerAndAThinkingOnlyReplyShowsNothing() {

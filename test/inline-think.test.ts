@@ -216,6 +216,35 @@ test("a flood of leading whitespace is released instead of held", () => {
   assert.equal(splitThinkBlock(later, stream), later);
 });
 
+// Found live on 2026-09-25: MiniMax M3, asked about this very file, quoted the
+// tag pair inside its thinking, and the quoted close ended the block early.
+test("a tag pair quoted inside the thinking does not end it", () => {
+  const raw = "<think>The file handles `<think>…</think>` blocks in model outputs. Answer in three sentences.</think>\n\nThe file has 298 lines.";
+  for (const pieces of [[raw], [...raw]]) {
+    const { result } = relay(pieces, { finish: "stop" });
+    assert.equal(result.reasoning, "The file handles `<think>…</think>` blocks in model outputs. Answer in three sentences.");
+    assert.equal(result.content, "The file has 298 lines.");
+  }
+});
+
+test("a lone quoted opening tag does not swallow the answer", () => {
+  const { result } = relay(["<think>The tag <think> opens it.</think>\n", "\nAnswer"], { finish: "stop" });
+  assert.equal(result.reasoning, "The tag <think> opens it.");
+  assert.equal(result.content, "Answer");
+});
+
+test("an answer straight after the real close still splits when a pair was quoted", () => {
+  const { result } = relay(["<think>use <think>x</think> here</think>Done"], { finish: "stop" });
+  assert.equal(result.reasoning, "use <think>x</think> here");
+  assert.equal(result.content, "Done");
+});
+
+test("a message that ends on its close after a lone quoted tag is all thinking", () => {
+  const { result } = relay(["<think>mention <think> only</think>"], { finish: "tool_calls" });
+  assert.equal(result.reasoning, "mention <think> only");
+  assert.equal(result.content, "");
+});
+
 test("a non-streamed reply is split the same way", () => {
   const json = { choices: [{ index: 0, message: { role: "assistant", content: "\n<think>why</think>\n\nBecause." }, finish_reason: "stop" }] };
   assert.equal(splitThinkCompletion(json), true);
@@ -273,5 +302,6 @@ test("stored bubbles hide a leading think block, and only a leading one", () => 
   assert.equal(withoutLeadingThink("Use <think> tags."), "Use <think> tags.");
   assert.equal(withoutLeadingThink("<div>html</div>"), "<div>html</div>");
   assert.equal(withoutLeadingThink("Plain answer"), "Plain answer");
+  assert.equal(withoutLeadingThink("<think>it handles `<think>…</think>` blocks</think>\n\nThe file has 298 lines."), "The file has 298 lines.");
   assert.equal(withoutLeadingThink(""), "");
 });
