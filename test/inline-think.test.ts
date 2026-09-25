@@ -197,6 +197,25 @@ test("blocks that carry no content come back byte for byte", () => {
   assert.equal(splitThinkBlock(later, stream), later);
 });
 
+test("a stream that already sends native reasoning is split but not learned", () => {
+  let found = 0;
+  const stream = createThinkStream(() => { found += 1; });
+  splitThinkBlock(block({ reasoning_content: "native thought" }), stream);
+  const out = splitThinkBlock(block({ content: "<think>quoted</think>Answer" }), stream);
+  const delta = JSON.parse(out.slice(5)).choices[0].delta;
+  assert.equal(delta.content, "Answer");
+  assert.equal(found, 0);
+});
+
+test("a flood of leading whitespace is released instead of held", () => {
+  const stream = createThinkStream();
+  const spaces = " ".repeat(300);
+  const out = splitThinkBlock(block({ content: spaces }), stream);
+  assert.equal(JSON.parse(out.slice(5)).choices[0].delta.content, spaces);
+  const later = block({ content: "<think>x</think>" });
+  assert.equal(splitThinkBlock(later, stream), later);
+});
+
 test("a non-streamed reply is split the same way", () => {
   const json = { choices: [{ index: 0, message: { role: "assistant", content: "\n<think>why</think>\n\nBecause." }, finish_reason: "stop" }] };
   assert.equal(splitThinkCompletion(json), true);
@@ -227,12 +246,14 @@ test("history goes back as inline thinking only to models that wrote it that way
     { role: "tool", tool_call_id: "t1", content: "data" },
     { role: "assistant", content: "<think>old</think>\n\nStored before the fix" },
     { role: "assistant", content: "No thinking" },
+    { role: "assistant", content: [{ type: "text", text: "parts" }], reasoning_content: "kept apart" },
   ];
   const out = rewrapThinkHistory(history) as Array<Record<string, unknown>>;
   assert.deepEqual(out[1], { role: "assistant", content: "<think>greet</think>\n\nHello" });
   assert.deepEqual(out[2], { role: "assistant", content: "<think>need a file</think>", tool_calls: history[2].tool_calls });
   assert.deepEqual(out[4], history[4]);
   assert.deepEqual(out[5], history[5]);
+  assert.equal(out[6], history[6]);
   assert.equal(out[0], history[0]);
   // The caller's history is not mutated.
   assert.equal(history[1].reasoning_content, "greet");

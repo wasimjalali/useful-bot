@@ -34,6 +34,8 @@ interface ChoiceState {
 export interface ThinkStream {
   choices: Map<number, ChoiceState>;
   found: boolean;
+  /** The upstream sent its own reasoning field: the model is not an inline thinker. */
+  native: boolean;
   onFound?: () => void;
   /** The last chunk's envelope, for a chunk the router has to add itself. */
   template: Record<string, unknown> | null;
@@ -41,8 +43,11 @@ export interface ThinkStream {
 
 /** Per stream. `onFound` runs once, the first time a think block opens. */
 export function createThinkStream(onFound?: () => void): ThinkStream {
-  return { choices: new Map(), found: false, onFound, template: null };
+  return { choices: new Map(), found: false, native: false, onFound, template: null };
 }
+
+/** Whitespace held while waiting to see whether a tag opens the message. */
+const MAX_HELD_START = 256;
 
 interface Split {
   content: string;
@@ -63,11 +68,13 @@ function feed(stream: ThinkStream, state: ChoiceState, piece: string): Split {
         state.close = tag.close;
         state.held = "";
         rest = trimmed.slice(tag.open.length);
-        if (!stream.found) {
+        // A model that already fills the reasoning field and opens one
+        // answer with a tag is not learned: its history keeps the field.
+        if (!stream.found && !stream.native) {
           stream.found = true;
           stream.onFound?.();
         }
-      } else if (THINK_TAGS.some((candidate) => candidate.open.startsWith(trimmed))) {
+      } else if (THINK_TAGS.some((candidate) => candidate.open.startsWith(trimmed)) && text.length <= MAX_HELD_START) {
         state.held = text;
       } else {
         state.mode = "text";
@@ -193,6 +200,10 @@ export function splitThinkBlock(block: string, stream: ThinkStream): string {
       }
       if (state.mode === "text") continue;
       const delta = isRecord(choice.delta) ? choice.delta : null;
+      if (delta && ((typeof delta.reasoning_content === "string" && delta.reasoning_content)
+        || (typeof delta.reasoning === "string" && delta.reasoning))) {
+        stream.native = true;
+      }
       const split: Split = { content: "", reasoning: "" };
       let hadContent = false;
       if (delta && typeof delta.content === "string") {
@@ -271,6 +282,8 @@ export function rewrapThinkHistory(messages: unknown): unknown {
     if (!isRecord(item) || item.role !== "assistant") return item;
     const reasoning = item.reasoning_content;
     if (typeof reasoning !== "string" || !reasoning) return item;
+    // Only text or nothing can take a think block in front of it.
+    if (item.content !== null && item.content !== undefined && typeof item.content !== "string") return item;
     const { reasoning_content: _reasoning, ...rest } = item;
     const content = typeof rest.content === "string" ? rest.content : "";
     if (splitLeadingThink(content)) return rest;

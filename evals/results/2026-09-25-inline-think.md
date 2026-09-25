@@ -66,9 +66,21 @@ and the model carried run 1's figure (17 files) into its answer.
 The Generalist chat from the original report now renders the same stored
 messages without the tags, and the bubble that held only thinking is gone.
 
-Tests: 19 router and helper cases (`test/inline-think.test.ts`), 4 Swift
-cases (`InlineThinkTests.swift`); full suites 737 Node, 431 Swift, all
+Tests: 21 router and helper cases (`test/inline-think.test.ts`), 4 Swift
+cases (`InlineThinkTests.swift`); full suites 739 Node, 431 Swift, all
 passing. Cost: two MiniMax M3 turns on the OpenCode Go plan.
+
+## Reviews
+
+Pass 1 ran SWE-2 high (Devin CLI) and an Opus 5.5 agent on the same brief
+(`review-brief.md`). Neither found a critical or high issue. SWE-2 hung four
+times in print mode: each time right after firing several reads in
+parallel, or while writing a long final answer. It finished once the brief
+asked for one tool call at a time and line ranges only. Fixed from the lows:
+a model is not learned when its stream also carries a native reasoning
+field; a run of leading whitespace over 256 characters is released rather
+than held; history messages with non-string content are left alone. Raw
+verdicts: `review-swe2-high-pass1.txt`, `review-opus-pass1.md`.
 
 ## Left open
 
