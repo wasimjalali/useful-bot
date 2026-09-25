@@ -15,6 +15,7 @@ import { generateImage, IMAGE_USAGE_TOKENS } from "./upstreams/images.ts";
 import { readCapped } from "./read-capped.ts";
 import { usageFromPayload, usageFromSseBlock } from "../../shared/usage-parse.ts";
 import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
+import { createThinkStream, flushThinkStream, noteInlineThink, splitThinkBlock, splitThinkCompletion } from "./inline-think.ts";
 
 const NODE_MAJOR = Number(process.versions.node.split(".")[0]);
 if (NODE_MAJOR !== POLICY_NODE_MAJOR) {
@@ -27,6 +28,11 @@ const UUID =
 
 function log(fields: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify({ time: new Date().toISOString(), component: "router", ...fields })}\n`);
+}
+
+/** Logged once per model, so which models write inline thinking is on record. */
+function learnInlineThink(requestId: string, provider: string, model: string): void {
+  if (noteInlineThink(provider, model)) log({ request_id: requestId, event: "inline_think_learned", provider, model });
 }
 
 function send(res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}): void {
@@ -664,6 +670,9 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             const decoder = new TextDecoder();
             let leftover = "";
             const toolSeen = { toolCall: false };
+            // A think block written into the answer moves to the reasoning
+            // field on the way through (see inline-think.ts).
+            const thinkStream = createThinkStream(() => learnInlineThink(requestId, upstream.providerId, upstream.model));
             let firstEvent = false;
             let idleTimer: NodeJS.Timeout | undefined;
             const armIdle = (ms: number) => {
@@ -712,7 +721,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
                   }
                   const usage = usageFromSseBlock(part);
                   if (usage) record(usage);
-                  out += `${settleStreamBlock(part, toolSeen)}\n\n`;
+                  out += `${splitThinkBlock(settleStreamBlock(part, toolSeen), thinkStream)}\n\n`;
                 }
                 if (!firstEvent) {
                   firstEvent = true;
@@ -744,13 +753,18 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             // A stream that ended without a closing blank line still owes its
             // last block to the client, terminated, and its usage to the meter.
             leftover += decoder.decode();
+            let tail = "";
             if (leftover.trim()) {
               const usage = usageFromSseBlock(leftover);
               if (usage) record(usage);
-              res.end(`${settleStreamBlock(leftover, toolSeen)}\n\n`);
-            } else {
-              res.end();
+              tail = `${splitThinkBlock(settleStreamBlock(leftover, toolSeen), thinkStream)}\n\n`;
             }
+            // Text still held back by the think split, when the stream ended
+            // with neither a finish reason nor [DONE] to release it.
+            const held = flushThinkStream(thinkStream);
+            if (held) tail += `${held}\n\n`;
+            if (tail) res.end(tail);
+            else res.end();
             circuit.recordSuccess(entry.alias);
             return;
           }
@@ -780,6 +794,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           }
           record(usageFromPayload(json));
           settleCompletion(json);
+          if (splitThinkCompletion(json)) learnInlineThink(requestId, upstream.providerId, upstream.model);
           send(res, upstream.response.status, json, outHeaders);
           if (upstream.response.status < 500) circuit.recordSuccess(entry.alias);
           return;

@@ -24,6 +24,7 @@ import {
 } from "../../shared/eve-stream.ts";
 import { DEFAULT_BOT_ID, PREVIEW_MAX, parseShell, selectedBot, type ShellBot } from "../../shared/shell-store.ts";
 import { groupMembers, parseMentions, speakerLabel, speakersFrom } from "../../shared/threads.ts";
+import { withoutLeadingThink } from "../../shared/inline-think.ts";
 import { useShell } from "../lib/use-shell.ts";
 import { useAgentThread } from "../lib/use-agent-thread.ts";
 
@@ -679,7 +680,13 @@ export default function Page() {
         }
       });
     }
-    return rows;
+    // A reply stored with its thinking inline shows only its answer, and one
+    // that was all thinking shows nothing. Pairing above used the stored text.
+    return rows.flatMap((row) => {
+      if (row.kind !== "assistant") return [row];
+      const text = withoutLeadingThink(row.text);
+      return text ? [{ ...row, text }] : [];
+    });
   })();
 
   const isDefaultBot = !bot || bot.id === DEFAULT_BOT_ID;

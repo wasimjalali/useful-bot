@@ -22,14 +22,17 @@ When a change touches more than one surface, do the macOS work first and complet
 
 ## Change management
 
-Adversarial review runs through SWE-2 in the Devin CLI, at the tier the diff calls for
-(`devin -p --model swe-2-max|high|medium --permission-mode dangerous --prompt-file <file>`).
-Not Muse Spark or GLM in opencode, not `/code-review`, not parallel Opus subagents. Check
+Adversarial review runs SWE-2 in the Devin CLI, at the tier the diff calls for
+(`devin -p --model swe-2-max|high|medium --permission-mode dangerous --prompt-file <file>`),
+plus one Opus 5.5 reviewer (up to two Opus reviewers for a large diff) in parallel, each on the areas it
+suits. Not Muse Spark or GLM in opencode, not `/code-review`. SWE-2 has a 262k context:
+save the diff to a file, name the exact files and line ranges, tell it to make one tool call
+at a time, and never ask it to review "the branch"; a pass should take minutes. Check
 out the branch under review first: the reviewer reads the files, and a diff against code
 that is not in the tree wastes the pass. Use `dangerous`: in print mode nothing can answer a
 prompt, so `auto` and `smart` both refuse tool calls (`smart` has refused a plain file read)
 and the reviewer gives up mid-pass. Never accept a bare empty array, ask for the list
-of what it dismissed and why. A clean pass counts as the PR review: fix what it finds,
+of what it dismissed and why. A clean pass from every reviewer counts as the PR review: fix what it finds,
 review again, then merge, rebuild the app and install it from local `main`.
 
 This arrangement expires on 2026-10-15; ask Wasim what to move to rather than falling back.
