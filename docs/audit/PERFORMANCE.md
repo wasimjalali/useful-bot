@@ -46,6 +46,29 @@ workspace credits once and was rerun).
   `malloc_history <pid> <region start>`. The production web server logs no per-request lines, so
   chat-open is now timed by `ps -o %cpu` per second after the click until it settles.
 
+## Batch 11: the transcript knows where its bottom is again (PR: fix/reply-follow-after-tool)
+
+Measured 2026-09-25 on the installed app with a temporary file trace of the scroll geometry and
+the landing loops (removed before merge), Test Bot open:
+
+| Measure | Before (main @ c66d716) | After |
+|---|---|---|
+| Cold start, landing at the newest turn | 10,037 ms (hit the 10 s `landingCap`) | 592 ms and 621 ms |
+| Chat switch landing (Generalist, back to Test Bot) | not measured before | 870 ms and 446 ms |
+| Reply after a tool step | landed with its end under the composer; pin dropped 240 ms after the send | followed to the bottom, pin held for the whole turn |
+
+- **Problem.** Since the floating header became a top safe-area inset (#123), the pin tracker
+  computed the bottom edge as `contentOffset.y + containerSize.height - contentInsets.bottom`.
+  With the 62 pt top inset that put the true bottom 62 pt short: at rest the distance read 62,
+  never 0. The landing loops wait for `distance <= 1`, so every cold landing ran to the 10 s cap,
+  and a 24 pt clamp after a send (the scroll-to-bottom landed on a height from before a shrink)
+  read as the reader scrolling up, unpinned the view, and left the reply below the fold.
+- **Fix.** The bottom edge is `visibleRect.maxY - contentInsets.bottom`, what is actually on
+  screen. One line in `ScrollPinnedTracker`.
+- **Checked.** 30 fps recordings of a tool-step turn, a cold start and a chat switch, every
+  changed frame reviewed: the reply follows, the cold start shows the newest turn at 0.93 s and
+  stays still, the switch lands at the newest turn.
+
 ## Batch 10: chats open from a snapshot (PR #118, perf/instant-chat-open)
 
 Measured end to end, from the moment the app handles the switch to the last frame that changes.

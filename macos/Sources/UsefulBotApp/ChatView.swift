@@ -1829,9 +1829,12 @@ private struct ScrollPinnedTracker: ViewModifier {
                 }
             }
             .onScrollGeometryChange(for: Geometry.self) { geometry in
-                let bottomEdge = geometry.contentOffset.y
-                    + geometry.containerSize.height
-                    - geometry.contentInsets.bottom
+                // The visible rect, not the offset plus the container: the
+                // floating header's top inset shifts the offset, and adding
+                // the container to it put the true bottom 62 points short, so
+                // every settle at the bottom read as the reader scrolling up
+                // and the landing never saw the bottom.
+                let bottomEdge = geometry.visibleRect.maxY - geometry.contentInsets.bottom
                 return Geometry(
                     offset: geometry.contentOffset.y,
                     contentHeight: geometry.contentSize.height,
