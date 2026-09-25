@@ -21,6 +21,11 @@ import Testing
         #expect(EveStream.withoutLeadingThink("<think>The tag <think> opens it.</think>\n\nAnswer") == "Answer")
         #expect(EveStream.withoutLeadingThink("<think>use <think>x</think> here</think>Done") == "Done")
         #expect(EveStream.withoutLeadingThink("<think>mention <think> only</think>") == "")
+        // Whatever follows the real close, a lone quoted open never swallows the answer.
+        #expect(EveStream.withoutLeadingThink("<think>The user asks what <think> does.</think>\nThe <think> tag opens a block.") == "The <think> tag opens a block.")
+        #expect(EveStream.withoutLeadingThink("<think>what <think> does</think>Answer here") == "Answer here")
+        #expect(EveStream.withoutLeadingThink("<think>a <think> b</think>\r\n\r\nAnswer") == "Answer")
+        #expect(EveStream.withoutLeadingThink("<think>mention <think> only</think> ") == "")
     }
 
     @Test func storedReplyShowsItsAnswerAndAThinkingOnlyReplyShowsNothing() {

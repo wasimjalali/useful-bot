@@ -619,23 +619,26 @@ public enum EveStream {
         return thinkTags.contains { $0.open.hasPrefix(trimmed) } ? "" : text
     }
 
-    /// Port of `scanThink` in `shared/inline-think.ts`, for a whole message:
-    /// where the text after the closing tag starts, or nil when the block
-    /// never closes. The same tag quoted inside the thinking is counted in
-    /// pairs; a close followed by a blank line, or by nothing, ends it
-    /// whatever the count.
+    /// Port of `scanThink` in `shared/inline-think.ts` for a complete
+    /// message: where the text after the closing tag starts, or nil when the
+    /// block never closes. The same tag quoted inside the thinking is counted
+    /// in pairs; a close followed by a blank line, or by nothing but
+    /// whitespace, ends it whatever the count; a count that never returns to
+    /// zero ends at the last close, so the answer is never swallowed.
     private static func thinkEnd(_ body: Substring, open: String, close: String) -> Substring.Index? {
         var depth = 1
+        var lastPassed: Substring.Index?
         var index = body.startIndex
         while index < body.endIndex {
             let rest = body[index...]
             if rest.hasPrefix(close) {
                 let after = body.index(index, offsetBy: close.count)
                 let tail = body[after...]
-                if depth <= 1 || tail.hasPrefix("\n\n")
+                if depth <= 1 || tail.hasPrefix("\n\n") || tail.hasPrefix("\r\n\r\n")
                     || tail.allSatisfy({ $0.isWhitespace || $0.isNewline }) {
                     return after
                 }
+                lastPassed = after
                 depth -= 1
                 index = after
                 continue
@@ -647,7 +650,7 @@ public enum EveStream {
             }
             index = body.index(after: index)
         }
-        return nil
+        return lastPassed
     }
 
     private static let thinkTags: [(open: String, close: String)] = [

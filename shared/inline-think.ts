@@ -15,29 +15,47 @@ export const THINK_TAGS = [
 export type ThinkTag = (typeof THINK_TAGS)[number];
 
 /**
- * Where a think block ends, in the text after its opening tag. A model that
- * thinks about these tags quotes them, so the same tag is counted in pairs
- * and a quoted `<think>…</think>` does not end the block. A closing tag
- * followed by a blank line ends it whatever the count, so a lone quoted
- * opening tag cannot swallow the answer. `final` means no more text follows;
- * otherwise a tag or a close still waiting for what comes after it is left
- * unread from `safe` on, with the count at that point.
+ * How the scanned text ends: `stream` means more may follow, `done` that the
+ * message is complete, `cut` that it stopped at the length limit.
  */
-export function scanThink(
-  text: string,
-  tag: ThinkTag,
-  depth: number,
-  final: boolean,
-): { closed: true; end: number; after: number } | { closed: false; safe: number; depth: number } {
+export type ScanEnd = "stream" | "done" | "cut";
+
+/** Text held after a quoted close before it is let go as thinking. */
+export const MAX_HELD_QUOTED = 16384;
+
+type Scan = { closed: true; end: number; after: number } | { closed: false; safe: number; depth: number };
+
+/**
+ * Where a think block ends, in the text after its opening tag. A model that
+ * thinks about these tags quotes them, so the same tag is counted in pairs:
+ * the block ends at the close that brings the count back to zero, or at any
+ * close followed by a blank line. A close that leaves the count above zero
+ * may be a quoted one or the real end after a lone quoted opening tag; which
+ * one only shows later. So a stream holds everything from that close on,
+ * and a complete message whose count never returns to zero ends at its last
+ * close, so the answer is never swallowed. A message cut at the length limit
+ * is all thinking. Unless `ended` is `done` or `cut`, a partial tag at the end
+ * is held too; `safe` is where held text starts and `depth` the count there.
+ * `passQuoted` lets a stream stop holding after a quoted close.
+ */
+export function scanThink(text: string, tag: ThinkTag, depth: number, ended: ScanEnd, passQuoted = false): Scan {
   let i = 0;
+  let hold: { safe: number; depth: number } | null = null;
+  let lastPassed: { end: number; after: number } | null = null;
+  const held = (safe: number, count: number): Scan => ({ closed: false, ...(hold ?? { safe, depth: count }) });
   while (i < text.length) {
     if (text.startsWith(tag.close, i)) {
       const after = i + tag.close.length;
-      if (depth <= 1) return { closed: true, end: i, after };
-      const next = text.slice(after, after + 2);
-      if (next === "\n\n") return { closed: true, end: i, after };
-      if (final && !text.slice(after).trim()) return { closed: true, end: i, after };
-      if (!final && (next === "" || next === "\n")) return { closed: false, safe: i, depth };
+      const tail = text.slice(after);
+      if (depth <= 1 || tail.startsWith("\n\n") || tail.startsWith("\r\n\r\n")) return { closed: true, end: i, after };
+      if (ended === "stream") {
+        // Nothing but whitespace yet: it could still become a blank line.
+        if (!tail.trim()) return held(i, depth);
+        if (!passQuoted && !hold) hold = { safe: i, depth };
+      } else if (!tail.trim()) {
+        return { closed: true, end: i, after };
+      }
+      lastPassed = { end: i, after };
       depth -= 1;
       i = after;
       continue;
@@ -47,13 +65,14 @@ export function scanThink(
       i += tag.open.length;
       continue;
     }
-    if (!final && text[i] === "<") {
+    if (ended === "stream" && text[i] === "<") {
       const tail = text.slice(i);
-      if (tag.open.startsWith(tail) || tag.close.startsWith(tail)) return { closed: false, safe: i, depth };
+      if (tag.open.startsWith(tail) || tag.close.startsWith(tail)) return held(i, depth);
     }
     i += 1;
   }
-  return { closed: false, safe: text.length, depth };
+  if (ended === "done" && lastPassed) return { closed: true, ...lastPassed };
+  return held(text.length, depth);
 }
 
 /**
@@ -61,12 +80,12 @@ export function scanThink(
  * loses the blank lines that separated it from the thinking. An unclosed
  * block is all thinking. Null when the message does not open with one.
  */
-export function splitLeadingThink(text: string): { thinking: string; answer: string } | null {
+export function splitLeadingThink(text: string, ended: "done" | "cut" = "done"): { thinking: string; answer: string } | null {
   const trimmed = text.trimStart();
   for (const tag of THINK_TAGS) {
     if (!trimmed.startsWith(tag.open)) continue;
     const body = trimmed.slice(tag.open.length);
-    const scan = scanThink(body, tag, 1, true);
+    const scan = scanThink(body, tag, 1, ended);
     if (!scan.closed) return { thinking: body, answer: "" };
     return { thinking: body.slice(0, scan.end), answer: body.slice(scan.after).trimStart() };
   }

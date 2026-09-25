@@ -11,7 +11,7 @@
 // (MiniMax's docs: keep the thinking in `content`, unmodified), so a model
 // seen doing this gets its reasoning re-wrapped into the content it sends.
 
-import { THINK_TAGS, scanThink, splitLeadingThink, type ThinkTag } from "../../shared/inline-think.ts";
+import { MAX_HELD_QUOTED, THINK_TAGS, scanThink, splitLeadingThink, type ThinkTag } from "../../shared/inline-think.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -31,6 +31,8 @@ interface ChoiceState {
   tag: ThinkTag;
   /** Open think tags of this kind, counting quoted ones inside the thinking. */
   depth: number;
+  /** Set once text held after a quoted close grew too long and was let go. */
+  passQuoted: boolean;
 }
 
 export interface ThinkStream {
@@ -69,6 +71,7 @@ function feed(stream: ThinkStream, state: ChoiceState, piece: string): Split {
         state.mode = "inside";
         state.tag = tag;
         state.depth = 1;
+        state.passQuoted = false;
         state.held = "";
         rest = trimmed.slice(tag.open.length);
         // A model that already fills the reasoning field and opens one
@@ -87,7 +90,13 @@ function feed(stream: ThinkStream, state: ChoiceState, piece: string): Split {
     } else if (state.mode === "inside") {
       const text = state.held + rest;
       rest = "";
-      const scan = scanThink(text, state.tag, state.depth, false);
+      let scan = scanThink(text, state.tag, state.depth, "stream", state.passQuoted);
+      if (!scan.closed && text.length - scan.safe > MAX_HELD_QUOTED) {
+        // Held long enough to be thinking after a quoted pair: let it go and
+        // stop holding for the rest of the block.
+        state.passQuoted = true;
+        scan = scanThink(text, state.tag, state.depth, "stream", true);
+      }
       if (scan.closed) {
         out.reasoning += text.slice(0, scan.end);
         state.held = "";
@@ -114,12 +123,16 @@ function feed(stream: ThinkStream, state: ChoiceState, piece: string): Split {
   return out;
 }
 
-/** What a choice still holds when its stream ends: text before a tag was clear, thinking inside one. */
-function flush(state: ChoiceState): Split {
+/**
+ * What a choice still holds when its stream ends: text before a tag was
+ * clear, thinking inside one, or an answer after a quoted close. A reply cut
+ * at the length limit keeps it all as thinking.
+ */
+function flush(state: ChoiceState, finish?: string): Split {
   const out: Split = { content: "", reasoning: "" };
   if (state.mode === "start") out.content = state.held;
   else if (state.mode === "inside") {
-    const scan = scanThink(state.held, state.tag, state.depth, true);
+    const scan = scanThink(state.held, state.tag, state.depth, finish === "length" ? "cut" : "done", state.passQuoted);
     if (scan.closed) {
       out.reasoning = state.held.slice(0, scan.end);
       out.content = state.held.slice(scan.after).trimStart();
@@ -200,7 +213,7 @@ export function splitThinkBlock(block: string, stream: ThinkStream): string {
       const index = typeof choice.index === "number" ? choice.index : 0;
       let state = stream.choices.get(index);
       if (!state) {
-        state = { mode: "start", held: "", tag: THINK_TAGS[0], depth: 0 };
+        state = { mode: "start", held: "", tag: THINK_TAGS[0], depth: 0, passQuoted: false };
         stream.choices.set(index, state);
       }
       if (state.mode === "text") continue;
@@ -218,7 +231,7 @@ export function splitThinkBlock(block: string, stream: ThinkStream): string {
         split.reasoning += got.reasoning;
       }
       if (typeof choice.finish_reason === "string" && choice.finish_reason) {
-        const held = flush(state);
+        const held = flush(state, choice.finish_reason);
         split.content += held.content;
         split.reasoning += held.reasoning;
       }
@@ -248,7 +261,7 @@ export function splitThinkCompletion(payload: unknown): boolean {
     if (!isRecord(choice) || !isRecord(choice.message)) continue;
     const message = choice.message;
     if (typeof message.content !== "string") continue;
-    const split = splitLeadingThink(message.content);
+    const split = splitLeadingThink(message.content, choice.finish_reason === "length" ? "cut" : "done");
     if (!split) continue;
     const native = (typeof message.reasoning_content === "string" && message.reasoning_content)
       || (typeof message.reasoning === "string" && message.reasoning);

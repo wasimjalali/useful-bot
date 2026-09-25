@@ -9,7 +9,7 @@ import {
   splitThinkCompletion,
   usesInlineThink,
 } from "../router/src/inline-think.ts";
-import { withoutLeadingThink } from "../shared/inline-think.ts";
+import { splitLeadingThink, withoutLeadingThink } from "../shared/inline-think.ts";
 
 // Some models (MiniMax M3 through OpenCode, MiniMax's own API by default)
 // write their thinking into the answer as `<think>…</think>` instead of the
@@ -243,6 +243,59 @@ test("a message that ends on its close after a lone quoted tag is all thinking",
   const { result } = relay(["<think>mention <think> only</think>"], { finish: "tool_calls" });
   assert.equal(result.reasoning, "mention <think> only");
   assert.equal(result.content, "");
+});
+
+// PR #135 review: a lone quoted opening tag whose real close is not followed
+// by a blank line swallowed the whole answer.
+test("a lone quoted open never swallows the answer, whatever follows the close", () => {
+  for (const [raw, thinking, answer] of [
+    ["<think>The user asks what <think> does.</think>\nThe <think> tag opens a block.", "The user asks what <think> does.", "The <think> tag opens a block."],
+    ["<think>what <think> does</think>Answer here", "what <think> does", "Answer here"],
+    ["<think>what <think> does</think> Answer", "what <think> does", "Answer"],
+    ["<think>a <think> b</think>\r\n\r\nAnswer", "a <think> b", "Answer"],
+  ]) {
+    for (const pieces of [[raw], [...raw]]) {
+      const { result } = relay(pieces, { finish: "stop" });
+      assert.equal(result.reasoning, thinking, JSON.stringify(raw));
+      assert.equal(result.content, answer, JSON.stringify(raw));
+    }
+    assert.deepEqual(splitLeadingThink(raw), { thinking, answer });
+  }
+});
+
+test("a reply cut off by the length limit stays thinking even after a quoted pair", () => {
+  const { result } = relay(["<think>use <think>x</think> and then cut"], { finish: "length" });
+  assert.equal(result.reasoning, "use <think>x</think> and then cut");
+  assert.equal(result.content, "");
+});
+
+test("held text after a quoted close is released on [DONE] and at stream end", () => {
+  const raw = "<think>what <think> does</think>\nAnswer";
+  assert.equal(relay([...raw], { done: true }).result.content, "Answer");
+  assert.equal(relay([...raw], { done: false, flush: true }).result.content, "Answer");
+});
+
+test("a streamed reply splits exactly as the whole text does", () => {
+  const texts = [
+    "<think>mention <think> only</think> ",
+    "<think>mention <think> only</think>\t",
+    "<think>mention <think> only</think>\r\n",
+    "<think>x <think>y</think> z</think>\n\nA",
+    "<think>x <think>y</think>\n\nleaks by design</think>A",
+    "<thinking>q <thinking>r</thinking> s</thinking>Done",
+    "<think>a <thinking> b</think>C",
+    "<think>open <think> open <think> close</think> close</think>\nEnd",
+    "<think>plain</think>\n\nAnswer with </think> inside",
+  ];
+  for (const raw of texts) {
+    const whole = splitLeadingThink(raw);
+    assert.ok(whole, raw);
+    for (const pieces of [[raw], [...raw]]) {
+      const { result } = relay(pieces, { finish: "stop" });
+      assert.equal(result.reasoning, whole.thinking, JSON.stringify(raw));
+      assert.equal(result.content, whole.answer, JSON.stringify(raw));
+    }
+  }
 });
 
 test("a non-streamed reply is split the same way", () => {
