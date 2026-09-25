@@ -90,6 +90,10 @@ owner set the review loop to SWE-2 plus one Opus 5.5 reviewer (two at most),
 with SWE-2 briefs aimed at a diff file and line ranges (global rules and this
 repo's CLAUDE.md).
 
+Pass 3: Opus found nothing in the non-streamed fix. SWE-2 medium on the
+CLAUDE.md wording found two ambiguities ("two at most", "from both"); both
+reworded. Verdict: `review-swe2-medium-pass3.txt`.
+
 ## Left open
 
 - A router restart forgets which models were learned; the first reply after a
