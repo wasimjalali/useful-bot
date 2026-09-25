@@ -9,7 +9,7 @@ import {
   splitThinkCompletion,
   usesInlineThink,
 } from "../router/src/inline-think.ts";
-import { withoutLeadingThink } from "../shared/inline-think.ts";
+import { THINK_TAGS, scanThink, splitLeadingThink, withoutLeadingThink } from "../shared/inline-think.ts";
 
 // Some models (MiniMax M3 through OpenCode, MiniMax's own API by default)
 // write their thinking into the answer as `<think>…</think>` instead of the
@@ -216,6 +216,106 @@ test("a flood of leading whitespace is released instead of held", () => {
   assert.equal(splitThinkBlock(later, stream), later);
 });
 
+// Found live on 2026-09-25: MiniMax M3, asked about this very file, quoted the
+// tag pair inside its thinking, and the quoted close ended the block early.
+test("a tag pair quoted inside the thinking does not end it", () => {
+  const raw = "<think>The file handles `<think>…</think>` blocks in model outputs. Answer in three sentences.</think>\n\nThe file has 298 lines.";
+  for (const pieces of [[raw], [...raw]]) {
+    const { result } = relay(pieces, { finish: "stop" });
+    assert.equal(result.reasoning, "The file handles `<think>…</think>` blocks in model outputs. Answer in three sentences.");
+    assert.equal(result.content, "The file has 298 lines.");
+  }
+});
+
+test("a lone quoted opening tag does not swallow the answer", () => {
+  const { result } = relay(["<think>The tag <think> opens it.</think>\n", "\nAnswer"], { finish: "stop" });
+  assert.equal(result.reasoning, "The tag <think> opens it.");
+  assert.equal(result.content, "Answer");
+});
+
+test("an answer straight after the real close still splits when a pair was quoted", () => {
+  const { result } = relay(["<think>use <think>x</think> here</think>Done"], { finish: "stop" });
+  assert.equal(result.reasoning, "use <think>x</think> here");
+  assert.equal(result.content, "Done");
+});
+
+test("a message that ends on its close after a lone quoted tag is all thinking", () => {
+  const { result } = relay(["<think>mention <think> only</think>"], { finish: "tool_calls" });
+  assert.equal(result.reasoning, "mention <think> only");
+  assert.equal(result.content, "");
+});
+
+// PR #135 review: a lone quoted opening tag whose real close is not followed
+// by a blank line swallowed the whole answer.
+test("a lone quoted open never swallows the answer, whatever follows the close", () => {
+  for (const [raw, thinking, answer] of [
+    ["<think>The user asks what <think> does.</think>\nThe <think> tag opens a block.", "The user asks what <think> does.", "The <think> tag opens a block."],
+    ["<think>what <think> does</think>Answer here", "what <think> does", "Answer here"],
+    ["<think>what <think> does</think> Answer", "what <think> does", "Answer"],
+    ["<think>a <think> b</think>\r\n\r\nAnswer", "a <think> b", "Answer"],
+  ]) {
+    for (const pieces of [[raw], [...raw]]) {
+      const { result } = relay(pieces, { finish: "stop" });
+      assert.equal(result.reasoning, thinking, JSON.stringify(raw));
+      assert.equal(result.content, answer, JSON.stringify(raw));
+    }
+    assert.deepEqual(splitLeadingThink(raw), { thinking, answer });
+  }
+});
+
+test("a reply cut off by the length limit stays thinking even after a quoted pair", () => {
+  const { result } = relay(["<think>use <think>x</think> and then cut"], { finish: "length" });
+  assert.equal(result.reasoning, "use <think>x</think> and then cut");
+  assert.equal(result.content, "");
+});
+
+test("held text after a quoted close is released on [DONE] and at stream end", () => {
+  const raw = "<think>what <think> does</think>\nAnswer";
+  assert.equal(relay([...raw], { done: true }).result.content, "Answer");
+  assert.equal(relay([...raw], { done: false, flush: true }).result.content, "Answer");
+});
+
+test("thinking held after a quoted close is let go past the cap, and the block still ends", () => {
+  const raw = "<think>q <think>x</think> " + "t".repeat(17000) + "</think>\n\nAnswer";
+  const pieces: string[] = [];
+  for (let i = 0; i < raw.length; i += 64) pieces.push(raw.slice(i, i + 64));
+  const { result } = relay(pieces, { finish: "stop" });
+  assert.equal(result.reasoning, "q <think>x</think> " + "t".repeat(17000));
+  assert.equal(result.content, "Answer");
+});
+
+test("a whitespace run after a quoted close is not held once it cannot become a blank line", () => {
+  let scan = scanThink("x</think>   \t  more", THINK_TAGS[0], 2, "stream");
+  assert.deepEqual(scan, { closed: false, safe: 1, depth: 2 });
+  scan = scanThink("x</think>   \t  ", THINK_TAGS[0], 2, "stream", true);
+  assert.deepEqual(scan, { closed: false, safe: 15, depth: 1 });
+  scan = scanThink("x</think>\n", THINK_TAGS[0], 2, "stream", true);
+  assert.deepEqual(scan, { closed: false, safe: 1, depth: 2 });
+});
+
+test("a streamed reply splits exactly as the whole text does", () => {
+  const texts = [
+    "<think>mention <think> only</think> ",
+    "<think>mention <think> only</think>\t",
+    "<think>mention <think> only</think>\r\n",
+    "<think>x <think>y</think> z</think>\n\nA",
+    "<think>x <think>y</think>\n\nleaks by design</think>A",
+    "<thinking>q <thinking>r</thinking> s</thinking>Done",
+    "<think>a <thinking> b</think>C",
+    "<think>open <think> open <think> close</think> close</think>\nEnd",
+    "<think>plain</think>\n\nAnswer with </think> inside",
+  ];
+  for (const raw of texts) {
+    const whole = splitLeadingThink(raw);
+    assert.ok(whole, raw);
+    for (const pieces of [[raw], [...raw]]) {
+      const { result } = relay(pieces, { finish: "stop" });
+      assert.equal(result.reasoning, whole.thinking, JSON.stringify(raw));
+      assert.equal(result.content, whole.answer, JSON.stringify(raw));
+    }
+  }
+});
+
 test("a non-streamed reply is split the same way", () => {
   const json = { choices: [{ index: 0, message: { role: "assistant", content: "\n<think>why</think>\n\nBecause." }, finish_reason: "stop" }] };
   assert.equal(splitThinkCompletion(json), true);
@@ -273,5 +373,6 @@ test("stored bubbles hide a leading think block, and only a leading one", () => 
   assert.equal(withoutLeadingThink("Use <think> tags."), "Use <think> tags.");
   assert.equal(withoutLeadingThink("<div>html</div>"), "<div>html</div>");
   assert.equal(withoutLeadingThink("Plain answer"), "Plain answer");
+  assert.equal(withoutLeadingThink("<think>it handles `<think>…</think>` blocks</think>\n\nThe file has 298 lines."), "The file has 298 lines.");
   assert.equal(withoutLeadingThink(""), "");
 });
