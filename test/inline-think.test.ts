@@ -9,7 +9,7 @@ import {
   splitThinkCompletion,
   usesInlineThink,
 } from "../router/src/inline-think.ts";
-import { splitLeadingThink, withoutLeadingThink } from "../shared/inline-think.ts";
+import { THINK_TAGS, scanThink, splitLeadingThink, withoutLeadingThink } from "../shared/inline-think.ts";
 
 // Some models (MiniMax M3 through OpenCode, MiniMax's own API by default)
 // write their thinking into the answer as `<think>…</think>` instead of the
@@ -273,6 +273,24 @@ test("held text after a quoted close is released on [DONE] and at stream end", (
   const raw = "<think>what <think> does</think>\nAnswer";
   assert.equal(relay([...raw], { done: true }).result.content, "Answer");
   assert.equal(relay([...raw], { done: false, flush: true }).result.content, "Answer");
+});
+
+test("thinking held after a quoted close is let go past the cap, and the block still ends", () => {
+  const raw = "<think>q <think>x</think> " + "t".repeat(17000) + "</think>\n\nAnswer";
+  const pieces: string[] = [];
+  for (let i = 0; i < raw.length; i += 64) pieces.push(raw.slice(i, i + 64));
+  const { result } = relay(pieces, { finish: "stop" });
+  assert.equal(result.reasoning, "q <think>x</think> " + "t".repeat(17000));
+  assert.equal(result.content, "Answer");
+});
+
+test("a whitespace run after a quoted close is not held once it cannot become a blank line", () => {
+  let scan = scanThink("x</think>   \t  more", THINK_TAGS[0], 2, "stream");
+  assert.deepEqual(scan, { closed: false, safe: 1, depth: 2 });
+  scan = scanThink("x</think>   \t  ", THINK_TAGS[0], 2, "stream", true);
+  assert.deepEqual(scan, { closed: false, safe: 15, depth: 1 });
+  scan = scanThink("x</think>\n", THINK_TAGS[0], 2, "stream", true);
+  assert.deepEqual(scan, { closed: false, safe: 1, depth: 2 });
 });
 
 test("a streamed reply splits exactly as the whole text does", () => {

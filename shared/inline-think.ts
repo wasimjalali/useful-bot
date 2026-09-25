@@ -49,8 +49,8 @@ export function scanThink(text: string, tag: ThinkTag, depth: number, ended: Sca
       const tail = text.slice(after);
       if (depth <= 1 || tail.startsWith("\n\n") || tail.startsWith("\r\n\r\n")) return { closed: true, end: i, after };
       if (ended === "stream") {
-        // Nothing but whitespace yet: it could still become a blank line.
-        if (!tail.trim()) return held(i, depth);
+        // Too little yet to tell whether a blank line follows.
+        if ("\n\n".startsWith(tail) || "\r\n\r\n".startsWith(tail)) return held(i, depth);
         if (!passQuoted && !hold) hold = { safe: i, depth };
       } else if (!tail.trim()) {
         return { closed: true, end: i, after };

@@ -94,11 +94,36 @@ Pass 3: Opus found nothing in the non-streamed fix. SWE-2 medium on the
 CLAUDE.md wording found two ambiguities ("two at most", "from both"); both
 reworded. Verdict: `review-swe2-medium-pass3.txt`.
 
+## Follow-up: quoted tags (PR #135)
+
+A third live turn on the merged fix asked MiniMax M3 about this very code.
+Its thinking quoted `<think>…</think>`, the first quoted close ended the
+block, and the rest of the thinking showed in the bubble. PR #135 counts the
+same tag in pairs, ends at a close followed by a blank line, holds text after
+an undecided close in a stream, ends a complete message at its last close so
+a lone quoted opening tag cannot swallow the answer, and keeps a length-cut
+reply as thinking. Live rerun of the same prompt shape: the thinking quoted
+the tags 7 times open and 5 times close, and all of it stayed in reasoning.
+
+Reviews, split by area under the new loop: SWE-2 high on the scanner and
+state machine, Opus on stream-versus-whole parity and the Swift twin. Pass 1
+found a high (a lone quoted open followed by a close without a blank line
+swallowed the answer, a regression against main) plus parity and CRLF lows;
+all fixed. Pass 2: Opus fuzzed 12,965 texts in every release mode with 0
+stream-versus-whole mismatches and compiled the Swift twin against the TS
+results (5 exotic Unicode differences). Neither pass 2 found a critical or
+high. Verdicts: `pr135-review-*.txt`, `pr135-review-opus.md`.
+
 ## Left open
 
 - A router restart forgets which models were learned; the first reply after a
   restart relearns, so that one step's history goes back without the wrap.
 - Models whose template emits only `</think>` (no opening tag) are not
   detected; none in the traces do.
+- Text after an undecided close does not stream until the block resolves
+  (up to 16K characters), and each chunk rescans the held text; past the
+  cap it is let go as thinking, which can hide an answer after a lone quoted
+  open in a very long reply. A quoted close followed by a blank line inside
+  the thinking still ends the block.
 - Run 2 surfaced a separate scroll bug: the finished reply landed with its
   last line under the composer fade. Tracked on its own.
