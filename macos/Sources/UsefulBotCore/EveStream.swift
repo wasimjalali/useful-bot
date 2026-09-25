@@ -603,6 +603,27 @@ public enum EveStream {
         return String(text[range.upperBound...])
     }
 
+    /// Port of `withoutLeadingThink` in `shared/inline-think.ts`. A reply
+    /// stored before the router moved inline thinking to the reasoning field
+    /// still opens with `<think>…</think>`: its bubble shows the answer after
+    /// it, and nothing while the block is unclosed or its opening tag is still
+    /// arriving. A tag further into the reply is the reply's own text.
+    public static func withoutLeadingThink(_ text: String) -> String {
+        let trimmed = text.drop { $0.isWhitespace || $0.isNewline }
+        for (open, close) in thinkTags where trimmed.hasPrefix(open) {
+            let body = trimmed.dropFirst(open.count)
+            guard let end = body.range(of: close) else { return "" }
+            return String(body[end.upperBound...].drop { $0.isWhitespace || $0.isNewline })
+        }
+        guard trimmed.hasPrefix("<") else { return text }
+        return thinkTags.contains { $0.open.hasPrefix(trimmed) } ? "" : text
+    }
+
+    private static let thinkTags: [(open: String, close: String)] = [
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+    ]
+
     /// Port of `parseSearchChips` from `shared/eve-stream.ts`: accept a result
     /// payload as an array, `{results}`, `{result:{results}}` or
     /// `{output:{results}}`, keep up to five http(s) rows.

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { RouterError } from "../errors.ts";
 import type { RegistryEntry } from "../registry.ts";
 import { applyReasoning, modelOption, modelSeesImages } from "../../../shared/models.ts";
+import { rewrapThinkHistory, usesInlineThink } from "../inline-think.ts";
 import { catalogFor } from "../../../shared/live-models.ts";
 import { POLICY_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
@@ -159,9 +160,13 @@ export async function completeUpstream(input: {
   // model's own window may size its cap.
   const sized = option?.id === model && option.contextTokens && option.contextTokens > 0 ? option.contextTokens : null;
   const outputCap = Math.min(input.entry.maxOutputTokens, Math.floor((sized ?? POLICY_WINDOW_TOKENS) / 10));
+  const history = withoutImagesForTextModel(forwardedBody.messages, sees);
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
-    messages: withoutImagesForTextModel(forwardedBody.messages, sees),
+    // A model that writes its thinking inline gets it back the same way.
+    messages: resolved.protocol === "openai-chat" && usesInlineThink(resolved.providerId, model)
+      ? rewrapThinkHistory(history)
+      : history,
     model,
     max_tokens: typeof payload.max_tokens === "number" ? Math.min(payload.max_tokens, outputCap) : outputCap,
   });

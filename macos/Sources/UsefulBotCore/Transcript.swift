@@ -76,10 +76,18 @@ public enum Transcript {
             // Strip on both sides of the merge: if a durable row ever stored
             // the proxy-injected prefix, it must still pair with its live echo.
             let text = EveStream.stripThreadPrefix(event.text)
+            // A reply stored with its thinking inline shows only its answer,
+            // and one that was all thinking shows nothing. Pairing below
+            // still counts the stored text, which is what the echo carries.
+            let shown = kind == .assistant ? EveStream.withoutLeadingThink(text) : text
+            if kind == .assistant, shown.isEmpty {
+                durableAssistantCounts[text, default: 0] += 1
+                continue
+            }
             durable.append(TranscriptRow(
                 id: event.id,
                 kind: kind,
-                text: kind == .widget ? (event.widgetId ?? text) : text,
+                text: kind == .widget ? (event.widgetId ?? text) : shown,
                 // Only a durable author label renders; the web treats an
                 // unattributed stream echo as unlabelled.
                 author: event.authorName,
@@ -131,10 +139,12 @@ public enum Transcript {
                 live.append(TranscriptRow(id: message.id, kind: .user, text: message.text, at: message.at))
             case .assistant:
                 if consume(&durableAssistantCounts, message.text) { continue }
+                let shown = EveStream.withoutLeadingThink(message.text)
+                if shown.isEmpty { continue }
                 live.append(TranscriptRow(
                     id: message.id,
                     kind: .assistant,
-                    text: message.text,
+                    text: shown,
                     at: message.at
                 ))
             }

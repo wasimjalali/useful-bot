@@ -1,0 +1,80 @@
+# MiniMax M3 thinking leaked into chat bubbles
+
+Date: 2026-09-25. Branch `fix/inline-think-reasoning`.
+
+## Question
+
+With MiniMax M3 selected, the bot's thinking showed in the chat as plain text
+(`<think>Now verify quickly…</think> The new page is ready.`). Other models
+fold their thinking into the working row. Is it MiniMax only, why, and does
+the fix keep it out of the UI for any model that does the same?
+
+## Diagnosis
+
+`trace-audit.py` over the local eve traces (`.eve/traces/v1`), grouped by the
+turn identity line, before the fix:
+
+| Model (connection) | Segments | Raw `<think>` in text | Reasoning parts |
+|---|---|---|---|
+| Space Bunny Free (OpenCode) | 397 | 0 | 381 |
+| DeepSeek V4.1 Flash (OpenCode) | 99 | 0 | 98 |
+| GPT-6-Sol (OpenAI) | 65 | 0 | 15 |
+| GPT-6-Luna (OpenAI) | 38 | 0 | 6 |
+| GLM 5.3 Flash (OpenCode) | 18 | 0 | 17 |
+| MiMo V2.6 Pro (OpenCode) | 11 | 0 | 8 |
+| **MiniMax M3 (OpenCode)** | **11** | **11** | 7 |
+| MiniMax M2.7 (OpenCode) | 6 | 0 | 6 |
+
+Cause: the AI SDK's openai-compatible provider only reads thinking from
+`delta.reasoning_content` / `delta.reasoning`. MiniMax's documented default
+on the OpenAI-style API is thinking inside `content`, wrapped in
+`<think>…</think>` (MiniMax docs, "Native Format"). OpenCode converts it for
+M2.7 but passes M3's through, and the router relayed `/chat/completions`
+untouched, so eve stored the thinking as answer text. OpenCode's own docs list
+MiniMax models on its Anthropic `/messages` endpoint instead; the router sends
+every OpenCode model to `/chat/completions`.
+
+## What changed
+
+- Router (`router/src/inline-think.ts`): a think block (`<think>` or
+  `<thinking>`) that opens a message's content, from any model, moves to the
+  reasoning field, streamed or not. Tags split across chunks are held until
+  clear; held text is released on the finish reason, before `[DONE]`, or at
+  stream end. A tag further into the answer stays text.
+- The router learns which provider and model did this (logged once as
+  `inline_think_learned`) and sends that model's history back with its
+  reasoning wrapped in `<think>` inside the content, as MiniMax's docs ask.
+- macOS (`Transcript.merge`) and web (`page.tsx`): replies stored before the
+  fix hide a leading think block; one that was all thinking shows no bubble.
+
+## Runs
+
+Test Bot, MiniMax M3 Max through OpenCode Go, installed app rebuilt from the
+branch. Each run recorded the window with `winrec` at 30 fps; every frame was
+OCR'd with Apple Vision (`ocr-frames.swift`, raw text in `run*-ocr.txt.gz`).
+
+| Run | Turn | Steps | Reasoning parts | Raw `<think>` in answer | Frames OCR'd | Frames showing thinking |
+|---|---|---|---|---|---|---|
+| 1 | Three shell calls, thinking before each, then a summary | 4 | 4 | 0 | 1211 | 0 |
+| 2 (cold start, router restarted) | Follow-up leaning on run 1's count, one shell call | 2 | 2 | 0 | 1751 | 0 |
+
+The only `think` text OCR found is the model quoting `<think>…</think>` in the
+middle of its run 1 answer, which is correct to keep. Run 2 logged
+`inline_think_learned provider=opencode-go model=minimax-m3` on its first reply,
+and the model carried run 1's figure (17 files) into its answer.
+
+The Generalist chat from the original report now renders the same stored
+messages without the tags, and the bubble that held only thinking is gone.
+
+Tests: 19 router and helper cases (`test/inline-think.test.ts`), 4 Swift
+cases (`InlineThinkTests.swift`); full suites 737 Node, 431 Swift, all
+passing. Cost: two MiniMax M3 turns on the OpenCode Go plan.
+
+## Left open
+
+- A router restart forgets which models were learned; the first reply after a
+  restart relearns, so that one step's history goes back without the wrap.
+- Models whose template emits only `</think>` (no opening tag) are not
+  detected; none in the traces do.
+- Run 2 surfaced a separate scroll bug: the finished reply landed with its
+  last line under the composer fade. Tracked on its own.
