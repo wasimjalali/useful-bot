@@ -229,6 +229,11 @@ test("a non-streamed reply is split the same way", () => {
   assert.equal(splitThinkCompletion(plain), false);
   assert.equal(plain.choices[0].message.content, "Use <think> tags.");
 
+  // Split but not reported: the model already fills the reasoning field.
+  const native = { choices: [{ message: { role: "assistant", content: "<think>q</think>A", reasoning_content: "native " } }] };
+  assert.equal(splitThinkCompletion(native), false);
+  assert.deepEqual(native.choices[0].message, { role: "assistant", content: "A", reasoning_content: "native q" });
+
   const tools = { choices: [{ message: { role: "assistant", content: null, tool_calls: [] } }] };
   assert.equal(splitThinkCompletion(tools), false);
 });

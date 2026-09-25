@@ -82,6 +82,14 @@ field; a run of leading whitespace over 256 characters is released rather
 than held; history messages with non-string content are left alone. Raw
 verdicts: `review-swe2-high-pass1.txt`, `review-opus-pass1.md`.
 
+Pass 2 on the fix commit (SWE-2 high about 4 minutes with the tight brief,
+Opus about 2 minutes): no critical or high. Both found that the non-streamed
+path still learned a model that already sends native reasoning; fixed.
+Verdicts: `review-swe2-high-pass2.txt`, `review-opus-pass2.md`. Afterwards the
+owner set the review loop to SWE-2 plus one Opus 5.5 reviewer (two at most),
+with SWE-2 briefs aimed at a diff file and line ranges (global rules and this
+repo's CLAUDE.md).
+
 ## Left open
 
 - A router restart forgets which models were learned; the first reply after a

@@ -231,7 +231,11 @@ export function splitThinkBlock(block: string, stream: ThinkStream): string {
   return changed ? lines.join("\n") : block;
 }
 
-/** The same split for a non-streamed completion, in place. True when a block was found. */
+/**
+ * The same split for a non-streamed completion, in place. True when a block
+ * was found in a message that had no reasoning of its own, the case worth
+ * learning the model from.
+ */
 export function splitThinkCompletion(payload: unknown): boolean {
   if (!isRecord(payload) || !Array.isArray(payload.choices)) return false;
   let found = false;
@@ -241,7 +245,9 @@ export function splitThinkCompletion(payload: unknown): boolean {
     if (typeof message.content !== "string") continue;
     const split = splitLeadingThink(message.content);
     if (!split) continue;
-    found = true;
+    const native = (typeof message.reasoning_content === "string" && message.reasoning_content)
+      || (typeof message.reasoning === "string" && message.reasoning);
+    if (!native) found = true;
     message.content = split.answer;
     addReasoning(message, split.thinking);
   }
