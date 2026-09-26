@@ -321,6 +321,22 @@ export class ApprovalStore {
     });
   }
 
+  /** A stopped session can no longer act on its cards: retire them now. */
+  expireSession(sessionId: string): number {
+    return this.locked(() => {
+      this.load();
+      let expired = 0;
+      for (const record of this.records.values()) {
+        if (record.status === "pending" && record.sessionId === sessionId) {
+          record.status = "expired";
+          expired += 1;
+        }
+      }
+      if (expired) this.persist();
+      return expired;
+    });
+  }
+
   invalidateOnRestart(): void {
     this.locked(() => {
       this.load();

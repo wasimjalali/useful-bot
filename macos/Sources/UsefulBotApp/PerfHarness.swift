@@ -34,7 +34,7 @@ final class PerfHarness {
     }
 
     struct Step: Decodable {
-        /// create | select | pause | send | deny | wait_prewarm | restore | quit
+        /// create | select | pause | send | post | stop | deny | wait_prewarm | restore | quit
         let op: String
         let bot: String?
         let label: String?
@@ -242,7 +242,7 @@ final class PerfHarness {
                 guard prewarmEnded else { return abort("step \(index): the prewarm did not finish") }
             case "pause":
                 try? await Task.sleep(nanoseconds: Self.nanos(step.ms ?? 1000))
-            case "select", "send":
+            case "select", "send", "post", "stop":
                 guard let name = step.bot, name.hasPrefix(Self.fixturePrefix),
                       let bot = model.store?.bots.first(where: { $0.name == name }) else {
                     return abort("step \(index): \(step.bot ?? "no bot") is not a Perf bot here")
@@ -258,6 +258,21 @@ final class PerfHarness {
                         return abort("step \(index): \(name) never landed")
                     }
                     await lastProbe?.value
+                }
+                if step.op == "post" {
+                    // A send that is not waited out, for checking a turn while
+                    // it runs (an approval card, a step row).
+                    guard let text = step.text, !text.isEmpty, model.selectedBotId == bot.id,
+                          !model.pending, !model.backgroundWorking else {
+                        return abort("step \(index): post needs text, the open Perf bot and no turn running")
+                    }
+                    model.send(text)
+                    mark("post", ["index": index, "sent": model.pending])
+                }
+                if step.op == "stop" {
+                    guard model.selectedBotId == bot.id else { return abort("step \(index): stop needs the open Perf bot") }
+                    model.cancel()
+                    mark("stop", ["index": index, "approvals": model.approvals.count])
                 }
                 if step.op == "send" {
                     guard let text = step.text, !text.isEmpty else { return abort("step \(index): send has no text") }

@@ -1,4 +1,5 @@
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
+import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
   eveGetAllowed,
   evePostAllowed,
@@ -235,6 +236,16 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         { ok: false, error: "eve_error", status: upstream.status, ...(code ? { code } : {}) },
         { status: upstream.status },
       );
+    }
+    // A stopped turn can't act on an approval card any more. Its cards are
+    // retired now instead of staying up over the chat until they expire.
+    const cancelled = method === "POST" ? /^session\/([^/]+)\/cancel$/.exec(suffix) : null;
+    if (cancelled) {
+      try {
+        new ApprovalStore(Date.now, defaultApprovalsPath()).expireSession(cancelled[1]);
+      } catch (err) {
+        console.error("approval cards of a stopped session were left pending", err);
+      }
     }
     const out = new Headers();
     const ct = upstream.headers.get("content-type");
