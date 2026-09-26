@@ -61,9 +61,14 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 /// before every live row, so a handoff or a routine run that landed just now
 /// rendered at the very top of the chat and auto-scroll jumped with it.
 public enum Transcript {
-    /// Text with nothing to see: whitespace and zero-width characters only.
+    /// Text with nothing to see: whitespace, the zero-width space and joiners,
+    /// the word joiner and the byte-order mark. The same set as the web's
+    /// filter in web/app/page.tsx; other format characters can draw a glyph.
     static func isBlank(_ text: String) -> Bool {
-        text.unicodeScalars.allSatisfy { $0.properties.isWhitespace || $0.properties.generalCategory == .format }
+        text.unicodeScalars.allSatisfy { scalar in
+            scalar.properties.isWhitespace || (0x200B...0x200D).contains(scalar.value)
+                || scalar.value == 0x2060 || scalar.value == 0xFEFF
+        }
     }
 
     public static func merge(
