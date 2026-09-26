@@ -51,3 +51,11 @@ was built from; after an edit there the launcher falls back to `next dev` until 
 `build:app` (see `scripts/web-mode.mjs`). The web service has to be restarted to pick either
 one up. Build the web service through `build:app`, not bare `next build`: Next's TypeScript
 auto-install rewrites `package-lock.json`, and the router refuses a changed lockfile.
+
+## Performance guard
+
+A change that touches `macos/`, `shared/`, `agent/`, `router/src` or `web/` runs `npm run perf:check`
+on its own `build:app` before merge (about 15 minutes; it quits and relaunches the app in the
+background) and commits the record it writes under `evals/results/`. A breach is fixed, or the
+budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-run never erases a
+breach. The fixture bots ("Perf ...") are frozen: never send to them. See `perf/README.md`.

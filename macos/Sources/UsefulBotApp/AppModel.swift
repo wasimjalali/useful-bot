@@ -258,6 +258,9 @@ final class AppModel: ObservableObject {
         // DesktopEndpointPolicy never rejects; the throws exists so iOS
         // policies can refuse an endpoint (spec 4.7).
         self.client = try! BackendClient(base: config.baseURL)
+        if let perf = PerfHarness.shared {
+            for botId in perf.snapshotsToDrop { snapshots.remove(botId: botId) }
+        }
     }
 
     private var projection = StreamProjection()
@@ -527,10 +530,12 @@ final class AppModel: ObservableObject {
             guard !Task.isCancelled, attempt == startAttempt else { return }
             store = loaded
             selectedBotId = loaded.selectedBotId ?? loaded.bots.first?.id
+            PerfHarness.shared?.mark("initial_selection", ["bot": selectedBotId ?? ""])
             // The chat the app opens on is painted from its snapshot in the
             // same pass that shows the window, not after the reads below.
             if let first = selectedBotId, transcript.isEmpty { restoreChat(first) }
             phase = .ready
+            PerfHarness.shared?.run(model: self)
             // The chat's load starts first; the operator and composer reads
             // share nothing with it and no longer hold it back.
             startReload()
@@ -648,6 +653,8 @@ final class AppModel: ObservableObject {
             }
             return
         }
+        // Before the stash: leaving a long chat is part of the switch's cost.
+        PerfHarness.shared?.mark("select_start", ["bot": botId])
         // Stash the outgoing turn so it keeps running. Switching used to
         // cancel the server session, which is why a bot stopped the moment
         // the owner opened another chat.
@@ -3148,9 +3155,12 @@ final class AppModel: ObservableObject {
     private func restoreChat(_ botId: String) {
         let sessionId = store?.bots.first { $0.id == botId }?.sessionId ?? ""
         let resumable = sendTasks[botId] == nil && !sessionId.isEmpty && !snapshotsBlocked.contains(botId)
+        restoreSource = "none"
         if resumable, let snapshot = stashSnapshots[botId], snapshot.sessionId == sessionId {
+            restoreSource = "stash_snapshot"
             restore(snapshot)
         } else if let stored = backgroundProjections[botId] {
+            restoreSource = "background_projection"
             projection = stored
             pending = sendTasks[botId] != nil
             // The stash is a snapshot from when this chat was left, and a
@@ -3164,8 +3174,10 @@ final class AppModel: ObservableObject {
             rebuildTranscript()
             restoredFromCache = !transcript.isEmpty && readyStashes.contains(botId)
         } else if resumable, let snapshot = snapshots.load(botId: botId, sessionId: sessionId) {
+            restoreSource = "disk_snapshot"
             restore(snapshot)
         } else if let cached = transcriptCache[botId] {
+            restoreSource = "row_cache"
             // A chat already opened this session comes back with its rows on
             // screen while the reload confirms them. The events come too: a
             // second switch before the reload lands stashes this chat again,
@@ -3175,6 +3187,22 @@ final class AppModel: ObservableObject {
             durableEvents = cached.events
             restoredFromCache = !cached.rows.isEmpty && readyStashes.contains(botId)
         }
+    }
+
+    /// Which of `restoreChat`'s paths put the open chat on screen, for the
+    /// performance guard: a case that took another path measured another thing.
+    private var restoreSource = "none"
+
+    /// What the performance guard records with each landing.
+    var perfStats: [String: Any] {
+        [
+            "source": restoreSource,
+            "rows": transcript.count,
+            "blocks": transcriptBlocks.count,
+            "events": followCursor?.next ?? -1,
+            "fromSnapshot": restoredFromSnapshot,
+            "fromCache": restoredFromCache,
+        ]
     }
 
     private func restore(_ snapshot: ChatSnapshot) {
@@ -3317,6 +3345,8 @@ final class AppModel: ObservableObject {
             // Out of the way of the launch and the first chat's own load.
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard let self else { return }
+            PerfHarness.shared?.mark("prewarm_start")
+            defer { PerfHarness.shared?.mark("prewarm_end") }
             self.pruneSnapshots()
             for bot in self.store?.bots ?? [] {
                 guard !Task.isCancelled else { return }

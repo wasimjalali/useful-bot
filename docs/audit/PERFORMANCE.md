@@ -3,6 +3,8 @@
 What made the macOS app slow, what was changed, and what it bought. Newest batch first.
 Every number here was measured on the owner's machine; nothing is an estimate unless it says so.
 
+The gains below are guarded by `npm run perf:check` (see `perf/README.md`) since 2026-09-26.
+
 ## How the audit ran (2026-09-17)
 
 Five models read the code against the same read-only brief, then each finding was checked by
@@ -592,6 +594,9 @@ tests did not. Lesson: measure each fix on the long chat, not on a fresh one.
 | Item | Why it matters | Risk | Found by |
 |---|---|---|---|
 | A send still asks eve for the tail index before it posts | about 1.25 s before the reply starts in a YT Producer sized chat | medium | batch 10 measurements |
+| A return to a long chat of big markdown answers freezes the main thread | 4.9 s median, 5.5 s worst in the Perf Long Replies fixture (8.6 s on a busy machine); the old chat stays frozen on screen for most of it | high | perf guard baseline, 2026-09-26 |
+| A first open with no snapshot runs past the 10 s landing cap on long chats | every first open after a rebuild: 11.3 s (tools) and 12.3 s (markdown) medians, most launches capped | medium | perf guard baseline, 2026-09-26 |
+| Each turn on a long chat takes longer than the last | about 35 s × turn number for answers of the same size (33 s at turn 1, 433 s at turn 11) | medium | perf guard fixture build, 2026-09-26 |
 
 Closed: the avatar timelines and 1024 px layers (batch 4), the windowed transcript (batch 5), the
 streaming markdown cache (batch 6), the eager widget web views (batch 7), the cache budget (batch 8), the per-tick sweep (batch 9), the cached chat switch resuming from its cursor (batch 10); the store parse memo was measured and
