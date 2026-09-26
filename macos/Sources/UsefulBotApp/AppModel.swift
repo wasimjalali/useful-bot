@@ -2086,8 +2086,10 @@ final class AppModel: ObservableObject {
     /// transcript can hold it where the reader had it: a prepend leaves the
     /// scroll offset where it was, which is the top of the new rows.
     func showEarlierMessages() {
-        guard let selectedBotId, transcriptWindow.hidden > 0 else { return }
-        let hidden = transcriptWindow.hidden
+        // The published window can briefly outlive a reset that emptied the
+        // blocks; a tap in that gap must not index past them.
+        let hidden = min(transcriptWindow.hidden, transcriptBlocks.count)
+        guard let selectedBotId, hidden > 0 else { return }
         var start = hidden
         var spent = 0
         var messages = 0
