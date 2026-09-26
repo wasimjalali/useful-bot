@@ -263,16 +263,19 @@ final class PerfHarness {
                     // A send that is not waited out, for checking a turn while
                     // it runs (an approval card, a step row).
                     guard let text = step.text, !text.isEmpty, model.selectedBotId == bot.id,
+                          model.store?.bots.first(where: { $0.id == bot.id })?.name.hasPrefix(Self.fixturePrefix) == true,
                           !model.pending, !model.backgroundWorking else {
                         return abort("step \(index): post needs text, the open Perf bot and no turn running")
                     }
                     model.send(text)
-                    mark("post", ["index": index, "sent": model.pending])
+                    guard model.pending else { return abort("step \(index): the post was refused") }
+                    mark("post", ["index": index])
                 }
                 if step.op == "stop" {
                     guard model.selectedBotId == bot.id else { return abort("step \(index): stop needs the open Perf bot") }
+                    let running = model.pending || model.backgroundWorking
                     model.cancel()
-                    mark("stop", ["index": index, "approvals": model.approvals.count])
+                    mark("stop", ["index": index, "turnWasRunning": running, "cardsBefore": model.approvals.count])
                 }
                 if step.op == "send" {
                     guard let text = step.text, !text.isEmpty else { return abort("step \(index): send has no text") }
