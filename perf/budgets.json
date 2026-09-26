@@ -1,0 +1,163 @@
+{
+  "_about": "Limits perf/run.sh check enforces. Set 2026-09-26 from evals/results/2026-09-26-perf-baseline-a7cd66b with the budgetRule in config.json. Change only by a reviewed edit that says why.",
+  "cases": {
+    "cold_first_open_replies": {
+      "app_ms": {
+        "median": 6500.0,
+        "worst": 9750.0
+      },
+      "note": "Known slow, same cause as warm_return_replies.",
+      "reasons": [
+        "settled"
+      ],
+      "sources": [
+        "disk_snapshot"
+      ],
+      "stall_ms": {
+        "worst": 6360.0
+      },
+      "visual_ms": {
+        "median": 7270.0,
+        "worst": 10900.0
+      }
+    },
+    "cold_first_open_tools": {
+      "app_ms": {
+        "median": 400.0,
+        "worst": 600.0
+      },
+      "reasons": [
+        "settled"
+      ],
+      "sources": [
+        "disk_snapshot"
+      ],
+      "stall_ms": {
+        "worst": 340.0
+      },
+      "visual_ms": {
+        "median": 450.0,
+        "worst": 680.0
+      }
+    },
+    "cold_launch": {
+      "app_ms": {
+        "median": 2780.0,
+        "worst": 8320.0
+      },
+      "reasons": [
+        "settled"
+      ],
+      "sources": [
+        "disk_snapshot"
+      ],
+      "stall_ms": {
+        "worst": 60.0
+      },
+      "visual_ms": {
+        "median": 2840.0,
+        "worst": 8420.0
+      }
+    },
+    "cold_no_snapshot_replies": {
+      "app_ms": {
+        "median": 14180.0,
+        "worst": 32450.0
+      },
+      "note": "Known slow: every launch runs past the 10 s landing cap. Open in docs/audit/PERFORMANCE.md.",
+      "reasons": [
+        "cap",
+        "settled"
+      ],
+      "sources": [
+        "none"
+      ],
+      "stall_ms": {
+        "worst": 18300.0
+      },
+      "visual_ms": {
+        "median": 14400.0,
+        "worst": 36300.0
+      }
+    },
+    "cold_no_snapshot_tools": {
+      "app_ms": {
+        "median": 10200.0,
+        "worst": 15300.0
+      },
+      "note": "Known slow: no snapshot means a full replay, which runs past the 10 s landing cap on some launches. Open in docs/audit/PERFORMANCE.md.",
+      "reasons": [
+        "cap",
+        "settled"
+      ],
+      "sources": [
+        "none"
+      ],
+      "stall_ms": {
+        "worst": 40.0
+      },
+      "visual_ms": {
+        "median": 10520.0,
+        "worst": 15780.0
+      }
+    },
+    "warm_return_replies": {
+      "app_ms": {
+        "median": 9280.0,
+        "worst": 14170.0
+      },
+      "note": "Known slow: the main thread freezes for seconds on a return to a long markdown chat. Open in docs/audit/PERFORMANCE.md; tighten when fixed.",
+      "reasons": [
+        "settled"
+      ],
+      "sources": [
+        "stash_snapshot"
+      ],
+      "stall_ms": {
+        "worst": 12290.0
+      },
+      "visual_ms": {
+        "median": 10380.0,
+        "worst": 16490.0
+      }
+    },
+    "warm_return_tools": {
+      "app_ms": {
+        "median": 390.0,
+        "worst": 1050.0
+      },
+      "reasons": [
+        "settled"
+      ],
+      "sources": [
+        "stash_snapshot"
+      ],
+      "stall_ms": {
+        "worst": 920.0
+      },
+      "visual_ms": {
+        "median": 430.0,
+        "worst": 1140.0
+      }
+    },
+    "warm_switch_short": {
+      "app_ms": {
+        "median": 680.0,
+        "worst": 1040.0
+      },
+      "reasons": [
+        "settled"
+      ],
+      "sources": [
+        "stash_snapshot"
+      ],
+      "stall_ms": {
+        "worst": 160.0
+      },
+      "visual_ms": {
+        "median": 750.0,
+        "worst": 1130.0
+      }
+    }
+  }
+}

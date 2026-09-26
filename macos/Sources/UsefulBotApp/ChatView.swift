@@ -470,6 +470,7 @@ struct ChatView: View {
         let slowAfter = Date().addingTimeInterval(Self.resumeConfirmWait)
         let deadline = Date().addingTimeInterval(Self.landingCap)
         var lastHeight: CGFloat = -1
+        var reason = "cap"
         while Date() < deadline {
             try? await Task.sleep(nanoseconds: 16_000_000)
             guard !Task.isCancelled else { return }
@@ -500,6 +501,7 @@ struct ChatView: View {
                     lastHeight = -1
                     continue
                 }
+                reason = scrollProbe.seen ? "settled" : "no_geometry"
                 break
             }
             if scrollProbe.seen, !atBottom { scrollToBottom(proxy) }
@@ -509,6 +511,7 @@ struct ChatView: View {
         // `slowRestoreBotId` stays set through the landing, so a slow
         // chat's mascot fades out; the next landing clears it.
         landedBotId = botId
+        PerfHarness.shared?.landed(botId: botId, reason: reason, stats: model.perfStats)
         guard model.slimFirstPaint else { return }
         // Two frames, so the landed frame is committed before the rest of the
         // window is built above it. Not tied to this task: a remount in those
@@ -742,6 +745,7 @@ struct ChatView: View {
                     // ends and the condition no longer holds.
                     if sentIntoReadyChat {
                         landedBotId = bot.id
+                        PerfHarness.shared?.landed(botId: bot.id, reason: "sent", stats: model.perfStats)
                         model.finishFirstPaint()
                         return
                     }
@@ -790,6 +794,15 @@ struct ChatView: View {
                     // Hidden, the reader cannot have scrolled: it is pinned.
                     pinnedToBottom = true
                     landedBotId = bot.id
+                    if let perf = PerfHarness.shared {
+                        var reason = steady >= 3 ? "settled" : "cap"
+                        if #available(macOS 15.0, *) {
+                            if steady >= 3, !scrollProbe.seen { reason = "no_geometry" }
+                        } else if steady >= 3 {
+                            reason = "unmeasured"
+                        }
+                        perf.landed(botId: bot.id, reason: reason, stats: model.perfStats)
+                    }
                     model.finishFirstPaint()
                 }
                 // A replay slower than the cap finishes after the rows were
