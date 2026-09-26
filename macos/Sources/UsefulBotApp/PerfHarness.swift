@@ -174,6 +174,9 @@ final class PerfHarness {
             if self.aborted, let id = self.scenario.restoreBotId, model.selectedBotId != id,
                model.store?.bots.contains(where: { $0.id == id }) == true {
                 model.select(id)
+                // The selection is saved through a queued write; the runner
+                // quits the app once it reads the abort.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
                 self.mark("restored", ["bot": id])
             }
         }
@@ -185,6 +188,9 @@ final class PerfHarness {
            !(await waitLanded(botId: first, after: 0, timeoutMs: 30_000)) {
             return abort("the first chat never landed")
         }
+        // The first landing's stall probe is waited out like any select's, so
+        // step 1's work is never counted as the launch's stall.
+        await lastProbe?.value
         for (index, step) in scenario.steps.enumerated() {
             let label = step.label ?? step.op
             switch step.op {
@@ -290,7 +296,7 @@ final class PerfHarness {
             abort("step \(index): the open chat is no longer the Perf bot")
             return false
         }
-        guard !model.pending else {
+        guard !model.pending, !model.backgroundWorking else {
             abort("step \(index): a turn is already running in this chat")
             return false
         }

@@ -113,6 +113,27 @@ def bots_by_name():
     return {b["name"]: b for b in shell_state()["bots"]}
 
 
+def owner_selection():
+    """The owner's last real chat, to put back after a run.
+
+    The open chat at the start of a run is not enough: a run that stopped
+    early leaves a fixture open, and every later run then "restored" the
+    fixture. The last non-fixture selection is remembered across runs.
+    """
+    path = os.path.join(PERF, ".runs", "owner-selection.json")
+    state = shell_state()
+    names = {b["id"]: b["name"] for b in state["bots"]}
+    current = state.get("selectedBotId")
+    fixtures = set(CONFIG["fixtures"].values())
+    if current in names and names[current] not in fixtures and not names[current].startswith("Perf "):
+        write_json(path, {"botId": current, "name": names[current]})
+        return current
+    saved = load_json(path, default={}).get("botId")
+    if saved in names:
+        return saved
+    sys.exit("the open chat is a Perf fixture and no earlier selection is known: open one of your own chats first")
+
+
 # ---------------------------------------------------------------- preflight
 
 
@@ -274,6 +295,11 @@ class Launch:
         if end is None:
             raise RuntimeError(f"{self.name}: no end mark in {timeout_s}s")
         if end["ev"] == "abort":
+            # The harness puts the owner's chat back after an abort; let that save.
+            for _ in range(40):
+                if self.scenario.get("restoreBotId") is None or self.last_event({"restored"}):
+                    break
+                time.sleep(0.1)
             raise RuntimeError(f"{self.name}: the app aborted the scenario: {end.get('why')}")
         if end["ev"] == "exited":
             raise RuntimeError(f"{self.name}: the app exited before the scenario ended")
@@ -554,7 +580,7 @@ def measure(args, quick):
         for p in problems:
             print(f"preflight: {p}")
         sys.exit(2)
-    owner_selection = shell_state().get("selectedBotId")
+    owner = owner_selection()
     was_running = [p for p in app.running_pids()]
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M%S")
     outdir = os.path.join(PERF, ".runs", stamp)
@@ -567,7 +593,7 @@ def measure(args, quick):
     started = time.time()
     try:
         for name, steps, drop in plan(quick):
-            restore = owner_selection if name == "warm" else None
+            restore = owner if name == "warm" else None
             launch = Launch(app, outdir, name, steps, drop, restore)
             cpu, top = external_cpu()
             loads.append((name, round(cpu), top))
@@ -722,7 +748,7 @@ def cmd_fixtures(args):
     names = bots_by_name()
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M%S")
     outdir = os.path.join(PERF, ".runs", f"fixtures-{stamp}")
-    owner_selection = shell_state().get("selectedBotId")
+    owner = owner_selection()
     for key, name in CONFIG["fixtures"].items():
         turns = spec[key]["turns"]
         bot = names.get(name)
@@ -740,7 +766,7 @@ def cmd_fixtures(args):
             steps.append(step("send", name, text=text))
         steps += [step("restore"), step("pause", ms=1500), step("quit")]
         print(f"{name}: {len(turns)} turns")
-        launch = Launch(app, outdir, key, steps, restore=owner_selection)
+        launch = Launch(app, outdir, key, steps, restore=owner)
         launch.execute(timeout_s=len(turns) * 900 + 120, record=False)
         for m in launch.marks():
             if m["ev"] in ("ready", "send_done"):
@@ -757,7 +783,7 @@ def cmd_lock(args):
     for key in ("longTools", "longReplies", "shortB", "shortA"):
         steps += [step("select", CONFIG["fixtures"][key], "lock"), step("pause", ms=6000)]
     launch = Launch(app, outdir, "lock", steps + [step("restore"), step("pause", ms=1500), step("quit")],
-                    restore=shell_state().get("selectedBotId")).execute(record=False)
+                    restore=owner_selection()).execute(record=False)
     ids = {b["id"]: b for b in shell_state()["bots"]}
     lock = {"lockedAt": stamp, "bots": {}}
     for m in launch.marks():

@@ -683,9 +683,10 @@ struct ChatView: View {
                     // first message against the composer with the window
                     // empty above it. Once the chat outgrows the window this
                     // floor does nothing and the anchor takes over.
-                    // The container height includes the header's inset band,
-                    // which already adds its own scroll room.
-                    .frame(maxWidth: .infinity, minHeight: max(0, viewportHeight - DesignTokens.Space.chatHead), alignment: .top)
+                    // The container height is already the area under the
+                    // header's inset band (measured: visible 657 = container
+                    // 595 + inset 62), so it is the floor as it stands.
+                    .frame(maxWidth: .infinity, minHeight: max(0, viewportHeight), alignment: .top)
                     // The scroll target sits under the bottom padding. Inside
                     // the stack it sat 8 points above the end of the content,
                     // so every scroll to it stopped short, and the view slid
@@ -864,7 +865,8 @@ struct ChatView: View {
                 .onChange(of: model.pending) { wasPending, nowPending in
                     guard wasPending, !nowPending, landedBotId == bot.id, pinnedToBottom,
                           !scrollProbe.dragging,
-                          replyHeight > viewportHeight - DesignTokens.Space.chatHead - Self.replyAnchorSlack,
+                          // The viewport is already the area under the header.
+                          replyHeight > viewportHeight - Self.replyAnchorSlack,
                           let anchor = model.latestReplyAnchor else { return }
                     holdingReplyAnchor = true
                     scrollWithoutAnimation(proxy, to: anchor)

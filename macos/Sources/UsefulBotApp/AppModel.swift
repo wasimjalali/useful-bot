@@ -2103,7 +2103,8 @@ final class AppModel: ObservableObject {
         let window = TranscriptBlocks.window(
             transcriptBlocks,
             startId: selectedBotId.flatMap { windowStarts[$0] },
-            minimum: slimFirstPaint ? Self.firstPaintBlocks : TranscriptBlocks.windowMinimum
+            minimum: slimFirstPaint ? Self.firstPaintBlocks : TranscriptBlocks.windowMinimum,
+            historyBudget: slimFirstPaint ? Self.firstPaintHistory : TranscriptBlocks.historyCharacterBudget
         )
         if window != transcriptWindow { transcriptWindow = window }
     }
@@ -2113,6 +2114,9 @@ final class AppModel: ObservableObject {
     /// come from a snapshot (about 150 ms on Generalist); the newest turn is
     /// always whole whatever this says.
     private static let firstPaintBlocks = 14
+    /// The first frame's share of history text: about one long answer above
+    /// the newest turn, whatever the block count says.
+    private static let firstPaintHistory = 6_000
     /// True from a restore until the transcript has landed: the window holds
     /// only the newest `firstPaintBlocks`, and the rest mounts above the fold
     /// once the first frame is on screen, where the bottom anchor keeps the
