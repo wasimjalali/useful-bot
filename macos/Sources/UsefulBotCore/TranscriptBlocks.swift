@@ -34,7 +34,7 @@ public enum TranscriptBlock: Equatable, Sendable, Identifiable {
         return false
     }
 
-    var isMessage: Bool {
+    public var isMessage: Bool {
         switch self {
         case .message, .images: return true
         case .dayDivider, .summary: return false
@@ -200,7 +200,7 @@ public enum TranscriptBlocks {
     public static let historyCharacterBudget = 20_000
 
     /// A block's share of the budget: its text, or a fixed cost for pictures.
-    static func weight(_ block: TranscriptBlock) -> Int {
+    public static func weight(_ block: TranscriptBlock) -> Int {
         switch block {
         case .message(let row, _): return row.text.utf16.count
         case .images(let rows): return rows.count * 500
@@ -228,10 +228,13 @@ public enum TranscriptBlocks {
             return false
         })
         // The budget counts only the history above the newest turn, so a reply
-        // streaming in never moves the window's start.
+        // streaming in never moves the window's start. A chat nobody has
+        // written to (handoffs, posts) anchors on its newest message instead,
+        // so the budget can never cut the window down to nothing.
+        let anchor = turn ?? blocks.lastIndex(where: \.isMessage)
         var budgetStart = 0
         var spent = 0
-        for index in stride(from: (turn ?? blocks.count) - 1, through: 0, by: -1) {
+        for index in stride(from: (anchor ?? blocks.count) - 1, through: 0, by: -1) {
             spent += weight(blocks[index])
             if spent > historyBudget { budgetStart = index + 1; break }
         }
@@ -241,8 +244,8 @@ public enum TranscriptBlocks {
         if let startId, let held = blocks.firstIndex(where: { $0.id == startId }) {
             start = min(start, held)
         }
-        if let turn {
-            start = min(start, turn)
+        if let anchor {
+            start = min(start, anchor)
         }
         // A strip that summarises a run cut off above it says "2 messages
         // with" over nothing; a divider is put back below instead.

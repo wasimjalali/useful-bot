@@ -2078,13 +2078,26 @@ final class AppModel: ObservableObject {
         send(option.label)
     }
 
-    /// Mount another `TranscriptBlocks.windowMinimum` blocks above the window.
+    /// Mount one more budget of history above the window: up to
+    /// `TranscriptBlocks.historyCharacterBudget` of text and at most
+    /// `windowMinimum` blocks, and always at least one message. A flat 60
+    /// blocks put dozens of long answers back in one layout pass.
     /// `windowExpandedFrom` is the block that was first before this, so the
     /// transcript can hold it where the reader had it: a prepend leaves the
     /// scroll offset where it was, which is the top of the new rows.
     func showEarlierMessages() {
         guard let selectedBotId, transcriptWindow.hidden > 0 else { return }
-        let start = max(0, transcriptWindow.hidden - TranscriptBlocks.windowMinimum)
+        let hidden = transcriptWindow.hidden
+        var start = hidden
+        var spent = 0
+        var messages = 0
+        while start > max(0, hidden - TranscriptBlocks.windowMinimum) {
+            let weight = TranscriptBlocks.weight(transcriptBlocks[start - 1])
+            if messages > 0, spent + weight > TranscriptBlocks.historyCharacterBudget { break }
+            start -= 1
+            spent += weight
+            if transcriptBlocks[start].isMessage { messages += 1 }
+        }
         windowExpandedFrom = transcriptWindow.startId
         windowStarts[selectedBotId] = transcriptBlocks[start].id
         republishWindow()

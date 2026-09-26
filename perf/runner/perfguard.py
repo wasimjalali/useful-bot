@@ -131,6 +131,8 @@ def owner_selection():
     saved = load_json(path, default={}).get("botId")
     if saved in names:
         return saved
+    if current is None:
+        return None
     sys.exit("the open chat is a Perf fixture and no earlier selection is known: open one of your own chats first")
 
 
