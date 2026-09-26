@@ -80,7 +80,8 @@ and say so in the PR.
 
 - median limit: baseline median × 1.2 + 20 ms
 - worst limit: the larger of worst × 1.25 and median limit × 1.5
-- stall limit: the same worst rule, never under 150 ms (one GC pause is tens of ms)
+- stall limits: median as above; worst from the worst alone (× 1.25). Neither goes under
+  150 ms (one GC pause is tens of ms)
 
 Copy in what you accept by hand. A budget only moves by a reviewed edit, never by the tool.
 
@@ -95,3 +96,6 @@ with the change it measured. The raw frames stay in `perf/.runs/`, which is too 
 - Cold means the app is cold. The services outlive the app, so they're warm in every case.
 - One machine's numbers. Budgets from another Mac don't transfer; re-baseline there.
 - Idle CPU and memory aren't guarded yet.
+- The no-snapshot cases time the app's 10 s landing cap, not the replay behind it: most launches
+  land by cap with every row in. A slower replay can't fail them until the harness marks when the
+  replay is done.

@@ -14,7 +14,8 @@
         "disk_snapshot"
       ],
       "stall_ms": {
-        "worst": 5240.0
+        "median": 3490.0,
+        "worst": 3960.0
       },
       "visual_ms": {
         "median": 6030.0,
@@ -33,7 +34,8 @@
         "disk_snapshot"
       ],
       "stall_ms": {
-        "worst": 330.0
+        "median": 220.0,
+        "worst": 220.0
       },
       "visual_ms": {
         "median": 400.0,
@@ -52,6 +54,7 @@
         "disk_snapshot"
       ],
       "stall_ms": {
+        "median": 150,
         "worst": 150
       },
       "visual_ms": {
@@ -64,7 +67,7 @@
         "median": 13670.0,
         "worst": 20500.0
       },
-      "note": "Known slow: every launch runs past the 10 s landing cap. Open in docs/audit/PERFORMANCE.md.",
+      "note": "Times the 10 s landing cap, not the replay: most launches land by cap with every row in, so a slower replay cannot move this number until the harness gets a replay-done mark. It only guards against the cap path getting worse.",
       "reasons": [
         "cap",
         "settled"
@@ -73,6 +76,7 @@
         "none"
       ],
       "stall_ms": {
+        "median": 150,
         "worst": 150
       },
       "visual_ms": {
@@ -85,7 +89,7 @@
         "median": 13340.0,
         "worst": 20010.0
       },
-      "note": "Known slow: no snapshot means a full replay, which runs past the 10 s landing cap on some launches. Open in docs/audit/PERFORMANCE.md.",
+      "note": "Times the 10 s landing cap, not the replay: most launches land by cap with every row in, so a slower replay cannot move this number until the harness gets a replay-done mark. It only guards against the cap path getting worse.",
       "reasons": [
         "cap",
         "settled"
@@ -94,6 +98,7 @@
         "none"
       ],
       "stall_ms": {
+        "median": 150,
         "worst": 150
       },
       "visual_ms": {
@@ -114,7 +119,8 @@
         "stash_snapshot"
       ],
       "stall_ms": {
-        "worst": 5160.0
+        "median": 3440.0,
+        "worst": 3640.0
       },
       "visual_ms": {
         "median": 5920.0,
@@ -133,7 +139,8 @@
         "stash_snapshot"
       ],
       "stall_ms": {
-        "worst": 320.0
+        "median": 210.0,
+        "worst": 220.0
       },
       "visual_ms": {
         "median": 390.0,
@@ -152,6 +159,7 @@
         "stash_snapshot"
       ],
       "stall_ms": {
+        "median": 150,
         "worst": 150
       },
       "visual_ms": {

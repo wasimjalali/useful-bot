@@ -535,7 +535,7 @@ def measure(args, quick):
     outdir = os.path.join(PERF, ".runs", stamp)
     os.makedirs(outdir, exist_ok=True)
     # A display that sleeps or locks mid-run stops rendering the window.
-    subprocess.Popen(["caffeinate", "-di", "-w", str(os.getpid())])
+    subprocess.Popen(["caffeinate", "-diu", "-w", str(os.getpid())])
     print(f"run {stamp}: {app.path}\n  frames and marks in {os.path.relpath(outdir, ROOT)}")
     ids = {b["id"]: b["name"] for b in shell_state()["bots"]}
     samples, failures, done, loads = [], [], [], []
@@ -670,8 +670,13 @@ def cmd_baseline(args):
             median = round(m["median"] * rule["medianFactor"] + rule["floorMs"], -1)
             worst = round(max(m["worst"] * rule["worstFactor"], median * rule["worstOverMedian"]), -1)
             if metric == "stall_ms":
-                # A single GC pause is tens of ms; below this a stall isn't felt.
-                entry[metric] = {"worst": max(worst, rule["stallFloorMs"])}
+                # Stalls bunch tightly, so worst comes from the worst alone (the
+                # median rule let them grow 65-96% unnoticed) and the median is
+                # gated too. A single GC pause is tens of ms; below the floor a
+                # stall isn't felt.
+                stall_median = max(median, rule["stallFloorMs"])
+                entry[metric] = {"median": stall_median,
+                                 "worst": max(round(m["worst"] * rule["worstFactor"], -1), stall_median)}
             else:
                 entry[metric] = {"median": median, "worst": worst}
         proposal["cases"][case] = entry
