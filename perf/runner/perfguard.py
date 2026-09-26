@@ -120,6 +120,28 @@ def load_1m():
     return float(run(["sysctl", "-n", "vm.loadavg"]).stdout.split()[1])
 
 
+def external_cpu():
+    """CPU % of everything except the app, its services and the guard itself.
+
+    The load average counts the run's own work: a no-snapshot launch replays
+    thousands of events through the local services and pushed it past the
+    limit on its own. What makes a run unfair is other work, so only that counts.
+    """
+    own = CONFIG["ownProcesses"]
+    total, top = 0.0, []
+    for line in run(["ps", "-Ao", "pcpu=,command="]).stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        cpu, command = float(parts[0]), parts[1]
+        if any(p in command for p in own):
+            continue
+        total += cpu
+        top.append((cpu, command[:60]))
+    top.sort(reverse=True)
+    return total, [f"{c:.0f}% {n}" for c, n in top[:3] if c >= 10]
+
+
 def preflight(app):
     """Conditions that make numbers meaningless fail the run; the rest is recorded."""
     facts, problems = {}, []
@@ -143,8 +165,11 @@ def preflight(app):
     facts["memoryFree"] = next((l.split(":")[1].strip() for l in run(["memory_pressure", "-Q"]).stdout.splitlines()
                                 if "free percentage" in l), "?")
     facts["loadAverage"] = run(["sysctl", "-n", "vm.loadavg"]).stdout.strip()
-    if load_1m() > CONFIG["maxLoad"]:
-        problems.append(f"the machine is busy (1-minute load {load_1m():.1f} > {CONFIG['maxLoad']}): other work would be timed too")
+    cpu, top = external_cpu()
+    facts["externalCpu"] = round(cpu)
+    if cpu > CONFIG["maxExternalCpu"]:
+        problems.append(f"the machine is busy ({cpu:.0f}% CPU in other work, limit {CONFIG['maxExternalCpu']}%: "
+                        f"{'; '.join(top)}): it would be timed too")
     # The web service serves its production build only while the sources still
     # hash to what it was built from, and only a process started after that
     # build serves it. Anything else is `next dev`, which is several times slower.
@@ -544,7 +569,8 @@ def measure(args, quick):
         for name, steps, drop in plan(quick):
             restore = owner_selection if name == "warm" else None
             launch = Launch(app, outdir, name, steps, drop, restore)
-            loads.append((name, load_1m()))
+            cpu, top = external_cpu()
+            loads.append((name, round(cpu), top))
             try:
                 selects = sum(1 for st in steps if st["op"] == "select")
                 launch.execute(timeout_s=max(300, selects * 45))
@@ -563,9 +589,10 @@ def measure(args, quick):
             app.quit_all()
             installed = CONFIG.get("installedApp")
             subprocess.run(["open", "-g", "-a", os.path.expanduser(installed) if installed else app.path])
-    loads.append(("end", load_1m()))
-    facts["loadDuringRun"] = loads
-    busy = [f"{n} {l:.1f}" for n, l in loads if l > CONFIG["maxLoad"]]
+    cpu, top = external_cpu()
+    loads.append(("end", round(cpu), top))
+    facts["externalCpuDuringRun"] = loads
+    busy = [f"{n} {c}% ({'; '.join(t)})" for n, c, t in loads if c > CONFIG["maxExternalCpu"]]
     facts["busy"] = busy
     summary = summarize(samples)
     return app, facts, outdir, stamp, samples, summary, failures, done, time.time() - started
@@ -617,7 +644,8 @@ def write_record(outdir):
     lines = [f"# Performance {kind}, {date} {stamp[11:13]}:{stamp[13:15]} ({sha})", "",
              f"App `{facts['app']}` (sha256 {facts['appSha256'][:12]}), git {facts['gitSha'][:12]}"
              + (" with uncommitted changes" if facts["gitDirty"] else "") + f", macOS {facts['macOS']}, {facts['machine']}.",
-             f"Power {facts['power']}, memory free {facts['memoryFree']}, load {facts['loadAverage']}, web {facts['webMode']}.",
+             f"Power {facts['power']}, memory free {facts['memoryFree']}, load {facts['loadAverage']}, "
+             f"other work {facts.get('externalCpu', '?')}% CPU, web {facts['webMode']}.",
              f"Command: `perf/run.sh {result['command']}`. Took {round(seconds)} s.", "",
              "| Case | n | Visual median | Visual worst | App median | App worst | Stall worst | Path | Landed by |",
              "|---|---|---|---|---|---|---|---|---|"]
@@ -632,8 +660,8 @@ def write_record(outdir):
     if failures:
         lines += ["## Launch failures", ""] + [f"- {f}" for f in failures] + [""]
     if facts.get("busy"):
-        lines += [f"## Machine busy during the run (1-minute load over {CONFIG['maxLoad']})", "",
-                  ", ".join(facts["busy"]), ""]
+        lines += [f"## Machine busy during the run (other work over {CONFIG['maxExternalCpu']}% CPU)", ""]
+        lines += [f"- {b}" for b in facts["busy"]] + [""]
     if kind == "check":
         lines += ["**Result: " + verdict(result) + "**", ""]
     with open(os.path.join(dest, "README.md"), "w") as f:

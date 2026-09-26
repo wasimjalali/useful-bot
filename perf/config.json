@@ -14,7 +14,9 @@
   "crop": { "left": 250, "top": 70, "right": 0, "bottom": 170 },
   "changeThreshold": 0.6,
   "settleQuietMs": 600,
-  "maxLoad": 6.0,
+  "maxExternalCpu": 250,
+  "ownProcesses": ["UsefulBotApp", "scripts/service.mjs", "eve/bin/eve.js", "local-server-child", "next-server",
+                   "router/src/index.ts", "perfrec", "perfguard.py", "caffeinate", "ps -Ao"],
   "pauseMs": 1500,
   "fixtures": {
     "shortA": "Perf Short A",

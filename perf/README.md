@@ -11,8 +11,10 @@ npm run perf:check         # about 20 minutes
 perf/run.sh check --quick  # fewer runs, to try the rig; never a merge gate
 ```
 
-Exit codes: 0 pass, 1 breach or failed launch, 2 preflight refused, 3 inconclusive (the machine
-got busy mid-run; the record still lists any breaches). Only 0 is a pass.
+Exit codes: 0 pass, 1 breach or failed launch, 2 preflight refused, 3 inconclusive (other work
+used over 250% CPU (about 3 of 8 cores) at some launch; the record still lists any breaches). Only 0 is a pass. The
+app, its services and the guard don't count as other work: a no-snapshot replay loads the
+machine on its own.
 
 The run quits Useful Bot, launches the candidate (`macos/dist`) about 20 times in the
 background, and reopens the installed app at the end. Keep the screen unlocked. It never
