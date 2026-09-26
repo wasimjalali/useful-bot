@@ -160,7 +160,9 @@ def external_cpu():
         if any(p in command for p in own):
             continue
         total += cpu
-        top.append((cpu, command[:60]))
+        # Only the program's name goes into the record: a command line can carry
+        # a key or a token (one on this machine does), and records are committed.
+        top.append((cpu, os.path.basename(command.split()[0])))
     top.sort(reverse=True)
     return total, [f"{c:.0f}% {n}" for c, n in top[:3] if c >= 10]
 
