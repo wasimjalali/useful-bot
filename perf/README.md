@@ -7,9 +7,12 @@ on the build under review, before merge.
 npm run build:app          # the candidate, plus a fresh production web build
 pkill -f 'scripts/service.mjs web'; nohup /usr/local/bin/node scripts/service.mjs web \
   >> ~/Library/Logs/UsefulBot/service-web.log 2>&1 &   # serve that build (the preflight checks)
-npm run perf:check         # about 12 minutes; exit 1 on any breach
+npm run perf:check         # about 20 minutes
 perf/run.sh check --quick  # fewer runs, to try the rig; never a merge gate
 ```
+
+Exit codes: 0 pass, 1 breach or failed launch, 2 preflight refused, 3 inconclusive (the machine
+got busy mid-run; the record still lists any breaches). Only 0 is a pass.
 
 The run quits Useful Bot, launches the candidate (`macos/dist`) about 20 times in the
 background, and reopens the installed app at the end. Keep the screen unlocked. It never
@@ -77,12 +80,13 @@ and say so in the PR.
 
 - median limit: baseline median × 1.2 + 20 ms
 - worst limit: the larger of worst × 1.25 and median limit × 1.5
+- stall limit: the same worst rule, never under 150 ms (one GC pause is tens of ms)
 
 Copy in what you accept by hand. A budget only moves by a reviewed edit, never by the tool.
 
 ## Records
 
-Every run writes `evals/results/<date>-perf-<check|baseline>-<sha>/`: a README with the table,
+Every run writes `evals/results/<date>-perf-<check|baseline>-<HHMM>-<sha>/`: a README with the table,
 `report.json`, every launch's marks and a frame sheet of the worst sample per case. Commit it
 with the change it measured. The raw frames stay in `perf/.runs/`, which is too big to commit.
 

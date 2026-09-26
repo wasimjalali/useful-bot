@@ -50,6 +50,10 @@ mkdir -p "$APP/Contents/Resources/Brand/avatars" "$APP/Contents/Resources/Brand/
 cp ../brand/avatars/*-256.png "$APP/Contents/Resources/Brand/avatars/"
 cp -R ../brand/motion/native "$APP/Contents/Resources/Brand/motion/"
 cp ../brand/providers/*.svg "$APP/Contents/Resources/Brand/providers/"
+# What the binary was built from, so the performance guard can refuse to time
+# an app that is older than the sources under review (perf/runner/perfguard.py).
+find Sources Package.swift -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 \
+  | shasum -a 256 | cut -d' ' -f1 > "$APP/Contents/Resources/ub-app-sources.sha256"
 # No nested code lives in the bundle, so signing the bundle directly is enough
 # and avoids the discouraged --deep flag.
 codesign --force --sign - "$APP" >/dev/null

@@ -166,6 +166,13 @@ def preflight(app):
     facts["gitDirty"] = bool(run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT).stdout.strip())
     facts["app"] = app.path
     facts["appSha256"] = app.exe_sha
+    stamp_file = os.path.join(app.path, "Contents/Resources/ub-app-sources.sha256")
+    built_from = open(stamp_file).read().strip() if os.path.exists(stamp_file) else None
+    now_hash = run(["sh", "-c", "find Sources Package.swift -type f -print0 | LC_ALL=C sort -z | "
+                    "xargs -0 shasum -a 256 | shasum -a 256 | cut -d' ' -f1"], cwd=os.path.join(ROOT, "macos")).stdout.strip()
+    facts["appSourcesMatch"] = built_from == now_hash
+    if not facts["appSourcesMatch"]:
+        problems.append(f"the app was not built from the current macos/ sources ({CONFIG['buildHint']})")
     names = bots_by_name()
     missing = [n for n in CONFIG["fixtures"].values() if n not in names]
     if missing:
@@ -222,18 +229,23 @@ class Launch:
             self.window = line.split()[1:]
         deadline = time.time() + timeout_s
         end = None
-        while time.time() < deadline:
-            end = self.last_event({"quit", "done", "abort"})
-            if end:
-                break
-            if not self.app.running_pids():
-                end = {"ev": "exited"}
-                break
-            time.sleep(0.2)
-        if rec:
-            time.sleep(0.3)
-            rec.terminate()
-            rec.wait(timeout=10)
+        try:
+            while time.time() < deadline:
+                end = self.last_event({"quit", "done", "abort"})
+                if end:
+                    break
+                if not self.app.running_pids():
+                    end = {"ev": "exited"}
+                    break
+                time.sleep(0.2)
+        finally:
+            if rec:
+                time.sleep(0.3)
+                rec.terminate()
+                try:
+                    rec.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    rec.kill()
         if end is None:
             raise RuntimeError(f"{self.name}: no end mark in {timeout_s}s")
         if end["ev"] == "abort":
@@ -292,7 +304,7 @@ def samples_from(launch, names_by_id):
     def responsive_after(bot, landed_t):
         for m in marks:
             if m["ev"] == "responsive" and m["bot"] == bot and m["landedAt"] == landed_t:
-                return m["stallMaxMs"]
+                return m
         return None
 
     def sample(case, bot, t0, t_end):
@@ -302,9 +314,14 @@ def samples_from(launch, names_by_id):
         if landed is None:
             s["problems"].append("never landed")
         else:
+            probe = responsive_after(bot, landed["t"])
             s.update(app_ms=(landed["t"] - t0) / 1e6, reason=landed["reason"], source=landed.get("source"),
                      rows=landed.get("rows"), blocks=landed.get("blocks"), events=landed.get("events"),
-                     stall_ms=responsive_after(bot, landed["t"]))
+                     stall_ms=probe["stallMaxMs"] if probe else None)
+            if probe is None:
+                s["problems"].append("no responsiveness mark after landing")
+            elif probe["t"] > t_end:
+                s["problems"].append("the responsiveness probe ran into the next step")
         if last is None:
             s["problems"].append("nothing changed on screen")
         else:
@@ -317,7 +334,9 @@ def samples_from(launch, names_by_id):
         return s
 
     init = next((m for m in marks if m["ev"] == "initial_selection"), None)
-    if launch.name.startswith("cold") and init and steps:
+    # Only launches with every snapshot in place: a no-snapshot launch is slower
+    # at opening Perf Short A too, and pooling the two hid a 2x launch regression.
+    if launch.name.startswith("cold-cold_first_open") and init and steps:
         s = sample("cold_launch", init["bot"], launch.t_launch, steps[0]["t"])
         if s["bot"] != CONFIG["fixtures"]["shortA"]:
             s["problems"].append(f"opened on {s['bot']}, not {CONFIG['fixtures']['shortA']}")
@@ -409,7 +428,9 @@ def fixture_check(samples, lock):
         if bot.get("sessionId") != locked["sessionId"]:
             problems.append(f"fixture {name} is on a new session (was {locked['sessionId']})")
         seen = [s["events"] for s in samples if s.get("bot") == name and isinstance(s.get("events"), int) and s["events"] >= 0]
-        if seen and max(seen) != locked["events"]:
+        if not seen:
+            problems.append(f"fixture {name}: no landing reported its event count")
+        elif max(seen) != locked["events"]:
             problems.append(f"fixture {name} has {max(seen)} events, locked at {locked['events']}")
     return problems
 
@@ -513,6 +534,8 @@ def measure(args, quick):
     stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M%S")
     outdir = os.path.join(PERF, ".runs", stamp)
     os.makedirs(outdir, exist_ok=True)
+    # A display that sleeps or locks mid-run stops rendering the window.
+    subprocess.Popen(["caffeinate", "-di", "-w", str(os.getpid())])
     print(f"run {stamp}: {app.path}\n  frames and marks in {os.path.relpath(outdir, ROOT)}")
     ids = {b["id"]: b["name"] for b in shell_state()["bots"]}
     samples, failures, done, loads = [], [], [], []
@@ -523,7 +546,8 @@ def measure(args, quick):
             launch = Launch(app, outdir, name, steps, drop, restore)
             loads.append((name, load_1m()))
             try:
-                launch.execute()
+                selects = sum(1 for st in steps if st["op"] == "select")
+                launch.execute(timeout_s=max(300, selects * 45))
             except RuntimeError as err:
                 failures.append(str(err))
                 print(f"  {name}: FAILED {err}")
@@ -645,7 +669,11 @@ def cmd_baseline(args):
                 continue
             median = round(m["median"] * rule["medianFactor"] + rule["floorMs"], -1)
             worst = round(max(m["worst"] * rule["worstFactor"], median * rule["worstOverMedian"]), -1)
-            entry[metric] = {"median": median, "worst": worst} if metric != "stall_ms" else {"worst": worst}
+            if metric == "stall_ms":
+                # A single GC pause is tens of ms; below this a stall isn't felt.
+                entry[metric] = {"worst": max(worst, rule["stallFloorMs"])}
+            else:
+                entry[metric] = {"median": median, "worst": worst}
         proposal["cases"][case] = entry
     write_json(os.path.join(PERF, "budgets.proposed.json"), proposal)
     print("proposed budgets: perf/budgets.proposed.json (review, then copy what you accept into budgets.json)")

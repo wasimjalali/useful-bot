@@ -1,10 +1,10 @@
 {
-  "_about": "Limits perf/run.sh check enforces. Set 2026-09-26 from evals/results/2026-09-26-perf-baseline-a7cd66b with the budgetRule in config.json. Change only by a reviewed edit that says why.",
+  "_about": "Limits perf/run.sh check enforces. Set 2026-09-26 from evals/results/2026-09-26-perf-baseline-0555-0caa10d with the budgetRule in config.json. Its first launch started at load 6.5 (limit 6.0) and gave the worst cold_launch (1,504 ms against a 920 ms median), which loosens that case's worst budget; its other sample was in line. Change only by a reviewed edit that says why.",
   "cases": {
     "cold_first_open_replies": {
       "app_ms": {
-        "median": 6500.0,
-        "worst": 9750.0
+        "median": 5390.0,
+        "worst": 8080.0
       },
       "note": "Known slow, same cause as warm_return_replies.",
       "reasons": [
@@ -14,17 +14,17 @@
         "disk_snapshot"
       ],
       "stall_ms": {
-        "worst": 6360.0
+        "worst": 5240.0
       },
       "visual_ms": {
-        "median": 7270.0,
-        "worst": 10900.0
+        "median": 6030.0,
+        "worst": 9040.0
       }
     },
     "cold_first_open_tools": {
       "app_ms": {
-        "median": 400.0,
-        "worst": 600.0
+        "median": 370.0,
+        "worst": 560.0
       },
       "reasons": [
         "settled"
@@ -33,17 +33,17 @@
         "disk_snapshot"
       ],
       "stall_ms": {
-        "worst": 340.0
+        "worst": 330.0
       },
       "visual_ms": {
-        "median": 450.0,
-        "worst": 680.0
+        "median": 400.0,
+        "worst": 600.0
       }
     },
     "cold_launch": {
       "app_ms": {
-        "median": 2780.0,
-        "worst": 8320.0
+        "median": 1100.0,
+        "worst": 1860.0
       },
       "reasons": [
         "settled"
@@ -52,17 +52,17 @@
         "disk_snapshot"
       ],
       "stall_ms": {
-        "worst": 60.0
+        "worst": 150
       },
       "visual_ms": {
-        "median": 2840.0,
-        "worst": 8420.0
+        "median": 1120.0,
+        "worst": 1880.0
       }
     },
     "cold_no_snapshot_replies": {
       "app_ms": {
-        "median": 14180.0,
-        "worst": 32450.0
+        "median": 13670.0,
+        "worst": 20500.0
       },
       "note": "Known slow: every launch runs past the 10 s landing cap. Open in docs/audit/PERFORMANCE.md.",
       "reasons": [
@@ -73,17 +73,17 @@
         "none"
       ],
       "stall_ms": {
-        "worst": 18300.0
+        "worst": 150
       },
       "visual_ms": {
-        "median": 14400.0,
-        "worst": 36300.0
+        "median": 14820.0,
+        "worst": 22230.0
       }
     },
     "cold_no_snapshot_tools": {
       "app_ms": {
-        "median": 10200.0,
-        "worst": 15300.0
+        "median": 13340.0,
+        "worst": 20010.0
       },
       "note": "Known slow: no snapshot means a full replay, which runs past the 10 s landing cap on some launches. Open in docs/audit/PERFORMANCE.md.",
       "reasons": [
@@ -94,17 +94,17 @@
         "none"
       ],
       "stall_ms": {
-        "worst": 40.0
+        "worst": 150
       },
       "visual_ms": {
-        "median": 10520.0,
-        "worst": 15780.0
+        "median": 13550.0,
+        "worst": 20320.0
       }
     },
     "warm_return_replies": {
       "app_ms": {
-        "median": 9280.0,
-        "worst": 14170.0
+        "median": 5280.0,
+        "worst": 7920.0
       },
       "note": "Known slow: the main thread freezes for seconds on a return to a long markdown chat. Open in docs/audit/PERFORMANCE.md; tighten when fixed.",
       "reasons": [
@@ -114,17 +114,17 @@
         "stash_snapshot"
       ],
       "stall_ms": {
-        "worst": 12290.0
+        "worst": 5160.0
       },
       "visual_ms": {
-        "median": 10380.0,
-        "worst": 16490.0
+        "median": 5920.0,
+        "worst": 8880.0
       }
     },
     "warm_return_tools": {
       "app_ms": {
-        "median": 390.0,
-        "worst": 1050.0
+        "median": 360.0,
+        "worst": 540.0
       },
       "reasons": [
         "settled"
@@ -133,17 +133,17 @@
         "stash_snapshot"
       ],
       "stall_ms": {
-        "worst": 920.0
+        "worst": 320.0
       },
       "visual_ms": {
-        "median": 430.0,
-        "worst": 1140.0
+        "median": 390.0,
+        "worst": 580.0
       }
     },
     "warm_switch_short": {
       "app_ms": {
-        "median": 680.0,
-        "worst": 1040.0
+        "median": 250.0,
+        "worst": 380.0
       },
       "reasons": [
         "settled"
@@ -152,11 +152,11 @@
         "stash_snapshot"
       ],
       "stall_ms": {
-        "worst": 160.0
+        "worst": 150
       },
       "visual_ms": {
-        "median": 750.0,
-        "worst": 1130.0
+        "median": 290.0,
+        "worst": 440.0
       }
     }
   }

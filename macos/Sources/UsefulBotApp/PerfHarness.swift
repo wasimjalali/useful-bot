@@ -54,12 +54,19 @@ final class PerfHarness {
     private var started = false
     private var prewarmEnded = false
     private var aborted = false
+    /// The responsiveness probe of the latest landing. A select waits it out,
+    /// so the next step's work is never counted as this landing's stall.
+    private var lastProbe: Task<Void, Never>?
     /// App Nap throttles a background app's timers, and the runner launches
     /// the app with `open -g` so the owner's focus is never taken. An app in
     /// front is never napped, so this keeps the numbers to what the owner sees.
     private let activity: NSObjectProtocol
 
     nonisolated static func now() -> UInt64 { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
+
+    /// A step's milliseconds as nanoseconds, clamped to 0...1 h so a malformed
+    /// scenario cannot trap on a negative or overflowing value.
+    static func nanos(_ ms: Int) -> UInt64 { UInt64(min(max(ms, 0), 3_600_000)) * 1_000_000 }
 
     private static func fromArguments() -> PerfHarness? {
         let args = ProcessInfo.processInfo.arguments
@@ -107,7 +114,9 @@ final class PerfHarness {
         if event == "prewarm_end" { prewarmEnded = true }
     }
 
-    /// Snapshot files to remove before the first restore reads them.
+    /// Snapshot files to remove before the first restore reads them. The store
+    /// is not loaded yet, so these ids cannot be checked against "Perf " names
+    /// here: the runner only ever passes fixture ids. The files are a cache.
     var snapshotsToDrop: [String] { scenario.dropSnapshots ?? [] }
 
     /// Called by ChatView when a chat has landed (its rows are shown).
@@ -127,7 +136,7 @@ final class PerfHarness {
     /// Deferred row building can freeze a picture that no longer changes, so
     /// the main thread is sampled for a second after each landing.
     private func probeResponsiveness(botId: String, landedAt: UInt64) {
-        Task { @MainActor [weak self] in
+        lastProbe = Task { @MainActor [weak self] in
             var worst: UInt64 = 0
             for _ in 0..<60 {
                 let before = Self.now()
@@ -144,7 +153,7 @@ final class PerfHarness {
         return await withCheckedContinuation { resume in
             landingWaiters.append((botId, after, resume))
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                try? await Task.sleep(nanoseconds: Self.nanos(timeoutMs))
                 guard let self, let index = self.landingWaiters.firstIndex(where: {
                     $0.botId == botId && $0.after == after
                 }) else { return }
@@ -171,11 +180,7 @@ final class PerfHarness {
     }
 
     private func execute(model: AppModel) async {
-        mark("ready", [
-            "bot": model.selectedBotId ?? "",
-            "modelId": model.composer?.modelId ?? "",
-            "modelLabel": model.composer?.modelLabel ?? "",
-        ])
+        mark("ready", ["bot": model.selectedBotId ?? ""])
         if let first = model.selectedBotId,
            !(await waitLanded(botId: first, after: 0, timeoutMs: 30_000)) {
             return abort("the first chat never landed")
@@ -208,12 +213,15 @@ final class PerfHarness {
                 guard let text = step.text, !text.isEmpty else { return abort("step \(index): deny has no text") }
                 let commands = text.split(separator: "\n").map(String.init)
                 var quietSince = Date()
+                var requested: Set<String> = []
                 let deadline = Date().addingTimeInterval(300)
                 while Date().timeIntervalSince(quietSince) < 20, Date() < deadline {
-                    if let item = model.approvals.first(where: { card in commands.contains { card.preview.hasPrefix($0) } }),
-                       !model.busyApprovals.contains(item.id) {
+                    if let item = model.approvals.first(where: { card in
+                        !requested.contains(card.id) && commands.contains { card.preview.hasPrefix($0) }
+                    }), !model.busyApprovals.contains(item.id) {
+                        requested.insert(item.id)
                         model.decideApproval(item, decision: .deny)
-                        mark("denied", ["preview": item.preview])
+                        mark("deny_requested", ["preview": item.preview])
                         quietSince = Date()
                     }
                     try? await Task.sleep(nanoseconds: 500_000_000)
@@ -221,13 +229,13 @@ final class PerfHarness {
             case "wait_prewarm":
                 // The prewarm snapshots every chat after a new build; a
                 // measured launch must not share the machine with it.
-                let deadline = Date().addingTimeInterval(Double(step.ms ?? 180_000) / 1000)
+                let deadline = Date().addingTimeInterval(Double(Self.nanos(step.ms ?? 180_000)) / 1_000_000_000)
                 while !prewarmEnded, Date() < deadline {
                     try? await Task.sleep(nanoseconds: 250_000_000)
                 }
                 guard prewarmEnded else { return abort("step \(index): the prewarm did not finish") }
             case "pause":
-                try? await Task.sleep(nanoseconds: UInt64(step.ms ?? 1000) * 1_000_000)
+                try? await Task.sleep(nanoseconds: Self.nanos(step.ms ?? 1000))
             case "select", "send":
                 guard let name = step.bot, name.hasPrefix(Self.fixturePrefix),
                       let bot = model.store?.bots.first(where: { $0.name == name }) else {
@@ -243,10 +251,11 @@ final class PerfHarness {
                     guard await waitLanded(botId: bot.id, after: t, timeoutMs: step.ms ?? 30_000) else {
                         return abort("step \(index): \(name) never landed")
                     }
+                    await lastProbe?.value
                 }
                 if step.op == "send" {
                     guard let text = step.text, !text.isEmpty else { return abort("step \(index): send has no text") }
-                    guard await sendAndWait(model: model, text: text, index: index) else { return }
+                    guard await sendAndWait(model: model, botId: bot.id, text: text, index: index) else { return }
                 }
             case "restore":
                 guard let id = scenario.restoreBotId, model.store?.bots.contains(where: { $0.id == id }) == true else {
@@ -256,6 +265,9 @@ final class PerfHarness {
                 if model.selectedBotId != id { model.select(id) }
                 mark("restored", ["bot": id])
             case "quit":
+                // `select` saves the selection through a queued write; an exit
+                // straight after `restore` could drop it.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
                 mark("quit")
                 try? output.synchronize()
                 NSApplication.shared.terminate(nil)
@@ -268,7 +280,20 @@ final class PerfHarness {
     }
 
     /// A fixture turn: sent, then waited out until the bot is idle again.
-    private func sendAndWait(model: AppModel, text: String, index: Int) async -> Bool {
+    private func sendAndWait(model: AppModel, botId: String, text: String, index: Int) async -> Bool {
+        // `send` goes to whatever chat is open when it runs. A selection echoed
+        // from elsewhere since the step began would post fixture text into a
+        // real conversation, and a turn already running would be measured as
+        // this one.
+        guard model.selectedBotId == botId,
+              model.store?.bots.first(where: { $0.id == botId })?.name.hasPrefix(Self.fixturePrefix) == true else {
+            abort("step \(index): the open chat is no longer the Perf bot")
+            return false
+        }
+        guard !model.pending else {
+            abort("step \(index): a turn is already running in this chat")
+            return false
+        }
         let t = Self.now()
         mark("send", ["index": index, "chars": text.count,
                       "modelId": model.composer?.modelId ?? "", "modelLabel": model.composer?.modelLabel ?? ""], at: t)

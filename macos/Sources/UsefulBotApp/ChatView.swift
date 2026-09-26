@@ -122,6 +122,11 @@ struct ChatView: View {
                             }
                     } else if model.transcriptReady {
                         emptyState(bot)
+                            // The transcript's landing never mounts for a chat
+                            // with no rows; the performance guard's wait ends here.
+                            .task(id: bot.id) {
+                                PerfHarness.shared?.landed(botId: bot.id, reason: "empty", stats: model.perfStats)
+                            }
                     } else {
                         loadingState
                     }
