@@ -285,7 +285,8 @@ class Launch:
                 if end:
                     break
                 if not self.app.running_pids():
-                    end = {"ev": "exited"}
+                    # The app may have written its end mark and quit since the read above.
+                    end = self.last_event({"quit", "done", "abort"}) or {"ev": "exited"}
                     break
                 time.sleep(0.2)
         finally:

@@ -1,12 +1,11 @@
 {
-  "_about": "Limits perf/run.sh check enforces. Set 2026-09-26 from evals/results/2026-09-26-perf-baseline-0555-0caa10d with the budgetRule in config.json. Its first launch started at load 6.5 (limit 6.0) and gave the worst cold_launch (1,504 ms against a 920 ms median), which loosens that case's worst budget; its other sample was in line. Change only by a reviewed edit that says why.",
+  "_about": "Limits perf/run.sh check enforces. Set 2026-09-26 from evals/results/2026-09-26-perf-baseline-0555-0caa10d with the budgetRule in config.json. Its first launch started at load 6.5 (limit 6.0) and gave the worst cold_launch (1,504 ms against a 920 ms median), which loosens that case's worst budget; its other sample was in line. Change only by a reviewed edit that says why. On 2026-09-27 the four long-chat cases (cold_first_open_replies, warm_return_replies, cold_no_snapshot_replies, cold_no_snapshot_tools) were tightened from evals/results/2026-09-27-perf-baseline-1919-c450c11 after PR #139 fixed the long markdown chat (5.4 s to 1.55 s); the old limits would have let it regress unnoticed. The other cases keep their 2026-09-26 limits. The two no-snapshot cases now settle (about 5.5 s and 1.5 s) instead of landing by the 10 s cap, so they accept only a settled landing.",
   "cases": {
     "cold_first_open_replies": {
       "app_ms": {
-        "median": 5390.0,
-        "worst": 8080.0
+        "median": 1690.0,
+        "worst": 2540.0
       },
-      "note": "Known slow, same cause as warm_return_replies.",
       "reasons": [
         "settled"
       ],
@@ -14,12 +13,12 @@
         "disk_snapshot"
       ],
       "stall_ms": {
-        "median": 3490.0,
-        "worst": 3960.0
+        "median": 1100.0,
+        "worst": 1130.0
       },
       "visual_ms": {
-        "median": 6030.0,
-        "worst": 9040.0
+        "median": 1940.0,
+        "worst": 2910.0
       }
     },
     "cold_first_open_tools": {
@@ -64,12 +63,10 @@
     },
     "cold_no_snapshot_replies": {
       "app_ms": {
-        "median": 13670.0,
-        "worst": 20500.0
+        "median": 6140.0,
+        "worst": 9210.0
       },
-      "note": "Times the 10 s landing cap, not the replay: most launches land by cap with every row in, so a slower replay cannot move this number until the harness gets a replay-done mark. It only guards against the cap path getting worse.",
       "reasons": [
-        "cap",
         "settled"
       ],
       "sources": [
@@ -80,18 +77,16 @@
         "worst": 150
       },
       "visual_ms": {
-        "median": 14820.0,
-        "worst": 22230.0
+        "median": 6680.0,
+        "worst": 10020.0
       }
     },
     "cold_no_snapshot_tools": {
       "app_ms": {
-        "median": 13340.0,
-        "worst": 20010.0
+        "median": 1630.0,
+        "worst": 2440.0
       },
-      "note": "Times the 10 s landing cap, not the replay: most launches land by cap with every row in, so a slower replay cannot move this number until the harness gets a replay-done mark. It only guards against the cap path getting worse.",
       "reasons": [
-        "cap",
         "settled"
       ],
       "sources": [
@@ -102,16 +97,15 @@
         "worst": 150
       },
       "visual_ms": {
-        "median": 13550.0,
-        "worst": 20320.0
+        "median": 1840.0,
+        "worst": 2760.0
       }
     },
     "warm_return_replies": {
       "app_ms": {
-        "median": 5280.0,
-        "worst": 7920.0
+        "median": 1650.0,
+        "worst": 2480.0
       },
-      "note": "Known slow: the main thread freezes for seconds on a return to a long markdown chat. Open in docs/audit/PERFORMANCE.md; tighten when fixed.",
       "reasons": [
         "settled"
       ],
@@ -119,12 +113,12 @@
         "stash_snapshot"
       ],
       "stall_ms": {
-        "median": 3440.0,
-        "worst": 3640.0
+        "median": 1100.0,
+        "worst": 1140.0
       },
       "visual_ms": {
-        "median": 5920.0,
-        "worst": 8880.0
+        "median": 1880.0,
+        "worst": 2820.0
       }
     },
     "warm_return_tools": {
