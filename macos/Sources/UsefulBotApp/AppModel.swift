@@ -2078,13 +2078,28 @@ final class AppModel: ObservableObject {
         send(option.label)
     }
 
-    /// Mount another `TranscriptBlocks.windowMinimum` blocks above the window.
+    /// Mount one more budget of history above the window: up to
+    /// `TranscriptBlocks.historyCharacterBudget` of text and at most
+    /// `windowMinimum` blocks, and always at least one message. A flat 60
+    /// blocks put dozens of long answers back in one layout pass.
     /// `windowExpandedFrom` is the block that was first before this, so the
     /// transcript can hold it where the reader had it: a prepend leaves the
     /// scroll offset where it was, which is the top of the new rows.
     func showEarlierMessages() {
-        guard let selectedBotId, transcriptWindow.hidden > 0 else { return }
-        let start = max(0, transcriptWindow.hidden - TranscriptBlocks.windowMinimum)
+        // The published window can briefly outlive a reset that emptied the
+        // blocks; a tap in that gap must not index past them.
+        let hidden = min(transcriptWindow.hidden, transcriptBlocks.count)
+        guard let selectedBotId, hidden > 0 else { return }
+        var start = hidden
+        var spent = 0
+        var messages = 0
+        while start > max(0, hidden - TranscriptBlocks.windowMinimum) {
+            let weight = TranscriptBlocks.weight(transcriptBlocks[start - 1])
+            if messages > 0, spent + weight > TranscriptBlocks.historyCharacterBudget { break }
+            start -= 1
+            spent += weight
+            if transcriptBlocks[start].isMessage { messages += 1 }
+        }
         windowExpandedFrom = transcriptWindow.startId
         windowStarts[selectedBotId] = transcriptBlocks[start].id
         republishWindow()
@@ -2103,7 +2118,8 @@ final class AppModel: ObservableObject {
         let window = TranscriptBlocks.window(
             transcriptBlocks,
             startId: selectedBotId.flatMap { windowStarts[$0] },
-            minimum: slimFirstPaint ? Self.firstPaintBlocks : TranscriptBlocks.windowMinimum
+            minimum: slimFirstPaint ? Self.firstPaintBlocks : TranscriptBlocks.windowMinimum,
+            historyBudget: slimFirstPaint ? Self.firstPaintHistory : TranscriptBlocks.historyCharacterBudget
         )
         if window != transcriptWindow { transcriptWindow = window }
     }
@@ -2113,6 +2129,9 @@ final class AppModel: ObservableObject {
     /// come from a snapshot (about 150 ms on Generalist); the newest turn is
     /// always whole whatever this says.
     private static let firstPaintBlocks = 14
+    /// The first frame's share of history text: about one long answer above
+    /// the newest turn, whatever the block count says.
+    private static let firstPaintHistory = 6_000
     /// True from a restore until the transcript has landed: the window holds
     /// only the newest `firstPaintBlocks`, and the rest mounts above the fold
     /// once the first frame is on screen, where the bottom anchor keeps the

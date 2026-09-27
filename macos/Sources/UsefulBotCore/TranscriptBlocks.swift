@@ -34,7 +34,7 @@ public enum TranscriptBlock: Equatable, Sendable, Identifiable {
         return false
     }
 
-    var isMessage: Bool {
+    public var isMessage: Bool {
         switch self {
         case .message, .images: return true
         case .dayDivider, .summary: return false
@@ -192,6 +192,22 @@ public enum TranscriptBlocks {
     /// How many blocks a chat shows before the rest go behind the row.
     public static let windowMinimum = 60
 
+    /// How much history text, above the newest turn, a chat mounts before the
+    /// rest go behind the row. A block count alone let a chat of long markdown
+    /// answers (tables, code) mount dozens of screens at once: every one is
+    /// measured before anything shows, which froze a switch for seconds. Sixty
+    /// ordinary messages stay well under it.
+    public static let historyCharacterBudget = 20_000
+
+    /// A block's share of the budget: its text, or a fixed cost for pictures.
+    public static func weight(_ block: TranscriptBlock) -> Int {
+        switch block {
+        case .message(let row, _): return row.text.utf16.count
+        case .images(let rows): return rows.count * 500
+        case .dayDivider, .summary: return 0
+        }
+    }
+
     /// The last `minimum` blocks, or everything from `startId` on once the
     /// reader has asked for more, extended so the newest turn is always whole
     /// (the reply's height is summed from every one of its bubbles, and the
@@ -203,19 +219,33 @@ public enum TranscriptBlocks {
     public static func window(
         _ blocks: [TranscriptBlock],
         startId: String?,
-        minimum: Int = windowMinimum
+        minimum: Int = windowMinimum,
+        historyBudget: Int = historyCharacterBudget
     ) -> Window {
-        guard blocks.count > minimum else { return Window(blocks: blocks, hidden: 0) }
-        var start = blocks.count - minimum
+        // The newest turn: from the last thing said to the bot to the end.
+        let turn = blocks.lastIndex(where: { block in
+            if case .message(let row, _) = block { return row.kind == .user || row.kind == .post }
+            return false
+        })
+        // The budget counts only the history above the newest turn, so a reply
+        // streaming in never moves the window's start. A chat nobody has
+        // written to (handoffs, posts) anchors on its newest message instead,
+        // so the budget can never cut the window down to nothing.
+        let anchor = turn ?? blocks.lastIndex(where: \.isMessage)
+        var budgetStart = 0
+        var spent = 0
+        for index in stride(from: (anchor ?? blocks.count) - 1, through: 0, by: -1) {
+            spent += weight(blocks[index])
+            if spent > historyBudget { budgetStart = index + 1; break }
+        }
+        guard blocks.count > minimum || budgetStart > 0 else { return Window(blocks: blocks, hidden: 0) }
+        var start = max(blocks.count - minimum, budgetStart)
+        // A reader who asked for more keeps it, budget or not.
         if let startId, let held = blocks.firstIndex(where: { $0.id == startId }) {
             start = min(start, held)
         }
-        // The newest turn: from the last thing said to the bot to the end.
-        if let turn = blocks.lastIndex(where: { block in
-            if case .message(let row, _) = block { return row.kind == .user || row.kind == .post }
-            return false
-        }) {
-            start = min(start, turn)
+        if let anchor {
+            start = min(start, anchor)
         }
         // A strip that summarises a run cut off above it says "2 messages
         // with" over nothing; a divider is put back below instead.
