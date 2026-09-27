@@ -685,7 +685,9 @@ export default function Page() {
     return rows.flatMap((row) => {
       if (row.kind !== "assistant") return [row];
       const text = withoutLeadingThink(row.text);
-      return text ? [{ ...row, text }] : [];
+      // A blank line written before a tool call has nothing to show. The same
+      // set as the macOS app's Transcript.isBlank.
+      return /^[\s\u200B-\u200D\u2060\uFEFF]*$/.test(text) ? [] : [{ ...row, text }];
     });
   })();
 

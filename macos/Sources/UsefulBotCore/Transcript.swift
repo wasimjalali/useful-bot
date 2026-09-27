@@ -61,6 +61,16 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 /// before every live row, so a handoff or a routine run that landed just now
 /// rendered at the very top of the chat and auto-scroll jumped with it.
 public enum Transcript {
+    /// Text with nothing to see: whitespace, the zero-width space and joiners,
+    /// the word joiner and the byte-order mark. The same set as the web's
+    /// filter in web/app/page.tsx; other format characters can draw a glyph.
+    static func isBlank(_ text: String) -> Bool {
+        text.unicodeScalars.allSatisfy { scalar in
+            scalar.properties.isWhitespace || (0x200B...0x200D).contains(scalar.value)
+                || scalar.value == 0x2060 || scalar.value == 0xFEFF
+        }
+    }
+
     public static func merge(
         events: [AgentEvent],
         messages: [ChatMessage],
@@ -80,7 +90,9 @@ public enum Transcript {
             // and one that was all thinking shows nothing. Pairing below
             // still counts the stored text, which is what the echo carries.
             let shown = kind == .assistant ? EveStream.withoutLeadingThink(text) : text
-            if kind == .assistant, shown.isEmpty {
+            // A model can write only a blank line before a tool call; it has
+            // nothing to show and rendered as an empty bubble.
+            if kind == .assistant, Self.isBlank(shown) {
                 durableAssistantCounts[text, default: 0] += 1
                 continue
             }
@@ -140,7 +152,7 @@ public enum Transcript {
             case .assistant:
                 if consume(&durableAssistantCounts, message.text) { continue }
                 let shown = EveStream.withoutLeadingThink(message.text)
-                if shown.isEmpty { continue }
+                if Self.isBlank(shown) { continue }
                 live.append(TranscriptRow(
                     id: message.id,
                     kind: .assistant,

@@ -1,4 +1,5 @@
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
+import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
   eveGetAllowed,
   evePostAllowed,
@@ -45,6 +46,21 @@ export async function POST(
   context: { params: Promise<{ path: string[] }> },
 ) {
   return proxy(request, await context.params, "POST");
+}
+
+/**
+ * A stopped turn can't act on an approval card any more. After a cancel, its
+ * session's cards are retired instead of staying up over the chat until they
+ * expire.
+ */
+function retireCards(method: string, suffix: string): void {
+  const cancelled = method === "POST" ? /^session\/([^/]+)\/cancel$/.exec(suffix) : null;
+  if (!cancelled) return;
+  try {
+    new ApprovalStore(Date.now, defaultApprovalsPath()).expireSession(cancelled[1]);
+  } catch (err) {
+    console.error("approval cards of a stopped session were left pending", err);
+  }
 }
 
 async function proxy(request: Request, params: { path: string[] }, method: string): Promise<Response> {
@@ -231,11 +247,14 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         ? await upstream.text().catch(() => "")
         : (await upstream.body?.cancel().catch(() => undefined), "");
       const code = relayedEveCode(upstream.status, text);
+      // A session eve already retired can't act on its cards either.
+      if (code === "session_not_active") retireCards(method, suffix);
       return Response.json(
         { ok: false, error: "eve_error", status: upstream.status, ...(code ? { code } : {}) },
         { status: upstream.status },
       );
     }
+    retireCards(method, suffix);
     const out = new Headers();
     const ct = upstream.headers.get("content-type");
     if (ct) out.set("content-type", ct);
