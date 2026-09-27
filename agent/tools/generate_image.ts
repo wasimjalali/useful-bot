@@ -15,7 +15,7 @@ const GENERATE_TIMEOUT_MS = 150_000;
 
 export default defineTool({
   description:
-    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (an OpenAI, xAI, Z.ai or OpenRouter API key) is connected in Settings; when it is not, say so instead of retrying. It uses the owner's default image model; pass `model` (an image model id from list_models, with its `connectionId` when two providers offer the same id) only when the owner asks for a model or the job clearly needs a different one, since some models cost far more per image. The drawing lands in the transcript by itself and is saved in the owner's Library, the Useful Bot folder in Documents (the result gives its path): answer in text and do not link or embed the file. The Library is where it belongs. Do not copy, move or save it anywhere else (Desktop, Downloads, a project folder) unless the owner names that place for this image; an attached folder, full access or an earlier file saved elsewhere is not such a request. When the owner does name a place, copy the Library file there and keep the Library one.",
+    "Draw an image from a text prompt with the owner's image model and place it in this chat. Use it when the owner asks for a picture, illustration, icon or render. It only works when an image-capable provider (an OpenAI, xAI, Z.ai or OpenRouter API key) is connected in Settings; when it is not, say so instead of retrying. It uses the owner's default image model; pass `model` (an image model id from list_models, with its `connectionId` when two providers offer the same id) only when the owner asks for a model or the job clearly needs a different one, since some models cost far more per image. The drawing lands in the transcript by itself and is saved in the owner's Library, the Useful Bot folder in Documents (the result gives its path): answer in text and do not link or embed the file. The Library is where it belongs. Do not copy, move or save it anywhere else (Desktop, Downloads, a project folder) unless the owner asks for a copy there, for this image or as a standing preference; an attached folder, full access or an earlier file saved elsewhere is not such a request. When the owner does name a place, copy the Library file there and keep the Library one.",
   inputSchema: z.object({
     prompt: z.string().min(1).max(4000),
     size: z.enum(["square", "wide", "tall"]).optional(),
@@ -157,7 +157,7 @@ export default defineTool({
       }
     }
     const where = savedPath
-      ? `Saved in the Library as ${savedPath}. Leave it there: copy it somewhere else only if the owner named that place for this image.`
+      ? `Saved in the Library as ${savedPath}. Leave it there: copy it somewhere else only if the owner asked for that place.`
       : "Kept in the app's own store for now; it moves into the Useful Bot folder in Documents on the next Library load, so there is no file path to copy yet.";
     return {
       status: "generated",
