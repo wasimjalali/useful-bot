@@ -123,7 +123,11 @@ async function childEnv() {
   try {
     env.UB_OPENCODE_GO_KEY = await keychain("com.usefulbot.opencode-go");
   } catch {
-    fail("credential_store_locked_or_missing", "com.usefulbot.opencode-go");
+    // A fresh install has no OpenCode Go key: the owner connects a provider
+    // in the app instead. The router then reports itself "limited" on
+    // /health/live rather than refusing to start.
+    delete env.UB_OPENCODE_GO_KEY;
+    process.stderr.write(`${JSON.stringify({ service: mode, warning: "credential_missing", item: "com.usefulbot.opencode-go" })}\n`);
   }
   return env;
 }

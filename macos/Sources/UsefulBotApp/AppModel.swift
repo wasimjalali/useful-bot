@@ -494,6 +494,27 @@ final class AppModel: ObservableObject {
         threadError = nil
         stickyThreadError = nil
         saveError = nil
+        // A release build first lays out the services it carries (a copy only
+        // after an update) and refreshes the local credentials.
+        // Only into its own folder: the copy deletes what the payload does not
+        // carry, so a checkout set as `repoPath` must never be its target.
+        if let bundled = RuntimeInstall.bundledRuntime(), config.repoPath == RuntimeInstall.installRoot.path {
+            let root = RuntimeInstall.installRoot
+            let prepared = await Task.detached { () -> String? in
+                do {
+                    try RuntimeInstall.prepare(bundled: bundled, root: root)
+                    return nil
+                } catch {
+                    return String(describing: error)
+                }
+            }.value
+            guard !Task.isCancelled, attempt == startAttempt else { return }
+            if let prepared {
+                startupError = "Useful Bot could not set up its local services: \(prepared)"
+                phase = .unavailable
+                return
+            }
+        }
         let outcome = await services.ensure(config: config)
         // A cancelled attempt paints nothing at all: the retry that cancelled
         // it owns the screen from here, and `startAttempt` is only bumped once

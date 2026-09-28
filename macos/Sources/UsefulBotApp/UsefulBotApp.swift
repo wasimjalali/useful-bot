@@ -4,6 +4,7 @@ import UsefulBotCore
 @main
 struct UsefulBotDesktopApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var updater = AppUpdater.shared
 
     var body: some Scene {
         WindowGroup("Useful Bot") {
@@ -15,6 +16,9 @@ struct UsefulBotDesktopApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 780)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton(updater: updater)
+            }
             CommandGroup(after: .newItem) {
                 Button("Search") {
                     model.searchOpen.toggle()

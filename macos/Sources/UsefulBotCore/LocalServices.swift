@@ -45,7 +45,7 @@ public struct LocalServices: Sendable {
         if await allReady(config: config) { return .ready }
         // Without a node binary nothing can start; report it now instead of
         // waiting out the health timeout on a launch that can never succeed.
-        guard supervisor.isNodeAvailable else { return .nodeMissing }
+        guard supervisor.isNodeAvailable(repoPath: config.repoPath) else { return .nodeMissing }
         // The checks above were awaits of their own, so nothing is started for
         // an attempt that has already been replaced.
         if Task.isCancelled { return .unavailable }

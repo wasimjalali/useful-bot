@@ -31,6 +31,10 @@ done
     git checkout -- web/next-env.d.ts
   fi
   "$NODE" scripts/web-mode.mjs --stamp
+  # A release carries the services it runs (scripts/build-runtime.mjs).
+  if [ -n "${UB_RELEASE:-}" ]; then
+    "$NODE" scripts/build-runtime.mjs macos/.build/runtime-stage "${UB_VERSION:?UB_RELEASE needs UB_VERSION}+${UB_BUILD:?UB_RELEASE needs UB_BUILD}"
+  fi
 )
 
 swift build -c release
@@ -40,6 +44,22 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/UsefulBotApp"
 chmod +x "$APP/Contents/MacOS/UsefulBotApp"
 cp bundle/Info.plist "$APP/Contents/Info.plist"
+# Sparkle ships signed by its authors; ditto keeps that signature. The updater
+# only runs when a release build writes its feed and key (UB_FEED_URL and
+# UB_ED_PUBLIC_KEY, set by scripts/release-mac.mjs); dev builds carry neither.
+rm -rf "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/Frameworks"
+ditto .build/release/Sparkle.framework "$APP/Contents/Frameworks/Sparkle.framework"
+if [ -n "${UB_FEED_URL:-}" ]; then
+  [ -n "${UB_ED_PUBLIC_KEY:-}" ] || { echo "UB_FEED_URL is set without UB_ED_PUBLIC_KEY" >&2; exit 1; }
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $UB_FEED_URL" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $UB_ED_PUBLIC_KEY" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool true" "$APP/Contents/Info.plist"
+fi
+if [ -n "${UB_VERSION:-}" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $UB_VERSION" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${UB_BUILD:?UB_VERSION needs UB_BUILD}" "$APP/Contents/Info.plist"
+fi
 cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/AppIcon.icns"
 
 for asset in png/mark/useful-bot-128.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/motion.json app/macos/UsefulBot.icns; do
@@ -50,11 +70,16 @@ mkdir -p "$APP/Contents/Resources/Brand/avatars" "$APP/Contents/Resources/Brand/
 cp ../brand/avatars/*-256.png "$APP/Contents/Resources/Brand/avatars/"
 cp -R ../brand/motion/native "$APP/Contents/Resources/Brand/motion/"
 cp ../brand/providers/*.svg "$APP/Contents/Resources/Brand/providers/"
+rm -rf "$APP/Contents/Resources/runtime"
+if [ -n "${UB_RELEASE:-}" ]; then
+  ditto .build/runtime-stage "$APP/Contents/Resources/runtime"
+fi
 # What the binary was built from, so the performance guard can refuse to time
 # an app that is older than the sources under review (perf/runner/perfguard.py).
 find Sources Package.swift -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 \
   | shasum -a 256 | cut -d' ' -f1 > "$APP/Contents/Resources/ub-app-sources.sha256"
-# No nested code lives in the bundle, so signing the bundle directly is enough
-# and avoids the discouraged --deep flag.
+# The only nested code is Sparkle.framework, already signed, so signing the
+# bundle directly is enough and avoids the discouraged --deep flag.
 codesign --force --sign - "$APP" >/dev/null
+codesign --verify --strict "$APP"
 echo "built $APP"
