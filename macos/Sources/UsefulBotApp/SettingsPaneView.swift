@@ -94,7 +94,7 @@ private struct FacePickerView: View {
                         select(color)
                     } label: {
                         VStack(spacing: 2) {
-                            BotFaceView(color: color, size: 40)
+                            BotStillFaceView(color: color, size: 40)
                             Text(BrandAssets.palette[color]!.label)
                                 .font(Theme.font(10, .medium))
                                 .foregroundStyle(Theme.C.ink)

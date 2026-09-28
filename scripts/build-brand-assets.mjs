@@ -311,46 +311,14 @@ for (const part of motionLayers) {
   await pngOutput(`brand/motion/native/${part}.png`, await render(optimized(layer), 1024), 1024, { family: 'motion-layer', layer: part });
 }
 
-// Product avatars keep only the approved head, enlarged without distortion.
-// This square viewBox centers the original head at (512, 397.056).
-// Reduce its shading depth to 30% so selected colors stay clean and bright.
-const avatarParts = new Set(['head', 'glasses', 'eye-left', 'eye-right']);
-const avatarMaster = optimized(optimize(mark, { plugins: [{ name: 'headOnlyAvatar', fn: () => ({ element: {
-  enter(node) {
-    if (node.name === 'svg') node.attributes.viewBox = '128 13.056 768 768';
-    if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && avatarParts.has(child.attributes.id));
-    if (node.name === 'stop' && node.attributes['stop-color']) {
-      const gray = node.attributes['stop-color'];
-      const luminance = parseInt(gray.length === 4 ? gray[1].repeat(2) : gray.slice(1, 3), 16);
-      const lifted = Math.round(255 - (255 - luminance) * .3).toString(16).padStart(2, '0');
-      node.attributes['stop-color'] = '#' + lifted.repeat(3);
-    }
-  },
-} }) }] }).data);
-// Use the same bright head in the native avatar animation. Keep the full
-// artboard here so the existing glasses/eye layers and blink anchors line up.
-const nativeAvatarHead = optimized(optimize(avatarMaster, { plugins: [{ name: 'nativeAvatarHead', fn: () => ({ element: {
-  enter(node) {
-    if (node.name === 'svg') node.attributes.viewBox = '0 0 1024 1024';
-    if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && child.attributes.id === 'head');
-  },
-} }) }] }).data);
-await pngOutput('brand/motion/native/avatar-head.png', await render(nativeAvatarHead, 1024), 1024, { family: 'motion-layer', layer: 'avatar-head' });
-
-// Black eyes/glasses and white highlights retain the approved geometry.
+// Avatars come from the circle-head face source. The head circle's fill is the tint.
+const avatarFace = (await read('brand/source/avatar-face.svg')).toString();
 const palette = JSON.parse(await read('brand/source/avatar-palette.json'));
-const surfaces = new Set(['head']);
 for (const [color, { fill }] of Object.entries(palette)) {
   assert(/^[a-z]+$/.test(color) && /^#[A-Fa-f0-9]{6}$/.test(fill), `Invalid avatar color: ${color}`);
-  const channels = fill.match(/[A-Fa-f0-9]{2}/g).map(channel => parseInt(channel, 16));
-  const avatar = optimize(avatarMaster, { plugins: [{ name: 'tintMascotSurfaces', fn: () => ({ element: {
+  const avatar = optimize(avatarFace, { plugins: [{ name: 'tintAvatarHead', fn: () => ({ element: {
     enter(node, parent) {
-      if (node.name === 'stop' && node.attributes['stop-color']) {
-        const gray = node.attributes['stop-color'];
-        const luminance = parseInt(gray.length === 4 ? gray[1].repeat(2) : gray.slice(1, 3), 16) / 255;
-        node.attributes['stop-color'] = '#' + channels.map(channel => Math.round(channel * luminance).toString(16).padStart(2, '0')).join('');
-      }
-      if (surfaces.has(parent.attributes?.id) && node.attributes.fill && !node.attributes.fill.startsWith('url(')) node.attributes.fill = fill;
+      if (parent.attributes?.id === 'head' && node.attributes.fill) node.attributes.fill = fill;
     },
   } }) }] }).data;
   const vector = await svgOutput(`brand/avatars/${color}.svg`, avatar);
@@ -370,6 +338,7 @@ await output('brand/source/provenance.json', JSON.stringify({
   vectorMasterSha256: sha(await read('brand/source/useful-bot-master.svg')),
   edgeMaskSha256: sha(await read('brand/source/raster-edge-mask.svg')),
   avatarPaletteSha256: sha(await read('brand/source/avatar-palette.json')),
+  avatarFaceSha256: sha(await read('brand/source/avatar-face.svg')),
   motionTimingSha256: sha(await read('brand/source/motion.json')),
   note: 'Interior RGB retained; a hand-authored silhouette and narrow edge RGB decontamination remove extraction debris. Interior alpha normalized. No AI enhancement or bitmap trace.',
   font: { family: 'Inter', weight: 600, version: '4.1', license: 'SIL OFL 1.1', source: 'https://github.com/rsms/inter/releases/tag/v4.1', sha256: sha(fontBytes) },

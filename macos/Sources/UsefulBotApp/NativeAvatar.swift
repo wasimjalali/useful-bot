@@ -1,18 +1,73 @@
 import SwiftUI
 import UsefulBotCore
 
-/// All bot avatars use the approved mascot with transparent surroundings.
+/// A bot head that can move: the rail, pinned bots and the working row.
+/// Idle, it holds still and costs nothing per frame.
 struct BotFaceView: View {
+    let color: String
+    var size: CGFloat
+    var pose: BotFacePose = .idle
+    /// Bump to play one hop.
+    var hop: Int = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        BotFaceLayerView(color: color, pose: pose, hop: hop, reduceMotion: reduceMotion)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A still bot head, drawn once per tint and size. Chat rows, pickers and
+/// stacks show many of these, so they are images, not layers.
+struct BotStillFaceView: View {
     let color: String
     var size: CGFloat
 
     var body: some View {
-        Image(nsImage: BrandAssets.image("avatars/\(color)-256.png"))
+        Image(nsImage: BotFaceArt.still(color, size: size))
             .resizable()
-            .interpolation(.high)
-            .scaledToFit()
             .frame(width: size, height: size)
             .accessibilityHidden(true)
+    }
+}
+
+private struct BotFaceLayerView: NSViewRepresentable {
+    let color: String
+    let pose: BotFacePose
+    let hop: Int
+    let reduceMotion: Bool
+
+    final class Coordinator {
+        var hop: Int
+        var color: String?
+        init(hop: Int) { self.hop = hop }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(hop: hop) }
+
+    func makeNSView(context: Context) -> BotFaceNSView {
+        let view = BotFaceNSView(frame: .zero)
+        update(view, context: context)
+        return view
+    }
+
+    func updateNSView(_ view: BotFaceNSView, context: Context) {
+        update(view, context: context)
+    }
+
+    private func update(_ view: BotFaceNSView, context: Context) {
+        if context.coordinator.color != color {
+            context.coordinator.color = color
+            view.setTint(BotFaceArt.tint(color))
+        }
+        view.apply(pose: pose, reduceMotion: reduceMotion)
+        // A counter seen at creation is history (a row scrolled back in);
+        // only a bump while on screen plays.
+        if hop != context.coordinator.hop {
+            context.coordinator.hop = hop
+            view.hop()
+        }
     }
 }
 
@@ -52,7 +107,7 @@ struct BotAvatarView: View {
     var body: some View {
         // Shape and image fields are retained on the wire for old saved stores,
         // but are no longer competing visual identities.
-        BotFaceView(color: BrandAssets.colorID(for: bot), size: size)
+        BotStillFaceView(color: BrandAssets.colorID(for: bot), size: size)
     }
 }
 

@@ -46,7 +46,15 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    @Published private(set) var selectedBotId: String?
+    @Published private(set) var selectedBotId: String? {
+        // Opening a chat is reading its reply.
+        didSet {
+            if let id = selectedBotId, replyReady.contains(id) { replyReady.remove(id) }
+            // Leaving a chat means its end wasn't seen, so a handoff ending
+            // after the switch still counts as an unread reply.
+            if selectedBotId != oldValue { selectedAtLastTick = nil }
+        }
+    }
     @Published private(set) var transcript: [TranscriptRow] = []
     /// The grouped render list for `transcript`. Derived once per change here
     /// rather than in the view body: `ChatView` observes this model, so every
@@ -302,6 +310,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var workingBotIds: Set<String> = []
     /// Handoff deliveries in flight on bots the owner is not looking at.
     @Published private(set) var handoffWorkingIds: Set<String> = []
+    /// Live activity of working bots the owner is not looking at, published
+    /// only when it changes. The selected bot's is `activity`.
+    @Published private(set) var backgroundActivities: [String: TurnActivity] = [:]
+    /// Unselected bots whose turn finished with a reply the owner has not
+    /// opened yet. In memory only.
+    @Published private(set) var replyReady: Set<String> = []
+    /// Bumped once per finished reply; the rail face hops on each change.
+    @Published private(set) var railHops: [String: Int] = [:]
     private var saveChain: Task<Void, Never>?
     private var uploadChain: Task<Void, Never>?
     /// The newest session this app started, scoped to its bot so a Stop on
@@ -1356,10 +1372,27 @@ final class AppModel: ObservableObject {
         tickInFlight = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if let ids = await self.client.tick() {
+            let polled = await self.client.tick()
+            if let ids = polled {
                 let next = Set(ids)
+                // Handoffs and routines run without a local stream, so their
+                // end is only seen here. The poll can't tell a reply from a
+                // failure, so a finished turn counts as a reply. An empty set
+                // right after failed ticks is the service restarting, not
+                // replies, so that marks nothing.
+                let ended = self.handoffWorkingIds.subtracting(next)
+                let reset = next.isEmpty && self.lastTickFailed
+                if !reset {
+                    for botId in ended where botId != self.selectedBotId
+                        && botId != self.selectedAtLastTick
+                        && !self.workingBotIds.contains(botId) {
+                        self.markReplyReady(botId)
+                    }
+                }
                 if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             }
+            self.lastTickFailed = polled == nil
+            self.selectedAtLastTick = self.selectedBotId
             self.tickInFlight = false
         }
     }
@@ -1944,9 +1977,49 @@ final class AppModel: ObservableObject {
     private var retryNotBefore: [String: Date] = [:]
 
     private func markWorking(_ botId: String, _ running: Bool) {
+        let wasWorking = workingBotIds.contains(botId)
         var next = workingBotIds
         if running { next.insert(botId) } else { next.remove(botId) }
         if next != workingBotIds { workingBotIds = next }
+        if running {
+            if replyReady.contains(botId) { replyReady.remove(botId) }
+        } else {
+            if backgroundActivities[botId] != nil { backgroundActivities[botId] = nil }
+            // A turn that ended with an assistant message and no failure. A
+            // stopped send drops its projection first, so it never counts; a
+            // stream that died mid-turn is still pending, so it doesn't either.
+            // A cancel that already streamed partial text still would.
+            if wasWorking, botId != selectedBotId,
+               let proj = backgroundProjections[botId],
+               !proj.pending, !proj.failed, proj.messages.last?.role == .assistant {
+                markReplyReady(botId)
+            }
+        }
+    }
+
+    /// A reply is waiting in a chat the owner isn't looking at: the rail face
+    /// hops once and the row reads "REPLY READY" until the chat is opened.
+    private func markReplyReady(_ botId: String) {
+        // One hop per unread reply: a second one landing before the chat is
+        // opened doesn't hop again.
+        guard replyReady.insert(botId).inserted else { return }
+        railHops[botId, default: 0] += 1
+    }
+
+    /// The chat on screen at the previous tick, cleared when the owner
+    /// switches. A handoff that ends between two ticks was seen if its bot
+    /// was open at the first and still is.
+    private var selectedAtLastTick: String?
+    /// Whether the previous tick failed. The service being down shows as
+    /// failed ticks, and its in-flight set comes back empty after a restart.
+    private var lastTickFailed = false
+
+    /// The current step of a working bot, for the rail face and subtitle.
+    /// Nil when it is not tracked; the face then reads as thinking.
+    func railActivity(_ botId: String) -> TurnActivity? {
+        guard isWorking(botId) else { return nil }
+        if botId == selectedBotId { return activity }
+        return backgroundActivities[botId] ?? backgroundProjections[botId]?.activity
     }
 
     func isWorking(_ botId: String) -> Bool {
@@ -1970,6 +2043,9 @@ final class AppModel: ObservableObject {
         backgroundProjections[botId] = proj
         cacheUse[botId] = Date()
         persistNewWidgets(proj.widgets, botId: botId)
+        if proj.pending, backgroundActivities[botId] != proj.activity {
+            backgroundActivities[botId] = proj.activity
+        }
         markWorking(botId, proj.pending)
     }
 

@@ -366,7 +366,7 @@ struct RootView: View {
             if model.phase == .starting {
                 BrandMotionView(size: 72)
             } else {
-                BotFaceView(color: "ink", size: 72)
+                BotStillFaceView(color: "ink", size: 72)
             }
             Text(model.startingMessage)
                 .font(.system(size: 14))

@@ -68,12 +68,13 @@ if [ -n "${UB_VERSION:-}" ]; then
 fi
 cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/AppIcon.icns"
 
-for asset in png/mark/useful-bot-128.png png/black/useful-bot-256.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/motion.json app/macos/UsefulBot.icns; do
+for asset in png/mark/useful-bot-128.png png/black/useful-bot-256.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/avatar-face.svg source/motion.json app/macos/UsefulBot.icns; do
   mkdir -p "$APP/Contents/Resources/Brand/$(dirname "$asset")"
   cp "../brand/$asset" "$APP/Contents/Resources/Brand/$asset"
 done
-mkdir -p "$APP/Contents/Resources/Brand/avatars" "$APP/Contents/Resources/Brand/motion" "$APP/Contents/Resources/Brand/providers"
-cp ../brand/avatars/*-256.png "$APP/Contents/Resources/Brand/avatars/"
+# Builds write into the same bundle; the avatar PNGs are no longer shipped.
+rm -rf "$APP/Contents/Resources/Brand/avatars"
+mkdir -p "$APP/Contents/Resources/Brand/motion" "$APP/Contents/Resources/Brand/providers"
 cp -R ../brand/motion/native "$APP/Contents/Resources/Brand/motion/"
 cp ../brand/providers/*.svg "$APP/Contents/Resources/Brand/providers/"
 rm -rf "$APP/Contents/Resources/runtime"

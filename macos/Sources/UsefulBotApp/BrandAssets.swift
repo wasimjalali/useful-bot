@@ -52,15 +52,13 @@ enum BrandAssets {
     }
 
     /// A motion layer at the size it is drawn, rasterised once per size.
-    /// The animation composites eight layers 30 times a second, so each one
-    /// is a bitmap of `size` points at 2x and no bigger. `drawnScale` is
-    /// what the view scales the layer by after layout (the avatar crop and
-    /// the working row's breath), so the bitmap is still 1:1 on screen.
-    static func motionLayer(_ name: String, size: CGFloat, drawnScale: CGFloat = 1) -> NSImage {
-        let key = "\(name)@\(size)x\(drawnScale)"
+    /// The animation composites seven layers 30 times a second, so each one
+    /// is a bitmap of `size` points at 2x and no bigger.
+    static func motionLayer(_ name: String, size: CGFloat) -> NSImage {
+        let key = "\(name)@\(size)"
         if let layer = layers[key] { return layer }
         let source = image("motion/native/\(name).png")
-        let pixels = Int((size * 2 * drawnScale).rounded(.up))
+        let pixels = Int((size * 2).rounded(.up))
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8,
             samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
@@ -92,7 +90,6 @@ struct BrandMotionView: View {
     var size: CGFloat
     var color = "ink"
     var repeating = true
-    var avatar = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var started = Date()
@@ -103,8 +100,7 @@ struct BrandMotionView: View {
             BrandMotionFrameView(
                 frame: finished ? BrandMotion.Frame() : BrandAssets.motion.frame(at: context.date.timeIntervalSince(started), repeating: repeating, reducedMotion: reduceMotion),
                 size: size,
-                color: color,
-                avatar: avatar
+                color: color
             )
         }
         .frame(width: size, height: size)
@@ -127,33 +123,26 @@ struct BrandMotionFrameView: View {
     var frame: BrandMotion.Frame
     var size: CGFloat
     var color = "ink"
-    var avatar = false
 
     private var tint: Color { Theme.color(BrandAssets.palette[color]!.fill) }
 
     var body: some View {
         ZStack {
-            if !avatar {
-                layer("arm-left").colorMultiply(tint)
-                layer("arm-right").colorMultiply(tint)
-                    .rotationEffect(.degrees(frame.wave), anchor: UnitPoint(x: 710.0 / 1024, y: 725.0 / 1024))
-                layer("body").colorMultiply(tint)
-                    .scaleEffect(x: frame.squashX, y: frame.squashY, anchor: UnitPoint(x: 0.5, y: 890.0 / 1024))
-            }
-            layer(avatar ? "avatar-head" : "head").colorMultiply(tint)
+            layer("arm-left").colorMultiply(tint)
+            layer("arm-right").colorMultiply(tint)
+                .rotationEffect(.degrees(frame.wave), anchor: UnitPoint(x: 710.0 / 1024, y: 725.0 / 1024))
+            layer("body").colorMultiply(tint)
+                .scaleEffect(x: frame.squashX, y: frame.squashY, anchor: UnitPoint(x: 0.5, y: 890.0 / 1024))
+            layer("head").colorMultiply(tint)
             layer("glasses")
             layer("eye-left").scaleEffect(x: 1, y: frame.blink, anchor: UnitPoint(x: 370.944 / 1024, y: 441.088 / 1024))
             layer("eye-right").scaleEffect(x: 1, y: frame.blink, anchor: UnitPoint(x: 653.568 / 1024, y: 441.088 / 1024))
         }
-        // Match avatars' 128 13.056 768 768 viewBox without redrawing paths.
-        .scaleEffect(avatar ? 1024.0 / 768 : 1)
-        .offset(y: (avatar ? 114.944 * size / 768 : 0) + frame.float * size / (avatar ? 768 : 1024))
+        .offset(y: frame.float * size / 1024)
     }
 
     private func layer(_ name: String) -> some View {
-        // The avatar crop below scales the stack by 1024/768, and the working
-        // row breathes it up to 1.04 on top of that.
-        Image(nsImage: BrandAssets.motionLayer(name, size: size, drawnScale: avatar ? 1024.0 / 768 * 1.04 : 1))
+        Image(nsImage: BrandAssets.motionLayer(name, size: size))
             .resizable().interpolation(.high).scaledToFit()
             .frame(width: size, height: size)
     }

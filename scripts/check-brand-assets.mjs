@@ -18,7 +18,7 @@ const required = [
   'brand/README.md', 'brand/preview.html', 'brand/tokens.css', 'BRAND_ASSET_REPORT.md',
   'brand/motion/animation-demo.html', 'brand/motion/useful-bot-animated.svg',
   'brand/source/useful-bot-master.svg', 'brand/source/raster-edge-mask.svg',
-  'brand/source/avatar-palette.json', 'brand/source/motion.json',
+  'brand/source/avatar-palette.json', 'brand/source/avatar-face.svg', 'brand/source/motion.json',
   'brand/source/useful-bot-raster-master-1024.png', 'brand/source/useful-bot-raster-clean-1254.png',
   'brand/source/fonts/Inter-SemiBold.ttf', 'brand/source/fonts/Inter-SemiBold.woff2', 'brand/source/fonts/LICENSE.txt',
   'brand/app/AppIcon.appiconset/Contents.json', 'brand/app/macos/UsefulBot.icns',
@@ -128,6 +128,7 @@ const provenance = JSON.parse(await read('brand/source/provenance.json'));
 assert.equal(createHash('sha256').update(await read('brand/source/useful-bot-master.svg')).digest('hex'), provenance.vectorMasterSha256, 'Vector source changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/raster-edge-mask.svg')).digest('hex'), provenance.edgeMaskSha256, 'Edge mask changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/avatar-palette.json')).digest('hex'), provenance.avatarPaletteSha256, 'Avatar palette changed: rebuild assets');
+assert.equal(createHash('sha256').update(await read('brand/source/avatar-face.svg')).digest('hex'), provenance.avatarFaceSha256, 'Avatar face changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/motion.json')).digest('hex'), provenance.motionTimingSha256, 'Motion timing changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/fonts/Inter-SemiBold.ttf')).digest('hex'), provenance.font.sha256, 'Font changed: rebuild assets');
 for (const source of provenance.sources) assert.equal(createHash('sha256').update(await read(source.path)).digest('hex'), source.sha256, `Original source changed: ${source.path}`);
@@ -191,20 +192,18 @@ function eyeGeometry(svg) {
 const markSvg = (await read('brand/svg/useful-bot-mark.svg')).toString();
 const features = eyeGeometry(markSvg);
 assert.equal(Object.keys(features).length, 3);
-const headOnly = optimize(markSvg, { plugins: [{ name: 'expectedAvatarSilhouette', fn: () => ({ element: {
-  enter(node) {
-    if (node.name === 'svg') node.attributes.viewBox = '128 13.056 768 768';
-    if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && ['head', 'glasses', 'eye-left', 'eye-right'].includes(child.attributes.id));
-  },
-} }) }] }).data;
-const headPixels = await sharp(Buffer.from(headOnly)).resize(1024, 1024).ensureAlpha().raw().toBuffer();
+const faceSvg = (await read('brand/source/avatar-face.svg')).toString();
+const faceFeatures = eyeGeometry(faceSvg);
+assert.equal(Object.keys(faceFeatures).length, 3);
+// Expected head silhouette: the source circle, untinted.
+const headPixels = await sharp(Buffer.from(faceSvg)).resize(1024, 1024).ensureAlpha().raw().toBuffer();
 const avatarPalette = JSON.parse(await read('brand/source/avatar-palette.json'));
 assert.equal(Object.keys(avatarPalette).length, 11);
 for (const color of Object.keys(avatarPalette)) {
   const svg = (await read(`brand/avatars/${color}.svg`)).toString();
-  assert(svg.includes('viewBox="128 13.056 768 768"'), `Avatar crop/centering changed: ${color}`);
+  assert(svg.includes('viewBox="128 36 768 768"'), `Avatar crop/centering changed: ${color}`);
   assert(!/id="(?:body|arm-left|arm-right)"/.test(svg), `Avatar includes body or arms: ${color}`);
-  assert.deepEqual(eyeGeometry(svg), features, `Avatar changed eyes or glasses: ${color}`);
+  assert.deepEqual(eyeGeometry(svg), faceFeatures, `Avatar changed eyes or glasses: ${color}`);
   const tinted = await sharp(Buffer.from(svg)).resize(1024, 1024).ensureAlpha().raw().toBuffer();
   for (let i = 3; i < tinted.length; i += 4) assert.equal(tinted[i], headPixels[i], `Avatar head silhouette/alpha changed: ${color}`);
 }

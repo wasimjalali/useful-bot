@@ -235,8 +235,8 @@
     },
     {
       "path": "brand/avatars/blue-256.png",
-      "bytes": 14419,
-      "sha256": "261325ae516e000c0f4f87acd414f638a0d36ef860a3223db788779118739082",
+      "bytes": 19794,
+      "sha256": "5a8313f057a49e4849547771f0e81c87f90109e7f469fbc62ca26b9a4d297395",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -246,14 +246,14 @@
     },
     {
       "path": "brand/avatars/blue.svg",
-      "bytes": 2923,
-      "sha256": "1ab4c7da1234e37eaf967a00a2eae5c8630c787ca0df0610fcb1c372a9abbc52",
+      "bytes": 2745,
+      "sha256": "d0e086b493b35af9b23333503232f6ee2161581caf66fe34969ae5075ca5b43c",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/brown-256.png",
-      "bytes": 14526,
-      "sha256": "d2a15bea870dd6de7ee502bf1e66caab1c55b93dfd84a74b932225ff337d9932",
+      "bytes": 19865,
+      "sha256": "a1d8c8e03d45f764e798d4951f9a42ca27f359a5392c4f5f51fadf8601332eb0",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -263,14 +263,14 @@
     },
     {
       "path": "brand/avatars/brown.svg",
-      "bytes": 2923,
-      "sha256": "40788070c51e880754840da3564922acc353ca0dfbe3c4ec32cf3d5d716ed6b6",
+      "bytes": 2745,
+      "sha256": "882dc967db1946b97f1849a07f0457a311ac772d51a3cfd30514a729f8c585a6",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/gold-256.png",
-      "bytes": 14228,
-      "sha256": "d03f004976a58d1fa2908ee3c7ca3872d2f7313a2b387655a1e61268e49b6a3f",
+      "bytes": 19458,
+      "sha256": "cde3f5d6fe851b2a58f2c828be5ce16d732aaec404b906d362dc8b49e520489e",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -280,14 +280,14 @@
     },
     {
       "path": "brand/avatars/gold.svg",
-      "bytes": 2923,
-      "sha256": "94b6492b830939f6e24978fb3921880295c2e266ee8cc0ff8a9edbe2396faa49",
+      "bytes": 2745,
+      "sha256": "afa726434ad0579a59502d79594a9e000a5bd16870cceeecfa7cbf3426cb1f8c",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/gray-256.png",
-      "bytes": 14037,
-      "sha256": "5e9b5b10d47f83f0219d7970748b183c906787b6f19c43a297c368fb7e16769f",
+      "bytes": 19888,
+      "sha256": "8e726d01e324afa0702a59fdc5c16cb7ba6e5e8cd259983c47d8a659da86ee70",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -297,14 +297,14 @@
     },
     {
       "path": "brand/avatars/gray.svg",
-      "bytes": 2923,
-      "sha256": "a74efdd2bf9f3dd5cacdfc331d021769fb149a572a7e40b87b24eaf990858eb0",
+      "bytes": 2745,
+      "sha256": "1594023fa5c5b6b75d3ca6d33949a4eeed1ddfa86e51a53a45ef9c31508f4a25",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/green-256.png",
-      "bytes": 14356,
-      "sha256": "9fd2d1b43771ccbfc12881fe2cedc4490c8794442b32ffadc2a5036885c90e92",
+      "bytes": 19612,
+      "sha256": "efc62cbaa488ed48f5364377b3609506e17f35d8670c82ff09e8dcfbdfb14257",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -314,14 +314,14 @@
     },
     {
       "path": "brand/avatars/green.svg",
-      "bytes": 2923,
-      "sha256": "5879c9a5b252d26e0c0b1534d28540c4e0776dcb1a457400e81983ef57e646c7",
+      "bytes": 2745,
+      "sha256": "75385c8951432aa68156e0eb41c22d1cfddfad0e0ae922591bb0745b478fd9fd",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/ink-256.png",
-      "bytes": 12644,
-      "sha256": "40b115a04d50d378b543a44527898177654699da3823eba12eab3778cf695faf",
+      "bytes": 19497,
+      "sha256": "864489c689f64f0e88d055ea0fd3d1fb8da643b470d8ae3735f26b0f4c392ef3",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -331,14 +331,14 @@
     },
     {
       "path": "brand/avatars/ink.svg",
-      "bytes": 2920,
-      "sha256": "7fabfd02212530c1cd75d100d6c630bae9a35a857061c8661c8e9c885e10a036",
+      "bytes": 2742,
+      "sha256": "1a7260bd781bb2436bc350345bc28c4501e892cdda0b0255eef10e14cdff6c7a",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/orange-256.png",
-      "bytes": 14255,
-      "sha256": "8e3599130e3ccb582a3f75b7a781e3d9b40b4d08fcb23e1961dbae7d5e7d6f32",
+      "bytes": 19555,
+      "sha256": "5f7f722f9aa6a03b46eb8b29aceb5ea5eca83f91598bef067a70fbc03ec72034",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -348,14 +348,14 @@
     },
     {
       "path": "brand/avatars/orange.svg",
-      "bytes": 2923,
-      "sha256": "5cd52a5b066eb52157a1cc2d902e66e200beb40d8fa481b723c0ed80e508bb2c",
+      "bytes": 2745,
+      "sha256": "8c37ab29276e968a99ed3b8747003cff577e709cff0593f3b6f3daf86b4d0268",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/pink-256.png",
-      "bytes": 14565,
-      "sha256": "f0e25570c5c4b6fd48124c4a91df68bada78c44dfde91d417ce689f662b20f20",
+      "bytes": 19840,
+      "sha256": "a5ae8bc24b4a8951ef2be0ab3e0e603db17f27499a752fa97115d0359f949103",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -365,14 +365,14 @@
     },
     {
       "path": "brand/avatars/pink.svg",
-      "bytes": 2923,
-      "sha256": "f4f39c184e76a4f2d52f968cea78191b11bb5f6593de598eb5574d9d1760270c",
+      "bytes": 2745,
+      "sha256": "07329ece0b0bfcc13885c0e7994fefefe192cce6ed0a37e9796950a820f40ff4",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/purple-256.png",
-      "bytes": 14546,
-      "sha256": "82bfab9935ccb17a68a22440c8f92a69725dbc84afe9e1d72d9bb09cb190be28",
+      "bytes": 19929,
+      "sha256": "5d2355ff9b0d28a695f0ed697cd05f9bba19add798fba232ffdb2b3428571497",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -382,14 +382,14 @@
     },
     {
       "path": "brand/avatars/purple.svg",
-      "bytes": 2923,
-      "sha256": "c2dfc9e3e7b59efd3ad7eabdad460d5bdfd26ea90e0ee98fba0ad9c502c6278e",
+      "bytes": 2745,
+      "sha256": "04f56c9a9048cf15aef4bd6024751031f8a3dccc39801286edc2b7692d45a246",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/red-256.png",
-      "bytes": 14365,
-      "sha256": "1aec5a5d93c8e5d75fc19eb4643bb690993d0ffa0d2a0d582207263ae355600f",
+      "bytes": 19598,
+      "sha256": "15dbe8d48ad11a476abfb63f898442a16fb0618f529cf8135edce637684a0149",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -399,14 +399,14 @@
     },
     {
       "path": "brand/avatars/red.svg",
-      "bytes": 2923,
-      "sha256": "556775247f2f5235309f82255299fd010b5bde5f3eeef904443ac6d6981a1ccd",
+      "bytes": 2745,
+      "sha256": "d9fecabce563027993f373cd54a45b7132d98cbec2e423a812ef4e5a93a1b3f8",
       "kind": "svg"
     },
     {
       "path": "brand/avatars/teal-256.png",
-      "bytes": 13644,
-      "sha256": "5b02baa530c5b42a08a212397a09e425c556797d41db565d781ed74772de9d04",
+      "bytes": 19573,
+      "sha256": "19ad3b9d40e9992da33f0f7a85442f5223c09b0a52e3cc6a5c198b8153944667",
       "kind": "png",
       "width": 256,
       "height": 256,
@@ -416,8 +416,8 @@
     },
     {
       "path": "brand/avatars/teal.svg",
-      "bytes": 2923,
-      "sha256": "1a6c48ec2f1db86e931621f265c10c6005d176a87152dedb2600bc16a724623d",
+      "bytes": 2745,
+      "sha256": "3c842a1f532721a984bc46fa09250f2b77418f4da995e11ad23b02c8bd1ec421",
       "kind": "svg"
     },
     {
@@ -483,17 +483,6 @@
       "alpha": true,
       "family": "motion-layer",
       "layer": "arm-right"
-    },
-    {
-      "path": "brand/motion/native/avatar-head.png",
-      "bytes": 21326,
-      "sha256": "2637eaedd3a30a038ca9798d1af81fd81de19744721173abe13df6ca5aab7ddf",
-      "kind": "png",
-      "width": 1024,
-      "height": 1024,
-      "alpha": true,
-      "family": "motion-layer",
-      "layer": "avatar-head"
     },
     {
       "path": "brand/motion/native/body.png",
@@ -860,8 +849,8 @@
     },
     {
       "path": "brand/source/provenance.json",
-      "bytes": 2719,
-      "sha256": "670ade5ba9f29043b46a0e3e30886024a23b5c17d56a724a033f5d92a9d9ffa9"
+      "bytes": 2809,
+      "sha256": "e580fdc6b1b2d93dc5453ae41a5168a74fd77df411fe2e6929a539d8eca49989"
     },
     {
       "path": "brand/source/useful-bot-lockup-horizontal-badge-text.svg",

@@ -4,20 +4,18 @@ import Testing
 
 @Suite struct RailCopyTests {
     @Test func pinnedAndHiddenReasonsAccumulate() {
-        #expect(RailCopy.emptySectionHint(pinned: 1, hidden: 0, isUnassigned: false)
+        #expect(RailCopy.emptySectionHint(pinned: 1, hidden: 0)
             == "1 pinned bot shows at the top.")
-        #expect(RailCopy.emptySectionHint(pinned: 2, hidden: 0, isUnassigned: false)
+        #expect(RailCopy.emptySectionHint(pinned: 2, hidden: 0)
             == "2 pinned bots show at the top.")
-        #expect(RailCopy.emptySectionHint(pinned: 0, hidden: 1, isUnassigned: false)
+        #expect(RailCopy.emptySectionHint(pinned: 0, hidden: 1)
             == "1 bot here is hidden.")
-        #expect(RailCopy.emptySectionHint(pinned: 1, hidden: 3, isUnassigned: true)
+        #expect(RailCopy.emptySectionHint(pinned: 1, hidden: 3)
             == "1 pinned bot shows at the top. 3 bots here are hidden.")
     }
 
     @Test func aGenuinelyEmptySectionStillGetsALine() {
-        #expect(RailCopy.emptySectionHint(pinned: 0, hidden: 0, isUnassigned: true)
-            == "Default home for new bots.")
-        #expect(RailCopy.emptySectionHint(pinned: 0, hidden: 0, isUnassigned: false)
+        #expect(RailCopy.emptySectionHint(pinned: 0, hidden: 0)
             == "No bots here yet.")
     }
 }

@@ -93,9 +93,9 @@ Logical group IDs are preserved: `head`, `body`, `arm-left`, `arm-right`, `glass
 
 ## Product avatar colors
 
-The user's approved exception to monochrome is bot avatars only. `source/avatar-palette.json` defines Original plus ten bright head colors. Each `avatars/<id>.svg` and `avatars/<id>-256.png` contains only the approved head, glasses, eyes and white highlights, with transparent surroundings. Body and arms are removed. Head shading is reduced to 30% of its original depth to keep colors bright. The main logo, badge, app icon and social assets keep the full monochrome mascot.
+The user's approved exception to monochrome is bot avatars only. `source/avatar-palette.json` defines Original plus ten bright head colors. Each `avatars/<id>.svg` and `avatars/<id>-256.png` is built from `source/avatar-face.svg`: a circle head with a hairline edge, glasses, eyes and a wide smile with a pink tongue, on a transparent background. The head circle's fill is the tint. The main logo, badge, app icon and social assets keep the full monochrome mascot.
 
-Avatar SVGs use the square viewBox `128 13.056 768 768` within the unchanged master coordinates. This enlarges and centers the head uniformly, retaining roughly 9% horizontal and 16% vertical breathing room. Native animated avatars use the same crop and the generated `motion/native/avatar-head.png` layer. No head or facial geometry is redrawn.
+Avatar SVGs use the square viewBox `128 36 768 768`. The macOS app draws its bot heads, still and moving, from `source/avatar-face.svg` too.
 
 Colors are selected only in bot/group settings, using actual mascot previews. Shapes, random face generation and image upload are no longer offered. Existing saved shape/image fields remain readable for compatibility but don't change the rendered mascot. Choosing a color clears the old image field explicitly; no background migration deletes saved user images. The historical color ID `ink` now means Original white, preserving the existing wire format. Other IDs are also unchanged. Reset restores Original for Useful Bot and the derived default color for another bot.
 
