@@ -2136,8 +2136,16 @@ final class AppModel: ObservableObject {
     /// or "Image" for a picture sent on its own. Never the lines naming it.
     static func previewText(_ text: String) -> String {
         let sent = Attachments.sentImages(in: text)
-        if sent.images.isEmpty { return text }
-        return sent.text.isEmpty ? (sent.images.count == 1 ? "Image" : "\(sent.images.count) images") : sent.text
+        if !sent.images.isEmpty {
+            return sent.text.isEmpty ? (sent.images.count == 1 ? "Image" : "\(sent.images.count) images") : sent.text
+        }
+        // A preview can be clipped before its file line, which leaves only the
+        // "Attached image:" line: in a one-line preview it is never the owner's.
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let kept = lines.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("Attached image: ") }
+        guard kept.count != lines.count else { return text }
+        let rest = kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return rest.isEmpty ? "Image" : rest
     }
 
     private func updateSession(botId: String, sessionId: String, preview: String) async {
@@ -2458,18 +2466,22 @@ final class AppModel: ObservableObject {
         // row up forever: after a few hours it is taken as gone.
         let cutoff = Date().addingTimeInterval(-Self.subagentPatience)
         let since = projection.runningTasks.values.filter { $0 > cutoff }.min()
-        if since != runningTaskSince {
+        if since != runningTaskSince || (since != nil && taskExpiry == nil) {
             runningTaskSince = since
             // A quiet chat publishes nothing more, so the row is taken down
             // at the cutoff itself rather than at the next event.
             taskExpiry?.cancel()
             if let since {
-                let wait = max(1, since.addingTimeInterval(Self.subagentPatience).timeIntervalSinceNow)
+                // A little past the cutoff, so the check on waking is past it too.
+                let wait = max(1, since.addingTimeInterval(Self.subagentPatience).timeIntervalSinceNow + 0.1)
                 taskExpiry = Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                     guard !Task.isCancelled else { return }
+                    self?.taskExpiry = nil
                     self?.publishActivity()
                 }
+            } else {
+                taskExpiry = nil
             }
         }
         // The turn's own start, so the timer survives leaving the chat.
@@ -2480,7 +2492,7 @@ final class AppModel: ObservableObject {
         activity = projection.activity
         // A connector step names its app and shows its logo; the list of
         // connected apps is otherwise only read when the pane opens.
-        if case .tool("connector_execute", _) = activity, connectorApps.isEmpty, !connectorAppsLoading {
+        if case .tool("connector_execute", _) = activity, !connectorAppsFetched, !connectorAppsLoading {
             Task { await loadConnectorApps() }
         }
     }
@@ -2490,12 +2502,17 @@ final class AppModel: ObservableObject {
     /// by the pane's search and reports its errors to the owner.
     @Published private(set) var connectorApps: [ConnectorToolkit] = []
     private var connectorAppsLoading = false
+    /// Read once, and again after the Connectors pane has loaded (an app
+    /// connected there shows its logo on the next step). Zero connected apps
+    /// is an answer too, not a reason to ask on every step.
+    private var connectorAppsFetched = false
 
     private func loadConnectorApps() async {
         connectorAppsLoading = true
         defer { connectorAppsLoading = false }
         guard let payload = try? await client.connectors(search: "", limit: 200) else { return }
         connectorApps = payload.toolkits.filter(\.connected)
+        connectorAppsFetched = true
     }
 
     private static let subagentPatience: TimeInterval = 3 * 3600
@@ -2865,6 +2882,8 @@ final class AppModel: ObservableObject {
                 connectorSearch = search
             }
             connectors = payload
+            // The pane saw the latest list; the working row reads it afresh.
+            connectorAppsFetched = false
             if let code = payload.error {
                 let message = code == "key_rejected" ? Self.connectorKeyRejected : Self.connectorUpstreamError
                 if !quiet || connectorsError == nil || Self.connectorLoadErrors.contains(connectorsError ?? "") {
@@ -3136,7 +3155,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func perform(_ action: [String: Any]) {
+    func perform(_ action: [String: Any], onSuccess: (@MainActor () -> Void)? = nil) {
         // Captured at the call, not when the queued work runs: a switch that
         // lands ahead of it in the chain would otherwise make the action's
         // outcome belong to the new bot.
@@ -3148,6 +3167,7 @@ final class AppModel: ObservableObject {
                 let result = try await self.client.shellActionResult(action)
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.applyStore(result.store)
+                onSuccess?()
                 // The roster change stood; something hanging off it did not.
                 // The tick sweeps the rest, so this says so and moves on
                 // rather than presenting a completed action as a failure.
@@ -3300,7 +3320,6 @@ final class AppModel: ObservableObject {
     func delete(botId: String) {
         replyQuotes[botId] = nil
         transcriptCache[botId] = nil
-        SentImageStore.forget(botId: botId)
         // Gone from disk now; blocked for good once the store drops the bot,
         // so a delete the server refuses leaves the chat able to save again.
         removeSnapshot(botId, blockWrites: false)
@@ -3314,7 +3333,9 @@ final class AppModel: ObservableObject {
                 _ = try? await self?.client.cancel(sessionId: running)
             }
         }
-        perform(ShellActions.deleteBot(botId: botId))
+        // Its pictures go only once the server has dropped the bot: a
+        // refused delete leaves the chat, pictures and all.
+        perform(ShellActions.deleteBot(botId: botId)) { SentImageStore.forget(botId: botId) }
     }
 
     /// New Bot from the rail: clear the thread server-side and start fresh.
@@ -3346,6 +3367,8 @@ final class AppModel: ObservableObject {
                 guard generation == (self.chatGenerations[id] ?? 0) else { return }
                 self.forgetTurnIds(of: self.store?.bots.first { $0.id == id }?.sessionId)
                 self.applyStore(cleared)
+                // The cleared conversation's pictures go with it.
+                SentImageStore.forget(botId: id)
             } catch {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."
                 return
@@ -3971,7 +3994,6 @@ final class AppModel: ObservableObject {
     var latestReplyAnchor: String? {
         var anchor: String?
         var awaitingReply = false
-        var previousFromTask = false
         for block in transcriptBlocks {
             guard case .message(let row, _) = block else { continue }
             switch row.kind {
@@ -3980,8 +4002,7 @@ final class AppModel: ObservableObject {
                 anchor = nil
             case .assistant:
                 // A sub-agent's report turn has no owner row above its reply.
-                if projection.taskReplyRowIds.contains(row.id), !previousFromTask { awaitingReply = true }
-                previousFromTask = projection.taskReplyRowIds.contains(row.id)
+                if projection.taskReplyRowIds.contains(row.id) { awaitingReply = true }
                 if awaitingReply {
                     anchor = row.id
                     awaitingReply = false

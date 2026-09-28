@@ -100,7 +100,7 @@ import Testing
             "activity", "continuationRowId", "currentTurnId", "discardedUserMessageId", "failed", "failure", "failureMarks", "firstSession",
             "indexById", "journalBase", "journalSession", "journalTop", "liveFailureMarkId", "messages", "minted", "newestTurnStart",
             "pending", "questions", "rowJournal", "runningTasks", "searchHits", "seen", "seenCursor", "seenOrder",
-            "taskReplyRowIds", "tasksSession", "turn", "turnOrder", "turnStartedAt", "turns", "widgets",
+            "settledTasks", "taskReplyRowIds", "tasksSession", "turn", "turnOrder", "turnStartedAt", "turns", "widgets",
         ])
     }
 
@@ -115,7 +115,7 @@ import Testing
         let turn = try #require(Mirror(reflecting: StreamProjection()).children.first { $0.label == "turn" }?.value)
         #expect(labels(turn) == [
             "assistantId", "carriedUserMessageId", "ended", "fromTask", "lastRowId", "openUserRows",
-            "producedWork", "replayingMessage", "sawMessage", "superseded",
+            "producedWork", "replayingMessage", "sawMessage", "superseded", "taskReplyMarked",
         ])
         #expect(labels(ChatMessage(id: "m", role: .user, text: "t")) == ["at", "id", "role", "text"])
         #expect(labels(SearchChip(title: "t", url: "u", snippet: "s")) == ["snippet", "title", "url"])

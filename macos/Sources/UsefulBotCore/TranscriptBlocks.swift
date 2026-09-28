@@ -289,21 +289,18 @@ public enum TranscriptBlocks {
     /// Every bubble of the newest reply: the bot's messages since the last
     /// thing said to it. The first is the reply anchor; together they are the
     /// answer whose height decides whether it overflows the window.
-    /// `taskReplies` are rows a sub-agent's report turn wrote: with no owner
-    /// row above them, the first of them starts a reply of its own.
+    /// `taskReplies` are the first rows of sub-agent report turns: with no
+    /// owner row above them, each starts a reply of its own.
     public static func latestReplyRunIds(_ blocks: [TranscriptBlock], taskReplies: Set<String> = []) -> Set<String> {
         var run = Set<String>()
-        var inTaskReply = false
         for block in blocks {
             guard case .message(let row, _) = block else { continue }
             switch row.kind {
             case .user, .post:
                 run = []
-                inTaskReply = false
             case .assistant:
-                let fromTask = taskReplies.contains(row.id)
-                if fromTask, !inTaskReply { run = [] }
-                inTaskReply = fromTask
+                // Each marked row is the first of a reply of its own.
+                if taskReplies.contains(row.id) { run = [] }
                 run.insert(row.id)
             case .handoff, .note, .widget, .image, .page, .failure: continue
             }

@@ -19,17 +19,30 @@ DEST="/Applications/Useful Bot.app"
 
 # A clean copy, not a merge: ditto over an existing bundle keeps files the new
 # build no longer has, and the copy no longer matches its signature.
+WAS_RUNNING=0
 if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
+  WAS_RUNNING=1
   echo "Quitting the running Useful Bot..."
   osascript -e 'tell application id "ai.useful.bot" to quit' >/dev/null 2>&1 || true
-  sleep 3
+  # Never replace the bundle under a running app: wait for it to go.
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
+    echo "Useful Bot is still running. Quit it and run this again." >&2
+    exit 1
+  fi
 fi
 NEW="$DEST.installing"
+# A half-copied stage left behind would be one more registered bundle.
+trap 'rm -rf "$NEW"' EXIT
 rm -rf "$NEW"
 ditto "$SRC" "$NEW"
 codesign --verify --strict "$NEW"
 rm -rf "$DEST"
 mv "$NEW" "$DEST"
+trap - EXIT
 touch "$DEST"
 
 "$LSREGISTER" -dump | awk '
@@ -43,3 +56,4 @@ done
 "$LSREGISTER" -f "$DEST"
 
 echo "Installed $DEST"
+if [ "$WAS_RUNNING" = 1 ]; then open "$DEST"; fi

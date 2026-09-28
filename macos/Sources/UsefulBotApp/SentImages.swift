@@ -35,6 +35,12 @@ enum SentImageStore {
     static func keep(_ images: [Attachment], botId: String) {
         let items = images.compactMap { image -> (URL, String)? in
             guard image.isImage, let dataUrl = image.dataUrl else { return nil }
+            // In memory at once, so the bubble drawn right after this send
+            // has its picture before the file lands. Attachments are capped
+            // at 1 MB each, so the decode here is small.
+            if let data = Attachments.bytes(ofDataURL: dataUrl), let picture = NSImage(data: data) {
+                cache.setObject(picture, forKey: "\(botId)/\(image.name)" as NSString)
+            }
             return (url(for: image.name, botId: botId), dataUrl)
         }
         guard !items.isEmpty else { return }

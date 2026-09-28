@@ -869,9 +869,14 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// working row counts from it, and a chat switched away from and back
     /// to keeps counting instead of starting again at 0.
     public private(set) var turnStartedAt: Date?
-    /// The bot's rows written in a turn a sub-agent's report opened. No owner
-    /// row sits above them, so this is what marks where that reply begins.
+    /// The first row the bot wrote in each turn a sub-agent's report opened.
+    /// No owner row sits above it, so this marks where that reply begins,
+    /// one per turn, even when two reports arrive back to back.
     public private(set) var taskReplyRowIds: Set<String> = []
+    /// Tasks that already reported that they are done. A report of theirs
+    /// delivered again, or an update wake that trails the completion, is
+    /// still the bot's and never an owner row.
+    private var settledTasks: Set<String> = []
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -989,6 +994,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         /// Opened by a sub-agent's report, not by the owner: there is no
         /// message of theirs to send again, so its failure offers no Retry.
         var fromTask = false
+        /// Whether that turn's first reply row has been marked.
+        var taskReplyMarked = false
         /// Whether a terminal has been applied for it. Any boundary event
         /// arriving after that is a replay, and acts on nothing.
         var ended = false
@@ -1348,6 +1355,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// of that stream skips everything before that message. So without this the
     /// projection kept `failed` from a turn that ended hours ago, and the next
     /// successful reply was still reported as "The turn failed."
+    private mutating func settle(_ task: String) {
+        runningTasks[task] = nil
+        settledTasks.insert(task)
+    }
+
     public mutating func beginTurn() {
         pending = true
         turnStartedAt = Date()
@@ -1484,6 +1496,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             } else {
                 leaveCurrentTurn()
             }
+            // A turn starting is where its clock starts: a follower sees this
+            // ahead of the message, and the last turn's start showed until then.
+            turnStartedAt = stamp ?? Date()
             pending = true
             failed = false
             failure = nil
@@ -1505,7 +1520,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // A sub-agent reporting back, known by eve's wording and by a task
             // this session started: an owner who pastes that wording is still
             // the owner.
-            let report = EveStream.taskReport(text).flatMap { runningTasks[$0.taskId] != nil ? $0 : nil }
+            let report = EveStream.taskReport(text).flatMap {
+                runningTasks[$0.taskId] != nil || settledTasks.contains($0.taskId) ? $0 : nil
+            }
             if let id = event.id, EveStream.isContinuationTurn(event.message ?? "") {
                 continuationRowId = id
             }
@@ -1531,7 +1548,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     guard canResume(known) || ownEcho, var stepped = unstash(named) else {
                         // A late report is still the bot's, never an owner row.
                         if let report {
-                            if report.settled { runningTasks[report.taskId] = nil }
+                            if report.settled { settle(report.taskId) }
                             return
                         }
                         lateUserRow(event, text: text, at: stamp, for: named)
@@ -1561,7 +1578,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // owner's: it opens the turn in which the bot answers, and shows
             // only in the working row.
             if let report {
-                if report.settled { runningTasks[report.taskId] = nil }
+                if report.settled { settle(report.taskId) }
                 turn.fromTask = true
                 failed = false
                 failure = nil
@@ -1599,6 +1616,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 failure = nil
                 turn.producedWork = false
                 pending = true
+                turnStartedAt = stamp ?? Date()
                 activity = .thinking
                 return
             }
@@ -1629,7 +1647,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 return
             }
             let userId = event.id ?? mintId("u")
-            turnStartedAt = stamp ?? turnStartedAt ?? Date()
+            turnStartedAt = stamp ?? Date()
             appendMessage(ChatMessage(
                 id: userId,
                 role: .user,
@@ -1748,7 +1766,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     journal: event.index
                 )
                 record.lastRowId = id
-                if record.fromTask { taskReplyRowIds.insert(id) }
+                if record.fromTask, !record.taskReplyMarked {
+                    taskReplyRowIds.insert(id)
+                    record.taskReplyMarked = true
+                }
             }
         case "message.completed":
             let full = EveStream.stripThreadPrefix(event.message ?? "")
@@ -1794,7 +1815,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                         journal: event.index
                     )
                     record.lastRowId = id
-                    if record.fromTask { taskReplyRowIds.insert(id) }
+                    if record.fromTask, !record.taskReplyMarked {
+                        taskReplyRowIds.insert(id)
+                        record.taskReplyMarked = true
+                    }
                 }
             }
             // Also on an empty completion: a later delta must not append to a
