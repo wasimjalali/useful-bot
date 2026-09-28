@@ -93,13 +93,25 @@ struct RootView: View {
         .ignoresSafeArea(.container, edges: .top)
         .background(WindowChrome(fullScreen: $windowFullScreen))
         .onChange(of: appearance) { _, next in
+            // Light and dark trade places over a quarter second rather than
+            // in one frame. The fade runs on each window's root layer, so it
+            // costs the app nothing per frame.
+            if !reduceMotion {
+                for window in NSApp.windows where window.isVisible {
+                    guard let layer = window.contentView?.superview?.layer ?? window.contentView?.layer else { continue }
+                    let fade = CATransition()
+                    fade.type = .fade
+                    fade.duration = DesignTokens.Motion.appearance
+                    fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    layer.add(fade, forKey: "appearance")
+                }
+            }
             NSApp.appearance = next.nsAppearance
         }
         .onAppear {
             NSApp.appearance = appearance.nsAppearance
             ThinScrollbar.install()
             InputModality.shared.install()
-            NSApp.applicationIconImage = BrandAssets.image("app/macos/UsefulBot.icns")
         }
         .task(id: reduceMotion) {
             guard !reduceMotion else { launchFinished = true; return }
@@ -131,12 +143,14 @@ struct RootView: View {
             composerIn = false
         }
         DispatchQueue.main.async {
-            // The chat has drawn under the flow by now. The flow fades, mostly
-            // gone by 100 ms on the curve, and the chat comes in after.
-            withAnimation(Theme.ease(0.2)) { firstRun.completeLanding() }
-            withAnimation(Theme.ease(0.5).delay(0.12)) { railIn = true }
-            withAnimation(Theme.ease(0.5).delay(0.18)) { stageIn = true }
-            withAnimation(Theme.ease(0.5).delay(0.3)) { composerIn = true }
+            // The chat has drawn under the flow by now. The flow fades while
+            // the chat comes in under it: waiting for the flow to clear first
+            // left a bare grey window for a moment, the one frame of the first
+            // run that looked like nothing was there.
+            withAnimation(Theme.ease(0.25)) { firstRun.completeLanding() }
+            withAnimation(Theme.ease(0.4).delay(0.04)) { railIn = true }
+            withAnimation(Theme.ease(0.4).delay(0.08)) { stageIn = true }
+            withAnimation(Theme.ease(0.4).delay(0.16)) { composerIn = true }
         }
     }
 
@@ -352,7 +366,6 @@ struct RootView: View {
                 )
             } else {
                 ChatView(
-                    onOpenConnectors: { connectorsOpen = true },
                     onDeleteRequest: { deleteBot = $0 }
                 )
             }
@@ -394,6 +407,8 @@ struct RootView: View {
 struct NativeDialog<Content: View>: View {
     let maxWidth: CGFloat
     let ariaLabel: String
+    /// Off for a dialog whose own header row carries the close button.
+    var closeRow = true
     let onClose: () -> Void
     @ViewBuilder var content: Content
 
@@ -403,13 +418,15 @@ struct NativeDialog<Content: View>: View {
                 .ignoresSafeArea()
                 .onTapGesture(perform: onClose)
             VStack(spacing: 0) {
-                HStack {
-                    Spacer(minLength: 0)
-                    NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
-                        .accessibilityLabel("Close \(ariaLabel)")
-                        .accessibilityIdentifier("dialog-close")
+                if closeRow {
+                    HStack {
+                        Spacer(minLength: 0)
+                        NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
+                            .accessibilityLabel("Close \(ariaLabel)")
+                            .accessibilityIdentifier("dialog-close")
+                    }
+                    .padding(8)
                 }
-                .padding(8)
                 content
             }
             .frame(maxWidth: maxWidth)
@@ -420,6 +437,8 @@ struct NativeDialog<Content: View>: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
             .popShadow()
+            // Never flush with the window's edges when the window is narrow.
+            .padding(.horizontal, 24)
         }
         .onExitCommand(perform: onClose)
     }

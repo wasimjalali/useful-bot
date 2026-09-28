@@ -9,7 +9,8 @@ macOS app ships to users, split into one PR per session.
 2. Settle that PR's master prompt and master plan together with Wasim. The section below is a
    starting point, not a spec.
 3. Build, verify live in the running app (screenshots, and 60 fps frame-by-frame review for
-   anything that moves), review (SWE-2 plus one Opus 5.5 reviewer), fix, merge, install.
+   anything that moves), review (one Opus 5.5 plus one Sonnet 5.5 reviewer, split by area), fix,
+   merge, install (`npm run install:app`).
 4. No `perf:check` per PR. It runs once, in PR 6.
 
 The mobile app (its own worktree) waits until after launch.
@@ -109,6 +110,23 @@ The bots are the brand. Make them feel cute and premium.
 
 ## PR 4: Landing page on bot.usefulbuild.com
 
+- **Carried over from PR 3 (macOS, do these first):**
+  - **Sub-agent messages without eve's wording still show as the owner's.** PR 3 hides a
+    sub-agent's result only when it arrives in eve's own form ("Background task task_… is
+    completed", "failed", "is cancelled", "needs input", "needs authorization", "update:") and
+    names a task the app saw start. eve's `wakeTaskMessageParentStep` can also send a
+    background tool's or workflow's message into the parent session as plain text, with no
+    prefix and no marker on the stream, so the app can't tell it from the owner. Not confirmed
+    whether the `agent` tool itself does this. Start by reproducing it on Test Bot. The likely
+    fix is upstream: have eve forward its internal `execution.background_task` kind on
+    `message.received` (a small patch or a vendor request), then filter on that instead of text.
+  - **A long chat's first open after a rebuild or update takes 9 to 11 s.** Chat snapshots are
+    keyed to the exact app binary (`AppModel.buildId`), so every new build, and so every
+    Sparkle update for users, replays each chat from zero on its first open. A same-build
+    relaunch lands in about 0.9 s. Measured in `evals/results/2026-09-29-pr3-polish.md`. Look at
+    keying snapshots by `ChatSnapshot.formatVersion` (which already guards the stored shape)
+    instead of the binary, with whatever projection-logic guard that needs.
+
 - **Page:**
   - A beautiful landing page for Useful Bot on the new subdomain `bot.usefulbuild.com`.
   - Its primary button is the macOS download:
@@ -128,6 +146,9 @@ The bots are the brand. Make them feel cute and premium.
   publishes.
 
 ## PR 5: Release readiness and live verification
+
+- **Before starting:** put `devin-dist-prompt.md` back from
+  `~/.Trash/useful-bot-root-cleanup-2026-09-28/` into `docs/plan/`.
 
 - **Clean-Mac check:** install and update E2E on a clean Mac, from `devin-dist-prompt.md` (the
   Devin macOS VM). PR 1's root cleanup moved that untracked prompt to

@@ -14,7 +14,6 @@ const opentype = require('opentype.js');
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const records = [];
 const sizes = [2048, 1024, 512, 256, 128, 64, 32];
-const sourceName = 'ChatGPT Image Sep 14, 2026, 01_40_55 AM.png';
 const read = (path) => readFile(resolve(root, path));
 const sha = (data) => createHash('sha256').update(data).digest('hex');
 const xml = (body, width = 1024, height = width, title = 'Useful Bot') =>
@@ -54,9 +53,9 @@ async function render(svg, width, height = width) {
   return sharp(Buffer.from(enlarged)).resize(width, height, { fit: 'contain', kernel: 'lanczos3' }).png().toBuffer();
 }
 
-async function pngOutput(path, input, size, { height = size, opaque = false, ...extra } = {}) {
+async function pngOutput(path, input, size, { height = size, opaque = false, background = '#000000', ...extra } = {}) {
   let image = sharp(input).resize(size, height, { fit: 'contain', kernel: 'lanczos3' }).toColourspace('srgb');
-  image = opaque ? image.flatten({ background: '#000000' }).removeAlpha() : image.ensureAlpha();
+  image = opaque ? image.flatten({ background }).removeAlpha() : image.ensureAlpha();
   if (!opaque) {
     const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
     // Remove faint Lanczos alpha ringing without changing the actual AA edge.
@@ -100,127 +99,122 @@ async function ico(images) {
   return Buffer.concat([header, ...chunks]);
 }
 
-const master = optimized((await read('brand/source/useful-bot-master.svg')).toString());
-assert(/viewBox="0 0 1024 1024"/.test(master), 'Master must use the 1024 artboard');
-const mark = await svgOutput('brand/svg/useful-bot-mark.svg', master);
-// Retain the identical silhouette, eyes and glasses. Remove only surface shading.
-const flat = await svgOutput('brand/svg/useful-bot-mark-flat.svg', master
-  .replace(/<defs>[\s\S]*?<\/defs>/, '')
-  .replace(/<path\b[^>]*fill="url\(#neck-depth\)"[^>]*\/>/g, '')
-  .replace(/fill="url\(#[^)]+\)"/g, 'fill="#FFFFFF"'));
-const badgeContents = (transparent) => `${transparent ? '<circle cx="512" cy="512" r="456" fill="#000000"/>' : black}<circle cx="512" cy="512" r="440" fill="none" stroke="#FFFFFF" stroke-width="32"/><g transform="translate(30.72 64) scale(.94)">${content(mark)}</g>`;
-await svgOutput('brand/svg/useful-bot-badge.svg', xml(badgeContents(false)));
-await svgOutput('brand/svg/useful-bot-badge-transparent.svg', xml(badgeContents(true)));
+// The logo is the bot's circle head in Original white. Three hand-written masters
+// share one face geometry (copied from avatar-face.svg) and differ only in placement.
+const headSource = (await read('brand/source/useful-bot-head.svg')).toString();
+const logoSource = (await read('brand/source/useful-bot-logo.svg')).toString();
+const appSource = (await read('brand/source/useful-bot-app-icon-macos.svg')).toString();
+for (const svg of [headSource, logoSource, appSource]) assert(/viewBox="0 0 1024 1024"/.test(svg), 'Masters must use the 1024 artboard');
+// The face group's children, in face units (circle centre 512,420, radius 352).
+const faceInner = headSource.match(/<g id="face"[^>]*>([\s\S]*)<\/g>\s*<\/svg>/)[1].trim();
+for (const svg of [logoSource, appSource]) assert(svg.includes(faceInner), 'Masters must share one face geometry');
+// Place the face so its circle has `diameter` and is centred on (cx, cy).
+const FACE_DIAMETER = 704;
+const face = (diameter, cx, cy, inner = faceInner) => {
+  const s = diameter / FACE_DIAMETER;
+  const m = [s, 0, 0, s, cx - s * 512, cy - s * 420].map(v => +v.toFixed(6));
+  return `<g transform="matrix(${m.join(' ')})">${inner}</g>`;
+};
+// The Welcome tile: a 76 pt face box in a 112 pt tile. The 768-unit box is 19/28 of the tile.
+const MARK_DIAMETER = 1024 * 19 / 28 * FACE_DIAMETER / 768;
+const markScale = MARK_DIAMETER / FACE_DIAMETER;
+const placed = (source, scale, cx = 512, cy = 512) => {
+  const m = source.match(/<g id="face" transform="matrix\(([^)]+)\)"/)[1].split(/[\s,]+/).map(Number);
+  const expected = [scale, 0, 0, scale, cx - scale * 512, cy - scale * 420];
+  return m.every((value, index) => Math.abs(value - expected[index]) < .001);
+};
+assert(placed(headSource, markScale) && placed(logoSource, markScale), 'Mark or logo placement drifted from the Welcome tile');
+assert(placed(appSource, 824 / 1024 * markScale), 'App icon head must keep the Welcome proportion inside the 824 tile');
+const mark = await svgOutput('brand/svg/useful-bot-mark.svg', optimized(headSource));
+const logo = await svgOutput('brand/svg/useful-bot-logo.svg', optimized(logoSource));
+const appIcon = await svgOutput('brand/svg/useful-bot-app-icon-macos.svg', optimized(appSource));
+// Inverse set for white surfaces: the same face with every colour flipped, so the
+// glasses, eyes and mouth stay readable on a black head.
+const invert = svg => svg.replace(/fill="#FFFFFF"(?=\/>)/, 'fill="#000000"').replaceAll('#141413', '#FFFFFF').replaceAll('stroke="#fff"', 'stroke="#000000"');
+const headInverseSource = (await read('brand/source/useful-bot-head-inverse.svg')).toString();
+const logoInverseSource = (await read('brand/source/useful-bot-logo-inverse.svg')).toString();
+const faceInverseInner = invert(faceInner);
+for (const svg of [headInverseSource, logoInverseSource]) {
+  assert(svg.includes(faceInverseInner), 'Inverse masters must be the face with its colours flipped');
+  assert(placed(svg, markScale), 'Inverse placement drifted from the Welcome tile');
+}
+const markInverse = await svgOutput('brand/svg/useful-bot-mark-inverse.svg', optimized(headInverseSource));
+const logoInverse = await svgOutput('brand/svg/useful-bot-logo-inverse.svg', optimized(logoInverseSource));
 
 const fontBytes = await read('brand/source/fonts/Inter-SemiBold.ttf');
 const font = opentype.parse(fontBytes.buffer.slice(fontBytes.byteOffset, fontBytes.byteOffset + fontBytes.byteLength));
-function word(x, y, size) {
+const glyphs = Array.from('Useful Bot', character => font.charToGlyph(character));
+const advance = (index, size) => {
+  const kerning = index + 1 < glyphs.length ? font.getKerningValue(glyphs[index], glyphs[index + 1]) : 0;
+  return (glyphs[index].advanceWidth + kerning) * size / font.unitsPerEm - size * .018;
+};
+// Ink width of the name: advances up to the last glyph, plus that glyph's outline.
+const wordWidth = size => glyphs.slice(0, -1).reduce((total, _, index) => total + advance(index, size), 0) + glyphs.at(-1).getBoundingBox().x2 * size / font.unitsPerEm;
+const capHeight = size => font.tables.os2.sCapHeight * size / font.unitsPerEm;
+function word(x, y, size, fill = '#FFFFFF') {
   // The fixed Latin name needs no contextual substitutions. Reading each glyph
   // avoids Inter's unsupported GSUB ccmp lookup in opentype.js, preserving its
   // actual outlines, advance widths and kerning pairs.
-  const glyphs = Array.from('Useful Bot', character => font.charToGlyph(character));
   const contours = [];
   let cursor = x;
   for (const [index, glyph] of glyphs.entries()) {
     contours.push(glyph.getPath(cursor, y, size).toPathData(3));
-    const kerning = index + 1 < glyphs.length ? font.getKerningValue(glyph, glyphs[index + 1]) : 0;
-    cursor += (glyph.advanceWidth + kerning) * size / font.unitsPerEm - size * .018;
+    cursor += advance(index, size);
   }
-  return `<path fill="#FFFFFF" d="${contours.join(' ')}"/>`;
+  return `<path fill="${fill}" d="${contours.join(' ')}"/>`;
 }
-const editableWord = (x, y, size) => `<text x="${x}" y="${y}" fill="#FFFFFF" font-family="Inter, sans-serif" font-weight="600" font-size="${size}" letter-spacing="-.018em">Useful Bot</text>`;
+const editableWord = (x, y, size, fill = '#FFFFFF') => `<text x="${x}" y="${y}" fill="${fill}" font-family="Inter, sans-serif" font-weight="600" font-size="${size}" letter-spacing="-.018em">Useful Bot</text>`;
 const fontStyle = '<style>@font-face{font-family:Inter;src:url(fonts/Inter-SemiBold.woff2) format("woff2");font-weight:600;font-style:normal}</style>';
+const r1 = v => Math.round(v * 10) / 10;
+// Horizontal: the head is 0.7 of the height, the gap half the head's radius, and
+// the name's cap height is centred on the head. Margins equal the vertical margin.
+const lockupH = (() => {
+  const height = 640, d = 448, size = 224, margin = (height - d) / 2, x = margin + d + d / 4;
+  return ['useful-bot-lockup-horizontal', Math.ceil(x + wordWidth(size) + margin), height, face(d, margin + d / 2, height / 2), r1(x), r1(height / 2 + capHeight(size) / 2), size];
+})();
+// Stacked: the head above the centred name, one cap height apart.
+const lockupS = (() => {
+  const width = 1024, d = 600, size = 160, top = 112, baseline = top + d + capHeight(size) * 2;
+  return ['useful-bot-lockup-stacked', width, Math.ceil(baseline + top), face(d, width / 2, top + d / 2), r1((width - wordWidth(size)) / 2), r1(baseline), size];
+})();
 const lockups = [
   ['useful-bot-wordmark', 740, 170, '', 12, 124, 136],
-  ['useful-bot-lockup-horizontal', 1800, 640, `<g transform="translate(-12 0) scale(.625)">${content(mark)}</g>`, 632, 384, 224],
-  ['useful-bot-lockup-horizontal-badge', 1800, 640, `<g transform="scale(.625)">${badgeContents(true)}</g>`, 672, 384, 216],
-  ['useful-bot-lockup-stacked', 1024, 1280, content(mark), 108, 1158, 160],
+  lockupH,
+  lockupS,
 ];
 for (const [name, width, height, artwork, x, y, size] of lockups) {
   await svgOutput(`brand/svg/${name}.svg`, xml(artwork + word(x, y, size), width, height));
   await svgOutput(`brand/source/${name}-text.svg`, xml(fontStyle + artwork + editableWord(x, y, size), width, height));
+  // Inverse: black name and black head, for white backgrounds.
+  const inverseArt = invert(artwork);
+  await svgOutput(`brand/svg/${name}-inverse.svg`, xml(inverseArt + word(x, y, size, '#000000'), width, height));
+  await svgOutput(`brand/source/${name}-inverse-text.svg`, xml(fontStyle + inverseArt + editableWord(x, y, size, '#000000'), width, height));
 }
 
-// Preserve interior RGB. Rebuild alpha from the hand-authored silhouette and
-// decontaminate its narrow edge band from the nearest sound interior pixel.
-// The original extraction contains both white debris and a dark matte seam.
-const supplied = await read(`brand/source/${sourceName}`);
-const mask = await render((await read('brand/source/raster-edge-mask.svg')).toString(), 1254);
-const originalPixels = await sharp(supplied).ensureAlpha().raw().toBuffer();
-const maskPixels = await sharp(mask).ensureAlpha().raw().toBuffer();
-const cleanedPixels = Buffer.from(originalPixels);
-const width = 1254, distance = new Uint16Array(width * width);
-for (let i = 0; i < distance.length; i++) distance[i] = maskPixels[i * 4 + 3] === 255 ? 10000 : 0;
-for (let y = 1; y < width; y++) for (let x = 1; x < width; x++) {
-  const i = y * width + x; distance[i] = Math.min(distance[i], distance[i - 1] + 1, distance[i - width] + 1);
-}
-for (let y = width - 2; y >= 0; y--) for (let x = width - 2; x >= 0; x--) {
-  const i = y * width + x; distance[i] = Math.min(distance[i], distance[i + 1] + 1, distance[i + width] + 1);
-}
-for (let y = 0; y < width; y++) for (let x = 0; x < width; x++) {
-  const i = y * width + x, pixel = i * 4, alpha = maskPixels[pixel + 3];
-  cleanedPixels[pixel + 3] = alpha;
-  if (!alpha) { cleanedPixels.fill(0, pixel, pixel + 3); continue; }
-  if (distance[i] > 3 && originalPixels[pixel + 3] >= 250) continue;
-  let closest = -1, closestDistance = Infinity;
-  for (let dy = -16; dy <= 16; dy++) for (let dx = -16; dx <= 16; dx++) {
-    const nx = x + dx, ny = y + dy;
-    if (nx < 0 || ny < 0 || nx >= width || ny >= width) continue;
-    const candidate = ny * width + nx, p = candidate * 4, d = dx * dx + dy * dy;
-    if (distance[candidate] < 4 || originalPixels[p + 3] < 250 || originalPixels[p] < 128 || d >= closestDistance) continue;
-    closest = p; closestDistance = d;
-  }
-  assert(closest >= 0, `No sound source pixel near raster edge ${x},${y}`);
-  originalPixels.copy(cleanedPixels, pixel, closest, closest + 3);
-}
-const cleaned = await sharp(cleanedPixels, { raw: { width, height: width, channels: 4 } }).png().toBuffer();
-await pngOutput('brand/source/useful-bot-raster-clean-1254.png', cleaned, 1254);
-const positioned = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: '#00000000' } })
-  .composite([{ input: await sharp(cleaned).resize(963, 963, { kernel: 'lanczos3' }).png().toBuffer(), left: 31, top: 32 }]).png().toBuffer();
-await pngOutput('brand/source/useful-bot-raster-master-1024.png', positioned, 1024, { family: 'primary' });
-
-async function primary(size, tiny = true) {
-  // Render 2048 directly from the cleaned 1254 source, avoiding a 1024 intermediate.
-  if (tiny && size <= 64) return render(flat, size);
-  const scaledSize = Math.round(size * 963 / 1024);
-  return sharp({ create: { width: size, height: size, channels: 4, background: '#00000000' } })
-    .composite([{ input: await sharp(cleaned).resize(scaledSize, scaledSize, { kernel: 'lanczos3' }).png().toBuffer(), left: Math.round(size * 31 / 1024), top: Math.round(size * 32 / 1024) }])
-    .png().toBuffer();
-}
-async function rasterBadge(size) {
-  const bot = await sharp(await primary(1024, false)).resize(963, 963).extract({ left: 0, top: 0, width: 963, height: 960 }).png().toBuffer();
-  const layer = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: '#000000' } })
-    .composite([{ input: bot, left: 31, top: 64 }, { input: await render(xml('<circle cx="512" cy="512" r="440" fill="none" stroke="#FFFFFF" stroke-width="32"/>'), 1024) }])
-    .png().toBuffer();
-  return sharp(layer).resize(size, size, { kernel: 'lanczos3' }).png().toBuffer();
-}
+// Rasters render straight from the vector masters.
 for (const size of sizes) {
-  const input = await primary(size);
-  await pngOutput(`brand/png/mark/useful-bot-${size}.png`, input, size, { family: 'primary', master: size <= 64 ? 'flat' : 'raster' });
-  await pngOutput(`brand/png/black/useful-bot-${size}.png`, input, size, { opaque: true, family: 'primary', master: size <= 64 ? 'flat' : 'raster' });
-}
-for (const size of [1024, 512, 256, 128, 64]) {
-  await pngOutput(`brand/png/badge/useful-bot-badge-${size}.png`, await rasterBadge(size), size, { opaque: true });
+  await pngOutput(`brand/png/mark/useful-bot-${size}.png`, await render(mark, size), size, { family: 'primary' });
+  await pngOutput(`brand/png/black/useful-bot-${size}.png`, await render(logo, size), size, { opaque: true, family: 'primary' });
+  await pngOutput(`brand/png/mark-inverse/useful-bot-${size}.png`, await render(markInverse, size), size, { family: 'primary' });
+  await pngOutput(`brand/png/white/useful-bot-${size}.png`, await render(logoInverse, size), size, { opaque: true, background: '#FFFFFF', family: 'primary-inverse' });
 }
 
-const faviconSvg = xml(black + content(flat));
+// Tabs are tiny, so the favicon's head fills more of its black square (84% of the width).
+const faviconSvg = xml(black + face(1024 * .84, 512, 512));
 await svgOutput('brand/favicon/favicon.svg', faviconSvg);
 const icoImages = [];
 for (const size of [16, 32, 48]) {
   const data = await render(faviconSvg, size);
   icoImages.push({ data, size });
-  if (size !== 48) await pngOutput(`brand/favicon/favicon-${size}x${size}.png`, data, size, { opaque: true, family: 'primary' });
+  if (size !== 48) await pngOutput(`brand/favicon/favicon-${size}x${size}.png`, data, size, { opaque: true, family: 'favicon' });
 }
 await output('brand/favicon/favicon.ico', await ico(icoImages), { kind: 'ico' });
-await pngOutput('brand/favicon/apple-touch-icon.png', await primary(180), 180, { opaque: true, family: 'primary' });
+await pngOutput('brand/favicon/apple-touch-icon.png', await render(logo, 180), 180, { opaque: true, family: 'primary' });
 for (const size of [192, 512]) {
-  await pngOutput(`brand/pwa/icon-${size}.png`, await primary(size), size, { opaque: true, family: 'primary' });
-  // 0.70 scales the primary artboard, including its safe area, about its center.
-  const reduced = Math.round(size * .7);
-  const offset = Math.round((size - reduced) / 2);
-  const maskable = await sharp({ create: { width: size, height: size, channels: 3, background: '#000000' } })
-    .composite([{ input: await primary(reduced), left: offset, top: offset }]).png().toBuffer();
-  await pngOutput(`brand/pwa/icon-maskable-${size}.png`, maskable, size, { opaque: true, family: 'maskable' });
+  await pngOutput(`brand/pwa/icon-${size}.png`, await render(logo, size), size, { opaque: true, family: 'primary' });
+  // The primary placement already keeps the head (radius 31% of the width) inside the
+  // W3C maskable safe circle (radius 40%), so the maskable icon is the full-bleed logo.
+  await pngOutput(`brand/pwa/icon-maskable-${size}.png`, await render(logo, size), size, { opaque: true, family: 'maskable' });
 }
 const manifest = {
   name: 'Useful Bot', short_name: 'Useful Bot', id: '/', start_url: '/', scope: '/',
@@ -238,17 +232,17 @@ for (const record of [...records].filter(r => /^brand\/(favicon|pwa)\//.test(r.p
   await output(`public/${name}`, await read(record.path), { ...record, path: `public/${name}` });
 }
 
-for (const size of [1024, 2048]) await pngOutput(`brand/app/useful-bot-app-icon-${size}.png`, await primary(size), size, { opaque: true, family: 'primary' });
-// The platform silhouette belongs only to macOS outputs. Archival app masters stay square.
-const macPlate = '<path fill="#000000" d="M285 100H739C863 100 924 161 924 285V739C924 863 863 924 739 924H285C161 924 100 863 100 739V285C100 161 161 100 285 100Z"/>';
+// Square, opaque app masters for pipelines that apply their own mask (iOS).
+for (const size of [1024, 2048]) await pngOutput(`brand/app/useful-bot-app-icon-${size}.png`, await render(logo, size), size, { opaque: true, family: 'primary' });
+// The iOS target's catalog takes copies, so they can't drift from the masters.
+await output('ios/UsefulBot/Resources/Assets.xcassets/AppIcon.appiconset/useful-bot-app-icon-1024.png', await read('brand/app/useful-bot-app-icon-1024.png'), { kind: 'png', width: 1024, height: 1024, alpha: false, family: 'primary' });
+await output('ios/UsefulBot/Resources/Assets.xcassets/useful-bot-badge.imageset/useful-bot-badge.svg', logo + '\n', { kind: 'svg' });
+// macOS draws its own icon silhouette: the app icon master carries the grid's rounded tile.
 const macEntries = [];
 for (const points of [16, 32, 128, 256, 512]) for (const scale of [1, 2]) {
   const size = points * scale;
   const name = `icon_${points}x${points}${scale === 2 ? '@2x' : ''}.png`;
-  const art = size <= 64 ? await render(flat, 824) : await primary(824, false);
-  const platformMaster = await sharp(await render(xml(macPlate), 1024))
-    .composite([{ input: art, left: 100, top: 100 }]).png().toBuffer();
-  const png = await sharp(platformMaster).resize(size, size, { kernel: 'lanczos3' }).png().toBuffer();
+  const png = await render(appIcon, size);
   await pngOutput(`brand/app/macos/UsefulBot.iconset/${name}`, png, size, { family: 'macos' });
   await pngOutput(`brand/app/AppIcon.appiconset/${name}`, png, size, { family: 'macos' });
   macEntries.push({ idiom: 'mac', size: `${points}x${points}`, scale: `${scale}x`, filename: name });
@@ -265,49 +259,54 @@ const icnsHeader = Buffer.alloc(8); icnsHeader.write('icns');
 icnsHeader.writeUInt32BE(8 + icnsChunks.reduce((total, chunk) => total + chunk.length, 0), 4);
 await output('brand/app/macos/UsefulBot.icns', Buffer.concat([icnsHeader, ...icnsChunks]), { kind: 'icns' });
 
-for (const name of ['avatar-1024', 'x-profile', 'linkedin-profile']) await pngOutput(`brand/social/${name}.png`, await primary(1024), 1024, { opaque: true, family: 'primary' });
-await pngOutput('brand/social/avatar-badge-1024.png', await rasterBadge(1024), 1024, { opaque: true });
+for (const name of ['avatar-1024', 'x-profile', 'linkedin-profile']) await pngOutput(`brand/social/${name}.png`, await render(logo, 1024), 1024, { opaque: true, family: 'primary' });
+// Link previews: head and name as one centred group on black.
 for (const [name, width, height] of [['og-image', 1200, 630], ['github-social-preview', 1280, 640]]) {
-  const markSize = 510;
-  const wordSize = width === 1200 ? 118 : 126;
-  const canvas = await sharp({ create: { width, height, channels: 3, background: '#000000' } })
-    .composite([
-      { input: await primary(markSize), left: 28, top: Math.round((height - markSize) / 2) },
-      { input: await render(xml(word(544, height / 2 + wordSize * .35, wordSize), width, height), width, height), left: 0, top: 0 },
-    ]).png().toBuffer();
-  await pngOutput(`brand/social/${name}.png`, canvas, width, { height, opaque: true });
+  const d = Math.round(height * .5), size = Math.round(d * .36), gap = d / 4;
+  const left = (width - d - gap - wordWidth(size)) / 2;
+  const art = xml(black.replace('V1024H0', `V${height}H0`).replace('H1024', `H${width}`) + face(d, left + d / 2, height / 2) + word(r1(left + d + gap), r1(height / 2 + capHeight(size) / 2), size), width, height);
+  await pngOutput(`brand/social/${name}.png`, await render(art, width, height), width, { height, opaque: true });
 }
 
 // Both the browser and native animation consume the same timing source.
+// The head floats and blinks. The wave and squash tracks belonged to the retired
+// full-body mascot; they stay in motion.json for the native decoder but drive nothing.
 const motion = JSON.parse(await read('brand/source/motion.json'));
 assert(motion.duration > 0 && Number.isFinite(motion.duration), 'Invalid motion duration');
-for (const key of ['float', 'wave', 'blink', 'squashX', 'squashY']) {
+for (const key of ['float', 'blink']) {
   const track = motion[key];
   assert(track.length >= 2 && track[0][0] === 0 && track.at(-1)[0] === 100, `Incomplete motion track: ${key}`);
   for (const [index, frame] of track.entries()) assert(frame.length === 2 && frame.every(Number.isFinite) && (!index || frame[0] > track[index - 1][0]), `Invalid keyframe: ${key}`);
 }
 const keyframes = (name, track, transform) => `@keyframes ${name}{${track.map(([at, value]) => `${at}%{transform:${transform(value, at)}}`).join('')}}`;
 const motionStyle = `<style>
-  #mascot{animation:ub-float 2.8s ease-in-out infinite;transform-origin:512px 680px}
-  #arm-right{animation:ub-wave 2.8s ease-in-out infinite;transform-origin:710px 725px}
+  #float{animation:ub-float 2.8s ease-in-out infinite}
   #eye-left,#eye-right{animation:ub-blink 2.8s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
-  #body{animation:ub-squash 2.8s ease-in-out infinite;transform-origin:512px 890px}
   ${keyframes('ub-float', motion.float, value => `translateY(${value}px)`)}
-  ${keyframes('ub-wave', motion.wave, value => `rotate(${value}deg)`)}
   ${keyframes('ub-blink', motion.blink, value => `scaleY(${value})`)}
-  ${keyframes('ub-squash', motion.squashX, (value, at) => `scale(${value},${motion.squashY.find(frame => frame[0] === at)[1]})`)}
-  @media(prefers-reduced-motion:reduce){#mascot,#arm-right,#eye-left,#eye-right,#body{animation:none;transform:none}}
+  @media(prefers-reduced-motion:reduce){#float,#eye-left,#eye-right{animation:none;transform:none}}
 </style>`.replaceAll('2.8s', `${motion.duration}s`);
-await svgOutput('brand/motion/useful-bot-animated.svg', xml(motionStyle + content(mark)));
+// The float runs on a wrapper: a CSS transform would replace the placement matrix.
+await svgOutput('brand/motion/useful-bot-animated.svg', xml(motionStyle + `<g id="float">${face(MARK_DIAMETER, 512, 512)}</g>`));
 
-// Native layers are exports of the approved geometry, never separate drawings.
-const motionLayers = ['arm-left', 'arm-right', 'body', 'head', 'glasses', 'eye-left', 'eye-right'];
-for (const part of motionLayers) {
-  const layer = optimize(mark, { plugins: [{ name: 'isolateNativeLayer', fn: () => ({ element: {
-    enter(node) {
-      if (node.attributes.id === 'mascot') node.children = node.children.filter(child => child.type === 'element' && child.attributes.id === part);
-    },
-  } }) }] }).data;
+// Native layers: the avatar face (with its hairline edge, since the app shows them on
+// light surfaces too) in the mark's placement, one group per layer.
+const avatarFaceSource = (await read('brand/source/avatar-face.svg')).toString();
+const faceGroup = id => {
+  const open = avatarFaceSource.indexOf(`<g id="${id}">`);
+  assert(open >= 0, `Face group missing: ${id}`);
+  let depth = 0, at = open;
+  const tags = /<\/?g\b[^>]*>/g;
+  tags.lastIndex = open;
+  for (let tag; (tag = tags.exec(avatarFaceSource));) {
+    depth += tag[0].startsWith('</') ? -1 : tag[0].endsWith('/>') ? 0 : 1;
+    if (!depth) { at = tag.index + tag[0].length; break; }
+  }
+  return avatarFaceSource.slice(open, at);
+};
+const motionLayers = { head: ['head'], mouth: ['mouth'], glasses: ['glasses'], 'eye-left': ['eye-left'], 'eye-right': ['eye-right'] };
+for (const [part, groups] of Object.entries(motionLayers)) {
+  const layer = xml(`<g transform="matrix(${markScale} 0 0 ${markScale} ${512 - markScale * 512} ${512 - markScale * 420})">${groups.map(faceGroup).join('')}</g>`);
   await pngOutput(`brand/motion/native/${part}.png`, await render(optimized(layer), 1024), 1024, { family: 'motion-layer', layer: part });
 }
 
@@ -325,25 +324,19 @@ for (const [color, { fill }] of Object.entries(palette)) {
   await pngOutput(`brand/avatars/${color}-256.png`, await render(vector, 256), 256, { family: 'avatar', avatarColor: color });
 }
 
-// Record original files too, so source provenance survives packaging.
-const sources = [];
-for (const name of (await readdir(resolve(root, 'brand/source'))).filter(n => n.startsWith('ChatGPT') && n.endsWith('.png')).sort()) {
-  const bytes = await read(`brand/source/${name}`);
-  const metadata = await sharp(bytes).metadata();
-  sources.push({ path: `brand/source/${name}`, sha256: sha(bytes), width: metadata.width, height: metadata.height, alpha: metadata.hasAlpha });
-}
 await output('brand/source/provenance.json', JSON.stringify({
-  rasterSource: sourceName, sourceScale: 963 / 1254, rasterTranslation: [31, 32],
-  vectorScale: .768, vectorTranslation: [30.72, 31.744],
-  vectorMasterSha256: sha(await read('brand/source/useful-bot-master.svg')),
-  edgeMaskSha256: sha(await read('brand/source/raster-edge-mask.svg')),
+  masters: {
+    head: { path: 'brand/source/useful-bot-head.svg', sha256: sha(await read('brand/source/useful-bot-head.svg')) },
+    logo: { path: 'brand/source/useful-bot-logo.svg', sha256: sha(await read('brand/source/useful-bot-logo.svg')) },
+    appIconMacos: { path: 'brand/source/useful-bot-app-icon-macos.svg', sha256: sha(await read('brand/source/useful-bot-app-icon-macos.svg')) },
+  },
+  headDiameter: { mark: +(MARK_DIAMETER / 1024).toFixed(4), favicon: .84, macosTile: +(MARK_DIAMETER / 1024).toFixed(4) },
   avatarPaletteSha256: sha(await read('brand/source/avatar-palette.json')),
   avatarFaceSha256: sha(await read('brand/source/avatar-face.svg')),
   motionTimingSha256: sha(await read('brand/source/motion.json')),
-  note: 'Interior RGB retained; a hand-authored silhouette and narrow edge RGB decontamination remove extraction debris. Interior alpha normalized. No AI enhancement or bitmap trace.',
+  note: 'Hand-written vector masters. The head reuses the avatar-face geometry unchanged, in Original white, without its hairline edge. Every raster renders from these SVGs. No raster source, AI enhancement or bitmap trace.',
   font: { family: 'Inter', weight: 600, version: '4.1', license: 'SIL OFL 1.1', source: 'https://github.com/rsms/inter/releases/tag/v4.1', sha256: sha(fontBytes) },
-  sources,
-}, null, 2) + '\n');
+}, null, 2) + '\n', { kind: 'provenance' });
 await writeFile(resolve(root, 'brand/asset-manifest.json'), JSON.stringify({ version: 1, files: records.sort((a, b) => a.path.localeCompare(b.path)) }, null, 2) + '\n');
 execFileSync(process.execPath, [resolve(root, 'scripts/check-brand-assets.mjs')], { cwd: root, stdio: 'inherit' });
 // Build a fresh archive. Stable file order and timestamps make repeat builds byte-identical.

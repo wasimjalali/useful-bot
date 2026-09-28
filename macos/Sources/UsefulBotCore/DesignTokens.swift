@@ -255,6 +255,8 @@ public enum DesignTokens {
         public static let overlay: Double = 0.2
         public static let dialog: Double = 0.25
         public static let scrollFade: Double = 0.22
+        /// Light and dark trading places.
+        public static let appearance: Double = 0.25
     }
 }
 

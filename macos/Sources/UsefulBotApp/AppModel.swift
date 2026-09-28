@@ -63,7 +63,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var transcriptBlocks: [TranscriptBlock] = [] {
         didSet {
             continuationIds = TranscriptBlocks.continuationIds(transcriptBlocks)
-            latestReplyRunIds = TranscriptBlocks.latestReplyRunIds(transcriptBlocks)
+            latestReplyRunIds = TranscriptBlocks.latestReplyRunIds(transcriptBlocks, taskReplies: projection.taskReplyRowIds)
             republishWindow()
         }
     }
@@ -84,11 +84,15 @@ final class AppModel: ObservableObject {
     /// every composer keystroke.
     private(set) var continuationIds = Set<String>()
     private(set) var latestReplyRunIds = Set<String>()
-    @Published private(set) var pending = false
+    @Published private(set) var pending = false {
+        didSet { if pending, !oldValue { activitySince = Date() } }
+    }
     /// A turn is running in this bot's session that this app did not send (a
     /// handoff, a connect resume, a routine). Drives the working row the same
     /// way `pending` does; the follower keeps it in step with the stream.
-    @Published private(set) var backgroundWorking = false
+    @Published private(set) var backgroundWorking = false {
+        didSet { if backgroundWorking, !oldValue, !pending { activitySince = Date() } }
+    }
     /// Failures with no turn to put them under (a send that never reached
     /// the server, a load that failed, a write that was refused), shown as a
     /// one-line note over the composer. A turn that failed is a row in the
@@ -127,6 +131,14 @@ final class AppModel: ObservableObject {
     /// What the live turn is doing, shown in the working row until the reply
     /// takes its place.
     @Published private(set) var activity: TurnActivity = .thinking
+    /// When the running turn began, for the working row's timer. It counts
+    /// the whole turn, from the send to the reply, through every step: a
+    /// timer that went back to 0 at each tool read as the bot starting over.
+    @Published private(set) var activitySince = Date()
+    /// When the oldest background sub-agent still out in this chat started,
+    /// or nil when none is. The working row stays up for it after the turn
+    /// that started it has ended.
+    @Published private(set) var runningTaskSince: Date?
     /// Operator identity plus build info for the settings dialog.
     @Published private(set) var appStatus: AppStatus?
     /// App settings dialog, opened from the rail account row or the composer.
@@ -688,9 +700,28 @@ final class AppModel: ObservableObject {
     }
 
     private func loadOperator() async {
+        // The Mac's own name first, so a slow or failed status call never
+        // leaves the placeholder showing.
+        let local = NSFullUserName().trimmingCharacters(in: .whitespaces)
+        if !local.isEmpty, operatorName == "Desktop owner" {
+            let words = local.split(separator: " ").compactMap(\.first)
+            operatorName = local
+            operatorInitials = words.count > 1 ? (String(words[0]) + String(words[1])).uppercased() : String(local.prefix(2)).uppercased()
+        }
         guard let status = try? await client.status() else { return }
         appStatus = status
-        if let name = status.name, !name.isEmpty, let initials = status.initials, !initials.isEmpty {
+        // The Mac account's full name ("Wasim Jalali") wins over the service's
+        // login-derived one ("Wasimjalali"), so the rail and Settings name the
+        // owner the same way.
+        let full = NSFullUserName().trimmingCharacters(in: .whitespaces)
+        let words = full.split(separator: " ").compactMap(\.first)
+        if !full.isEmpty, words.count > 1 {
+            operatorName = full
+            operatorInitials = (String(words[0]) + String(words[1])).uppercased()
+        } else if !full.isEmpty {
+            operatorName = full
+            operatorInitials = String(full.prefix(2)).uppercased()
+        } else if let name = status.name, !name.isEmpty, let initials = status.initials, !initials.isEmpty {
             operatorName = name
             operatorInitials = initials
         }
@@ -702,7 +733,12 @@ final class AppModel: ObservableObject {
     /// store's selection (a forced first run lands without touching the
     /// owner's store). The idle poll leaves such a selection alone until the
     /// next real pick.
+    /// Counts every pick of a bot, the one already open included, so a view
+    /// covering the chat (the new-chat picker) can step aside for it.
+    @Published private(set) var selectTick = 0
+
     func select(_ botId: String, persist: Bool = true) {
+        selectTick &+= 1
         localOnlySelection = persist ? nil : botId
         guard botId != selectedBotId else {
             guard persist else { return }
@@ -1207,7 +1243,8 @@ final class AppModel: ObservableObject {
                         recordSendError(
                             current.id,
                             projection.failure?.message ?? "The turn failed.",
-                            resendable: true,
+                            // A sub-agent's report turn has no owner message to resend.
+                            resendable: projection.retryableMarkId != nil,
                             retryAfter: projection.failure?.coolDownSeconds
                         )
                     } else if ["turn.started", "turn.completed", "turn.cancelled"].contains(event.type),
@@ -1527,6 +1564,7 @@ final class AppModel: ObservableObject {
         // `[file: ...]` line per image, and that echo is what the optimistic
         // row, the rail preview and the stream arming have to match.
         let images = sentAttachments.filter(\.isImage)
+        SentImageStore.keep(images, botId: bot.id)
         let echo = Attachments.echoedMessage(message, images: images)
         // Appended to the projection that is already on screen, never a fresh
         // one built from the durable rows. The durable store holds only the
@@ -1685,7 +1723,7 @@ final class AppModel: ObservableObject {
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
                 // A reply's preview is what the owner wrote, not the quote.
-                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: ReplyQuote.split(echo)?.body ?? echo)
+                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: Self.previewText(ReplyQuote.split(echo)?.body ?? echo))
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                     self.finishSend(botId: bot.id, generation: generation)
                     return
@@ -2094,6 +2132,38 @@ final class AppModel: ObservableObject {
         }.value
     }
 
+    /// What the rail and search show for a sent message: the owner's words,
+    /// or "Image" for a picture sent on its own. Never the lines naming it.
+    /// `PREVIEW_MAX` in shared/shell-store.ts.
+    private static let previewClip = 160
+
+    static func previewText(_ text: String) -> String {
+        let sent = Attachments.sentImages(in: text)
+        // The server clips at 160 UTF-16 units (JavaScript's own count), so
+        // the clip is measured the same way here.
+        let clipped = text.utf16.count >= previewClip
+        let body = clipped ? dropClippedImageTail(sent.text) : sent.text
+        let imageCount = sent.images.count + (body != sent.text ? 1 : 0)
+        if imageCount == 0 { return text }
+        return body.isEmpty ? (imageCount == 1 ? "Image" : "\(imageCount) images") : body
+    }
+
+    /// A clipped preview often ends inside its image lines. Only at its tail
+    /// do lines that start like them go: an owner who typed one mid-message
+    /// keeps it.
+    private static func dropClippedImageTail(_ text: String) -> String {
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var dropped = false
+        while let last = lines.last {
+            let line = last.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("Attached image: ") || line.hasPrefix("[file: ") || line.isEmpty else { break }
+            lines.removeLast()
+            dropped = dropped || !line.isEmpty
+        }
+        guard dropped else { return text }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func updateSession(botId: String, sessionId: String, preview: String) async {
         guard var current = store,
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
@@ -2408,9 +2478,61 @@ final class AppModel: ObservableObject {
     /// Only on a real change: the label is read off every streamed event, and
     /// republishing the same one would redraw the transcript on each delta.
     private func publishActivity() {
+        // A task that never reported back (eve lost it) must not keep the
+        // row up forever: after a few hours it is taken as gone.
+        let cutoff = Date().addingTimeInterval(-Self.subagentPatience)
+        let since = projection.runningTasks.values.filter { $0 > cutoff }.min()
+        if since != runningTaskSince || (since != nil && taskExpiry == nil) {
+            runningTaskSince = since
+            // A quiet chat publishes nothing more, so the row is taken down
+            // at the cutoff itself rather than at the next event.
+            taskExpiry?.cancel()
+            if let since {
+                // A little past the cutoff, so the check on waking is past it too.
+                let wait = max(1, since.addingTimeInterval(Self.subagentPatience).timeIntervalSinceNow + 0.1)
+                taskExpiry = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    self?.taskExpiry = nil
+                    self?.publishActivity()
+                }
+            } else {
+                taskExpiry = nil
+            }
+        }
+        // The turn's own start, so the timer survives leaving the chat.
+        if let started = projection.turnStartedAt, pending || backgroundWorking, activitySince != started {
+            activitySince = started
+        }
         guard projection.activity != activity else { return }
         activity = projection.activity
+        // A connector step names its app and shows its logo; the list of
+        // connected apps is otherwise only read when the pane opens.
+        if case .tool("connector_execute", _) = activity, !connectorAppsFetched, !connectorAppsLoading {
+            Task { await loadConnectorApps() }
+        }
     }
+
+    /// The connected apps, for a connector step's logo and name. Read on its
+    /// own, not through the Connectors pane's list: that one pages, filters
+    /// by the pane's search and reports its errors to the owner.
+    @Published private(set) var connectorApps: [ConnectorToolkit] = []
+    private var connectorAppsLoading = false
+    /// Read once, and again after the Connectors pane has loaded (an app
+    /// connected there shows its logo on the next step). Zero connected apps
+    /// is an answer too, not a reason to ask on every step.
+    private var connectorAppsFetched = false
+
+    private func loadConnectorApps() async {
+        connectorAppsLoading = true
+        defer { connectorAppsLoading = false }
+        guard let payload = try? await client.connectors(search: "", limit: 200) else { return }
+        connectorApps = payload.toolkits.filter(\.connected)
+        connectorAppsFetched = true
+    }
+
+    private static let subagentPatience: TimeInterval = 3 * 3600
+    private var taskExpiry: Task<Void, Never>?
 
     // MARK: - Approvals
 
@@ -2776,6 +2898,8 @@ final class AppModel: ObservableObject {
                 connectorSearch = search
             }
             connectors = payload
+            // The pane saw the latest list; the working row reads it afresh.
+            connectorAppsFetched = false
             if let code = payload.error {
                 let message = code == "key_rejected" ? Self.connectorKeyRejected : Self.connectorUpstreamError
                 if !quiet || connectorsError == nil || Self.connectorLoadErrors.contains(connectorsError ?? "") {
@@ -3047,7 +3171,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func perform(_ action: [String: Any]) {
+    func perform(_ action: [String: Any], onSuccess: (@MainActor () -> Void)? = nil) {
         // Captured at the call, not when the queued work runs: a switch that
         // lands ahead of it in the chain would otherwise make the action's
         // outcome belong to the new bot.
@@ -3057,6 +3181,9 @@ final class AppModel: ObservableObject {
             let epoch = self.storeEpoch
             do {
                 let result = try await self.client.shellActionResult(action)
+                // The server's word is what counts, whatever the view has
+                // moved on to since.
+                onSuccess?()
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.applyStore(result.store)
                 // The roster change stood; something hanging off it did not.
@@ -3224,7 +3351,9 @@ final class AppModel: ObservableObject {
                 _ = try? await self?.client.cancel(sessionId: running)
             }
         }
-        perform(ShellActions.deleteBot(botId: botId))
+        // Its pictures go only once the server has dropped the bot: a
+        // refused delete leaves the chat, pictures and all.
+        perform(ShellActions.deleteBot(botId: botId)) { SentImageStore.forget(botId: botId) }
     }
 
     /// New Bot from the rail: clear the thread server-side and start fresh.
@@ -3888,6 +4017,8 @@ final class AppModel: ObservableObject {
                 awaitingReply = true
                 anchor = nil
             case .assistant:
+                // A sub-agent's report turn has no owner row above its reply.
+                if projection.taskReplyRowIds.contains(row.id) { awaitingReply = true }
                 if awaitingReply {
                     anchor = row.id
                     awaitingReply = false
@@ -4060,7 +4191,7 @@ final class AppModel: ObservableObject {
                 }
                 let outcome = await self.uploadOne(url)
                 if let attachment = outcome.attachment {
-                    self.attachments.append(attachment)
+                    self.attachments.append(SentImageStore.named(attachment))
                 } else if let message = outcome.error {
                     self.attachError = message
                 }

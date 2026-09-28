@@ -288,10 +288,13 @@ struct FirstRunView: View {
     @State private var visits = 0
     @State private var opacity: [String: Double] = [:]
     @State private var offset: [String: CGFloat] = [:]
-    /// Welcome stays mounted through its exit so the mark can finish leaving.
+    @State private var yOffset: [String: CGFloat] = [:]
+    /// Welcome stays mounted through its exit so it can finish fading.
     @State private var welcomeMounted: Bool
     @State private var welcomeLeaving = false
     @State private var pendingDrop: DispatchWorkItem?
+    /// True from a step change until its transition has settled.
+    @State private var moving = false
     /// Reopened over the chat, the flow fades in once it has drawn; at
     /// launch it is simply there.
     @State private var revealed: Bool
@@ -318,8 +321,10 @@ struct FirstRunView: View {
                 ForEach(layers, id: \.key) { layer in
                     page(layer.step)
                         .opacity(opacity[layer.key] ?? 1)
-                        .offset(y: offset[layer.key] ?? 0)
-                        .allowsHitTesting(layer == layers.last)
+                        .offset(x: offset[layer.key] ?? 0, y: yOffset[layer.key] ?? 0)
+                        // Not while it is still invisible: a fast second click
+                        // landed on the next page before it faded in.
+                        .allowsHitTesting(layer == layers.last && !moving)
                         .accessibilityHidden(layer != layers.last)
                 }
             }
@@ -351,6 +356,10 @@ struct FirstRunView: View {
         case .connect:
             ConnectPage(
                 onPick: pick,
+                onContinue: {
+                    model.providerConnections.forEach { controller.noteConnected($0.id) }
+                    controller.go(.model)
+                },
                 onSkip: { controller.finish(model) }
             )
         case .signIn(let entry):
@@ -385,15 +394,16 @@ struct FirstRunView: View {
         }
     }
 
-    /// Welcome to Connect: the mark shrinks toward the top while the content
-    /// cross-fades and rises 16 pt. Between steps: the old page clears, then
-    /// the next slides 24 pt and fades up; Back comes from the other side.
-    /// Reduced motion keeps the fades and drops every move.
+    /// Welcome to Connect: all of Welcome fades out in place while the list
+    /// fades in and rises 16 pt. Between steps: an overlapping crossfade with a
+    /// short slide, forward moving left and Back the other way. Reduced motion
+    /// is a plain short crossfade.
     ///
     /// The next page is mounted first, invisible, and the motion starts on
     /// the following run-loop turn, after it has drawn.
     private func move(from old: FirstRunController.Step, to next: FirstRunController.Step) {
         pendingDrop?.cancel()
+        moving = true
         let fromWelcome = old == .welcome
         let direction: CGFloat = next.depth < old.depth ? -1 : 1
         visits += 1
@@ -404,33 +414,45 @@ struct FirstRunView: View {
         withTransaction(still) {
             layers = (outgoing.map { [$0] } ?? []) + [incoming]
             opacity[incoming.key] = 0
-            offset[incoming.key] = reduceMotion ? 0 : (fromWelcome ? 16 : 24 * direction)
+            offset[incoming.key] = reduceMotion ? 0 : (fromWelcome ? 0 : 28 * direction)
+            yOffset[incoming.key] = reduceMotion || !fromWelcome ? 0 : 16
         }
         DispatchQueue.main.async {
+            let curve: Animation = reduceMotion ? .easeOut(duration: 0.2) : Theme.ease(0.32)
             if fromWelcome {
-                withAnimation(reduceMotion ? .easeOut(duration: 0.2) : Theme.ease(0.42)) { welcomeLeaving = true }
-            } else {
-                if let outgoing {
-                    withAnimation(reduceMotion ? .easeOut(duration: 0.1) : Theme.ease(0.1)) {
-                        opacity[outgoing.key] = 0
-                        if !reduceMotion { offset[outgoing.key] = -6 * direction }
-                    }
+                withAnimation(reduceMotion ? .easeOut(duration: 0.2) : Theme.ease(0.16)) { welcomeLeaving = true }
+            } else if let outgoing {
+                // Out quickly, then the next page in: at a full-length
+                // crossfade the two pages sat half-visible over each other,
+                // text on text, for several frames.
+                withAnimation(reduceMotion ? .easeOut(duration: 0.2) : Theme.ease(0.15)) {
+                    opacity[outgoing.key] = 0
+                    if !reduceMotion { offset[outgoing.key] = -20 * direction }
                 }
             }
-            // The exit is all but done by 50 ms on the front-loaded curve.
-            let enter: Animation = reduceMotion ? .easeOut(duration: 0.22) : Theme.ease(fromWelcome ? 0.36 : 0.3)
-            withAnimation(enter.delay(fromWelcome ? 0.08 : 0.05)) {
+            // The next page waits until the last one is nearly gone. The
+            // stage itself stays, so there is never a bare window.
+            withAnimation(curve.delay(reduceMotion ? 0 : (fromWelcome ? 0.13 : 0.11))) {
                 opacity[incoming.key] = 1
                 offset[incoming.key] = 0
+                yOffset[incoming.key] = 0
             }
             let drop = DispatchWorkItem {
                 layers.removeAll { $0 != incoming }
                 opacity = opacity.filter { $0.key == incoming.key }
                 offset = offset.filter { $0.key == incoming.key }
+                yOffset = yOffset.filter { $0.key == incoming.key }
                 if welcomeLeaving { welcomeMounted = false }
+                moving = false
             }
             pendingDrop = drop
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: drop)
+            // Clickable again once the new page is mostly in, not only when
+            // the old one is dropped: a click at 0.3 s was swallowed.
+            let settle = visits
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if visits == settle { moving = false }
+            }
         }
     }
 }
@@ -441,20 +463,16 @@ private struct WelcomePage: View {
     @EnvironmentObject private var model: AppModel
     let leaving: Bool
     let onStart: () -> Void
+    @State private var hop = 0
 
     private var ready: Bool { model.phase == .ready && model.providersLoaded }
 
     var body: some View {
         VStack(spacing: 28) {
-            Image(nsImage: BrandAssets.image("png/black/useful-bot-256.png"))
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
+            BotFaceView(color: "ink", size: 76, hop: hop)
                 .frame(width: 112, height: 112)
-                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.xxl, style: .continuous))
-                .scaleEffect(leaving ? 0.4 : 1, anchor: .top)
-                .offset(y: leaving ? -150 : 0)
-                .opacity(leaving ? 0 : 1)
+                .background(Color.black, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xxl, style: .continuous))
+                .accessibilityElement()
                 .accessibilityLabel("Useful Bot")
             VStack(spacing: 10) {
                 Text("Welcome to Useful Bot")
@@ -466,17 +484,17 @@ private struct WelcomePage: View {
                     .foregroundStyle(Theme.C.inkMuted)
                     .multilineTextAlignment(.center)
             }
-            .opacity(leaving ? 0 : 1)
-            .offset(y: leaving ? -16 : 0)
-            // The words clear fast so they never sit under the next page.
-            .animation(Theme.ease(0.14), value: leaving)
             action
-                .opacity(leaving ? 0 : 1)
-                .offset(y: leaving ? -16 : 0)
-                .animation(Theme.ease(0.14), value: leaving)
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The whole page leaves together, in place, so no piece of it sits
+        // over the next step.
+        .opacity(leaving ? 0 : 1)
+        .onAppear {
+            // One friendly hop once the page has drawn. Reduced motion holds still.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { hop += 1 }
+        }
     }
 
     @ViewBuilder
@@ -538,6 +556,25 @@ private struct WelcomePage: View {
 }
 
 // MARK: - Shared pieces
+
+/// One frame for every step: a 520 pt column centred in the stage, scrolling
+/// only when the window is shorter than the content.
+private struct StepFrame<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        GeometryReader { geo in
+            ScrollView {
+                content
+                    .frame(width: 520)
+                    .padding(.vertical, 40)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height)
+            }
+            .scrollIndicators(.never)
+            .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+}
 
 private struct StepHeader: View {
     var eyebrow: String?
@@ -666,6 +703,7 @@ private func siteHost(_ link: String?) -> String? {
 private struct ConnectPage: View {
     @EnvironmentObject private var model: AppModel
     let onPick: (CatalogPublic) -> Void
+    let onContinue: () -> Void
     let onSkip: () -> Void
 
     @State private var subsOpen = false
@@ -673,13 +711,9 @@ private struct ConnectPage: View {
 
     var body: some View {
         let lists = FirstRunCatalog.lists(model.providerCatalog)
-        ScrollView {
+        StepFrame {
             VStack(alignment: .leading, spacing: 20) {
-                StepHeader(
-                    eyebrow: "Step 1 of 2",
-                    title: "Connect a provider",
-                    detail: "Use a subscription you already pay for, or an API key. You can add more later in Settings."
-                )
+                StepHeader(eyebrow: "Step 1 of 2", title: "Connect a provider")
                 if model.providerCatalog.isEmpty {
                     loading
                 } else {
@@ -688,21 +722,21 @@ private struct ConnectPage: View {
                     group("Or use an API key", top: lists.keys, more: lists.moreKeys,
                           moreTitle: "More providers", open: $keysOpen, id: "keys")
                 }
-                HStack {
-                    Spacer(minLength: 0)
-                    TextLinkButton(title: "Skip for now", action: onSkip)
-                        .accessibilityIdentifier("first-run-skip")
-                    Spacer(minLength: 0)
+                if model.providerConnections.isEmpty {
+                    HStack {
+                        Spacer(minLength: 0)
+                        TextLinkButton(title: "Skip for now", action: onSkip)
+                            .accessibilityIdentifier("first-run-skip")
+                        Spacer(minLength: 0)
+                    }
+                } else {
+                    NativeButton(kind: .primary, action: onContinue) {
+                        Text("Continue").frame(maxWidth: .infinity)
+                    }
+                    .accessibilityIdentifier("first-run-continue")
                 }
             }
-            .frame(width: 520)
-            .padding(.top, 44)
-            .padding(.bottom, 24)
-            .frame(maxWidth: .infinity)
         }
-        // A scroller that appears once the groups open would narrow the
-        // centred column and shift it sideways.
-        .scrollIndicators(.never)
     }
 
     @ViewBuilder
@@ -931,11 +965,8 @@ private struct SignInPage: View {
             }
             codeCard
             status
-            Spacer(minLength: 0)
         }
-        .frame(width: 460)
-        .padding(.top, 56)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .stepFrame()
         .onAppear(perform: start)
         .onChange(of: model.oauthCompletions) { _, count in
             guard count > completionsAtStart else { return }
@@ -1169,11 +1200,8 @@ private struct KeyPage: View {
                 Text(checking ? "Checking the key…" : "Connect").frame(maxWidth: .infinity)
             }
             .accessibilityIdentifier("first-run-connect-key")
-            Spacer(minLength: 0)
         }
-        .frame(width: 460)
-        .padding(.top, 56)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .stepFrame()
         .onAppear {
             model.clearConnectError()
             focused = true
@@ -1247,11 +1275,11 @@ private struct ModelPage: View {
 
     private static func key(_ option: RoleModelOption) -> String { "\(option.connectionId)::\(option.id)" }
 
-    /// The connections this run connected, else every connected one.
+    /// Every connected provider, the ones connected in this run first.
     private var scope: [String] {
         let live = model.providerConnections.map(\.id)
         let fromRun = connected.filter { live.contains($0) }
-        return fromRun.isEmpty ? live : fromRun
+        return fromRun + live.filter { !fromRun.contains($0) }
     }
 
     /// The current default when it is one of the shown models; otherwise the
@@ -1313,7 +1341,7 @@ private struct ModelPage: View {
                 .uvScroll()
                 // As tall as the stage allows. A fixed 420 pt hid a third
                 // provider below the fold with no scroller to say so.
-                .frame(maxHeight: max(180, pageHeight - 330))
+                .frame(maxHeight: max(180, pageHeight - 380))
                 .fixedSize(horizontal: false, vertical: true)
             }
             if let error {
@@ -1325,12 +1353,8 @@ private struct ModelPage: View {
                 Text(saving ? "Saving" : "Start using Useful Bot").frame(maxWidth: .infinity)
             }
             .accessibilityIdentifier("first-run-finish")
-            Spacer(minLength: 0)
         }
-        .frame(width: 520)
-        .padding(.top, 40)
-        .padding(.bottom, 24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .stepFrame()
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
         .onAppear { if picked == nil { picked = suggested } }
         .onChange(of: suggested) { _, next in if picked == nil { picked = next } }
@@ -1484,4 +1508,9 @@ private struct ModelPage: View {
             }
         }
     }
+}
+
+private extension View {
+    /// Wraps a step's content in the shared frame.
+    func stepFrame() -> some View { StepFrame { self } }
 }

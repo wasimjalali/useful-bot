@@ -41,7 +41,16 @@ A UI change is verified with a real screenshot of the running macOS app, not wit
 alone. Any live check that sends a message goes to the bot named "Test Bot": pick it in
 the rail, or create it first if it is missing. Never send a test turn to any other bot;
 those hold real conversations. `/Applications/Useful Bot.app` is the installed copy people
-use; rebuilding means `npm run build:app` then `ditto` into `/Applications`.
+use; rebuilding means `npm run build:app` then `npm run install:app` (not a bare `ditto`).
+
+**Logo and icon gotcha.** Launch Services keeps a record for every bundle with the id
+`ai.useful.bot` it has ever seen: `macos/dist`, agent scratch copies, old "before" builds. At
+launch the Dock can take its icon from any of them, so a stale copy flashes an old logo (the
+very old terminal one, 2026-09-28) until the app sets its own. `install:app` unregisters every
+other copy and re-registers the installed one with a fresh date. When the logo changes: update
+`brand/app/macos/UsefulBot.icns`, rebuild, run `install:app`, and check that
+`/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -dump | grep -B8 "identifier: *ai.useful.bot"` lists only `/Applications`. Never
+leave extra copies of the app lying around, including in scratch folders.
 
 `build:app` also builds the web service. The installed app serves that build only while the
 sources under `web/`, `shared/`, `agent/`, `router/src` and `brand/source` still hash to what it

@@ -235,11 +235,17 @@ struct RailView: View {
     private func unassignedSection(_ store: ShellStore) -> some View {
         let bots = store.sectionBots(nil)
         if !bots.isEmpty {
+            // With no sections of the owner's own there is nothing to be
+            // unassigned from: a new install showed "Unassigned" over its one
+            // bot. The header comes in with the first section.
+            let headed = !store.sections.isEmpty
             VStack(alignment: .leading, spacing: 2) {
-                SectionHeader(title: "Unassigned", collapsed: store.collapsedUnassigned) {
-                    model.toggleSection("unassigned")
+                if headed {
+                    SectionHeader(title: "Unassigned", collapsed: store.collapsedUnassigned) {
+                        model.toggleSection("unassigned")
+                    }
                 }
-                if !store.collapsedUnassigned {
+                if !headed || !store.collapsedUnassigned {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(bots) { bot in
                             BotRowView(
@@ -698,7 +704,8 @@ extension AppModel {
             return (railActivity(bot.id) ?? .thinking).label.uppercased()
         }
         if replyReady.contains(bot.id) { return "REPLY READY" }
-        return fallback.isEmpty ? nil : fallback.uppercased()
+        if fallback.isEmpty || sameAsName(fallback, bot.name) { return nil }
+        return fallback.uppercased()
     }
 }
 
@@ -962,7 +969,7 @@ private struct PinnedCardView: View {
     /// "Finance · Senior bookkeeper": the section a pinned bot came from stays
     /// visible on the card, so pinning never hides where it belongs.
     private var badge: String {
-        [sectionName, bot.label.isEmpty ? nil : bot.label]
+        [sectionName, bot.label.isEmpty || sameAsName(bot.label, bot.name) ? nil : bot.label]
             .compactMap { $0 }
             .joined(separator: " · ")
             .uppercased()

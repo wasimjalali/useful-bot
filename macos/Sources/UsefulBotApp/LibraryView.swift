@@ -34,7 +34,9 @@ struct LibraryView: View {
     private static let gridHeight: CGFloat = 560
 
     var body: some View {
-        NativeDialog(maxWidth: 1040, ariaLabel: "Library", onClose: onClose) {
+        // The shared dialog, with the close button on the title's row rather
+        // than a row of its own.
+        NativeDialog(maxWidth: 1040, ariaLabel: "Library", closeRow: false, onClose: onClose) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
                     if selected != nil {
@@ -51,7 +53,7 @@ struct LibraryView: View {
                         .pointerOnHover()
                         .accessibilityLabel("Back to Library")
                     }
-                    Text(selected?.title ?? "Library")
+                    Text(selected?.displayTitle ?? "Library")
                         .font(.system(size: DesignTokens.FontSize.settingsTitle, weight: .semibold))
                         .foregroundStyle(Theme.C.ink)
                         .lineLimit(1)
@@ -63,9 +65,12 @@ struct LibraryView: View {
                             NSWorkspace.shared.open(url)
                         }
                     }
+                    NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
+                        .accessibilityLabel("Close Library")
+                        .accessibilityIdentifier("dialog-close")
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 4)
+                .padding(.top, 14)
 
                 if let selected {
                     LibraryDetail(
@@ -182,7 +187,7 @@ struct LibraryView: View {
             .frame(maxWidth: .infinity)
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 196, maximum: 260), spacing: 16)], spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 196), spacing: 16)], spacing: 16) {
                     ForEach(visible) { item in
                         Button {
                             selected = item
@@ -191,12 +196,22 @@ struct LibraryView: View {
                         }
                         .buttonStyle(.plain)
                         .pointerOnHover()
-                        .accessibilityLabel(Text(item.title))
+                        .accessibilityLabel(Text(item.displayTitle))
                     }
                 }
-                .padding(20)
+                .padding(.vertical, 20)
+                .padding(.leading, 20)
+                // With a mouse attached macOS shows legacy scroll bars, whose
+                // lane takes width on the right, and the grid sat 16 pt off
+                // centre. That lane counts toward the right margin.
+                .padding(.trailing, max(4, 20 - Self.scrollerLane))
             }
         }
+    }
+
+    private static var scrollerLane: CGFloat {
+        NSScroller.preferredScrollerStyle == .legacy
+            ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
     }
 
     private var botNames: [(id: String, name: String)] {
@@ -355,7 +370,7 @@ private struct LibraryTile: View {
                         .strokeBorder(Theme.C.border, lineWidth: 1)
                 )
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
+                Text(item.displayTitle)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
@@ -560,7 +575,7 @@ struct LibraryDetail: View {
             withAnimation(.easeOut(duration: DesignTokens.Motion.overlay)) { pageHovering = inside }
         }
         .help("Open in your browser")
-        .accessibilityLabel(Text(item.title))
+        .accessibilityLabel(Text(item.displayTitle))
         .accessibilityHint("Opens the page in your browser")
     }
 
@@ -739,5 +754,56 @@ actor LibraryThumbnails {
         let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         cache.setObject(image, forKey: key)
         return image
+    }
+}
+
+extension MediaItem {
+    /// A short title for the grid. The stored title is the prompt cut into a
+    /// file name (colons lost), so images get a fresh one from the prompt:
+    /// its first clause without filler words or aspect ratios, about 40
+    /// characters at a word boundary. Pages and drawings keep their own.
+    var displayTitle: String {
+        guard kind == "image" else { return title }
+        // Worked out once per prompt: the grid asks on every layout pass.
+        if let cached = Self.titleCache.object(forKey: prompt as NSString) { return cached as String }
+        let made = Self.makeTitle(prompt: prompt, fallback: title)
+        Self.titleCache.setObject(made as NSString, forKey: prompt as NSString)
+        return made
+    }
+
+    private static let titleCache = NSCache<NSString, NSString>()
+
+    private static func makeTitle(prompt: String, fallback title: String) -> String {
+        let line = prompt.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        var text = line.trimmingCharacters(in: .whitespaces)
+        func strip(_ pattern: String) {
+            text = text.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+        }
+        strip(#"\b(16|9|4|3|21|2|1)\s*[: ]\s*(9|16|3|4|5|1|2)\b(?=\s|$)"#)
+        strip(#"\b(aspect ratio|photorealistic)\b"#)
+        text = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        var previous = ""
+        while previous != text {
+            previous = text
+            strip(#"^\s*(please\s+)?(create|generate|make|design|draw|produce|render)\s+(me\s+)?"#)
+            strip(#"^\s*(a|an|the|completed|finished|final|professional)\s+"#)
+        }
+        // First clause: up to a sentence end, comma or semicolon (colons stay).
+        if let end = text.range(of: #"[.,;!?](\s|$)|\s[-\u2013\u2014]\s"#, options: .regularExpression) {
+            text = String(text[..<end.lowerBound])
+        }
+        text = text.trimmingCharacters(in: .whitespaces)
+        if text.count > 40 {
+            let cut = String(text.prefix(40))
+            text = (cut.lastIndex(of: " ").map { String(cut[..<$0]) } ?? cut)
+        }
+        text = text.trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-"))
+        // A cut that lands after "for an" or "with the" reads as broken off.
+        let dangling: Set<String> = ["a", "an", "the", "for", "of", "with", "and", "or", "to", "in", "on", "at", "by", "from"]
+        var words = text.split(separator: " ")
+        while words.count > 1, let last = words.last, dangling.contains(last.lowercased()) { words.removeLast() }
+        text = words.joined(separator: " ")
+        guard let first = text.first else { return title }
+        return first.uppercased() + text.dropFirst()
     }
 }

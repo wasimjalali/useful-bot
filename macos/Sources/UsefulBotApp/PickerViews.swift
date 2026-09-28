@@ -19,9 +19,10 @@ struct NewChatPickerView: View {
 
     private var bots: [ShellBot] {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        let visible = store.bots.filter { !$0.hidden }
+        // Hidden bots and the frozen "Perf ..." fixtures only show when searched for.
+        let visible = store.bots.filter { !$0.hidden && !$0.name.hasPrefix("Perf ") }
         guard !needle.isEmpty else { return visible }
-        return visible.filter { bot in
+        return store.bots.filter { bot in
             "\(bot.name) \(bot.label) \(bot.description) \(bot.lastPreview)"
                 .lowercased()
                 .contains(needle)
@@ -106,8 +107,8 @@ struct NewChatPickerView: View {
                                         .foregroundStyle(Theme.C.ink)
                                         .lineLimit(1)
                                     Spacer(minLength: 0)
-                                    if !bot.label.isEmpty {
-                                        BotLabelChip(text: bot.label)
+                                    if !bot.label.isEmpty, !sameAsName(bot.label, bot.name) {
+                                        BotLabelChip(text: bot.label, fitsFully: true)
                                     }
                                 }
                             }
@@ -145,6 +146,8 @@ struct NewChatPickerView: View {
         }
         .onAppear { focused = true }
         .onExitCommand(perform: onClose)
+        // Picking a bot in the rail while the picker is open closes it.
+        .onChange(of: model.selectTick) { _, _ in onClose() }
     }
 
     private func hitRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -230,7 +233,12 @@ struct SearchPaletteView: View {
                     .lowercased()
                     .contains(needle)
             }
-            for recent in (needle.isEmpty ? Array(recents.prefix(8)) : recents) {
+            // The same message from the same bot shows once, newest first.
+            var seen = Set<String>()
+            let unique = recents.sorted { $0.updatedAt > $1.updatedAt }.filter { recent in
+                seen.insert("\(recent.botId)|\(Self.recentText(recent))").inserted
+            }
+            for recent in (needle.isEmpty ? Array(unique.prefix(8)) : unique) {
                 results.append(.recent(recent, store.bots.first { $0.id == recent.botId }))
             }
         }
@@ -374,9 +382,8 @@ struct SearchPaletteView: View {
                     ForEach(Array(hits.enumerated()), id: \.element.id) { index, hit in
                         VStack(alignment: .leading, spacing: 0) {
                             if let heading = heading(for: index) {
-                                Text(heading.uppercased())
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .tracking(0.04 * 11)
+                                Text(heading)
+                                    .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(Theme.C.inkFaint)
                                     .padding(.horizontal, 10)
                                     .padding(.top, 8)
@@ -430,18 +437,18 @@ struct SearchPaletteView: View {
                     .foregroundStyle(Theme.C.ink)
             case .recent(let recent, let bot):
                 if let bot {
-                    BotAvatarView(bot: bot, size: 24)
+                    BotAvatarView(bot: model.liveBot(bot), size: 24)
                 } else {
                     Image(systemName: "bubble.left")
                         .font(.system(size: 14))
                         .foregroundStyle(Theme.C.ink)
                 }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(recent.title)
+                    Text(Self.recentText(recent))
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.ink)
                         .lineLimit(1)
-                    Text([bot?.name, recent.preview].compactMap { $0 }.joined(separator: " · "))
+                    Text([bot?.name, Self.relativeTime(recent.updatedAt)].compactMap { $0 }.joined(separator: " · "))
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.C.inkMuted)
                         .lineLimit(1)
@@ -453,8 +460,8 @@ struct SearchPaletteView: View {
                     .foregroundStyle(Theme.C.ink)
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if !bot.label.isEmpty {
-                    BotLabelChip(text: bot.label)
+                if !bot.label.isEmpty, !sameAsName(bot.label, bot.name) {
+                    BotLabelChip(text: bot.label, fitsFully: true)
                 }
                 if bot.hidden {
                     Text("HIDDEN")
@@ -474,6 +481,44 @@ struct SearchPaletteView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The message as plain text: markdown marks stripped, whitespace folded.
+    /// A recent as one plain line. Only markdown's own marks go: links keep
+    /// their text, code ticks and paired emphasis drop their marks, and a
+    /// heading or quote marker goes at the start of a line. "C#", "issue #42"
+    /// and "clear_history" stay as written.
+    private static func recentText(_ recent: ShellRecent) -> String {
+        let raw = AppModel.previewText(recent.title.isEmpty || recent.title == "Chat" ? recent.preview : recent.title)
+        var text = raw.replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?m)^\\s*(#{1,6}\\s+|>\\s)", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "`+", with: "", options: .regularExpression)
+        for mark in ["\\*\\*", "__", "\\*", "_", "~~"] {
+            text = text.replacingOccurrences(
+                of: "(?<![A-Za-z0-9])\(mark)(?=\\S)(.+?)(?<=\\S)\(mark)(?![A-Za-z0-9])",
+                with: "$1",
+                options: .regularExpression
+            )
+        }
+        text = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static let plainISO = ISO8601DateFormatter()
+    private static let fractionalISO: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    private static func relativeTime(_ iso: String) -> String? {
+        guard let date = fractionalISO.date(from: iso) ?? plainISO.date(from: iso) else { return nil }
+        return relative.localizedString(for: date, relativeTo: Date())
+    }
+
     private func run(_ hit: Hit?) {
         guard let hit else { return }
         switch hit {
@@ -485,4 +530,13 @@ struct SearchPaletteView: View {
             onSelect(bot.id)
         }
     }
+}
+
+/// True when a role label only repeats the bot's name ("Generalist" under
+/// "Generalist"), ignoring case, spaces and punctuation.
+func sameAsName(_ label: String, _ name: String) -> Bool {
+    func fold(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+    return fold(label) == fold(name)
 }

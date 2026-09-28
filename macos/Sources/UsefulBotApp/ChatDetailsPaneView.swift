@@ -182,13 +182,13 @@ struct ChatDetailsPaneView: View {
     /// The reference's empty state: one calm line and one button.
     private var routinesEmptyState: some View {
         VStack(spacing: 10) {
-            Text("Routines are recurring tasks this Bot runs on a schedule.")
+            Text("Tasks this bot runs on a schedule.")
                 .font(.system(size: 13))
                 .lineSpacing(3)
                 .foregroundStyle(Theme.C.inkMuted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 260)
-            NativeButton("Create Routine", kind: .secondary, small: true) {
+            NativeButton("Create routine", kind: .secondary, small: true) {
                 model.routineCreating = true
             }
             .accessibilityIdentifier("routine-create")
@@ -198,10 +198,9 @@ struct ChatDetailsPaneView: View {
     }
 
     private func sectionLabel(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 11, weight: .semibold))
-            .tracking(DesignTokens.Tracking.label * 11)
-            .foregroundStyle(Theme.C.inkFaint)
+        Text(text)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Theme.C.inkMuted)
     }
 }
 

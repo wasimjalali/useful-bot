@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Attachment rules from `shared/attachments.ts`. The native composer uses
@@ -112,6 +113,64 @@ public enum Attachments {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             return trimmed.hasPrefix("[file: ") && trimmed.hasSuffix("]")
         }
+    }
+
+    /// An image's name made unique by its content: `photo.png` becomes
+    /// `photo-3fa2c1d0.png`. The name is all a stored turn keeps of a picture
+    /// (the text names it, eve's echo adds a `[file: …]` line), so it is the
+    /// key a sent bubble finds its local copy by after a relaunch. Two
+    /// different pictures pasted as `image.png` must not share one.
+    public static func contentName(_ name: String, data: Data) -> String {
+        let hash = SHA256.hash(data: data).prefix(4).map { String(format: "%02x", $0) }.joined()
+        let url = URL(fileURLWithPath: name)
+        let ext = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        if stem.hasSuffix("-\(hash)") { return name }
+        return ext.isEmpty ? "\(stem)-\(hash)" : "\(stem)-\(hash).\(ext)"
+    }
+
+    /// The bytes of a `data:` URL, as `/api/attachments` returns an image.
+    public static func bytes(ofDataURL url: String) -> Data? {
+        guard url.hasPrefix("data:"), let comma = url.firstIndex(of: ",") else { return nil }
+        let header = url[..<comma]
+        let body = String(url[url.index(after: comma)...])
+        guard header.hasSuffix(";base64") else { return body.removingPercentEncoding?.data(using: .utf8) }
+        return Data(base64Encoded: body)
+    }
+
+    /// A sent message split into what the owner wrote and the images it
+    /// carried. The stored turn names each picture twice, as an
+    /// `Attached image: name` line (`formatMessage`) and eve's
+    /// `[file: name (type)]` line (`echoedMessage`); neither is for the owner
+    /// to read. Names come back in order, once each.
+    public static func sentImages(in text: String) -> (text: String, images: [String]) {
+        // A picture is named by both lines: an owner who types "Attached
+        // image: x" themselves, with no file line to match, keeps their text.
+        func named(_ line: Substring) -> (kind: Int, name: String)? {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("Attached image: ") {
+                let name = String(trimmed.dropFirst("Attached image: ".count))
+                return name.isEmpty ? nil : (0, name)
+            }
+            if trimmed.hasPrefix("[file: "), trimmed.hasSuffix(")]"),
+               let open = trimmed.range(of: " (", options: .backwards),
+               trimmed[open.upperBound...].hasPrefix("image") {
+                let name = String(trimmed[trimmed.index(trimmed.startIndex, offsetBy: 7)..<open.lowerBound])
+                return name.isEmpty ? nil : (1, name)
+            }
+            return nil
+        }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let found = lines.compactMap(named)
+        let both = Set(found.filter { $0.kind == 0 }.map(\.name)).intersection(found.filter { $0.kind == 1 }.map(\.name))
+        guard !both.isEmpty else { return (text, []) }
+        var images: [String] = []
+        let kept = lines.filter { line in
+            guard let hit = named(line), both.contains(hit.name) else { return true }
+            if !images.contains(hit.name) { images.append(hit.name) }
+            return false
+        }
+        return (kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines), images)
     }
 
     private static func fence(for body: String) -> String {

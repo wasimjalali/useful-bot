@@ -17,26 +17,25 @@ assert.equal(indexed.size, manifest.files.length, 'Duplicate output paths');
 const required = [
   'brand/README.md', 'brand/preview.html', 'brand/tokens.css', 'BRAND_ASSET_REPORT.md',
   'brand/motion/animation-demo.html', 'brand/motion/useful-bot-animated.svg',
-  'brand/source/useful-bot-master.svg', 'brand/source/raster-edge-mask.svg',
+  'brand/source/useful-bot-head.svg', 'brand/source/useful-bot-logo.svg', 'brand/source/useful-bot-app-icon-macos.svg',
+  'brand/source/useful-bot-head-inverse.svg', 'brand/source/useful-bot-logo-inverse.svg',
   'brand/source/avatar-palette.json', 'brand/source/avatar-face.svg', 'brand/source/motion.json',
-  'brand/source/useful-bot-raster-master-1024.png', 'brand/source/useful-bot-raster-clean-1254.png',
   'brand/source/fonts/Inter-SemiBold.ttf', 'brand/source/fonts/Inter-SemiBold.woff2', 'brand/source/fonts/LICENSE.txt',
   'brand/app/AppIcon.appiconset/Contents.json', 'brand/app/macos/UsefulBot.icns',
 ];
-for (const name of ['mark', 'mark-flat', 'badge', 'badge-transparent', 'wordmark', 'lockup-horizontal', 'lockup-horizontal-badge', 'lockup-stacked']) required.push(`brand/svg/useful-bot-${name}.svg`);
-for (const group of ['mark', 'black']) for (const size of [2048, 1024, 512, 256, 128, 64, 32]) required.push(`brand/png/${group}/useful-bot-${size}.png`);
-for (const size of [1024, 512, 256, 128, 64]) required.push(`brand/png/badge/useful-bot-badge-${size}.png`);
+for (const name of ['mark', 'logo', 'app-icon-macos', 'wordmark', 'lockup-horizontal', 'lockup-stacked', 'mark-inverse', 'logo-inverse', 'wordmark-inverse', 'lockup-horizontal-inverse', 'lockup-stacked-inverse']) required.push(`brand/svg/useful-bot-${name}.svg`);
+for (const group of ['mark', 'black', 'mark-inverse', 'white']) for (const size of [2048, 1024, 512, 256, 128, 64, 32]) required.push(`brand/png/${group}/useful-bot-${size}.png`);
 const webFiles = ['favicon.svg', 'favicon.ico', 'favicon-16x16.png', 'favicon-32x32.png', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-192.png', 'icon-maskable-512.png', 'site.webmanifest'];
 for (const file of webFiles) required.push(`public/${file}`);
-for (const name of ['avatar-1024', 'avatar-badge-1024', 'og-image', 'github-social-preview', 'x-profile', 'linkedin-profile']) required.push(`brand/social/${name}.png`);
+for (const name of ['avatar-1024', 'og-image', 'github-social-preview', 'x-profile', 'linkedin-profile']) required.push(`brand/social/${name}.png`);
 for (const size of [1024, 2048]) required.push(`brand/app/useful-bot-app-icon-${size}.png`);
 for (const path of required) assert((await stat(resolve(root, path))).size > 0, `Missing/empty output: ${path}`);
 
-function bounds(data, width, height, channels, opaque) {
+function bounds(data, width, height, channels, opaque, light = false) {
   let left = width, top = height, right = -1, bottom = -1, count = 0, maxRadius = 0;
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const i = (y * width + x) * channels;
-    const visible = opaque ? Math.max(data[i], data[i + 1], data[i + 2]) > 32 : data[i + channels - 1] > 32;
+    const visible = opaque ? (light ? Math.min(data[i], data[i + 1], data[i + 2]) < 223 : Math.max(data[i], data[i + 1], data[i + 2]) > 32) : data[i + channels - 1] > 32;
     if (!visible) continue;
     left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); count++;
     maxRadius = Math.max(maxRadius, Math.hypot((x + .5) / width - .5, (y + .5) / height - .5));
@@ -85,6 +84,9 @@ async function checkIco(bytes, path) {
   assert.equal(end, bytes.length);
 }
 
+// The Welcome tile: a 76 pt face box in a 112 pt tile, so the 704-unit circle in a
+// 768-unit face box spans 19/28 x 704/768 of the width.
+const headRadius = 19 / 28 * 704 / 768 / 2;
 let pngCount = 0, svgCount = 0;
 for (const file of manifest.files) {
   assert(!file.path.startsWith('/') && !file.path.split('/').includes('..'), 'Unexpected output path');
@@ -107,31 +109,46 @@ for (const file of manifest.files) {
     assert(partial > 0 && opaque > 0, `No anti-aliasing or opaque art: ${file.path}`);
     for (const i of [3, (info.width - 1) * 4 + 3, (info.height - 1) * info.width * 4 + 3, data.length - 1]) assert.equal(data[i], 0, `Nontransparent corner: ${file.path}`);
   }
-  const b = bounds(data, info.width, info.height, info.channels, !file.alpha);
+  const b = bounds(data, info.width, info.height, info.channels, !file.alpha, file.family === 'primary-inverse');
   assert(b.left > 0 && b.top > 0 && b.right < info.width - 1 && b.bottom < info.height - 1, `Clipped artwork: ${file.path}`);
-  if (file.family === 'primary') {
+  // Visible extents as fractions of the width: the head circle, or the macOS tile.
+  const extent = { primary: headRadius, 'primary-inverse': headRadius, favicon: .42, macos: 412 / 1024 }[file.family];
+  if (extent) {
     const tolerance = 2 / info.width;
-    for (const [actual, expected] of [[b.left / info.width, .120], [b.top / info.height, .132], [(b.right + 1) / info.width, .881], [(b.bottom + 1) / info.height, .869]]) assert(Math.abs(actual - expected) < tolerance + .006, `Primary alignment/distortion: ${file.path}`);
+    for (const [actual, expected] of [[b.left / info.width, .5 - extent], [b.top / info.height, .5 - extent], [(b.right + 1) / info.width, .5 + extent], [(b.bottom + 1) / info.height, .5 + extent]]) assert(Math.abs(actual - expected) < tolerance + .006, `Head alignment/distortion: ${file.path}`);
   }
   if (file.family === 'maskable') assert(b.maxRadius < .4, `Mascot outside PWA safe circle: ${file.path}`);
 }
 
-const sourceMaster = (await read('brand/source/useful-bot-master.svg')).toString();
-checkSvg(sourceMaster, 'source master');
-for (const id of ['head', 'body', 'arm-left', 'arm-right', 'glasses', 'eye-left', 'eye-right', 'eye-highlight-left', 'eye-highlight-right']) assert(sourceMaster.includes(`id="${id}"`), `Missing editable group: ${id}`);
+const masters = ['head', 'logo', 'app-icon-macos'].map(name => `brand/source/useful-bot-${name}.svg`);
+const masterSources = await Promise.all(masters.map(async path => (await read(path)).toString()));
+for (const [index, svg] of masterSources.entries()) {
+  checkSvg(svg, masters[index]);
+  for (const id of ['face', 'head', 'glasses', 'mouth', 'tongue', 'eye-left', 'eye-right', 'eye-highlight-left', 'eye-highlight-right']) assert(svg.includes(`id="${id}"`), `Missing editable group ${id}: ${masters[index]}`);
+  assert(!/id="(?:body|arm-left|arm-right)"/.test(svg), `The retired full-body mascot is back: ${masters[index]}`);
+  const colors = new Set(['#FFFFFF', '#000000', '#141413', '#FF8FA3']);
+  for (const hex of svg.match(/#[A-Fa-f0-9]{6}\b/g)) assert(colors.has(hex.toUpperCase()), `Unexpected brand color: ${hex} in ${masters[index]}`);
+}
+// Inverse masters: the same face with every colour flipped (head black; glasses, eyes
+// and mouth white; highlights black), so the face never turns into a black blob.
+const inverseMasters = ['head-inverse', 'logo-inverse'].map(name => `brand/source/useful-bot-${name}.svg`);
+const whiteFace = masterSources[0].match(/<g id="face"[^>]*>([\s\S]*)<\/g>\s*<\/svg>/)[1].trim();
+const flipped = whiteFace.replace(/fill="#FFFFFF"(?=\/>)/, 'fill="#000000"').replaceAll('#141413', '#FFFFFF').replaceAll('stroke="#fff"', 'stroke="#000000"');
+for (const path of inverseMasters) {
+  const svg = (await read(path)).toString();
+  checkSvg(svg, path);
+  assert(svg.includes(flipped), `Inverse face must be the white face with its colours flipped: ${path}`);
+  assert(!svg.includes('#141413') && /<circle[^>]*fill="#000000"/.test(svg), `Inverse head must be black with white features: ${path}`);
+}
 const animated = (await read('brand/motion/useful-bot-animated.svg')).toString();
 assert(animated.includes('prefers-reduced-motion') && animated.includes('animation:none'), 'Reduced motion missing');
-const palette = new Set(['#FFFFFF', '#000000', '#F5F5F5', '#CCCCCC', '#999999']);
-for (const hex of sourceMaster.match(/#[A-Fa-f0-9]{6}\b/g)) assert(palette.has(hex.toUpperCase()), `Unexpected brand color: ${hex}`);
 
 const provenance = JSON.parse(await read('brand/source/provenance.json'));
-assert.equal(createHash('sha256').update(await read('brand/source/useful-bot-master.svg')).digest('hex'), provenance.vectorMasterSha256, 'Vector source changed: rebuild assets');
-assert.equal(createHash('sha256').update(await read('brand/source/raster-edge-mask.svg')).digest('hex'), provenance.edgeMaskSha256, 'Edge mask changed: rebuild assets');
+for (const master of Object.values(provenance.masters)) assert.equal(createHash('sha256').update(await read(master.path)).digest('hex'), master.sha256, `Master changed: rebuild assets (${master.path})`);
 assert.equal(createHash('sha256').update(await read('brand/source/avatar-palette.json')).digest('hex'), provenance.avatarPaletteSha256, 'Avatar palette changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/avatar-face.svg')).digest('hex'), provenance.avatarFaceSha256, 'Avatar face changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/motion.json')).digest('hex'), provenance.motionTimingSha256, 'Motion timing changed: rebuild assets');
 assert.equal(createHash('sha256').update(await read('brand/source/fonts/Inter-SemiBold.ttf')).digest('hex'), provenance.font.sha256, 'Font changed: rebuild assets');
-for (const source of provenance.sources) assert.equal(createHash('sha256').update(await read(source.path)).digest('hex'), source.sha256, `Original source changed: ${source.path}`);
 const pwa = JSON.parse(await read('public/site.webmanifest'));
 assert.equal(pwa.name, 'Useful Bot'); assert.equal(pwa.short_name, 'Useful Bot'); assert.equal(pwa.display, 'standalone');
 assert.equal(pwa.theme_color, '#000000'); assert.equal(pwa.background_color, '#000000');
@@ -161,23 +178,19 @@ while (offset < icns.length) {
 }
 assert.equal(offset, icns.length); assert.equal(chunks, 11);
 
-// Check native shape fidelity independently of the output inventory.
-const raster = await sharp(await read('brand/source/useful-bot-raster-master-1024.png')).ensureAlpha().raw().toBuffer();
-const vector = await sharp(await read('brand/svg/useful-bot-mark.svg')).resize(1024, 1024).ensureAlpha().raw().toBuffer();
-const original = await sharp(await read(`brand/source/${provenance.rasterSource}`)).ensureAlpha().raw().toBuffer();
-const clean = await sharp(await read('brand/source/useful-bot-raster-clean-1254.png')).ensureAlpha().raw().toBuffer();
-let visible = 0, unchanged = 0;
-for (let i = 0; i < original.length; i += 4) {
-  if (clean[i + 3] < 128) continue;
-  visible++;
-  if (original[i] === clean[i] && original[i + 1] === clean[i + 1] && original[i + 2] === clean[i + 2]) unchanged++;
-}
-assert(unchanged / visible > .97, 'Raster cleanup changed too much source RGB');
+// The logo head must be the avatar face itself, only placed: render the face source
+// with the viewBox that maps its circle onto the mark's, and compare silhouettes.
+const faceSvg = (await read('brand/source/avatar-face.svg')).toString();
+const markScale = headRadius * 2 * 1024 / 704;
+const placedViewBox = `${-(512 - markScale * 512) / markScale} ${-(512 - markScale * 420) / markScale} ${1024 / markScale} ${1024 / markScale}`;
+const placedFace = faceSvg.replace(/viewBox="[^"]+"/, `viewBox="${placedViewBox}"`);
+const faceRender = await sharp(Buffer.from(placedFace.replace('<svg ', '<svg width="3072" height="3072" '))).resize(1024, 1024).ensureAlpha().raw().toBuffer();
+const markRender = await sharp(await read('brand/svg/useful-bot-mark.svg')).resize(1024, 1024).ensureAlpha().raw().toBuffer();
 let intersection = 0, union = 0;
-for (let i = 3; i < raster.length; i += 4) {
-  const r = raster[i] > 127, v = vector[i] > 127; intersection += r && v; union += r || v;
+for (let i = 3; i < faceRender.length; i += 4) {
+  const f = faceRender[i] > 127, m = markRender[i] > 127; intersection += f && m; union += f || m;
 }
-assert(intersection / union > .97, `Raster/vector silhouette mismatch: ${intersection / union}`);
+assert(intersection / union > .99, `Logo head differs from the avatar face: ${intersection / union}`);
 
 // Avatar tints must never alter eyes, glasses, highlights or geometry.
 function eyeGeometry(svg) {
@@ -189,12 +202,9 @@ function eyeGeometry(svg) {
   } }) }] });
   return groups;
 }
-const markSvg = (await read('brand/svg/useful-bot-mark.svg')).toString();
-const features = eyeGeometry(markSvg);
-assert.equal(Object.keys(features).length, 3);
-const faceSvg = (await read('brand/source/avatar-face.svg')).toString();
 const faceFeatures = eyeGeometry(faceSvg);
 assert.equal(Object.keys(faceFeatures).length, 3);
+for (const [index, svg] of masterSources.entries()) assert.deepEqual(eyeGeometry(svg), faceFeatures, `Logo changed eyes or glasses: ${masters[index]}`);
 // Expected head silhouette: the source circle, untinted.
 const headPixels = await sharp(Buffer.from(faceSvg)).resize(1024, 1024).ensureAlpha().raw().toBuffer();
 const avatarPalette = JSON.parse(await read('brand/source/avatar-palette.json'));
@@ -208,11 +218,11 @@ for (const color of Object.keys(avatarPalette)) {
   for (let i = 3; i < tinted.length; i += 4) assert.equal(tinted[i], headPixels[i], `Avatar head silhouette/alpha changed: ${color}`);
 }
 
-// Reassembled native layers must look like the vector, not a separate mascot.
-const layers = ['arm-left', 'arm-right', 'body', 'head', 'glasses', 'eye-left', 'eye-right'];
+// Reassembled native layers must look like the placed face, not a separate drawing.
+const layers = ['head', 'mouth', 'glasses', 'eye-left', 'eye-right'];
 const inputs = await Promise.all(layers.map(async part => ({ input: await read(`brand/motion/native/${part}.png`), left: 0, top: 0 })));
 const assembled = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: '#00000000' } }).composite(inputs).raw().toBuffer();
-const expected = await sharp(Buffer.from(markSvg.replace('<svg ', '<svg width="3072" height="3072" '))).resize(1024, 1024).ensureAlpha().raw().toBuffer();
+const expected = faceRender;
 let error = 0;
 for (let i = 0; i < assembled.length; i++) error += Math.abs(assembled[i] - expected[i]);
 assert(error / assembled.length < .3, `Native layers differ from vector: ${error / assembled.length}`);
@@ -226,4 +236,4 @@ async function walk(folder) {
   }
 }
 await walk('brand');
-console.log(`Brand checks passed: ${pngCount} PNGs, ${svgCount} SVG exports, ICO, ICNS, PWA and Xcode catalogs. Silhouette agreement ${(intersection / union * 100).toFixed(2)}%.`);
+console.log(`Brand checks passed: ${pngCount} PNGs, ${svgCount} SVG exports, ICO, ICNS, PWA and Xcode catalogs. Head agreement with the avatar face ${(intersection / union * 100).toFixed(2)}%.`);

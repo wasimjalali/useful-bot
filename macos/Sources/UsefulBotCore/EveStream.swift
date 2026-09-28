@@ -104,6 +104,9 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     /// It can take a while on a long chat, and a bare "Thinking" through it
     /// read as a hang.
     case compacting
+    /// A background sub-agent the bot started. Its work is between the bot
+    /// and the sub-agent: the owner only sees that it runs and when it is back.
+    case subagent(finished: Bool)
 
     /// Sentence case, no trailing period: the row swaps between these while
     /// the turn runs, and a period on every one of them reads as a stutter.
@@ -114,10 +117,39 @@ public enum TurnActivity: Codable, Equatable, Sendable {
         // under the bubble being written.
         case .working: return "Writing"
         case .compacting: return "Compacting the conversation"
+        case .subagent(let finished): return finished ? "Sub-agent finished" : "Sub-agent working"
         case .tool(let name, let detail):
             guard let detail else { return Self.toolLabel(name) }
+            if name == "connector_execute" { return Self.connectorStep(detail, toolkits: []).label }
             return "\(Self.toolLabel(name)): \(detail)"
         }
+    }
+
+    /// A connected app's tool, by its slug (`GMAIL_FETCH_EMAILS`), as the
+    /// app and what it is doing: "Gmail: fetch emails". The app is the
+    /// longest known toolkit the slug starts with, the way the server reads
+    /// it (`toolkitOf` in shared/composio.ts); without a match, the slug's
+    /// first word.
+    public static func connectorStep(
+        _ slug: String,
+        toolkits: [(slug: String, name: String)]
+    ) -> (toolkit: String?, label: String) {
+        let lower = slug.trimmingCharacters(in: .whitespaces).lowercased()
+        let match = toolkits
+            .sorted { $0.slug.count > $1.slug.count }
+            .first { lower == $0.slug.lowercased() || lower.hasPrefix($0.slug.lowercased() + "_") }
+        let app: String
+        let rest: Substring
+        if let match {
+            app = match.name
+            rest = lower.dropFirst(match.slug.count).drop { $0 == "_" }
+        } else {
+            let head = lower.prefix { $0 != "_" }
+            app = head.prefix(1).uppercased() + head.dropFirst()
+            rest = lower.dropFirst(head.count).drop { $0 == "_" }
+        }
+        let action = rest.replacingOccurrences(of: "_", with: " ")
+        return (match?.slug, action.isEmpty ? "Using \(app)" : "\(app): \(action)")
     }
 
     /// Says what the bot is doing, not which function it called. Tools the
@@ -133,6 +165,8 @@ public enum TurnActivity: Codable, Equatable, Sendable {
     }
 
     private static let known: [String: String] = [
+        "agent": "Starting a sub-agent",
+        "todo": "Planning",
         "bash": "Running a command",
         "clear_history": "Clearing a chat",
         "connector_execute": "Using a connector",
@@ -591,6 +625,26 @@ public enum EveStream {
         return handoffEnvelope.firstMatch(in: text, range: whole) != nil
     }
 
+    /// eve's own wording for a background task reporting back
+    /// (`formatTaskNotification` and the update and authorization wakes in
+    /// eve's `execution/tasks/child/steps.js`, 0.54). The stream carries no
+    /// other mark: eve tags the message internally and drops the tag before
+    /// it reaches this projection.
+    private static let taskReportPattern = try! NSRegularExpression(
+        pattern: "^Background task (task_[A-Za-z0-9]+)(?: \\([^\\n]*?\\))? (is completed\\.|failed\\.|is cancelled\\.|needs input\\.|needs authorization\\.|update: )"
+    )
+
+    /// The task a sub-agent's report is about, and whether the task is over.
+    /// nil for anything else, the owner's own messages included.
+    public static func taskReport(_ text: String) -> (taskId: String, settled: Bool)? {
+        let whole = NSRange(text.startIndex..., in: text)
+        guard let match = taskReportPattern.firstMatch(in: text, range: whole),
+              let id = Range(match.range(at: 1), in: text),
+              let verb = Range(match.range(at: 2), in: text) else { return nil }
+        let settled = ["is completed.", "failed.", "is cancelled."].contains(String(text[verb]))
+        return (String(text[id]), settled)
+    }
+
     /// Remove the identity prefix the web proxy injects into a stored user
     /// turn, so the transcript shows the owner's original message.
     public static func stripThreadPrefix(_ text: String) -> String {
@@ -804,6 +858,25 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// answered yet. The turn is over while one is open: the bot is waiting on
     /// the owner, not working.
     public private(set) var questions: [OwnerQuestion] = []
+    /// Background sub-agents started in this session that have not reported
+    /// back, by task id, with when each started. Their result arrives as a
+    /// message of its own, which is not the owner's and never becomes a row.
+    public private(set) var runningTasks: [String: Date] = [:]
+    /// The session those tasks belong to. A task wakes only the session that
+    /// started it, so a new session means none of them will report back.
+    private var tasksSession: String?
+    /// When the turn in flight began, from its message's own stamp: the
+    /// working row counts from it, and a chat switched away from and back
+    /// to keeps counting instead of starting again at 0.
+    public private(set) var turnStartedAt: Date?
+    /// The first row the bot wrote in each turn a sub-agent's report opened.
+    /// No owner row sits above it, so this marks where that reply begins,
+    /// one per turn, even when two reports arrive back to back.
+    public private(set) var taskReplyRowIds: Set<String> = []
+    /// Tasks that already reported that they are done. A report of theirs
+    /// delivered again, or an update wake that trails the completion, is
+    /// still the bot's and never an owner row.
+    private var settledTasks: Set<String> = []
     private var seen = Set<String>()
     private var seenOrder: [String] = []
     private var seenCursor = 0
@@ -918,6 +991,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         /// otherwise be read as having thrown away a message an earlier turn
         /// had already delivered.
         var sawMessage = false
+        /// Opened by a sub-agent's report, not by the owner: there is no
+        /// message of theirs to send again, so its failure offers no Retry.
+        var fromTask = false
+        /// Whether that turn's first reply row has been marked.
+        var taskReplyMarked = false
         /// Whether a terminal has been applied for it. Any boundary event
         /// arriving after that is a replay, and acts on nothing.
         var ended = false
@@ -1277,8 +1355,14 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// of that stream skips everything before that message. So without this the
     /// projection kept `failed` from a turn that ended hours ago, and the next
     /// successful reply was still reported as "The turn failed."
+    private mutating func settle(_ task: String) {
+        runningTasks[task] = nil
+        settledTasks.insert(task)
+    }
+
     public mutating func beginTurn() {
         pending = true
+        turnStartedAt = Date()
         failed = false
         failure = nil
         searchHits = []
@@ -1334,6 +1418,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
         // Keyed off the first session named, not off a switch having been
         // seen, so a late event of the first session stays raw too.
         if let session = event.sessionId {
+            if let tasks = tasksSession, tasks != session {
+                runningTasks = [:]
+                tasksSession = nil
+            }
             if firstSession == nil { firstSession = session }
             if session != firstSession, let turnId = event.turnId, !turnId.isEmpty {
                 event.turnId = "\(session)/\(turnId)"
@@ -1408,6 +1496,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             } else {
                 leaveCurrentTurn()
             }
+            // A turn starting is where its clock starts: a follower sees this
+            // ahead of the message, and the last turn's start showed until then.
+            turnStartedAt = stamp ?? Date()
             pending = true
             failed = false
             failure = nil
@@ -1426,6 +1517,12 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // ahead of it is never applied and the id would stay unknown for
             // the whole live turn.
             let text = EveStream.stripThreadPrefix(event.message ?? "")
+            // A sub-agent reporting back, known by eve's wording and by a task
+            // this session started: an owner who pastes that wording is still
+            // the owner.
+            let report = EveStream.taskReport(text).flatMap {
+                runningTasks[$0.taskId] != nil || settledTasks.contains($0.taskId) ? $0 : nil
+            }
             if let id = event.id, EveStream.isContinuationTurn(event.message ?? "") {
                 continuationRowId = id
             }
@@ -1449,6 +1546,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                             $0.role == .user && $0.text == text && $0.id.hasPrefix(EveStream.optimisticUserPrefix)
                         } == true
                     guard canResume(known) || ownEcho, var stepped = unstash(named) else {
+                        // A late report is still the bot's, never an owner row.
+                        if let report {
+                            if report.settled { settle(report.taskId) }
+                            return
+                        }
                         lateUserRow(event, text: text, at: stamp, for: named)
                         return
                     }
@@ -1470,6 +1572,20 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 }
                 currentTurnId = named
                 noteTurnStart(event.index)
+            }
+            // A background sub-agent reporting back. eve sends that as a
+            // message into the session, and it is the bot's to read, not the
+            // owner's: it opens the turn in which the bot answers, and shows
+            // only in the working row.
+            if let report {
+                if report.settled { settle(report.taskId) }
+                turn.fromTask = true
+                failed = false
+                failure = nil
+                pending = true
+                turnStartedAt = stamp ?? Date()
+                activity = .subagent(finished: report.settled)
+                return
             }
             // The last turn failed before the bot said anything, and eve threw
             // the message away with it. The same text arriving again is that
@@ -1500,6 +1616,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 failure = nil
                 turn.producedWork = false
                 pending = true
+                turnStartedAt = stamp ?? Date()
                 activity = .thinking
                 return
             }
@@ -1530,6 +1647,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 return
             }
             let userId = event.id ?? mintId("u")
+            turnStartedAt = stamp ?? Date()
             appendMessage(ChatMessage(
                 id: userId,
                 role: .user,
@@ -1648,6 +1766,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                     journal: event.index
                 )
                 record.lastRowId = id
+                if record.fromTask, !record.taskReplyMarked {
+                    taskReplyRowIds.insert(id)
+                    record.taskReplyMarked = true
+                }
             }
         case "message.completed":
             let full = EveStream.stripThreadPrefix(event.message ?? "")
@@ -1693,6 +1815,10 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                         journal: event.index
                     )
                     record.lastRowId = id
+                    if record.fromTask, !record.taskReplyMarked {
+                        taskReplyRowIds.insert(id)
+                        record.taskReplyMarked = true
+                    }
                 }
             }
             // Also on an empty completion: a later delta must not append to a
@@ -1713,7 +1839,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 // eve still threw this turn's message away, and its row goes.
                 // And a session that failed is retired whichever turn it
                 // failed on, so a question card goes down here as below.
-                if event.type == "session.failed" { questions = [] }
+                if event.type == "session.failed" {
+                    questions = []
+                    // A retired session wakes for nothing again.
+                    runningTasks = [:]
+                }
                 guard var stepped = turns[id] else { break }
                 stepped.ended = true
                 turns[id] = stepped
@@ -1737,7 +1867,11 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 // session, where it answers nothing. A failed turn alone
                 // keeps the card: the session lives on, so the label still
                 // lands beside the question.
-                if event.type == "session.failed" { questions = [] }
+                if event.type == "session.failed" {
+                    questions = []
+                    // A retired session wakes for nothing again.
+                    runningTasks = [:]
+                }
                 let standing = retryableMarkId
                 pending = false
                 failed = true
@@ -1748,6 +1882,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 failure = reported
                 discardMessage(of: turn)
                 liveFailureMarkId = markFailure(reported, event: event, record: turn, at: stamp, live: true, standing: standing)
+                // Nothing of the owner's to resend: Retry would send their
+                // last message, already answered, a second time.
+                if turn.fromTask { liveFailureMarkId = nil }
                 // A turn that ended takes its id with it. Left behind, it
                 // makes the next turn's work look like somebody else's and
                 // stops it counting, which is the direction that folds a
@@ -1756,6 +1893,16 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 leaveCurrentTurn()
             }
         case "action.result", "action.partial":
+            // A sub-agent started in the background: the call returns at
+            // once, and the task runs on after the turn ends. Any turn's, so
+            // a replay puts back the ones still out.
+            if event.type == "action.result",
+               let output = event.data?["result"]?["output"],
+               output["status"]?.stringValue == "working",
+               let task = output["taskId"]?.stringValue, task.hasPrefix("task_") {
+                runningTasks[task] = runningTasks[task] ?? stamp ?? Date()
+                if let session = event.sessionId { tasksSession = session }
+            }
             // Another turn's results are not this turn's chips.
             guard case .current = turnOwner(of: event) else { break }
             turn.producedWork = true
