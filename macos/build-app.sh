@@ -72,8 +72,7 @@ for asset in png/mark/useful-bot-128.png png/black/useful-bot-256.png svg/useful
   mkdir -p "$APP/Contents/Resources/Brand/$(dirname "$asset")"
   cp "../brand/$asset" "$APP/Contents/Resources/Brand/$asset"
 done
-mkdir -p "$APP/Contents/Resources/Brand/avatars" "$APP/Contents/Resources/Brand/motion" "$APP/Contents/Resources/Brand/providers"
-cp ../brand/avatars/*-256.png "$APP/Contents/Resources/Brand/avatars/"
+mkdir -p "$APP/Contents/Resources/Brand/motion" "$APP/Contents/Resources/Brand/providers"
 cp -R ../brand/motion/native "$APP/Contents/Resources/Brand/motion/"
 cp ../brand/providers/*.svg "$APP/Contents/Resources/Brand/providers/"
 rm -rf "$APP/Contents/Resources/runtime"

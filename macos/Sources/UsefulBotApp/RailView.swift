@@ -119,8 +119,10 @@ struct RailView: View {
         }
         .overlay(alignment: .topLeading) {
             if accountOpen {
+                // As wide as the rail less its 12 pt margin on each side, so the
+                // menu keeps the same gap from the chat pane as from the window.
                 accountPopover
-                    .frame(width: 240)
+                    .frame(width: DesignTokens.Space.railWidth - 24)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { accountMenuHeight = $0 }
                     .offset(x: 12, y: accountDivider.minY - accountMenuHeight - 8)
                     // Hidden for the one frame before its height is known.
@@ -400,17 +402,21 @@ struct RailView: View {
 
     /// System, Light and Dark, switched in place.
     private var appearanceRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "circle.lefthalf.filled")
-                .font(.system(size: 14))
-                .foregroundStyle(Theme.C.ink)
-                .frame(width: 18)
-            Text("Appearance")
-                .font(.system(size: 14))
-                .foregroundStyle(Theme.C.ink)
-                .lineLimit(1)
-                .fixedSize()
-            Spacer(minLength: 4)
+        // The menu is the rail's width less its margins, so this row has to
+        // fit it: one small gap before the switch, not the stack's spacing twice.
+        HStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "circle.lefthalf.filled")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.ink)
+                    .frame(width: 18)
+                Text("Appearance")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            Spacer(minLength: 8)
             ToneSegmented(
                 items: AppAppearance.allCases,
                 selection: $appearance,
@@ -419,11 +425,11 @@ struct RailView: View {
                 label: { option in AnyView(Image(systemName: Self.appearanceIcon(option)).font(.system(size: 12))) },
                 name: { $0.label }
             )
-            .frame(width: 96)
+            .frame(width: 80)
             .accessibilityIdentifier("account-appearance")
         }
         .padding(.leading, 10)
-        .padding(.trailing, 2)
+        .padding(.trailing, 8)
         .frame(minHeight: 40)
     }
 
@@ -1017,12 +1023,11 @@ private struct PinnedCardView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .background(selected || hovering ? Theme.C.sunken : Theme.C.surface)
+            // The same states as a rail row: white only while its chat is open,
+            // a light wash on hover, nothing otherwise.
+            .background(selected ? Theme.C.surface : (hovering ? Theme.C.sunken : .clear))
             .clipShape(shape)
-            .cardLift(cornerRadius: DesignTokens.Radius.md)
-            .overlay {
-                if selected { shape.strokeBorder(Theme.C.ink, lineWidth: 1.5) }
-            }
+            .shadow(color: Theme.C.shadow.opacity(selected ? 0.06 : 0), radius: 2, x: 0, y: 1)
             .contentShape(shape)
         }
         .buttonStyle(.plain)

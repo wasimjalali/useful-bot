@@ -1371,6 +1371,13 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             if let ids = await self.client.tick() {
                 let next = Set(ids)
+                // Handoffs and routines run without a local stream, so their
+                // end is only seen here. The poll can't tell a reply from a
+                // failure, so a finished turn counts as a reply.
+                for botId in self.handoffWorkingIds.subtracting(next)
+                    where botId != self.selectedBotId && !self.workingBotIds.contains(botId) {
+                    self.markReplyReady(botId)
+                }
                 if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             }
             self.tickInFlight = false
@@ -1967,14 +1974,21 @@ final class AppModel: ObservableObject {
             if backgroundActivities[botId] != nil { backgroundActivities[botId] = nil }
             // A turn that ended with an assistant message and no failure. A
             // stopped send drops its projection first, so it never counts; a
-            // cancel that already streamed partial text still would.
+            // stream that died mid-turn is still pending, so it doesn't either.
+            // A cancel that already streamed partial text still would.
             if wasWorking, botId != selectedBotId,
                let proj = backgroundProjections[botId],
-               !proj.failed, proj.messages.last?.role == .assistant {
-                replyReady.insert(botId)
-                railHops[botId, default: 0] += 1
+               !proj.pending, !proj.failed, proj.messages.last?.role == .assistant {
+                markReplyReady(botId)
             }
         }
+    }
+
+    /// A reply is waiting in a chat the owner isn't looking at: the rail face
+    /// hops once and the row reads "REPLY READY" until the chat is opened.
+    private func markReplyReady(_ botId: String) {
+        replyReady.insert(botId)
+        railHops[botId, default: 0] += 1
     }
 
     /// The current step of a working bot, for the rail face and subtitle.

@@ -87,7 +87,7 @@ public enum BotFaceMotion {
         let d = 0.9
         let times = [0, 0.172, 0.483, 0.793, 1]
         return [
-            Track(part: .body, property: .translateY, duration: d, keyTimes: times, values: [0, 0, -130, 0, 0]),
+            Track(part: .body, property: .translateY, duration: d, keyTimes: times, values: [0, 0, -100, 0, 0]),
             Track(part: .body, property: .scaleX, duration: d, keyTimes: times, values: [1, 1.08, 0.95, 1.06, 1]),
             Track(part: .body, property: .scaleY, duration: d, keyTimes: times, values: [1, 0.9, 1.06, 0.94, 1]),
         ]

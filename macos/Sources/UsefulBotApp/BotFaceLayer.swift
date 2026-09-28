@@ -49,7 +49,9 @@ enum BotFaceArt {
     }
 
     static func color(_ hex: String) -> CGColor {
-        let value = UInt32(hex.dropFirst(), radix: 16) ?? 0
+        guard hex.count == 7, hex.hasPrefix("#"), let value = UInt32(hex.dropFirst(), radix: 16) else {
+            preconditionFailure("Bad face color \(hex)")
+        }
         return CGColor(
             srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
             green: CGFloat((value >> 8) & 0xFF) / 255,
@@ -262,11 +264,16 @@ final class BotFaceNSView: NSView {
             turn: atan2(bodyNow.m12, bodyNow.m11)
         )
         let blend = configured && !reduce
+        // A hop still in flight is already on the body; blending from it
+        // would lift the head twice.
+        let hopping = body.animationKeys()?.contains { $0.hasPrefix("hop.") } ?? false
         configured = true
         pose = next
         reduceMotion = reduce
         for layer in [body, eyes] + eyeLayers {
-            for key in layer.animationKeys() ?? [] where key.hasPrefix("pose.") || key.hasPrefix("blend.") {
+            // Reduce motion also stops a hop that is playing.
+            for key in layer.animationKeys() ?? []
+            where key.hasPrefix("pose.") || key.hasPrefix("blend.") || (reduce && key.hasPrefix("hop.")) {
                 layer.removeAnimation(forKey: key)
             }
         }
@@ -294,9 +301,9 @@ final class BotFaceNSView: NSView {
         let blends: [(CALayer, String, CGFloat)] = [
             (eyes, "transform.translation.x", from.eyesX - start(.eyes, .translateX)),
             (eyes, "transform.translation.y", from.eyesY - start(.eyes, .translateY)),
-            (body, "transform.translation.y", from.bodyY - start(.body, .translateY)),
+            (body, "transform.translation.y", hopping ? 0 : from.bodyY - start(.body, .translateY)),
             // Turns are in radians, not scaled by the face's size.
-            (body, "transform.rotation.z", from.turn - (unit > 0 ? start(.body, .rotation) / unit : 0)),
+            (body, "transform.rotation.z", hopping ? 0 : from.turn - (unit > 0 ? start(.body, .rotation) / unit : 0)),
         ]
         for (layer, keyPath, offset) in blends where abs(offset) > 0.001 {
             let animation = CABasicAnimation(keyPath: keyPath)

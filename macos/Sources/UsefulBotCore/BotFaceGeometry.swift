@@ -97,14 +97,15 @@ public struct BotFaceGeometry: Equatable, Sendable {
         let head = try one("head", "circle")
         headCenter = Point(try number(head, "cx"), try number(head, "cy"))
         headRadius = try number(head, "r")
-        edgeOpacity = (try? number(head, "stroke-opacity")) ?? 0
+        edgeOpacity = try number(head, "stroke-opacity")
         glasses = try path(try one("glasses", "path"))
         let mouthShape = try one("mouth", "path", notId: "tongue")
         mouth = try path(mouthShape)
-        mouthStrokeWidth = (try? number(mouthShape, "stroke-width")) ?? 0
+        mouthStrokeWidth = try number(mouthShape, "stroke-width")
         let tongueShape = try one("mouth", "path", id: "tongue")
         tongue = try path(tongueShape)
-        guard let fill = tongueShape["fill"], fill.count == 7, fill.hasPrefix("#") else {
+        guard let fill = tongueShape["fill"], fill.count == 7, fill.hasPrefix("#"),
+              UInt32(fill.dropFirst(), radix: 16) != nil else {
             throw Invalid(description: "avatar-face.svg: tongue needs a #RRGGBB fill")
         }
         tongueColor = fill
@@ -150,7 +151,7 @@ public struct BotFaceGeometry: Equatable, Sendable {
                     }
                     break
                 }
-                guard end > index, let value = Double(d[index..<end]) else {
+                guard end > index, let value = Double(d[index..<end]), value.isFinite else {
                     throw Invalid(description: "Bad path number near \(d[index...].prefix(12))")
                 }
                 tokens.append(.number(value))
