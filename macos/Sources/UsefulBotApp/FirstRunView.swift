@@ -447,6 +447,12 @@ struct FirstRunView: View {
             }
             pendingDrop = drop
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: drop)
+            // Clickable again once the new page is mostly in, not only when
+            // the old one is dropped: a click at 0.3 s was swallowed.
+            let settle = visits
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if visits == settle { moving = false }
+            }
         }
     }
 }

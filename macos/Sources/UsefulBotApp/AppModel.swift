@@ -700,6 +700,14 @@ final class AppModel: ObservableObject {
     }
 
     private func loadOperator() async {
+        // The Mac's own name first, so a slow or failed status call never
+        // leaves the placeholder showing.
+        let local = NSFullUserName().trimmingCharacters(in: .whitespaces)
+        if !local.isEmpty, operatorName == "Desktop owner" {
+            let words = local.split(separator: " ").compactMap(\.first)
+            operatorName = local
+            operatorInitials = words.count > 1 ? (String(words[0]) + String(words[1])).uppercased() : String(local.prefix(2)).uppercased()
+        }
         guard let status = try? await client.status() else { return }
         appStatus = status
         // The Mac account's full name ("Wasim Jalali") wins over the service's

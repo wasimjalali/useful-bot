@@ -489,7 +489,7 @@ struct SearchPaletteView: View {
     private static func recentText(_ recent: ShellRecent) -> String {
         let raw = AppModel.previewText(recent.title.isEmpty || recent.title == "Chat" ? recent.preview : recent.title)
         var text = raw.replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
-        text = text.replacingOccurrences(of: "(?m)^\\s*(#{1,6}\\s+|>\\s?)", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?m)^\\s*(#{1,6}\\s+|>\\s)", with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: "`+", with: "", options: .regularExpression)
         for mark in ["\\*\\*", "__", "\\*", "_", "~~"] {
             text = text.replacingOccurrences(
