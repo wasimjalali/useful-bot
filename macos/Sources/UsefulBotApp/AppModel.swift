@@ -130,6 +130,14 @@ final class AppModel: ObservableObject {
     /// Providers v2 catalogue and connections from `GET /api/providers`. The
     /// UI renders only what the server returns.
     @Published private(set) var providerCatalog: [CatalogPublic] = []
+    /// The providers have been read at least once, so an empty connection
+    /// list means none is connected rather than not known yet.
+    @Published private(set) var providersLoaded = false
+    /// The last providers read failed and none has succeeded since.
+    @Published private(set) var providersLoadFailed = false
+
+    /// Known to have no provider connected: chat has no model to talk to.
+    var noModelConnected: Bool { providersLoaded && providerConnections.isEmpty }
     @Published private(set) var providerConnections: [ConnectionPublic] = []
     @Published private(set) var defaultRole: RolePublic?
     @Published private(set) var reviewerRole: RolePublic?
@@ -143,6 +151,9 @@ final class AppModel: ObservableObject {
     /// stays so the sheet stays up with the error; the spinner and the
     /// sign-in button hide, and Close clears everything.
     @Published private(set) var oauthDone = false
+    /// Bumped each time a device sign-in completes, so a screen waiting on
+    /// one can tell it finished rather than was cancelled.
+    @Published private(set) var oauthCompletions = 0
     /// Consecutive poll errors; the flow ends at the limit rather than waiting out the code.
     private var oauthErrorStreak = 0
     private static let oauthErrorLimit = 6
@@ -573,6 +584,8 @@ final class AppModel: ObservableObject {
             await refreshComposer()
             await firstLoad?.value
             await pollApprovals()
+            // The first-run gate and the skipped-setup bar read these.
+            await loadProviders()
             startPolling()
             startPrewarm()
         } catch is CancellationError {
@@ -1782,6 +1795,14 @@ final class AppModel: ObservableObject {
 
     /// Reply to a bot message: the chip goes above the composer of this chat
     /// and the caret into the field.
+    /// A starter prompt: the text goes into the composer, the caret after
+    /// it, and nothing is sent.
+    func fillDraft(_ text: String) {
+        draft = text
+        draftWriteToken &+= 1
+        composerFocusToken &+= 1
+    }
+
     func reply(to text: String, author: String?, botId: String) {
         // The chat on screen, including the fallback the composer shows
         // before a selection is stored.
@@ -2343,14 +2364,17 @@ final class AppModel: ObservableObject {
         providersError = nil
         do {
             applyProviders(try await client.providersPayload())
+            providersLoadFailed = false
         } catch {
             providersError = "Could not load providers."
+            if !providersLoaded { providersLoadFailed = true }
         }
     }
 
     private func applyProviders(_ payload: ProvidersPayload) {
         providerCatalog = payload.catalog
         providerConnections = payload.connections
+        providersLoaded = true
         defaultRole = payload.defaultRole
         reviewerRole = payload.reviewerRole
         imageRole = payload.imageRole
@@ -2361,11 +2385,12 @@ final class AppModel: ObservableObject {
     }
 
     /// The server error code in plain words for the connect sheet.
-    static func connectCopy(_ code: String?) -> String {
+    static func connectCopy(_ code: String?, name: String? = nil) -> String {
         switch code {
         case "provider_key":
             return "That key looks invalid."
         case "upstream_auth_failed":
+            if let name { return "\(name) didn't accept this key. Check that it's copied in full." }
             return "The provider rejected this key."
         default:
             return "Could not connect."
@@ -2376,14 +2401,14 @@ final class AppModel: ObservableObject {
         connectError = nil
     }
 
-    func connectProvider(providerId: String, mode: String, key: String?, fields: [String: String]?) async {
+    func connectProvider(providerId: String, mode: String, key: String?, fields: [String: String]?, label: String? = nil) async {
         providerBusy = "\(providerId):\(mode)"
         connectError = nil
         providersError = nil
         do {
             applyProviders(try await client.connect(providerId: providerId, mode: mode, key: key, fields: fields))
         } catch {
-            connectError = Self.connectCopy((error as? BackendError)?.providerCode)
+            connectError = Self.connectCopy((error as? BackendError)?.providerCode, name: label)
         }
         providerBusy = nil
     }
@@ -2499,6 +2524,7 @@ final class AppModel: ObservableObject {
                 oauthPoll?.cancel()
                 oauth = nil
                 oauthError = nil
+                oauthCompletions &+= 1
             case "pending", "slow_down":
                 oauthErrorStreak = 0
                 oauthError = nil

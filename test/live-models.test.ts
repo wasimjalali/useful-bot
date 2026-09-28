@@ -7,6 +7,7 @@ import {
   MODELS_DEV_URL,
   catalogFor,
   fetchProviderModelIds,
+  keyRejected,
   parseModelList,
   parseModelsDev,
   readModelsCache,
@@ -316,4 +317,38 @@ test("the image list merges generators, drops SVG-only ones and survives a faile
   images.data = [images.data[1]];
   byId = new Map((await refresh()).map((item) => [item.id, item]));
   assert.equal(byId.has("black-forest-labs/flux.2-pro"), false);
+});
+
+// The connect sheet asks the vendor about a pasted key before storing it. How
+// that can go wrong: a bad key saved as if it worked (401 or 403 read as
+// fine), a good key refused because the vendor was down, rate limited or the
+// Mac was offline, or a good key refused because it went out in the wrong
+// header for that vendor.
+test("keyRejected refuses only a key the vendor answers 401 or 403", async () => {
+  for (const [status, rejected] of [[401, true], [403, true], [200, false], [404, false], [429, false], [500, false], [503, false]] as const) {
+    const verdict = await keyRejected("https://api.example.com/v1", "sk-test-key", async () => new Response("{}", { status }));
+    assert.equal(verdict, rejected, `status ${status}`);
+  }
+});
+
+test("keyRejected lets the key through when the vendor cannot be reached", async () => {
+  const verdict = await keyRejected("https://api.example.com/v1", "sk-test-key", async () => {
+    throw new TypeError("fetch failed");
+  });
+  assert.equal(verdict, false);
+});
+
+test("keyRejected sends the key the way the vendor takes it, to its model list", async () => {
+  const seen: Array<{ url: string; headers: Headers }> = [];
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    seen.push({ url: String(input), headers: new Headers(init?.headers) });
+    return new Response("{}", { status: 200 });
+  };
+  await keyRejected("https://api.anthropic.com/v1/", "sk-ant-key", fetchImpl, "x-api-key", { "anthropic-version": "2023-06-01" });
+  await keyRejected("https://api.example.com/v1", "sk-bearer", fetchImpl);
+  assert.equal(seen[0]?.url, "https://api.anthropic.com/v1/models");
+  assert.equal(seen[0]?.headers.get("x-api-key"), "sk-ant-key");
+  assert.equal(seen[0]?.headers.get("authorization"), null);
+  assert.equal(seen[0]?.headers.get("anthropic-version"), "2023-06-01");
+  assert.equal(seen[1]?.headers.get("authorization"), "Bearer sk-bearer");
 });

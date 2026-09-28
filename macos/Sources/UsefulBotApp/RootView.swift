@@ -19,6 +19,12 @@ struct RootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
     @State private var launchFinished = false
+    @StateObject private var firstRun = FirstRunController()
+    /// The entrance into the first chat: the rail slides in, the stage lifts
+    /// in, the composer rises. True is at rest.
+    @State private var railIn = true
+    @State private var stageIn = true
+    @State private var composerIn = true
 
     @State private var pickerOpen = false
     @State private var windowFullScreen = false
@@ -39,7 +45,10 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            if showingLaunch {
+            // Landing, the chat is laid out under the flow first; the flow
+            // leaves once it has drawn, so the change never shows a stall.
+            if !firstRun.active || firstRun.landing || firstRun.opening {
+                if showingLaunch || firstRun.waiting(model) {
                 VStack(spacing: 16) {
                     BrandMotionView(size: 168, repeating: false)
                     Image(nsImage: BrandAssets.image("svg/useful-bot-wordmark.svg"))
@@ -50,10 +59,34 @@ struct RootView: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Starting Useful Bot")
                 .accessibilityIdentifier("brand-launch")
-            } else {
-                applicationContent
+                } else {
+                    // Into the first chat the rail, stage and composer bring
+                    // themselves in; the app only fades when the flow opens over it.
+                    applicationContent
+                        .transition(.asymmetric(insertion: .identity, removal: .opacity))
+                }
+            }
+            if firstRun.active {
+                // It fades itself in once drawn; see FirstRunView.
+                FirstRunView(controller: firstRun)
+                    .transition(.asymmetric(insertion: .identity, removal: .opacity))
+                    .zIndex(1)
             }
         }
+        .animation(Theme.ease(0.3), value: firstRun.active)
+        .environment(\.starterBotId, firstRun.landingBotId(model.store))
+        .environment(\.connectModel, { firstRun.reopen() })
+        .environment(\.noModelPreview, firstRun.previewsNoModel)
+        .onChange(of: model.phase) { _, phase in
+            // The gate waits on the providers; ask for them the moment the
+            // services answer rather than after the first chat's replay.
+            if phase == .ready, firstRun.decision == .wait { Task { await model.loadProviders() } }
+            firstRun.evaluate(model)
+        }
+        .onChange(of: model.providersLoaded) { _, _ in firstRun.evaluate(model) }
+        .onChange(of: model.providersLoadFailed) { _, _ in firstRun.evaluate(model) }
+        .onChange(of: model.providerConnections.count) { _, _ in firstRun.evaluate(model) }
+        .onChange(of: firstRun.landedToken) { _, _ in enterFirstChat() }
         .background(Theme.C.canvas)
         // The title bar is hidden and the lights sit on the header row, so
         // the content starts at the window's top edge, not under a band.
@@ -79,6 +112,32 @@ struct RootView: View {
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: connectorsOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: libraryOpen)
         .animation(.easeOut(duration: DesignTokens.Motion.overlay), value: model.appSettingsOpen)
+    }
+
+    /// Into the first chat: the rail slides in from the left, the stage lifts
+    /// in, the composer rises. Reduced motion keeps only the fades.
+    private func enterFirstChat() {
+        guard firstRun.entrance else {
+            DispatchQueue.main.async {
+                withAnimation(Theme.ease(0.2)) { firstRun.completeLanding() }
+            }
+            return
+        }
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) {
+            railIn = false
+            stageIn = false
+            composerIn = false
+        }
+        DispatchQueue.main.async {
+            // The chat has drawn under the flow by now. The flow fades, mostly
+            // gone by 100 ms on the curve, and the chat comes in after.
+            withAnimation(Theme.ease(0.2)) { firstRun.completeLanding() }
+            withAnimation(Theme.ease(0.5).delay(0.12)) { railIn = true }
+            withAnimation(Theme.ease(0.5).delay(0.18)) { stageIn = true }
+            withAnimation(Theme.ease(0.5).delay(0.3)) { composerIn = true }
+        }
     }
 
     private var applicationContent: some View {
@@ -240,8 +299,14 @@ struct RootView: View {
                 newChatTriggerFrame: $newChatTrigger,
                 fullScreen: windowFullScreen
             )
+            .offset(x: railIn || reduceMotion ? 0 : -40)
+            .opacity(railIn ? 1 : 0)
 
             stage
+                .scaleEffect(stageIn || reduceMotion ? 1 : 0.985)
+                .offset(y: stageIn || reduceMotion ? 0 : 12)
+                .opacity(stageIn ? 1 : 0)
+                .environment(\.composerRisen, composerIn)
                 .padding(EdgeInsets(
                     top: DesignTokens.Space.stageMargin,
                     leading: 0,

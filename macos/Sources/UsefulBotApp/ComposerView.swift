@@ -99,7 +99,8 @@ struct ComposerView: View {
     /// draft with no files formats to nothing. This runs on every body pass,
     /// and formatting scanned each attached file's text for fences.
     private var canSend: Bool {
-        !model.attachments.isEmpty
+        guard !model.noModelConnected else { return false }
+        return !model.attachments.isEmpty
             || !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 

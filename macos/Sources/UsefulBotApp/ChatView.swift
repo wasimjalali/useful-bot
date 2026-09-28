@@ -6,6 +6,11 @@ import UsefulBotCore
 /// 768pt column, empty state, proposal and onboarding cards, composer.
 struct ChatView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.starterBotId) private var starterBotId
+    @Environment(\.composerRisen) private var composerRisen
+    @Environment(\.connectModel) private var connectModel
+    @Environment(\.noModelPreview) private var noModelPreview
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var onOpenConnectors: () -> Void
     var onDeleteRequest: (ShellBot) -> Void
 
@@ -897,7 +902,47 @@ struct ChatView: View {
             .accessibilityLabel("Loading chat")
     }
 
+    @ViewBuilder
     private func emptyState(_ bot: ShellBot) -> some View {
+        if bot.id == starterBotId, !bot.isGroup {
+            starters(bot)
+        } else {
+            plainEmptyState(bot)
+        }
+    }
+
+    private static let starterPrompts = [
+        "Summarize a PDF or web page",
+        "Draft a post for LinkedIn",
+        "Tidy up my Downloads folder",
+        "Create a bot that tracks job posts",
+    ]
+
+    /// The first chat's empty state: four things to try. A tap fills the
+    /// composer and sends nothing.
+    private func starters(_ bot: ShellBot) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("What should we do first?")
+                    .font(.system(size: 22, weight: .semibold))
+                    .tracking(DesignTokens.Tracking.heading * 22)
+                    .foregroundStyle(Theme.C.ink)
+                Text("\(bot.name) can research, write, work with files and set up new bots for you.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                ForEach(Self.starterPrompts, id: \.self) { prompt in
+                    StarterPromptButton(text: prompt) { model.fillDraft(prompt) }
+                }
+            }
+        }
+        .frame(maxWidth: DesignTokens.Space.bubbleMax)
+        .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func plainEmptyState(_ bot: ShellBot) -> some View {
         VStack(spacing: 8) {
             Text("What can I do for you?")
                 .font(.system(size: DesignTokens.FontSize.emptyTitle, weight: .semibold))
@@ -936,7 +981,8 @@ struct ChatView: View {
     // MARK: - Composer column
 
     private func composerColumn(_ bot: ShellBot) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let noModel = model.noModelConnected || noModelPreview
+        return VStack(alignment: .leading, spacing: 0) {
             // A model, effort or speed pick that did not store. Muted rather
             // than danger: the chip reverted, nothing arrived broken.
             if let error = model.composerError {
@@ -946,15 +992,40 @@ struct ChatView: View {
                     .padding(.horizontal, 2)
                     .padding(.bottom, 8)
             }
+            // Setup was skipped, or every provider was removed: nothing to
+            // chat with until one is connected.
+            if noModel {
+                HStack(spacing: 12) {
+                    Text("Connect a model to start chatting.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.C.ink)
+                    Spacer(minLength: 0)
+                    NativeButton("Connect", kind: .primary, small: true) {
+                        if let connectModel { connectModel() } else { model.openAppSettings(.providers) }
+                    }
+                    .accessibilityIdentifier("no-model-connect")
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 8)
+                .padding(.vertical, 8)
+                .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                .padding(.top, DesignTokens.Space.composerTop)
+                .transition(.opacity)
+            }
             ComposerView(
                 bot: bot,
                 onOpenConnectors: onOpenConnectors,
                 onOpenProviders: { model.openAppSettings(.providers) }
             )
+            .allowsHitTesting(!noModel)
+            .opacity(noModel ? 0.55 : 1)
+            .accessibilityHidden(noModel)
         }
         .frame(maxWidth: DesignTokens.Space.chatColumnMax)
         .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
         .frame(maxWidth: .infinity)
+        .offset(y: composerRisen || reduceMotion ? 0 : 28)
+        .opacity(composerRisen ? 1 : 0)
     }
 }
 
@@ -2023,4 +2094,32 @@ private struct MessageHoverActions<Content: View>: View {
             copied = false
         }
     }
+}
+
+/// One starter prompt: a sunken tile that tones up on hover.
+private struct StarterPromptButton: View {
+    let text: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.C.ink)
+                .multilineTextAlignment(.leading)
+                .padding(14)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                .background(hovering ? Self.hover : Theme.C.sunken,
+                            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+        .onHover { hovering = $0 }
+        .animation(Theme.ease(0.15), value: hovering)
+        .accessibilityIdentifier("starter-prompt")
+    }
+
+    private static let hover = Theme.adaptive(DesignTokens.Hex.border, DesignTokens.DarkHex.borderStrong)
 }

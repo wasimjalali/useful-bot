@@ -109,6 +109,12 @@ enum Theme {
     static func shadow(_ token: DesignTokens.ShadowToken) -> Color {
         color(token.color).opacity(token.opacity)
     }
+
+    /// The brand easing, the web's `--ease-out: cubic-bezier(0.22, 1, 0.36, 1)`.
+    /// Front-loaded: most of the change lands in the first third.
+    static func ease(_ duration: Double) -> Animation {
+        .timingCurve(0.22, 1, 0.36, 1, duration: duration)
+    }
 }
 
 /// Which appearance the app draws in. Stored per Mac; System follows the

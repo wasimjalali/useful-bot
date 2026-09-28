@@ -56,13 +56,16 @@ if [ -n "${UB_FEED_URL:-}" ]; then
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $UB_ED_PUBLIC_KEY" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool true" "$APP/Contents/Info.plist"
 fi
+# Where Settings > Feedback posts (services/feedback). Every build carries it;
+# UB_FEEDBACK_URL points a build at another Worker.
+/usr/libexec/PlistBuddy -c "Add :UBFeedbackURL string ${UB_FEEDBACK_URL:-https://feedback.usefulbuild.com/v1/feedback}" "$APP/Contents/Info.plist"
 if [ -n "${UB_VERSION:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $UB_VERSION" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${UB_BUILD:?UB_VERSION needs UB_BUILD}" "$APP/Contents/Info.plist"
 fi
 cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/AppIcon.icns"
 
-for asset in png/mark/useful-bot-128.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/motion.json app/macos/UsefulBot.icns; do
+for asset in png/mark/useful-bot-128.png png/black/useful-bot-256.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/motion.json app/macos/UsefulBot.icns; do
   mkdir -p "$APP/Contents/Resources/Brand/$(dirname "$asset")"
   cp "../brand/$asset" "$APP/Contents/Resources/Brand/$asset"
 done

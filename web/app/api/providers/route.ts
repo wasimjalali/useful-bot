@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
-import { syncProviderModels } from "../../../lib/sync-models";
+import { keyRejectedFor, syncProviderModels } from "../../../lib/sync-models";
 import { isEffortId, isSpeedId } from "../../../../shared/models.ts";
 import {
   connectionId,
@@ -116,6 +116,21 @@ export async function PUT(request: Request) {
     body = await readJson(request) as typeof body;
   } catch (err) {
     return apiError(err) ?? NextResponse.json({ ok: false, error: "invalid" }, { status: 400 });
+  }
+  // A pasted key is put to the vendor before it is stored, so one it turns
+  // down never replaces a working key or shows as connected.
+  if (typeof body.providerId === "string" && typeof body.key === "string" && body.key.trim()) {
+    const mode = body.mode === undefined ? legacyMode(body.providerId) : body.mode;
+    if (mode === "api" || mode === "plan") {
+      try {
+        const fields = isStringRecord(body.fields) ? body.fields : {};
+        if (await keyRejectedFor(body.providerId, mode, body.key.trim(), fields)) {
+          return NextResponse.json({ ok: false, error: "upstream_auth_failed" }, { status: 400 });
+        }
+      } catch (err) {
+        return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
+      }
+    }
   }
   try {
     const store = updateProviderStore((current) => {
