@@ -2134,17 +2134,28 @@ final class AppModel: ObservableObject {
 
     /// What the rail and search show for a sent message: the owner's words,
     /// or "Image" for a picture sent on its own. Never the lines naming it.
+    /// `PREVIEW_MAX` in shared/shell-store.ts.
+    private static let previewClip = 160
+
     static func previewText(_ text: String) -> String {
         let sent = Attachments.sentImages(in: text)
         if !sent.images.isEmpty {
             return sent.text.isEmpty ? (sent.images.count == 1 ? "Image" : "\(sent.images.count) images") : sent.text
         }
-        // A preview can be clipped before its file line, which leaves only the
-        // "Attached image:" line: in a one-line preview it is never the owner's.
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        let kept = lines.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("Attached image: ") }
-        guard kept.count != lines.count else { return text }
-        let rest = kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // A stored preview is clipped at 160 characters, often inside the
+        // image lines. Only then, and only at its tail, do lines that start
+        // like them go: an owner who typed one mid-message keeps it.
+        guard text.count >= Self.previewClip else { return text }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var dropped = false
+        while let last = lines.last {
+            let line = last.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("Attached image: ") || line.hasPrefix("[file: ") || line.isEmpty else { break }
+            lines.removeLast()
+            dropped = dropped || !line.isEmpty
+        }
+        guard dropped else { return text }
+        let rest = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return rest.isEmpty ? "Image" : rest
     }
 
@@ -3165,9 +3176,11 @@ final class AppModel: ObservableObject {
             let epoch = self.storeEpoch
             do {
                 let result = try await self.client.shellActionResult(action)
+                // The server's word is what counts, whatever the view has
+                // moved on to since.
+                onSuccess?()
                 guard !Task.isCancelled, epoch == self.storeEpoch else { return }
                 self.applyStore(result.store)
-                onSuccess?()
                 // The roster change stood; something hanging off it did not.
                 // The tick sweeps the rest, so this says so and moves on
                 // rather than presenting a completed action as a failure.
@@ -3367,8 +3380,6 @@ final class AppModel: ObservableObject {
                 guard generation == (self.chatGenerations[id] ?? 0) else { return }
                 self.forgetTurnIds(of: self.store?.bots.first { $0.id == id }?.sessionId)
                 self.applyStore(cleared)
-                // The cleared conversation's pictures go with it.
-                SentImageStore.forget(botId: id)
             } catch {
                 self.threadError = (error as? LocalizedError)?.errorDescription ?? "Could not start a new chat."
                 return

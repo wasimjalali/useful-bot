@@ -40,9 +40,10 @@ trap 'rm -rf "$NEW"' EXIT
 rm -rf "$NEW"
 ditto "$SRC" "$NEW"
 codesign --verify --strict "$NEW"
+# From here the stage is the only good copy: keep it even if the move fails.
+trap - EXIT
 rm -rf "$DEST"
 mv "$NEW" "$DEST"
-trap - EXIT
 touch "$DEST"
 
 "$LSREGISTER" -dump | awk '
