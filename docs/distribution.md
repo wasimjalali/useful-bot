@@ -48,6 +48,13 @@ A curl download carries no quarantine flag, so macOS opens the app without the G
 browser download of the zip works too; the first open then needs System Settings > Privacy & Security >
 Open Anyway, once.
 
+## Feedback
+
+Every build (dev and release) carries `UBFeedbackURL` in its Info.plist, written by
+`macos/build-app.sh` (override with `UB_FEEDBACK_URL`). Settings > Feedback posts there: the Worker
+and D1 in `services/feedback/` (see its README). Only what the owner types, plus the version line if
+they leave it ticked, leaves the Mac.
+
 ## The signing key
 
 The private EdDSA key is in the release Mac's login Keychain (account `useful-bot`) with a backup in the

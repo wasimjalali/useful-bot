@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UsefulBotCore
 
@@ -22,6 +23,8 @@ struct RailView: View {
     var fullScreen = false
 
     @State private var accountOpen = false
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .light
+    @ObservedObject private var updater = AppUpdater.shared
     /// The footer row (photo and Connectors pill), in rail space. The account
     /// menu opens just above it.
     @State private var accountDivider: CGRect = .zero
@@ -117,7 +120,7 @@ struct RailView: View {
         .overlay(alignment: .topLeading) {
             if accountOpen {
                 accountPopover
-                    .frame(width: 214)
+                    .frame(width: 240)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { accountMenuHeight = $0 }
                     .offset(x: 12, y: accountDivider.minY - accountMenuHeight - 8)
                     // Hidden for the one frame before its height is known.
@@ -354,6 +357,41 @@ struct RailView: View {
                 onOpenAppSettings(.general)
             }
             .accessibilityIdentifier("account-settings")
+            appearanceRow
+            popDivider
+            popItem(icon: "bubble.left", title: "Send feedback") {
+                accountOpen = false
+                onOpenAppSettings(.feedback)
+            }
+            .accessibilityIdentifier("account-feedback")
+            popItem(icon: "envelope", title: "Contact us") {
+                accountOpen = false
+                NSWorkspace.shared.open(ReleaseLinks.contactMail)
+            }
+            .accessibilityIdentifier("account-contact")
+            popDivider
+            HStack(spacing: 8) {
+                Text("Useful Bot \(AppUpdater.version)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .accessibilityIdentifier("account-version")
+                Spacer(minLength: 0)
+                // A dev build has no feed to check.
+                if updater.available {
+                    Button("Check for updates") {
+                        accountOpen = false
+                        updater.checkForUpdates()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.ink)
+                    .disabled(!updater.canCheckForUpdates)
+                    .pointerOnHover()
+                    .accessibilityIdentifier("account-check-updates")
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(minHeight: 30)
         }
         .padding(6)
         .background(Theme.C.surface)
@@ -363,6 +401,49 @@ struct RailView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .popShadow()
+    }
+
+    /// System, Light and Dark, switched in place.
+    private var appearanceRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "circle.lefthalf.filled")
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.C.ink)
+                .frame(width: 18)
+            Text("Appearance")
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.C.ink)
+                .lineLimit(1)
+                .fixedSize()
+            Spacer(minLength: 4)
+            ToneSegmented(
+                items: AppAppearance.allCases,
+                selection: $appearance,
+                height: 30,
+                accessibilityLabel: "Appearance",
+                label: { option in AnyView(Image(systemName: Self.appearanceIcon(option)).font(.system(size: 12))) },
+                name: { $0.label }
+            )
+            .frame(width: 96)
+            .accessibilityIdentifier("account-appearance")
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 2)
+        .frame(minHeight: 40)
+    }
+
+    private static func appearanceIcon(_ option: AppAppearance) -> String {
+        switch option {
+        case .system: return "desktopcomputer"
+        case .light: return "sun.max"
+        case .dark: return "moon"
+        }
+    }
+
+    private var popDivider: some View {
+        Hairline()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
     }
 
     /// How close today is to a stop: the router caps input, output and

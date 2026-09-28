@@ -282,15 +282,7 @@ export async function modelMetaFor(
   }
 }
 
-export async function fetchProviderModels(
-  baseUrl: string,
-  key?: string | null,
-  fetchImpl: typeof fetch = fetch,
-  keyHeader: KeyHeader = "bearer",
-  headers: Record<string, string> = {},
-  query: Record<string, string> = {},
-  path = "models",
-): Promise<{ ids: string[]; meta: Record<string, ModelMeta> }> {
+function listHeaders(key: string | null | undefined, keyHeader: KeyHeader, headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {
     accept: "application/json",
     "user-agent": "useful-bot/1.0",
@@ -301,9 +293,48 @@ export async function fetchProviderModels(
     else if (keyHeader === "api-key") out["api-key"] = key;
     else out.authorization = `Bearer ${key}`;
   }
+  return out;
+}
+
+/**
+ * Asks the vendor's model list whether it takes a pasted key, before the key
+ * is stored. Only a 401 or 403 is a rejection: a timeout, an offline Mac, a
+ * rate limit or a vendor outage lets the key through, the way a save always
+ * did, so a good key is never refused for someone else's trouble. Nothing is
+ * cached; the list itself is fetched after the save.
+ */
+export async function keyRejected(
+  baseUrl: string,
+  key: string,
+  fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = fetch,
+  keyHeader: KeyHeader = "bearer",
+  headers: Record<string, string> = {},
+  query: Record<string, string> = {},
+): Promise<boolean> {
+  const search = new URLSearchParams(query).toString();
+  try {
+    const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/models${search ? `?${search}` : ""}`, {
+      headers: listHeaders(key, keyHeader, headers),
+      signal: AbortSignal.timeout(4000),
+    });
+    return res.status === 401 || res.status === 403;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchProviderModels(
+  baseUrl: string,
+  key?: string | null,
+  fetchImpl: typeof fetch = fetch,
+  keyHeader: KeyHeader = "bearer",
+  headers: Record<string, string> = {},
+  query: Record<string, string> = {},
+  path = "models",
+): Promise<{ ids: string[]; meta: Record<string, ModelMeta> }> {
   const search = new URLSearchParams(query).toString();
   const res = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/${path}${search ? `?${search}` : ""}`, {
-    headers: out,
+    headers: listHeaders(key, keyHeader, headers),
     signal: AbortSignal.timeout(4000),
   });
   // The image list fails loud so the caller can keep the last good rows; an

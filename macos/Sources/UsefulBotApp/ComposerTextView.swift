@@ -167,9 +167,12 @@ struct ComposerTextView: NSViewRepresentable {
             if textView.string == next || textView.hasMarkedText() { return }
             let selection = textView.selectedRanges
             let length = (next as NSString).length
+            // Text written into an empty field (a starter prompt, a restored
+            // draft) leaves the caret after it, not in front of it.
+            let wasEmpty = textView.string.isEmpty
             textView.string = next
             let kept = selection.filter { $0.rangeValue.location <= length }
-            if kept.isEmpty {
+            if kept.isEmpty || wasEmpty {
                 textView.setSelectedRange(NSRange(location: length, length: 0))
             } else {
                 textView.selectedRanges = kept

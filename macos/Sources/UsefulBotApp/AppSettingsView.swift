@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UsefulBotCore
 
@@ -7,7 +8,8 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
     case providers
     case computer
     case usage
-    case updates
+    case feedback
+    case about
 
     var id: String { rawValue }
 
@@ -17,7 +19,8 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
         case .providers: return "Providers"
         case .computer: return "Computer"
         case .usage: return "Usage"
-        case .updates: return "Updates"
+        case .feedback: return "Feedback"
+        case .about: return "About"
         }
     }
 
@@ -27,7 +30,8 @@ enum AppSettingsTab: String, CaseIterable, Identifiable {
         case .providers: return "server.rack"
         case .computer: return "desktopcomputer"
         case .usage: return "chart.bar"
-        case .updates: return "arrow.triangle.2.circlepath"
+        case .feedback: return "bubble.left"
+        case .about: return "info.circle"
         }
     }
 }
@@ -50,6 +54,14 @@ struct AppSettingsView: View {
     /// scrolling body cannot clip it. Anchors come from the pane.
     @State private var providersCard: ProvidersCard?
     @State private var providersKeySheet: KeySheetTarget?
+    @ObservedObject private var updater = AppUpdater.shared
+    /// The form outlives the dialog: closing Settings keeps what was typed.
+    @ObservedObject private var feedbackDraft = FeedbackDraft.shared
+    @State private var feedbackEmailError: String?
+    @State private var feedbackSending = false
+    @State private var feedbackSent = false
+    @State private var feedbackError: String?
+    @FocusState private var feedbackEmailFocused: Bool
 
     init(initialTab: AppSettingsTab, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -190,7 +202,8 @@ struct AppSettingsView: View {
                 case .providers: providersPane
                 case .computer: computerPane
                 case .usage: usagePane
-                case .updates: updatesPane
+                case .feedback: feedbackPane
+                case .about: aboutPane
                 }
             }
             .padding(EdgeInsets(top: 20, leading: 32, bottom: 28, trailing: 28))
@@ -322,7 +335,7 @@ struct AppSettingsView: View {
 
     /// `machdep.cpu.brand_string` reports the real chip ("Apple M2 Max",
     /// "Intel(R) Core(TM) i7...") instead of the web's hardcoded platform.
-    private static let chipName: String = {
+    static let chipName: String = {
         var size = 0
         guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 0 else {
             return "This Mac"
@@ -627,32 +640,330 @@ struct AppSettingsView: View {
         return count(value)
     }
 
-    // MARK: - Updates
+    // MARK: - About
 
-    private var updatesPane: some View {
+    private var aboutPane: some View {
         VStack(alignment: .leading, spacing: 24) {
-            section("Useful Bot") {
+            HStack(spacing: 14) {
+                Image(nsImage: BrandAssets.image("png/black/useful-bot-256.png"))
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Useful Bot")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.C.ink)
+                    Text("Version \(AppUpdater.version) (\(AppUpdater.build))")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.inkMuted)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("about-version")
+                }
+            }
+
+            section("Updates") {
                 settingsGroup {
-                    settingsRow {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Update track")
+                    if updater.available {
+                        settingsRow {
+                            Text(updateStatus)
                                 .font(.system(size: 14))
                                 .foregroundStyle(Theme.C.ink)
-                            Text("Install from this repo. No auto-update channel yet.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.C.inkMuted)
+                                .lineLimit(2)
+                            Spacer(minLength: 0)
+                            if case .ready = updater.status {
+                                // Opens Sparkle's Install and Relaunch alert.
+                                NativeButton("Install update", kind: .primary, small: true,
+                                             enabled: updater.canCheckForUpdates) { updater.installUpdate() }
+                                    .accessibilityIdentifier("about-install-update")
+                            } else {
+                                NativeButton("Check now", kind: .secondary, small: true,
+                                             enabled: updater.canCheckForUpdates && updater.status != .checking) {
+                                    updater.checkForUpdates()
+                                }
+                                .accessibilityIdentifier("about-check-now")
+                            }
                         }
-                        Spacer(minLength: 0)
-                        settingsValue("Git")
-                    }
-                    settingsRow(last: true) {
-                        Text("Version")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.C.ink)
-                        Spacer(minLength: 0)
-                        settingsValue(model.appStatus?.version ?? "dev")
+                        settingsRow(last: true) {
+                            Text("Install updates automatically")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.C.ink)
+                            Spacer(minLength: 0)
+                            NativeSwitch(isOn: updater.installAutomatically) {
+                                updater.setInstallAutomatically(!updater.installAutomatically)
+                            }
+                            .disabled(!updater.allowsAutomaticUpdates)
+                            .opacity(updater.allowsAutomaticUpdates ? 1 : 0.55)
+                            .accessibilityLabel("Install updates automatically")
+                        }
+                    } else {
+                        settingsRow(last: true) {
+                            Text("This is a development build. Updates come with releases.")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.C.inkMuted)
+                            Spacer(minLength: 0)
+                        }
                     }
                 }
+            }
+
+            if ReleaseLinks.whatsNew != nil || ReleaseLinks.privacy != nil {
+                section("Links") {
+                    settingsGroup {
+                        if let url = ReleaseLinks.whatsNew {
+                            linkRow("What's new in \(AppUpdater.version)", url: url, last: ReleaseLinks.privacy == nil)
+                        }
+                        if let url = ReleaseLinks.privacy {
+                            linkRow("Privacy", url: url, last: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var updateStatus: String {
+        switch updater.status {
+        case .checking: return "Checking for updates…"
+        case .available(let version): return "Version \(version) is available"
+        case .ready(let version): return "Version \(version) is ready to install"
+        case .failed: return "Couldn't check for updates. Try again later."
+        case .upToDate, .idle:
+            guard let checked = updater.lastChecked else {
+                return updater.status == .upToDate ? "Up to date" : "Not checked yet"
+            }
+            let ago = Date().timeIntervalSince(checked) < 60
+                ? "just now"
+                : RelativeDateTimeFormatter().localizedString(for: checked, relativeTo: Date())
+            return "Up to date. Checked \(ago)"
+        }
+    }
+
+    private func linkRow(_ title: String, url: URL, last: Bool, value: String? = nil) -> some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            settingsRow(last: last) {
+                Text(title)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.C.ink)
+                Spacer(minLength: 0)
+                if let value { settingsValue(value) }
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerOnHover()
+    }
+
+    // MARK: - Feedback
+
+    /// Info.plist's `UBFeedbackURL`, written by build-app.sh; a defaults value
+    /// of the same name overrides it for a local check. Nil means this build
+    /// cannot send.
+    private static var feedbackURL: URL? {
+        let raw = UserDefaults.standard.string(forKey: "UBFeedbackURL")
+            ?? Bundle.main.object(forInfoDictionaryKey: "UBFeedbackURL") as? String
+        guard let raw, let url = URL(string: raw), url.scheme == "https" || url.scheme == "http" else { return nil }
+        return url
+    }
+
+    private var feedbackDetails: String {
+        "Useful Bot \(AppUpdater.version) (\(AppUpdater.build)), macOS \(Feedback.macOSVersion()) and \(Self.chipName)"
+    }
+
+    private var feedbackPlaceholder: String {
+        switch feedbackDraft.kind {
+        case .idea: return "What would make Useful Bot better for you?"
+        case .problem: return "What happened, and what did you expect?"
+        case .other: return "Tell us anything."
+        }
+    }
+
+    private var feedbackLength: Int { Feedback.length(feedbackDraft.message) }
+
+    private var canSendFeedback: Bool {
+        !feedbackSending && Self.feedbackURL != nil && Feedback.canSend(feedbackDraft.message)
+    }
+
+    private var feedbackPane: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if feedbackSent {
+                settingsGroup {
+                    settingsRow(last: true) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(Theme.C.success)
+                        Text("Thanks. Your feedback reached us.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Theme.C.ink)
+                            .accessibilityIdentifier("feedback-sent")
+                        Spacer(minLength: 0)
+                        NativeButton("Send more", kind: .secondary, small: true) {
+                            feedbackSent = false
+                        }
+                    }
+                }
+                .transition(.opacity)
+            } else {
+                feedbackForm
+            }
+
+            section("Contact") {
+                settingsGroup {
+                    if let url = ReleaseLinks.reportBug {
+                        linkRow("Report a bug on GitHub", url: url, last: false, value: "Public")
+                    }
+                    linkRow("Email us", url: ReleaseLinks.contactMail, last: true, value: ReleaseLinks.contactAddress)
+                }
+            }
+        }
+        .animation(Theme.ease(0.25), value: feedbackSent)
+    }
+
+    private var feedbackForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ToneSegmented(
+                items: FeedbackKind.allCases,
+                selection: $feedbackDraft.kind,
+                height: 32,
+                accessibilityLabel: "Kind",
+                label: { kind in AnyView(Text(Self.kindLabel(kind)).font(.system(size: 13, weight: .medium))) },
+                name: { Self.kindLabel($0) }
+            )
+            .frame(width: 300)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Your message")
+                    .font(.system(size: DesignTokens.FontSize.fieldLabel, weight: .medium))
+                    .foregroundStyle(Theme.C.inkMuted)
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $feedbackDraft.message)
+                        .font(.system(size: DesignTokens.FontSize.fieldInput))
+                        .foregroundStyle(Theme.C.ink)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
+                        .accessibilityLabel("Your message")
+                        .accessibilityIdentifier("feedback-message")
+                    if feedbackDraft.message.isEmpty {
+                        Text(feedbackPlaceholder)
+                            .font(.system(size: DesignTokens.FontSize.fieldInput))
+                            .foregroundStyle(Theme.C.inkFaint)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(height: 150)
+                .background(Theme.C.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous)
+                        .strokeBorder(feedbackLength > Feedback.messageMax ? Theme.C.danger : Theme.C.borderStrong, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.field, style: .continuous))
+                // The count shows only near the limit, where it matters.
+                if feedbackLength > Feedback.messageMax - 500 {
+                    Text("\(feedbackLength.formatted(.number.locale(Locale(identifier: "en_US")))) of 4,000")
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(feedbackLength > Feedback.messageMax ? Theme.C.danger : Theme.C.inkMuted)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+
+            FieldShell(label: "Email for a reply (optional)", error: feedbackEmailError) {
+                TextField("you@example.com", text: $feedbackDraft.email)
+                    .nativeField(focused: feedbackEmailFocused)
+                    .focused($feedbackEmailFocused)
+                    .accessibilityIdentifier("feedback-email")
+                    // The complaint goes as soon as the address is touched again.
+                    .onChange(of: feedbackDraft.email) { _, _ in feedbackEmailError = nil }
+            }
+            .frame(maxWidth: 360)
+
+            Button {
+                feedbackDraft.includesDetails.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: feedbackDraft.includesDetails ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 14))
+                        .foregroundStyle(feedbackDraft.includesDetails ? Theme.C.accent : Theme.C.inkFaint)
+                    Text("Include \(feedbackDetails)")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.C.ink)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerOnHover()
+            .accessibilityAddTraits(feedbackDraft.includesDetails ? [.isSelected] : [])
+            .accessibilityIdentifier("feedback-include")
+
+            HStack(spacing: 12) {
+                NativeButton(feedbackSending ? "Sending" : "Send", kind: .primary, small: true,
+                             enabled: canSendFeedback, action: sendFeedback)
+                    .accessibilityIdentifier("feedback-send")
+                Text(Self.feedbackURL == nil
+                     ? "Feedback isn't set up in this build. Email us instead."
+                     : "Only this form and an anonymous install ID are sent. No chats, no files.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.C.inkMuted)
+            }
+            if let feedbackError {
+                Text(feedbackError)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("feedback-error")
+            }
+        }
+    }
+
+    private static func kindLabel(_ kind: FeedbackKind) -> String {
+        switch kind {
+        case .idea: return "Idea"
+        case .problem: return "Problem"
+        case .other: return "Other"
+        }
+    }
+
+    private func sendFeedback() {
+        guard canSendFeedback, let url = Self.feedbackURL else { return }
+        let email = feedbackDraft.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !email.isEmpty, !Feedback.plausibleEmail(email) {
+            feedbackEmailError = "That email doesn't look right."
+            return
+        }
+        let submission = FeedbackSubmission(
+            kind: feedbackDraft.kind,
+            message: feedbackDraft.message,
+            replyEmail: email,
+            installId: Feedback.installId(),
+            context: feedbackDraft.includesDetails
+                ? FeedbackContext(appVersion: AppUpdater.version, build: AppUpdater.build,
+                                  macosVersion: Feedback.macOSVersion(), chip: Self.chipName)
+                : nil
+        )
+        feedbackSending = true
+        feedbackError = nil
+        Task {
+            let result = await Feedback.send(submission, to: url)
+            feedbackSending = false
+            switch result {
+            case .sent:
+                feedbackDraft.message = ""
+                feedbackSent = true
+            case .rateLimited:
+                feedbackError = "You've reached today's feedback limit. Try again tomorrow."
+            case .server:
+                feedbackError = "Couldn't send. Check your connection and try again."
+            case .invalid(_, let message):
+                feedbackError = message ?? "Something in the form isn't right. Check it and try again."
             }
         }
     }
@@ -750,4 +1061,35 @@ struct SettingsPopUpLabel: View {
         .background(Theme.C.border.opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
+}
+
+/// Links that only exist once the public releases repo does. Until then the
+/// rows that need them stay hidden.
+enum ReleaseLinks {
+    /// Flip when github.com/wasimjalali/useful-bot-releases is public.
+    static let releasesRepoLive = false
+    static let contactAddress = "hello@usefulbuild.com"
+    static let contactMail = URL(string: "mailto:hello@usefulbuild.com")!
+
+    static var reportBug: URL? {
+        releasesRepoLive ? URL(string: "https://github.com/wasimjalali/useful-bot-releases/issues/new") : nil
+    }
+
+    static var whatsNew: URL? {
+        releasesRepoLive ? URL(string: "https://github.com/wasimjalali/useful-bot-releases/releases/tag/v\(AppUpdater.version)") : nil
+    }
+
+    /// No privacy page exists yet.
+    static let privacy: URL? = nil
+}
+
+/// Settings > Feedback's form, kept for the life of the app so closing the
+/// dialog doesn't throw away what was typed.
+@MainActor
+final class FeedbackDraft: ObservableObject {
+    static let shared = FeedbackDraft()
+    @Published var kind: FeedbackKind = .idea
+    @Published var message = ""
+    @Published var email = ""
+    @Published var includesDetails = true
 }

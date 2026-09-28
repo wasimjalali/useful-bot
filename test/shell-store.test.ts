@@ -66,13 +66,13 @@ test("setWorkspace rejects an unknown bot and a malformed grant", () => {
   );
 });
 
-test("seed store has compact Useful Bot in Unassigned", () => {
+test("seed store has compact Generalist in Unassigned", () => {
   const store = seedStore(new Date("2026-09-12T00:00:00Z"));
   assert.equal(store.bots.length, 1);
   assert.equal(store.bots[0].id, DEFAULT_BOT_ID);
   assert.equal(store.bots[0].pinned, false);
   assert.equal(store.bots[0].sectionId, null);
-  assert.equal(selectedBot(store).name, "Useful Bot");
+  assert.equal(selectedBot(store).name, "Generalist");
 });
 
 test("create section pin move hide delete and new chat", () => {

@@ -1,5 +1,5 @@
-import { refreshProviderModels } from "../../shared/live-models.ts";
-import { providerMode, type ProviderMode } from "../../shared/provider-catalog.ts";
+import { keyRejected, refreshProviderModels } from "../../shared/live-models.ts";
+import { providerMode, type AuthMode, type ProviderMode } from "../../shared/provider-catalog.ts";
 import { accessTokenFor } from "../../shared/provider-oauth.ts";
 import type { ProviderStore } from "../../shared/providers.ts";
 
@@ -94,6 +94,25 @@ async function refreshOne(store: ProviderStore, id: string, force: boolean): Pro
   });
   inFlight.set(id, { sig, job });
   return job;
+}
+
+/**
+ * True when the vendor turns down a key the owner just pasted, asked the same
+ * way the model list is fetched for that connection. Modes with no model list
+ * and local servers are never asked.
+ */
+export async function keyRejectedFor(
+  providerId: string,
+  mode: AuthMode,
+  key: string,
+  fields: Record<string, string> = {},
+): Promise<boolean> {
+  if (mode === "local" || mode === "oauth") return false;
+  const def = providerMode(providerId, mode);
+  if (!def.listsModels) return false;
+  let baseUrl = substituteFields(def.baseUrl, fields);
+  if (providerId === "opencode-go" && process.env.UB_OPENCODE_GO_BASE) baseUrl = process.env.UB_OPENCODE_GO_BASE;
+  return keyRejected(baseUrl, key, fetch, def.keyHeader, { ...(def.headers ?? {}) }, def.modelsQuery ?? {});
 }
 
 /**

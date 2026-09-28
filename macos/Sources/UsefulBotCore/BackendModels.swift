@@ -528,6 +528,8 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
     public let accountId: String?
     public var fields: [String: String]
     public var models: [ConnectionModelOption]
+    /// The catalogue's everyday model for this connection; nil from an older server.
+    public let defaultModelId: String?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -547,11 +549,12 @@ public struct ConnectionPublic: Codable, Identifiable, Equatable, Sendable {
         accountId = try? c.decodeIfPresent(String.self, forKey: .accountId)
         fields = (try? c.decode([String: String].self, forKey: .fields)) ?? [:]
         models = (try? c.decode([ConnectionModelOption].self, forKey: .models)) ?? []
+        defaultModelId = try? c.decodeIfPresent(String.self, forKey: .defaultModelId)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, providerId, mode, label, kindLabel, monogram, icon, connected, last4
-        case source, active, status, lastError, accountId, fields, models
+        case source, active, status, lastError, accountId, fields, models, defaultModelId
     }
 }
 

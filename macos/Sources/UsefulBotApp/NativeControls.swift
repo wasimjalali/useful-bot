@@ -327,3 +327,54 @@ extension View {
         modifier(NativeFieldStyle(focused: focused))
     }
 }
+
+/// A drawn segmented control: a tone track with a lifted surface pill under
+/// the picked option. The system picker fills the pick with the OS accent
+/// colour, which breaks the monochrome brand. The pill glides between options.
+struct ToneSegmented<Item: Hashable>: View {
+    let items: [Item]
+    @Binding var selection: Item
+    var height: CGFloat = 30
+    var accessibilityLabel: String
+    let label: (Item) -> AnyView
+    let name: (Item) -> String
+
+    @Namespace private var pill
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(items, id: \.self) { item in
+                let picked = item == selection
+                Button {
+                    withAnimation(reduceMotion ? nil : Theme.ease(0.22)) { selection = item }
+                } label: {
+                    label(item)
+                        .foregroundStyle(picked ? Theme.C.ink : Theme.C.inkMuted)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: height - 4)
+                        .background { Color.clear.matchedGeometryEffect(id: item, in: pill, isSource: true) }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerOnHover()
+                .accessibilityLabel(name(item))
+                .accessibilityAddTraits(picked ? [.isSelected] : [])
+            }
+        }
+        // The pill sits under every label and glides to the picked one.
+        .background {
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
+                .fill(Self.pillFill)
+                .shadow(color: Theme.C.shadow.opacity(0.08), radius: 2, x: 0, y: 1)
+                .matchedGeometryEffect(id: selection, in: pill, isSource: false)
+        }
+        .padding(2)
+        .background(Theme.C.sunken, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// Lighter than the track in both appearances.
+    private static var pillFill: Color { Theme.adaptive(DesignTokens.Hex.surface, "#3A3A3A") }
+}
