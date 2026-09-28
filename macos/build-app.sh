@@ -66,7 +66,13 @@ if [ -n "${UB_VERSION:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $UB_VERSION" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${UB_BUILD:?UB_VERSION needs UB_BUILD}" "$APP/Contents/Info.plist"
 fi
-cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/AppIcon.icns"
+# Named after the logo it holds, and renamed whenever the logo changes, so
+# nothing that cached the bundle's icon by file name can match the old one.
+# (A Dock tile pinned before the change can still hold the old picture until
+# the system icon cache is cleared: see the logo gotcha in CLAUDE.md.) The
+# last build's icon file goes first, so the bundle carries only this one.
+find "$APP/Contents/Resources" -maxdepth 1 -name '*.icns' -delete
+cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/UsefulBotHead.icns"
 
 for asset in png/mark/useful-bot-128.png png/black/useful-bot-256.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/avatar-face.svg source/motion.json app/macos/UsefulBot.icns; do
   mkdir -p "$APP/Contents/Resources/Brand/$(dirname "$asset")"
