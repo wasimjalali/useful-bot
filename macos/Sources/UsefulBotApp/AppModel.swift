@@ -702,7 +702,18 @@ final class AppModel: ObservableObject {
     private func loadOperator() async {
         guard let status = try? await client.status() else { return }
         appStatus = status
-        if let name = status.name, !name.isEmpty, let initials = status.initials, !initials.isEmpty {
+        // The Mac account's full name ("Wasim Jalali") wins over the service's
+        // login-derived one ("Wasimjalali"), so the rail and Settings name the
+        // owner the same way.
+        let full = NSFullUserName().trimmingCharacters(in: .whitespaces)
+        let words = full.split(separator: " ").compactMap(\.first)
+        if !full.isEmpty, words.count > 1 {
+            operatorName = full
+            operatorInitials = (String(words[0]) + String(words[1])).uppercased()
+        } else if !full.isEmpty {
+            operatorName = full
+            operatorInitials = String(full.prefix(2)).uppercased()
+        } else if let name = status.name, !name.isEmpty, let initials = status.initials, !initials.isEmpty {
             operatorName = name
             operatorInitials = initials
         }

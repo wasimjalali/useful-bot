@@ -407,6 +407,8 @@ struct RootView: View {
 struct NativeDialog<Content: View>: View {
     let maxWidth: CGFloat
     let ariaLabel: String
+    /// Off for a dialog whose own header row carries the close button.
+    var closeRow = true
     let onClose: () -> Void
     @ViewBuilder var content: Content
 
@@ -416,13 +418,15 @@ struct NativeDialog<Content: View>: View {
                 .ignoresSafeArea()
                 .onTapGesture(perform: onClose)
             VStack(spacing: 0) {
-                HStack {
-                    Spacer(minLength: 0)
-                    NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
-                        .accessibilityLabel("Close \(ariaLabel)")
-                        .accessibilityIdentifier("dialog-close")
+                if closeRow {
+                    HStack {
+                        Spacer(minLength: 0)
+                        NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
+                            .accessibilityLabel("Close \(ariaLabel)")
+                            .accessibilityIdentifier("dialog-close")
+                    }
+                    .padding(8)
                 }
-                .padding(8)
                 content
             }
             .frame(maxWidth: maxWidth)
@@ -433,6 +437,8 @@ struct NativeDialog<Content: View>: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
             .popShadow()
+            // Never flush with the window's edges when the window is narrow.
+            .padding(.horizontal, 24)
         }
         .onExitCommand(perform: onClose)
     }

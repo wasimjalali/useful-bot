@@ -293,6 +293,8 @@ struct FirstRunView: View {
     @State private var welcomeMounted: Bool
     @State private var welcomeLeaving = false
     @State private var pendingDrop: DispatchWorkItem?
+    /// True from a step change until its transition has settled.
+    @State private var moving = false
     /// Reopened over the chat, the flow fades in once it has drawn; at
     /// launch it is simply there.
     @State private var revealed: Bool
@@ -320,7 +322,9 @@ struct FirstRunView: View {
                     page(layer.step)
                         .opacity(opacity[layer.key] ?? 1)
                         .offset(x: offset[layer.key] ?? 0, y: yOffset[layer.key] ?? 0)
-                        .allowsHitTesting(layer == layers.last)
+                        // Not while it is still invisible: a fast second click
+                        // landed on the next page before it faded in.
+                        .allowsHitTesting(layer == layers.last && !moving)
                         .accessibilityHidden(layer != layers.last)
                 }
             }
@@ -399,6 +403,7 @@ struct FirstRunView: View {
     /// the following run-loop turn, after it has drawn.
     private func move(from old: FirstRunController.Step, to next: FirstRunController.Step) {
         pendingDrop?.cancel()
+        moving = true
         let fromWelcome = old == .welcome
         let direction: CGFloat = next.depth < old.depth ? -1 : 1
         visits += 1
@@ -438,6 +443,7 @@ struct FirstRunView: View {
                 offset = offset.filter { $0.key == incoming.key }
                 yOffset = yOffset.filter { $0.key == incoming.key }
                 if welcomeLeaving { welcomeMounted = false }
+                moving = false
             }
             pendingDrop = drop
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: drop)

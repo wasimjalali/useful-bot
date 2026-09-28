@@ -513,14 +513,16 @@ struct ComposerView: View {
                     model.removeAttachment(id: file.id)
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.white)
-                        .frame(width: 18, height: 18)
+                        .frame(width: 20, height: 20)
                         .background(Circle().fill(Color.black.opacity(0.6)))
+                        // A larger target than the circle it draws.
+                        .padding(4)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(4)
-                .accessibilityLabel("Remove image")
+                .accessibilityLabel("Remove \(file.name)")
             }
     }
 

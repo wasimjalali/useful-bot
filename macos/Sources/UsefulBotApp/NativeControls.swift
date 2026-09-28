@@ -56,7 +56,9 @@ private struct ButtonChrome: ButtonStyle {
 
     private var foreground: Color {
         // Disabled is one sunken look for every kind: flat, muted, full opacity.
-        if !enabled { return Theme.C.inkFaint }
+        // Muted, not faint: on the sunken fill faint fell under 3:1 and a
+        // disabled button read as a plain label.
+        if !enabled { return Theme.C.inkMuted }
         switch kind {
         case .primary: return Theme.C.accentInk
         case .secondary: return hovering ? Theme.C.accent : Theme.C.ink
@@ -240,7 +242,9 @@ struct BotLabelChip: View {
             .kern: 0.02 * DesignTokens.FontSize.railLabel,
         ]
         let measured = NSAttributedString(string: text.uppercased(), attributes: attributes).size().width
-        return fitsFully ? ceil(measured) + 13 : min(ceil(measured) + 13, Self.maxWidth)
+        // Whole in a picker, but never so wide that a long role pushes the
+        // bot's own name out of its row.
+        return min(ceil(measured) + 13, fitsFully ? 160 : Self.maxWidth)
     }
 
     var body: some View {

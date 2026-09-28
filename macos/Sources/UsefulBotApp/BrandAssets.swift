@@ -128,15 +128,13 @@ struct BrandMotionFrameView: View {
 
     var body: some View {
         ZStack {
-            layer("arm-left").colorMultiply(tint)
-            layer("arm-right").colorMultiply(tint)
-                .rotationEffect(.degrees(frame.wave), anchor: UnitPoint(x: 710.0 / 1024, y: 725.0 / 1024))
-            layer("body").colorMultiply(tint)
-                .scaleEffect(x: frame.squashX, y: frame.squashY, anchor: UnitPoint(x: 0.5, y: 890.0 / 1024))
+            // The head alone since the logo became the circle face: no body
+            // or arms to squash or wave, only the float and the blink.
             layer("head").colorMultiply(tint)
+            layer("mouth")
             layer("glasses")
-            layer("eye-left").scaleEffect(x: 1, y: frame.blink, anchor: UnitPoint(x: 370.944 / 1024, y: 441.088 / 1024))
-            layer("eye-right").scaleEffect(x: 1, y: frame.blink, anchor: UnitPoint(x: 653.568 / 1024, y: 441.088 / 1024))
+            layer("eye-left").scaleEffect(x: 1, y: frame.blink, anchor: UnitPoint(x: 384.378 / 1024, y: 531.080 / 1024))
+            layer("eye-right").scaleEffect(x: 1, y: frame.blink, anchor: UnitPoint(x: 640.085 / 1024, y: 531.080 / 1024))
         }
         .offset(y: frame.float * size / 1024)
     }

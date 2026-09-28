@@ -22,7 +22,7 @@ struct ProvidersPaneView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            section("") {
+            section(nil) {
                 if let error = model.providersError {
                     Text(error)
                         .font(.system(size: 14))
@@ -506,9 +506,11 @@ struct ProvidersPaneView: View {
         openCard = (openCard == card) ? nil : card
     }
 
-    private func section<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+    /// A group with its label above it; nil for the pane's first group, which
+    /// the pane title already names.
+    private func section<Content: View>(_ label: String?, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !label.isEmpty {
+            if let label {
                 Text(label)
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)

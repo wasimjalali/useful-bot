@@ -34,12 +34,9 @@ struct LibraryView: View {
     private static let gridHeight: CGFloat = 560
 
     var body: some View {
-        // The shared NativeDialog puts the close button on its own row; here it
-        // shares the title's row.
-        ZStack {
-            Theme.C.overlay
-                .ignoresSafeArea()
-                .onTapGesture(perform: onClose)
+        // The shared dialog, with the close button on the title's row rather
+        // than a row of its own.
+        NativeDialog(maxWidth: 1040, ariaLabel: "Library", closeRow: false, onClose: onClose) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
                     if selected != nil {
@@ -112,16 +109,8 @@ struct LibraryView: View {
                         .frame(height: Self.gridHeight)
                 }
             }
-            .frame(maxWidth: 1040, alignment: .leading)
-            .background(Theme.C.surface)
-            .overlay(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous)
-                    .strokeBorder(Theme.C.edge, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.dialog, style: .continuous))
-            .popShadow()
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .onExitCommand(perform: onClose)
         .task { await load() }
     }
 
@@ -775,6 +764,16 @@ extension MediaItem {
     /// characters at a word boundary. Pages and drawings keep their own.
     var displayTitle: String {
         guard kind == "image" else { return title }
+        // Worked out once per prompt: the grid asks on every layout pass.
+        if let cached = Self.titleCache.object(forKey: prompt as NSString) { return cached as String }
+        let made = Self.makeTitle(prompt: prompt, fallback: title)
+        Self.titleCache.setObject(made as NSString, forKey: prompt as NSString)
+        return made
+    }
+
+    private static let titleCache = NSCache<NSString, NSString>()
+
+    private static func makeTitle(prompt: String, fallback title: String) -> String {
         let line = prompt.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         var text = line.trimmingCharacters(in: .whitespaces)
         func strip(_ pattern: String) {

@@ -482,25 +482,41 @@ struct SearchPaletteView: View {
     }
 
     /// The message as plain text: markdown marks stripped, whitespace folded.
+    /// A recent as one plain line. Only markdown's own marks go: links keep
+    /// their text, code ticks and paired emphasis drop their marks, and a
+    /// heading or quote marker goes at the start of a line. "C#", "issue #42"
+    /// and "clear_history" stay as written.
     private static func recentText(_ recent: ShellRecent) -> String {
         let raw = AppModel.previewText(recent.title.isEmpty || recent.title == "Chat" ? recent.preview : recent.title)
         var text = raw.replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
-        text = text.replacingOccurrences(of: "[`*#>~]+", with: "", options: .regularExpression)
-        // Underscores only where they wrap words (_emphasis_); inside a word
-        // (clear_history) they are the word.
-        text = text.replacingOccurrences(of: "(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?m)^\\s*(#{1,6}\\s+|>\\s?)", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "`+", with: "", options: .regularExpression)
+        for mark in ["\\*\\*", "__", "\\*", "_", "~~"] {
+            text = text.replacingOccurrences(
+                of: "(?<![A-Za-z0-9])\(mark)(?=\\S)(.+?)(?<=\\S)\(mark)(?![A-Za-z0-9])",
+                with: "$1",
+                options: .regularExpression
+            )
+        }
         text = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func relativeTime(_ iso: String) -> String? {
-        let plain = ISO8601DateFormatter()
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = fractional.date(from: iso) ?? plain.date(from: iso) else { return nil }
+    private static let plainISO = ISO8601DateFormatter()
+    private static let fractionalISO: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return formatter
+    }()
+
+    private static func relativeTime(_ iso: String) -> String? {
+        guard let date = fractionalISO.date(from: iso) ?? plainISO.date(from: iso) else { return nil }
+        return relative.localizedString(for: date, relativeTo: Date())
     }
 
     private func run(_ hit: Hit?) {

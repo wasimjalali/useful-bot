@@ -220,18 +220,9 @@ struct AppSettingsView: View {
 
     // MARK: - General
 
-    /// The Mac account's full name ("Wasim Jalali"); the login-derived name
-    /// ("Wasimjalali") only when the Mac has none.
-    private var displayName: String {
-        let full = NSFullUserName().trimmingCharacters(in: .whitespaces)
-        return full.isEmpty ? model.operatorName : full
-    }
-
-    private var displayInitials: String {
-        let parts = displayName.split(separator: " ").compactMap(\.first)
-        guard parts.count > 1 else { return model.operatorInitials }
-        return String(parts[0]).uppercased() + String(parts[1]).uppercased()
-    }
+    /// The same name and initials the rail shows (`AppModel.loadOperator`).
+    private var displayName: String { model.operatorName }
+    private var displayInitials: String { model.operatorInitials }
 
     private var generalPane: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -317,7 +308,7 @@ struct AppSettingsView: View {
 
     private var computerPane: some View {
         VStack(alignment: .leading, spacing: 24) {
-            section("") {
+            section(nil) {
                 settingsGroup {
                     settingsRow {
                         VStack(alignment: .leading, spacing: 2) {
@@ -986,9 +977,11 @@ struct AppSettingsView: View {
     // MARK: - Rows
 
     /// A quiet heading over a grey card, the way macOS and Grok group settings.
-    private func section<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+    /// A group with its label above it; nil for the pane's first group, which
+    /// the pane title already names.
+    private func section<Content: View>(_ label: String?, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !label.isEmpty {
+            if let label {
                 Text(label)
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
