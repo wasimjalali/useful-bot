@@ -4,10 +4,11 @@
 //
 //   npm run release:mac -- --version 0.3.0 [--feed-url URL] [--download-base URL] [--out DIR] [--allow-dirty]
 //
-// Nothing is uploaded. Publishing is putting the zip and appcast.xml where
+// Nothing is uploaded. Publishing is putting the zip, appcast.xml and install.sh where
 // --download-base and --feed-url say (docs/distribution.md).
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -82,4 +83,12 @@ const appcast = `<?xml version="1.0" encoding="utf-8"?>
 </rss>
 `;
 writeFileSync(path.join(out, "appcast.xml"), appcast);
-process.stdout.write(`${JSON.stringify({ version, build, zip, bytes: statSync(zip).size, appcast: path.join(out, "appcast.xml"), feed: values["feed-url"] })}\n`);
+
+// The installer names this release's zip and its hash, and refuses anything else.
+const zipSha = createHash("sha256").update(readFileSync(zip)).digest("hex");
+const installer = readFileSync(path.join(ROOT, "scripts/install.sh"), "utf8")
+  .replace("@@ZIP_URL@@", `${downloadBase}/${ZIP}`)
+  .replace("@@ZIP_SHA256@@", zipSha);
+if (installer.includes("@@ZIP_")) throw new Error("install.sh placeholders were not filled");
+writeFileSync(path.join(out, "install.sh"), installer, { mode: 0o755 });
+process.stdout.write(`${JSON.stringify({ version, build, zip, bytes: statSync(zip).size, sha256: zipSha, appcast: path.join(out, "appcast.xml"), feed: values["feed-url"] })}\n`);

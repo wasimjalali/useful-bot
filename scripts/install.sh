@@ -2,11 +2,15 @@
 # Installs Useful Bot on a Mac:
 #   curl -fsSL https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/install.sh | sh
 #
-# A download through curl carries no quarantine flag, so macOS opens the app
-# without the "unidentified developer" stop. Updates then arrive in the app.
+# The app has no Apple Developer ID, so this clears its quarantine flag to skip
+# the "unidentified developer" stop. What it trusts instead: the release this
+# copy was published with. scripts/release-mac.mjs writes that release's zip
+# URL and SHA-256 below, and a download that does not match is refused.
+# Updates then arrive in the app, checked against its EdDSA key.
 set -eu
 
-URL="${UB_DOWNLOAD_URL:-https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip}"
+URL="@@ZIP_URL@@"
+SHA256="@@ZIP_SHA256@@"
 DEST="${UB_INSTALL_DIR:-/Applications}"
 APP="$DEST/Useful Bot.app"
 
@@ -23,9 +27,15 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 say "Downloading Useful Bot…"
-curl -fL --progress-bar -o "$tmp/Useful-Bot-macOS.zip" "$URL" || die "the download did not complete."
+case "$URL$SHA256" in *@@*) die "this is the unreleased template; install from a release's install.sh." ;; esac
+# HTTPS only; plain HTTP just for a local test server.
+case "$URL" in http://127.0.0.1:*) proto='=http' ;; *) proto='=https' ;; esac
+curl -fL --proto "$proto" --progress-bar -o "$tmp/Useful-Bot-macOS.zip" "$URL" || die "the download did not complete."
+got="$(shasum -a 256 "$tmp/Useful-Bot-macOS.zip" | cut -d' ' -f1)"
+[ "$got" = "$SHA256" ] || die "the download does not match this release (sha256 $got, expected $SHA256)."
 ditto -x -k "$tmp/Useful-Bot-macOS.zip" "$tmp/unpacked" || die "the download is not a valid zip."
 [ -d "$tmp/unpacked/Useful Bot.app" ] || die "the download does not contain Useful Bot.app."
+codesign --verify --strict "$tmp/unpacked/Useful Bot.app" || die "the app's code signature does not verify."
 
 if pgrep -x UsefulBotApp >/dev/null 2>&1; then
   say "Quitting the running Useful Bot…"
