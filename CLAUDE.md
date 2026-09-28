@@ -48,7 +48,11 @@ use; rebuilding means `npm run build:app` then `npm run install:app` (not a bare
 launch the Dock can take its icon from any of them, so a stale copy flashes an old logo (the
 very old terminal one, 2026-09-28) until the app sets its own. `install:app` unregisters every
 other copy and re-registers the installed one with a fresh date. When the logo changes: update
-`brand/app/macos/UsefulBot.icns`, rebuild, run `install:app`, and check that
+`brand/app/macos/UsefulBot.icns`, give the bundle's icon file a new name (`CFBundleIconFile` in
+`macos/bundle/Info.plist` and the copy in `macos/build-app.sh`; macOS caches the Dock tile by that
+name, so the old logo stayed on a pinned tile until the app ran), rebuild, run `install:app`, clear the
+system icon cache once on this Mac (`sudo rm -rf /Library/Caches/com.apple.iconservices.store &&
+killall Dock`, the owner runs it: it needs his password), and check that
 `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -dump | grep -B8 "identifier: *ai.useful.bot"` lists only `/Applications`. Never
 leave extra copies of the app lying around, including in scratch folders.
 

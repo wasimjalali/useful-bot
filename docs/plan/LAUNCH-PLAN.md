@@ -126,6 +126,14 @@ The bots are the brand. Make them feel cute and premium.
     relaunch lands in about 0.9 s. Measured in `evals/results/2026-09-29-pr3-polish.md`. Look at
     keying snapshots by `ChatSnapshot.formatVersion` (which already guards the stored shape)
     instead of the binary, with whatever projection-logic guard that needs.
+  - **The app icon draws grey in the Dock until the app is running (macOS 26).** Checked on
+    2026-09-29 after installing the new logo: while launching, the Dock shows the head as a grey
+    face on black, then it turns white once the app sets its own icon. The bundle ships only a
+    flat `.icns`; macOS 26 renders such icons with its legacy treatment. The fix is a compiled
+    asset catalog (`Assets.car` with an `AppIcon`, ideally from an Icon Composer `.icon`), which
+    needs Xcode's `actool` (this Mac has only the Command Line Tools). Installing Xcode is the
+    owner's call. Also, on this Mac a pinned tile kept the old full-body logo while idle until the
+    system icon cache is cleared (the owner runs the command in the CLAUDE.md logo gotcha).
 
 - **Page:**
   - A beautiful landing page for Useful Bot on the new subdomain `bot.usefulbuild.com`.
