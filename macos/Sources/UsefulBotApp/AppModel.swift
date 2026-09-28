@@ -500,6 +500,14 @@ final class AppModel: ObservableObject {
         // carry, so a checkout set as `repoPath` must never be its target.
         if let bundled = RuntimeInstall.bundledRuntime(), config.repoPath == RuntimeInstall.installRoot.path {
             let root = RuntimeInstall.installRoot
+            // After an update the previous version's services are still up
+            // (they outlive the app) and would keep serving from files the
+            // copy is about to replace, so they stop first and `ensure`
+            // starts the new ones.
+            if RuntimeInstall.needsCopy(bundled: bundled, root: root) {
+                await services.stopOwnServices(config: config)
+                guard !Task.isCancelled, attempt == startAttempt else { return }
+            }
             let prepared = await Task.detached { () -> String? in
                 do {
                     try RuntimeInstall.prepare(bundled: bundled, root: root)

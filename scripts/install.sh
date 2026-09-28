@@ -43,9 +43,15 @@ if pgrep -x UsefulBotApp >/dev/null 2>&1; then
   sleep 2
 fi
 
+# Staged beside the old copy and checked there, so a copy cut short (a full
+# disk) leaves the installed app as it was.
+NEW="$DEST/.Useful Bot.app.installing"
+rm -rf "$NEW"
+ditto "$tmp/unpacked/Useful Bot.app" "$NEW" || { rm -rf "$NEW"; die "could not copy the app into $DEST."; }
+xattr -cr "$NEW"
+codesign --verify --strict "$NEW" || { rm -rf "$NEW"; die "the copied app does not verify."; }
 rm -rf "$APP"
-ditto "$tmp/unpacked/Useful Bot.app" "$APP"
-xattr -cr "$APP"
+mv "$NEW" "$APP"
 
 say "Installed $APP"
 open "$APP"

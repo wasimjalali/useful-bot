@@ -12,7 +12,7 @@
 // --download-base and --feed-url say (docs/distribution.md).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -50,6 +50,20 @@ if (!values["allow-dirty"] && git("status", "--porcelain", "--untracked-files=no
 const build = git("rev-list", "--count", "HEAD");
 const downloadBase = values["download-base"] ?? `${RELEASES}/download/v${version}`;
 
+// The key the app will trust must be the key the zip is signed with, or no
+// update from this release could ever install. Checked before the long build.
+const accountKey = execFileSync(path.join(SPARKLE_BIN, "generate_keys"), ["--account", values["ed-account"], "-p"], { encoding: "utf8" }).trim();
+if (accountKey !== values["ed-public-key"]) {
+  process.stderr.write(`the Keychain key for account "${values["ed-account"]}" is not the public key given (${values["ed-public-key"]})\n`);
+  process.exit(1);
+}
+const out = path.resolve(values.out);
+// Only ever replace an earlier release folder, never an arbitrary one.
+if (existsSync(out) && readdirSync(out).length > 0 && !existsSync(path.join(out, "appcast.xml"))) {
+  process.stderr.write(`${out} is not empty and is not an earlier release; refusing to delete it\n`);
+  process.exit(1);
+}
+
 execFileSync("sh", [path.join(ROOT, "macos/build-app.sh")], {
   cwd: path.join(ROOT, "macos"),
   stdio: "inherit",
@@ -63,7 +77,6 @@ execFileSync("sh", [path.join(ROOT, "macos/build-app.sh")], {
   },
 });
 
-const out = path.resolve(values.out);
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 const zip = path.join(out, ZIP);

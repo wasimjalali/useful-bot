@@ -9,7 +9,7 @@
 // Run after the web build (macos/build-app.sh does, when UB_RELEASE=1).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,14 +25,19 @@ if (!out || !stamp) {
   process.exit(2);
 }
 
-// The Node the services require (package.json engines), as nodejs.org ships it.
+// The Node the services require (package.json engines), as nodejs.org ships it,
+// and its tarball's SHA-256 from nodejs.org/dist/v24.11.1/SHASUMS256.txt. A
+// pinned hash is authenticity, not only transit integrity: a changed download
+// is refused even if the checksum file beside it changed too.
 const NODE_VERSION = "24.11.1";
 const NODE_DIST = `node-v${NODE_VERSION}-darwin-arm64`;
+const NODE_SHA256 = "b05aa3a66efe680023f930bd5af3fdbbd542794da5644ca2ad711d68cbd4dc35";
 
 // What the three services read at runtime. The web sources stay home: a
 // release always serves its built web (scripts/web-mode.mjs), and the built
-// server carries what it needs.
-const COPY = [
+// server carries what it needs. Sources are copied from git's index only, so a
+// stray untracked or ignored file (an `agent/.env`) can never ship.
+const TRACKED = [
   "package.json",
   "package-lock.json",
   "scripts/service.mjs",
@@ -42,27 +47,43 @@ const COPY = [
   "agent",
   "router/src",
   "brand/source",
-  "web/.next/standalone",
 ];
+// Build output, not in git: copied whole, then scanned below.
+const BUILT = "web/.next/standalone";
+// Names that must never reach a published zip, outside third-party packages.
+const SECRET = /^(\.env(\..*)?|.*\.pem|.*\.key|.*\.p12|id_rsa.*|secrets?(\.json)?|service-account\.json|\.npmrc|\.git-credentials)$/i;
 
 function sha256(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
 const target = path.resolve(out);
+// Only ever replace an earlier runtime, never an arbitrary folder given by mistake.
+if (existsSync(target) && readdirSync(target).length > 0 && !existsSync(path.join(target, ".ub-runtime-version"))) {
+  throw new Error(`${target} is not empty and is not an earlier runtime; refusing to delete it`);
+}
 rmSync(target, { recursive: true, force: true });
 mkdirSync(target, { recursive: true });
 
-for (const item of COPY) {
-  const from = path.join(ROOT, item);
-  if (!existsSync(from)) throw new Error(`missing ${item}: build the web first (npm run build:app)`);
-  cpSync(from, path.join(target, item), {
-    recursive: true,
-    verbatimSymlinks: true,
-    // The standalone web build carries its own node_modules; nothing else may.
-    filter: (src) => item === "web/.next/standalone" || !src.split(path.sep).includes("node_modules"),
-  });
+const files = execFileSync("git", ["ls-files", "-z", "--", ...TRACKED], { cwd: ROOT, encoding: "utf8" }).split("\0").filter(Boolean);
+for (const item of TRACKED) {
+  if (!files.some((file) => file === item || file.startsWith(`${item}/`))) throw new Error(`nothing tracked under ${item}`);
 }
+for (const file of files) {
+  mkdirSync(path.dirname(path.join(target, file)), { recursive: true });
+  cpSync(path.join(ROOT, file), path.join(target, file));
+}
+if (!existsSync(path.join(ROOT, BUILT))) throw new Error(`missing ${BUILT}: build the web first (npm run build:app)`);
+cpSync(path.join(ROOT, BUILT), path.join(target, BUILT), { recursive: true, verbatimSymlinks: true });
+
+function scanForSecrets(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (SECRET.test(entry.name)) throw new Error(`refusing to ship ${path.relative(target, full)}: it looks like a secret`);
+    if (entry.isDirectory() && entry.name !== "node_modules") scanForSecrets(full);
+  }
+}
+scanForSecrets(target);
 
 // Production dependencies only, exactly as the lockfile pins them. The router
 // refuses a lockfile whose hash changed, so the copy must stay byte-identical.
@@ -87,17 +108,14 @@ for (const dir of ["node_modules/next", "node_modules/@next"]) rmSync(path.join(
 const nextBin = path.join(target, "node_modules/.bin/next");
 if (lstatSync(nextBin, { throwIfNoEntry: false })) unlinkSync(nextBin);
 
-// An official Node, checked against nodejs.org's published checksums.
+// The official Node, checked against the pinned hash.
 const cache = path.join(ROOT, "macos/.build/node-dist");
 mkdirSync(cache, { recursive: true });
 const tarball = path.join(cache, `${NODE_DIST}.tar.gz`);
-const sums = path.join(cache, `SHASUMS256-${NODE_VERSION}.txt`);
-if (!existsSync(sums)) execFileSync("curl", ["-fsSL", "-o", sums, `https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt`]);
-if (!existsSync(tarball)) execFileSync("curl", ["-fsSL", "-o", tarball, `https://nodejs.org/dist/v${NODE_VERSION}/${NODE_DIST}.tar.gz`]);
-const expected = readFileSync(sums, "utf8").split("\n").find((line) => line.endsWith(`  ${NODE_DIST}.tar.gz`))?.split(" ")[0];
-if (!expected || sha256(tarball) !== expected) {
+if (!existsSync(tarball)) execFileSync("curl", ["-fsSL", "--proto", "=https", "-o", tarball, `https://nodejs.org/dist/v${NODE_VERSION}/${NODE_DIST}.tar.gz`]);
+if (sha256(tarball) !== NODE_SHA256) {
   rmSync(tarball, { force: true });
-  throw new Error(`${NODE_DIST}.tar.gz does not match nodejs.org's SHASUMS256`);
+  throw new Error(`${NODE_DIST}.tar.gz does not match the pinned SHA-256`);
 }
 mkdirSync(path.join(target, "bin"), { recursive: true });
 execFileSync("tar", ["-xzf", tarball, "-C", path.join(target, "bin"), "--strip-components", "2", `${NODE_DIST}/bin/node`]);

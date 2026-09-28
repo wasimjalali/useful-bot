@@ -9,8 +9,10 @@ checked by Sparkle, which needs no Apple account.
 `npm run release:mac -- --version X.Y.Z` builds, in `macos/dist/release/`:
 
 - `Useful-Bot-macOS.zip`: the app. It carries its services in `Contents/Resources/runtime` (router,
-  web build, eve and the agent, production `node_modules`, an official Node 24 checked against
-  nodejs.org's SHASUMS256). See `scripts/build-runtime.mjs`.
+  web build, eve and the agent, production `node_modules`, an official Node 24 checked against a
+  pinned SHA-256). Sources come from git's index only, and the build refuses to ship anything named
+  like a secret (`.env`, `*.pem`, `secrets/`). See `scripts/build-runtime.mjs`.
+- `install.sh`: this release's installer, with the zip's URL and SHA-256 written in.
 - `appcast.xml`: the one-item Sparkle feed pointing at that zip, with its EdDSA signature.
 
 The build number (`CFBundleVersion`) is the commit count, so it only grows. The release tree must be
@@ -19,7 +21,8 @@ clean; `--allow-dirty` is for test builds only.
 ## How it runs on a user's Mac
 
 On launch a release copies its runtime to `~/Library/Application Support/Useful Bot/app` when the
-version changed (`RuntimeInstall.swift`), mints any missing or expired local credentials
+version changed (`RuntimeInstall.swift`), first stopping the previous version's services (they
+outlive the app, so after an update they would otherwise keep serving from replaced files), mints any missing or expired local credentials
 (`setup-local.mjs`), and starts the services from there with its own Node. Eve keeps its sessions in
 `app/.eve/`, which a copy never touches. Everything else stays in `~/.useful-bot` as before. Nothing
 leaves the Mac.

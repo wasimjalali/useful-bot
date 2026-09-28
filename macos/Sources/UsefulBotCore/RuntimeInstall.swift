@@ -28,37 +28,66 @@ public enum RuntimeInstall {
         public let description: String
     }
 
-    /// Copies the payload into `installRoot` when its version differs from the
-    /// one already there, then mints any missing or expired local credentials.
-    /// Blocking; call it off the main thread.
+    /// True when the payload in `root` is not the one this app carries: after
+    /// an update, or on the first launch. The caller stops the services still
+    /// running the old files before `prepare` replaces them.
+    public static func needsCopy(bundled: URL, root: URL = installRoot) -> Bool {
+        let wanted = try? String(contentsOf: bundled.appendingPathComponent(stampName), encoding: .utf8)
+        let have = try? String(contentsOf: root.appendingPathComponent(stampName), encoding: .utf8)
+        return wanted == nil || wanted != have
+    }
+
+    /// Copies the payload into `root` when its version differs from the one
+    /// already there, then mints any missing or expired local credentials.
+    /// Blocking; call it off the main thread, with the old services stopped
+    /// when `needsCopy` said so.
     public static func prepare(bundled: URL, root: URL = installRoot) throws {
         let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        // Two copies of the app starting at once (a relaunch overlapping a
+        // slow quit) must not run two copies into the same folder.
+        let lock = open(root.appendingPathComponent(".ub-install.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard lock >= 0 else { throw Failure(description: "cannot open the install lock (errno \(errno))") }
+        defer { close(lock) }
+        guard flock(lock, LOCK_EX) == 0 else { throw Failure(description: "cannot take the install lock (errno \(errno))") }
+        defer { flock(lock, LOCK_UN) }
+
         let wanted = try String(contentsOf: bundled.appendingPathComponent(stampName), encoding: .utf8)
         let stamp = root.appendingPathComponent(stampName)
         if (try? String(contentsOf: stamp, encoding: .utf8)) != wanted {
-            try fm.createDirectory(at: root, withIntermediateDirectories: true)
             // The stamp goes first, so a copy cut short is redone on the next launch.
             try? fm.removeItem(at: stamp)
             // Everything the payload owns is replaced; what the services wrote
-            // at runtime (.eve, eve's production output) stays.
-            try run("/usr/bin/rsync", ["-a", "--delete", "--exclude", "/.eve/", "--exclude", "/.output/", "--exclude", "/\(stampName)",
-                                       bundled.path + "/", root.path + "/"])
+            // at runtime (.eve, eve's production output) and the lock stay.
+            try run("/usr/bin/rsync", ["-a", "--delete", "--exclude", "/.eve/", "--exclude", "/.output/",
+                                       "--exclude", "/\(stampName)", "--exclude", "/.ub-install.lock",
+                                       bundled.path + "/", root.path + "/"], timeout: 600)
             // A payload unpacked from a download can carry the quarantine flag,
-            // and Gatekeeper would then stop the first `node` it runs. `-d` fails on
-            // every file without the flag, so all extended attributes are cleared.
-            try run("/usr/bin/xattr", ["-cr", root.path])
+            // and Gatekeeper would then stop the first `node` it runs. `-d`
+            // fails on every file without the flag, so all extended attributes
+            // are cleared, on the payload's own files only (never .eve).
+            let owned = try fm.contentsOfDirectory(atPath: bundled.path).filter { $0 != stampName }
+            try run("/usr/bin/xattr", ["-cr"] + owned.map { root.appendingPathComponent($0).path }, timeout: 300)
             try wanted.write(to: stamp, atomically: true, encoding: .utf8)
         }
         // Every launch: the local credentials expire after 30 days, and
         // `--add-missing` refreshes those and mints any that are absent. A Mac
-        // that has never been set up gets the plain first-time setup.
+        // that has never been set up gets the plain first-time setup, and the
+        // app cannot run without it. A refresh that fails leaves working
+        // credentials in place, so it is logged, not fatal.
         let configured = fm.fileExists(atPath: fm.homeDirectoryForCurrentUser.appendingPathComponent(".useful-bot/config.json").path)
-        try run(root.appendingPathComponent("bin/node").path,
-                [root.appendingPathComponent("scripts/setup-local.mjs").path] + (configured ? ["--add-missing"] : []),
-                cwd: root)
+        do {
+            try run(root.appendingPathComponent("bin/node").path,
+                    [root.appendingPathComponent("scripts/setup-local.mjs").path] + (configured ? ["--add-missing"] : []),
+                    cwd: root, timeout: 60)
+        } catch {
+            guard configured else { throw error }
+            NSLog("Useful Bot: credential refresh failed, keeping the current ones: %@", String(describing: error))
+        }
     }
 
-    private static func run(_ tool: String, _ args: [String], cwd: URL? = nil) throws {
+    /// Runs a tool to completion, or kills it after `timeout` seconds.
+    private static func run(_ tool: String, _ args: [String], cwd: URL? = nil, timeout: TimeInterval) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = args
@@ -66,9 +95,20 @@ public enum RuntimeInstall {
         let err = Pipe()
         process.standardError = err
         process.standardOutput = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
         try process.run()
-        let data = err.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        // Read while it runs, so a chatty tool cannot fill the pipe and stall.
+        var data = Data()
+        let reader = DispatchQueue(label: "ub.runtime-install.stderr")
+        reader.async { data = err.fileHandleForReading.readDataToEndOfFile() }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            done.wait()
+            reader.sync {}
+            throw Failure(description: "\((tool as NSString).lastPathComponent) did not finish in \(Int(timeout)) s")
+        }
+        reader.sync {}
         guard process.terminationStatus == 0 else {
             let detail = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             throw Failure(description: "\((tool as NSString).lastPathComponent) exited \(process.terminationStatus): \(detail.suffix(400))")

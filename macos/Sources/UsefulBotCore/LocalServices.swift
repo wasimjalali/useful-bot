@@ -189,6 +189,22 @@ public struct LocalServices: Sendable {
         }
     }
 
+    /// Stops this checkout's own router, eve and web, leaving any foreign
+    /// listener alone. The services outlive the app, so after an update the
+    /// old version is still serving; its files are about to be replaced.
+    public func stopOwnServices(config: ServerConfig) async {
+        let repoPath = config.repoPath
+        let owns: @Sendable (String) -> Bool = { [supervisor] line in
+            supervisor.isOwnNodeProcess(line, repoPath: repoPath)
+        }
+        for port in [ServiceSupervisor.webPort, ServiceSupervisor.evePort, ServiceSupervisor.routerPort] {
+            runner.stopOwnListeners(port: port, owns: owns)
+            if await waitForPortFree(port: port, timeout: 5_000) { continue }
+            runner.forceStopOwnListeners(port: port, owns: owns)
+            _ = await waitForPortFree(port: port, timeout: 1_000)
+        }
+    }
+
     /// Polls the health endpoint until it answers or the grace elapses.
     private func waitForHealth(_ health: URL, seconds: Double) async -> Bool {
         guard seconds > 0 else { return false }
