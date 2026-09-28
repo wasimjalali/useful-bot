@@ -58,6 +58,24 @@ The bots are the brand. Make them feel cute and premium.
   - Disabled buttons use 55% opacity instead of the mockup's sunken look.
   - The appearance switch is instant.
   - The entrance into a large existing chat drops frames.
+- **Bug to fix in this PR (reported 2026-09-28): attached images show as a path, not a picture.**
+  - **Seen:** attach an image in the composer and send it with a message. The sent user message
+    shows the image's file name or path as text. It doesn't show the picture.
+  - **Wanted:**
+    - The composer shows a small preview of each attached image before sending.
+    - The sent user message shows the image a bit larger, above the message text.
+    - The picture stays after a relaunch or a chat replay.
+    - No file path is ever shown to the user.
+  - **Where to start:** `macos/Sources/UsefulBotCore/Attachments.swift`. `formatMessage` adds
+    "Attached image: <name>" and `echoedMessage` adds `[file: <name> (<type>)]` lines to the
+    stored text, and the pixels aren't kept after the send ("the pictures themselves are long
+    gone"). The sent row therefore has only those lines to show. Also check `attachmentsRow` in
+    `ComposerView.swift`, the user bubble in `ChatView.swift`, and how eve replays the turn
+    (`transcript-lives-in-eve-not-durable-store` in memory). A local copy per sent image, for
+    example beside the media store, is likely what lets the bubble draw it after a relaunch.
+  - **Done when:** screenshots show the composer preview and the sent bubble for one and for
+    several images, before and after a relaunch. The model still gets the pixels, and the
+    `[file: …]` lines never show.
 - **Done when:** every picked item is built and verified by screenshot. If the list is long it
   splits in two, so that's one or two PRs.
 
