@@ -2,7 +2,7 @@ import Foundation
 
 /// Raw Useful Brain design tokens, first ported from the removed web UI's CSS.
 /// These are the CSS authoring values; the app target maps them to SwiftUI
-/// colors, fonts and metrics. Nothing here may drift from the web values.
+/// colors, fonts and metrics. These are the source of truth for both apps.
 public enum DesignTokens {
     public enum Hex {
         public static let canvas = "#F3F3F3"

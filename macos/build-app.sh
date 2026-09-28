@@ -21,6 +21,10 @@ done
 (
   set -eu
   cd ..
+  # `next dev` leaves route types under .next/dev/types that web/tsconfig.json
+  # includes. A build never refreshes them, so types for deleted routes would
+  # fail the release's tsc_web step; drop them and let the next `next dev` redo them.
+  rm -rf web/.next/dev/types
   npm_config_package_lock=false npm_config_save=false "$NODE" node_modules/next/dist/bin/next build web
   rm -rf web/.next/standalone/web/.next/static web/.next/standalone/web/public
   cp -R web/.next/static web/.next/standalone/web/.next/static

@@ -212,7 +212,7 @@ public enum Transcript {
     }
 
     /// Attribute an untagged group reply by the member mention in the user turn
-    /// that produced it, the same rule the web client applies.
+    /// that produced it.
     public static func attributeGroupReplies(_ rows: [TranscriptRow], roster: [Speaker]) -> [TranscriptRow] {
         guard !roster.isEmpty else { return rows }
         var next = rows

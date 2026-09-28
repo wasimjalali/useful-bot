@@ -1,10 +1,9 @@
 import SwiftUI
 import UsefulBotCore
 
-/// Renders the blocks from `ChatMarkdownParser` with the web's `.chat-md`
-/// type scale: 15pt body at 1.65 line height, 13pt mono code on the sunken
-/// surface, 12pt block gaps. Inline spans come from the web parser so the
-/// native transcript reads exactly like the browser one.
+/// Renders the blocks from `ChatMarkdownParser` with the chat type scale:
+/// 15pt body at 1.65 line height, 13pt mono code on the sunken surface, 12pt
+/// block gaps.
 struct ChatMarkdownView: View, Equatable {
     let text: String
     var textColor: Color = Theme.C.ink
@@ -262,7 +261,7 @@ private struct FillRowHeight: ViewModifier {
     }
 }
 
-/// One fenced code block: the sunken mono card from the web's `pre`, with a
+/// One fenced code block: a sunken mono card, with a
 /// copy affordance so a drafted prompt can go straight to the pasteboard.
 /// The block spans the column and long lines scroll horizontally under the
 /// app-wide thin scroller instead of pushing the layout out past the edge.

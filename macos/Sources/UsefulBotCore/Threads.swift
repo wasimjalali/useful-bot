@@ -111,7 +111,7 @@ public enum Threads {
     }
 
     /// Transcript label for the bot a routed turn answered as, matching
-    /// `speakerLabel` in the web client.
+    /// `speakerLabel` in `shared/threads.ts`.
     public static func speakerLabel(
         bot: ShellBot?,
         speakers: [Speaker],

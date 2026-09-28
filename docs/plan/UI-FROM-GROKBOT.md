@@ -9,7 +9,7 @@ Useful Bot should feel like a multi-agent personal OS, not a single chat box.
 Grok Bot screenshots define **structure and behavior**. Cursor screenshots define **composer / + menu** patterns.
 
 ## Visual rules (owner)
-1. Implement with **Useful Brain / Useful Bot tokens** (`web/app/globals.css`).
+1. Implement with **Useful Brain / Useful Bot tokens** (`macos/Sources/UsefulBotCore/DesignTokens.swift`).
 2. **Light (white) theme first**, then dark on the same tokens.
 3. Do **not** copy Grok Bot’s dark charcoal look from the reference PNGs.
 4. Screenshots are mostly dark and often show **CEO pinned** (large card). That is not the default bot row. See README glossary.

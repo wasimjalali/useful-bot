@@ -78,6 +78,22 @@ The bots are the brand. Make them feel cute and premium.
   - **Done when:** screenshots show the composer preview and the sent bubble for one and for
     several images, before and after a relaunch. The model still gets the pixels, and the
     `[file: …]` lines never show.
+- **To decide and fix in this PR (reported 2026-09-28): how a bot hears back from its sub-agents.**
+  - **Seen:** when a bot's background sub-agent finishes, its result lands in the chat as an
+    owner message. It sits in the right-hand bubble and reads "Background task task_… (agent) is
+    completed. Result: …". Visual Creator showed this on 2026-09-28.
+  - **Wanted:** sub-agent traffic stays between the main agent and its sub-agents, out of the
+    owner's side of the chat. The owner sees it only in the bot's working state: the working
+    animation or step row says a sub-agent is running, and then that its result came back. The
+    main agent then answers in its own bubble.
+  - **Decide first, with Wasim:** how the result reaches the main agent (an internal eve event,
+    a tool result or a hidden turn, rather than a user message), and what the UI shows. Options
+    include a line in the working row, a small collapsible "sub-agent" step or nothing beyond
+    the animation. Check how eve delivers background task completions and where the Mac app
+    turns them into transcript rows before picking.
+  - **Done when:** a live Test Bot turn that starts a sub-agent shows it only in the working
+    state. No owner bubble appears for its result, before or after a relaunch or replay, and the
+    main agent still uses the result.
 - **Done when:** every picked item is built and verified by screenshot. If the list is long it
   splits in two, so that's one or two PRs.
 

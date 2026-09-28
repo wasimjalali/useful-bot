@@ -2,7 +2,7 @@
 
 **Purpose:** Interaction and information-architecture reference so Useful Bot can support multi-bot chat, sections, groups, routines, marketplace shape, and a Cursor-like composer.
 
-**Audience:** Agents and humans implementing Useful Bot macOS + web UI.
+**Audience:** Agents and humans implementing the Useful Bot macOS app.
 
 **Captured:** 2026-09-13 (window captures + Desktop screenshots). Almost all Grok Bot shots are **dark theme**. That is incidental. Do not copy that look.
 
@@ -12,7 +12,7 @@
 
 These screenshots show **structure and behavior**, not Useful Bot’s visual system.
 
-1. **Use Useful Bot / Useful Brain design tokens** in `web/app/globals.css` (`--canvas`, `--surface`, `--ink`, `--border`, accents, shadows). Rail + stage shell stays.
+1. **Use Useful Bot / Useful Brain design tokens** in `macos/Sources/UsefulBotCore/DesignTokens.swift` (canvas, surface, ink, border, accents, shadows). Rail + stage shell stays.
 2. **Build light (white) theme first.** That is the default product look.
 3. **Dark theme second**, still on our tokens, not a port of Grok Bot’s charcoal UI.
 4. **Do not** adopt Grok Bot’s dark greys, brand mark, or icon set from these PNGs.
@@ -179,4 +179,4 @@ Derived from the screenshots. Belong in the plan even if missing from the origin
 - `docs/spec/PLAN-FINAL.md`
 - `docs/plan/UI-FROM-GROKBOT.md`
 - `docs/plan/GROKBOT-AGENT-CAPABILITIES.md` — interactive bot capabilities and how to build them
-- Tokens: `web/app/globals.css`
+- Tokens: `macos/Sources/UsefulBotCore/DesignTokens.swift`

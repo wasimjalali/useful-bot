@@ -1,7 +1,7 @@
 import Foundation
 
 /// Minimal JSON tree so event payloads with unknown shapes (search results,
-/// tool output) can be walked the way the web's `parseSearchChips` walks them.
+/// tool output) can be walked for search chips.
 public enum JSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)
@@ -749,7 +749,7 @@ public enum EveStream {
         return head
     }
 
-    /// Mirror the web's `String(value)` for scalar fields: numbers and booleans
+    /// Like JavaScript's `String(value)` for scalar fields: numbers and booleans
     /// stringify, compound and null values fall back to the next source.
     private static func chipText(_ value: JSONValue?) -> String? {
         switch value {
@@ -1316,7 +1316,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
 
     public mutating func apply(_ event: EveEvent, live: Bool = false) {
         var event = event
-        // Dedupe every identified event, matching the web's seenIds contract;
+        // Dedupe every identified event by id;
         // a replayed chunk id must not append its delta twice.
         if let id = event.id {
             if seen.contains(id) { return }
