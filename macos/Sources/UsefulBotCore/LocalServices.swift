@@ -45,7 +45,7 @@ public struct LocalServices: Sendable {
         if await allReady(config: config) { return .ready }
         // Without a node binary nothing can start; report it now instead of
         // waiting out the health timeout on a launch that can never succeed.
-        guard supervisor.isNodeAvailable else { return .nodeMissing }
+        guard supervisor.isNodeAvailable(repoPath: config.repoPath) else { return .nodeMissing }
         // The checks above were awaits of their own, so nothing is started for
         // an attempt that has already been replaced.
         if Task.isCancelled { return .unavailable }
@@ -186,6 +186,25 @@ public struct LocalServices: Sendable {
         // stays false and we never start a duplicate on an occupied port.
         if !Task.isCancelled, runner.listeners(port: port).isEmpty {
             runner.start(supervisor.command(mode: mode, repoPath: repoPath))
+        }
+    }
+
+    /// Stops this checkout's own router, eve and web, leaving any foreign
+    /// listener alone. The services outlive the app, so after an update the
+    /// old version is still serving; its files are about to be replaced.
+    public func stopOwnServices(config: ServerConfig) async {
+        let repoPath = config.repoPath
+        let owns: @Sendable (String) -> Bool = { [supervisor] line in
+            supervisor.isOwnNodeProcess(line, repoPath: repoPath)
+        }
+        for port in [ServiceSupervisor.webPort, ServiceSupervisor.evePort, ServiceSupervisor.routerPort] {
+            runner.stopOwnListeners(port: port, owns: owns)
+            if await waitForPortFree(port: port, timeout: 5_000) { continue }
+            // A cancelled wait returns at once; force-killing then would cut
+            // eve off mid-write. The retry's own boot stops them again.
+            if Task.isCancelled { return }
+            runner.forceStopOwnListeners(port: port, owns: owns)
+            _ = await waitForPortFree(port: port, timeout: 1_000)
         }
     }
 

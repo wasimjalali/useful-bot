@@ -72,6 +72,15 @@ export function webLaunch(root, env = process.env) {
   if (env.UB_WEB_MODE === "dev") return { mode: "dev", reason: "UB_WEB_MODE=dev" };
   const server = standaloneServer(root);
   const copied = ["web/.next/standalone/web/.next/static", "web/.next/standalone/web/public"];
+  // A release runtime (scripts/build-runtime.mjs) carries only the built web
+  // and no `next dev`, so there is nothing to compare and nothing to fall back
+  // to: an incomplete one is a broken release, said loudly.
+  if (existsSync(path.join(root, ".ub-runtime-version"))) {
+    if (!existsSync(server) || !copied.every((item) => existsSync(path.join(root, item)))) {
+      throw new Error("release runtime has no complete web build");
+    }
+    return { mode: "production", reason: "release_runtime", server };
+  }
   if (!existsSync(server) || !existsSync(stampPath(root)) || !copied.every((item) => existsSync(path.join(root, item)))) {
     return { mode: "dev", reason: "web_build_missing" };
   }

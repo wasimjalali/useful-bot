@@ -42,14 +42,17 @@ public struct ServiceSupervisor: Sendable {
 
     /// First candidate that exists, or the preferred path when none do. The
     /// predicate is injectable so the order is testable without a filesystem.
+    /// A release runtime carries its own Node at `bin/node` and comes first.
     public static func resolveNodePath(
+        repoPath: String? = nil,
         exists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> String {
-        nodeCandidates.first(where: exists) ?? nodeCandidates[0]
+        let bundled = repoPath.map { ($0 as NSString).appendingPathComponent("bin/node") }
+        return ([bundled].compactMap { $0 } + nodeCandidates).first(where: exists) ?? nodeCandidates[0]
     }
 
-    public var isNodeAvailable: Bool {
-        nodeExists(Self.resolveNodePath())
+    public func isNodeAvailable(repoPath: String) -> Bool {
+        nodeExists(Self.resolveNodePath(repoPath: repoPath, exists: nodeExists))
     }
 
     public func scriptPath(repoPath: String) -> String {
@@ -58,7 +61,7 @@ public struct ServiceSupervisor: Sendable {
 
     public func command(mode: ServiceMode, repoPath: String) -> ServiceCommand {
         ServiceCommand(
-            executable: Self.resolveNodePath(),
+            executable: Self.resolveNodePath(repoPath: repoPath),
             arguments: [scriptPath(repoPath: repoPath), mode.rawValue],
             workingDirectory: repoPath
         )

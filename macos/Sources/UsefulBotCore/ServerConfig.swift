@@ -14,7 +14,10 @@ public struct ServerConfig: Equatable {
     public static let supervisedPorts: Set<Int> = [defaultPort]
 
     public static func resolved(defaults: UserDefaults = .standard) -> ServerConfig {
-        let repo = defaults.string(forKey: "repoPath") ?? defaultRepoPath
+        // A release build runs the services it carries (RuntimeInstall); a dev
+        // build runs the checkout.
+        let fallback = RuntimeInstall.bundledRuntime() != nil ? RuntimeInstall.installRoot.path : defaultRepoPath
+        let repo = defaults.string(forKey: "repoPath") ?? fallback
         let stored = defaults.object(forKey: "port") as? Int ?? defaultPort
         return ServerConfig(repoPath: repo, port: stored)
     }

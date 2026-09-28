@@ -87,7 +87,10 @@ function keychain(service) {
     child.on("error", () => finish(new Error("missing")));
     child.on("close", (status) => {
       const value = out.trim();
-      if (status !== 0 || !value) finish(new Error("missing"));
+      // 44 is errSecItemNotFound: the item does not exist, as opposed to a
+      // locked or refusing store, which callers must not mistake for "absent".
+      if (status === 44) finish(new Error("not_found"));
+      else if (status !== 0 || !value) finish(new Error("missing"));
       else finish(null, value);
     });
   });
@@ -122,8 +125,14 @@ async function childEnv() {
   }
   try {
     env.UB_OPENCODE_GO_KEY = await keychain("com.usefulbot.opencode-go");
-  } catch {
-    fail("credential_store_locked_or_missing", "com.usefulbot.opencode-go");
+  } catch (error) {
+    // A fresh install has no OpenCode Go key: the owner connects a provider
+    // in the app instead, and the router reports itself "limited" on
+    // /health/live. Only a key that does not exist degrades; a locked or
+    // refusing Keychain still stops the service.
+    if (error.message !== "not_found") fail("credential_store_locked_or_missing", "com.usefulbot.opencode-go");
+    delete env.UB_OPENCODE_GO_KEY;
+    process.stderr.write(`${JSON.stringify({ service: mode, warning: "credential_missing", item: "com.usefulbot.opencode-go" })}\n`);
   }
   return env;
 }
