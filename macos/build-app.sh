@@ -68,7 +68,7 @@ if [ -n "${UB_VERSION:-}" ]; then
 fi
 cp ../brand/app/macos/UsefulBot.icns "$APP/Contents/Resources/AppIcon.icns"
 
-for asset in png/mark/useful-bot-128.png png/black/useful-bot-256.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/motion.json app/macos/UsefulBot.icns; do
+for asset in png/mark/useful-bot-128.png png/black/useful-bot-256.png svg/useful-bot-wordmark.svg source/avatar-palette.json source/avatar-face.svg source/motion.json app/macos/UsefulBot.icns; do
   mkdir -p "$APP/Contents/Resources/Brand/$(dirname "$asset")"
   cp "../brand/$asset" "$APP/Contents/Resources/Brand/$asset"
 done

@@ -17,7 +17,7 @@ struct AvatarStackView: View {
         HStack(spacing: -size * overlap) {
             ForEach(Array(visible.enumerated()), id: \.element.id) { index, bot in
                 chip {
-                    BotFaceView(color: BrandAssets.colorID(for: bot), size: size * 0.84)
+                    BotStillFaceView(color: BrandAssets.colorID(for: bot), size: size * 0.84)
                 }
                 .zIndex(Double(index))
             }

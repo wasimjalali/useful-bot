@@ -1619,62 +1619,31 @@ private struct WorkingRow: View {
     /// The avatar's box, which is also the slot the transcript reserves.
     static let height: CGFloat = 24
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var started = Date()
-
-    /// One breath. The avatar swells and the label dims on the same wave, so
-    /// the row reads as one living thing rather than two loaders side by side.
-    /// 1.6s is the house loading pulse.
-    private static let breath: Double = 1.6
-
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || scenePhase != .active)) { context in
-            let elapsed = context.date.timeIntervalSince(started)
-            let wave = reduceMotion ? 0 : Self.wave(elapsed)
-            // Sits where the reply will, so the text does not jump sideways
-            // when the first token lands.
-            HStack(alignment: .center, spacing: 10) {
-                // The face is drawn a shade larger than a reply avatar, but
-                // its box is not, so the label keeps the reply's left edge.
-                // One timeline drives the face and the breath: a
-                // `BrandMotionView` here would run a second one inside it.
-                BrandMotionFrameView(
-                    frame: BrandAssets.motion.frame(at: elapsed, reducedMotion: reduceMotion),
-                    size: 28,
-                    color: BrandAssets.colorID(for: bot),
-                    avatar: true
-                )
-                .frame(width: 28, height: 28)
-                .scaleEffect(1 + 0.04 * wave)
+        // Sits where the reply will, so the text does not jump sideways
+        // when the first token lands.
+        HStack(alignment: .center, spacing: 10) {
+            // The face is drawn a shade larger than a reply avatar, but its
+            // box is not, so the label keeps the reply's left edge. Its eyes
+            // say what the bot is doing; the label holds still.
+            BotFaceView(color: BrandAssets.colorID(for: bot), size: 28, pose: BotFacePose(activity: activity))
                 .frame(width: Self.height, height: Self.height)
-                Text(activity.label)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .font(.system(size: DesignTokens.FontSize.chatBody))
-                    .foregroundStyle(Theme.C.inkMuted)
-                    .opacity(1 - 0.5 * wave)
-                    .contentTransition(.opacity)
-                    .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: activity)
-                    // The label's own crossfade only. The first reply pushes
-                    // the row down in the same update that turns "Thinking"
-                    // into "Writing", and without this the label slid down
-                    // from under the new bubble while its face jumped.
-                    .geometryGroup()
-                Spacer(minLength: 0)
-            }
+            Text(activity.label)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .font(.system(size: DesignTokens.FontSize.chatBody))
+                .foregroundStyle(Theme.C.inkMuted)
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: activity)
+                // The label's own crossfade only. The first reply pushes
+                // the row down in the same update that turns "Thinking"
+                // into "Writing", and without this the label slid down
+                // from under the new bubble while its face jumped.
+                .geometryGroup()
+            Spacer(minLength: 0)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(activity.label)
-    }
-
-    /// 0 → 1 → 0 over one breath, flat at both ends. A cosine is the
-    /// ease-in-out in both directions that a repeating SwiftUI animation only
-    /// approximates, and it cannot be restarted by a redraw mid-cycle.
-    private static func wave(_ elapsed: TimeInterval) -> Double {
-        guard elapsed.isFinite, elapsed > 0 else { return 0 }
-        let phase = elapsed.truncatingRemainder(dividingBy: breath) / breath
-        return (1 - cos(2 * .pi * phase)) / 2
     }
 }
 

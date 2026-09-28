@@ -158,10 +158,12 @@ struct RailView: View {
     private func pinnedSection(_ store: ShellStore) -> some View {
         let pinned = store.pinnedBots
         if !pinned.isEmpty {
-            VStack(spacing: 8) {
+            let columns = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+            LazyVGrid(columns: pinned.count == 1 ? [GridItem(.flexible())] : columns, spacing: 8) {
                 ForEach(pinned) { bot in
                     PinnedCardView(
                         bot: bot,
+                        tile: pinned.count > 1,
                         selected: bot.id == model.selectedBotId,
                         sectionName: store.sections.first { $0.id == bot.sectionId }?.name,
                         sections: store.sections,
@@ -223,27 +225,20 @@ struct RailView: View {
     private func emptySectionHint(_ store: ShellStore, _ sectionId: String?) -> String {
         RailCopy.emptySectionHint(
             pinned: store.pinnedBots.filter { $0.sectionId == sectionId }.count,
-            hidden: store.hiddenBots.filter { $0.sectionId == sectionId }.count,
-            isUnassigned: sectionId == nil
+            hidden: store.hiddenBots.filter { $0.sectionId == sectionId }.count
         )
     }
 
     @ViewBuilder
     private func unassignedSection(_ store: ShellStore) -> some View {
         let bots = store.sectionBots(nil)
-        VStack(alignment: .leading, spacing: 2) {
-            SectionHeader(title: "Unassigned", collapsed: store.collapsedUnassigned) {
-                model.toggleSection("unassigned")
-            }
-            if !store.collapsedUnassigned {
-                VStack(alignment: .leading, spacing: 2) {
-                    if bots.isEmpty {
-                        Text(emptySectionHint(store, nil))
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.C.inkFaint)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                    } else {
+        if !bots.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                SectionHeader(title: "Unassigned", collapsed: store.collapsedUnassigned) {
+                    model.toggleSection("unassigned")
+                }
+                if !store.collapsedUnassigned {
+                    VStack(alignment: .leading, spacing: 2) {
                         ForEach(bots) { bot in
                             BotRowView(
                                 bot: bot,
@@ -258,12 +253,12 @@ struct RailView: View {
                                 onCreateSection: onCreateSection,
                                 onMenu: { frame, trigger in
                                     toggleRowMenu(bot, frame: frame, trigger: trigger)
-                            }
+                                }
                             )
                         }
                     }
+                    .padding(.top, 2)
                 }
-                .padding(.top, 2)
             }
         }
     }
@@ -682,6 +677,42 @@ private func rowContextMenu(
         .disabled(!canDelete)
 }
 
+extension AppModel {
+    /// The uppercase line under a bot's name: what it is doing while it works,
+    /// "REPLY READY" when an answer is waiting, else the given fallback.
+    func railSubtitle(_ bot: ShellBot, fallback: String) -> String? {
+        if isWorking(bot.id) {
+            return (railActivity(bot.id) ?? .thinking).label.uppercased()
+        }
+        if replyReady.contains(bot.id) { return "REPLY READY" }
+        return fallback.isEmpty ? nil : fallback.uppercased()
+    }
+}
+
+/// A bot's head in the rail: the animated face, posed for what the bot is
+/// doing and hopping when a reply lands.
+private struct RailFaceView: View {
+    let bot: ShellBot
+    let size: CGFloat
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        let working = model.isWorking(bot.id)
+        // One view whether or not the bot works: swapping branches would
+        // rebuild the face in the same update that bumps its hop, and the
+        // hop would never play.
+        BotFaceView(
+            color: BrandAssets.colorID(for: bot),
+            size: size,
+            pose: working ? BotFacePose(activity: model.railActivity(bot.id) ?? .thinking) : .idle,
+            hop: model.railHops[bot.id] ?? 0
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(working ? "\(bot.name) is working" : "")
+        .accessibilityHidden(!working)
+    }
+}
+
 private struct BotRowView: View {
     let bot: ShellBot
     let selected: Bool
@@ -707,12 +738,8 @@ private struct BotRowView: View {
             HStack(spacing: 8) {
                 if bot.isGroup, !members.isEmpty {
                     AvatarStackView(bots: members, size: 26, maxVisible: 3)
-                } else if model.isWorking(bot.id) {
-                    BrandMotionView(size: 36, color: BrandAssets.colorID(for: bot), avatar: true)
-                        .frame(width: 36, height: 36)
-                        .accessibilityLabel("\(bot.name) is working")
                 } else {
-                    BotAvatarView(bot: bot, size: 36)
+                    RailFaceView(bot: bot, size: 36)
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
@@ -732,8 +759,8 @@ private struct BotRowView: View {
                     }
                     // The label lives under the name; the row stays clean, so
                     // no preview and no timestamp.
-                    if !bot.label.isEmpty {
-                        Text(bot.label.uppercased())
+                    if let subtitle = model.railSubtitle(bot, fallback: bot.label) {
+                        Text(subtitle)
                             .font(.system(size: DesignTokens.FontSize.railLabel, weight: .regular))
                             .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
                             .foregroundStyle(Theme.C.inkFaint)
@@ -899,6 +926,7 @@ private struct RowActionsButton: View {
 
 private struct PinnedCardView: View {
     let bot: ShellBot
+    var tile = false
     let selected: Bool
     var sectionName: String?
     var sections: [ShellSection] = []
@@ -927,42 +955,80 @@ private struct PinnedCardView: View {
             .uppercased()
     }
 
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+    }
+
+    private var nameText: some View {
+        Text(bot.name)
+            .font(.system(size: DesignTokens.FontSize.railName, weight: .semibold))
+            .foregroundStyle(Theme.C.ink)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    private var badgeText: some View {
+        Text(model.railSubtitle(bot, fallback: badge) ?? "")
+            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .regular))
+            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
+            .foregroundStyle(Theme.C.inkFaint)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    @ViewBuilder
+    private var head: some View {
+        if bot.isGroup, !members.isEmpty {
+            AvatarStackView(bots: members, size: 46, maxVisible: 2)
+        } else {
+            RailFaceView(bot: bot, size: 48)
+        }
+    }
+
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 10) {
-                if bot.isGroup, !members.isEmpty {
-                    AvatarStackView(bots: members, size: 46, maxVisible: 2)
-                } else {
-                    BotAvatarView(bot: bot, size: 60)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(bot.name)
-                        .font(.system(size: DesignTokens.FontSize.railName, weight: .semibold))
-                        .foregroundStyle(Theme.C.ink)
-                        .lineLimit(1)
-                    if !badge.isEmpty {
-                        Text(badge)
-                            .font(.system(size: DesignTokens.FontSize.railLabel, weight: .regular))
-                            .tracking(DesignTokens.Tracking.label * DesignTokens.FontSize.railLabel)
-                            .foregroundStyle(Theme.C.inkFaint)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+            Group {
+                if tile {
+                    VStack(spacing: 4) {
+                        head
+                        nameText
+                        if model.railSubtitle(bot, fallback: badge) != nil {
+                            badgeText
+                        }
                     }
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 14)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 10)
+                    .frame(maxWidth: .infinity)
+                } else {
+                    HStack(spacing: 10) {
+                        head
+                        VStack(alignment: .leading, spacing: 1) {
+                            nameText
+                            if model.railSubtitle(bot, fallback: badge) != nil {
+                                badgeText
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(DesignTokens.Space.pinnedCardPadding)
+                    .padding(.trailing, 22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Spacer(minLength: 0)
             }
-            .padding(DesignTokens.Space.pinnedCardPadding)
-            .padding(.trailing, 22)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .background(selected || hovering ? Theme.C.sunken : Theme.C.surface)
-            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .clipShape(shape)
             .cardLift(cornerRadius: DesignTokens.Radius.md)
-            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+            .overlay {
+                if selected { shape.strokeBorder(Theme.C.ink, lineWidth: 1.5) }
+            }
+            .contentShape(shape)
         }
         .buttonStyle(.plain)
         .pointerOnHover()
         .onHover { hovering = $0 }
-        .overlay(alignment: .trailing) {
+        .overlay(alignment: tile ? .topTrailing : .trailing) {
             RowActionsOverlay(
                 label: "Actions for \(bot.name)",
                 rowHovering: hovering,
@@ -970,6 +1036,7 @@ private struct PinnedCardView: View {
                 onTap: onMenu
             )
             .padding(.trailing, 6)
+            .padding(.top, tile ? 6 : 0)
         }
         .contextMenu {
             rowContextMenu(

@@ -35,6 +35,11 @@ went with it. The notes below are the question as it was asked.
 
 ## PR 2: Bot character
 
+**Built 2026-09-28** on `feat/bot-character`: circle face with a smile, motion A ("Look and
+think"), the pinned card and tiles, Unassigned hidden when empty, and `brand:check` green. The
+settled prompt and plan are in `docs/plan/PR2-BOT-CHARACTER.md`; measurements in
+`evals/results/2026-09-28-pr2-bot-face.md`. The notes below are the brief as it was written.
+
 The bots are the brand. Make them feel cute and premium.
 
 - **Head shape:** a true circle.
