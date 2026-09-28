@@ -1001,7 +1001,7 @@ struct ChatView: View {
                         .foregroundStyle(Theme.C.ink)
                     Spacer(minLength: 0)
                     NativeButton("Connect", kind: .primary, small: true) {
-                        if let connectModel { connectModel() } else { model.openAppSettings(.providers) }
+                        if let connectModel { connectModel.reopen() } else { model.openAppSettings(.providers) }
                     }
                     .accessibilityIdentifier("no-model-connect")
                 }

@@ -8,6 +8,7 @@ import UsefulBotCore
 /// model/effort chip and a circular send (or stop) button on the right.
 struct ComposerView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.noModelPreview) private var noModelPreview
 
     /// The same input cap `chat-composer.tsx` puts on its textarea. Nothing
     /// clips a turn once it is sent.
@@ -99,7 +100,8 @@ struct ComposerView: View {
     /// draft with no files formats to nothing. This runs on every body pass,
     /// and formatting scanned each attached file's text for fences.
     private var canSend: Bool {
-        guard !model.noModelConnected else { return false }
+        // The preview bar blocks the keyboard too: a verification run never sends.
+        guard !model.noModelConnected, !noModelPreview else { return false }
         return !model.attachments.isEmpty
             || !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

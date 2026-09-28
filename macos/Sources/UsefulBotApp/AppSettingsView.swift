@@ -906,7 +906,7 @@ struct AppSettingsView: View {
                     .accessibilityIdentifier("feedback-send")
                 Text(Self.feedbackURL == nil
                      ? "Feedback isn't set up in this build. Email us instead."
-                     : "Only what you type here is sent. No chats, no files.")
+                     : "Only this form and an anonymous install ID are sent. No chats, no files.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkMuted)
             }

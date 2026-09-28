@@ -26,7 +26,6 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     @Published private(set) var lastChecked: Date?
     @Published private(set) var installAutomatically = false
     @Published private(set) var allowsAutomaticUpdates = false
-    private var installNow: (() -> Void)?
 
     /// The version the owner sees, from the bundle rather than the web
     /// service's package.json.
@@ -61,8 +60,10 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         controller.checkForUpdates(nil)
     }
 
+    /// Sparkle already holds the downloaded update: a check presents it with
+    /// Install and Relaunch.
     func restartToUpdate() {
-        installNow?()
+        controller?.checkForUpdates(nil)
     }
 
     func setInstallAutomatically(_ on: Bool) {
@@ -85,11 +86,10 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     nonisolated func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
         let version = item.displayVersionString
-        Task { @MainActor in
-            self.installNow = immediateInstallHandler
-            self.status = .ready(version)
-        }
-        return true
+        Task { @MainActor in self.status = .ready(version) }
+        // NO keeps Sparkle's scheduler running (critical updates still show at
+        // once); YES would stall every later update cycle until a quit.
+        return false
     }
 
     nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {

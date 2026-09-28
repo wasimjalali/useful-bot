@@ -32,8 +32,10 @@ The network is an HMAC of the IP keyed with the `IP_SALT` secret. The raw IP is 
 cd services/feedback && npm ci
 npx wrangler d1 migrations apply useful-bot-feedback --remote
 npx wrangler deploy
-openssl rand -hex 32 | npx wrangler secret put IP_SALT   # first deploy only
 ```
+
+`IP_SALT` is already set. A brand-new Worker can't take `wrangler secret put` before it exists, so
+the first deploy passed it with `--secrets-file` (a private temp file, deleted right after).
 
 ## Check
 

@@ -75,7 +75,7 @@ struct RootView: View {
         }
         .animation(Theme.ease(0.3), value: firstRun.active)
         .environment(\.starterBotId, firstRun.landingBotId(model.store))
-        .environment(\.connectModel, { firstRun.reopen() })
+        .environment(\.connectModel, firstRun)
         .environment(\.noModelPreview, firstRun.previewsNoModel)
         .onChange(of: model.phase) { _, phase in
             // The gate waits on the providers; ask for them the moment the

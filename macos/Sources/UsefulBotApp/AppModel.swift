@@ -584,8 +584,9 @@ final class AppModel: ObservableObject {
             await refreshComposer()
             await firstLoad?.value
             await pollApprovals()
-            // The first-run gate and the skipped-setup bar read these.
-            await loadProviders()
+            // The first-run gate and the skipped-setup bar read these. Not
+            // awaited: a cold live-model refresh can take seconds.
+            Task { await self.loadProviders() }
             startPolling()
             startPrewarm()
         } catch is CancellationError {
@@ -1793,8 +1794,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Reply to a bot message: the chip goes above the composer of this chat
-    /// and the caret into the field.
     /// A starter prompt: the text goes into the composer, the caret after
     /// it, and nothing is sent.
     func fillDraft(_ text: String) {
@@ -1803,6 +1802,8 @@ final class AppModel: ObservableObject {
         composerFocusToken &+= 1
     }
 
+    /// Reply to a bot message: the chip goes above the composer of this chat
+    /// and the caret into the field.
     func reply(to text: String, author: String?, botId: String) {
         // The chat on screen, including the fallback the composer shows
         // before a selection is stored.

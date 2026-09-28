@@ -225,7 +225,7 @@ private struct ComposerRisenKey: EnvironmentKey {
 }
 
 private struct ConnectModelKey: EnvironmentKey {
-    static let defaultValue: (() -> Void)? = nil
+    static let defaultValue: FirstRunController? = nil
 }
 
 private struct NoModelPreviewKey: EnvironmentKey {
@@ -245,8 +245,10 @@ extension EnvironmentValues {
         set { self[ComposerRisenKey.self] = newValue }
     }
 
-    /// The skipped-setup bar's Connect.
-    var connectModel: (() -> Void)? {
+    /// The skipped-setup bar's Connect reopens this flow. The controller, not
+    /// a closure, so the value is the same object on every pass and the chat
+    /// isn't redrawn for it.
+    var connectModel: FirstRunController? {
         get { self[ConnectModelKey.self] }
         set { self[ConnectModelKey.self] = newValue }
     }
@@ -350,7 +352,7 @@ struct FirstRunView: View {
                 controller.go(.model)
             })
         case .model:
-            ModelPage(connected: controller.connected, onBack: { controller.go(.connect) }) {
+            ModelPage(connected: controller.connected, dryRun: controller.forced || controller.preview != nil, onBack: { controller.go(.connect) }) {
                 controller.finish(model)
             }
         }
@@ -439,7 +441,7 @@ private struct WelcomePage: View {
                     .font(.system(size: 30, weight: .semibold))
                     .tracking(DesignTokens.Tracking.heading * 30)
                     .foregroundStyle(Theme.C.ink)
-                Text("A team of AI helpers that works on your Mac. Your chats and keys stay here.")
+                Text("A team of AI helpers that works on your Mac. Your chats and keys are stored here.")
                     .font(.system(size: 15))
                     .foregroundStyle(Theme.C.inkMuted)
                     .multilineTextAlignment(.center)
@@ -1183,6 +1185,8 @@ private struct ModelPage: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let connected: [String]
+    /// A forced or preview run: Start never writes the owner's default model.
+    let dryRun: Bool
     let onBack: () -> Void
     let onFinish: () -> Void
 
@@ -1280,7 +1284,8 @@ private struct ModelPage: View {
             for _ in 0..<8 where groups.isEmpty {
                 await model.loadProviders()
                 if !groups.isEmpty { return }
-                try? await Task.sleep(for: .milliseconds(1500))
+                // Leaving the page cancels the task: stop asking.
+                do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
             }
             if groups.isEmpty { waitedOut = true }
         }
@@ -1304,6 +1309,7 @@ private struct ModelPage: View {
 
     private func groupView(_ group: ModelGroup) -> some View {
         let open = expanded.contains(group.id)
+        let suggestedKey = suggested
         let rest = Array(group.options.dropFirst(3))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -1315,15 +1321,16 @@ private struct ModelPage: View {
             .padding(.leading, 4)
             VStack(spacing: 0) {
                 ForEach(group.options.prefix(3), id: \.id) { option in
-                    modelRow(option)
+                    modelRow(option, suggested: suggestedKey)
                 }
                 // The rest open as one block, so the group's height and the
                 // rows' fade run together; the rows fade 20 ms apart.
                 if open {
                     VStack(spacing: 0) {
                         ForEach(Array(rest.enumerated()), id: \.element.id) { index, option in
-                            modelRow(option)
-                                .transition(.opacity.animation(Theme.ease(0.26).delay(Double(index) * 0.02)))
+                            modelRow(option, suggested: suggestedKey)
+                                // Capped, so a list of hundreds doesn't trail in for seconds.
+                                .transition(.opacity.animation(Theme.ease(0.26).delay(Double(min(index, 10)) * 0.02)))
                         }
                     }
                 }
@@ -1362,7 +1369,7 @@ private struct ModelPage: View {
         }
     }
 
-    private func modelRow(_ option: RoleModelOption) -> some View {
+    private func modelRow(_ option: RoleModelOption, suggested: String?) -> some View {
         let key = Self.key(option)
         let on = picked == key
         return Button {
@@ -1401,7 +1408,7 @@ private struct ModelPage: View {
     private func start() {
         guard !saving else { return }
         let options = groups.flatMap(\.options)
-        guard let picked, let option = options.first(where: { Self.key($0) == picked }) else {
+        guard !dryRun, let picked, let option = options.first(where: { Self.key($0) == picked }) else {
             onFinish()
             return
         }

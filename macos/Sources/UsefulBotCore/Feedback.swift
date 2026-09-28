@@ -142,8 +142,9 @@ public enum Feedback {
             return .sent
         case 429:
             return .rateLimited
-        case 400..<500:
+        case 400:
             return .invalid(field: answer?.field, message: answer?.message)
+        // 404, 413, 415 and the like mean a wrong endpoint, not a wrong form.
         default:
             return .server
         }
