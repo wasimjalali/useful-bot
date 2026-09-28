@@ -43,7 +43,12 @@ The bots are the brand. Make them feel cute and premium.
 - **Session shape:** Opus 5.5 first studies the current avatars (`NativeAvatar.swift`,
   `OperatorAvatar.swift`, `FacePalette.swift`, `BrandMotion.swift`) and proposes the shape and the
   motions as a design (a canvas is fine). Wasim picks, then it gets built.
+- **Left from PR 1: `npm run brand:check` is red on `main`.** The provider logos added in #145
+  (`brand/providers/*.svg`) fail its SVG lint: fixed `width`/`height` on the root `<svg>` and no
+  `<title>`, starting with `alibaba.svg` and `command-code.svg`. Fix the logos (or teach the
+  check their rules on purpose) so the check is green before new avatar assets land.
 - **Done when:**
+  - `npm run brand:check` passes.
   - Heads are circles at every size.
   - The animations pass 60 fps frame-by-frame review with reduced motion respected.
   - Idle CPU with a working bot stays near today's.
@@ -120,7 +125,9 @@ The bots are the brand. Make them feel cute and premium.
 ## PR 5: Release readiness and live verification
 
 - **Clean-Mac check:** install and update E2E on a clean Mac, from `devin-dist-prompt.md` (the
-  Devin macOS VM).
+  Devin macOS VM). PR 1's root cleanup moved that untracked prompt to
+  `~/.Trash/useful-bot-root-cleanup-2026-09-28/devin-dist-prompt.md`. Put it back as
+  `docs/plan/devin-dist-prompt.md` and commit it before this PR starts.
 - **PR #144 lows:** fix every open low listed in its description.
 - **Release repo:** create the public repo `wasimjalali/useful-bot-releases` and publish v1.0.0
   (`npm run release:mac`), only on Wasim's go. Then turn on `ReleaseLinks.releasesRepoLive`
@@ -129,6 +136,9 @@ The bots are the brand. Make them feel cute and premium.
   - "Install update" on a real update.
   - Back during the device-code fetch.
   - A Feedback send from the installed app (Idea, "[test]").
+  - Settings > About shows the version after PR 1 (it reads `/api/status`). A background
+    cua-driver can't reach the account popover, so this needs a window where the pointer may be
+    used, or an in-app route to Settings.
 - **Wasim's own switch:** Wasim moves to the installed release as a clean first-time user. Back up
   `~/.useful-bot` and the repo `.eve` first.
 - **Done when:** a fresh Mac installs from the landing page, runs first run end to end, and takes
@@ -148,6 +158,6 @@ The bots are the brand. Make them feel cute and premium.
 
 PR 1, 2, 3, 4, 5, 6: six sessions, seven if the polish pass splits.
 
-- **Web first:** its decision decides whether PRs 2 and 3 touch the web.
+- **Web first:** done in #148. The browser UI is gone, so PRs 2 to 6 are macOS only.
 - **Landing page after the polish:** it needs screenshots of the polished app.
 - **Perf last:** it measures what ships.
