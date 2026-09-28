@@ -63,7 +63,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var transcriptBlocks: [TranscriptBlock] = [] {
         didSet {
             continuationIds = TranscriptBlocks.continuationIds(transcriptBlocks)
-            latestReplyRunIds = TranscriptBlocks.latestReplyRunIds(transcriptBlocks)
+            latestReplyRunIds = TranscriptBlocks.latestReplyRunIds(transcriptBlocks, taskReplies: projection.taskReplyRowIds)
             republishWindow()
         }
     }
@@ -134,7 +134,7 @@ final class AppModel: ObservableObject {
     /// When the running turn began, for the working row's timer. It counts
     /// the whole turn, from the send to the reply, through every step: a
     /// timer that went back to 0 at each tool read as the bot starting over.
-    private(set) var activitySince = Date()
+    @Published private(set) var activitySince = Date()
     /// When the oldest background sub-agent still out in this chat started,
     /// or nil when none is. The working row stays up for it after the turn
     /// that started it has ended.
@@ -1235,7 +1235,8 @@ final class AppModel: ObservableObject {
                         recordSendError(
                             current.id,
                             projection.failure?.message ?? "The turn failed.",
-                            resendable: true,
+                            // A sub-agent's report turn has no owner message to resend.
+                            resendable: projection.retryableMarkId != nil,
                             retryAfter: projection.failure?.coolDownSeconds
                         )
                     } else if ["turn.started", "turn.completed", "turn.cancelled"].contains(event.type),
@@ -1555,6 +1556,7 @@ final class AppModel: ObservableObject {
         // `[file: ...]` line per image, and that echo is what the optimistic
         // row, the rail preview and the stream arming have to match.
         let images = sentAttachments.filter(\.isImage)
+        SentImageStore.keep(images, botId: bot.id)
         let echo = Attachments.echoedMessage(message, images: images)
         // Appended to the projection that is already on screen, never a fresh
         // one built from the durable rows. The durable store holds only the
@@ -2448,20 +2450,48 @@ final class AppModel: ObservableObject {
         // row up forever: after a few hours it is taken as gone.
         let cutoff = Date().addingTimeInterval(-Self.subagentPatience)
         let since = projection.runningTasks.values.filter { $0 > cutoff }.min()
-        if since != runningTaskSince { runningTaskSince = since }
+        if since != runningTaskSince {
+            runningTaskSince = since
+            // A quiet chat publishes nothing more, so the row is taken down
+            // at the cutoff itself rather than at the next event.
+            taskExpiry?.cancel()
+            if let since {
+                let wait = max(1, since.addingTimeInterval(Self.subagentPatience).timeIntervalSinceNow)
+                taskExpiry = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    self?.publishActivity()
+                }
+            }
+        }
+        // The turn's own start, so the timer survives leaving the chat.
+        if let started = projection.turnStartedAt, pending || backgroundWorking, activitySince != started {
+            activitySince = started
+        }
         guard projection.activity != activity else { return }
         activity = projection.activity
         // A connector step names its app and shows its logo; the list of
         // connected apps is otherwise only read when the pane opens.
-        if case .tool("connector_execute", _) = activity, connectors == nil, !connectorsRequested {
-            connectorsRequested = true
-            Task { await loadConnectors(quiet: true) }
+        if case .tool("connector_execute", _) = activity, connectorApps.isEmpty, !connectorAppsLoading {
+            Task { await loadConnectorApps() }
         }
     }
 
-    private var connectorsRequested = false
+    /// The connected apps, for a connector step's logo and name. Read on its
+    /// own, not through the Connectors pane's list: that one pages, filters
+    /// by the pane's search and reports its errors to the owner.
+    @Published private(set) var connectorApps: [ConnectorToolkit] = []
+    private var connectorAppsLoading = false
+
+    private func loadConnectorApps() async {
+        connectorAppsLoading = true
+        defer { connectorAppsLoading = false }
+        guard let payload = try? await client.connectors(search: "", limit: 200) else { return }
+        connectorApps = payload.toolkits.filter(\.connected)
+    }
 
     private static let subagentPatience: TimeInterval = 3 * 3600
+    private var taskExpiry: Task<Void, Never>?
 
     // MARK: - Approvals
 
@@ -3262,6 +3292,7 @@ final class AppModel: ObservableObject {
     func delete(botId: String) {
         replyQuotes[botId] = nil
         transcriptCache[botId] = nil
+        SentImageStore.forget(botId: botId)
         // Gone from disk now; blocked for good once the store drops the bot,
         // so a delete the server refuses leaves the chat able to save again.
         removeSnapshot(botId, blockWrites: false)
@@ -3932,6 +3963,7 @@ final class AppModel: ObservableObject {
     var latestReplyAnchor: String? {
         var anchor: String?
         var awaitingReply = false
+        var previousFromTask = false
         for block in transcriptBlocks {
             guard case .message(let row, _) = block else { continue }
             switch row.kind {
@@ -3939,6 +3971,9 @@ final class AppModel: ObservableObject {
                 awaitingReply = true
                 anchor = nil
             case .assistant:
+                // A sub-agent's report turn has no owner row above its reply.
+                if projection.taskReplyRowIds.contains(row.id), !previousFromTask { awaitingReply = true }
+                previousFromTask = projection.taskReplyRowIds.contains(row.id)
                 if awaitingReply {
                     anchor = row.id
                     awaitingReply = false
@@ -4111,7 +4146,7 @@ final class AppModel: ObservableObject {
                 }
                 let outcome = await self.uploadOne(url)
                 if let attachment = outcome.attachment {
-                    self.attachments.append(SentImageStore.keep(attachment))
+                    self.attachments.append(SentImageStore.named(attachment))
                 } else if let message = outcome.error {
                     self.attachError = message
                 }

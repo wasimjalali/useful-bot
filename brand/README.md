@@ -114,6 +114,8 @@ npm run brand:check
 
 The build optimizes SVGs with SVGO, renders PNGs with sharp and outlines Inter with opentype.js. Their exact versions and lockfile are in `scripts/brand-tools/`. ICO, ICNS and ZIP encoding use Node buffers, so no platform image tool is needed. The build also writes `useful-bot-brand-assets.zip` with the whole `brand/` folder.
 
+The build writes and overwrites; it never deletes an output it no longer makes. When a file drops out of the system, delete it by hand. `brand:check` fails on stray files under `svg/`, `png/`, `app/`, `favicon/`, `pwa/`, `social/`, `avatars/` and `motion/native/`, but not in `source/` or the iOS catalogs, so check those two yourself.
+
 Open `brand/preview.html` to see the system: the mark, the logo, the app icon at every size, favicons, lockups, the maskable preview and the rules.
 
 ## Naming and restrictions

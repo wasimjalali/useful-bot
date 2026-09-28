@@ -507,7 +507,7 @@ struct ComposerView: View {
 
     /// An attached picture as a small preview, its remove button on the corner.
     private func imageChip(_ file: Attachment) -> some View {
-        SentImageView(name: file.name, side: 56)
+        AttachmentPreview(file: file, side: 56)
             .overlay(alignment: .topTrailing) {
                 Button {
                     model.removeAttachment(id: file.id)

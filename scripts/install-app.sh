@@ -17,7 +17,19 @@ DEST="/Applications/Useful Bot.app"
 
 [ -d "$SRC" ] || { echo "No build at $SRC. Run npm run build:app first." >&2; exit 1; }
 
-ditto "$SRC" "$DEST"
+# A clean copy, not a merge: ditto over an existing bundle keeps files the new
+# build no longer has, and the copy no longer matches its signature.
+if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
+  echo "Quitting the running Useful Bot..."
+  osascript -e 'tell application id "ai.useful.bot" to quit' >/dev/null 2>&1 || true
+  sleep 3
+fi
+NEW="$DEST.installing"
+rm -rf "$NEW"
+ditto "$SRC" "$NEW"
+codesign --verify --strict "$NEW"
+rm -rf "$DEST"
+mv "$NEW" "$DEST"
 touch "$DEST"
 
 "$LSREGISTER" -dump | awk '

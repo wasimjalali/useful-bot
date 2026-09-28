@@ -49,7 +49,7 @@ launch the Dock can take its icon from any of them, so a stale copy flashes an o
 very old terminal one, 2026-09-28) until the app sets its own. `install:app` unregisters every
 other copy and re-registers the installed one with a fresh date. When the logo changes: update
 `brand/app/macos/UsefulBot.icns`, rebuild, run `install:app`, and check that
-`lsregister -dump | grep -B8 "identifier: *ai.useful.bot"` lists only `/Applications`. Never
+`/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -dump | grep -B8 "identifier: *ai.useful.bot"` lists only `/Applications`. Never
 leave extra copies of the app lying around, including in scratch folders.
 
 `build:app` also builds the web service. The installed app serves that build only while the

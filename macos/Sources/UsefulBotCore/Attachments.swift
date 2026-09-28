@@ -144,25 +144,32 @@ public enum Attachments {
     /// `[file: name (type)]` line (`echoedMessage`); neither is for the owner
     /// to read. Names come back in order, once each.
     public static func sentImages(in text: String) -> (text: String, images: [String]) {
-        var kept: [Substring] = []
-        var images: [String] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        // A picture is named by both lines: an owner who types "Attached
+        // image: x" themselves, with no file line to match, keeps their text.
+        func named(_ line: Substring) -> (kind: Int, name: String)? {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            var name: String?
             if trimmed.hasPrefix("Attached image: ") {
-                name = String(trimmed.dropFirst("Attached image: ".count))
-            } else if trimmed.hasPrefix("[file: "), trimmed.hasSuffix(")]"),
-                      let open = trimmed.range(of: " (", options: .backwards) {
-                let candidate = trimmed[trimmed.index(trimmed.startIndex, offsetBy: 7)..<open.lowerBound]
-                if trimmed[open.upperBound...].hasPrefix("image") { name = String(candidate) }
+                let name = String(trimmed.dropFirst("Attached image: ".count))
+                return name.isEmpty ? nil : (0, name)
             }
-            if let name, !name.isEmpty {
-                if !images.contains(name) { images.append(name) }
-            } else {
-                kept.append(line)
+            if trimmed.hasPrefix("[file: "), trimmed.hasSuffix(")]"),
+               let open = trimmed.range(of: " (", options: .backwards),
+               trimmed[open.upperBound...].hasPrefix("image") {
+                let name = String(trimmed[trimmed.index(trimmed.startIndex, offsetBy: 7)..<open.lowerBound])
+                return name.isEmpty ? nil : (1, name)
             }
+            return nil
         }
-        guard !images.isEmpty else { return (text, []) }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let found = lines.compactMap(named)
+        let both = Set(found.filter { $0.kind == 0 }.map(\.name)).intersection(found.filter { $0.kind == 1 }.map(\.name))
+        guard !both.isEmpty else { return (text, []) }
+        var images: [String] = []
+        let kept = lines.filter { line in
+            guard let hit = named(line), both.contains(hit.name) else { return true }
+            if !images.contains(hit.name) { images.append(hit.name) }
+            return false
+        }
         return (kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines), images)
     }
 

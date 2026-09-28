@@ -52,7 +52,7 @@ enum BrandAssets {
     }
 
     /// A motion layer at the size it is drawn, rasterised once per size.
-    /// The animation composites seven layers 30 times a second, so each one
+    /// The animation composites five layers 30 times a second, so each one
     /// is a bitmap of `size` points at 2x and no bigger.
     static func motionLayer(_ name: String, size: CGFloat) -> NSImage {
         let key = "\(name)@\(size)"

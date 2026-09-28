@@ -660,7 +660,7 @@ struct ChatView: View {
                                     bot: bot,
                                     activity: model.activity,
                                     since: model.activitySince,
-                                    toolkits: model.connectors?.toolkits ?? []
+                                    toolkits: model.connectorApps
                                 )
                             } else if let since = model.runningTaskSince {
                                 // The turn that started a sub-agent is over,
@@ -1557,7 +1557,7 @@ struct TranscriptRowView: View, Equatable {
                     Spacer(minLength: 60)
                     WrapHStack(spacing: 6) {
                         ForEach(sent.images, id: \.self) { name in
-                            SentImageView(name: name, side: sent.images.count == 1 ? 240 : 120, keepsShape: sent.images.count == 1)
+                            SentImageView(name: name, botId: bot.id, side: sent.images.count == 1 ? 240 : 120, keepsShape: sent.images.count == 1)
                         }
                     }
                     .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
@@ -2070,7 +2070,11 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // row gave up in the same frame, and that pair read as a
                     // move up. The pin dropped, nothing re-pinned, and the
                     // owner's message sat hidden under the card.
-                    let viewportShrank = new.viewport < old.viewport
+                    // Only as far as it shrank (plus the content change in the
+                    // same frame): past that, the reader's own wheel moved too.
+                    let shrink = max(0, old.viewport - new.viewport)
+                    let viewportShrank = shrink > 0
+                        && old.offset - new.offset <= shrink + abs(new.contentHeight - old.contentHeight) + 0.5
                     // While the view is parked at the top of a finished reply,
                     // a resize frame is the reload settling, not the reader.
                     if !appScroll, !viewportGrew, !viewportShrank, !(probe.holding && resized),
