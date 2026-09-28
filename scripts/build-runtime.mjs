@@ -51,13 +51,16 @@ const TRACKED = [
 // Build output, not in git: copied whole, then scanned below.
 const BUILT = "web/.next/standalone";
 // Names that must never reach a published zip, outside third-party packages.
-const SECRET = /^(\.env(\..*)?|.*\.pem|.*\.key|.*\.p12|id_rsa.*|secrets?(\.json)?|service-account\.json|\.npmrc|\.git-credentials)$/i;
+const SECRET = /^(\.env(\..*)?|.*\.env|\.envrc|\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx|p8|jks|keystore|token)|secrets?(\..*)?|credentials?(\..*)?|client_secret.*|service-account.*\.json)$/i;
 
 function sha256(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
 const target = path.resolve(out);
+// A build stage lives in this checkout. Anywhere else (an installed runtime in
+// Application Support, a home folder) is never cleared by a build.
+if (!target.startsWith(ROOT + path.sep)) throw new Error(`${target} is outside the checkout; refusing to build a runtime there`);
 // Only ever replace an earlier runtime, never an arbitrary folder given by mistake.
 if (existsSync(target) && readdirSync(target).length > 0 && !existsSync(path.join(target, ".ub-runtime-version"))) {
   throw new Error(`${target} is not empty and is not an earlier runtime; refusing to delete it`);

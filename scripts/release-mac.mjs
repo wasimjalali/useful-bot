@@ -52,6 +52,10 @@ const downloadBase = values["download-base"] ?? `${RELEASES}/download/v${version
 
 // The key the app will trust must be the key the zip is signed with, or no
 // update from this release could ever install. Checked before the long build.
+// Sparkle's tools come with the Swift package; a fresh checkout has not fetched it yet.
+if (!existsSync(path.join(SPARKLE_BIN, "generate_keys"))) {
+  execFileSync("swift", ["package", "resolve"], { cwd: path.join(ROOT, "macos"), stdio: "inherit" });
+}
 const accountKey = execFileSync(path.join(SPARKLE_BIN, "generate_keys"), ["--account", values["ed-account"], "-p"], { encoding: "utf8" }).trim();
 if (accountKey !== values["ed-public-key"]) {
   process.stderr.write(`the Keychain key for account "${values["ed-account"]}" is not the public key given (${values["ed-public-key"]})\n`);

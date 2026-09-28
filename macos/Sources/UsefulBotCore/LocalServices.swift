@@ -200,6 +200,9 @@ public struct LocalServices: Sendable {
         for port in [ServiceSupervisor.webPort, ServiceSupervisor.evePort, ServiceSupervisor.routerPort] {
             runner.stopOwnListeners(port: port, owns: owns)
             if await waitForPortFree(port: port, timeout: 5_000) { continue }
+            // A cancelled wait returns at once; force-killing then would cut
+            // eve off mid-write. The retry's own boot stops them again.
+            if Task.isCancelled { return }
             runner.forceStopOwnListeners(port: port, owns: owns)
             _ = await waitForPortFree(port: port, timeout: 1_000)
         }
