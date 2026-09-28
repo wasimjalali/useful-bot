@@ -16,11 +16,13 @@ The mobile app (its own worktree) waits until after launch.
 
 ## PR 1: Web app decision
 
-**Question for Wasim:** keep the web UI, or remove it?
+**Decided 2026-09-28: removed.** The browser UI is gone, `/` returns a plain status, and Tailwind
+went with it. The notes below are the question as it was asked.
 
-- **What exists:** `web/` is two things. One is the Next.js API (`web/app/api`, 15 route groups).
-  The Mac app talks to it, so it stays either way. The other is the browser UI (`web/app/page.tsx`
-  and its components, about 10,400 lines of TSX).
+- **What exists:** `web/` is two things. One is the Next.js API (`web/app/api`, 15 route groups,
+  plus the eve proxy in `web/app/eve`). The Mac app talks to it, so it stays either way. The
+  other is the browser UI (`web/app/page.tsx` and its components, about 5,500 lines of TSX plus
+  1,280 of CSS).
 - **Keep it:** making it pixel-identical to macOS means redoing every Mac screen in React, then
   keeping the two in step on every future change. That's several PRs now, plus a tax on every
   PR after.

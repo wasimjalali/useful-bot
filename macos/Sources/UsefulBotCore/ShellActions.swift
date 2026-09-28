@@ -112,8 +112,7 @@ public enum ShellActions {
     }
 }
 
-/// Confirm payloads for each proposal kind, ported from
-/// `web/components/proposal-card.tsx`.
+/// Confirm payloads for each proposal kind.
 public enum ProposalActions {
     public static func confirm(_ proposal: Proposal) -> [String: Any]? {
         switch proposal.kind {

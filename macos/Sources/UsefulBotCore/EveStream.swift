@@ -768,7 +768,7 @@ public enum EveStream {
     }
 }
 
-/// Live projection of a session stream, mirroring the web UI: a delta stream
+/// Live projection of a session stream: a delta stream
 /// accumulates, message.completed is authoritative, replays dedupe by event id.
 /// Codable so a chat can be put back exactly as it was left (`ChatSnapshot`).
 /// Every stored property is part of that snapshot: a change to one must bump

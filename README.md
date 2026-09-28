@@ -37,7 +37,7 @@ make -C macos bundle
 open "macos/dist/Useful Bot.app"
 ```
 
-Web is `http://127.0.0.1:4320`. Chat needs eve as well (`service.mjs eve`) after the Go key is in Keychain. Sleeping the Mac is downtime.
+The web service is the API the app calls, on `http://127.0.0.1:4320` (no browser UI; `/` returns a status). Chat needs eve as well (`service.mjs eve`) after the Go key is in Keychain. Sleeping the Mac is downtime.
 
 Model providers are connected from the app: account popover, Providers. The list comes from the server catalogue in `shared/provider-catalog.ts`, one row per provider and mode. Subscription rows sign in with a device code (ChatGPT through Codex, GitHub Copilot) or take a coding-plan key (OpenCode Go, GLM Coding Plan, Kimi Code, Qwen Coding Plan, MiniMax and MiMo token plans, Command Code). API rows take a key, Local rows take a server URL. Claude and Google subscriptions are not offered because their terms forbid third-party use; both work with an API key. Connections live in `~/.useful-bot/providers.json`, the router picks the protocol per connection (OpenAI chat completions, Responses, Anthropic Messages), and Task models sets the chat model and the reviewer model with their reasoning level.
 
@@ -186,7 +186,7 @@ Excalidraw render in the macOS chat as an MCP App widget. Edit opens it full
 screen over the window (Done or Escape returns), and Open in Excalidraw
 exports it to excalidraw.com in the browser. The app's own tool calls go
 through `POST /api/connections/widget/[id]/call`, limited to tools the server
-marks for its app. The web UI does not port this card.
+marks for its app.
 
 No MCP server's tools are mounted for every turn. An OpenAPI connection is,
 because eve owns spec parsing and there is no other way to reach one. Every

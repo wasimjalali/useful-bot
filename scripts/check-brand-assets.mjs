@@ -27,7 +27,7 @@ for (const name of ['mark', 'mark-flat', 'badge', 'badge-transparent', 'wordmark
 for (const group of ['mark', 'black']) for (const size of [2048, 1024, 512, 256, 128, 64, 32]) required.push(`brand/png/${group}/useful-bot-${size}.png`);
 for (const size of [1024, 512, 256, 128, 64]) required.push(`brand/png/badge/useful-bot-badge-${size}.png`);
 const webFiles = ['favicon.svg', 'favicon.ico', 'favicon-16x16.png', 'favicon-32x32.png', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-192.png', 'icon-maskable-512.png', 'site.webmanifest'];
-for (const folder of ['public', 'web/public']) for (const file of webFiles) required.push(`${folder}/${file}`);
+for (const file of webFiles) required.push(`public/${file}`);
 for (const name of ['avatar-1024', 'avatar-badge-1024', 'og-image', 'github-social-preview', 'x-profile', 'linkedin-profile']) required.push(`brand/social/${name}.png`);
 for (const size of [1024, 2048]) required.push(`brand/app/useful-bot-app-icon-${size}.png`);
 for (const path of required) assert((await stat(resolve(root, path))).size > 0, `Missing/empty output: ${path}`);
@@ -141,7 +141,7 @@ for (const purpose of ['any', 'maskable']) for (const size of [192, 512]) {
 for (const name of webFiles) {
   const folder = name.startsWith('icon-') || name === 'site.webmanifest' ? 'pwa' : 'favicon';
   const expected = await read(`brand/${folder}/${name}`);
-  for (const target of ['public', 'web/public']) assert((await read(`${target}/${name}`)).equals(expected), `Public copy differs: ${target}/${name}`);
+  assert((await read(`public/${name}`)).equals(expected), `Public copy differs: public/${name}`);
 }
 const app = JSON.parse(await read('brand/app/AppIcon.appiconset/Contents.json'));
 assert.equal(app.images.length, 10);
@@ -205,7 +205,6 @@ for (const color of Object.keys(avatarPalette)) {
   assert(svg.includes('viewBox="128 13.056 768 768"'), `Avatar crop/centering changed: ${color}`);
   assert(!/id="(?:body|arm-left|arm-right)"/.test(svg), `Avatar includes body or arms: ${color}`);
   assert.deepEqual(eyeGeometry(svg), features, `Avatar changed eyes or glasses: ${color}`);
-  assert((await read(`web/public/brand/avatars/${color}.svg`)).equals(Buffer.from(svg)), `Web avatar differs: ${color}`);
   const tinted = await sharp(Buffer.from(svg)).resize(1024, 1024).ensureAlpha().raw().toBuffer();
   for (let i = 3; i < tinted.length; i += 4) assert.equal(tinted[i], headPixels[i], `Avatar head silhouette/alpha changed: ${color}`);
 }

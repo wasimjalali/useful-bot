@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import UsefulBotCore
 
-/// The Useful Brain token set from `web/app/globals.css`, mapped to SwiftUI on
+/// The Useful Brain token set (`DesignTokens`), mapped to SwiftUI on
 /// the phone. Every color resolves per appearance through
 /// `UIColor(dynamicProvider:)`: the light hex from `DesignTokens.Hex`, the
 /// dark one from `DesignTokens.DarkHex`.

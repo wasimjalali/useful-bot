@@ -67,7 +67,7 @@ Example for a site whose public assets are served from `/`:
 <meta name="theme-color" content="#000000">
 ```
 
-The build copies these files to root `public/` for portability and `web/public/` for this repository's Next.js application. It also updates `web/app/icon.svg`, because Next's file convention otherwise retains the old mark. The root layout points to the manifest and favicon package. A manifest and icons alone don't add offline support or turn an application into a fully installable PWA. For a subpath deployment, adjust the manifest `id`, `start_url`, `scope` and example paths.
+The build copies these files to root `public/` for portability. This repository's web service is an API with no browser UI, so it takes no copy. A manifest and icons alone don't add offline support or turn an application into a fully installable PWA. For a subpath deployment, adjust the manifest `id`, `start_url`, `scope` and example paths.
 
 ## macOS
 
@@ -99,7 +99,7 @@ Avatar SVGs use the square viewBox `128 13.056 768 768` within the unchanged mas
 
 Colors are selected only in bot/group settings, using actual mascot previews. Shapes, random face generation and image upload are no longer offered. Existing saved shape/image fields remain readable for compatibility but don't change the rendered mascot. Choosing a color clears the old image field explicitly; no background migration deletes saved user images. The historical color ID `ink` now means Original white, preserving the existing wire format. Other IDs are also unchanged. Reset restores Original for Useful Bot and the derived default color for another bot.
 
-These avatar colors are not general brand tokens. Don't reuse them to recolor the app shell or marketing marks. Web assets in `web/public/brand/` are deterministic copies of the canonical `brand/` outputs.
+These avatar colors are not general brand tokens. Don't reuse them to recolor the app shell or marketing marks.
 
 ## Regeneration and inspection
 

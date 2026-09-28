@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UsefulBotCore
 
-/// Settings sections from `web/components/app-settings-dialog.tsx`.
+/// Settings sections.
 enum AppSettingsTab: String, CaseIterable, Identifiable {
     case general
     case providers

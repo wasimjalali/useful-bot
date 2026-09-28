@@ -9,8 +9,8 @@ before the native app was committed to), this document records the newer owner d
 so explicitly. Where two sections of this document disagree, §4 (security model) wins.
 
 Source of truth for product behavior: the macOS app (`macos/`) and the shared TypeScript
-backend (`shared/`, `web/app/api/`, `web/app/eve/`). The web UI (`web/components/`,
-`web/app/page.tsx`) is a secondary reference only; do not copy its structure into SwiftUI.
+backend (`shared/`, `web/app/api/`, `web/app/eve/`). The browser UI was removed on 2026-09-28;
+`web/` is only that backend now.
 
 Every claim in this document about existing code was verified against the repository on
 2026-09-19. Build agents who find a claim stale must record it in the build log (§17.4) and
@@ -86,7 +86,7 @@ Useful Bot is a local-first multi-agent system. The Mac runs three loopback serv
 | Service | Port | Role |
 |---------|------|------|
 | Router | 127.0.0.1:4319 | AuthN/Z, model routing, credential registry |
-| Web (Next.js) | 127.0.0.1:4320 | Owner API + eve proxy + web UI |
+| Web (Next.js) | 127.0.0.1:4320 | Owner API + eve proxy |
 | Eve agent | 127.0.0.1:4321 | Agent runtime (Vercel `eve` 0.54.3) |
 
 The macOS app supervises these, renders the UI natively (SwiftUI/AppKit), and authenticates

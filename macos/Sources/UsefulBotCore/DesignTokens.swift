@@ -1,6 +1,6 @@
 import Foundation
 
-/// Raw design tokens ported from `web/app/globals.css` (Useful Brain parity).
+/// Raw Useful Brain design tokens, first ported from the removed web UI's CSS.
 /// These are the CSS authoring values; the app target maps them to SwiftUI
 /// colors, fonts and metrics. Nothing here may drift from the web values.
 public enum DesignTokens {
@@ -88,8 +88,7 @@ public enum DesignTokens {
         public static let overlayDark = "#000000"
     }
 
-    /// One radius scale, by role, shared with `web/app/globals.css`
-    /// (`--radius-*`). Role names below point into it.
+    /// One radius scale, by role. Role names below point into it.
     public enum Radius {
         /// Focus rings, tiny chips, kbd, labels.
         public static let xs: CGFloat = 6

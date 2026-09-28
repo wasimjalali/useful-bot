@@ -1,6 +1,6 @@
 import Foundation
 
-/// Rail time labels, ported from `formatRailTime` in `web/components/bot-rail.tsx`:
+/// Rail time labels:
 /// today renders the locale time, any other day renders "Mon D".
 public enum RailClock {
     private static let iso: ISO8601DateFormatter = {

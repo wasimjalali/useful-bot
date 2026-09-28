@@ -205,7 +205,6 @@ for (const size of [1024, 512, 256, 128, 64]) {
 
 const faviconSvg = xml(black + content(flat));
 await svgOutput('brand/favicon/favicon.svg', faviconSvg);
-await svgOutput('web/app/icon.svg', faviconSvg);
 const icoImages = [];
 for (const size of [16, 32, 48]) {
   const data = await render(faviconSvg, size);
@@ -232,10 +231,11 @@ const manifest = {
   ]),
 };
 await output('brand/pwa/site.webmanifest', JSON.stringify(manifest, null, 2) + '\n', { kind: 'manifest' });
-// Root public is the portable handoff. This repository serves Next from web/.
+// Root public is the portable handoff. The web service has no browser UI, so
+// nothing is copied under web/.
 for (const record of [...records].filter(r => /^brand\/(favicon|pwa)\//.test(r.path))) {
   const name = record.path.split('/').at(-1);
-  for (const folder of ['public', 'web/public']) await output(`${folder}/${name}`, await read(record.path), { ...record, path: `${folder}/${name}` });
+  await output(`public/${name}`, await read(record.path), { ...record, path: `public/${name}` });
 }
 
 for (const size of [1024, 2048]) await pngOutput(`brand/app/useful-bot-app-icon-${size}.png`, await primary(size), size, { opaque: true, family: 'primary' });
@@ -355,9 +355,7 @@ for (const [color, { fill }] of Object.entries(palette)) {
   } }) }] }).data;
   const vector = await svgOutput(`brand/avatars/${color}.svg`, avatar);
   await pngOutput(`brand/avatars/${color}-256.png`, await render(vector, 256), 256, { family: 'avatar', avatarColor: color });
-  await output(`web/public/brand/avatars/${color}.svg`, await read(`brand/avatars/${color}.svg`), { kind: 'svg' });
 }
-for (const name of ['useful-bot-mark.svg', 'useful-bot-mark-flat.svg']) await output(`web/public/brand/${name}`, await read(`brand/svg/${name}`), { kind: 'svg' });
 
 // Record original files too, so source provenance survives packaging.
 const sources = [];

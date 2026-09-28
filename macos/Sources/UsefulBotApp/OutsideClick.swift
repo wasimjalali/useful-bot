@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The web popovers close on any mousedown outside the card
-/// (`web/components/popover.tsx`). SwiftUI anchored overlays have no
+/// Popovers close on any mousedown outside the card. SwiftUI anchored
+/// overlays have no
 /// equivalent, so this installs temporary AppKit event monitors for the
 /// lifetime of the popover view and closes it when the user clicks anywhere
 /// else. Pass `triggers` with the toggle button's window frame so clicking the

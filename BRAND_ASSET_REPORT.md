@@ -31,7 +31,7 @@ The package productionizes the approved supplied mascot. The bot without a circl
 | Product bot avatars | 11 transparent head-only SVGs with square 768-unit viewBoxes and 256 × 256 PNGs |
 | Native motion layers | Eight transparent 1024 × 1024 PNGs: seven full-mascot layers and one bright avatar head |
 
-The `public/` package is duplicated into `web/public/` because Next.js runs from `web/`. Next metadata, web logos and bot avatars consume the approved package. Native SwiftUI uses bundled copies from `brand/`; `macos/build-app.sh` packages the ICNS, header artwork, avatar PNGs, animation layers and shared JSON sources. There is one editable brand source, with generated copies only where a platform needs them.
+The `public/` package is the portable web handoff; the web service has no browser UI, so nothing is copied under `web/`. Native SwiftUI uses bundled copies from `brand/`; `macos/build-app.sh` packages the ICNS, header artwork, avatar PNGs, animation layers and shared JSON sources. There is one editable brand source, with generated copies only where a platform needs them.
 
 ## Native integration
 

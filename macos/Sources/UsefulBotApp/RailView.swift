@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UsefulBotCore
 
-/// The 248pt rail from `web/components/bot-rail.tsx`: logo, search pill,
+/// The 248pt rail: logo, search pill,
 /// New Bot, pinned cards, sections, unassigned/hidden, account row.
 struct RailView: View {
     @EnvironmentObject private var model: AppModel

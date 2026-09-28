@@ -3,7 +3,7 @@ import type { ThreadKind } from "./agent-store.ts";
 
 /**
  * Routing rules for 1:1 threads, group chats and bot-to-bot handoffs.
- * Pure functions only: the agent tools, the eve proxy and the web UI all share
+ * Pure functions only: the agent tools and the eve proxy both share
  * this file, so it must not import anything platform specific.
  */
 
