@@ -3,7 +3,7 @@ import ObjectiveC.runtime
 import SwiftUI
 import UsefulBotCore
 
-/// The Useful Brain token set from `web/app/globals.css`, mapped to SwiftUI.
+/// The Useful Brain token set (`DesignTokens`), mapped to SwiftUI.
 /// Every color resolves per appearance: the light hex from `DesignTokens.Hex`
 /// and the dark one from `DesignTokens.DarkHex`. `AppAppearance` picks which
 /// one the app draws in.

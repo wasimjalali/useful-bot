@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
  * Everything a web build is made from: the app, the shared code its routes
  * reach, and the brand palette `shared/bot-face.ts` imports.
  */
-const SOURCE_DIRS = ["web/app", "web/components", "web/lib", "web/public", "shared", "agent", "router/src", "brand/source"];
+const SOURCE_DIRS = ["web/app", "web/lib", "shared", "agent", "router/src", "brand/source"];
 // Not the lockfile: eve restamps it on its first boot, which would mark every
 // build stale the moment the services started. package.json carries the
 // versions a person chose.
-const SOURCE_FILES = ["web/next.config.ts", "web/postcss.config.mjs", "web/tsconfig.json", "package.json"];
+const SOURCE_FILES = ["web/next.config.ts", "web/tsconfig.json", "package.json"];
 
 export function standaloneServer(root) {
   return path.join(root, "web/.next/standalone/web/server.js");
@@ -71,7 +71,7 @@ export function stampBuild(root) {
 export function webLaunch(root, env = process.env) {
   if (env.UB_WEB_MODE === "dev") return { mode: "dev", reason: "UB_WEB_MODE=dev" };
   const server = standaloneServer(root);
-  const copied = ["web/.next/standalone/web/.next/static", "web/.next/standalone/web/public"];
+  const copied = ["web/.next/standalone/web/.next/static"];
   // A release runtime (scripts/build-runtime.mjs) carries only the built web
   // and no `next dev`, so there is nothing to compare and nothing to fall back
   // to: an incomplete one is a broken release, said loudly.

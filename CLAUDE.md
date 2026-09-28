@@ -12,9 +12,9 @@ This product is the macOS app. Everything else serves it.
 2. **Mobile app.** Planned, not built yet. Design decisions that would be expensive to undo
    on a phone are worth thinking about now; nothing else about mobile is in scope until it
    starts.
-3. **Web UI** (`web/`). Secondary. It follows the macOS app rather than leading it, and it is
-   fine for it to trail a release behind. Port a change here when it is cheap or when asked,
-   and say so plainly when it has not been ported.
+3. **No web UI.** The browser UI was removed on 2026-09-28 (PR 1 of the launch plan); git
+   history keeps it. `web/` is now only the API service the apps call (`web/app/api`, the
+   eve proxy in `web/app/eve`), and `/` returns a plain status. Do not add browser pages.
 4. **CLI.** Not a concern. Do not build new CLI surfaces or spend design effort on one.
    Existing CLI and script entry points stay as they are: there is no need to remove them.
 

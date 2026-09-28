@@ -6,8 +6,8 @@ cd "$(dirname "$0")"
 # The web service the app talks to. scripts/service.mjs serves this build while
 # the sources still hash to what it was built from and falls back to `next dev`
 # otherwise, so a release always leaves a fresh one behind. The standalone
-# server does not carry its own static files or public folder; Next leaves that
-# copy to us.
+# server does not carry its own static files; Next leaves that copy to us. The
+# service has no browser UI, so there is no public folder to copy.
 #
 # Next does not recognise TypeScript 7 as `typescript` and runs `npm install`
 # for it on every build. Nothing gets installed, but npm rewrote the lockfile,
@@ -21,10 +21,13 @@ done
 (
   set -eu
   cd ..
+  # `next dev` leaves route types under .next/dev/types that web/tsconfig.json
+  # includes. A build never refreshes them, so types for deleted routes would
+  # fail the release's tsc_web step; drop them and let the next `next dev` redo them.
+  rm -rf web/.next/dev/types
   npm_config_package_lock=false npm_config_save=false "$NODE" node_modules/next/dist/bin/next build web
   rm -rf web/.next/standalone/web/.next/static web/.next/standalone/web/public
   cp -R web/.next/static web/.next/standalone/web/.next/static
-  cp -R web/public web/.next/standalone/web/public
   # The build repoints this generated, tracked file from the dev types to the
   # build types. Put back so a release build leaves the tree clean.
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

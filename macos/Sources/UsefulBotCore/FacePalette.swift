@@ -32,7 +32,7 @@ public enum FacePalette {
     }
 
     public static func defaultFace(for id: String) -> Face {
-        // Walk UTF-16 code units like the web's charCodeAt so both clients
+        // Walk UTF-16 code units like `charCodeAt` in `shared/bot-face.ts` so both sides
         // derive the same face for the same id, including emoji ids.
         var hash: UInt32 = 0
         for (index, unit) in id.utf16.enumerated() {

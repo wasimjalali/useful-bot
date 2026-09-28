@@ -1,7 +1,7 @@
 import Foundation
 
 /// Minimal JSON tree so event payloads with unknown shapes (search results,
-/// tool output) can be walked the way the web's `parseSearchChips` walks them.
+/// tool output) can be walked for search chips.
 public enum JSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)
@@ -603,8 +603,7 @@ public enum EveStream {
         return String(text[range.upperBound...])
     }
 
-    /// Port of `withoutLeadingThink` in `shared/inline-think.ts`. A reply
-    /// stored before the router moved inline thinking to the reasoning field
+    /// A reply stored before the router moved inline thinking to the reasoning field
     /// still opens with `<think>…</think>`: its bubble shows the answer after
     /// it, and nothing while the block is unclosed or its opening tag is still
     /// arriving. A tag further into the reply is the reply's own text.
@@ -749,7 +748,7 @@ public enum EveStream {
         return head
     }
 
-    /// Mirror the web's `String(value)` for scalar fields: numbers and booleans
+    /// Like JavaScript's `String(value)` for scalar fields: numbers and booleans
     /// stringify, compound and null values fall back to the next source.
     private static func chipText(_ value: JSONValue?) -> String? {
         switch value {
@@ -768,7 +767,7 @@ public enum EveStream {
     }
 }
 
-/// Live projection of a session stream, mirroring the web UI: a delta stream
+/// Live projection of a session stream: a delta stream
 /// accumulates, message.completed is authoritative, replays dedupe by event id.
 /// Codable so a chat can be put back exactly as it was left (`ChatSnapshot`).
 /// Every stored property is part of that snapshot: a change to one must bump
@@ -1316,7 +1315,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
 
     public mutating func apply(_ event: EveEvent, live: Bool = false) {
         var event = event
-        // Dedupe every identified event, matching the web's seenIds contract;
+        // Dedupe every identified event by id;
         // a replayed chunk id must not append its delta twice.
         if let id = event.id {
             if seen.contains(id) { return }

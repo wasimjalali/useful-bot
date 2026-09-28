@@ -1,6 +1,6 @@
 import Foundation
 
-/// Block-level markdown, ported from `shared/chat-markdown.ts`. The renderer
+/// Block-level markdown, first ported from the removed web parser. The renderer
 /// handles inline spans with AttributedString; this parser decides the blocks.
 public enum MarkdownBlock: Equatable, Sendable {
     case paragraph(String)
@@ -195,8 +195,7 @@ public enum ChatMarkdownParser {
         for character in trimmed {
             if escaped {
                 // Only the pipe loses its escape; any other escaped character
-                // keeps its backslash, matching `splitRow` in
-                // `shared/chat-markdown.ts` (`C:\path` stays `C:\path`).
+                // keeps its backslash (`C:\path` stays `C:\path`).
                 current.append(character == "|" ? "|" : "\\\(character)")
                 escaped = false
                 continue
@@ -406,10 +405,10 @@ public enum ChatMarkdownCache {
         return blockCache.value(for: source, build: ChatMarkdownParser.blocks(from:))
     }
 
-    /// The inline spans from `shared/chat-markdown.ts`. The renderer turns
-    /// these into styled `AttributedString` runs; parsing must match the web
-    /// exactly, so Apple's own markdown parser is not used (it italicizes
-    /// `_snake_case_` and accepts emphasis forms the web never draws).
+    /// The inline spans. The renderer turns
+    /// these into styled `AttributedString` runs. Apple's own markdown parser
+    /// is not used (it italicizes `_snake_case_` and accepts emphasis forms the
+    /// chat never draws).
     public static func inline(from source: String, streamingKey: String? = nil) -> [InlineSpan] {
         if let streamingKey { return transient.inline(for: streamingKey, source: source) }
         return inlineCache.value(for: source, build: ChatInline.parse)

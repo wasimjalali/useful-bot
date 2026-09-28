@@ -62,8 +62,8 @@ public struct TranscriptRow: Identifiable, Equatable, Sendable {
 /// rendered at the very top of the chat and auto-scroll jumped with it.
 public enum Transcript {
     /// Text with nothing to see: whitespace, the zero-width space and joiners,
-    /// the word joiner and the byte-order mark. The same set as the web's
-    /// filter in web/app/page.tsx; other format characters can draw a glyph.
+    /// the word joiner and the byte-order mark. Other format characters can
+    /// draw a glyph.
     static func isBlank(_ text: String) -> Bool {
         text.unicodeScalars.allSatisfy { scalar in
             scalar.properties.isWhitespace || (0x200B...0x200D).contains(scalar.value)
@@ -212,7 +212,7 @@ public enum Transcript {
     }
 
     /// Attribute an untagged group reply by the member mention in the user turn
-    /// that produced it, the same rule the web client applies.
+    /// that produced it.
     public static func attributeGroupReplies(_ rows: [TranscriptRow], roster: [Speaker]) -> [TranscriptRow] {
         guard !roster.isEmpty else { return rows }
         var next = rows

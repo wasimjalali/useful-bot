@@ -158,7 +158,7 @@ Owner decisions of 2026-09-12. Work runs in the implementing agent's harness, no
 
 The loop: executor work, then DeepSeek adversarial passes, fix confirmed Critical and High findings, then the GLM 5.3 gate, and only a clean gate merges. The implementing agent merges on green and reports after each PR. Document-only changes skip the adversarial step, per the standing loop. If the Grok CLI is not authenticated when a hard-spot pass is needed, that pass falls back to an additional DeepSeek adversarial pass plus the GLM 5.3 gate, and the substitution is stated in the PR.
 
-Implementation sequence after the original six PRs (living list is HANDOFF.md):
+Implementation sequence after the original six PRs (the current plan is docs/plan/LAUNCH-PLAN.md):
 stream real replies (GitHub PR 11), then the light-theme multi-bot shell UI,
 then memory/approvals in chat, search + reviewer, launchd, then release
 verification.

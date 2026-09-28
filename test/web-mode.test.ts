@@ -13,13 +13,12 @@ function put(root: string, file: string, body = "x"): void {
 
 function checkout(): string {
   const root = mkdtempSync(join(tmpdir(), "ub-web-mode-"));
-  put(root, "web/app/page.tsx");
+  put(root, "web/app/route.ts");
   put(root, "shared/models.ts");
   put(root, "brand/source/avatar-palette.json", "{}");
   put(root, "package.json", "{}");
   put(root, "web/.next/standalone/web/server.js");
   put(root, "web/.next/standalone/web/.next/static/chunk.js");
-  put(root, "web/.next/standalone/web/public/favicon.ico");
   stampBuild(root);
   return root;
 }
@@ -55,7 +54,7 @@ test("touching a file without changing it keeps the build", () => {
 
 test("no build, no stamp, or a build missing its copied folders runs next dev", () => {
   assert.deepEqual(webLaunch(mkdtempSync(join(tmpdir(), "ub-web-mode-")), {}), { mode: "dev", reason: "web_build_missing" });
-  for (const gone of ["web/.next/ub-sources.sha256", "web/.next/standalone/web/public", "web/.next/standalone/web/.next/static"]) {
+  for (const gone of ["web/.next/ub-sources.sha256", "web/.next/standalone/web/.next/static"]) {
     const root = checkout();
     rmSync(join(root, gone), { recursive: true });
     assert.deepEqual(webLaunch(root, {}), { mode: "dev", reason: "web_build_missing" }, gone);

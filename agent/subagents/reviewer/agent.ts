@@ -68,5 +68,6 @@ export default defineAgent({
       }),
     },
   }),
+  // eve refuses to boot if a subagent's description is empty.
   description: "Read-only defect finder over supplied text. No tools, no delegation.",
 });

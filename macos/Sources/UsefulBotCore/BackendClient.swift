@@ -1408,7 +1408,7 @@ public actor BackendClient {
     }
 
     /// Persist the session pointer and preview for a bot, the same shell
-    /// action the web client sends after a turn starts. Without it a poll
+    /// action to send after a turn starts. Without it a poll
     /// would read back a null session and the next send would start a new one.
     public func touchChat(botId: String, preview: String, sessionId: String) async throws {
         let (data, response) = try await perform { client, token in

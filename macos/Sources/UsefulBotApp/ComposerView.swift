@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UsefulBotCore
 
-/// The chat composer from `web/components/chat-composer.tsx`: one rounded
+/// The chat composer: one rounded
 /// container with a plus affordance on the left, a growing field, the
 /// model/effort chip and a circular send (or stop) button on the right.
 struct ComposerView: View {

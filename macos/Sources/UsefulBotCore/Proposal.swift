@@ -103,8 +103,8 @@ public struct Proposal: Identifiable, Decodable, Equatable, Sendable {
         case connectionId, urlHost, authKind, redirectHost
     }
 
-    /// Same filter as the web: pending and not past its TTL. A date that does
-    /// not parse is treated as closed, matching the web's `Date.parse` filter.
+    /// Pending and not past its TTL. A date that does not parse is treated as
+    /// closed.
     public func isOpen(now: Date = Date()) -> Bool {
         guard status == "pending" else { return false }
         guard let expiry = RailClock.date(from: expiresAt) else { return false }

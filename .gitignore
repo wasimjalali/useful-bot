@@ -17,7 +17,7 @@ router/dist/
 web/.next/
 build/
 
-# regenerable verification evidence (large, reproduce with scripts/build-plan-html.py)
+# verification screenshots (large, per-session evidence)
 review-*.png
 dup-*.png
 ondemand-*.png

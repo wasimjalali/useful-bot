@@ -78,6 +78,11 @@ for (const file of files) {
 }
 if (!existsSync(path.join(ROOT, BUILT))) throw new Error(`missing ${BUILT}: build the web first (npm run build:app)`);
 cpSync(path.join(ROOT, BUILT), path.join(target, BUILT), { recursive: true, verbatimSymlinks: true });
+// Next's standalone server.js is CommonJS. In the checkout the nearest
+// package.json above it is Next's own `web/.next/package.json`, which says so;
+// a runtime carries only the standalone folder, so the nearest one would be
+// the root package.json ("type": "module") and the server would not start.
+writeFileSync(path.join(target, BUILT, "web/package.json"), `${JSON.stringify({ type: "commonjs" })}\n`);
 
 function scanForSecrets(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

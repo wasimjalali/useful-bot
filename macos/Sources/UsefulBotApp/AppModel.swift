@@ -37,7 +37,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var startupError: String?
     @Published private(set) var store: ShellStore? {
         didSet {
-            // A chat deleted anywhere (the web UI, a bot's own tool) leaves
+            // A chat deleted anywhere (the phone, a bot's own tool) leaves
             // the disk with its bot, not only one deleted from this rail.
             guard let oldValue, let store else { return }
             let kept = Set(store.bots.map(\.id))
@@ -747,7 +747,7 @@ final class AppModel: ObservableObject {
     /// the strength of the server's stale pointer.
     private var pendingSelectionBotId: String?
 
-    /// Persist the selection the way the web's select action does, without
+    /// Persist the selection through the select shell action, without
     /// applying the echoed store (that would re-enter this method).
     private func persistSelection(_ botId: String) {
         pendingSelectionBotId = botId
@@ -1096,7 +1096,7 @@ final class AppModel: ObservableObject {
             // The replay above ends once the stream has been idle a few
             // seconds, and nothing reopened it. Hand the transcript over to
             // the session follower, so a turn started elsewhere for this bot
-            // (a routine run, a handoff delivery, a send from the web UI)
+            // (a routine run, a handoff delivery, a send from the phone)
             // still reaches it while the chat stays open.
             followTask?.cancel()
             followTask = Task { @MainActor [weak self] in
@@ -1123,10 +1123,10 @@ final class AppModel: ObservableObject {
 
     /// Keep the open bot's session followed after the load's replay stream has
     /// ended. The stream finishes about three seconds after its last event, so
-    /// this reopens it in a loop with a short backoff, the way the web's
-    /// `follow()` keeps its stream alive across reconnects. A turn started
+    /// this reopens it in a loop with a short backoff, keeping the stream alive
+    /// across reconnects. A turn started
     /// elsewhere for this bot (a routine run, a handoff delivery, a send from
-    /// the web UI) then reaches the transcript as it happens instead of
+    /// the phone) then reaches the transcript as it happens instead of
     /// waiting for the bot to be re-selected.
     ///
     /// Each read starts at `followCursor`, so it carries only events the
@@ -1252,7 +1252,7 @@ final class AppModel: ObservableObject {
                 fresh.bots[index].lastAt = local.lastAt
             }
             // A chat whose session was cleared or replaced somewhere else (the
-            // web UI, a bot, a routine) has nothing in common with what this
+            // phone, a bot, a routine) has nothing in common with what this
             // app holds for it. Without this the old messages stayed up until
             // the owner switched chats and back.
             let moved = movedSessions(from: store, to: fresh)

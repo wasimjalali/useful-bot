@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UsefulBotCore
 
-/// The chat column from `web/app/page.tsx`: header, transcript in a centered
+/// The chat column: header, transcript in a centered
 /// 768pt column, empty state, proposal and onboarding cards, composer.
 struct ChatView: View {
     @EnvironmentObject private var model: AppModel
