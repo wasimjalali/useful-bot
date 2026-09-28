@@ -4,6 +4,10 @@
 //
 //   npm run release:mac -- --version 0.3.0 [--feed-url URL] [--download-base URL] [--out DIR] [--allow-dirty]
 //
+// A test machine without the real key signs with its own (--ed-account and
+// --ed-public-key from its `generate_keys`); those builds can never update a
+// real install, whose app only trusts ED_PUBLIC_KEY.
+//
 // Nothing is uploaded. Publishing is putting the zip, appcast.xml and install.sh where
 // --download-base and --feed-url say (docs/distribution.md).
 import { execFileSync } from "node:child_process";
@@ -28,6 +32,8 @@ const { values } = parseArgs({
     "download-base": { type: "string" },
     out: { type: "string", default: path.join(ROOT, "macos/dist/release") },
     "allow-dirty": { type: "boolean", default: false },
+    "ed-account": { type: "string", default: "useful-bot" },
+    "ed-public-key": { type: "string", default: ED_PUBLIC_KEY },
   },
 });
 const version = values.version;
@@ -53,7 +59,7 @@ execFileSync("sh", [path.join(ROOT, "macos/build-app.sh")], {
     UB_VERSION: version,
     UB_BUILD: build,
     UB_FEED_URL: values["feed-url"],
-    UB_ED_PUBLIC_KEY: ED_PUBLIC_KEY,
+    UB_ED_PUBLIC_KEY: values["ed-public-key"],
   },
 });
 
@@ -64,7 +70,7 @@ const zip = path.join(out, ZIP);
 execFileSync("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", path.join(ROOT, "macos/dist/Useful Bot.app"), zip]);
 
 // `sign_update` prints the enclosure attributes: sparkle:edSignature="…" length="…".
-const signed = execFileSync(path.join(SPARKLE_BIN, "sign_update"), ["--account", "useful-bot", zip], { encoding: "utf8" }).trim();
+const signed = execFileSync(path.join(SPARKLE_BIN, "sign_update"), ["--account", values["ed-account"], zip], { encoding: "utf8" }).trim();
 if (!/sparkle:edSignature="[^"]+"/.test(signed)) throw new Error(`sign_update gave no signature: ${signed}`);
 
 const appcast = `<?xml version="1.0" encoding="utf-8"?>
