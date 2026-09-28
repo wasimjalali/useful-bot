@@ -6,7 +6,7 @@ Date: 2026-09-15. Status: approved by the owner the same day (all five decisions
 
 The Connectors entry exists in both shells and opens a placeholder:
 
-- `web/components/marketplace-dialog.tsx` renders "No connectors yet. MCP servers you add will show here."
+- The removed web UI's marketplace dialog rendered "No connectors yet. MCP servers you add will show here."
 - `macos/Sources/UsefulBotApp/RootView.swift` has the same `ConnectorsDialog` in SwiftUI.
 - There is no `web/app/api/connectors` route, no store under `~/.useful-bot`, no agent tool and no `agent/connections/` folder.
 

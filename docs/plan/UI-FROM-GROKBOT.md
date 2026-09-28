@@ -1,7 +1,7 @@
 # UI features to add from Grok Bot reference
 
 Status: owner direction 2026-09-13. Source: `docs/grokbot-ui-reference/`.
-Extends PLAN-FINAL / SPEC for the macOS + web chat surface.
+Extends PLAN-FINAL / SPEC for the macOS chat surface.
 Does **not** require the virtual computer.
 
 ## Why

@@ -91,15 +91,3 @@ export function splitLeadingThink(text: string, ended: "done" | "cut" = "done"):
   }
   return null;
 }
-
-/**
- * The bubble text for a stored reply: a leading think block and the blank
- * lines after it removed. An unclosed block, or the start of an opening tag
- * still streaming in, shows nothing yet.
- */
-export function withoutLeadingThink(text: string): string {
-  const split = splitLeadingThink(text);
-  if (split) return split.answer;
-  const trimmed = text.trimStart();
-  return trimmed.startsWith("<") && THINK_TAGS.some((tag) => tag.open.startsWith(trimmed)) ? "" : text;
-}

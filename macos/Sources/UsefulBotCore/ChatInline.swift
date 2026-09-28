@@ -1,12 +1,11 @@
 import Foundation
 
-/// Inline spans, ported from `shared/chat-markdown.ts` `parseInline`.
+/// Inline spans (`parseInline`), first ported from the removed web parser.
 ///
-/// The renderer must match the web character for character, and Apple's
-/// `AttributedString(markdown:)` parses full CommonMark, which the web does
-/// not: it italicizes `_snake_case_` identifiers, mangles stray `#` and `*`,
-/// and accepts emphasis forms the web never draws. This port keeps only the
-/// four spans the web recognizes: code, bold, emphasis, and http(s) links.
+/// Apple's `AttributedString(markdown:)` parses full CommonMark, which the
+/// chat does not want: it italicizes `_snake_case_` identifiers, mangles stray `#` and `*`,
+/// and accepts emphasis forms the chat never draws. This port keeps only the
+/// four spans the chat renders: code, bold, emphasis, and http(s) links.
 public enum InlineSpanKind: Equatable, Sendable {
     case text
     case code

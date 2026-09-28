@@ -9,7 +9,7 @@ import {
   splitThinkCompletion,
   usesInlineThink,
 } from "../router/src/inline-think.ts";
-import { THINK_TAGS, scanThink, splitLeadingThink, withoutLeadingThink } from "../shared/inline-think.ts";
+import { THINK_TAGS, scanThink, splitLeadingThink } from "../shared/inline-think.ts";
 
 // Some models (MiniMax M3 through OpenCode, MiniMax's own API by default)
 // write their thinking into the answer as `<think>…</think>` instead of the
@@ -364,15 +364,3 @@ test("history goes back as inline thinking only to models that wrote it that way
   assert.equal(history[1].reasoning_content, "greet");
 });
 
-test("stored bubbles hide a leading think block, and only a leading one", () => {
-  assert.equal(withoutLeadingThink("<think>plan</think>\n\nThe page is ready."), "The page is ready.");
-  assert.equal(withoutLeadingThink("  <thinking>plan</thinking>Done"), "Done");
-  assert.equal(withoutLeadingThink("<think>All checks pass.\n\nMark todo final.</think>\n\n"), "");
-  assert.equal(withoutLeadingThink("<think>still thinking"), "");
-  assert.equal(withoutLeadingThink("<thi"), "");
-  assert.equal(withoutLeadingThink("Use <think> tags."), "Use <think> tags.");
-  assert.equal(withoutLeadingThink("<div>html</div>"), "<div>html</div>");
-  assert.equal(withoutLeadingThink("Plain answer"), "Plain answer");
-  assert.equal(withoutLeadingThink("<think>it handles `<think>…</think>` blocks</think>\n\nThe file has 298 lines."), "The file has 298 lines.");
-  assert.equal(withoutLeadingThink(""), "");
-});

@@ -603,8 +603,7 @@ public enum EveStream {
         return String(text[range.upperBound...])
     }
 
-    /// Port of `withoutLeadingThink` in `shared/inline-think.ts`. A reply
-    /// stored before the router moved inline thinking to the reasoning field
+    /// A reply stored before the router moved inline thinking to the reasoning field
     /// still opens with `<think>…</think>`: its bubble shows the answer after
     /// it, and nothing while the block is unclosed or its opening tag is still
     /// arriving. A tag further into the reply is the reply's own text.

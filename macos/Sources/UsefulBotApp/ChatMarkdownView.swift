@@ -117,9 +117,8 @@ struct ChatMarkdownView: View, Equatable {
     }
 
     /// Inline spans turned into one attributed string: code on the sunken
-    /// mono face, bold, italics, and http(s) links only. Parsing matches the
-    /// web (`shared/chat-markdown.ts`), so `_snake_case_` stays plain and no
-    /// other emphasis form renders.
+    /// mono face, bold, italics, and http(s) links only. `_snake_case_` stays
+    /// plain and no other emphasis form renders.
     private func inline(_ source: String) -> AttributedString {
         var attributed = AttributedString()
         for span in ChatMarkdownCache.inline(from: source, streamingKey: streamingKey) {
