@@ -50,6 +50,9 @@ final class AppModel: ObservableObject {
         // Opening a chat is reading its reply.
         didSet {
             if let id = selectedBotId, replyReady.contains(id) { replyReady.remove(id) }
+            // Leaving a chat means its end wasn't seen, so a handoff ending
+            // after the switch still counts as an unread reply.
+            if selectedBotId != oldValue { selectedAtLastTick = nil }
         }
     }
     @Published private(set) var transcript: [TranscriptRow] = []
@@ -1369,15 +1372,16 @@ final class AppModel: ObservableObject {
         tickInFlight = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if let ids = await self.client.tick() {
+            let polled = await self.client.tick()
+            if let ids = polled {
                 let next = Set(ids)
                 // Handoffs and routines run without a local stream, so their
                 // end is only seen here. The poll can't tell a reply from a
-                // failure, so a finished turn counts as a reply. Several ending
-                // in the same tick with nothing left running is the service
-                // restarting, not replies, so that marks nothing.
+                // failure, so a finished turn counts as a reply. An empty set
+                // right after failed ticks is the service restarting, not
+                // replies, so that marks nothing.
                 let ended = self.handoffWorkingIds.subtracting(next)
-                let reset = next.isEmpty && ended.count > 1
+                let reset = next.isEmpty && self.lastTickFailed
                 if !reset {
                     for botId in ended where botId != self.selectedBotId
                         && botId != self.selectedAtLastTick
@@ -1387,6 +1391,7 @@ final class AppModel: ObservableObject {
                 }
                 if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             }
+            self.lastTickFailed = polled == nil
             self.selectedAtLastTick = self.selectedBotId
             self.tickInFlight = false
         }
@@ -2001,9 +2006,13 @@ final class AppModel: ObservableObject {
         railHops[botId, default: 0] += 1
     }
 
-    /// The chat on screen at the previous tick. A handoff that ends between
-    /// two ticks was seen by the owner if its bot was open at the first.
+    /// The chat on screen at the previous tick, cleared when the owner
+    /// switches. A handoff that ends between two ticks was seen if its bot
+    /// was open at the first and still is.
     private var selectedAtLastTick: String?
+    /// Whether the previous tick failed. The service being down shows as
+    /// failed ticks, and its in-flight set comes back empty after a restart.
+    private var lastTickFailed = false
 
     /// The current step of a working bot, for the rail face and subtitle.
     /// Nil when it is not tracked; the face then reads as thinking.
