@@ -53,7 +53,7 @@ const again = await composio.use(session.sessionId);                // reuse acr
 
 Yes for the stated goal, with one tradeoff to accept knowingly.
 
-The tradeoff: HANDOFF.md says "Tokens never leave the Mac." With Composio the OAuth refresh tokens for Gmail, Slack and so on live in Composio's cloud, keyed to our user id. Every tool call goes Mac to Composio to the app. The Mac keeps only the Composio API key. That is the price of 1,500 apps without registering and maintaining an OAuth client per app. If that is unacceptable, the alternative is a per-app build (own OAuth apps, own token refresh, one integration at a time), which is weeks per handful of apps.
+The tradeoff: the original handoff said "Tokens never leave the Mac." With Composio the OAuth refresh tokens for Gmail, Slack and so on live in Composio's cloud, keyed to our user id. Every tool call goes Mac to Composio to the app. The Mac keeps only the Composio API key. That is the price of 1,500 apps without registering and maintaining an OAuth client per app. If that is unacceptable, the alternative is a per-app build (own OAuth apps, own token refresh, one integration at a time), which is weeks per handful of apps.
 
 Alternatives checked and set aside:
 
@@ -136,7 +136,7 @@ Every phase lands through the change management loop: branch, tests, review, PR,
 
 **Phase 3, UI.** Web dialog, macOS dialog, approval card rendering in both. Verified with screenshots of each state in both shells, then `npx tsc --noEmit`, `npm test` and `macos/test.sh`.
 
-**Phase 4, live check and docs.** Connect Gmail and one write app (Linear or GitHub) for real, run the turn in 4.4, confirm the card, approve, confirm the effect in the app. Update README (Connectors section), HANDOFF.md and the v2 note in `PLAN-FINAL.md`.
+**Phase 4, live check and docs.** Connect Gmail and one write app (Linear or GitHub) for real, run the turn in 4.4, confirm the card, approve, confirm the effect in the app. Update README (Connectors section) and the v2 note in `PLAN-FINAL.md`.
 
 Order of the adversarial review triggers in the global rules: phase 1 and phase 2 both touch secrets handling and privileged routes, so both get the review before their PR.
 

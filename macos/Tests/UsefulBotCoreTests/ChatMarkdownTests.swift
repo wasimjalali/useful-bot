@@ -86,6 +86,29 @@ import Testing
         ])
     }
 
+    @Test func plainAndQueryStringHttpLinksAreLinks() {
+        #expect(ChatInline.parse("[site](http://example.com)") == [
+            InlineSpan(kind: .link, text: "site", href: "http://example.com"),
+        ])
+        #expect(ChatInline.parse("[q](https://example.com/a?b=1)") == [
+            InlineSpan(kind: .link, text: "q", href: "https://example.com/a?b=1"),
+        ])
+    }
+
+    @Test func dataAndVbscriptLinksStayText() {
+        #expect(ChatInline.parse("[x](data:text/html,hi)") == [
+            InlineSpan(kind: .text, text: "[x](data:text/html,hi)"),
+        ])
+        #expect(ChatInline.parse("[x](vbscript:alert(1))") == [
+            InlineSpan(kind: .text, text: "[x](vbscript:alert(1))"),
+        ])
+    }
+
+    @Test func singleUnderscoreEmphasisStaysPlainAndCodeKeepsUnderscore() {
+        #expect(ChatInline.parse("_not em_") == [InlineSpan(kind: .text, text: "_not em_")])
+        #expect(ChatInline.parse("`a_b`") == [InlineSpan(kind: .code, text: "a_b")])
+    }
+
     @Test func emptySourceHasNoSpans() {
         #expect(ChatInline.parse("").isEmpty)
     }
