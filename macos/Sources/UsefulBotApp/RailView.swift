@@ -368,9 +368,14 @@ struct RailView: View {
             .accessibilityIdentifier("account-contact")
             popDivider
             HStack(spacing: 8) {
-                Text("Useful Bot \(AppUpdater.version)")
+                // Short, so it fits beside "Check for updates" in the menu's
+                // width; neither side may wrap.
+                Text("v\(AppUpdater.version)")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.inkMuted)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .accessibilityLabel("Useful Bot \(AppUpdater.version)")
                     .accessibilityIdentifier("account-version")
                 Spacer(minLength: 0)
                 // A dev build has no feed to check.
@@ -382,6 +387,8 @@ struct RailView: View {
                     .buttonStyle(.plain)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.C.ink)
+                    .lineLimit(1)
+                    .fixedSize()
                     .disabled(!updater.canCheckForUpdates)
                     .pointerOnHover()
                     .accessibilityIdentifier("account-check-updates")
@@ -425,7 +432,7 @@ struct RailView: View {
                 label: { option in AnyView(Image(systemName: Self.appearanceIcon(option)).font(.system(size: 12))) },
                 name: { $0.label }
             )
-            .frame(width: 80)
+            .frame(width: 76)
             .accessibilityIdentifier("account-appearance")
         }
         .padding(.leading, 10)

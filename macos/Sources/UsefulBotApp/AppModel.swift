@@ -1373,13 +1373,21 @@ final class AppModel: ObservableObject {
                 let next = Set(ids)
                 // Handoffs and routines run without a local stream, so their
                 // end is only seen here. The poll can't tell a reply from a
-                // failure, so a finished turn counts as a reply.
-                for botId in self.handoffWorkingIds.subtracting(next)
-                    where botId != self.selectedBotId && !self.workingBotIds.contains(botId) {
-                    self.markReplyReady(botId)
+                // failure, so a finished turn counts as a reply. Several ending
+                // in the same tick with nothing left running is the service
+                // restarting, not replies, so that marks nothing.
+                let ended = self.handoffWorkingIds.subtracting(next)
+                let reset = next.isEmpty && ended.count > 1
+                if !reset {
+                    for botId in ended where botId != self.selectedBotId
+                        && botId != self.selectedAtLastTick
+                        && !self.workingBotIds.contains(botId) {
+                        self.markReplyReady(botId)
+                    }
                 }
                 if next != self.handoffWorkingIds { self.handoffWorkingIds = next }
             }
+            self.selectedAtLastTick = self.selectedBotId
             self.tickInFlight = false
         }
     }
@@ -1987,9 +1995,15 @@ final class AppModel: ObservableObject {
     /// A reply is waiting in a chat the owner isn't looking at: the rail face
     /// hops once and the row reads "REPLY READY" until the chat is opened.
     private func markReplyReady(_ botId: String) {
-        replyReady.insert(botId)
+        // One hop per unread reply: a second one landing before the chat is
+        // opened doesn't hop again.
+        guard replyReady.insert(botId).inserted else { return }
         railHops[botId, default: 0] += 1
     }
+
+    /// The chat on screen at the previous tick. A handoff that ends between
+    /// two ticks was seen by the owner if its bot was open at the first.
+    private var selectedAtLastTick: String?
 
     /// The current step of a working bot, for the rail face and subtitle.
     /// Nil when it is not tracked; the face then reads as thinking.

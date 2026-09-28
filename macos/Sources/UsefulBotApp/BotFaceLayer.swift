@@ -303,7 +303,8 @@ final class BotFaceNSView: NSView {
             (eyes, "transform.translation.y", from.eyesY - start(.eyes, .translateY)),
             (body, "transform.translation.y", hopping ? 0 : from.bodyY - start(.body, .translateY)),
             // Turns are in radians, not scaled by the face's size.
-            (body, "transform.rotation.z", hopping ? 0 : from.turn - (unit > 0 ? start(.body, .rotation) / unit : 0)),
+            // The hop never turns the head, so a tilt always eases.
+            (body, "transform.rotation.z", from.turn - (unit > 0 ? start(.body, .rotation) / unit : 0)),
         ]
         for (layer, keyPath, offset) in blends where abs(offset) > 0.001 {
             let animation = CABasicAnimation(keyPath: keyPath)
