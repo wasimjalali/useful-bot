@@ -57,7 +57,7 @@ import Testing
         #expect(Feedback.result(status: 429, body: Data("nope".utf8)) == .rateLimited)
         #expect(Feedback.result(status: 400, body: Data(#"{"ok":false,"error":"invalid","field":"replyEmail","message":"That email doesn't look right."}"#.utf8))
             == .invalid(field: "replyEmail", message: "That email doesn't look right."))
-        #expect(Feedback.result(status: 400, body: Data("garbled".utf8)) == .invalid(field: nil, message: nil))
+        #expect(Feedback.result(status: 400, body: Data("garbled".utf8)) == .server)
         #expect(Feedback.result(status: 500, body: Data(#"{"ok":false,"error":"server"}"#.utf8)) == .server)
         #expect(Feedback.result(status: 502, body: Data()) == .server)
         #expect(Feedback.result(status: 200, body: Data("<html>".utf8)) == .server)

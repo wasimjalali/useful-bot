@@ -10,6 +10,9 @@ struct ChatView: View {
     @Environment(\.composerRisen) private var composerRisen
     @Environment(\.connectModel) private var connectModel
     @Environment(\.noModelPreview) private var noModelPreview
+    /// Starters are for a first conversation: gone for good once the owner
+    /// has sent a message from this app.
+    @AppStorage(StarterPrompt.sentKey) private var firstMessageSent = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var onOpenConnectors: () -> Void
     var onDeleteRequest: (ShellBot) -> Void
@@ -904,24 +907,22 @@ struct ChatView: View {
 
     @ViewBuilder
     private func emptyState(_ bot: ShellBot) -> some View {
-        if bot.id == starterBotId, !bot.isGroup {
+        // Not under the no-model bar: a tap would fill a composer that can't send.
+        if bot.id == starterBotId, !bot.isGroup, !firstMessageSent,
+           !(model.noModelConnected || noModelPreview) {
             starters(bot)
         } else {
             plainEmptyState(bot)
         }
     }
 
-    private static let starterPrompts = [
-        "Summarize a PDF or web page",
-        "Draft a post for LinkedIn",
-        "Tidy up my Downloads folder",
-        "Create a bot that tracks job posts",
-    ]
-
-    /// The first chat's empty state: four things to try. A tap fills the
-    /// composer and sends nothing.
+    /// The first chat's empty state: six things a local Mac agent does that
+    /// people may not expect, two of them making more bots. A tap fills the
+    /// composer with the full prompt and sends nothing; the tiles step back
+    /// while the composer holds text.
     private func starters(_ bot: ShellBot) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let typing = !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("What should we do first?")
                     .font(.system(size: 22, weight: .semibold))
@@ -932,10 +933,15 @@ struct ChatView: View {
                     .foregroundStyle(Theme.C.inkMuted)
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                ForEach(Self.starterPrompts, id: \.self) { prompt in
-                    StarterPromptButton(text: prompt) { model.fillDraft(prompt) }
+                ForEach(StarterPrompt.all) { prompt in
+                    StarterPromptButton(text: prompt.label) { model.fillDraft(prompt.prompt) }
                 }
             }
+            // Faded, not removed, so the heading above doesn't move.
+            .opacity(typing ? 0 : 1)
+            .allowsHitTesting(!typing)
+            .accessibilityHidden(typing)
+            .animation(Theme.ease(0.2), value: typing)
         }
         .frame(maxWidth: DesignTokens.Space.bubbleMax)
         .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
@@ -2122,4 +2128,42 @@ private struct StarterPromptButton: View {
     }
 
     private static let hover = Theme.adaptive(DesignTokens.Hex.border, DesignTokens.DarkHex.borderStrong)
+}
+
+/// One starter: the short label on the tile and the fuller prompt it puts in
+/// the composer.
+struct StarterPrompt: Identifiable {
+    let label: String
+    let prompt: String
+    var id: String { label }
+
+    /// Set once the owner has sent a first message from the app.
+    static let sentKey = "ub.firstMessageSent"
+
+    static let all = [
+        StarterPrompt(
+            label: "Find what's taking up space on my Mac",
+            prompt: "Find what's taking up the most space on my Mac. List the biggest folders and files with their sizes. Don't delete anything."
+        ),
+        StarterPrompt(
+            label: "Rename my screenshots by what's in them",
+            prompt: "Look at the screenshots on my Desktop and rename each one to describe what's in it. Show me the new names before you rename anything."
+        ),
+        StarterPrompt(
+            label: "Pull my invoice totals into a spreadsheet",
+            prompt: "Read the PDF invoices in a folder I pick and put the vendor, date and total of each into a spreadsheet."
+        ),
+        StarterPrompt(
+            label: "Research a topic and save a report",
+            prompt: "Research a topic I'll name, then save a short report with sources as a document on my Desktop."
+        ),
+        StarterPrompt(
+            label: "Create a bot that keeps Downloads tidy",
+            prompt: "Create a bot that keeps my Downloads folder tidy: it sorts new files into folders by type and tells me what it moved."
+        ),
+        StarterPrompt(
+            label: "Create a copywriter bot for my brand",
+            prompt: "Create a copywriter bot for my brand. Ask me a few questions about my brand and voice first, then set it up."
+        ),
+    ]
 }

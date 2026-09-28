@@ -18,8 +18,10 @@ public enum FirstRunGate {
     }
 
     /// - Parameters:
-    ///   - freshMac: this Mac had no `~/.useful-bot/config.json` at launch,
-    ///     so nobody has set it up and the flow can show while services start.
+    ///   - freshMac: this Mac had no provider store
+    ///     (`~/.useful-bot/providers.json`) at launch, so nothing can be
+    ///     connected yet and the flow can show while services start. Any
+    ///     store at all means the gate waits for the connections.
     ///   - harnessRun: a scripted launch (the performance guard).
     ///   - connections: connected providers, nil until they have loaded.
     ///   - providersFailed: the providers read failed; the app opens rather

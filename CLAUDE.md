@@ -32,8 +32,9 @@ out the branch under review first: the reviewer reads the files, and a diff agai
 that is not in the tree wastes the pass. Use `dangerous`: in print mode nothing can answer a
 prompt, so `auto` and `smart` both refuse tool calls (`smart` has refused a plain file read)
 and the reviewer gives up mid-pass. Never accept a bare empty array, ask for the list
-of what it dismissed and why. A clean pass from every reviewer counts as the PR review: fix what it finds,
-review again, then merge, rebuild the app and install it from local `main`.
+of what it dismissed and why. Fix every finding above low (critical, high, medium, major) and
+review again until a pass from every reviewer has none. Then fix every low too; lows need no
+further pass. Then merge, rebuild the app and install it from local `main`.
 
 This arrangement expires on 2026-10-15; ask Wasim what to move to rather than falling back.
 
@@ -54,8 +55,11 @@ auto-install rewrites `package-lock.json`, and the router refuses a changed lock
 
 ## Performance guard
 
-A change that touches `macos/`, `shared/`, `agent/`, `router/src` or `web/` runs `npm run perf:check`
-on its own `build:app` before merge (about 15 minutes; it quits and relaunches the app in the
-background) and commits the record it writes under `evals/results/`. A breach is fixed, or the
+Until launch, PRs don't run `npm run perf:check` (decided 2026-09-28, to stop spending 20 minutes
+on every PR). The check runs once before the macOS app ships to users (after the landing page and
+the rest of launch are done): on `main` and on the newest open branch, each on its own `build:app`
+(about 20 minutes; it quits and relaunches the app in the background), and the records it writes
+under `evals/results/` are committed. After launch, every change that touches `macos/`, `shared/`,
+`agent/`, `router/src` or `web/` runs it again before merge. A breach is fixed, or the
 budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-run never erases a
 breach. The fixture bots ("Perf ...") are frozen: never send to them. See `perf/README.md`.

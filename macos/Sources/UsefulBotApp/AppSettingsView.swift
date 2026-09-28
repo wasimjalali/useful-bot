@@ -55,10 +55,9 @@ struct AppSettingsView: View {
     @State private var providersCard: ProvidersCard?
     @State private var providersKeySheet: KeySheetTarget?
     @ObservedObject private var updater = AppUpdater.shared
-    @State private var feedbackKind: FeedbackKind = .idea
-    @State private var feedbackMessage = ""
-    @State private var feedbackEmail = ""
-    @State private var feedbackIncludesDetails = true
+    /// The form outlives the dialog: closing Settings keeps what was typed.
+    @ObservedObject private var feedbackDraft = FeedbackDraft.shared
+    @State private var feedbackEmailError: String?
     @State private var feedbackSending = false
     @State private var feedbackSent = false
     @State private var feedbackError: String?
@@ -675,7 +674,10 @@ struct AppSettingsView: View {
                                 .lineLimit(2)
                             Spacer(minLength: 0)
                             if case .ready = updater.status {
-                                NativeButton("Restart to update", kind: .primary, small: true) { updater.restartToUpdate() }
+                                // Opens Sparkle's Install and Relaunch alert.
+                                NativeButton("Install update", kind: .primary, small: true,
+                                             enabled: updater.canCheckForUpdates) { updater.installUpdate() }
+                                    .accessibilityIdentifier("about-install-update")
                             } else {
                                 NativeButton("Check now", kind: .secondary, small: true,
                                              enabled: updater.canCheckForUpdates && updater.status != .checking) {
@@ -776,17 +778,17 @@ struct AppSettingsView: View {
     }
 
     private var feedbackPlaceholder: String {
-        switch feedbackKind {
+        switch feedbackDraft.kind {
         case .idea: return "What would make Useful Bot better for you?"
         case .problem: return "What happened, and what did you expect?"
         case .other: return "Tell us anything."
         }
     }
 
-    private var feedbackLength: Int { Feedback.length(feedbackMessage) }
+    private var feedbackLength: Int { Feedback.length(feedbackDraft.message) }
 
     private var canSendFeedback: Bool {
-        !feedbackSending && Self.feedbackURL != nil && Feedback.canSend(feedbackMessage)
+        !feedbackSending && Self.feedbackURL != nil && Feedback.canSend(feedbackDraft.message)
     }
 
     private var feedbackPane: some View {
@@ -828,7 +830,7 @@ struct AppSettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             ToneSegmented(
                 items: FeedbackKind.allCases,
-                selection: $feedbackKind,
+                selection: $feedbackDraft.kind,
                 height: 32,
                 accessibilityLabel: "Kind",
                 label: { kind in AnyView(Text(Self.kindLabel(kind)).font(.system(size: 13, weight: .medium))) },
@@ -841,7 +843,7 @@ struct AppSettingsView: View {
                     .font(.system(size: DesignTokens.FontSize.fieldLabel, weight: .medium))
                     .foregroundStyle(Theme.C.inkMuted)
                 ZStack(alignment: .topLeading) {
-                    TextEditor(text: $feedbackMessage)
+                    TextEditor(text: $feedbackDraft.message)
                         .font(.system(size: DesignTokens.FontSize.fieldInput))
                         .foregroundStyle(Theme.C.ink)
                         .scrollContentBackground(.hidden)
@@ -849,7 +851,7 @@ struct AppSettingsView: View {
                         .padding(.vertical, 8)
                         .accessibilityLabel("Your message")
                         .accessibilityIdentifier("feedback-message")
-                    if feedbackMessage.isEmpty {
+                    if feedbackDraft.message.isEmpty {
                         Text(feedbackPlaceholder)
                             .font(.system(size: DesignTokens.FontSize.fieldInput))
                             .foregroundStyle(Theme.C.inkFaint)
@@ -874,21 +876,23 @@ struct AppSettingsView: View {
                 }
             }
 
-            FieldShell(label: "Email for a reply (optional)") {
-                TextField("you@example.com", text: $feedbackEmail)
+            FieldShell(label: "Email for a reply (optional)", error: feedbackEmailError) {
+                TextField("you@example.com", text: $feedbackDraft.email)
                     .nativeField(focused: feedbackEmailFocused)
                     .focused($feedbackEmailFocused)
                     .accessibilityIdentifier("feedback-email")
+                    // The complaint goes as soon as the address is touched again.
+                    .onChange(of: feedbackDraft.email) { _, _ in feedbackEmailError = nil }
             }
             .frame(maxWidth: 360)
 
             Button {
-                feedbackIncludesDetails.toggle()
+                feedbackDraft.includesDetails.toggle()
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: feedbackIncludesDetails ? "checkmark.square.fill" : "square")
+                    Image(systemName: feedbackDraft.includesDetails ? "checkmark.square.fill" : "square")
                         .font(.system(size: 14))
-                        .foregroundStyle(feedbackIncludesDetails ? Theme.C.accent : Theme.C.inkFaint)
+                        .foregroundStyle(feedbackDraft.includesDetails ? Theme.C.accent : Theme.C.inkFaint)
                     Text("Include \(feedbackDetails)")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.C.ink)
@@ -897,7 +901,7 @@ struct AppSettingsView: View {
             }
             .buttonStyle(.plain)
             .pointerOnHover()
-            .accessibilityAddTraits(feedbackIncludesDetails ? [.isSelected] : [])
+            .accessibilityAddTraits(feedbackDraft.includesDetails ? [.isSelected] : [])
             .accessibilityIdentifier("feedback-include")
 
             HStack(spacing: 12) {
@@ -930,17 +934,17 @@ struct AppSettingsView: View {
 
     private func sendFeedback() {
         guard canSendFeedback, let url = Self.feedbackURL else { return }
-        let email = feedbackEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let email = feedbackDraft.email.trimmingCharacters(in: .whitespacesAndNewlines)
         if !email.isEmpty, !Feedback.plausibleEmail(email) {
-            feedbackError = "That email doesn't look right."
+            feedbackEmailError = "That email doesn't look right."
             return
         }
         let submission = FeedbackSubmission(
-            kind: feedbackKind,
-            message: feedbackMessage,
+            kind: feedbackDraft.kind,
+            message: feedbackDraft.message,
             replyEmail: email,
             installId: Feedback.installId(),
-            context: feedbackIncludesDetails
+            context: feedbackDraft.includesDetails
                 ? FeedbackContext(appVersion: AppUpdater.version, build: AppUpdater.build,
                                   macosVersion: Feedback.macOSVersion(), chip: Self.chipName)
                 : nil
@@ -952,7 +956,7 @@ struct AppSettingsView: View {
             feedbackSending = false
             switch result {
             case .sent:
-                feedbackMessage = ""
+                feedbackDraft.message = ""
                 feedbackSent = true
             case .rateLimited:
                 feedbackError = "You've reached today's feedback limit. Try again tomorrow."
@@ -1077,4 +1081,15 @@ enum ReleaseLinks {
 
     /// No privacy page exists yet.
     static let privacy: URL? = nil
+}
+
+/// Settings > Feedback's form, kept for the life of the app so closing the
+/// dialog doesn't throw away what was typed.
+@MainActor
+final class FeedbackDraft: ObservableObject {
+    static let shared = FeedbackDraft()
+    @Published var kind: FeedbackKind = .idea
+    @Published var message = ""
+    @Published var email = ""
+    @Published var includesDetails = true
 }

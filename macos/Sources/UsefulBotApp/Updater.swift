@@ -15,7 +15,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         case checking
         case upToDate
         case available(String)
-        /// Downloaded and waiting: Restart to update installs it now.
+        /// Downloaded and waiting: Install update presents it.
         case ready(String)
         case failed
     }
@@ -54,16 +54,25 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// False in a dev build, which has no feed.
     var available: Bool { controller != nil }
 
+    /// True once an update is downloaded and waiting. Nothing short of the
+    /// install itself takes the app out of this state.
+    private var isReady: Bool {
+        if case .ready = status { return true }
+        return false
+    }
+
     func checkForUpdates() {
         guard let controller else { return }
-        status = .checking
+        if !isReady { status = .checking }
         controller.checkForUpdates(nil)
     }
 
     /// Sparkle already holds the downloaded update: a check presents it with
-    /// Install and Relaunch.
-    func restartToUpdate() {
-        controller?.checkForUpdates(nil)
+    /// Install and Relaunch. While Sparkle is busy it can't, so nothing
+    /// happens and the update stays ready; the button is disabled then too.
+    func installUpdate() {
+        guard let controller, canCheckForUpdates else { return }
+        controller.checkForUpdates(nil)
     }
 
     func setInstallAutomatically(_ on: Bool) {
@@ -81,7 +90,9 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
-        Task { @MainActor in self.status = .upToDate }
+        Task { @MainActor in
+            if !self.isReady { self.status = .upToDate }
+        }
     }
 
     nonisolated func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
@@ -95,6 +106,8 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         let code = (error as NSError).code
         Task { @MainActor in
+            // A downloaded update outlives any later cycle's answer.
+            if self.isReady { return }
             // "No update" also arrives here in some cycles; it is not a failure.
             if code == Int(SUError.noUpdateError.rawValue) {
                 self.status = .upToDate

@@ -35,5 +35,16 @@ The hard ones:
 
 ## Conclusion
 
-The Worker is ready to deploy. Production deploy, a real Problem send and where it lands in the
-`hello@` inbox are still to confirm.
+The Worker is ready to deploy.
+
+## Live check (same day)
+
+Deployed to `feedback.usefulbuild.com` (version `0490b30d`). An invalid body got 400. A real Problem
+got 201, and its row is in D1 with a 64-character `ip_hash` and no raw IP. The owner confirmed the
+email reached the `hello@` inbox. One snag: this Mac's router cached an NXDOMAIN from a lookup made
+before the custom domain existed, so the name kept failing locally for over two hours while public
+resolvers answered. Deploy the Worker before anything looks the name up.
+
+## What changed because of it
+
+The app ships `UBFeedbackURL` pointing at this Worker, and Settings > Feedback posts to it.

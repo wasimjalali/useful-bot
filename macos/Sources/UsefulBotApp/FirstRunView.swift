@@ -74,8 +74,10 @@ final class FirstRunController: ObservableObject {
         forced = arguments.contains(FirstRunGate.forceArgument)
         landOverride = Self.value(after: "--first-run-land", in: arguments)
         preview = Self.value(after: "--first-run-preview", in: arguments)
-        let config = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".useful-bot/config.json")
-        freshMac = !FileManager.default.fileExists(atPath: config.path)
+        // The provider store, not the service config: a Mac can have a config
+        // with no store, but never a connection without one.
+        let store = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".useful-bot/providers.json")
+        freshMac = !FileManager.default.fileExists(atPath: store.path)
         harnessRun = PerfHarness.shared != nil
         // Decided before the first frame where it can be, so a forced run or
         // a new Mac never shows the launch cover for a frame first.
@@ -116,6 +118,8 @@ final class FirstRunController: ObservableObject {
         let connections = model.providersLoaded ? model.providerConnections.count : nil
         if FirstRunGate.marksDone(forced: forced, completed: completed, connections: connections) {
             defaults.set(true, forKey: FirstRunGate.completedKey)
+            // An owner from before first run existed has chatted already.
+            defaults.set(true, forKey: StarterPrompt.sentKey)
         }
         guard decision == .wait else { return }
         apply(decide(connections: connections, failed: model.providersLoadFailed))
@@ -155,7 +159,8 @@ final class FirstRunController: ObservableObject {
         }
         let lands = landsOnFinish
         if lands, let id = landingBotId(model.store), id != model.selectedBotId {
-            model.select(id)
+            // A forced run shows the chat without storing it as selected.
+            model.select(id, persist: FirstRunGate.persistsFinish(forced: forced))
         }
         decision = .skip
         landsOnFinish = false
@@ -267,10 +272,20 @@ struct FirstRunView: View {
     @ObservedObject var controller: FirstRunController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// One visit to a step. Each visit is its own page, so going Back and
+    /// picking the same provider again starts clean instead of reusing a page
+    /// whose flow was cancelled.
+    private struct Layer: Equatable {
+        let step: FirstRunController.Step
+        let visit: Int
+        var key: String { "\(step.key)#\(visit)" }
+    }
+
     /// The pages on screen, bottom to top. During a change the old page stays
     /// under the new one until the new one has drawn, so a page that takes a
     /// few frames to lay out never leaves the stage blank. Welcome is apart.
-    @State private var layers: [FirstRunController.Step]
+    @State private var layers: [Layer]
+    @State private var visits = 0
     @State private var opacity: [String: Double] = [:]
     @State private var offset: [String: CGFloat] = [:]
     /// Welcome stays mounted through its exit so the mark can finish leaving.
@@ -284,7 +299,7 @@ struct FirstRunView: View {
     init(controller: FirstRunController) {
         self.controller = controller
         _revealed = State(initialValue: !controller.opening)
-        _layers = State(initialValue: controller.step == .welcome ? [] : [controller.step])
+        _layers = State(initialValue: controller.step == .welcome ? [] : [Layer(step: controller.step, visit: 0)])
         _welcomeMounted = State(initialValue: controller.step == .welcome)
     }
 
@@ -300,12 +315,12 @@ struct FirstRunView: View {
                     }
                     .allowsHitTesting(!welcomeLeaving)
                 }
-                ForEach(layers, id: \.key) { step in
-                    page(step)
-                        .opacity(opacity[step.key] ?? 1)
-                        .offset(y: offset[step.key] ?? 0)
-                        .allowsHitTesting(step == layers.last)
-                        .accessibilityHidden(step != layers.last)
+                ForEach(layers, id: \.key) { layer in
+                    page(layer.step)
+                        .opacity(opacity[layer.key] ?? 1)
+                        .offset(y: offset[layer.key] ?? 0)
+                        .allowsHitTesting(layer == layers.last)
+                        .accessibilityHidden(layer != layers.last)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.stage, style: .continuous))
@@ -381,32 +396,37 @@ struct FirstRunView: View {
         pendingDrop?.cancel()
         let fromWelcome = old == .welcome
         let direction: CGFloat = next.depth < old.depth ? -1 : 1
+        visits += 1
+        let incoming = Layer(step: next, visit: visits)
+        let outgoing = layers.last
         var still = Transaction()
         still.disablesAnimations = true
         withTransaction(still) {
-            layers = layers.filter { $0.key == old.key && $0 != next } + [next]
-            opacity[next.key] = 0
-            offset[next.key] = reduceMotion ? 0 : (fromWelcome ? 16 : 24 * direction)
+            layers = (outgoing.map { [$0] } ?? []) + [incoming]
+            opacity[incoming.key] = 0
+            offset[incoming.key] = reduceMotion ? 0 : (fromWelcome ? 16 : 24 * direction)
         }
         DispatchQueue.main.async {
             if fromWelcome {
                 withAnimation(reduceMotion ? .easeOut(duration: 0.2) : Theme.ease(0.42)) { welcomeLeaving = true }
             } else {
-                withAnimation(reduceMotion ? .easeOut(duration: 0.1) : Theme.ease(0.1)) {
-                    opacity[old.key] = 0
-                    if !reduceMotion { offset[old.key] = -6 * direction }
+                if let outgoing {
+                    withAnimation(reduceMotion ? .easeOut(duration: 0.1) : Theme.ease(0.1)) {
+                        opacity[outgoing.key] = 0
+                        if !reduceMotion { offset[outgoing.key] = -6 * direction }
+                    }
                 }
             }
             // The exit is all but done by 50 ms on the front-loaded curve.
             let enter: Animation = reduceMotion ? .easeOut(duration: 0.22) : Theme.ease(fromWelcome ? 0.36 : 0.3)
             withAnimation(enter.delay(fromWelcome ? 0.08 : 0.05)) {
-                opacity[next.key] = 1
-                offset[next.key] = 0
+                opacity[incoming.key] = 1
+                offset[incoming.key] = 0
             }
             let drop = DispatchWorkItem {
-                layers.removeAll { $0 != next }
-                opacity = opacity.filter { $0.key == next.key }
-                offset = offset.filter { $0.key == next.key }
+                layers.removeAll { $0 != incoming }
+                opacity = opacity.filter { $0.key == incoming.key }
+                offset = offset.filter { $0.key == incoming.key }
                 if welcomeLeaving { welcomeMounted = false }
             }
             pendingDrop = drop
@@ -566,6 +586,7 @@ private struct ProviderTile: View {
 }
 
 private struct BackLink: View {
+    var enabled = true
     let action: () -> Void
     @State private var hovering = false
 
@@ -577,11 +598,13 @@ private struct BackLink: View {
                 Text("Back")
                     .font(.system(size: 13))
             }
-            .foregroundStyle(hovering ? Theme.C.ink : Theme.C.inkMuted)
+            .foregroundStyle(hovering && enabled ? Theme.C.ink : Theme.C.inkMuted)
             .frame(minHeight: 28)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.45)
         .pointerOnHover()
         .onHover { hovering = $0 }
         .accessibilityIdentifier("first-run-back")
@@ -1065,15 +1088,25 @@ private struct KeyPage: View {
     @State private var key = ""
     @State private var values: [String: String] = [:]
     @FocusState private var focused: Bool
+    /// Set in the same call that sends, so a second Return before the view
+    /// redraws can't send a second key, and cleared only by the answer.
+    private final class Submission {
+        var inFlight = false
+        var left = false
+    }
+    @State private var submission = Submission()
+    @State private var submitting = false
 
-    private var checking: Bool { model.providerBusy == entry.id }
+    private var checking: Bool { submitting || model.providerBusy == entry.id }
     private var canConnect: Bool {
         !checking && model.providerBusy == nil && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            BackLink(action: onBack)
+            // No Back while the key is out: the answer would land on a page
+            // the owner has already left.
+            BackLink(enabled: !checking, action: onBack)
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
                     ProviderTile(icon: entry.icon, monogram: entry.monogram, size: 40, mark: 22)
@@ -1145,6 +1178,7 @@ private struct KeyPage: View {
             model.clearConnectError()
             focused = true
         }
+        .onDisappear { submission.left = true }
         .onChange(of: key) { _, _ in
             if model.connectError != nil { model.clearConnectError() }
         }
@@ -1156,7 +1190,9 @@ private struct KeyPage: View {
     }
 
     private func connect() {
-        guard canConnect else { return }
+        guard canConnect, !submission.inFlight else { return }
+        submission.inFlight = true
+        submitting = true
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         var fields: [String: String] = [:]
         for field in entry.fields ?? [] {
@@ -1171,7 +1207,10 @@ private struct KeyPage: View {
                 fields: fields.isEmpty ? nil : fields,
                 label: entry.label
             )
-            if model.connectError == nil {
+            submission.inFlight = false
+            submitting = false
+            // A page already left (the flow closed under it) doesn't navigate.
+            if model.connectError == nil, !submission.left {
                 key = ""
                 onDone()
             }
@@ -1196,6 +1235,7 @@ private struct ModelPage: View {
     @State private var saving = false
     @State private var error: String?
     @State private var waitedOut = false
+    @State private var pageHeight: CGFloat = 760
 
     private struct ModelGroup: Identifiable {
         let id: String
@@ -1214,13 +1254,25 @@ private struct ModelPage: View {
         return fromRun.isEmpty ? live : fromRun
     }
 
+    /// The current default when it is one of the shown models; otherwise the
+    /// first group's everyday model from the catalogue, then its first row.
+    /// Each group already leads with that pick (see `groups`).
     private var suggested: String? {
         let all = groups.flatMap(\.options)
         if let role = model.defaultRole, let conn = role.connectionId,
            let match = all.first(where: { $0.connectionId == conn && $0.id == role.modelId }) {
             return Self.key(match)
         }
-        return all.first.map(Self.key)
+        return groups.first?.options.first.map(Self.key)
+    }
+
+    /// The model a group leads with: the current default when it lives in
+    /// this connection, else the catalogue's everyday model for it.
+    private func lead(for connectionId: String) -> String? {
+        if let role = model.defaultRole, role.connectionId == connectionId, !role.modelId.isEmpty {
+            return role.modelId
+        }
+        return model.providerConnections.first { $0.id == connectionId }?.defaultModelId
     }
 
     private var groups: [ModelGroup] {
@@ -1228,9 +1280,9 @@ private struct ModelPage: View {
         return scope.compactMap { id -> ModelGroup? in
             var rows = options.filter { $0.connectionId == id }
             guard !rows.isEmpty else { return nil }
-            // The suggested model leads its group, so the collapsed list shows it.
-            if let role = model.defaultRole, role.connectionId == id,
-               let index = rows.firstIndex(where: { $0.id == role.modelId }), index > 0 {
+            // The group's pick leads it, so the collapsed list shows it.
+            if let lead = lead(for: id),
+               let index = rows.firstIndex(where: { $0.id == lead }), index > 0 {
                 rows.insert(rows.remove(at: index), at: 0)
             }
             let connection = model.providerConnections.first { $0.id == id }
@@ -1258,8 +1310,10 @@ private struct ModelPage: View {
                     }
                     .padding(.vertical, 2)
                 }
-                .scrollIndicators(.never)
-                .frame(maxHeight: 420)
+                .uvScroll()
+                // As tall as the stage allows. A fixed 420 pt hid a third
+                // provider below the fold with no scroller to say so.
+                .frame(maxHeight: max(180, pageHeight - 330))
                 .fixedSize(horizontal: false, vertical: true)
             }
             if let error {
@@ -1277,6 +1331,7 @@ private struct ModelPage: View {
         .padding(.top, 40)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
         .onAppear { if picked == nil { picked = suggested } }
         .onChange(of: suggested) { _, next in if picked == nil { picked = next } }
         .task {

@@ -211,10 +211,10 @@ export function seedStore(at = new Date()): ShellStore {
       {
         id: DEFAULT_BOT_ID,
         kind: "bot",
-        name: "Useful Bot",
+        name: "Generalist",
         petname: null,
         label: "",
-        description: "Local personal agent on this Mac. Creates other bots with a name and instructions.",
+        description: "The starter bot. General work on this Mac, and creates other bots with a name and instructions.",
         notify: false,
         pinned: false,
         hidden: false,

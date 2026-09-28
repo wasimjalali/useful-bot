@@ -177,6 +177,8 @@ export interface ConnectionPublic {
   accountId: string | null;
   fields: Record<string, string>;
   models: Array<{ id: string; label: string }>;
+  /** The catalogue's everyday model for this mode (`defaults.workhorse`), the one first run suggests. */
+  defaultModelId: string;
 }
 
 export interface CatalogPublic {
@@ -815,6 +817,7 @@ function publicConnection(conn: Connection, activeId: string | null): Connection
     accountId: conn.credential.kind === "oauth" ? conn.credential.accountId : null,
     fields: { ...conn.fields },
     models: modelRows(conn.id),
+    defaultModelId: mode.defaults.workhorse,
   };
 }
 
@@ -879,6 +882,7 @@ export function publicProviders(
         accountId: null,
         fields: {},
         models: modelRows(implicit.id),
+        defaultModelId: providerMode("opencode-go", "plan").defaults.workhorse,
       }
       : publicConnection(conn, activeId));
 

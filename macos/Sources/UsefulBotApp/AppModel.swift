@@ -682,8 +682,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - Selection and reload
 
-    func select(_ botId: String) {
+    /// - Parameter persist: false shows the chat without writing it as the
+    /// store's selection (a forced first run lands without touching the
+    /// owner's store). The idle poll leaves such a selection alone until the
+    /// next real pick.
+    func select(_ botId: String, persist: Bool = true) {
+        localOnlySelection = persist ? nil : botId
         guard botId != selectedBotId else {
+            guard persist else { return }
             guard let store else { return }
             if store.bots.contains(where: { $0.id == botId }) {
                 if store.selectedBotId != botId {
@@ -730,8 +736,11 @@ final class AppModel: ObservableObject {
             restoreUnsentDraft(unsent.text, sentAttachments: unsent.attachments)
         }
         startReload()
-        persistSelection(botId)
+        if persist { persistSelection(botId) }
     }
+
+    /// A selection shown but deliberately not stored; see `select(_:persist:)`.
+    private var localOnlySelection: String?
 
     /// The bot a persistSelection write is still trying to store. While it is
     /// set the idle poll must not switch away from the locally chosen bot on
@@ -1383,6 +1392,8 @@ final class AppModel: ObservableObject {
     // MARK: - Send
 
     func send(_ text: String) {
+        // The starter prompts are for before the first message.
+        UserDefaults.standard.set(true, forKey: StarterPrompt.sentKey)
         send(text, retrying: false)
     }
 
@@ -2361,18 +2372,48 @@ final class AppModel: ObservableObject {
         appSettingsOpen = true
     }
 
+    /// One read at a time: a caller that arrives while one is running waits
+    /// for it instead of sending a second GET (launch used to send three).
+    /// The read runs outside the caller's task, so a view that goes away
+    /// (a closed settings tab) does not cancel it into an error.
     func loadProviders() async {
+        if let running = providersRead {
+            await running.value
+            return
+        }
+        let read = Task { @MainActor [weak self] () -> Void in
+            guard let self else { return }
+            await self.readProviders()
+        }
+        providersRead = read
+        await read.value
+        if providersRead == read { providersRead = nil }
+    }
+
+    private var providersRead: Task<Void, Never>?
+    /// Bumped by every payload applied. A read that started before a newer
+    /// payload landed (a connect's or a model pick's own answer) is dropped,
+    /// so an older list can never overwrite a newer one.
+    private var providersGeneration = 0
+
+    private func readProviders() async {
+        let started = providersGeneration
         providersError = nil
         do {
-            applyProviders(try await client.providersPayload())
+            let payload = try await client.providersPayload()
+            guard started == providersGeneration else { return }
+            applyProviders(payload)
             providersLoadFailed = false
         } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
+            guard started == providersGeneration else { return }
             providersError = "Could not load providers."
             if !providersLoaded { providersLoadFailed = true }
         }
     }
 
     private func applyProviders(_ payload: ProvidersPayload) {
+        providersGeneration &+= 1
         providerCatalog = payload.catalog
         providerConnections = payload.connections
         providersLoaded = true
@@ -2458,8 +2499,15 @@ final class AppModel: ObservableObject {
         providerBusy = nil
     }
 
+    /// Bumped by every start and cancel. A code that arrives after the flow
+    /// it was asked for was cancelled (Back while the code loads) is thrown
+    /// away and cancelled on the server, so nothing polls in the background.
+    private var oauthGeneration = 0
+
     func startOAuth(providerId: String, label: String) async {
         oauthPoll?.cancel()
+        oauthGeneration &+= 1
+        let generation = oauthGeneration
         providerBusy = "\(providerId):oauth"
         oauthError = nil
         oauthDone = false
@@ -2467,6 +2515,11 @@ final class AppModel: ObservableObject {
         providersError = nil
         do {
             let flow = try await client.startOAuth(providerId: providerId)
+            guard generation == oauthGeneration else {
+                try? await client.cancelOAuth(pollId: flow.pollId)
+                if providerBusy == "\(providerId):oauth" { providerBusy = nil }
+                return
+            }
             oauth = OAuthPending(
                 pollId: flow.pollId,
                 providerId: providerId,
@@ -2479,9 +2532,11 @@ final class AppModel: ObservableObject {
             )
             startOAuthPoll()
         } catch {
-            providersError = Self.connectCopy((error as? BackendError)?.providerCode)
+            if generation == oauthGeneration {
+                providersError = Self.connectCopy((error as? BackendError)?.providerCode)
+            }
         }
-        providerBusy = nil
+        if generation == oauthGeneration { providerBusy = nil }
     }
 
     private func startOAuthPoll() {
@@ -2511,6 +2566,8 @@ final class AppModel: ObservableObject {
         guard let pending = oauth, !oauthDone else { return }
         do {
             let (status, intervalMs, payload) = try await client.pollOAuth(pollId: pending.pollId)
+            // Cancelled or replaced while this poll was out: its answer is stale.
+            guard oauth?.pollId == pending.pollId else { return }
             if let intervalMs, intervalMs > 0 {
                 oauth?.intervalMs = intervalMs
             }
@@ -2564,15 +2621,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Clears the flow at once, before the server hears about it, so a start
+    /// made right after (Back, then the same row again) is never undone by
+    /// this cancel finishing late.
     func cancelOAuth() async {
         oauthPoll?.cancel()
-        if let pending = oauth {
-            try? await client.cancelOAuth(pollId: pending.pollId)
-        }
+        oauthGeneration &+= 1
+        let pending = oauth
         oauth = nil
         oauthError = nil
         oauthDone = false
         oauthErrorStreak = 0
+        if let busy = providerBusy, busy.hasSuffix(":oauth") { providerBusy = nil }
+        if let pending {
+            try? await client.cancelOAuth(pollId: pending.pollId)
+        }
     }
 
     func connectProvider(id: String, key: String) async {
@@ -2965,7 +3028,8 @@ final class AppModel: ObservableObject {
             // A local selection that has not been confirmed yet wins over the
             // server's stale pointer; otherwise a failed select write would
             // let the next idle poll switch straight back to the last bot.
-            if selected != selectedBotId, pendingSelectionBotId == nil {
+            if selected != selectedBotId, pendingSelectionBotId == nil,
+               localOnlySelection == nil || localOnlySelection != selectedBotId {
                 // A select write that failed twice is why this repair runs at
                 // all; the switch clears per-thread state, so the explanation
                 // has to survive it or the bounce looks unexplained.

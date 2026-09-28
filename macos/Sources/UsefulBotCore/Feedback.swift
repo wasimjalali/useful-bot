@@ -138,11 +138,15 @@ public enum Feedback {
     public static func result(status: Int, body: Data) -> FeedbackResult {
         let answer = try? JSONDecoder().decode(Answer.self, from: body)
         switch status {
-        case 201, 200 where answer?.ok == true:
+        case 201:
+            return .sent
+        case 200 where answer?.ok == true:
             return .sent
         case 429:
             return .rateLimited
-        case 400:
+        // Only the Worker's own refusal blames the form; a 400 from anything
+        // in front of it (a proxy, a captive portal) reads as unreachable.
+        case 400 where answer?.error == "invalid":
             return .invalid(field: answer?.field, message: answer?.message)
         // 404, 413, 415 and the like mean a wrong endpoint, not a wrong form.
         default:
