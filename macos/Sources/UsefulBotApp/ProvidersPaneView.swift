@@ -22,7 +22,7 @@ struct ProvidersPaneView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            section("Providers") {
+            section("") {
                 if let error = model.providersError {
                     Text(error)
                         .font(.system(size: 14))
@@ -508,11 +508,13 @@ struct ProvidersPaneView: View {
 
     private func section<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(label.uppercased())
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(DesignTokens.Tracking.label * 11)
-                .foregroundStyle(Theme.C.inkFaint)
-                .padding(.bottom, 8)
+            if !label.isEmpty {
+                Text(label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .padding(.leading, 4)
+                    .padding(.bottom, 8)
+            }
             content()
         }
     }

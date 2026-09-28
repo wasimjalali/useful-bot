@@ -13,7 +13,7 @@ public enum BotFacePose: Equatable, Sendable {
         switch activity {
         case .thinking, .compacting: self = .thinking
         case .working: self = .writing
-        case .tool: self = .tool
+        case .tool, .subagent: self = .tool
         }
     }
 }

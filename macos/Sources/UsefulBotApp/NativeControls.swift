@@ -27,7 +27,7 @@ private struct ButtonChrome: ButtonStyle {
             // luminance, so it reads as a button rather than a flat block.
             .overlay(
                 LinearGradient(
-                    colors: [Theme.C.white.opacity(kind == .primary ? 0.1 : 0), .clear],
+                    colors: [Theme.C.white.opacity(kind == .primary && enabled ? 0.1 : 0), .clear],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -36,11 +36,15 @@ private struct ButtonChrome: ButtonStyle {
             // edge keeps a secondary button's shape on any ground.
             .overlay(
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous)
-                    .strokeBorder(kind == .secondary ? Theme.C.edge : .clear, lineWidth: 1)
+                    .strokeBorder(kind == .secondary && enabled ? Theme.C.edge : .clear, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.channel, style: .continuous))
-            .smShadow()
-            .opacity(enabled ? 1 : 0.55)
+            .shadow(
+                color: enabled ? Theme.shadow(DesignTokens.Shadow.sm) : .clear,
+                radius: Theme.radius(DesignTokens.Shadow.sm),
+                x: 0,
+                y: DesignTokens.Shadow.sm.y
+            )
             .scaleEffect(configuration.isPressed && enabled ? 0.98 : 1)
             .focusRing(focused)
             .animation(.easeOut(duration: DesignTokens.Motion.fast), value: hovering)
@@ -51,6 +55,8 @@ private struct ButtonChrome: ButtonStyle {
     private static let secondaryHover = Theme.adaptive(DesignTokens.Hex.border, DesignTokens.DarkHex.borderStrong)
 
     private var foreground: Color {
+        // Disabled is one sunken look for every kind: flat, muted, full opacity.
+        if !enabled { return Theme.C.inkFaint }
         switch kind {
         case .primary: return Theme.C.accentInk
         case .secondary: return hovering ? Theme.C.accent : Theme.C.ink
@@ -60,6 +66,7 @@ private struct ButtonChrome: ButtonStyle {
     }
 
     private var background: Color {
+        if !enabled { return kind == .ghost ? .clear : Theme.C.sunken }
         switch kind {
         case .primary: return hovering && enabled ? Theme.C.accentStrong : Theme.C.accent
         case .secondary: return hovering && enabled ? Self.secondaryHover : Theme.C.sunken
@@ -216,6 +223,8 @@ struct NativeSwitch: View {
 /// the bot name is what truncates, exactly like the flex row on the web.
 struct BotLabelChip: View {
     let text: String
+    /// Pickers have room: show the whole label instead of the 84 pt cap.
+    var fitsFully = false
 
     /// The web caps the chip at 72px in Geist; SF Pro runs wider, so the cap
     /// is raised just enough that a ten-letter chip like "RESEARCHER" still
@@ -231,7 +240,7 @@ struct BotLabelChip: View {
             .kern: 0.02 * DesignTokens.FontSize.railLabel,
         ]
         let measured = NSAttributedString(string: text.uppercased(), attributes: attributes).size().width
-        return min(ceil(measured) + 13, Self.maxWidth)
+        return fitsFully ? ceil(measured) + 13 : min(ceil(measured) + 13, Self.maxWidth)
     }
 
     var body: some View {

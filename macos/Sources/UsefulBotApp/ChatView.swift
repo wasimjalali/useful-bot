@@ -14,7 +14,6 @@ struct ChatView: View {
     /// has sent a message from this app.
     @AppStorage(StarterPrompt.sentKey) private var firstMessageSent = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var onOpenConnectors: () -> Void
     var onDeleteRequest: (ShellBot) -> Void
 
     /// Measured width of the chat column, so user bubbles cap at 85% of the
@@ -657,7 +656,16 @@ struct ChatView: View {
                         // its height.
                         Group {
                             if model.pending || model.backgroundWorking {
-                                WorkingRow(bot: bot, activity: model.activity)
+                                WorkingRow(
+                                    bot: bot,
+                                    activity: model.activity,
+                                    since: model.activitySince,
+                                    toolkits: model.connectors?.toolkits ?? []
+                                )
+                            } else if let since = model.runningTaskSince {
+                                // The turn that started a sub-agent is over,
+                                // and the sub-agent is still at it.
+                                WorkingRow(bot: bot, activity: .subagent(finished: false), since: since, toolkits: [])
                             }
                         }
                         .frame(height: WorkingRow.height, alignment: .leading)
@@ -911,6 +919,8 @@ struct ChatView: View {
         if bot.id == starterBotId, !bot.isGroup, !firstMessageSent,
            !(model.noModelConnected || noModelPreview) {
             starters(bot)
+        } else if model.noModelConnected || noModelPreview, !bot.isGroup {
+            connectFirst(bot)
         } else {
             plainEmptyState(bot)
         }
@@ -948,8 +958,58 @@ struct ChatView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// A chat with nothing to answer it yet: one thing to do, and what the bot
+    /// can do once it can. The tiles are a preview, not buttons: a tap would
+    /// fill a composer that can't send.
+    private func connectFirst(_ bot: ShellBot) -> some View {
+        VStack(spacing: 28) {
+            VStack(spacing: 10) {
+                BotFaceView(color: BrandAssets.colorID(for: bot), size: 64)
+                    .frame(width: 64, height: 64)
+                    .padding(.bottom, 6)
+                    .accessibilityHidden(true)
+                Text("Connect a model to start")
+                    .font(.system(size: DesignTokens.FontSize.emptyTitle, weight: .semibold))
+                    .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
+                    .foregroundStyle(Theme.C.ink)
+                Text("Use a subscription you already pay for, or an API key.")
+                    .font(.system(size: DesignTokens.FontSize.emptyBody))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .multilineTextAlignment(.center)
+                NativeButton("Connect a provider", kind: .primary) {
+                    if let connectModel { connectModel.reopen() } else { model.openAppSettings(.providers) }
+                }
+                .padding(.top, 6)
+                .accessibilityIdentifier("no-model-connect")
+            }
+            if bot.id == starterBotId {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Then try")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.C.inkFaint)
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                        ForEach(StarterPrompt.all) { prompt in
+                            StarterPromptButton(text: prompt.label) {}
+                        }
+                    }
+                    .allowsHitTesting(false)
+                    .opacity(0.6)
+                }
+            }
+        }
+        .frame(maxWidth: DesignTokens.Space.bubbleMax)
+        .padding(.horizontal, DesignTokens.Space.chatColumnPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func plainEmptyState(_ bot: ShellBot) -> some View {
         VStack(spacing: 8) {
+            if !bot.isGroup {
+                BotFaceView(color: BrandAssets.colorID(for: bot), size: 64)
+                    .frame(width: 64, height: 64)
+                    .padding(.bottom, 8)
+                    .accessibilityHidden(true)
+            }
             Text("What can I do for you?")
                 .font(.system(size: DesignTokens.FontSize.emptyTitle, weight: .semibold))
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
@@ -973,15 +1033,15 @@ struct ChatView: View {
         // The posture is the owner's own choice, so the flat promise this used
         // to make was not true in every one of them.
         if bot.isReadOnly {
-            return "Runs locally on this Mac. Reads only, wherever it looks; writes, commands that change anything, app edits and connector writes are off."
+            return "Runs on this Mac and only reads. It changes nothing."
         }
         if bot.isFullAccess {
-            return "Runs locally on this Mac. Works anywhere on it, in the app and in connected apps without asking; only wiping a whole folder or disk still asks."
+            return "Runs on this Mac with full access. It only asks before wiping a folder or a disk."
         }
         if bot.workspace == nil {
-            return "Runs locally on this Mac. Reads and creates new files under your home on its own; any command that changes something, edits to existing files and connector writes need your approval."
+            return "Runs on this Mac. It asks before it changes your files, runs a command that changes something or writes to your apps."
         }
-        return "Runs locally on this Mac. Works in the attached folder on its own; deleting, other destructive commands and connector writes need your approval."
+        return "Works in the attached folder. It asks before it deletes anything or writes to your apps."
     }
 
     // MARK: - Composer column
@@ -1000,7 +1060,8 @@ struct ChatView: View {
             }
             // Setup was skipped, or every provider was removed: nothing to
             // chat with until one is connected.
-            if noModel {
+            // Not over an empty chat: its middle already asks for the same.
+            if noModel, model.hasThreadContent || model.pending || bot.isGroup {
                 HStack(spacing: 12) {
                     Text("Connect a model to start chatting.")
                         .font(.system(size: 14))
@@ -1020,7 +1081,6 @@ struct ChatView: View {
             }
             ComposerView(
                 bot: bot,
-                onOpenConnectors: onOpenConnectors,
                 onOpenProviders: { model.openAppSettings(.providers) }
             )
             .allowsHitTesting(!noModel)
@@ -1488,14 +1548,33 @@ struct TranscriptRowView: View, Equatable {
     }
 
     private var userRow: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 60)
-            if let reply = ReplyQuote.split(row.text) {
-                UserBubbleView(text: reply.body, quote: reply.quote)
+        // Pictures the owner sent sit above their words, a size up from the
+        // composer's preview; the lines that name them are not shown.
+        let sent = Attachments.sentImages(in: row.text)
+        return VStack(alignment: .trailing, spacing: 6) {
+            if !sent.images.isEmpty {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 60)
+                    WrapHStack(spacing: 6) {
+                        ForEach(sent.images, id: \.self) { name in
+                            SentImageView(name: name, side: sent.images.count == 1 ? 240 : 120, keepsShape: sent.images.count == 1)
+                        }
+                    }
                     .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
-            } else {
-                UserBubbleView(text: row.text)
-                    .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            if !sent.text.isEmpty {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 60)
+                    if let reply = ReplyQuote.split(sent.text) {
+                        UserBubbleView(text: reply.body, quote: reply.quote)
+                            .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
+                    } else {
+                        UserBubbleView(text: sent.text)
+                            .frame(maxWidth: max(160, maxBubbleWidth), alignment: .trailing)
+                    }
+                }
             }
         }
     }
@@ -1615,11 +1694,27 @@ struct TranscriptRowView: View, Equatable {
 private struct WorkingRow: View {
     let bot: ShellBot
     let activity: TurnActivity
+    /// When this step began. The row counts up from it, a second at a time.
+    let since: Date
+    /// The connected apps, for the logo and name of a connector step.
+    let toolkits: [ConnectorToolkit]
 
     /// The avatar's box, which is also the slot the transcript reserves.
     static let height: CGFloat = 24
 
+    /// A connected app's step: its logo leads the label, the way Claude
+    /// shows "Searching Gmail email threads" behind the Gmail mark.
+    private var connector: (logo: String, name: String, label: String)? {
+        guard case .tool("connector_execute", let detail?) = activity else { return nil }
+        let step = TurnActivity.connectorStep(detail, toolkits: toolkits.map { ($0.slug, $0.name) })
+        let slug = step.toolkit ?? String(detail.lowercased().prefix { $0 != "_" })
+        let logo = toolkits.first { $0.slug == slug }?.logo ?? "https://logos.composio.dev/api/\(slug)"
+        return (logo, slug, step.label)
+    }
+
     var body: some View {
+        let connector = connector
+        let label = connector?.label ?? activity.label
         // Sits where the reply will, so the text does not jump sideways
         // when the first token lands.
         HStack(alignment: .center, spacing: 10) {
@@ -1628,22 +1723,44 @@ private struct WorkingRow: View {
             // say what the bot is doing; the label holds still.
             BotFaceView(color: BrandAssets.colorID(for: bot), size: 28, pose: BotFacePose(activity: activity))
                 .frame(width: Self.height, height: Self.height)
-            Text(activity.label)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .font(.system(size: DesignTokens.FontSize.chatBody))
-                .foregroundStyle(Theme.C.inkMuted)
-                .contentTransition(.opacity)
-                .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: activity)
-                // The label's own crossfade only. The first reply pushes
-                // the row down in the same update that turns "Thinking"
-                // into "Writing", and without this the label slid down
-                // from under the new bubble while its face jumped.
-                .geometryGroup()
+            HStack(spacing: 8) {
+                if let connector {
+                    AppLogo(name: connector.name, url: connector.logo, size: 16)
+                        .transition(.opacity)
+                }
+                // Swapped in one frame, the way Claude's step line does: a
+                // crossfade between labels of different widths ran the old
+                // one over the timer beside it.
+                Text(label)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .font(.system(size: DesignTokens.FontSize.chatBody))
+                    .foregroundStyle(Theme.C.inkMuted)
+                // One text view redrawn once a second, not a clock ticking
+                // through the transcript.
+                TimelineView(.periodic(from: since, by: 1)) { context in
+                    Text(Self.elapsed(from: since, to: context.date))
+                        .font(.system(size: DesignTokens.FontSize.chatBody).monospacedDigit())
+                        .foregroundStyle(Theme.C.inkFaint)
+                }
+                .layoutPriority(1)
+            }
+            .animation(.easeInOut(duration: DesignTokens.Motion.fast), value: connector?.logo)
+            // The logo's own fade only. The first reply pushes
+            // the row down in the same update that turns "Thinking"
+            // into "Writing", and without this the label slid down
+            // from under the new bubble while its face jumped.
+            .geometryGroup()
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(activity.label)
+        .accessibilityLabel(label)
+    }
+
+    /// "0s", "9s", "1m 5s": whole seconds, never negative.
+    static func elapsed(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
     }
 }
 
@@ -1948,9 +2065,15 @@ private struct ScrollPinnedTracker: ViewModifier {
                     // own wheel in the same frame, and it unpins.
                     let growth = max(0, new.viewport - old.viewport)
                     let viewportGrew = growth > 0 && old.offset - new.offset <= growth + 0.5
+                    // A shorter window is the app's too: a question card
+                    // docking over the composer takes the room the working
+                    // row gave up in the same frame, and that pair read as a
+                    // move up. The pin dropped, nothing re-pinned, and the
+                    // owner's message sat hidden under the card.
+                    let viewportShrank = new.viewport < old.viewport
                     // While the view is parked at the top of a finished reply,
                     // a resize frame is the reload settling, not the reader.
-                    if !appScroll, !viewportGrew, !(probe.holding && resized),
+                    if !appScroll, !viewportGrew, !viewportShrank, !(probe.holding && resized),
                        Self.movedAway(old, new) {
                         if pinned { pinned = false }
                         return

@@ -84,11 +84,15 @@ final class AppModel: ObservableObject {
     /// every composer keystroke.
     private(set) var continuationIds = Set<String>()
     private(set) var latestReplyRunIds = Set<String>()
-    @Published private(set) var pending = false
+    @Published private(set) var pending = false {
+        didSet { if pending, !oldValue { activitySince = Date() } }
+    }
     /// A turn is running in this bot's session that this app did not send (a
     /// handoff, a connect resume, a routine). Drives the working row the same
     /// way `pending` does; the follower keeps it in step with the stream.
-    @Published private(set) var backgroundWorking = false
+    @Published private(set) var backgroundWorking = false {
+        didSet { if backgroundWorking, !oldValue, !pending { activitySince = Date() } }
+    }
     /// Failures with no turn to put them under (a send that never reached
     /// the server, a load that failed, a write that was refused), shown as a
     /// one-line note over the composer. A turn that failed is a row in the
@@ -127,6 +131,14 @@ final class AppModel: ObservableObject {
     /// What the live turn is doing, shown in the working row until the reply
     /// takes its place.
     @Published private(set) var activity: TurnActivity = .thinking
+    /// When the running turn began, for the working row's timer. It counts
+    /// the whole turn, from the send to the reply, through every step: a
+    /// timer that went back to 0 at each tool read as the bot starting over.
+    private(set) var activitySince = Date()
+    /// When the oldest background sub-agent still out in this chat started,
+    /// or nil when none is. The working row stays up for it after the turn
+    /// that started it has ended.
+    @Published private(set) var runningTaskSince: Date?
     /// Operator identity plus build info for the settings dialog.
     @Published private(set) var appStatus: AppStatus?
     /// App settings dialog, opened from the rail account row or the composer.
@@ -702,7 +714,12 @@ final class AppModel: ObservableObject {
     /// store's selection (a forced first run lands without touching the
     /// owner's store). The idle poll leaves such a selection alone until the
     /// next real pick.
+    /// Counts every pick of a bot, the one already open included, so a view
+    /// covering the chat (the new-chat picker) can step aside for it.
+    @Published private(set) var selectTick = 0
+
     func select(_ botId: String, persist: Bool = true) {
+        selectTick &+= 1
         localOnlySelection = persist ? nil : botId
         guard botId != selectedBotId else {
             guard persist else { return }
@@ -1685,7 +1702,7 @@ final class AppModel: ObservableObject {
                 // The turn is accepted: clear only what this send owned, so
                 // text or files added while it was in flight survive.
                 // A reply's preview is what the owner wrote, not the quote.
-                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: ReplyQuote.split(echo)?.body ?? echo)
+                await self.updateSession(botId: bot.id, sessionId: sessionId, preview: Self.previewText(ReplyQuote.split(echo)?.body ?? echo))
                 guard self.sendStillCurrent(bot.id, generation: generation, chatGen: chatGen) else {
                     self.finishSend(botId: bot.id, generation: generation)
                     return
@@ -2094,6 +2111,14 @@ final class AppModel: ObservableObject {
         }.value
     }
 
+    /// What the rail and search show for a sent message: the owner's words,
+    /// or "Image" for a picture sent on its own. Never the lines naming it.
+    static func previewText(_ text: String) -> String {
+        let sent = Attachments.sentImages(in: text)
+        if sent.images.isEmpty { return text }
+        return sent.text.isEmpty ? (sent.images.count == 1 ? "Image" : "\(sent.images.count) images") : sent.text
+    }
+
     private func updateSession(botId: String, sessionId: String, preview: String) async {
         guard var current = store,
               let index = current.bots.firstIndex(where: { $0.id == botId }) else { return }
@@ -2408,9 +2433,24 @@ final class AppModel: ObservableObject {
     /// Only on a real change: the label is read off every streamed event, and
     /// republishing the same one would redraw the transcript on each delta.
     private func publishActivity() {
+        // A task that never reported back (eve lost it) must not keep the
+        // row up forever: after a few hours it is taken as gone.
+        let cutoff = Date().addingTimeInterval(-Self.subagentPatience)
+        let since = projection.runningTasks.values.filter { $0 > cutoff }.min()
+        if since != runningTaskSince { runningTaskSince = since }
         guard projection.activity != activity else { return }
         activity = projection.activity
+        // A connector step names its app and shows its logo; the list of
+        // connected apps is otherwise only read when the pane opens.
+        if case .tool("connector_execute", _) = activity, connectors == nil, !connectorsRequested {
+            connectorsRequested = true
+            Task { await loadConnectors(quiet: true) }
+        }
     }
+
+    private var connectorsRequested = false
+
+    private static let subagentPatience: TimeInterval = 3 * 3600
 
     // MARK: - Approvals
 
@@ -4060,7 +4100,7 @@ final class AppModel: ObservableObject {
                 }
                 let outcome = await self.uploadOne(url)
                 if let attachment = outcome.attachment {
-                    self.attachments.append(attachment)
+                    self.attachments.append(SentImageStore.keep(attachment))
                 } else if let message = outcome.error {
                     self.attachError = message
                 }

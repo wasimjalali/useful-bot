@@ -22,7 +22,6 @@ struct ComposerView: View {
     }
 
     let bot: ShellBot
-    var onOpenConnectors: () -> Void
     var onOpenProviders: () -> Void
 
     @State private var plusOpen = false
@@ -192,10 +191,6 @@ struct ComposerView: View {
                             onAttachFolder: {
                                 plusOpen = false
                                 showFolderImporter = true
-                            },
-                            onConnectors: {
-                                plusOpen = false
-                                onOpenConnectors()
                             }
                         )
                         .fixedSize()
@@ -310,14 +305,19 @@ struct ComposerView: View {
 
     private var input: some View {
         ZStack(alignment: .topLeading) {
-            // Gone the moment the field takes focus, not only once a character
-            // lands: a caret sitting inside its own placeholder reads as text
-            // that will not delete.
-            if model.draft.isEmpty && !focused {
+            // Stays until the first character, with the caret before it, the
+            // way Messages and Claude do it. Hidden on focus, a chat that
+            // opened with the field focused showed an empty box that named
+            // nobody.
+            if model.draft.isEmpty {
                 Text(placeholder)
                     .font(.system(size: DesignTokens.FontSize.chatBody))
                     .foregroundStyle(Theme.C.inkFaint)
                     .padding(.top, 7)
+                    // Starts just past the caret, which sits at the text
+                    // view's line padding (5 pt): level with it, the caret
+                    // struck through the first letter.
+                    .padding(.leading, 7)
                     .allowsHitTesting(false)
             }
             ComposerTextView(
@@ -353,7 +353,7 @@ struct ComposerView: View {
         .buttonStyle(PlusButtonStyle())
         .pointerOnHover()
         .trackWindowFrame($plusButtonFrame)
-        .accessibilityLabel("Attach a file, attach a folder, or open connectors")
+        .accessibilityLabel("Attach files or a folder")
     }
 
     private var projectChip: some View {
@@ -494,6 +494,37 @@ struct ComposerView: View {
         // once three or more files were attached.
         WrapHStack(spacing: 8) {
             ForEach(model.attachments) { file in
+                if file.isImage {
+                    imageChip(file)
+                } else {
+                    fileChip(file)
+                }
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 2)
+    }
+
+    /// An attached picture as a small preview, its remove button on the corner.
+    private func imageChip(_ file: Attachment) -> some View {
+        SentImageView(name: file.name, side: 56)
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    model.removeAttachment(id: file.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(Color.black.opacity(0.6)))
+                }
+                .buttonStyle(.plain)
+                .padding(4)
+                .accessibilityLabel("Remove image")
+            }
+    }
+
+    private func fileChip(_ file: Attachment) -> some View {
                 HStack(spacing: 6) {
                     Text(file.name)
                         .font(.system(size: 12))
@@ -515,10 +546,6 @@ struct ComposerView: View {
                 .frame(height: 28)
                 .background(Theme.C.sunken)
                 .clipShape(Capsule())
-            }
-        }
-        .padding(.horizontal, 4)
-        .padding(.top, 2)
     }
 
     /// The message being replied to: an arrow, its opening words, and a way
@@ -660,35 +687,20 @@ private struct ModeChipStyle: ButtonStyle {
     }
 }
 
-/// `.composer-plus-menu`: photos and files, a folder, and connectors.
+/// `.composer-plus-menu`: photos and files, or a folder. Connectors live in
+/// one place, the rail's button beside the owner's photo. Rows match the
+/// permission menu beside it: an icon and one line each.
 private struct PlusMenu: View {
     let onAttach: () -> Void
     let onAttachFolder: () -> Void
-    let onConnectors: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            item(
-                icon: "paperclip",
-                title: "Upload photos & file",
-                subtitle: "Add files to this message",
-                action: onAttach
-            )
-            item(
-                icon: "folder",
-                title: "Attach folder",
-                subtitle: "Let the bot work in a folder",
-                action: onAttachFolder
-            )
-            item(
-                icon: "square.grid.2x2",
-                title: "Connectors",
-                subtitle: "MCPs and connected tools",
-                action: onConnectors
-            )
+            item(icon: "paperclip", title: "Photos and files", action: onAttach)
+            item(icon: "folder", title: "Folder", action: onAttachFolder)
         }
-        .padding(6)
-        .frame(width: 320)
+        .padding(.vertical, 6)
+        .frame(width: 248)
         .background(Theme.C.surface)
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
@@ -698,25 +710,20 @@ private struct PlusMenu: View {
         .popShadow()
     }
 
-    private func item(icon: String, title: String, subtitle: String, action: @escaping () -> Void) -> some View {
+    private func item(icon: String, title: String, action: @escaping () -> Void) -> some View {
         MenuRowButton(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 16))
+                    .font(.system(size: 13))
                     .foregroundStyle(Theme.C.inkMuted)
                     .frame(width: 18)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.C.ink)
-                    Text(subtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.C.inkMuted)
-                }
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.ink)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .frame(minHeight: 44)
+            .padding(.horizontal, 12)
+            .frame(height: 36)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }

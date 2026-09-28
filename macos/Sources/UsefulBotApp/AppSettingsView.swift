@@ -192,9 +192,8 @@ struct AppSettingsView: View {
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(Theme.C.ink)
                     Spacer(minLength: 0)
-                    NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
-                        .accessibilityLabel("Close settings")
                 }
+                .frame(minHeight: 32)
                 .padding(.bottom, 20)
 
                 switch tab {
@@ -210,9 +209,29 @@ struct AppSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .uvScroll()
+        // Outside the scroller, so the scroller's width never moves it.
+        .overlay(alignment: .topTrailing) {
+            NativeIconButton(systemImage: "xmark", size: 32, iconSize: 15, action: onClose)
+                .accessibilityLabel("Close settings")
+                .padding(.top, 20)
+                .padding(.trailing, 28)
+        }
     }
 
     // MARK: - General
+
+    /// The Mac account's full name ("Wasim Jalali"); the login-derived name
+    /// ("Wasimjalali") only when the Mac has none.
+    private var displayName: String {
+        let full = NSFullUserName().trimmingCharacters(in: .whitespaces)
+        return full.isEmpty ? model.operatorName : full
+    }
+
+    private var displayInitials: String {
+        let parts = displayName.split(separator: " ").compactMap(\.first)
+        guard parts.count > 1 else { return model.operatorInitials }
+        return String(parts[0]).uppercased() + String(parts[1]).uppercased()
+    }
 
     private var generalPane: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -223,20 +242,16 @@ struct AppSettingsView: View {
                             Button {
                                 avatarStore.pick()
                             } label: {
-                                OperatorAvatarView(initials: model.operatorInitials, size: 40)
+                                OperatorAvatarView(initials: displayInitials, size: 40)
                             }
                             .buttonStyle(.plain)
                             .pointerOnHover()
                             .help("Change photo")
                             .accessibilityLabel("Change profile photo")
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(model.operatorName)
+                                Text(displayName)
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(Theme.C.ink)
-                                    .lineLimit(1)
-                                Text("Local desktop owner")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Theme.C.inkMuted)
                                     .lineLimit(1)
                                 if let error = avatarStore.error {
                                     Text(error)
@@ -247,7 +262,7 @@ struct AppSettingsView: View {
                             }
                             Spacer(minLength: 0)
                             if avatarStore.image != nil {
-                                NativeButton("Remove", kind: .ghost, small: true, action: avatarStore.remove)
+                                NativeButton("Remove", kind: .secondary, small: true, action: avatarStore.remove)
                             }
                             NativeButton(avatarStore.image == nil ? "Upload photo" : "Change photo", kind: .secondary, small: true, action: avatarStore.pick)
                         }
@@ -302,14 +317,14 @@ struct AppSettingsView: View {
 
     private var computerPane: some View {
         VStack(alignment: .leading, spacing: 24) {
-            section("Computer") {
+            section("") {
                 settingsGroup {
                     settingsRow {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("This Mac")
                                 .font(.system(size: 14))
                                 .foregroundStyle(Theme.C.ink)
-                            Text("Tools run on this machine over loopback.")
+                            Text("Bots run their tools on this Mac.")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Theme.C.inkMuted)
                         }
@@ -973,11 +988,13 @@ struct AppSettingsView: View {
     /// A quiet heading over a grey card, the way macOS and Grok group settings.
     private func section<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(label)
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.C.inkMuted)
-                .padding(.leading, 4)
-                .padding(.bottom, 8)
+            if !label.isEmpty {
+                Text(label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .padding(.leading, 4)
+                    .padding(.bottom, 8)
+            }
             content()
         }
     }
@@ -1029,7 +1046,10 @@ private struct AppearancePicker: View {
                 }
             }
         } label: {
+            // Wide enough for the longest choice: macOS sizes this menu to
+            // the button, and at "Light"'s width it cut "System" to "Sy…m".
             SettingsPopUpLabel(title: selection.label)
+                .frame(minWidth: 96, alignment: .trailing)
         }
         // The button style with a plain look draws the label as built; the
         // borderless style flattens it to text and moves the chevron.

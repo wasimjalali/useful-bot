@@ -26,7 +26,8 @@
     "web:dev": "/usr/local/bin/node node_modules/next/dist/bin/next dev web --hostname 127.0.0.1 --port 4320",
     "test:macos": "macos/test.sh",
     "test:all": "npm test && macos/test.sh",
-    "build:app": "macos/build-app.sh"
+    "build:app": "macos/build-app.sh",
+    "install:app": "scripts/install-app.sh"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.48",
