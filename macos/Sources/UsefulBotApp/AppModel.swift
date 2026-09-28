@@ -2139,13 +2139,19 @@ final class AppModel: ObservableObject {
 
     static func previewText(_ text: String) -> String {
         let sent = Attachments.sentImages(in: text)
-        if !sent.images.isEmpty {
-            return sent.text.isEmpty ? (sent.images.count == 1 ? "Image" : "\(sent.images.count) images") : sent.text
-        }
-        // A stored preview is clipped at 160 characters, often inside the
-        // image lines. Only then, and only at its tail, do lines that start
-        // like them go: an owner who typed one mid-message keeps it.
-        guard text.count >= Self.previewClip else { return text }
+        // The server clips at 160 UTF-16 units (JavaScript's own count), so
+        // the clip is measured the same way here.
+        let clipped = text.utf16.count >= previewClip
+        let body = clipped ? dropClippedImageTail(sent.text) : sent.text
+        let imageCount = sent.images.count + (body != sent.text ? 1 : 0)
+        if imageCount == 0 { return text }
+        return body.isEmpty ? (imageCount == 1 ? "Image" : "\(imageCount) images") : body
+    }
+
+    /// A clipped preview often ends inside its image lines. Only at its tail
+    /// do lines that start like them go: an owner who typed one mid-message
+    /// keeps it.
+    private static func dropClippedImageTail(_ text: String) -> String {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         var dropped = false
         while let last = lines.last {
@@ -2155,8 +2161,7 @@ final class AppModel: ObservableObject {
             dropped = dropped || !line.isEmpty
         }
         guard dropped else { return text }
-        let rest = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return rest.isEmpty ? "Image" : rest
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func updateSession(botId: String, sessionId: String, preview: String) async {

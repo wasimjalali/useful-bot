@@ -40,10 +40,12 @@ trap 'rm -rf "$NEW"' EXIT
 rm -rf "$NEW"
 ditto "$SRC" "$NEW"
 codesign --verify --strict "$NEW"
-# From here the stage is the only good copy: keep it even if the move fails.
-trap - EXIT
+# From here the stage is the only good copy: keep it even if the move fails,
+# and say where it is.
+trap 'echo "Install stopped. The new build is at $NEW: move it to $DEST by hand." >&2' EXIT
 rm -rf "$DEST"
 mv "$NEW" "$DEST"
+trap - EXIT
 touch "$DEST"
 
 "$LSREGISTER" -dump | awk '
