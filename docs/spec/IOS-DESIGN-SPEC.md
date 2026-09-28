@@ -85,7 +85,7 @@ Mockups: "Pair with Mac", "Pair, camera denied", "Pair again".
 **Anatomy, top to bottom**
 
 1. Top padding 32 pt.
-2. Brand badge, 56 pt circle (`brand/svg/useful-bot-badge.svg` rendering, never redrawn).
+2. Brand logo, 56 pt circle (`brand/svg/useful-bot-logo.svg`, copied into the `useful-bot-badge` image set by `npm run brand:build`, never redrawn).
 3. 20 pt gap, title "Connect to your Mac", `FontSize.emptyTitle` 28, semibold, tracking
    `Tracking.tight`.
 4. 8 pt gap, one line in `inkMuted`, `FontSize.emptyBody` 15: "Your bots run on your Mac. This

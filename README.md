@@ -210,7 +210,7 @@ agent tool trips CI rather than a live turn.
 
 ## Brand assets
 
-The approved mascot package, usage guidelines and visual comparison are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).
+The logo package (the bot's white circle head on black), usage guidelines and preview are in [brand/README.md](brand/README.md) and [brand/preview.html](brand/preview.html).
 
 ```sh
 npm ci --prefix scripts/brand-tools
@@ -220,4 +220,4 @@ npm run brand:check
 
 Use the Node 24 runtime above. Brand tooling has its own lockfile to preserve the router's verified root dependency lock. The build creates `useful-bot-brand-assets.zip`; see [BRAND_ASSET_REPORT.md](BRAND_ASSET_REPORT.md) for the output inventory and verification results.
 
-The macOS bundle takes its app icon, logos, head-only bot avatars and native animation layers from `brand/`. Rebuild with `make -C macos bundle` after regenerating assets. Bot settings offer bright head colors with transparent surroundings. The app plays the full mascot animation at launch and a subtle head float/blink while working, respecting Reduce Motion. Old command-card icons and shape-based avatar renderers have been removed.
+The macOS bundle takes its app icon, logos, head-only bot avatars and native animation layers from `brand/`. Rebuild with `make -C macos bundle` after regenerating assets. Bot settings offer bright head colors with transparent surroundings. The app plays a head float and blink at launch and while working, respecting Reduce Motion. Old command-card icons and shape-based avatar renderers have been removed.

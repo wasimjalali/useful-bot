@@ -1,110 +1,314 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Useful Bot brand assets</title>
-  <link rel="icon" href="favicon/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="tokens.css">
-  <style>
-    @font-face{font-family:Inter;src:url(source/fonts/Inter-SemiBold.woff2) format("woff2");font-weight:600;font-display:swap}
-    *{box-sizing:border-box}body{margin:0;background:var(--ub-surface-shade);color:var(--ub-black);font:15px/1.5 system-ui,sans-serif}
-    main{max-width:1360px;margin:auto;padding:48px 32px 80px}h1,h2,h3,button{font-family:Inter,system-ui,sans-serif;font-weight:600}
-    h1{font-size:clamp(30px,4vw,48px);letter-spacing:-.045em;line-height:1.1;margin:0}h2{font-size:24px;letter-spacing:-.025em;margin:0 0 24px}h3{font-size:15px;margin:0}
-    header{display:flex;align-items:center;justify-content:space-between;gap:24px;padding-bottom:32px;border-bottom:1px solid var(--ub-edge-shade)}
-    a{color:inherit;text-underline-offset:4px;overflow-wrap:anywhere}nav{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:24px}nav a{display:inline-flex;align-items:center;min-height:44px}
-    section{margin-top:56px}figure{margin:0;min-width:0}figcaption{padding:12px 0 0;overflow-wrap:anywhere;font-size:13px}
-    .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:24px 0}button{border:1px solid var(--ub-edge-shade);border-radius:6px;background:var(--ub-white);color:var(--ub-black);padding:10px 16px;min-height:44px;font-size:13px;cursor:pointer;transition:background-color 150ms ease-out}
-    button:hover{background:var(--ub-edge-shade)}button:active,button[aria-pressed=true]{background:var(--ub-black);color:var(--ub-white)}button:disabled{opacity:.5;cursor:default}
-    :focus-visible{outline:2px solid currentColor;outline-offset:4px}
-    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}.grid.four{grid-template-columns:repeat(4,minmax(0,1fr))}
-    .surface{position:relative;display:flex;align-items:center;justify-content:center;min-width:0;aspect-ratio:1;background:var(--ub-black);border:1px solid var(--ub-edge-shade)}
-    .surface img{display:block;width:100%;height:100%;object-fit:contain}.surface.white{background:var(--ub-white)}
-    /* Checker pattern is a transparency inspection aid, never brand artwork. */
-    .surface.checker{background-color:var(--ub-white);background-image:conic-gradient(var(--ub-edge-shade) 25%,transparent 0 50%,var(--ub-edge-shade) 0 75%,transparent 0);background-size:24px 24px}
-    .surface.original img{position:absolute;left:3.02734375%;top:3.125%;width:94.04296875%;height:94.04296875%}
-    .wide .surface{aspect-ratio:2.8}.wide img{width:92%;height:80%}.wide figure:last-child .surface{aspect-ratio:4/5}.wide figure:last-child img{width:100%;height:100%}.social .surface{aspect-ratio:1200/630}
-    .sample-row{display:flex;flex-wrap:wrap;align-items:flex-start;gap:32px;padding:24px;background:var(--ub-white);border:1px solid var(--ub-edge-shade)}
-    .sample-row figure{display:grid;justify-items:start;gap:8px}.sample-row img{display:block;max-width:100%;height:auto}.sample-row figcaption{padding:0}
-    .zoom img{image-rendering:pixelated;width:128px;height:128px}.navbar{display:flex;align-items:center;min-height:80px;padding:16px 24px;background:var(--ub-black);border:1px solid var(--ub-edge-shade)}
-    .navbar img{width:240px;max-width:100%;height:auto}.note{max-width:76ch;margin:16px 0 0;font-size:14px}
-    .overlay{isolation:isolate}.overlay img{position:absolute;inset:0}.overlay img+img{opacity:.5}.overlay input{position:absolute;bottom:12px;width:80%;min-height:44px;accent-color:var(--ub-white)}
-    .file-list{columns:3;column-gap:32px;padding-left:20px}.file-list li{break-inside:avoid;margin-bottom:12px}.file-list a{display:inline-block;min-height:32px}
-    .error{padding:16px;background:var(--ub-white);color:var(--ub-black);border:2px solid var(--ub-black)}
-    footer{margin-top:56px;border-top:1px solid var(--ub-edge-shade);padding-top:24px}html{scrollbar-width:thin;scrollbar-color:var(--ub-edge-shade) transparent}
-    @media(max-width:900px){.grid.four{grid-template-columns:repeat(2,minmax(0,1fr))}.file-list{columns:2}}
-    @media(max-width:600px){main{padding:28px 20px 48px}header{display:block}header>a{display:inline-block;margin-top:20px;min-height:44px}.grid,.grid.four{grid-template-columns:1fr}.file-list{columns:1}section{margin-top:40px}.sample-row{gap:24px;padding:16px}}
-    @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-  </style>
-</head>
-<body>
-  <main>
-    <header><h1>Useful Bot brand assets</h1><a href="README.md">Read the guidelines</a></header>
-    <nav aria-label="Asset sections"><a href="#masters">Compare masters</a><a href="#marks">Marks and lockups</a><a href="#small">Small sizes</a><a href="#app">App icons</a><a href="#social">Social</a><a href="#avatars">Avatar colors</a><a href="#motion">Motion</a></nav>
-    <section id="masters">
-      <h2>Compare masters</h2>
-      <div class="toolbar" role="group" aria-label="Inspection background">
-        <button type="button" data-background="black" aria-pressed="true">Black</button>
-        <button type="button" data-background="white" aria-pressed="false">White</button>
-        <button type="button" data-background="checker" aria-pressed="false">Transparency</button>
-      </div>
-      <div class="grid four">
-        <figure><div class="surface original"><img src="source/ChatGPT%20Image%20Sep%2014,%202026,%2001_40_55%20AM.png" alt="Supplied approved mascot with original extraction debris" width="1254" height="1254"></div><figcaption>Approved source</figcaption></figure>
-        <figure><div class="surface"><img src="source/useful-bot-raster-master-1024.png" alt="Cleaned raster master" width="1024" height="1024"></div><figcaption>Raster master</figcaption></figure>
-        <figure><div class="surface"><img src="svg/useful-bot-mark.svg" alt="Hand-reconstructed vector master" width="1024" height="1024"></div><figcaption>Native vector</figcaption></figure>
-        <figure><div class="surface"><img src="svg/useful-bot-mark-flat.svg" alt="Flat tiny-size master" width="1024" height="1024"></div><figcaption>Flat master</figcaption></figure>
-      </div>
-      <p class="note">The supplied PNG has white extraction debris at its edge. The cleaned raster retains its original shading. The vector uses intentional curves, pure black glasses and simpler surface shading.</p>
-      <div class="grid" style="margin-top:32px">
-        <figure><div class="surface overlay"><img src="source/useful-bot-raster-master-1024.png" alt="Raster baseline" width="1024" height="1024"><img id="vector-overlay" src="svg/useful-bot-mark.svg" alt="Vector overlay" width="1024" height="1024"><input id="overlay-opacity" type="range" min="0" max="100" value="50" aria-label="Vector overlay opacity"></div><figcaption><label for="overlay-opacity">Raster/vector overlay</label></figcaption></figure>
-        <figure><div class="surface white fixed"><img src="svg/useful-bot-mark.svg" alt="Vector on white" width="1024" height="1024"></div><figcaption>White background check</figcaption></figure>
-        <figure><div class="surface checker fixed"><img src="source/useful-bot-raster-master-1024.png" alt="Raster alpha on checkerboard" width="1024" height="1024"></div><figcaption>Alpha check</figcaption></figure>
-      </div>
-    </section>
-    <section id="marks"><h2>Marks and lockups</h2><div class="grid" id="mark-gallery"></div><div class="grid wide" id="lockup-gallery" style="margin-top:32px"></div></section>
-    <section id="small"><h2>Small sizes</h2>
-      <h3>Favicons at actual CSS pixels</h3><div class="sample-row" id="favicon-sizes" style="margin-top:16px"></div>
-      <h3 style="margin-top:32px">16 px and 32 px enlarged for edge inspection</h3><div class="sample-row zoom" style="margin-top:16px"><figure><img src="favicon/favicon-16x16.png" alt="16 pixel favicon enlarged"><figcaption>16 px</figcaption></figure><figure><img src="favicon/favicon-32x32.png" alt="32 pixel favicon enlarged"><figcaption>32 px</figcaption></figure></div>
-      <h3 style="margin-top:32px">Website navbar</h3><div class="navbar" style="margin-top:16px"><img src="svg/useful-bot-lockup-horizontal.svg" alt="Useful Bot navbar lockup"></div>
-    </section>
-    <section id="app"><h2>App icons</h2><div class="sample-row" id="app-sizes"></div>
-      <div class="grid" style="margin-top:32px">
-        <figure><div class="surface"><img src="app/useful-bot-app-icon-1024.png" alt="Square app pipeline master" width="1024" height="1024"></div><figcaption>Square source master</figcaption></figure>
-        <figure><div class="surface checker fixed"><img src="app/AppIcon.appiconset/icon_512x512@2x.png" alt="macOS app icon with platform margins" width="1024" height="1024"></div><figcaption>macOS asset set</figcaption></figure>
-        <figure><div class="surface"><img src="pwa/icon-maskable-512.png" alt="PWA maskable icon with generous padding" width="512" height="512"></div><figcaption>Maskable PWA</figcaption></figure>
-      </div>
-    </section>
-    <section id="social"><h2>Social</h2><div class="grid" id="avatar-gallery"></div><div class="grid social" style="margin-top:32px"><figure><div class="surface"><img src="social/og-image.png" alt="Useful Bot Open Graph image" width="1200" height="630"></div><figcaption>Open Graph · 1200 × 630</figcaption></figure><figure><div class="surface"><img src="social/github-social-preview.png" alt="Useful Bot GitHub social preview" width="1280" height="640"></div><figcaption>GitHub · 1280 × 640</figcaption></figure></div></section>
-    <section id="avatars"><h2>Bot avatar colors</h2><p class="note">Head-only avatars in bright colors, with transparent surroundings. Glasses, eyes and highlights retain the approved geometry.</p><div class="grid" id="bot-avatar-gallery" style="margin-top:24px"></div></section>
-    <section id="motion"><h2>Motion</h2><p><a href="motion/animation-demo.html">Open the motion demo</a></p></section>
-    <section><h2>Download assets</h2><ul class="file-list" id="downloads"></ul></section>
-    <footer>Primary mark: bot without circle. Secondary mark: bot inside white circle.</footer>
-  </main>
-  <script>
-    const galleries = {
-      'bot-avatar-gallery': [['ink','Original'],['brown','Sand'],['red','Coral'],['orange','Peach'],['gold','Gold'],['green','Green'],['teal','Teal'],['blue','Blue'],['purple','Lilac'],['pink','Rose'],['gray','Silver']].map(([id,label]) => [`avatars/${id}.svg`,label]),
-      'mark-gallery': [['svg/useful-bot-mark.svg','Primary mark'],['svg/useful-bot-badge.svg','Secondary badge'],['svg/useful-bot-badge-transparent.svg','Badge with transparent exterior']],
-      'lockup-gallery': [['svg/useful-bot-wordmark.svg','Inter Semibold wordmark'],['svg/useful-bot-lockup-horizontal.svg','Horizontal lockup'],['svg/useful-bot-lockup-horizontal-badge.svg','Badge lockup'],['svg/useful-bot-lockup-stacked.svg','Stacked lockup']],
-      'avatar-gallery': [['social/avatar-1024.png','Primary avatar'],['social/avatar-badge-1024.png','Badge avatar'],['social/x-profile.png','X profile'],['social/linkedin-profile.png','LinkedIn profile']]
-    };
-    function figure(src, label, size, surface = false) {
-      const figure = document.createElement('figure'), img = document.createElement('img'), caption = document.createElement('figcaption');
-      img.src = src; img.alt = label; if (size) { img.width = size; img.height = size; }
-      const link = document.createElement('a'); link.href = src; link.textContent = label; caption.append(link);
-      if (surface) { const panel = document.createElement('div'); panel.className = 'surface'; panel.append(img); figure.append(panel); } else figure.append(img);
-      figure.append(caption); return figure;
+<title>Useful Bot Logo</title>
+<meta charset="utf-8">
+<link rel="icon" href="favicon/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #F3F3F1;
+    --panel: #FFFFFF;
+    --ink: #141413;
+    --muted: #5E5E5A;
+    --rule: #DEDEDA;
+    --black: #000000;
+    --tongue: #FF8FA3;
+    --good: #1F7A4D;
+    --bad: #B42318;
+    --checker: #E4E4E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground: #0E0E0D;
+      --panel: #1A1A19;
+      --ink: #F2F2EF;
+      --muted: #A3A39E;
+      --rule: #2E2E2C;
+      --good: #5CC98E;
+      --bad: #F2877D;
+      --checker: #2A2A28;
     }
-    for (const [id, assets] of Object.entries(galleries)) for (const [src,label] of assets) document.getElementById(id).append(figure(src,label,null,true));
-    for (const size of [16,32,48,64]) document.getElementById('favicon-sizes').append(figure(size < 48 ? `favicon/favicon-${size}x${size}.png` : 'favicon/favicon.svg', `${size} px`, size));
-    for (const [src,label,size] of [['favicon/apple-touch-icon.png','iOS · 60 pt',60],['pwa/icon-192.png','PWA · 64 px',64],['app/AppIcon.appiconset/icon_32x32.png','macOS · 32 pt',32],['app/AppIcon.appiconset/icon_128x128.png','macOS · 128 pt',128]]) document.getElementById('app-sizes').append(figure(src,label,size));
-    for (const button of document.querySelectorAll('[data-background]')) button.addEventListener('click', () => {
-      for (const control of document.querySelectorAll('[data-background]')) control.setAttribute('aria-pressed', String(control === button));
-      for (const panel of document.querySelectorAll('.surface:not(.fixed)')) { panel.classList.remove('white','checker'); if (button.dataset.background !== 'black') panel.classList.add(button.dataset.background); }
-    });
-    document.getElementById('overlay-opacity').addEventListener('input', event => { document.getElementById('vector-overlay').style.opacity = Number(event.target.value) / 100; });
-    const downloads = [...Object.values(galleries).flat(), ['source/useful-bot-raster-master-1024.png','Raster master'],['favicon/favicon.ico','Multi-size favicon ICO'],['pwa/site.webmanifest','PWA manifest'],['app/macos/UsefulBot.icns','macOS ICNS'],['asset-manifest.json','Exact output inventory']];
-    for (const [src,label] of downloads) { const li = document.createElement('li'), a = document.createElement('a'); a.href = src; a.textContent = label; li.append(a); document.getElementById('downloads').append(li); }
-    for (const img of document.images) img.addEventListener('error', () => { const error = document.createElement('p'); error.className = 'error'; error.textContent = `Missing asset: ${img.getAttribute('src')}. Run npm run brand:build.`; img.replaceWith(error); });
-  </script>
-</body>
-</html>
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground: #0E0E0D;
+    --panel: #1A1A19;
+    --ink: #F2F2EF;
+    --muted: #A3A39E;
+    --rule: #2E2E2C;
+    --good: #5CC98E;
+    --bad: #F2877D;
+    --checker: #2A2A28;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 15px/1.55 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding-inline: 16px;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding-block: 40px 88px; display: grid; gap: 72px; }
+  h1, h2, h3 { font-weight: 600; margin: 0; text-wrap: balance; }
+  h1 { font-size: clamp(32px, 5vw, 52px); letter-spacing: -0.035em; line-height: 1.05; }
+  h2 { font-size: 22px; letter-spacing: -0.02em; }
+  h3 { font-size: 14px; }
+  p { margin: 0; max-width: 64ch; }
+  .muted { color: var(--muted); }
+  .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 500; }
+  section { display: grid; gap: 24px; }
+  .head { display: grid; gap: 8px; }
+  img { display: block; max-width: 100%; }
+
+  /* Hero */
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 40px; align-items: center; }
+  .hero .copy { display: grid; gap: 20px; }
+  .hero .stage { background: var(--black); border-radius: 28px; aspect-ratio: 1; display: grid; place-items: center; max-width: 100%; }
+  .hero .stage img { width: 100%; height: auto; }
+  .specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; border-top: 1px solid var(--rule); padding-top: 16px; }
+  .specs div { display: grid; gap: 2px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 12px; }
+  .swatch { display: flex; align-items: center; gap: 8px; }
+  .chip { width: 20px; height: 20px; border-radius: 6px; border: 1px solid var(--rule); }
+
+  /* Masters */
+  .masters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+  figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+  figcaption { display: grid; gap: 2px; font-size: 13px; }
+  .tile { aspect-ratio: 1; max-width: 100%; border-radius: 16px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--rule); }
+  .tile img { width: 100%; height: auto; }
+  .on-black { background: var(--black); border-color: var(--black); }
+  .on-checker { background-color: var(--panel); background-image: conic-gradient(var(--checker) 25%, transparent 0 50%, var(--checker) 0 75%, transparent 0); background-size: 20px 20px; }
+
+  /* App icon ladder */
+  .ladder { background: var(--panel); border: 1px solid var(--rule); border-radius: 20px; padding: 28px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 28px 36px; }
+  .ladder figure { justify-items: center; text-align: center; }
+  .ladder figcaption { justify-items: center; }
+  .i1024 { width: 256px; } .i512 { width: 128px; } .i128 { width: 64px; } .i32 { width: 32px; } .i16 { width: 16px; }
+  .dock { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 22px; background: color-mix(in srgb, var(--ink) 8%, transparent); }
+  .dock span { width: 48px; height: 48px; border-radius: 12px; background: color-mix(in srgb, var(--ink) 16%, transparent); }
+  .dock img { width: 56px; height: 56px; }
+
+  /* Favicons */
+  .tabs { display: grid; gap: 12px; }
+  .tab { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px 10px 0 0; padding: 10px 14px; max-width: 340px; font-size: 13px; }
+  .tab img { width: 16px; height: 16px; }
+  .zoom { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-end; }
+  .zoom img { image-rendering: pixelated; }
+  .z16 { width: 128px; height: 128px; } .z32 { width: 128px; height: 128px; }
+  .z180 { width: 90px; height: 90px; border-radius: 20px; }
+
+  /* Lockups */
+  .lockups { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 20px; }
+  .lockup { background: var(--black); border-radius: 16px; padding: 36px; display: grid; place-items: center; }
+  .lockup img { width: 100%; height: auto; }
+  .lockup.stack img { width: 72%; }
+  .navbar { background: var(--black); border-radius: 12px; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #FFFFFF; font-size: 13px; }
+  .navbar img { width: 168px; height: auto; }
+  .navbar nav { display: flex; gap: 18px; opacity: .7; }
+  .wordmark { background: var(--black); border-radius: 12px; padding: 20px 24px; }
+  .wordmark img { width: 200px; }
+
+  /* PWA */
+  .pwa { display: flex; flex-wrap: wrap; gap: 28px; align-items: center; }
+  .mask { position: relative; width: 192px; height: 192px; max-width: 100%; }
+  .mask img { width: 100%; height: 100%; }
+  .mask.circle img { border-radius: 50%; }
+  .mask.squircle img { border-radius: 26%; }
+  .mask .safe { position: absolute; inset: 10%; border-radius: 50%; border: 2px dashed var(--tongue); pointer-events: none; }
+
+  /* Social */
+  .social { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  .social img { border-radius: 12px; width: 100%; height: auto; border: 1px solid var(--rule); }
+  .social .avatar img { border-radius: 50%; }
+
+  /* Do and don't */
+  .rules { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; }
+  .verdict { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .do .verdict { color: var(--good); }
+  .dont .verdict { color: var(--bad); }
+  .dont .tile { border-color: var(--bad); }
+  .stretch img { transform: scaleX(1.35); }
+  .rotate img { transform: rotate(-18deg); }
+  .crop img { transform: scale(1.9); }
+  .white-bg { background: #FFFFFF; }
+
+  code { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12.5px; background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+
+  @media (max-width: 820px) {
+    .hero, .lockups, .social { grid-template-columns: minmax(0, 1fr); }
+    .rules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 520px) {
+    .masters { grid-template-columns: minmax(0, 1fr); }
+    .specs { grid-template-columns: minmax(0, 1fr); }
+    .i1024 { width: 200px; }
+    .navbar nav { display: none; }
+  }
+</style>
+
+<main>
+  <section class="hero" aria-labelledby="title">
+    <div class="copy">
+      <span class="label">Brand system, September 2026</span>
+      <h1 id="title">The head is the logo.</h1>
+      <p class="muted">Useful Bot's logo is the bot's own face: the white circle head with black glasses, eyes and a smile, on black. It replaces the full-body mascot on every surface. The app icon, favicons, social images and lockups all come from three hand-written SVG masters.</p>
+      <div class="specs">
+        <div><span class="label">Head</span><span class="mono">62.2% of the tile</span></div>
+        <div><span class="label">Circle</span><span class="mono">r 352, face units</span></div>
+        <div><span class="label">macOS tile</span><span class="mono">824 at (100, 100)</span></div>
+      </div>
+      <div class="swatches">
+        <div class="swatch"><span class="chip" style="background:#000000"></span><span class="mono">#000000</span></div>
+        <div class="swatch"><span class="chip" style="background:#FFFFFF"></span><span class="mono">#FFFFFF</span></div>
+        <div class="swatch"><span class="chip" style="background:#141413"></span><span class="mono">#141413</span></div>
+        <div class="swatch"><span class="chip" style="background:#FF8FA3"></span><span class="mono">#FF8FA3</span></div>
+      </div>
+    </div>
+    <div class="stage"><img src="svg/useful-bot-logo.svg" width="1024" height="1024" alt="Useful Bot logo: a white round face with black glasses and a smile, on black"></div>
+  </section>
+
+  <section aria-labelledby="masters">
+    <div class="head">
+      <h2 id="masters">Three masters</h2>
+      <p class="muted">Same face, same geometry, three placements. The head sits where the first-run Welcome tile puts it: a 76 pt face box in a 112 pt tile.</p>
+    </div>
+    <div class="masters">
+      <figure>
+        <div class="tile on-checker"><img src="svg/useful-bot-mark.svg" width="1024" height="1024" alt="The mark, white head on transparent"></div>
+        <figcaption><h3>Mark</h3><span class="mono muted">svg/useful-bot-mark.svg</span><span class="muted">Transparent. For your own black surface.</span></figcaption>
+      </figure>
+      <figure>
+        <div class="tile on-black"><img src="svg/useful-bot-logo.svg" width="1024" height="1024" alt="The logo, white head on a black square"></div>
+        <figcaption><h3>Logo</h3><span class="mono muted">svg/useful-bot-logo.svg</span><span class="muted">The default. Brings its own black.</span></figcaption>
+      </figure>
+      <figure>
+        <div class="tile on-checker"><img src="svg/useful-bot-app-icon-macos.svg" width="1024" height="1024" alt="The macOS app icon, white head on a black rounded tile"></div>
+        <figcaption><h3>macOS app icon</h3><span class="mono muted">svg/useful-bot-app-icon-macos.svg</span><span class="muted">Apple's grid with a continuous corner.</span></figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="inverse">
+    <div class="head">
+      <h2 id="inverse">Inverse, for white surfaces</h2>
+      <p class="muted">Black head on white, for documents, light pages and print. Every colour flips so the glasses and eyes still read. White on black stays the default.</p>
+    </div>
+    <div class="masters">
+      <figure>
+        <div class="tile white-bg"><img src="svg/useful-bot-logo-inverse.svg" width="1024" height="1024" alt="Inverse logo: black head on white"></div>
+        <figcaption><h3>Inverse logo</h3><span class="mono muted">svg/useful-bot-logo-inverse.svg</span></figcaption>
+      </figure>
+      <figure>
+        <div class="tile on-checker"><img src="svg/useful-bot-mark-inverse.svg" width="1024" height="1024" alt="Inverse mark: black head on transparent"></div>
+        <figcaption><h3>Inverse mark</h3><span class="mono muted">svg/useful-bot-mark-inverse.svg</span></figcaption>
+      </figure>
+      <figure>
+        <div class="tile white-bg"><img src="png/white/useful-bot-32.png" width="32" height="32" alt="Inverse logo at 32 px, enlarged" style="width:50%;image-rendering:pixelated"></div>
+        <figcaption><h3>At 32 px</h3><span class="mono muted">png/white/useful-bot-32.png</span></figcaption>
+      </figure>
+    </div>
+    <div class="lockups">
+      <div class="lockup white-bg" style="border:1px solid var(--rule)"><img src="svg/useful-bot-lockup-horizontal-inverse.svg" alt="Inverse horizontal lockup"></div>
+      <div class="lockup stack white-bg" style="border:1px solid var(--rule)"><img src="svg/useful-bot-lockup-stacked-inverse.svg" alt="Inverse stacked lockup"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="appicon">
+    <div class="head">
+      <h2 id="appicon">App icon</h2>
+      <p class="muted">Rendered from the vector at every size in the ICNS. Nothing is scaled down from a bitmap.</p>
+    </div>
+    <div class="ladder">
+      <figure><img class="i1024" src="app/AppIcon.appiconset/icon_512x512@2x.png" width="1024" height="1024" alt="App icon, 1024 px"><figcaption><span class="mono">1024</span></figcaption></figure>
+      <figure><img class="i512" src="app/AppIcon.appiconset/icon_512x512.png" width="512" height="512" alt="App icon, 512 px"><figcaption><span class="mono">512</span></figcaption></figure>
+      <figure><img class="i128" src="app/AppIcon.appiconset/icon_128x128.png" width="128" height="128" alt="App icon, 128 px"><figcaption><span class="mono">128</span></figcaption></figure>
+      <figure><img class="i32" src="app/AppIcon.appiconset/icon_32x32.png" width="32" height="32" alt="App icon, 32 px"><figcaption><span class="mono">32</span></figcaption></figure>
+      <figure><img class="i16" src="app/AppIcon.appiconset/icon_16x16.png" width="16" height="16" alt="App icon, 16 px"><figcaption><span class="mono">16</span></figcaption></figure>
+      <figure>
+        <div class="dock" aria-hidden="true"><span></span><img src="app/AppIcon.appiconset/icon_128x128@2x.png" width="256" height="256" alt=""><span></span></div>
+        <figcaption><span class="muted">In the Dock</span></figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="favicons">
+    <div class="head">
+      <h2 id="favicons">Favicons</h2>
+      <p class="muted">Tabs are tiny, so the favicon's head fills 84% of its square. The ICO carries 16, 32 and 48 px.</p>
+    </div>
+    <div class="tabs">
+      <div class="tab"><img src="favicon/favicon-16x16.png" width="16" height="16" alt="">Useful Bot</div>
+    </div>
+    <div class="zoom">
+      <figure><img class="z16" src="favicon/favicon-16x16.png" width="16" height="16" alt="16 px favicon, enlarged"><figcaption><span class="mono">16 px, 8x</span></figcaption></figure>
+      <figure><img class="z32" src="favicon/favicon-32x32.png" width="32" height="32" alt="32 px favicon, enlarged"><figcaption><span class="mono">32 px, 4x</span></figcaption></figure>
+      <figure><img class="z180" src="favicon/apple-touch-icon.png" width="180" height="180" alt="Apple touch icon"><figcaption><span class="mono">180 touch icon</span></figcaption></figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="lockups">
+    <div class="head">
+      <h2 id="lockups">Wordmark and lockups</h2>
+      <p class="muted">Inter Semibold, outlined, tracked -0.018em. The name's cap height is centred on the head. White type, so always on black.</p>
+    </div>
+    <div class="lockups">
+      <div class="lockup"><img src="svg/useful-bot-lockup-horizontal.svg" alt="Horizontal lockup: head and the name Useful Bot"></div>
+      <div class="lockup stack"><img src="svg/useful-bot-lockup-stacked.svg" alt="Stacked lockup: head above the name"></div>
+    </div>
+    <div class="navbar">
+      <img src="svg/useful-bot-lockup-horizontal.svg" alt="Useful Bot">
+      <nav aria-hidden="true"><span>Download</span><span>Privacy</span></nav>
+    </div>
+    <div class="wordmark"><img src="svg/useful-bot-wordmark.svg" alt="Useful Bot wordmark"></div>
+  </section>
+
+  <section aria-labelledby="pwa">
+    <div class="head">
+      <h2 id="pwa">Maskable icon</h2>
+      <p class="muted">The dashed ring is the W3C safe circle, 40% of the width. The head's radius is 31%, so any launcher mask keeps the whole face.</p>
+    </div>
+    <div class="pwa">
+      <figure><div class="mask"><img src="pwa/icon-maskable-512.png" width="512" height="512" alt="Maskable icon, unmasked"><span class="safe"></span></div><figcaption><span class="mono">Full bleed</span></figcaption></figure>
+      <figure><div class="mask circle"><img src="pwa/icon-maskable-512.png" width="512" height="512" alt="Maskable icon in a circle mask"></div><figcaption><span class="mono">Circle mask</span></figcaption></figure>
+      <figure><div class="mask squircle"><img src="pwa/icon-maskable-512.png" width="512" height="512" alt="Maskable icon in a rounded square mask"></div><figcaption><span class="mono">Rounded mask</span></figcaption></figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="social">
+    <div class="head">
+      <h2 id="social">Social</h2>
+      <p class="muted">Link previews pair the head with the name. Profile images are the logo, and a circle crop keeps the head whole.</p>
+    </div>
+    <div class="social">
+      <figure><img src="social/og-image.png" width="1200" height="630" alt="Link preview image"><figcaption><span class="mono">og-image.png, 1200 x 630</span></figcaption></figure>
+      <figure class="avatar"><img src="social/avatar-1024.png" width="1024" height="1024" alt="Social avatar, circle crop"><figcaption><span class="mono">avatar-1024.png, cropped</span></figcaption></figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="rules">
+    <div class="head">
+      <h2 id="rules">Do and don't</h2>
+      <p class="muted">The head is always the original white face on black. Colored heads are for bots, not the brand.</p>
+    </div>
+    <div class="rules">
+      <figure class="do"><div class="tile on-black"><img src="svg/useful-bot-mark.svg" width="1024" height="1024" alt=""></div><figcaption><span class="verdict">Do</span><span>White head on black, with its clear space.</span></figcaption></figure>
+      <figure class="do"><div class="tile white-bg"><img src="svg/useful-bot-app-icon-macos.svg" width="1024" height="1024" alt=""></div><figcaption><span class="verdict">Do</span><span>On white, use the inverse logo, or the icon, which brings its own black.</span></figcaption></figure>
+      <figure class="dont"><div class="tile white-bg"><img src="svg/useful-bot-mark.svg" width="1024" height="1024" alt=""></div><figcaption><span class="verdict">Don't</span><span>Put the white mark on white. Use the inverse set.</span></figcaption></figure>
+      <figure class="dont"><div class="tile on-black"><img src="avatars/blue.svg" width="768" height="768" alt="" style="width:62%"></div><figcaption><span class="verdict">Don't</span><span>Use a bot color as the logo.</span></figcaption></figure>
+      <figure class="dont stretch"><div class="tile on-black"><img src="svg/useful-bot-mark.svg" width="1024" height="1024" alt=""></div><figcaption><span class="verdict">Don't</span><span>Stretch or squash the circle.</span></figcaption></figure>
+      <figure class="dont rotate"><div class="tile on-black"><img src="svg/useful-bot-mark.svg" width="1024" height="1024" alt=""></div><figcaption><span class="verdict">Don't</span><span>Tilt the head.</span></figcaption></figure>
+      <figure class="dont crop"><div class="tile on-black"><img src="svg/useful-bot-mark.svg" width="1024" height="1024" alt=""></div><figcaption><span class="verdict">Don't</span><span>Crop into the face.</span></figcaption></figure>
+      <figure class="do"><div class="tile on-black"><img src="motion/useful-bot-animated.svg" width="1024" height="1024" alt=""></div><figcaption><span class="verdict">Do</span><span>Float and blink, and nothing else. It stops for Reduce Motion.</span></figcaption></figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="files">
+    <div class="head">
+      <h2 id="files">Where things live</h2>
+      <p class="muted">Edit the masters in <code>brand/source/</code>, then run <code>npm run brand:build</code>. Never edit a generated file. The app reads <code>png/mark/useful-bot-128.png</code>, <code>png/black/useful-bot-256.png</code>, <code>svg/useful-bot-wordmark.svg</code> and <code>app/macos/UsefulBot.icns</code>.</p>
+    </div>
+  </section>
+</main>
