@@ -354,9 +354,20 @@ final class AppModel: ObservableObject {
     private var resumePoint: (sessionId: String, next: Int, lastEventId: String?)?
     /// Per-bot chat snapshots on disk, so a first open after launch starts
     /// where the chat was left instead of at event zero.
-    private let snapshots = ChatSnapshotStore(directory: ChatSnapshotStore.defaultDirectory, build: AppModel.buildId)
-    /// This binary, as the snapshots know it: every rebuild changes its size
-    /// or modification time, and with it which snapshots are trusted.
+    private let snapshots = ChatSnapshotStore(directory: ChatSnapshotStore.defaultDirectory, build: AppModel.snapshotKey)
+    /// Which snapshots this app trusts. A bundled build carries the hash of the
+    /// replay logic's sources (build-app.sh): UsefulBotCore and this file, which
+    /// feeds the fold. An update that leaves them alone keeps every chat's
+    /// snapshot and opens it at once; one that touches them replays each chat
+    /// once. Without the stamp (a bare `swift run`), every rebuild of the
+    /// binary starts over.
+    private static let snapshotKey: String = {
+        if let logic = Bundle.main.object(forInfoDictionaryKey: "UBSnapshotLogic") as? String, !logic.isEmpty {
+            return "v\(ChatSnapshot.formatVersion)-core-\(logic)"
+        }
+        return buildId
+    }()
+    /// This binary: every rebuild changes its size or modification time.
     private static let buildId: String = {
         guard let url = Bundle.main.executableURL,
               let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return "unknown" }

@@ -27,7 +27,8 @@
     "test:macos": "macos/test.sh",
     "test:all": "npm test && macos/test.sh",
     "build:app": "macos/build-app.sh",
-    "install:app": "scripts/install-app.sh"
+    "install:app": "scripts/install-app.sh",
+    "postinstall": "\"$npm_node_execpath\" scripts/patch-eve.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.48",

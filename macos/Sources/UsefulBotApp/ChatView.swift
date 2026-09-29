@@ -694,6 +694,11 @@ struct ChatView: View {
                     .padding(.top, DesignTokens.Space.chatPaddingVertical)
                     // The working row's slot is most of the bottom margin.
                     .padding(.bottom, DesignTokens.Space.chatPaddingVertical - WorkingRow.height + Self.bottomFade)
+                    // The floor below is a minimum, not the stack's height. A
+                    // finite height here made the eager stack share it out
+                    // between rows, and an earlier bubble's paragraph shrank
+                    // to one truncated line once a later reply arrived.
+                    .fixedSize(horizontal: false, vertical: true)
                     // A chat shorter than the window reads from the top, like
                     // a page. The bottom anchor below would otherwise sit a
                     // first message against the composer with the window

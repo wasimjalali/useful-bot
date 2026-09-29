@@ -26,7 +26,7 @@ takes the pointer or focus.
 |---|---|
 | `cold_launch` | App launch until the first chat (Perf Short A) has settled |
 | `cold_first_open_tools` / `_replies` | First open of a long chat after a cold launch, from its disk snapshot |
-| `cold_no_snapshot_tools` / `_replies` | The same with the snapshot deleted, which is the first launch after every rebuild |
+| `cold_no_snapshot_tools` / `_replies` | The same with the snapshot deleted, which is the first launch after a build that changed `UsefulBotCore` or `AppModel.swift` |
 | `warm_switch_short` | Switching between two short chats |
 | `warm_return_tools` / `_replies` | Coming back to a long chat already opened this launch, 30 times each |
 

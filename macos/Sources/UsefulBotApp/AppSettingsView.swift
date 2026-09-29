@@ -1092,8 +1092,8 @@ enum ReleaseLinks {
         releasesRepoLive ? URL(string: "https://github.com/wasimjalali/useful-bot-releases/releases/tag/v\(AppUpdater.version)") : nil
     }
 
-    /// No privacy page exists yet.
-    static let privacy: URL? = nil
+    /// What the app sends and where (site/public/privacy).
+    static let privacy: URL? = URL(string: "https://bot.usefulbuild.com/privacy/")
 }
 
 /// Settings > Feedback's form, kept for the life of the app so closing the

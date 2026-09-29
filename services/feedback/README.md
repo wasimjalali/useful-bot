@@ -37,6 +37,22 @@ npx wrangler deploy
 `IP_SALT` is already set. A brand-new Worker can't take `wrangler secret put` before it exists, so
 the first deploy passed it with `--secrets-file` (a private temp file, deleted right after).
 
+## Deleting someone's feedback
+
+The privacy page promises deletion on request. The app never shows the sender an id, so find
+their rows by reply email, or by a phrase from their message and the rough date:
+
+```sh
+cd services/feedback
+npx wrangler d1 execute useful-bot-feedback --remote --command "SELECT id, created_at, kind, substr(message, 1, 80) FROM feedback WHERE reply_email = 'them@example.com' OR message LIKE '%a phrase they quote%'"
+npx wrangler d1 execute useful-bot-feedback --remote --command "DELETE FROM feedback WHERE id IN ('<id>')"
+```
+
+The row is not the only copy. Also delete, in the hello@usefulbuild.com inbox, the "Problem"
+email for that id and the weekly digests that listed it (search the id and the reply address).
+D1 Time Travel keeps the database's recent history for its retention window after the delete;
+say so if the sender asks.
+
 ## Check
 
 `npm run e2e` runs 32 cases against `wrangler dev` with a local D1 and simulated email: validation,

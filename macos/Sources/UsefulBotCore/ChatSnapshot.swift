@@ -40,10 +40,11 @@ public struct ChatSnapshot: Codable, Equatable, Sendable {
     /// meets their events again and passes over them, as the follower does.
     public var localTurnIds: [String]
     public var savedAt: Date
-    /// The app build that wrote it. The fold logic in `StreamProjection.apply`
-    /// changes between builds without renaming a field, and a snapshot is
-    /// only what a replay from zero gives under the logic that made it, so
-    /// another build replays the chat and writes it afresh.
+    /// The replay logic that wrote it (the app passes a hash of this module's
+    /// sources and of the AppModel that feeds it). The fold logic in
+    /// `StreamProjection.apply` changes without renaming a field, and a
+    /// snapshot is only what a replay from zero gives under the logic that
+    /// made it, so other logic replays the chat and writes it afresh.
     public var build: String = ""
 
     public init(
