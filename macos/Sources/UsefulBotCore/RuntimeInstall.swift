@@ -106,7 +106,7 @@ public enum RuntimeInstall {
                 guard configured else { throw error }
                 NSLog("Useful Bot: credential refresh failed, keeping the current ones: %@", String(describing: error))
             }
-    
+
         }
     }
 

@@ -4,7 +4,7 @@ Required Notice: Copyright 2026 Wasim Jalali (Useful Build, https://bot.usefulbu
 
 Useful Bot is source available. You may use it under either of these licenses, at your choice:
 
-- [PolyForm Noncommercial 1.0.0](LICENSE-NONCOMMERCIAL.md): personal use (study, hobby projects,
+- [PolyForm Noncommercial 1.0.0](LICENSE-NONCOMMERCIAL.md): any noncommercial purpose, such as personal use (study, hobby projects,
   private use), and charities, schools, public research and government bodies.
 - [PolyForm Small Business 1.0.0](LICENSE-SMALL-BUSINESS.md): any use by a company with fewer than
   100 people (employees and contractors) and under 1,000,000 USD (2019, adjusted for inflation) of

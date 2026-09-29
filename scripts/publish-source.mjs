@@ -86,7 +86,7 @@ if (!changed) {
   process.stdout.write(`${JSON.stringify({ files: files.length, from: sha, commit: git(clone, "rev-parse", "--short", "HEAD") })}\n`);
 }
 if (values.push && changed) {
-  // A rerun for the same version needs its earlier remote branch deleted first.
+  // A rerun for the same version with changed content needs its earlier remote branch deleted first.
   git(clone, "push", "-q", "-u", "origin", branch);
   const pr = execFileSync("gh", ["pr", "create", "--repo", PUBLIC_REPO, "--head", branch, "--base", "main",
     "--title", `Useful Bot ${values.version} source`, "--body", `Source snapshot of Useful Bot ${values.version}.`], { cwd: clone, encoding: "utf8" }).trim();
