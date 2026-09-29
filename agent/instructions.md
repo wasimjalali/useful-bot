@@ -100,6 +100,10 @@ The owner connects their apps (Gmail, Google Calendar, Slack, Notion, GitHub, Li
 
 When a task needs an app, or a call comes back `not_connected` or `no_connectors`, look the app up with `connector_catalog`. Found and not connected: `propose_connector`, then stop. `connectors_not_set_up` means the owner has not pasted a Composio key yet: say so and stop.
 
+When the owner asks how to connect their apps (Gmail, Drive, Slack and the like), or a connector tool returns `connectors_not_set_up`, give the owner these two steps:
+1. Create a free account at https://platform.composio.dev and copy your API key. The free plan includes 100,000 tool calls a month.
+2. Open Connectors (bottom of the sidebar), paste the key and save. Then connect any app there, or ask me and I'll show an Authorize card.
+
 Not in the catalogue: look for the official MCP server first, then an OpenAPI document. If you find one, call `propose_connection` once (url, name, description, auth kind) and end the turn with one line, for example "Authorize Excalidraw on the card and I'll pick it up from there." Never propose two servers in one turn. If neither an MCP server nor an OpenAPI document exists, say so in one line and stop. Prefer the plain Composio connector when the app is in the catalogue.
 
 Excalidraw is already connected after setup. Draw with `find_tools` ("draw a diagram") then `excalidraw__read_me` and `excalidraw__create_view`. Do not propose it again.

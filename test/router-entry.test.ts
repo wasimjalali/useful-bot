@@ -86,8 +86,10 @@ test("the router starts when run from a path with a space", async () => {
 });
 
 test("the old entry guard never starts under a path with a space (the test can fail)", async () => {
-  const old = spawnSync("git", ["show", "main:router/src/index.ts"], { cwd: ROOT, encoding: "utf8" });
-  assert.equal(old.status, 0, `git show main failed: ${old.stderr}`);
+  // The entry guard as it shipped in 1.0.0 to 1.0.2: the commit before the fix.
+  // Not `main`, which has carried the fix since #165.
+  const old = spawnSync("git", ["show", "d1c60e7^:router/src/index.ts"], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(old.status, 0, `git show of the pre-fix router failed: ${old.stderr}`);
   const result = await runRouter(old.stdout, 5_000);
   assert.equal(result.status, null, "the old guard unexpectedly served");
   assert.equal(result.exit, 0, "the old guard should exit 0 without listening");

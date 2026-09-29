@@ -32,9 +32,9 @@ struct ChatMarkdownView: View, Equatable {
     private func blockView(_ block: MarkdownBlock) -> some View {
         switch block {
         case .paragraph(let content):
-            Text(inline(content))
+            LinkText(content: inline(content))
         case .heading(let level, let content):
-            Text(inline(content))
+            LinkText(content: inline(content))
                 .font(Theme.font(headingSize(level), .semibold))
                 .tracking(-0.02 * headingSize(level))
                 .padding(.top, level == 1 ? 2 : 1)
@@ -47,7 +47,7 @@ struct ChatMarkdownView: View, Equatable {
                         // Wraps instead of truncating: inside a bubble that
                         // hugs its content the row is offered one line's
                         // height first, and took it.
-                        Text(inline(item))
+                        LinkText(content: inline(item))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -63,7 +63,7 @@ struct ChatMarkdownView: View, Equatable {
                         // Wraps instead of truncating: inside a bubble that
                         // hugs its content the row is offered one line's
                         // height first, and took it.
-                        Text(inline(item))
+                        LinkText(content: inline(item))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -210,7 +210,7 @@ struct MarkdownTableView: View {
         let alignment = table.alignments.indices.contains(column)
             ? table.alignments[column]
             : .leading
-        return Text(inline(cell))
+        return LinkText(content: inline(cell))
             .font(header ? Theme.font(DesignTokens.FontSize.chatBody, .semibold) : nil)
             .multilineTextAlignment(textAlignment(alignment))
             // Wraps rather than truncating or forcing the column wider. No
@@ -398,5 +398,88 @@ struct CodeBlockView: View {
         .pointerOnHover()
         .accessibilityLabel(copied ? "Copied" : "Copy code")
         .help("Copy")
+    }
+}
+
+/// Inline text whose links show the pointing hand. Selectable `Text` keeps the
+/// I-beam over the whole run, links included, and a cursor can't be set for
+/// part of a `Text`. So on macOS 15 and later a text renderer records where the
+/// link runs are drawn, and the pointer turns into the hand only over those
+/// rects. Text without a link, and macOS 14, stay on the plain `Text` path.
+struct LinkText: View {
+    let content: AttributedString
+
+    var body: some View {
+        if #available(macOS 15.0, *), content.runs.contains(where: { $0.link != nil }) {
+            LinkHoverText(content: content)
+        } else {
+            Text(content)
+        }
+    }
+}
+
+@available(macOS 15.0, *)
+private struct LinkHoverText: View {
+    let content: AttributedString
+    @State private var rects = LinkRects()
+    @State private var overLink = false
+
+    var body: some View {
+        text
+            .textRenderer(LinkRectRenderer(rects: rects))
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let point):
+                    let inside = rects.contains(point)
+                    if inside != overLink { overLink = inside }
+                case .ended:
+                    if overLink { overLink = false }
+                }
+            }
+            .pointerStyle(overLink ? .link : nil)
+    }
+
+    /// The same runs as `Text(content)`, with each link run marked so the
+    /// renderer can find it.
+    private var text: Text {
+        content.runs.reduce(Text(verbatim: "")) { result, run in
+            let piece = Text(AttributedString(content[run.range]))
+            return result + (run.link != nil ? piece.customAttribute(LinkMark()) : piece)
+        }
+    }
+}
+
+@available(macOS 15.0, *)
+private struct LinkMark: TextAttribute {}
+
+/// Where the link runs were last drawn, in the text's own coordinates. A class
+/// so the renderer can fill it while drawing without invalidating the view.
+private final class LinkRects: @unchecked Sendable {
+    private var stored: [CGRect] = []
+    private let lock = NSLock()
+
+    func replace(_ rects: [CGRect]) {
+        lock.lock(); stored = rects; lock.unlock()
+    }
+
+    func contains(_ point: CGPoint) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return stored.contains { $0.contains(point) }
+    }
+}
+
+@available(macOS 15.0, *)
+private struct LinkRectRenderer: TextRenderer {
+    let rects: LinkRects
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        var found: [CGRect] = []
+        for line in layout {
+            for run in line where run[LinkMark.self] != nil {
+                found.append(run.typographicBounds.rect)
+            }
+            context.draw(line)
+        }
+        rects.replace(found)
     }
 }
