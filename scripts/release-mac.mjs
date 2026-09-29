@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Builds a release of the macOS app: the app with the services it carries, a
-// zip signed for Sparkle, and the one-item appcast that points at it.
+// zip signed for Sparkle, the one-item appcast that points at it, and a DMG
+// with the drag-to-Applications window for browser downloads.
 //
 //   npm run release:mac -- --version 0.3.0 [--feed-url URL] [--download-base URL] [--out DIR] [--allow-dirty]
 //
@@ -8,11 +9,12 @@
 // --ed-public-key from its `generate_keys`); those builds can never update a
 // real install, whose app only trusts ED_PUBLIC_KEY.
 //
-// Nothing is uploaded. Publishing is putting the zip, appcast.xml and install.sh where
+// Nothing is uploaded. Publishing is putting the zip, the DMG, appcast.xml and install.sh where
 // --download-base and --feed-url say (docs/distribution.md).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -24,6 +26,11 @@ const RELEASES = "https://github.com/wasimjalali/useful-bot-releases/releases";
 const ED_PUBLIC_KEY = "11z765AdjQEGbUvVpESlqpz5OLouCcCzucHfPpuNC0M=";
 const ZIP = "Useful-Bot-macOS.zip";
 const SPARKLE_BIN = path.join(ROOT, "macos/.build/artifacts/sparkle/Sparkle/bin");
+const DMG = "Useful-Bot-macOS.dmg";
+// dmgbuild writes the DMG window's .DS_Store itself, so no Finder scripting.
+// It lives in a venv under macos/.build, never in the system Python.
+const DMGBUILD = "dmgbuild==1.6.7";
+const DMG_VENV = path.join(ROOT, "macos/.build/dmg-venv");
 
 const { values } = parseArgs({
   options: {
@@ -61,6 +68,11 @@ if (accountKey !== values["ed-public-key"]) {
   process.stderr.write(`the Keychain key for account "${values["ed-account"]}" is not the public key given (${values["ed-public-key"]})\n`);
   process.exit(1);
 }
+// The DMG tool, fetched once, before the long build.
+if (!existsSync(path.join(DMG_VENV, "bin/python"))) {
+  execFileSync("python3", ["-m", "venv", DMG_VENV], { stdio: "inherit" });
+}
+execFileSync(path.join(DMG_VENV, "bin/pip"), ["install", "--quiet", "--disable-pip-version-check", DMGBUILD], { stdio: "inherit" });
 const out = path.resolve(values.out);
 // Only ever replace an earlier release folder, never an arbitrary one.
 if (existsSync(out) && readdirSync(out).length > 0 && !existsSync(path.join(out, "appcast.xml"))) {
@@ -114,4 +126,39 @@ const installer = readFileSync(path.join(ROOT, "scripts/install.sh"), "utf8")
   .replace("@@ZIP_SHA256@@", zipSha);
 if (installer.includes("@@ZIP_")) throw new Error("install.sh placeholders were not filled");
 writeFileSync(path.join(out, "install.sh"), installer, { mode: 0o755 });
-process.stdout.write(`${JSON.stringify({ version, build, zip, bytes: statSync(zip).size, sha256: zipSha, appcast: path.join(out, "appcast.xml"), feed: values["feed-url"] })}\n`);
+
+// The DMG: the same app beside a link to /Applications over the brand
+// background (macos/dmg/). Built from the bundle the zip holds.
+const dmg = path.join(out, DMG);
+const scratch = mkdtempSync(path.join(tmpdir(), "ub-dmg-"));
+try {
+  const font = path.join(ROOT, "brand/source/fonts/Inter-SemiBold.ttf");
+  for (const [name, scale] of [["background.png", "1"], ["background@2x.png", "2"]]) {
+    execFileSync("swift", [path.join(ROOT, "macos/dmg/background.swift"), path.join(scratch, name), scale, font], { stdio: "inherit" });
+  }
+  execFileSync(path.join(DMG_VENV, "bin/dmgbuild"), [
+    "-s", path.join(ROOT, "macos/dmg/settings.py"),
+    "-D", `app=${path.join(ROOT, "macos/dist/Useful Bot.app")}`,
+    "-D", `background=${path.join(scratch, "background.png")}`,
+    "Useful Bot", dmg,
+  ], { stdio: "inherit" });
+
+  // Mounted read-only and out of Finder's sight, checked, then let go.
+  const mount = path.join(scratch, "mount");
+  mkdirSync(mount);
+  execFileSync("hdiutil", ["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount, dmg], { stdio: "ignore" });
+  try {
+    const layout = execFileSync(path.join(DMG_VENV, "bin/python"), [path.join(ROOT, "macos/dmg/verify.py"), mount, "Useful Bot.app"], { encoding: "utf8" }).trim();
+    process.stderr.write(`dmg layout: ${layout}\n`);
+    execFileSync("codesign", ["--verify", "--strict", path.join(mount, "Useful Bot.app")]);
+  } finally {
+    execFileSync("hdiutil", ["detach", mount], { stdio: "ignore" });
+  }
+  const format = execFileSync("hdiutil", ["imageinfo", "-plist", dmg], { encoding: "utf8" });
+  if (!/<key>Format<\/key>\s*<string>UDZO<\/string>/.test(format)) throw new Error("the DMG is not a compressed (UDZO) image");
+} finally {
+  rmSync(scratch, { recursive: true, force: true });
+}
+const dmgSha = createHash("sha256").update(readFileSync(dmg)).digest("hex");
+
+process.stdout.write(`${JSON.stringify({ version, build, zip, bytes: statSync(zip).size, sha256: zipSha, dmg, dmgBytes: statSync(dmg).size, dmgSha256: dmgSha, appcast: path.join(out, "appcast.xml"), feed: values["feed-url"] })}\n`);
