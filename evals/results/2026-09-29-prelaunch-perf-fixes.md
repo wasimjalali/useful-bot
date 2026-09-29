@@ -121,3 +121,12 @@ Visual medians moved the same way: cold open replies 1513 to 571, warm return re
 - `e0d66e9` fix: a replayed long chat lands when the bottom-marker scroll stalls.
 - Budgets not touched. The replies cases now sit far under theirs (cold open app median 496 vs
   a 1,690 budget); tightening them is a separate reviewed edit.
+
+## Final run and the ship decision
+
+The last full check on the shipped head (39fa9ad, `evals/results/2026-09-29-perf-check-2004-39fa9ad`) had
+no breaches and every launch settled. Replies open 501 ms, warm return 482 ms, stall worst 313 ms,
+no-snapshot replies 4,056 ms, cold launch 856 ms. It was marked INCONCLUSIVE by one 2-second sample of
+273% in the multi-minute `warm` launch (macOS AMPLibraryAgent and fairplayd, not the app). The owner
+accepted it for release on 2026-09-29, on the strength of this run's zero breaches and the clean PASS
+at 1936 on code that differs only by a 0.5 pt tolerance in the landing check.
