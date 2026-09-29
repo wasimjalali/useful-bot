@@ -156,7 +156,13 @@ def external_cpu():
         parts = line.strip().split(None, 1)
         if len(parts) != 2:
             continue
-        cpu, command = float(parts[0]), parts[1]
+        # A command line with a newline in it spills onto more lines; those
+        # carry no CPU column and belong to the process above.
+        try:
+            cpu = float(parts[0])
+        except ValueError:
+            continue
+        command = parts[1]
         if any(p in command for p in own):
             continue
         total += cpu
