@@ -49,6 +49,28 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
             .receive(on: DispatchQueue.main)
             .assign(to: &$allowsAutomaticUpdates)
         lastChecked = updater.lastUpdateCheckDate
+        // A quiet look at the feed soon after launch, so the account menu can
+        // offer "Update now" without waiting for Sparkle's daily check. It
+        // shows no window; the delegate below records what it finds.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let updater = self?.controller?.updater, updater.canCheckForUpdates else { return }
+            updater.checkForUpdateInformation()
+        }
+    }
+
+    /// The version waiting to be installed, found or already downloaded.
+    var pendingVersion: String? {
+        switch status {
+        case .available(let version), .ready(let version): return version
+        default: return nil
+        }
+    }
+
+    /// The menu's Update now: installs a downloaded update, or opens
+    /// Sparkle's window for one it has only found.
+    func updateNow() {
+        if isReady { installUpdate() } else { checkForUpdates() }
     }
 
     /// False in a dev build, which has no feed.

@@ -385,7 +385,26 @@ struct RailView: View {
                     .accessibilityIdentifier("account-version")
                 Spacer(minLength: 0)
                 // A dev build has no feed to check.
-                if updater.available {
+                if let version = updater.pendingVersion {
+                    Button {
+                        accountOpen = false
+                        updater.updateNow()
+                    } label: {
+                        Text("Update now")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color(nsColor: .linkColor))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color(nsColor: .linkColor).opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .disabled(!updater.canCheckForUpdates)
+                    .pointerOnHover()
+                    .accessibilityLabel("Update to \(version)")
+                    .accessibilityIdentifier("account-update-now")
+                } else if updater.available {
                     Button("Check for updates") {
                         accountOpen = false
                         updater.checkForUpdates()
