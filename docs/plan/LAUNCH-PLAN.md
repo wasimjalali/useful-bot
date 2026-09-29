@@ -171,7 +171,8 @@ The bots are the brand. Make them feel cute and premium.
 - **PR #144 lows:** fix every open low listed in its description.
 - **Release repo:** create the public repo `wasimjalali/useful-bot-releases` and publish v1.0.0
   (`npm run release:mac`), only on Wasim's go. Then remove `data-release="soon"` from
-  `site/public/index.html` and redeploy the site, and turn on `ReleaseLinks.releasesRepoLive`
+  `site/public/index.html`, put the JSON-LD `downloadUrl` back and redeploy the site, and turn on
+  `ReleaseLinks.releasesRepoLive`
   (What's new, Report a bug on GitHub).
 - **Live checks left from #145:**
   - "Install update" on a real update.
@@ -182,6 +183,9 @@ The bots are the brand. Make them feel cute and premium.
     used, or an in-app route to Settings.
 - **Wasim's own switch:** Wasim moves to the installed release as a clean first-time user. Back up
   `~/.useful-bot` and the repo `.eve` first.
+- **Open source:** the bots' global instructions and the landing page say Useful Bot is open
+  source (Wasim's decision, 2026-09-29). Publish the source with a license before the release
+  ships, so that claim is true on day one.
 - **Done when:** a fresh Mac installs from the landing page, runs first run end to end, and takes
   an update.
 

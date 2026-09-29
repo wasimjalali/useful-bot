@@ -23,6 +23,9 @@
   B-firstlaunch 9242 ms, after-run1 845 ms, after-run2 707 ms, D-launch 10580 ms. The per-frame
   JPEGs (about 900 per run) were not kept; the tiled sheets here show each picked frame. Rerun:
   `coldopen.sh <outDir> [install]`, then `framesheet <outDir>/frames sheet.jpg`.
+- The chat times start at the window's first frame. Launch to that frame took another 1.3 to
+  2.3 s in every run (`*-timing.txt`), the same before and after. `coldopen.sh` assumes this
+  checkout at `~/Desktop/useful-bot`.
 - Before: `main` at `b483a2f`, snapshots keyed to the binary's size and modification time.
 - After: snapshots keyed to `ChatSnapshot.formatVersion` plus a hash of the `UsefulBotCore`
   sources, stamped into Info.plist by `macos/build-app.sh` (`UBSnapshotLogic`).
@@ -62,6 +65,14 @@ when the replay logic can actually have changed.
 - Test Bot, 60 fps through the turn (`tb-run1.jpg`): two parallel sub-agents, no owner bubble
   for either report in any frame, the working row cleared, the combined answer landed. Same after
   a relaunch (`testbot-after-relaunch.png`).
+
+## Later the same day
+
+Review round 1 found that `AppModel.swift` also shapes what a snapshot stores (the resume
+follower, the replay swap, the prewarm builder), so the key now hashes it too. It changed in
+about a quarter of recent commits, so more updates will replay each chat once than the table
+above suggests. That is the safe direction; it is noted here so a later perf check on "first
+open after update" isn't a surprise.
 
 ## What changed because of it
 

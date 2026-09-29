@@ -66,6 +66,7 @@ fi
 # folded under is unchanged (AppModel.snapshotKey). That logic is the fold in
 # UsefulBotCore plus AppModel, which feeds it (the resume follower, the replay
 # swap, the prewarm builder), so a change in either replays each chat once.
+[ -d Sources/UsefulBotCore ] && [ -f Sources/UsefulBotApp/AppModel.swift ] || { echo "snapshot key sources moved: update build-app.sh" >&2; exit 1; }
 SNAPSHOT_LOGIC=$( (find Sources/UsefulBotCore -type f -print0; printf '%s\0' Sources/UsefulBotApp/AppModel.swift) \
   | LC_ALL=C sort -z | xargs -0 shasum -a 256 \
   | shasum -a 256 | cut -c1-16)

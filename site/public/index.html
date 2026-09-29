@@ -23,7 +23,7 @@
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Useful Bot: the white bot head with glasses on black." />
     <meta name="twitter:card" content="summary_large_image" />
-    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","@id":"https://bot.usefulbuild.com/#app","name":"Useful Bot","url":"https://bot.usefulbuild.com/","applicationCategory":"ProductivityApplication","operatingSystem":"macOS 14 or later, Apple Silicon","description":"A native Mac app for a team of AI bots that use the model provider you connect.","downloadUrl":"https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip","publisher":{"@type":"Organization","@id":"https://usefulbuild.com/#organization","name":"Useful Build","url":"https://usefulbuild.com/"}}</script>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","@id":"https://bot.usefulbuild.com/#app","name":"Useful Bot","url":"https://bot.usefulbuild.com/","applicationCategory":"ProductivityApplication","operatingSystem":"macOS 14 or later, Apple Silicon","description":"A native Mac app for a team of AI bots that use the model provider you connect.","publisher":{"@type":"Organization","@id":"https://usefulbuild.com/#organization","name":"Useful Build","url":"https://usefulbuild.com/"}}</script>
     <script>document.documentElement.classList.add("has-js");</script>
     <style>
 @font-face { font-family: "Geist"; src: url("/fonts/geist-variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
@@ -130,7 +130,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 .chapter { padding: 48px 0 64px; }
 .ch-copy { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 64px; align-items: end; margin-bottom: 36px; }
 .ch-copy .n { grid-column: 1 / -1; margin-bottom: -40px; display: block; color: var(--ink-muted); font-family: var(--font-mono); font-size: 12px; }
-.ch-copy h2 { max-width: 14ch; margin: 0; font-size: clamp(28px, 3vw, 42px); font-weight: 500; line-height: 1.06; letter-spacing: -0.035em; text-wrap: balance; }
+.ch-copy h3 { max-width: 14ch; margin: 0; font-size: clamp(28px, 3vw, 42px); font-weight: 500; line-height: 1.06; letter-spacing: -0.035em; text-wrap: balance; }
 .ch-copy p { max-width: 46ch; margin: 0; color: var(--ink-muted); font-size: 17px; line-height: 1.6; }
 .shot { max-width: 1040px; margin: 0; }
 .shot-wide { max-width: none; }
@@ -141,7 +141,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 @supports (animation-timeline: view()) {
   @media (prefers-reduced-motion: no-preference) {
     .shot { animation: shot-in linear both; animation-timeline: view(); animation-range: entry 0% cover 35%; }
-    .ch-copy h2 { animation: head-in linear both; animation-timeline: view(); animation-range: entry 5% entry 80%; }
+    .ch-copy h3 { animation: head-in linear both; animation-timeline: view(); animation-range: entry 5% entry 80%; }
     .spec li { animation: head-in linear both; animation-timeline: view(); animation-range: entry 0% entry 90%; }
   }
 }
@@ -246,7 +246,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
           </a>
         </div>
         <nav class="nav-links" aria-label="Sections">
-          <a href="#how">How it works</a>
+          <a href="#how">What you get</a>
           <a href="#facts">The facts</a>
           <a href="/privacy/">Privacy</a>
         </nav>
@@ -296,11 +296,11 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 
       <section class="chapters" id="how">
         <div class="wrap">
-          <h2 class="section-title">What your bots can do.</h2>
+          <h2 class="section-title">What you get.</h2>
           <article class="chapter">
             <div class="ch-copy">
               <span class="n">01</span>
-              <h2>One bot for every job.</h2>
+              <h3>One bot for every job.</h3>
               <p>Make a bot for each part of your work and group them the way your week runs. Each keeps its own chat, instructions and memory, and can hand work to another.</p>
             </div>
             <figure class="shot">
@@ -310,7 +310,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
           <article class="chapter">
             <div class="ch-copy">
               <span class="n">02</span>
-              <h2>Bring the model you already pay for.</h2>
+              <h3>Bring the model you already pay for.</h3>
               <p>Sign in with ChatGPT or GitHub Copilot, add a coding plan or an API key, or point it at a model running on your own Mac. Pick the model per chat.</p>
             </div>
             <figure class="shot">
@@ -320,7 +320,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
           <article class="chapter">
             <div class="ch-copy">
               <span class="n">03</span>
-              <h2>Your apps, on your terms.</h2>
+              <h3>Your apps, on your terms.</h3>
               <p>Connect Gmail, Calendar, Drive and hundreds more. Read only, Auto or Full access decides what a bot may do on its own. In Auto, anything else waits for your yes.</p>
             </div>
             <figure class="shot">
@@ -330,11 +330,11 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
           <article class="chapter">
             <div class="ch-copy">
               <span class="n">04</span>
-              <h2>Work that runs while you're busy.</h2>
-              <p>Give a bot a routine, like a morning brief or a weekly cleanup, and it runs on schedule. Try it first with Test run. Web search is built in and free, with no extra key.</p>
+              <h3>Work that runs while you're busy.</h3>
+              <p>Give a bot a routine, like a morning brief or a weekly cleanup, and it runs on schedule. Try it first with Test run. Web search is built in and free to use, with a daily allowance and no extra key.</p>
             </div>
             <figure class="shot shot-wide">
-              <div class="frame"><img alt="A Drive Admin routine: its instructions, the bot's report from a scheduled run and the schedule editor with Test run." src="/shots/routines.png" width="2632" height="1122" loading="lazy" decoding="async" /></div>
+              <div class="frame"><picture><source media="(max-width: 720px)" srcset="/shots/routines-pane.png" width="684" height="1122" /><img alt="A Drive Admin routine: its instructions, the bot's report from a scheduled run and the schedule editor with Test run." src="/shots/routines.png" width="2632" height="1122" loading="lazy" decoding="async" /></picture></div>
             </figure>
           </article>
         </div>
@@ -367,7 +367,8 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
           <div class="cta-layout">
             <h2>Put a team of bots on your Mac.</h2>
             <div>
-              <p>Download the app, connect a model and make your first bot. It takes a couple of minutes.</p>
+              <p class="when-live">Download the app, connect a model and make your first bot. It takes a couple of minutes.</p>
+              <p class="when-soon">The first release is on its way. Come back here for the download.</p>
               <div class="cta-row">
                 <a class="btn btn-light when-live" href="https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip">Download for Mac</a>
                 <span class="btn btn-light btn-soon when-soon">Coming soon</span>
@@ -438,11 +439,11 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
             button.textContent = "Copied";
             status.textContent = "Install command copied.";
           } catch {
-            window.getSelection().selectAllChildren(code);
+            window.getSelection()?.selectAllChildren(code);
             button.textContent = "Selected";
             status.textContent = "Couldn't copy. The command is selected: press Command-C.";
           }
-          setTimeout(() => { button.textContent = "Copy"; }, 1800);
+          setTimeout(() => { button.textContent = "Copy"; status.textContent = ""; }, 1800);
         });
       }
     </script>

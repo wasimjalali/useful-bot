@@ -359,8 +359,8 @@ final class AppModel: ObservableObject {
     /// replay logic's sources (build-app.sh): UsefulBotCore and this file, which
     /// feeds the fold. An update that leaves them alone keeps every chat's
     /// snapshot and opens it at once; one that touches them replays each chat
-    /// once. Without the
-    /// stamp (a bare `swift run`), every rebuild of the binary starts over.
+    /// once. Without the stamp (a bare `swift run`), every rebuild of the
+    /// binary starts over.
     private static let snapshotKey: String = {
         if let logic = Bundle.main.object(forInfoDictionaryKey: "UBSnapshotLogic") as? String, !logic.isEmpty {
             return "v\(ChatSnapshot.formatVersion)-core-\(logic)"
