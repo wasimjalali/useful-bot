@@ -48,6 +48,22 @@ A curl download carries no quarantine flag, so macOS opens the app without the G
 browser download of the zip works too; the first open then needs System Settings > Privacy & Security >
 Open Anyway, once.
 
+## Source
+
+The source is public in `wasimjalali/useful-bot-source` under PolyForm Small Business 1.0.0
+(`LICENSE.md`). That repo gets one snapshot commit per release, not this repo's history: the history
+carries the owner's personal address and screenshots of real chats. After a release merges to `main`:
+
+```sh
+gh repo clone wasimjalali/useful-bot-source /tmp/ub-source   # once
+node scripts/publish-source.mjs --clone /tmp/ub-source --version X.Y.Z   # read the commit, then:
+node scripts/publish-source.mjs --clone /tmp/ub-source --version X.Y.Z --push
+```
+
+`--push` opens a PR on the public repo; merge it there. The script leaves out the paths in its
+`EXCLUDE` list (third-party captures, OpenAI's model catalog dump, every eval image). A new file that
+shows real chats or the owner's account belongs on that list before it is committed.
+
 ## Feedback
 
 Every build (dev and release) carries `UBFeedbackURL` in its Info.plist, written by

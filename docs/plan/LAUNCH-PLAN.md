@@ -161,6 +161,22 @@ The bots are the brand. Make them feel cute and premium.
 
 ## PR 5: Release readiness and live verification
 
+- **Status (2026-09-29):**
+  - License: PolyForm Small Business 1.0.0 (`LICENSE.md`), picked because it's free for
+    individuals and small companies, and bigger ones buy a commercial license. That makes it source
+    available, not open source, and the bots' instructions say so.
+  - Source: it goes public as snapshots in `wasimjalali/useful-bot-source`
+    (`scripts/publish-source.mjs`, `docs/distribution.md`), because this repo's history holds the
+    owner's personal Gmail and real-chat screenshots. That repo exists, private, with a clean first
+    commit. Flip it public after this PR merges.
+  - The #144 lows are fixed. v1.0.0 is built locally (`macos/dist/release`), with nothing
+    uploaded.
+  - Waiting on the owner:
+    - The go to publish.
+    - Deleting the stray private repo `useful-bot-source-delete-me`.
+    - Restoring `devin-dist-prompt.md` (macOS blocks agents from reading the Trash).
+    - Installing Xcode (the Dock icon).
+
 - **Before starting:** put `devin-dist-prompt.md` back from
   `~/.Trash/useful-bot-root-cleanup-2026-09-28/` into `docs/plan/`.
 
