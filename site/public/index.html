@@ -129,7 +129,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 .cmd code:focus-visible { outline-color: var(--cmd-ink); }
 /* The CTA's own `.cta p` would otherwise restyle these, so both blocks match the hero. */
 .cta .cmd-head { color: var(--night-ink); font-size: 15px; line-height: inherit; max-width: none; }
-.cta .cmd-note { color: #8a8a8a; max-width: none; }
+.cta .cmd-note { margin-top: 10px; color: #8a8a8a; font-size: 13px; line-height: 1.5; max-width: none; }
 .hero-row .cmd-head { margin-top: 0; }
 .dark ::selection { background: #3a3a3a; color: #fafafa; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -139,12 +139,10 @@ html:not([data-release="soon"]) .hero-row > div > .actions { order: 2; margin-to
 .cmd-head + .cmd { margin-top: 10px; }
 .cta-layout > div { min-width: 0; }
 .cta-install { margin-top: 28px; }
-.cta .cta-install .cmd-note { margin-top: 10px; font-size: 13px; }
-.cta-install .cmd-head { margin-top: 0; }
-.btn-ghost { align-self: flex-start; margin-top: 16px; color: var(--night-ink); background: transparent; border-color: #3a3a3a; }
+.btn-ghost { margin-top: 16px; color: var(--night-ink); background: transparent; border-color: #3a3a3a; }
 .btn-ghost:hover { background: rgb(255 255 255 / 0.06); border-color: #5a5a5a; box-shadow: none; }
 .btn-ghost:focus-visible { outline-color: var(--night-ink); }
-.cmd-note { margin: 10px 0 0; color: #8a8a8a; font-size: 13px; line-height: 1.5; }
+.cmd-note { margin: 10px 0 0; color: #8a8a8a; font-size: 13px; line-height: 1.5; text-wrap: pretty; }
 
 /* Chapters */
 .chapters { padding: 120px 0 40px; }
@@ -238,7 +236,7 @@ html:not([data-release="soon"]) .hero-row > div > .actions { order: 2; margin-to
   .spec-wrap { padding: 40px 0 72px; }
   .cta { padding-block: 64px 56px; }
   .cta-mark { width: 48px; height: 48px; margin-bottom: 36px; border-radius: 12px; }
-  .btn-ghost { align-self: stretch; width: 100%; justify-content: center; }
+  .btn-ghost { width: 100%; justify-content: center; }
   .cta-row { flex-direction: column; align-items: stretch; gap: 16px; }
   .footer { padding-block: 36px 32px; }
   .footer-nav { grid-template-columns: 1fr 1fr; }
