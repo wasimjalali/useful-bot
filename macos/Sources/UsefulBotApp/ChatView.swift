@@ -1049,7 +1049,7 @@ struct ChatView: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 448)
             } else {
-                everydayPrompts
+                everydayPrompts(bot)
                     .padding(.top, 20)
             }
         }
@@ -1060,10 +1060,10 @@ struct ChatView: View {
     /// Four everyday things to start from. A tap fills the composer and sends
     /// nothing; like the first chat's starters, the tiles step back while the
     /// composer holds text.
-    private var everydayPrompts: some View {
+    private func everydayPrompts(_ bot: ShellBot) -> some View {
         let typing = !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-            ForEach(StarterPrompt.everyday) { prompt in
+            ForEach(StarterPrompt.everyday(inFolder: bot.workspace != nil)) { prompt in
                 StarterPromptButton(text: prompt.label) { model.fillDraft(prompt.prompt) }
             }
         }
@@ -2298,8 +2298,15 @@ struct StarterPrompt: Identifiable {
         ),
     ]
 
-    /// Any empty chat's tiles: what most people ask a helper for first.
-    static let everyday = [
+    /// Any empty chat's tiles: what most people ask a helper for first. A bot
+    /// that works in one folder gets a folder tile in place of the whole-Mac one.
+    static func everyday(inFolder: Bool) -> [StarterPrompt] {
+        var tiles = common
+        tiles.append(inFolder ? folderTour : diskSpace)
+        return tiles
+    }
+
+    private static let common = [
         StarterPrompt(
             label: "Research a topic and sum it up",
             prompt: "Research a topic I'll name and sum it up in a short brief with sources."
@@ -2312,9 +2319,15 @@ struct StarterPrompt: Identifiable {
             label: "Summarize a document",
             prompt: "Summarize a document for me: the key points, decisions and anything I need to act on. I'll attach it or tell you where it is."
         ),
-        StarterPrompt(
-            label: "Find what's taking up space on my Mac",
-            prompt: "Find what's taking up the most space on my Mac. List the biggest folders and files with their sizes. Don't delete anything."
-        ),
     ]
+
+    private static let diskSpace = StarterPrompt(
+        label: "Find what's taking up space on my Mac",
+        prompt: "Find what's taking up the most space on my Mac. List the biggest folders and files with their sizes. Don't delete anything."
+    )
+
+    private static let folderTour = StarterPrompt(
+        label: "Tell me what's in this folder",
+        prompt: "Look through the attached folder and tell me what's in it and how it's organized. Don't change anything."
+    )
 }
