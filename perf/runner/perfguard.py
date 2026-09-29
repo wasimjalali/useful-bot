@@ -143,6 +143,24 @@ def load_1m():
     return float(run(["sysctl", "-n", "vm.loadavg"]).stdout.split()[1])
 
 
+def program_name(command):
+    """The program's name from a ps command line, never its arguments.
+
+    A path with spaces ("/Applications/Useful Bot.app/Contents/MacOS/X --flag")
+    splits wrong on whitespace, so the longest leading prefix that exists on
+    disk is the program.
+    """
+    marker = ".app/Contents/MacOS/"
+    if marker in command:
+        return command.split(marker, 1)[1].split()[0]
+    words = command.split()
+    for n in range(len(words), 0, -1):
+        candidate = " ".join(words[:n])
+        if os.path.isfile(candidate):
+            return os.path.basename(candidate)
+    return os.path.basename(words[0])
+
+
 def external_cpu():
     """CPU % of everything except the app, its services and the guard itself.
 
@@ -168,7 +186,7 @@ def external_cpu():
         total += cpu
         # Only the program's name goes into the record: a command line can carry
         # a key or a token (one on this machine does), and records are committed.
-        top.append((cpu, os.path.basename(command.split()[0])))
+        top.append((cpu, program_name(command)))
     top.sort(reverse=True)
     return total, [f"{c:.0f}% {n}" for c, n in top[:3] if c >= 10]
 
@@ -285,8 +303,17 @@ class Launch:
             self.window = line.split()[1:]
         deadline = time.time() + timeout_s
         end = None
+        # Other work is sampled every ~2 s while the launch runs: a burst in
+        # the middle of a launch skews it as much as one before it.
+        self.peak_cpu, self.peak_top = 0.0, []
+        next_sample = 0.0
         try:
             while time.time() < deadline:
+                if time.time() >= next_sample:
+                    cpu, top = external_cpu()
+                    if cpu > self.peak_cpu:
+                        self.peak_cpu, self.peak_top = cpu, top
+                    next_sample = time.time() + 2.0
                 end = self.last_event({"quit", "done", "abort"})
                 if end:
                     break
@@ -380,6 +407,10 @@ def samples_from(launch, names_by_id):
             s["problems"].append("never landed")
         else:
             probe = responsive_after(bot, landed["t"])
+            for ev in ("replay_first_event", "replay_done", "publish_done"):
+                m = next((m for m in marks if m["ev"] == ev and m.get("bot") == bot and t0 <= m["t"] <= landed["t"]), None)
+                if m:
+                    s[ev + "_ms"] = (m["t"] - t0) / 1e6
             s.update(app_ms=(landed["t"] - t0) / 1e6, reason=landed["reason"], source=landed.get("source"),
                      rows=landed.get("rows"), blocks=landed.get("blocks"), events=landed.get("events"),
                      stall_ms=probe["stallMaxMs"] if probe else None)
@@ -609,15 +640,18 @@ def measure(args, quick):
         for name, steps, drop in plan(quick):
             restore = owner if name == "warm" else None
             launch = Launch(app, outdir, name, steps, drop, restore)
-            cpu, top = external_cpu()
-            loads.append((name, round(cpu), top))
+            before, before_top = external_cpu()
             try:
                 selects = sum(1 for st in steps if st["op"] == "select")
                 launch.execute(timeout_s=max(300, selects * 45))
             except RuntimeError as err:
+                loads.append((name, round(max(before, getattr(launch, "peak_cpu", 0.0))), before_top))
                 failures.append(str(err))
                 print(f"  {name}: FAILED {err}")
                 continue
+            # The busiest sample of the launch, the one before it included.
+            peak, peak_top = (launch.peak_cpu, launch.peak_top) if launch.peak_cpu > before else (before, before_top)
+            loads.append((name, round(peak), peak_top))
             done.append(launch)
             if name != "prep":
                 got = samples_from(launch, ids)
