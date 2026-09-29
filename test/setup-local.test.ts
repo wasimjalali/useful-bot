@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,23 +32,9 @@ const ITEMS = [
   }
 }
 
-// A stand-in for /usr/bin/security that keeps each item as a file, so these
-// runs never touch the login Keychain. It speaks only the three forms the
-// script uses: `-i` with an add command on stdin, find -w, and delete.
-const STUB = `#!/bin/sh
-dir="$STUB_KEYCHAIN_DIR"
-case "$1" in
-  -i)
-    read -r _cmd _u _s svc _a _acct _w token
-    printf '%s' "$token" > "$dir/$svc" ;;
-  find-generic-password)
-    [ -f "$dir/$3" ] || exit 44
-    cat "$dir/$3" ;;
-  delete-generic-password)
-    rm -f "$dir/$3" ;;
-  *) exit 1 ;;
-esac
-`;
+// STUB_SH is a stand-in for /usr/bin/security that keeps each item as a file, so these
+// runs never touch the login Keychain (see the file for the forms it speaks).
+const STUB_SH = join(ROOT, "test/fixtures/security-stub/security.sh");
 
 function sandbox() {
   const base = mkdtempSync(join(tmpdir(), "ub-setup-"));
@@ -56,9 +42,7 @@ function sandbox() {
   const keychain = join(base, "keychain");
   mkdirSync(home);
   mkdirSync(keychain);
-  const bin = join(base, "security");
-  writeFileSync(bin, STUB);
-  chmodSync(bin, 0o755);
+  const bin = STUB_SH;
   const run = (...args: string[]) => {
     const result = spawnSync(process.execPath, ["--import", HOOKS, SETUP, ...args], {
       env: { ...process.env, HOME: home, STUB_SECURITY_BIN: bin, STUB_KEYCHAIN_DIR: keychain },
