@@ -1049,7 +1049,7 @@ struct ChatView: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 448)
             } else {
-                everydayPrompts(bot)
+                everydayPrompts
                     .padding(.top, 20)
             }
         }
@@ -1060,10 +1060,10 @@ struct ChatView: View {
     /// Four everyday things to start from. A tap fills the composer and sends
     /// nothing; like the first chat's starters, the tiles step back while the
     /// composer holds text.
-    private func everydayPrompts(_ bot: ShellBot) -> some View {
+    private var everydayPrompts: some View {
         let typing = !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-            ForEach(StarterPrompt.everyday(inFolder: bot.workspace != nil)) { prompt in
+            ForEach(StarterPrompt.everyday) { prompt in
                 StarterPromptButton(text: prompt.label) { model.fillDraft(prompt.prompt) }
             }
         }
@@ -2298,36 +2298,24 @@ struct StarterPrompt: Identifiable {
         ),
     ]
 
-    /// Any empty chat's tiles: what most people ask a helper for first. A bot
-    /// that works in one folder gets a folder tile in place of the whole-Mac one.
-    static func everyday(inFolder: Bool) -> [StarterPrompt] {
-        var tiles = common
-        tiles.append(inFolder ? folderTour : diskSpace)
-        return tiles
-    }
-
-    private static let common = [
+    /// Any empty chat's tiles: two bots worth making, the first step to
+    /// connecting apps and a routine, so the owner sees what's possible.
+    static let everyday = [
         StarterPrompt(
-            label: "Research a topic and sum it up",
-            prompt: "Research a topic I'll name and sum it up in a short brief with sources."
+            label: "Create an inbox assistant",
+            prompt: "Create a bot that goes through my email every morning, sums up what needs me and shows me draft replies here to review. Ask me what to watch for first."
         ),
         StarterPrompt(
-            label: "Write an email for me",
-            prompt: "Help me write a clear, friendly email. Ask me who it's for and what it needs to say."
+            label: "Create a writer for my social posts",
+            prompt: "Create a bot that writes my social media posts in my voice. Ask me about my audience, my topics and a few posts I like first, then set it up."
         ),
         StarterPrompt(
-            label: "Summarize a document",
-            prompt: "Summarize a document for me: the key points, decisions and anything I need to act on. I'll attach it or tell you where it is."
+            label: "How do I connect my apps?",
+            prompt: "How do I connect my apps, like Gmail, Calendar and Drive, so you can work in them?"
+        ),
+        StarterPrompt(
+            label: "Get a morning news brief every day",
+            prompt: "Every day at 8:00, post a short news brief here with sources on topics I pick. Ask me the topics first, then set it up as a routine."
         ),
     ]
-
-    private static let diskSpace = StarterPrompt(
-        label: "Find what's taking up space on my Mac",
-        prompt: "Find what's taking up the most space on my Mac. List the biggest folders and files with their sizes. Don't delete anything."
-    )
-
-    private static let folderTour = StarterPrompt(
-        label: "Tell me what's in this folder",
-        prompt: "Look through the attached folder and tell me what's in it and how it's organized. Don't change anything."
-    )
 }
