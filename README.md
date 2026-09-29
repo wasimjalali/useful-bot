@@ -226,7 +226,8 @@ The macOS bundle takes its app icon, logos, head-only bot avatars and native ani
 
 Copyright 2026 Wasim Jalali (Useful Build). Open source under the [GNU AGPL-3.0](LICENSE). Anyone
 may use, change and share it. Anyone who distributes a changed version, or lets others use one over
-a network, must offer those users its source under the same license. A company that wants to build on Useful Bot without those terms can buy a commercial
-license from Wasim Jalali (Useful Build): hello@usefulbuild.com.
+a network, must offer those users its source under the same license. A company that wants to
+build on Useful Bot without those terms can buy a commercial license from Wasim Jalali (Useful
+Build): hello@usefulbuild.com.
 
 Contributions come with a short contributor license agreement: see [CONTRIBUTING.md](CONTRIBUTING.md).

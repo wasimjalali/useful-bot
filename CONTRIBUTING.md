@@ -18,6 +18,7 @@ Each pull request you open is a contribution under these terms. You agree that:
    contribution under any terms, including commercial licenses. This includes a license to any of
    your patents that the contribution needs.
 4. You won't assert moral rights or similar rights against those uses, as far as the law allows.
-5. You keep the copyright in your contribution, and you give it as is, without warranty.
+5. You keep the copyright in your contribution.
+6. Every license above is given as is, without warranty of any kind.
 
 Tick the agreement box in the pull request template. A pull request without it isn't merged.
