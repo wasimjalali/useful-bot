@@ -392,15 +392,17 @@ struct RailView: View {
                     } label: {
                         Text("Update now")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color(nsColor: .linkColor))
+                            .foregroundStyle(Theme.C.link)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(Color(nsColor: .linkColor).opacity(0.12), in: Capsule())
+                            .background(Theme.C.link.opacity(0.12), in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .lineLimit(1)
                     .fixedSize()
                     .disabled(!updater.canCheckForUpdates)
+                    // A plain button doesn't dim custom content on its own.
+                    .opacity(updater.canCheckForUpdates ? 1 : 0.5)
                     .pointerOnHover()
                     .accessibilityLabel("Update to \(version)")
                     .accessibilityIdentifier("account-update-now")

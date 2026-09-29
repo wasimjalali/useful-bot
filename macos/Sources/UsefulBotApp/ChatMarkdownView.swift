@@ -144,7 +144,7 @@ struct ChatMarkdownView: View, Equatable {
                     run.link = Self.linkTarget(span.href)
                     // Blue, so a link reads as one at a glance: selectable
                     // text keeps the I-beam over it, so the pointer can't say so.
-                    run.foregroundColor = Color(nsColor: .linkColor)
+                    run.foregroundColor = Theme.C.link
                     run.underlineStyle = .single
                 }
                 attributed.append(run)
