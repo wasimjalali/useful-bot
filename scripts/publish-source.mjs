@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PUBLIC_REPO = "wasimjalali/useful-bot-source";
+const PUBLIC_REPO = "wasimjalali/usefulbot";
 const AUTHOR = "Wasim Jalali <245747147+wasimjalali@users.noreply.github.com>";
 // Never public: third-party captures with the owner's account and a real chat,
 // OpenAI's own system prompts, and eval frames that show the owner's real bots.

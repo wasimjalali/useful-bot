@@ -50,12 +50,12 @@ Open Anyway, once.
 
 ## Source
 
-The source is public in `wasimjalali/useful-bot-source` under PolyForm Noncommercial 1.0.0 or
+The source is public in `wasimjalali/usefulbot` under PolyForm Noncommercial 1.0.0 or
 PolyForm Small Business 1.0.0, at the user's choice (`LICENSE.md`). That repo gets one snapshot commit per release, not this repo's history: the history
 carries the owner's personal address and screenshots of real chats. After a release merges to `main`:
 
 ```sh
-gh repo clone wasimjalali/useful-bot-source /tmp/ub-source   # once
+gh repo clone wasimjalali/usefulbot /tmp/ub-source   # once
 node scripts/publish-source.mjs --clone /tmp/ub-source --version X.Y.Z   # read the commit, then:
 node scripts/publish-source.mjs --clone /tmp/ub-source --version X.Y.Z --push
 ```
