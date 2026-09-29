@@ -29,7 +29,9 @@ checked by Sparkle, which needs no Apple account.
 The zip stays the update and Terminal-install format; the DMG is only the browser download. The
 script prints both files' sizes and SHA-256 as JSON. It writes the zip and the DMG first and
 `install.sh` and `appcast.xml` last, and deletes the folder if any step fails, so a folder with an
-appcast is a whole release.
+appcast is a whole release. It only clears an `--out` folder that holds nothing but those four
+files; anything else there and it refuses. Ctrl-C, SIGTERM or SIGHUP during packaging still
+unmounts and cleans up; a signal after the last step leaves the finished release and exits 0.
 
 Prerequisites for the DMG:
 
@@ -88,15 +90,18 @@ Privacy & Security > Open Anyway, once.
 A release opened from anywhere but `/Applications` or `~/Applications` asks once, before any service
 starts, "Move Useful Bot to Applications?" (`MoveToApplications.swift`, decisions in
 `AppPlacement.swift`). On Move it copies itself to `/Applications/Useful Bot.app` (or
-`~/Applications` when the user cannot write `/Applications`) under a small progress panel, off the
-main thread. The copy goes to a hidden `.Useful Bot.app.moving` beside the destination first (a
-later launch removes one older than ten minutes). It then clears the quarantine flag, puts any copy
-already there in the Trash (put back if the final rename fails), reopens from there and quits. A
+`~/Applications` when the user cannot write `/Applications`) with ditto, off the main thread, under
+a small progress panel with Cancel. The copy goes into a fresh hidden `.Useful Bot.app.moving/`
+beside the destination first, with the copying process's pid in `owner.pid`. A later launch removes
+one whose owner is gone (or one over an hour old), never a live move's. The quarantine flag is
+cleared in the same background pass. It then puts any copy already there in the Trash (put back if
+the final rename fails, or the user is told it's in the Trash), reopens from there and quits. A
 user who cannot write `/Applications` while an admin's copy is there is sent to that copy instead of
 getting a second one. If a Useful Bot is already running from the destination, it comes forward and
 this copy quits. Paths are compared by file identity, not spelling, so the app already in
 `/Applications` under another name (`/System/Volumes/Data/Applications`, a symlinked folder) is never
-offered a move, and no step can trash the only copy. A copy left in
+offered a move, and no step can trash the only copy. When identity can't be read, nothing is
+trashed. A copy left in
 Downloads or elsewhere goes to the Trash; a DMG it ran from is ejected once it has quit. When macOS
 runs the app from a translocated read-only copy, it finds the original through Security.framework;
 if it cannot, it asks the user to drag the app into Applications instead. "Not now" asks again next

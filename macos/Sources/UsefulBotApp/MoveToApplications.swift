@@ -75,41 +75,62 @@ enum MoveToApplications {
 
         // Already running from there: bring that one forward instead of
         // starting a second set of services.
-        let current = NSRunningApplication.current
-        if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-            .contains(where: { $0 != current && AppPlacement.sameItem($0.bundleURL?.path ?? "", destination.path) }) {
-            switchTo(destination)
+        if isRunning(from: destination) { switchTo(destination) }
+        // The destination is this very copy under another spelling (or that
+        // cannot be ruled out): nothing to move, and trashing it could lose
+        // the only copy.
+        guard AppPlacement.mayTrash(destination.path, keeping: [source.path, running.path]) else {
+            inform("Useful Bot is already in Applications", "This copy is the one in \(folder.path), so there's nothing to move.")
+            return
         }
-        // The destination is this very copy under another spelling: nothing
-        // to move, and trashing it would lose the only copy.
-        guard AppPlacement.mayTrash(destination.path, keeping: [source.path, running.path]) else { return }
 
+        // Copied into a fresh staging folder beside the destination first, so
+        // a copy cut short (a full disk, Cancel) leaves any installed copy as it was.
+        let staged = staging.appendingPathComponent(AppPlacement.appName, isDirectory: true)
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-            if fm.fileExists(atPath: staging.path) { try fm.removeItem(at: staging) }
-            // Copied beside the destination first, so a copy cut short (a
-            // full disk) leaves any installed copy as it was.
-            try copyShowingProgress(from: source, to: staging)
-            // The user already opened this copy past Gatekeeper; without this
-            // the moved copy would be translocated on every launch. -s keeps
-            // it from following the bundle's symlinks out of the bundle.
-            run("/usr/bin/xattr", ["-r", "-s", "-d", "com.apple.quarantine", staging.path])
-            var trashed: NSURL?
-            if fm.fileExists(atPath: destination.path) {
-                try fm.trashItem(at: destination, resultingItemURL: &trashed)
-            }
-            do {
-                try fm.moveItem(at: staging, to: destination)
-            } catch {
-                // Put the old copy back rather than leave Applications empty.
-                if let trashed = trashed as URL? { try? fm.moveItem(at: trashed, to: destination) }
-                throw error
-            }
+            try claim(staging)
         } catch {
+            inform("Couldn't move Useful Bot", error.localizedDescription)
+            return
+        }
+        switch copyShowingProgress(from: source, to: staged) {
+        case .copied:
+            break
+        case .cancelled:
+            try? fm.removeItem(at: staging)
+            return
+        case .failed(let error):
             try? fm.removeItem(at: staging)
             inform("Couldn't move Useful Bot", error.localizedDescription)
             return
         }
+        // Checked again: a copy may have been opened from there meanwhile.
+        if isRunning(from: destination) {
+            try? fm.removeItem(at: staging)
+            switchTo(destination)
+        }
+        var trashed: NSURL?
+        do {
+            if fm.fileExists(atPath: destination.path) {
+                try fm.trashItem(at: destination, resultingItemURL: &trashed)
+            }
+            try fm.moveItem(at: staged, to: destination)
+        } catch {
+            try? fm.removeItem(at: staging)
+            var message = error.localizedDescription
+            // Put the old copy back rather than leave Applications empty.
+            if let old = trashed as URL? {
+                do {
+                    try fm.moveItem(at: old, to: destination)
+                } catch {
+                    message += " Your earlier copy is in the Trash as \(old.lastPathComponent). Put it back from there."
+                }
+            }
+            inform("Couldn't move Useful Bot", message)
+            return
+        }
+        try? fm.removeItem(at: staging)
 
         var volume = ""
         switch AppPlacement.cleanup(after: location) {
@@ -129,12 +150,45 @@ enum MoveToApplications {
         relaunch(destination, ejecting: volume)
     }
 
-    /// The copy runs off the main thread (a release is some hundreds of MB,
-    /// tens of seconds from a DMG) under a small modal panel, so the app never
-    /// hangs without a word.
-    private static func copyShowingProgress(from source: URL, to target: URL) throws {
+    private static func isRunning(from app: URL) -> Bool {
+        let current = NSRunningApplication.current
+        return NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .contains { $0 != current && AppPlacement.sameItem($0.bundleURL?.path ?? "", app.path) == true }
+    }
+
+    private enum CopyOutcome {
+        case copied
+        case cancelled
+        case failed(Error)
+    }
+
+    /// The copy runs in ditto (a release is some hundreds of MB, tens of
+    /// seconds from a DMG) under a small modal panel with Cancel, so the app
+    /// never hangs without a word. The quarantine flag is cleared in the same
+    /// background pass: the user already opened this copy past Gatekeeper,
+    /// and with it the moved copy would be translocated on every launch.
+    /// (`ditto --noqtn` keeps the flag on macOS 26, checked 2026-09-29.)
+    private static func copyShowingProgress(from source: URL, to target: URL) -> CopyOutcome {
+        final class Job: @unchecked Sendable {
+            let lock = NSLock()
+            var cancelled = false
+            /// Set by the worker only, once ditto has exited: nil is "not finished".
+            var outcome: CopyOutcome?
+        }
+        let job = Job()
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = [source.path, target.path]
+        let errors = Pipe()
+        ditto.standardError = errors
+        do {
+            try ditto.run()
+        } catch {
+            return .failed(error)
+        }
+
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 340, height: 84),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 120),
             styleMask: [.titled],
             backing: .buffered,
             defer: false
@@ -145,36 +199,97 @@ enum MoveToApplications {
         bar.style = .bar
         bar.isIndeterminate = true
         bar.startAnimation(nil)
-        let stack = NSStackView(views: [label, bar])
+        let cancel = ButtonAction {
+            job.lock.withLock { job.cancelled = true }
+            ditto.terminate()
+        }
+        let button = NSButton(title: "Cancel", target: cancel, action: #selector(ButtonAction.fire))
+        button.keyEquivalent = "\u{1b}"
+        let row = NSStackView()
+        row.addView(button, in: .trailing)
+        let stack = NSStackView(views: [label, bar, row])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 16, right: 20)
         bar.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        row.widthAnchor.constraint(equalToConstant: 300).isActive = true
         panel.contentView = stack
         panel.center()
 
-        final class Outcome: @unchecked Sendable { var result: Result<Void, Error> = .success(()) }
-        let outcome = Outcome()
         DispatchQueue.global(qos: .userInitiated).async {
-            outcome.result = Result { try FileManager().copyItem(at: source, to: target) }
+            let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            ditto.waitUntilExit()
+            let cancelled = job.lock.withLock { job.cancelled }
+            let outcome: CopyOutcome
+            if cancelled {
+                outcome = .cancelled
+            } else if ditto.terminationStatus == 0 && ditto.terminationReason == .exit {
+                // -s: never follow the bundle's symlinks out of it. A file
+                // without the flag makes xattr exit 1, which is fine.
+                let xattr = Process()
+                xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+                xattr.arguments = ["-r", "-s", "-d", "com.apple.quarantine", target.path]
+                do {
+                    try xattr.run()
+                    xattr.waitUntilExit()
+                } catch {
+                    NSLog("Useful Bot: xattr failed: %@", error.localizedDescription)
+                }
+                outcome = .copied
+            } else {
+                let reason = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+                outcome = .failed(MoveError(reason.isEmpty ? "The copy stopped (ditto \(ditto.terminationStatus))." : reason))
+            }
             // Runs inside the modal session below: the main queue is served
             // in the modal run loop mode, and not before runModal starts.
-            DispatchQueue.main.async { NSApp.stopModal() }
+            DispatchQueue.main.async {
+                job.outcome = outcome
+                NSApp.stopModal()
+            }
         }
-        NSApp.runModal(for: panel)
+        let response = withExtendedLifetime(cancel) { NSApp.runModal(for: panel) }
         panel.orderOut(nil)
-        try outcome.result.get()
+        guard response == .stop, let outcome = job.outcome else {
+            ditto.terminate()
+            return .failed(MoveError("The copy did not finish."))
+        }
+        return outcome
     }
 
-    /// A staging folder a force-quit copy left behind, in either Applications folder.
+    /// Makes a fresh staging folder owned by this process. One whose owner
+    /// still runs is another launch's move in progress and is left alone.
+    private static func claim(_ staging: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: staging.path) {
+            guard verdict(on: staging) == .remove else {
+                throw MoveError("Another Useful Bot is moving itself to \(staging.deletingLastPathComponent().path). Wait for it to finish.")
+            }
+            try fm.removeItem(at: staging)
+        }
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        try String(ProcessInfo.processInfo.processIdentifier)
+            .write(to: staging.appendingPathComponent(AppPlacement.stagingOwnerName), atomically: true, encoding: .utf8)
+    }
+
+    private static func verdict(on staging: URL) -> AppPlacement.StagingVerdict {
+        let created = (try? staging.resourceValues(forKeys: [.creationDateKey]))?.creationDate
+        var ownerAlive: Bool?
+        if let text = try? String(contentsOf: staging.appendingPathComponent(AppPlacement.stagingOwnerName), encoding: .utf8),
+           let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 {
+            // EPERM: the process exists but belongs to another user.
+            ownerAlive = kill(pid, 0) == 0 || errno == EPERM
+        }
+        return AppPlacement.stagingVerdict(ownerAlive: ownerAlive, created: created, now: Date())
+    }
+
+    /// A staging folder a force-quit or crashed move left behind, in either
+    /// Applications folder. A live move's folder is kept.
     private static func removeStaleStaging() {
         let fm = FileManager.default
         for folder in ["/Applications", (NSHomeDirectory() as NSString).appendingPathComponent("Applications")] {
             let staging = URL(fileURLWithPath: folder).appendingPathComponent(AppPlacement.stagingName)
-            guard fm.fileExists(atPath: staging.path) else { continue }
-            let created = (try? staging.resourceValues(forKeys: [.creationDateKey]))?.creationDate
-            guard AppPlacement.isStaleStaging(created: created, now: Date()) else { continue }
+            guard fm.fileExists(atPath: staging.path), verdict(on: staging) == .remove else { continue }
             do {
                 try fm.removeItem(at: staging)
             } catch {
@@ -248,18 +363,17 @@ enum MoveToApplications {
         return AppPlacement.diskImageMounts(hdiutilInfo: output.data)
     }
 
-    /// Best effort: a failure is logged, not thrown.
-    private static func run(_ tool: String, _ arguments: [String]) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tool)
-        process.arguments = arguments
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            NSLog("Useful Bot: %@ failed: %@", tool, error.localizedDescription)
-        }
+    private struct MoveError: LocalizedError {
+        let errorDescription: String?
+        init(_ message: String) { errorDescription = message }
     }
+}
+
+/// An AppKit button target that runs a closure.
+private final class ButtonAction: NSObject {
+    private let action: () -> Void
+    init(_ action: @escaping () -> Void) { self.action = action }
+    @objc func fire() { action() }
 }
 
 /// App Translocation: macOS runs a quarantined app that was not moved by

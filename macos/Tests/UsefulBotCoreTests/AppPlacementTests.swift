@@ -30,7 +30,9 @@ import Testing
 /// - a non-admin user with an admin-installed copy gets a second one in
 ///   ~/Applications;
 /// - a force-quit copy leaves a hidden staging folder forever, or a launch
-///   deletes another launch's copy in progress.
+///   deletes another launch's copy in progress;
+/// - an identity that cannot be read is taken for "different" and the only
+///   copy is trashed.
 @Suite struct AppPlacementTests {
     private let home = "/Users/ada"
 
@@ -39,7 +41,7 @@ import Testing
         "/System/Volumes/Data/Applications": "/Applications",
         "/Users/ada/Apps": "/Applications",
     ]
-    private static func fakeSame(_ a: String, _ b: String) -> Bool {
+    private static func fakeSame(_ a: String, _ b: String) -> Bool? {
         let canon = { (p: String) in aliases[p] ?? p }
         return canon(a) == canon(b)
     }
@@ -84,10 +86,12 @@ import Testing
         try fm.createDirectory(at: real.appendingPathComponent("Useful Bot.app"), withIntermediateDirectories: true)
         let link = root.appendingPathComponent("Link")
         try fm.createSymbolicLink(at: link, withDestinationURL: real)
-        #expect(AppPlacement.sameItem(link.appendingPathComponent("Useful Bot.app").path, real.appendingPathComponent("Useful Bot.app").path))
-        #expect(!AppPlacement.sameItem(link.path, root.path))
-        #expect(!AppPlacement.sameItem(root.appendingPathComponent("Missing").path, root.appendingPathComponent("Missing").path))
-        #expect(AppPlacement.sameItem("/System/Volumes/Data/Applications", "/Applications"))
+        #expect(AppPlacement.sameItem(link.appendingPathComponent("Useful Bot.app").path, real.appendingPathComponent("Useful Bot.app").path) == true)
+        #expect(AppPlacement.sameItem(link.path, root.path) == false)
+        #expect(AppPlacement.sameItem(root.appendingPathComponent("Missing").path, root.appendingPathComponent("Missing").path) == false)
+        #expect(AppPlacement.sameItem("/System/Volumes/Data/Applications", "/Applications") == true)
+        // The string fallback sees through the symlink too.
+        #expect(!AppPlacement.mayTrash(link.appendingPathComponent("Useful Bot.app").path, keeping: [real.appendingPathComponent("Useful Bot.app").path], sameItem: { _, _ in false }))
         #expect(AppPlacement.classify(
             bundlePath: "/System/Volumes/Data/Applications/Useful Bot.app",
             translocated: false, originalPath: nil, home: NSHomeDirectory(), diskImageMounts: []
@@ -97,8 +101,8 @@ import Testing
     @Test func noTrashEverHitsTheOnlyCopy() {
         let running = "/System/Volumes/Data/Applications/Useful Bot.app"
         let destination = "/Applications/Useful Bot.app"
-        let same = { (a: String, b: String) in
-            Self.fakeSame((a as NSString).deletingLastPathComponent, (b as NSString).deletingLastPathComponent)
+        let same = { (a: String, b: String) -> Bool? in
+            Self.fakeSame((a as NSString).deletingLastPathComponent, (b as NSString).deletingLastPathComponent) == true
                 && (a as NSString).lastPathComponent == (b as NSString).lastPathComponent
         }
         // The old destination is the running app: keep it.
@@ -108,6 +112,8 @@ import Testing
         #expect(!AppPlacement.mayTrash("/applications/Useful Bot.app/", keeping: [destination], sameItem: { _, _ in false }))
         #expect(AppPlacement.mayTrash("/Users/ada/Downloads/Useful Bot.app", keeping: [destination], sameItem: same))
         #expect(AppPlacement.mayTrash(destination, keeping: ["/Volumes/Useful Bot/Useful Bot.app"], sameItem: same))
+        // Identity unreadable for two existing items: keep.
+        #expect(!AppPlacement.mayTrash("/Users/ada/Downloads/Useful Bot.app", keeping: [destination], sameItem: { _, _ in nil }))
     }
 
     @Test func lookalikeFoldersAreNot() {
@@ -155,11 +161,20 @@ import Testing
         #expect(AppPlacement.destination(applicationsWritable: false, sharedCopyExists: true, home: home) == .openSharedCopy("/Applications/Useful Bot.app"))
     }
 
-    @Test func onlyAStaleStagingFolderIsRemoved() {
+    @Test func aLiveLaunchKeepsItsStaging() {
         let now = Date()
-        #expect(AppPlacement.isStaleStaging(created: now.addingTimeInterval(-11 * 60), now: now))
-        #expect(!AppPlacement.isStaleStaging(created: now.addingTimeInterval(-30), now: now))
-        #expect(AppPlacement.isStaleStaging(created: nil, now: now))
+        let ago = { (minutes: Double) in now.addingTimeInterval(-minutes * 60) }
+        // Another launch is copying right now.
+        #expect(AppPlacement.stagingVerdict(ownerAlive: true, created: ago(0.5), now: now) == .keep)
+        #expect(AppPlacement.stagingVerdict(ownerAlive: true, created: ago(30), now: now) == .keep)
+        // Its pid was reused by something else long after.
+        #expect(AppPlacement.stagingVerdict(ownerAlive: true, created: ago(61), now: now) == .remove)
+        // The copying launch is gone: force-quit or crashed.
+        #expect(AppPlacement.stagingVerdict(ownerAlive: false, created: ago(0.5), now: now) == .remove)
+        // No owner file yet: only age decides.
+        #expect(AppPlacement.stagingVerdict(ownerAlive: nil, created: ago(0.5), now: now) == .keep)
+        #expect(AppPlacement.stagingVerdict(ownerAlive: nil, created: ago(11), now: now) == .remove)
+        #expect(AppPlacement.stagingVerdict(ownerAlive: nil, created: nil, now: now) == .remove)
     }
 
     @Test func whatHappensToTheCopyLeftBehind() {

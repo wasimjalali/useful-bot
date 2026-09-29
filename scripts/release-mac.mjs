@@ -73,8 +73,12 @@ if (accountKey !== values["ed-public-key"]) {
 // 3.10 or later; the Command Line Tools' python3 is 3.9.
 const pyVersion = (python) => execFileSync(python, ["-c", "import sys; print('%d.%d' % sys.version_info[:2])"], { encoding: "utf8" }).trim();
 const pyOk = (v) => { const [major, minor] = v.split(".").map(Number); return major > 3 || (major === 3 && minor >= 10); };
-if (existsSync(path.join(DMG_VENV, "bin/python")) && !pyOk(pyVersion(path.join(DMG_VENV, "bin/python")))) {
-  rmSync(DMG_VENV, { recursive: true, force: true });
+// A venv made by an older Python, or one that no longer runs (its Python
+// was upgraded or removed), is made again.
+if (existsSync(DMG_VENV)) {
+  let venvOk = false;
+  try { venvOk = pyOk(pyVersion(path.join(DMG_VENV, "bin/python"))); } catch {}
+  if (!venvOk) rmSync(DMG_VENV, { recursive: true, force: true });
 }
 if (!existsSync(path.join(DMG_VENV, "bin/python"))) {
   let system = "none";
@@ -95,9 +99,12 @@ if (existsSync(`/Volumes/${VOLUME}`)) {
   process.exit(1);
 }
 const out = path.resolve(values.out);
-// Only ever replace an earlier release folder, never an arbitrary one.
-if (existsSync(out) && readdirSync(out).length > 0 && !existsSync(path.join(out, "appcast.xml"))) {
-  process.stderr.write(`${out} is not empty and is not an earlier release; refusing to delete it\n`);
+// Only ever replace an earlier release folder, never an arbitrary one: every
+// entry in it must be a file a release writes.
+const RELEASE_FILES = new Set([ZIP, DMG, "install.sh", "appcast.xml", ".DS_Store"]);
+const foreign = existsSync(out) ? readdirSync(out).filter((name) => !RELEASE_FILES.has(name)) : [];
+if (foreign.length > 0) {
+  process.stderr.write(`${out} holds files a release does not write (${foreign.join(", ")}); refusing to delete it\n`);
   process.exit(1);
 }
 
@@ -134,12 +141,14 @@ const detach = (mount) => {
   }
   return false;
 };
-// Ctrl-C reaches the running tool too, which then fails; the cleanup below
-// still runs (unmount, scratch, the half-written release) before exiting.
-let interrupted = false;
-const onInterrupt = () => { interrupted = true; };
-process.on("SIGINT", onInterrupt);
-process.on("SIGTERM", onInterrupt);
+// Ctrl-C (or a closed terminal) reaches the running tool too, which then
+// fails, so the step throws and the cleanup below runs (unmount, scratch,
+// the half-written release) before the error exits. Without these handlers
+// Node would die on the spot and skip it. A signal that lands after the last
+// step changes nothing: the release is whole, so its JSON prints and it exits 0.
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+const onSignal = (signal) => process.stderr.write(`${signal}: finishing the current step, then cleaning up\n`);
+for (const signal of SIGNALS) process.on(signal, onSignal);
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
@@ -165,6 +174,9 @@ try {
     for (const [name, scale] of [["background.png", "1"], ["background@2x.png", "2"]]) {
       execFileSync("swift", [path.join(ROOT, "macos/dmg/background.swift"), path.join(scratch, name), scale, font], { stdio: "inherit" });
     }
+    // Checked again here: a volume mounted during the long build would rename
+    // dmgbuild's working copy (see the check before the build).
+    if (existsSync(`/Volumes/${VOLUME}`)) throw new Error(`/Volumes/${VOLUME} was mounted during the build; eject it and run again`);
     execFileSync(path.join(DMG_VENV, "bin/dmgbuild"), [
       "-s", path.join(ROOT, "macos/dmg/settings.py"),
       "-D", `app=${APP}`,
@@ -233,9 +245,7 @@ try {
   rmSync(out, { recursive: true, force: true });
   throw error;
 } finally {
-  process.off("SIGINT", onInterrupt);
-  process.off("SIGTERM", onInterrupt);
+  for (const signal of SIGNALS) process.off(signal, onSignal);
 }
-if (interrupted) process.exit(130);
 
 process.stdout.write(`${JSON.stringify({ version, build, zip, bytes: statSync(zip).size, sha256: zipSha, dmg, dmgBytes: statSync(dmg).size, dmgSha256: dmgSha, appcast: path.join(out, "appcast.xml"), feed: values["feed-url"] })}\n`);
