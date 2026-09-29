@@ -572,19 +572,29 @@ final class AppModel: ObservableObject {
                 await services.stopOwnServices(config: config)
                 guard !Task.isCancelled, attempt == startAttempt else { return }
             }
-            let prepared = await Task.detached { () -> String? in
-                do {
-                    try RuntimeInstall.prepare(bundled: bundled, root: root, holding: lock)
-                    return nil
-                } catch {
-                    return String(describing: error)
-                }
+            let prepared = await Task.detached { () -> Result<Bool, Error> in
+                Result { try RuntimeInstall.prepare(bundled: bundled, root: root, holding: lock) }
             }.value
             guard !Task.isCancelled, attempt == startAttempt else { return }
-            if let prepared {
-                startupError = "Useful Bot could not set up its local services: \(prepared)"
+            switch prepared {
+            case .failure(let error as RuntimeInstall.SetupFailure):
+                // The owner gets a sentence; the raw tool output goes to Console.
+                NSLog("Useful Bot: local setup failed: %@", error.detail)
+                startupError = error.message
                 phase = .unavailable
                 return
+            case .failure(let error):
+                startupError = "Useful Bot could not set up its local services: \(error)"
+                phase = .unavailable
+                return
+            case .success(let rebuilt):
+                // New credentials replaced ones a running router, eve or web
+                // still holds (each reads them once at boot), so they stop and
+                // `ensure` starts them on the new ones.
+                if rebuilt {
+                    await services.stopOwnServices(config: config)
+                    guard !Task.isCancelled, attempt == startAttempt else { return }
+                }
             }
         }
         let outcome = await services.ensure(config: config)
