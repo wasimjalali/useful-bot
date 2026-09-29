@@ -162,10 +162,10 @@ The bots are the brand. Make them feel cute and premium.
 ## PR 5: Release readiness and live verification
 
 - **Status (2026-09-29):**
-  - License: PolyForm Noncommercial 1.0.0 or PolyForm Small Business 1.0.0, at the user's choice
-    (`LICENSE.md`). Personal use, noncommercial organizations and small companies are free, and
-    bigger companies buy a commercial license. That makes it source available, not open source,
-    and the bots' instructions say so.
+  - License: GNU AGPL-3.0 plus paid commercial licenses (owner's call, 2026-09-29, after a
+    PolyForm draft). The OSI-approved license keeps the "open source" label that OpenClaw and Hermes
+    (both MIT) also have. The copyleft steers companies that build on it toward a commercial
+    license. Outside contributions come under the agreement in `CONTRIBUTING.md`.
   - Source: it goes public as snapshots in `wasimjalali/usefulbot` (renamed from useful-bot-source on the owner's call)
     (`scripts/publish-source.mjs`, `docs/distribution.md`), because this repo's history holds the
     owner's personal Gmail and real-chat screenshots. That repo exists, private, with a clean first
@@ -201,10 +201,9 @@ The bots are the brand. Make them feel cute and premium.
 - **Wasim's own switch:** Wasim moves to the installed release as a clean first-time user. Back up
   `~/.useful-bot` and the repo `.eve` first.
 - **Source (was "Open source", superseded 2026-09-29):** the source is public as snapshots in
-  `wasimjalali/usefulbot` under the dual PolyForm license. **Hard gate:** flip that repo public
+  `wasimjalali/usefulbot` under the AGPL-3.0. **Hard gate:** flip that repo public
   and run `scripts/publish-source.mjs` before the release ships, or the bots send people to a 404.
-  Re-capture `site/public/shots/chat.png` once the new About facts are installed, since the current
-  shot's reply ends "Useful Bot is also open source."
+  The landing chat shot's "Useful Bot is also open source." is accurate again under the AGPL.
 - **Done when:** a fresh Mac installs from the landing page, runs first run end to end, and takes
   an update.
 

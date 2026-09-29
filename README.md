@@ -224,8 +224,10 @@ The macOS bundle takes its app icon, logos, head-only bot avatars and native ani
 
 ## License
 
-Source available, under [PolyForm Noncommercial 1.0.0](LICENSE-NONCOMMERCIAL.md) or
-[PolyForm Small Business 1.0.0](LICENSE-SMALL-BUSINESS.md), at your choice (summary in
-[LICENSE.md](LICENSE.md)). Free for personal use, noncommercial organizations and companies with
-fewer than 100 people and under 1,000,000 USD (2019, inflation-adjusted) of prior-year revenue. Any
-other use needs a commercial license from Wasim Jalali (Useful Build): hello@usefulbuild.com.
+Copyright 2026 Wasim Jalali (Useful Build). Open source under the [GNU AGPL-3.0](LICENSE). Anyone
+may use, change and share it. Anyone who distributes a changed version, or lets others use one over
+a network, must offer those users its source under the same license. A company that wants to
+build on Useful Bot without those terms can buy a commercial license from Wasim Jalali (Useful
+Build): hello@usefulbuild.com.
+
+Contributions come with a short contributor license agreement: see [CONTRIBUTING.md](CONTRIBUTING.md).
