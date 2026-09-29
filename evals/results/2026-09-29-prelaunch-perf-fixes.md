@@ -38,12 +38,13 @@ Which of these hold in the real app, and what fixes them without regressing beha
 | 1840 | INCONCLUSIVE | busy at prep (279%) |
 | 1845 | INCONCLUSIVE | busy at prep (257%) |
 | 1851 | INCONCLUSIVE | busy at prep (360%), first_open_tools-1 (258%), warm (338%) and end (312%) |
-| 1857 | INCONCLUSIVE | busy at prep (280%) and first_open_tools-1 (330%) |
+| 1857 | INCONCLUSIVE | busy at prep (280%) and first_open_tools-1 (330%); its no-snapshot open also landed by the cap (12,861 ms), which would otherwise be a FAIL |
 | 1902 | FAIL | the no-snapshot replies open landed by the 10 s cap |
 | 1911 | INCONCLUSIVE | busy at warm (306%) |
 | **1936** | **PASS** | the only clean run; busiest sample of other work 224%, under the 250% limit |
 
-No busy peak fell in a cold-open or no-snapshot replies launch. The `warm` launch holds the
+No busy peak fell in a cold-open replies or no-snapshot replies launch (the tools cold open was busy
+in 1851 and 1857). The `warm` launch holds the
 warm-return cases, replies included, so the 1851 and 1911 warm-return numbers are the least
 trustworthy. The numbers below are still read as direction, not as verdicts, and only 1936 backs
 a claim.

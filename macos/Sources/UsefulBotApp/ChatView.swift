@@ -817,9 +817,10 @@ struct ChatView: View {
                                 // after check, and the chat landed by the cap
                                 // thousands of points up its history. A scroll
                                 // to the newest block does move it, and the
-                                // marker is reached from there. The nudge
-                                // happens once per landing; every other check
-                                // scrolls to the marker.
+                                // marker is reached from there. While it stays
+                                // stuck, checks alternate between the nudge and
+                                // the marker scroll until it moves or the cap
+                                // ends the landing.
                                 if abs(height - lastHeight) <= 0.5,
                                    abs(scrollProbe.distance - lastDistance) <= 0.5, !nudged,
                                    let last = model.transcriptWindow.blocks.last?.id {
@@ -828,6 +829,7 @@ struct ChatView: View {
                                     transaction.disablesAnimations = true
                                     withTransaction(transaction) { proxy.scrollTo(last, anchor: .bottom) }
                                 } else {
+                                    nudged = false
                                     scrollToBottom(proxy)
                                 }
                             }

@@ -155,11 +155,14 @@ def program_name(command):
     for it) is ignored.
     """
     marker = ".app/Contents/MacOS/"
-    head = re.split(r"\s-", command, 1)[0]
+    head = re.split(r"\s-", command, maxsplit=1)[0]
     if marker in head:
         rest = head.split(marker, 1)[1].split()
-        if rest:
+        # The program is the one path component right after the marker; a
+        # directory path followed by a bare argument names nothing.
+        if rest and "/" not in rest[0] and not head.split(marker, 1)[1][:1].isspace():
             return rest[0]
+        return "?"
     words = command.split()
     if not words:
         return "?"
