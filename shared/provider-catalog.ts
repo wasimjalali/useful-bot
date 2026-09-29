@@ -574,7 +574,7 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
           listPath: "images/models",
         },
         headers: {
-          "HTTP-Referer": "https://usefulbot.app",
+          "HTTP-Referer": "https://bot.usefulbuild.com",
           "X-Title": "Useful Bot",
         },
       },

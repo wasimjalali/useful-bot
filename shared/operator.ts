@@ -1,4 +1,5 @@
 import { userInfo } from "node:os";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,9 +22,24 @@ function initialsFor(name: string): string {
   return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
 }
 
+/**
+ * The Mac account's full name ("Wasim Jalali"), the one the app shows in the
+ * rail and Settings (NSFullUserName). `id -F` reads it without a prompt; an
+ * account with no full name, or another platform, falls back to the login.
+ */
+export function ownerName(): string {
+  try {
+    const full = execFileSync("/usr/bin/id", ["-F"], { encoding: "utf8", timeout: 2000 }).trim();
+    if (full) return full;
+  } catch {
+    // Not macOS, or no full name set: the login name below still names them.
+  }
+  return titleName(userInfo().username || "Desktop owner");
+}
+
 export function systemOperator(): Operator {
   try {
-    const name = titleName(userInfo().username || "Desktop owner");
+    const name = ownerName();
     return { name, initials: initialsFor(name) };
   } catch {
     return { name: "Desktop owner", initials: "DO" };
