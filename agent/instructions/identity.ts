@@ -1,5 +1,5 @@
 import { defineDynamic, defineInstructions } from "eve/instructions";
-import { ownerName } from "../../shared/operator.ts";
+import { accountFullName, ownerName } from "../../shared/operator.ts";
 
 /**
  * Who owns this Mac, by the account's own name, so every install's bots know
@@ -8,9 +8,11 @@ import { ownerName } from "../../shared/operator.ts";
 let cached: string | undefined;
 
 export function ownerContext(): string {
-  // The account name doesn't change while the service runs.
-  cached ??= ownerName();
-  const name = cached;
+  // The account name doesn't change while the service runs. Only a name read
+  // from the account is kept: a fallback from a slow directory at login is
+  // tried again next turn.
+  cached ??= accountFullName() ?? undefined;
+  const name = cached ?? ownerName();
   return [
     "# Your owner",
     "",

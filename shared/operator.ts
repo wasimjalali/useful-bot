@@ -24,17 +24,25 @@ function initialsFor(name: string): string {
 
 /**
  * The Mac account's full name ("Wasim Jalali"), the one the app shows in the
- * rail and Settings (NSFullUserName). `id -F` reads it without a prompt; an
- * account with no full name, or another platform, falls back to the login.
+ * rail and Settings (NSFullUserName). `id -F` reads it without a prompt. Null
+ * when it can't: another platform, no full name set, or a slow directory.
+ * Whitespace is collapsed and the length capped, since it goes into a prompt.
  */
-export function ownerName(): string {
+export function accountFullName(): string | null {
   try {
-    const full = execFileSync("/usr/bin/id", ["-F"], { encoding: "utf8", timeout: 2000 }).trim();
-    if (full) return full;
+    const full = execFileSync("/usr/bin/id", ["-F"], { encoding: "utf8", timeout: 2000 })
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 100);
+    return full || null;
   } catch {
-    // Not macOS, or no full name set: the login name below still names them.
+    return null;
   }
-  return titleName(userInfo().username || "Desktop owner");
+}
+
+/** The account's full name, or its login name made readable. */
+export function ownerName(): string {
+  return accountFullName() ?? titleName(userInfo().username || "Desktop owner");
 }
 
 export function systemOperator(): Operator {
