@@ -6,7 +6,7 @@ import SwiftUI
 /// (scripts/release-mac.mjs writes it); a dev build from `build:app` has none,
 /// so it never offers to replace itself with a published release.
 @MainActor
-final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
+final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     static let shared = AppUpdater()
 
     /// What Settings > About says about updates.
@@ -36,7 +36,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
         super.init()
         let feed = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String ?? ""
         guard !feed.isEmpty else { return }
-        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
         self.controller = controller
         let updater = controller.updater
         updater.publisher(for: \.canCheckForUpdates)
@@ -86,6 +86,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     /// The menu's Update now: installs a downloaded update, or opens
     /// Sparkle's window for one it has only found.
     func updateNow() {
+        guard canCheckForUpdates else { return }
         if isReady { installUpdate() } else { checkForUpdates() }
     }
 
@@ -137,6 +138,18 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
             self.forgetFound()
             if !self.isReady { self.status = .upToDate }
         }
+    }
+
+    // MARK: - SPUStandardUserDriverDelegate
+
+    /// Gentle reminders: a scheduled check that finds an update while the
+    /// owner is working lights the menu's Update now instead of opening
+    /// Sparkle's window, which would otherwise return every 6 hours after a
+    /// Remind Me Later. Right after launch Sparkle still shows it.
+    nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    nonisolated func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {
+        immediateFocus
     }
 
     /// Skip This Version ends the offer; Remind Me Later keeps it.
