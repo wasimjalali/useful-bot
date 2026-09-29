@@ -54,8 +54,9 @@ const BUILT = "web/.next/standalone";
 // Names that must never reach a published zip, outside third-party packages.
 const SECRET = /^(\.env(\..*)?|.*\.env|\.envrc|\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx|p8|jks|keystore|token|gpg|asc|kubeconfig|tfvars|tfstate)|kubeconfig|terraform\.tfstate.*|secrets?(\..*)?|credentials?(\..*)?|client_secret.*|service-account.*\.json)$/i;
 
-// Backup copies of a secret are secrets too: `prod.env.bak`, `id_rsa.orig`, `.tfstate~`.
-const BACKUP_SUFFIX = /(\.(bak|backup|orig|old|save|swp|tmp)|~)+$/i;
+// Backup copies of a secret are secrets too: `prod.env.bak`, `id_rsa.orig`, `.tfstate~`,
+// `key.pem.bak.1`, `prod.env.2026-09-29`. Stripped only for this test, never from a name.
+const BACKUP_SUFFIX = /(\.(bak|backup|orig|old|save|swp|tmp)\d*|\.\d+|\.\d{4}-\d{2}-\d{2}|~)+$/i;
 function looksSecret(name) {
   return SECRET.test(name) || SECRET.test(name.replace(BACKUP_SUFFIX, ""));
 }

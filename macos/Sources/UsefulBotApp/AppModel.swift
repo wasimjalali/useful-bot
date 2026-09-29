@@ -550,8 +550,8 @@ final class AppModel: ObservableObject {
         // carry, so a checkout set as `repoPath` must never be its target.
         if let bundled = RuntimeInstall.bundledRuntime(), config.repoPath == RuntimeInstall.installRoot.path {
             let root = RuntimeInstall.installRoot
-            // Held until this block ends, so a second copy of the app starting
-            // now waits here and then finds the copy done.
+            // Held through `prepare`, so a second copy of the app starting now
+            // waits here and then finds the copy done.
             let locked = await Task.detached { () -> Result<RuntimeInstall.InstallLock, Error> in
                 Result { try RuntimeInstall.InstallLock(root: root) }
             }.value

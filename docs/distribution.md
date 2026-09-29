@@ -50,8 +50,8 @@ Open Anyway, once.
 
 ## Source
 
-The source is public in `wasimjalali/useful-bot-source` under PolyForm Small Business 1.0.0
-(`LICENSE.md`). That repo gets one snapshot commit per release, not this repo's history: the history
+The source is public in `wasimjalali/useful-bot-source` under PolyForm Noncommercial 1.0.0 or
+PolyForm Small Business 1.0.0, at the user's choice (`LICENSE.md`). That repo gets one snapshot commit per release, not this repo's history: the history
 carries the owner's personal address and screenshots of real chats. After a release merges to `main`:
 
 ```sh

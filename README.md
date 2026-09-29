@@ -224,6 +224,8 @@ The macOS bundle takes its app icon, logos, head-only bot avatars and native ani
 
 ## License
 
-[PolyForm Small Business 1.0.0](LICENSE.md). Free for personal use, noncommercial use and small
-businesses (fewer than 100 people and under 1,000,000 USD of yearly revenue, 2019 dollars). A
-larger company needs a commercial license: write to hello@usefulbuild.com.
+Source available, under [PolyForm Noncommercial 1.0.0](LICENSE-NONCOMMERCIAL.md) or
+[PolyForm Small Business 1.0.0](LICENSE-SMALL-BUSINESS.md), at your choice (summary in
+[LICENSE.md](LICENSE.md)). Free for personal use, noncommercial organizations and companies with
+fewer than 100 people and under 1,000,000 USD (2019, inflation-adjusted) of prior-year revenue. Any
+other use needs a commercial license from Wasim Jalali (Useful Build): hello@usefulbuild.com.

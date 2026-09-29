@@ -25,6 +25,8 @@ const EXCLUDE = [
   /^docs\/plan\/UI-FROM-GROKBOT\.md$/,
   /^docs\/research\/codex-model-catalog\.json$/,
   /^evals\/.*\.(png|jpe?g|webp|gif|mp4|mov)$/i,
+  // Its process list names another private project on the owner's Mac.
+  /^evals\/results\/2026-09-26-perf-check-1156-7dfbcbc\/report\.json$/,
 ];
 
 const { values } = parseArgs({
@@ -43,24 +45,38 @@ if (git(ROOT, "status", "--porcelain", "--untracked-files=no") !== "") throw new
 const clone = path.resolve(values.clone);
 if (!existsSync(path.join(clone, ".git"))) throw new Error(`${clone} is not a git clone`);
 const remote = git(clone, "remote", "get-url", "origin");
-if (!remote.includes(PUBLIC_REPO)) throw new Error(`${clone} is a clone of ${remote}, not ${PUBLIC_REPO}`);
+if (!new RegExp(`^(https://github\\.com/|git@github\\.com:)${PUBLIC_REPO}(\\.git)?$`).test(remote)) throw new Error(`${clone} is a clone of ${remote}, not ${PUBLIC_REPO}`);
 
 const branch = `source-v${values.version}`;
 git(clone, "fetch", "-q", "origin");
+try {
+  git(clone, "rev-parse", "--verify", "-q", "origin/main");
+} catch {
+  throw new Error(`${PUBLIC_REPO} has no main branch to start from`);
+}
 git(clone, "checkout", "-q", "-B", branch, "origin/main");
 
 const files = git(ROOT, "ls-files", "-z").split("\0").filter(Boolean).filter((f) => !EXCLUDE.some((re) => re.test(f)));
+// The same names build-runtime refuses to ship; a tracked one stops the publish.
+const SECRET = /^(\.env(\..*)?|.*\.env|\.envrc|\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx|p8|jks|keystore|token|gpg|asc|kubeconfig|tfvars|tfstate)|kubeconfig|terraform\.tfstate.*|secrets?(\..*)?|credentials?(\..*)?|client_secret.*|service-account.*\.json)$/i;
+const BACKUP_SUFFIX = /(\.(bak|backup|orig|old|save|swp|tmp)\d*|\.\d+|\.\d{4}-\d{2}-\d{2}|~)+$/i;
+const secrets = files.filter((f) => [path.basename(f), path.basename(f).replace(BACKUP_SUFFIX, "")].some((n) => SECRET.test(n)));
+if (secrets.length) throw new Error(`refusing to publish files that look like secrets: ${secrets.join(", ")}`);
 const stage = mkdtempSync(path.join(tmpdir(), "ub-source-"));
-for (const file of files) cpSync(path.join(ROOT, file), path.join(stage, file), { verbatimSymlinks: true });
-
-// The public tree is exactly the stage: everything else in the clone goes.
-for (const entry of readdirSync(clone)) if (entry !== ".git") rmSync(path.join(clone, entry), { recursive: true, force: true });
-cpSync(stage, clone, { recursive: true, verbatimSymlinks: true });
-rmSync(stage, { recursive: true, force: true });
+try {
+  for (const file of files) cpSync(path.join(ROOT, file), path.join(stage, file), { verbatimSymlinks: true });
+  // The public tree is exactly the stage: everything else in the clone goes.
+  for (const entry of readdirSync(clone)) if (entry !== ".git") rmSync(path.join(clone, entry), { recursive: true, force: true });
+  cpSync(stage, clone, { recursive: true, verbatimSymlinks: true });
+} finally {
+  rmSync(stage, { recursive: true, force: true });
+}
 
 const sha = git(ROOT, "rev-parse", "--short", "HEAD");
-git(clone, "add", "-A");
-if (git(clone, "status", "--porcelain") === "") {
+// -f: the copied .gitignore must not drop a file that is tracked here.
+git(clone, "add", "-A", "-f");
+const changed = git(clone, "status", "--porcelain") !== "";
+if (!changed) {
   process.stdout.write(`nothing changed since the last publish (${sha})\n`);
 } else {
   execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "--author", AUTHOR, "-m", `Useful Bot ${values.version} source`], {
@@ -69,7 +85,8 @@ if (git(clone, "status", "--porcelain") === "") {
   });
   process.stdout.write(`${JSON.stringify({ files: files.length, from: sha, commit: git(clone, "rev-parse", "--short", "HEAD") })}\n`);
 }
-if (values.push) {
+if (values.push && changed) {
+  // A rerun for the same version needs its earlier remote branch deleted first.
   git(clone, "push", "-q", "-u", "origin", branch);
   const pr = execFileSync("gh", ["pr", "create", "--repo", PUBLIC_REPO, "--head", branch, "--base", "main",
     "--title", `Useful Bot ${values.version} source`, "--body", `Source snapshot of Useful Bot ${values.version}.`], { cwd: clone, encoding: "utf8" }).trim();
