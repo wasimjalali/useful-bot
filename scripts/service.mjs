@@ -20,6 +20,12 @@ if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1
   process.exit(2);
 }
 
+// eve's CLI and Next both report usage to their vendors by default. The app
+// promises no analytics (bot.usefulbuild.com/privacy), so every service and
+// anything it spawns (eve flushes from a detached child) runs with both off.
+process.env.EVE_TELEMETRY_DISABLED = "1";
+process.env.NEXT_TELEMETRY_DISABLED = "1";
+
 const KEYCHAIN_TIMEOUT_MS = 15_000;
 
 const SERVICE_PORTS = {

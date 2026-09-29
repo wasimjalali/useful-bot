@@ -625,24 +625,35 @@ public enum EveStream {
         return handoffEnvelope.firstMatch(in: text, range: whole) != nil
     }
 
+    /// The `kind` eve puts on a `message.received` it sent on a background
+    /// task's behalf (patched in by scripts/patch-eve.mjs).
+    public static let backgroundTaskKind = "execution.background_task"
+
     /// eve's own wording for a background task reporting back
     /// (`formatTaskNotification` and the update and authorization wakes in
-    /// eve's `execution/tasks/child/steps.js`, 0.54). The stream carries no
-    /// other mark: eve tags the message internally and drops the tag before
-    /// it reaches this projection.
+    /// eve's `execution/tasks/child/steps.js`, 0.54). Streams from before the
+    /// `kind` mark carry nothing else to tell such a report by.
     private static let taskReportPattern = try! NSRegularExpression(
-        pattern: "^Background task (task_[A-Za-z0-9]+)(?: \\([^\\n]*?\\))? (is completed\\.|failed\\.|is cancelled\\.|needs input\\.|needs authorization\\.|update: )"
+        pattern: "^Background task (task_[A-Za-z0-9]+)(?: \\([^\\n]*?\\))? (is completed\\.|failed\\.|is cancelled\\.|needs input\\.|needs authorization\\.|update: )",
+        options: [.anchorsMatchLines]
     )
 
-    /// The task a sub-agent's report is about, and whether the task is over.
-    /// nil for anything else, the owner's own messages included.
-    public static func taskReport(_ text: String) -> (taskId: String, settled: Bool)? {
+    /// The tasks a sub-agent's report is about, and whether each is over.
+    /// eve hands several reports that land together to one turn, joined by a
+    /// blank line, so every report after the first starts a paragraph. Empty
+    /// unless the text opens with a report, the owner's own messages included.
+    public static func taskReports(_ text: String) -> [(taskId: String, settled: Bool)] {
         let whole = NSRange(text.startIndex..., in: text)
-        guard let match = taskReportPattern.firstMatch(in: text, range: whole),
-              let id = Range(match.range(at: 1), in: text),
-              let verb = Range(match.range(at: 2), in: text) else { return nil }
-        let settled = ["is completed.", "failed.", "is cancelled."].contains(String(text[verb]))
-        return (String(text[id]), settled)
+        var reports: [(taskId: String, settled: Bool)] = []
+        for match in taskReportPattern.matches(in: text, range: whole) {
+            guard let id = Range(match.range(at: 1), in: text),
+                  let verb = Range(match.range(at: 2), in: text),
+                  let start = Range(match.range, in: text)?.lowerBound else { continue }
+            if reports.isEmpty ? start != text.startIndex : !text[..<start].hasSuffix("\n\n") { continue }
+            let settled = ["is completed.", "failed.", "is cancelled."].contains(String(text[verb]))
+            reports.append((String(text[id]), settled))
+        }
+        return reports
     }
 
     /// Remove the identity prefix the web proxy injects into a stored user
@@ -1517,12 +1528,14 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // ahead of it is never applied and the id would stay unknown for
             // the whole live turn.
             let text = EveStream.stripThreadPrefix(event.message ?? "")
-            // A sub-agent reporting back, known by eve's wording and by a task
-            // this session started: an owner who pastes that wording is still
-            // the owner.
-            let report = EveStream.taskReport(text).flatMap {
-                runningTasks[$0.taskId] != nil || settledTasks.contains($0.taskId) ? $0 : nil
-            }
+            // A sub-agent or background tool reporting back. eve marks it
+            // (`kind`, scripts/patch-eve.mjs), and an owner can never send that
+            // mark. Streams written before the mark are known by eve's wording
+            // and by a task this session started: an owner who pastes that
+            // wording is still the owner.
+            let reports = EveStream.taskReports(text)
+            let fromTask = event.data?["kind"]?.stringValue == EveStream.backgroundTaskKind
+                || reports.first.map { runningTasks[$0.taskId] != nil || settledTasks.contains($0.taskId) } == true
             if let id = event.id, EveStream.isContinuationTurn(event.message ?? "") {
                 continuationRowId = id
             }
@@ -1547,8 +1560,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                         } == true
                     guard canResume(known) || ownEcho, var stepped = unstash(named) else {
                         // A late report is still the bot's, never an owner row.
-                        if let report {
-                            if report.settled { settle(report.taskId) }
+                        if fromTask {
+                            for report in reports where report.settled { settle(report.taskId) }
                             return
                         }
                         lateUserRow(event, text: text, at: stamp, for: named)
@@ -1577,14 +1590,14 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // message into the session, and it is the bot's to read, not the
             // owner's: it opens the turn in which the bot answers, and shows
             // only in the working row.
-            if let report {
-                if report.settled { settle(report.taskId) }
+            if fromTask {
+                for report in reports where report.settled { settle(report.taskId) }
                 turn.fromTask = true
                 failed = false
                 failure = nil
                 pending = true
                 turnStartedAt = stamp ?? Date()
-                activity = .subagent(finished: report.settled)
+                activity = .subagent(finished: !reports.isEmpty && reports.allSatisfy(\.settled))
                 return
             }
             // The last turn failed before the bot said anything, and eve threw

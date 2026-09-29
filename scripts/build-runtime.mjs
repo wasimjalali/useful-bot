@@ -41,6 +41,7 @@ const TRACKED = [
   "package.json",
   "package-lock.json",
   "scripts/service.mjs",
+  "scripts/patch-eve.mjs",
   "scripts/setup-local.mjs",
   "scripts/web-mode.mjs",
   "shared",

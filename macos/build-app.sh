@@ -62,6 +62,12 @@ fi
 # Where Settings > Feedback posts (services/feedback). Every build carries it;
 # UB_FEEDBACK_URL points a build at another Worker.
 /usr/libexec/PlistBuddy -c "Add :UBFeedbackURL string ${UB_FEEDBACK_URL:-https://feedback.usefulbuild.com/v1/feedback}" "$APP/Contents/Info.plist"
+# Chat snapshots are trusted across builds while the replay logic they were
+# folded under is unchanged (AppModel.snapshotKey). That logic is all of
+# UsefulBotCore, so a change anywhere in it replays each chat once.
+SNAPSHOT_LOGIC=$(find Sources/UsefulBotCore -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 \
+  | shasum -a 256 | cut -c1-16)
+/usr/libexec/PlistBuddy -c "Add :UBSnapshotLogic string $SNAPSHOT_LOGIC" "$APP/Contents/Info.plist"
 if [ -n "${UB_VERSION:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $UB_VERSION" "$APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${UB_BUILD:?UB_VERSION needs UB_BUILD}" "$APP/Contents/Info.plist"

@@ -110,6 +110,12 @@ The bots are the brand. Make them feel cute and premium.
 
 ## PR 4: Landing page on bot.usefulbuild.com
 
+- **Status (2026-09-29):** sub-agent reports carry eve's `kind` mark (`scripts/patch-eve.mjs`)
+  and merged reports all settle; snapshots are keyed to the `UsefulBotCore` hash (a rebuild's
+  first open 10.7 s to 0.8 s, `evals/results/2026-09-29-snapshot-key.md`); eve and Next telemetry
+  are off; the site lives in `site/` and is live; `ReleaseLinks.privacy` is set. The Dock icon
+  waits on Xcode (owner installing).
+
 - **Carried over from PR 3 (macOS, do these first):**
   - **Sub-agent messages without eve's wording still show as the owner's.** PR 3 hides a
     sub-agent's result only when it arrives in eve's own form ("Background task task_… is

@@ -15,6 +15,9 @@ This product is the macOS app. Everything else serves it.
 3. **No web UI.** The browser UI was removed on 2026-09-28 (PR 1 of the launch plan); git
    history keeps it. `web/` is now only the API service the apps call (`web/app/api`, the
    eve proxy in `web/app/eve`), and `/` returns a plain status. Do not add browser pages.
+   The one exception (decided 2026-09-29): the public website, the landing and privacy pages on
+   `bot.usefulbuild.com`, lives in this repo under `site/` (static files on a Cloudflare assets
+   Worker; deploy with `npx wrangler deploy --config site/wrangler.jsonc`).
 4. **CLI.** Not a concern. Do not build new CLI surfaces or spend design effort on one.
    Existing CLI and script entry points stay as they are: there is no need to remove them.
 
