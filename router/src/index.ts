@@ -926,6 +926,16 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
 // Compared as real paths: import.meta.url percent-encodes a space, so a
 // release installed under "Application Support" never matched a plain
 // `file://` + argv[1] and the router exited without starting.
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+function isEntryPoint(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    // A main path that doesn't exist (a runner's virtual entry) is not this file.
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   startRouter();
 }
