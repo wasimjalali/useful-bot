@@ -54,6 +54,11 @@ outlive the app, so after an update they would otherwise keep serving from repla
 `app/.eve/`, which a copy never touches. Everything else stays in `~/.useful-bot` as before. Nothing
 leaves the Mac.
 
+With no `~/.useful-bot/config.json` but Useful Bot items still in the Keychain (the data folder was
+deleted, the app kept), plain setup exits 3 and the app reruns it with `--rebuild-orphaned`, which
+replaces every credential and refuses if a config exists; the app then restarts its services so none
+keeps the old tokens.
+
 A dev build (`npm run build:app`) has no runtime and no feed: it runs the checkout and never updates
 itself. A stored `repoPath` default also keeps a release on that checkout.
 
