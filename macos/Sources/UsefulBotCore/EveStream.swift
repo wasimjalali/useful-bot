@@ -642,6 +642,10 @@ public enum EveStream {
     /// eve hands several reports that land together to one turn, joined by a
     /// blank line, so every report after the first starts a paragraph. Empty
     /// unless the text opens with a report, the owner's own messages included.
+    /// A result that itself quotes eve's wording for another task, at the start
+    /// of a paragraph, would settle that task early: its working row goes, and
+    /// its real report still arrives and is still hidden. Result text is free
+    /// form, so nothing on the stream tells the two apart.
     public static func taskReports(_ text: String) -> [(taskId: String, settled: Bool)] {
         let whole = NSRange(text.startIndex..., in: text)
         var reports: [(taskId: String, settled: Bool)] = []
@@ -1529,10 +1533,12 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // the whole live turn.
             let text = EveStream.stripThreadPrefix(event.message ?? "")
             // A sub-agent or background tool reporting back. eve marks it
-            // (`kind`, scripts/patch-eve.mjs), and an owner can never send that
-            // mark. Streams written before the mark are known by eve's wording
-            // and by a task this session started: an owner who pastes that
-            // wording is still the owner.
+            // (`kind`, scripts/patch-eve.mjs); an owner's own send never carries
+            // the mark. eve drops it when an owner message and a report are
+            // merged into one turn, and such a message then goes by the wording
+            // like streams written before the mark: known by eve's wording and
+            // by a task this session started. An owner who pastes that wording
+            // is still the owner.
             let reports = EveStream.taskReports(text)
             let fromTask = event.data?["kind"]?.stringValue == EveStream.backgroundTaskKind
                 || reports.first.map { runningTasks[$0.taskId] != nil || settledTasks.contains($0.taskId) } == true
@@ -1597,7 +1603,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
                 failure = nil
                 pending = true
                 turnStartedAt = stamp ?? Date()
-                activity = .subagent(finished: !reports.isEmpty && reports.allSatisfy(\.settled))
+                // A background tool's own message names no task: the bot is
+                // reading it, not waiting on a sub-agent.
+                activity = reports.isEmpty ? .thinking : .subagent(finished: reports.allSatisfy(\.settled))
                 return
             }
             // The last turn failed before the bot said anything, and eve threw

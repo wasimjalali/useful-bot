@@ -41,7 +41,7 @@ public struct ChatSnapshot: Codable, Equatable, Sendable {
     public var localTurnIds: [String]
     public var savedAt: Date
     /// The replay logic that wrote it (the app passes a hash of this module's
-    /// sources). The fold logic in `StreamProjection.apply` changes without
+    /// sources and of the AppModel that feeds it). The fold logic in `StreamProjection.apply` changes without
     /// renaming a field, and a snapshot is only what a replay from zero gives
     /// under the logic that made it, so other logic replays the chat and
     /// writes it afresh.

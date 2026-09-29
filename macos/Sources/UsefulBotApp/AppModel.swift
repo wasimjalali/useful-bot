@@ -356,9 +356,10 @@ final class AppModel: ObservableObject {
     /// where the chat was left instead of at event zero.
     private let snapshots = ChatSnapshotStore(directory: ChatSnapshotStore.defaultDirectory, build: AppModel.snapshotKey)
     /// Which snapshots this app trusts. A bundled build carries the hash of the
-    /// UsefulBotCore sources (build-app.sh), where the replay logic lives, so an
-    /// update that leaves that code alone keeps every chat's snapshot and opens
-    /// it at once; one that touches it replays each chat once. Without the
+    /// replay logic's sources (build-app.sh): UsefulBotCore and this file, which
+    /// feeds the fold. An update that leaves them alone keeps every chat's
+    /// snapshot and opens it at once; one that touches them replays each chat
+    /// once. Without the
     /// stamp (a bare `swift run`), every rebuild of the binary starts over.
     private static let snapshotKey: String = {
         if let logic = Bundle.main.object(forInfoDictionaryKey: "UBSnapshotLogic") as? String, !logic.isEmpty {

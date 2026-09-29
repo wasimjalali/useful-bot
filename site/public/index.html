@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="en">
+<!-- data-release="soon" hides the download until the first release is out. PR 5 removes it. -->
+<html lang="en" data-release="soon">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -57,6 +58,9 @@ img { max-width: 100%; }
 .btn:hover { box-shadow: 0 12px 24px -18px rgb(23 23 23 / 0.65); transform: translateY(-1px); }
 .btn:active { box-shadow: none; transform: scale(0.98); }
 .btn-light { color: var(--night); background: var(--night-ink); }
+.btn-soon, .btn-soon:hover { cursor: default; opacity: 0.72; box-shadow: none; transform: none; }
+[data-release="soon"] .when-live { display: none !important; }
+html:not([data-release="soon"]) .when-soon { display: none !important; }
 .btn-light:hover { background: #fff; box-shadow: 0 10px 30px -14px rgb(0 0 0 / 0.8); }
 .btn-light:focus-visible, .link-light:focus-visible, .cmd button:focus-visible { outline-color: var(--night-ink); }
 .link-light {
@@ -120,23 +124,19 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 .cmd code span { color: var(--night-muted); user-select: none; }
 .cmd button { flex: none; min-width: 72px; min-height: 40px; padding: 0 12px; border: 0; border-radius: 8px; color: var(--night-ink); background: #262626; font: 500 13px var(--font-sans); cursor: pointer; transition: background-color 150ms var(--ease-out); }
 .cmd button:hover { background: #303030; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .cmd-note { margin: 10px 0 0; color: #8a8a8a; font-size: 13px; line-height: 1.5; }
 
 /* Chapters */
 .chapters { padding: 120px 0 40px; }
-.rule-row { display: flex; align-items: center; gap: 14px; margin-bottom: 48px; color: var(--ink-muted); font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; }
-.rule-row b { color: var(--ink); font-weight: 400; }
-.rule-row i { flex: 1; height: 1px; background: var(--rule); }
-.rule-row s { position: relative; width: 13px; height: 13px; }
-.rule-row s::before, .rule-row s::after { content: ""; position: absolute; background: var(--ink-muted); }
-.rule-row s::before { top: 6px; left: 0; width: 13px; height: 1px; }
-.rule-row s::after { top: 0; left: 6px; width: 1px; height: 13px; }
 .chapter { padding: 48px 0 64px; }
 .ch-copy { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 64px; align-items: end; margin-bottom: 36px; }
 .ch-copy .n { grid-column: 1 / -1; margin-bottom: -40px; display: block; color: var(--ink-muted); font-family: var(--font-mono); font-size: 12px; }
 .ch-copy h2 { max-width: 14ch; margin: 0; font-size: clamp(28px, 3vw, 42px); font-weight: 500; line-height: 1.06; letter-spacing: -0.035em; text-wrap: balance; }
 .ch-copy p { max-width: 46ch; margin: 0; color: var(--ink-muted); font-size: 17px; line-height: 1.6; }
-.shot { max-width: 880px; margin: 0; }
+.shot { max-width: 1040px; margin: 0; }
+.shot-wide { max-width: none; }
+.section-title { max-width: 16ch; margin: 0 0 24px; font-size: clamp(34px, 4.4vw, 60px); font-weight: 500; line-height: 1.02; letter-spacing: -0.04em; text-wrap: balance; }
 .shot .frame { overflow: hidden; border: 1px solid var(--rule); border-radius: 16px; background: var(--paper-bright); box-shadow: 0 1px 0 rgb(23 23 23 / 0.03), 0 30px 60px -40px rgb(23 23 23 / 0.35); }
 .shot img { display: block; width: 100%; height: auto; }
 
@@ -151,7 +151,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 @keyframes head-in { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
 
 /* Spec sheet: the plain facts. */
-.spec-wrap { padding: 72px 0 120px; }
+.spec-wrap { padding: 72px 0 120px; border-top: 1px solid var(--rule); margin-top: 48px; }
 .spec-head { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 64px; }
 .spec-head h2 { margin: 0; font-size: clamp(28px, 3vw, 42px); font-weight: 500; line-height: 1.06; letter-spacing: -0.035em; }
 .spec-head h2 + p { max-width: 30ch; margin: 18px 0 0; color: var(--ink-muted); font-size: 15px; line-height: 1.6; }
@@ -175,7 +175,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 .footer-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 1.4fr; gap: clamp(1.5rem, 4vw, 3rem); }
 .footer nav { display: flex; flex-direction: column; align-items: flex-start; gap: 0.75rem; }
 .footer nav span { margin-bottom: 0.35rem; color: var(--ink-muted); font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
-.footer nav a { min-height: 28px; font-size: 0.9375rem; text-decoration: none; }
+.footer nav a { display: inline-flex; align-items: center; min-height: 40px; font-size: 0.9375rem; text-decoration: none; }
 .footer nav a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .footer nav a[aria-current="page"] { font-weight: 600; }
 .footer-blurb p { max-width: 28ch; margin: 0; color: var(--ink-muted); line-height: 1.5; }
@@ -252,7 +252,8 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
           <a href="#facts">The facts</a>
           <a href="/privacy/">Privacy</a>
         </nav>
-        <a class="btn btn-compact" href="https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip"><span class="wide-label">Download for Mac</span><span class="compact-label">Download</span></a>
+        <a class="btn btn-compact when-live" href="https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip"><span class="wide-label">Download for Mac</span><span class="compact-label">Download</span></a>
+        <span class="btn btn-compact btn-soon when-soon">Coming soon</span>
       </div>
     </header>
 
@@ -261,23 +262,29 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
         <div class="sheet">
           <div class="sheet-grid" aria-hidden="true"></div>
           <div class="hero-inner">
-            <p class="kicker" data-rise style="--i:0">Native Mac app · Built by Useful Build</p>
+            <p class="kicker" data-rise style="--i:0">Native Mac app</p>
             <h1 data-rise style="--i:0">A team of AI bots that lives on your Mac.</h1>
             <div class="hero-row" data-rise style="--i:1">
               <p class="lede">Give each bot one job: writing, research, your inbox or your files. They run on the model you already pay for, work in the apps you connect and ask before they touch anything you haven't allowed.</p>
               <div>
                 <div class="actions">
-                  <a class="btn btn-light" href="https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip">
+                  <span class="btn btn-light btn-soon when-soon">Coming soon</span>
+                  <a class="btn btn-light when-live" href="https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip">
                     <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
                     Download for Mac
                   </a>
                   <a class="link-light" href="#how">See how it works <span aria-hidden="true">&darr;</span></a>
                 </div>
+                <p class="cmd-note when-soon">The first release is on its way. The download goes up here the day it's out.</p>
+                <div class="when-live">
                 <div class="cmd">
                   <code id="install-cmd"><span>$ </span>curl -fsSL https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/install.sh | sh</code>
                   <button type="button" data-copy="install-cmd" aria-label="Copy the install command">Copy</button>
                 </div>
                 <p class="cmd-note">Or paste this in Terminal. macOS 14+ · Apple silicon · Updates arrive in the app</p>
+                <p class="cmd-note">The app isn't notarized yet. After a download, allow it once in System Settings, Privacy &amp; Security. The Terminal line skips that step.</p>
+                <p class="visually-hidden" role="status" id="copy-status"></p>
+                </div>
               </div>
             </div>
             <div class="stage" data-rise style="--i:2">
@@ -292,7 +299,7 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 
       <section class="chapters" id="how">
         <div class="wrap">
-          <div class="rule-row" aria-hidden="true"><b>01</b>How it works<i></i><s></s></div>
+          <h2 class="section-title">What your bots can do.</h2>
           <article class="chapter">
             <div class="ch-copy">
               <span class="n">01</span>
@@ -317,10 +324,20 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
             <div class="ch-copy">
               <span class="n">03</span>
               <h2>Your apps, on your terms.</h2>
-              <p>Connect Gmail, Calendar, Drive and hundreds more. Read only, Auto or Full access decides what a bot may do on its own, and anything else waits for your yes.</p>
+              <p>Connect Gmail, Calendar, Drive and hundreds more. Read only, Auto or Full access decides what a bot may do on its own. In Auto, anything else waits for your yes.</p>
             </div>
             <figure class="shot">
               <div class="frame"><img alt="Useful Bot's connectors, with apps a bot can use." src="/shots/connectors.png" width="1498" height="1150" loading="lazy" decoding="async" /></div>
+            </figure>
+          </article>
+          <article class="chapter">
+            <div class="ch-copy">
+              <span class="n">04</span>
+              <h2>Work that runs while you're busy.</h2>
+              <p>Give a bot a routine, like a morning brief or a weekly cleanup, and it runs on schedule. Try it first with Test run. Web search is built in and free, with no extra key.</p>
+            </div>
+            <figure class="shot shot-wide">
+              <div class="frame"><img alt="A Drive Admin routine: its instructions, the bot's report from a scheduled run and the schedule editor with Test run." src="/shots/routines.png" width="2632" height="1122" loading="lazy" decoding="async" /></div>
             </figure>
           </article>
         </div>
@@ -328,7 +345,6 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 
       <section class="spec-wrap" id="facts">
         <div class="wrap">
-          <div class="rule-row" aria-hidden="true"><b>02</b>The facts<i></i><s></s></div>
           <div class="spec-head">
             <div>
               <h2>Before you install.</h2>
@@ -356,7 +372,8 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
             <div>
               <p>Download the app, connect a model and make your first bot. It takes a couple of minutes.</p>
               <div class="cta-row">
-                <a class="btn btn-light" href="https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip">Download for Mac</a>
+                <a class="btn btn-light when-live" href="https://github.com/wasimjalali/useful-bot-releases/releases/latest/download/Useful-Bot-macOS.zip">Download for Mac</a>
+                <span class="btn btn-light btn-soon when-soon">Coming soon</span>
                 <a class="quiet" href="https://cal.com/usefulbuild/free-audit">Want bots like this for your team? Book a free audit</a>
               </div>
             </div>
@@ -369,10 +386,10 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
           <div class="footer-nav">
             <nav aria-label="Product links">
               <span>Products</span>
-              <a href="https://usefulapply.com">Useful Apply</a>
               <a href="https://bot.usefulbuild.com" aria-current="page">Useful Bot</a>
               <a href="https://brain.usefulbuild.com">Useful Brain</a>
               <a href="https://voice.usefulbuild.com">Useful Voice</a>
+              <a href="https://usefulapply.com">Useful Apply</a>
             </nav>
             <nav aria-label="Site links">
               <span>Useful Build</span>
@@ -416,12 +433,17 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
       window.addEventListener("scroll", updateNav, { passive: true });
       for (const button of document.querySelectorAll("[data-copy]")) {
         button.addEventListener("click", async () => {
-          const text = document.getElementById(button.dataset.copy).textContent.replace(/^\$ /, "");
+          const code = document.getElementById(button.dataset.copy);
+          const status = document.getElementById("copy-status");
+          const text = code.textContent.replace(/^\$ /, "");
           try {
             await navigator.clipboard.writeText(text);
             button.textContent = "Copied";
+            status.textContent = "Install command copied.";
           } catch {
-            button.textContent = "Select it";
+            window.getSelection().selectAllChildren(code);
+            button.textContent = "Selected";
+            status.textContent = "Couldn't copy. The command is selected: press Command-C.";
           }
           setTimeout(() => { button.textContent = "Copy"; }, 1800);
         });

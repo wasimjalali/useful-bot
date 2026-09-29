@@ -9,7 +9,11 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="canonical" href="https://bot.usefulbuild.com/privacy/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://bot.usefulbuild.com/privacy/" />
     <meta property="og:title" content="Privacy · Useful Bot" />
+    <meta property="og:description" content="What the Useful Bot Mac app keeps on your Mac, what it sends and to whom." />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta property="og:image" content="https://bot.usefulbuild.com/og.png" />
     <style>
 @font-face { font-family: "Geist"; src: url("/fonts/geist-variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
@@ -51,6 +55,7 @@ footer { border-top: 1px solid var(--rule); }
 .legal { display: flex; justify-content: space-between; gap: 1.5rem; width: min(100%, 1248px); margin-inline: auto; padding: 24px; color: var(--ink-muted); font-family: var(--font-mono); font-size: 0.7rem; line-height: 1.5; }
 .legal p { margin: 0; font-size: inherit; }
 .legal div { display: flex; gap: 1rem; }
+.legal a { display: inline-flex; align-items: center; min-height: 40px; }
 @media (max-width: 720px) {
   .nav-inner { height: 60px; padding-inline: 16px; }
   main { padding: 32px 20px 72px; }
@@ -92,14 +97,15 @@ footer { border-top: 1px solid var(--rule); }
         <h2>What leaves your Mac, and why</h2>
 
         <h3>The model provider you connect</h3>
-        <p>To answer you, a bot sends your conversation (messages, attachments and tool results) to the model provider you connected: for example OpenAI, GitHub Copilot, Anthropic, Google, OpenRouter or another listed provider. That provider handles it under its own terms and privacy policy. If you connect a local model such as Ollama or LM Studio, it stays on your Mac. The app also fetches each provider's list of models, and public model details from <code>models.dev</code>.</p>
+        <p>To answer you, a bot sends your conversation (messages, attachments and tool results) to the model provider you connected: for example OpenAI, GitHub Copilot, Anthropic, Google, OpenRouter or another listed provider. That provider handles it under its own terms and privacy policy. If you connect a local model such as Ollama or LM Studio, it stays on your Mac. The app also fetches each provider's list of models, and public model details from <code>models.dev</code>. Requests to OpenRouter name the app (Useful Bot) as the referrer, as OpenRouter asks.</p>
 
         <h3>Apps and tools you connect</h3>
         <ul>
           <li><strong>Connectors</strong> (Gmail, Calendar, Drive and others) run through Composio with your own Composio key. When a bot uses one, what it sends and gets back passes through Composio and that app.</li>
           <li><strong>Web search</strong> sends the search words to Firecrawl to find results.</li>
           <li><strong>Drawings and MCP servers</strong>: when a bot draws, it uses Excalidraw's server. Servers you add yourself get what a bot sends them. Interactive widgets from those servers may load code from that server or from <code>esm.sh</code>.</li>
-          <li><strong>Command-line tools</strong> a bot installs or runs with your approval reach whatever those tools reach.</li>
+          <li><strong>App logos</strong> in Connectors load from Composio's logo server, which sees your IP address and which logos are shown.</li>
+          <li><strong>Command-line tools</strong> a bot installs or runs, within the access level you chose, reach whatever those tools reach.</li>
         </ul>
         <p>Nothing here happens in the background on its own: each is a bot acting on your request or a routine you set up, within the access level you chose (Read only, Auto or Full access).</p>
 
@@ -107,7 +113,7 @@ footer { border-top: 1px solid var(--rule); }
         <p>The app checks GitHub for new versions. GitHub sees your IP address and the app version, as with any download. No system profile is sent. Every update is checked against the app's signing key before it installs.</p>
 
         <h3>Feedback you send us</h3>
-        <p>Settings &gt; Feedback sends us your message, its type, the reply email if you give one and a random install ID (made on your Mac, used only to limit spam). If you tick the box, it adds the app version, macOS version and chip. We store it with Cloudflare, keep a salted hash of your IP address (never the address itself) to stop abuse, and email it to our team. We keep feedback until it's no longer useful to improve the app, or until you ask us to delete it.</p>
+        <p>Settings &gt; Feedback sends us your message, its type, the reply email if you give one and a random install ID (made on your Mac, used only to limit spam). If you tick the box, it adds the app version and build, macOS version and chip. We store it with Cloudflare and email it to our team. Cloudflare handles the request like any other; in the feedback we store, your IP address is kept only as a salted hash, used to stop abuse. We keep feedback until it's no longer useful to improve the app, or until you ask us to delete it.</p>
 
         <h2>What we don't do</h2>
         <p>No analytics, telemetry or crash reporting in the app, and the frameworks it runs on have theirs switched off. No ads or cross-site tracking. We don't sell data and we don't train AI models on anything you send us.</p>

@@ -113,11 +113,11 @@ The bots are the brand. Make them feel cute and premium.
 - **Status (2026-09-29):** sub-agent reports carry eve's `kind` mark (`scripts/patch-eve.mjs`)
   and merged reports all settle; snapshots are keyed to the `UsefulBotCore` hash (a rebuild's
   first open 10.7 s to 0.8 s, `evals/results/2026-09-29-snapshot-key.md`); eve and Next telemetry
-  are off; the site lives in `site/` and is live; `ReleaseLinks.privacy` is set. The Dock icon
-  waits on Xcode (owner installing).
+  are off; the site lives in `site/` and is live, showing "Coming soon" instead of the download
+  until PR 5; `ReleaseLinks.privacy` is set. The Dock icon waits on Xcode (owner installing).
 
 - **Carried over from PR 3 (macOS, do these first):**
-  - **Sub-agent messages without eve's wording still show as the owner's.** PR 3 hides a
+  - **Done in PR 4:** **Sub-agent messages without eve's wording still show as the owner's.** PR 3 hides a
     sub-agent's result only when it arrives in eve's own form ("Background task task_… is
     completed", "failed", "is cancelled", "needs input", "needs authorization", "update:") and
     names a task the app saw start. eve's `wakeTaskMessageParentStep` can also send a
@@ -126,7 +126,7 @@ The bots are the brand. Make them feel cute and premium.
     whether the `agent` tool itself does this. Start by reproducing it on Test Bot. The likely
     fix is upstream: have eve forward its internal `execution.background_task` kind on
     `message.received` (a small patch or a vendor request), then filter on that instead of text.
-  - **A long chat's first open after a rebuild or update takes 9 to 11 s.** Chat snapshots are
+  - **Done in PR 4:** **A long chat's first open after a rebuild or update takes 9 to 11 s.** Chat snapshots are
     keyed to the exact app binary (`AppModel.buildId`), so every new build, and so every
     Sparkle update for users, replays each chat from zero on its first open. A same-build
     relaunch lands in about 0.9 s. Measured in `evals/results/2026-09-29-pr3-polish.md`. Look at
@@ -170,7 +170,8 @@ The bots are the brand. Make them feel cute and premium.
   `docs/plan/devin-dist-prompt.md` and commit it before this PR starts.
 - **PR #144 lows:** fix every open low listed in its description.
 - **Release repo:** create the public repo `wasimjalali/useful-bot-releases` and publish v1.0.0
-  (`npm run release:mac`), only on Wasim's go. Then turn on `ReleaseLinks.releasesRepoLive`
+  (`npm run release:mac`), only on Wasim's go. Then remove `data-release="soon"` from
+  `site/public/index.html` and redeploy the site, and turn on `ReleaseLinks.releasesRepoLive`
   (What's new, Report a bug on GitHub).
 - **Live checks left from #145:**
   - "Install update" on a real update.

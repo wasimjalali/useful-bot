@@ -17,6 +17,12 @@
   wait for its main window, record it with `winrec` at 60 fps for 16 s, and tile every changed
   frame with `framesheet`. The number is the frame time where the transcript paints, counted from
   the recording's start (the window's first frame).
+- How the number is read: `framesheet` lists the frames where the picture changes; the chat
+  time is the first frame whose tile shows the transcript instead of the loading mascot. Frames
+  it picked, by run: before-run1 10812 ms, before-run2 10609 ms, before-samebuild 836 ms,
+  B-firstlaunch 9242 ms, after-run1 845 ms, after-run2 707 ms, D-launch 10580 ms. The per-frame
+  JPEGs (about 900 per run) were not kept; the tiled sheets here show each picked frame. Rerun:
+  `coldopen.sh <outDir> [install]`, then `framesheet <outDir>/frames sheet.jpg`.
 - Before: `main` at `b483a2f`, snapshots keyed to the binary's size and modification time.
 - After: snapshots keyed to `ChatSnapshot.formatVersion` plus a hash of the `UsefulBotCore`
   sources, stamped into Info.plist by `macos/build-app.sh` (`UBSnapshotLogic`).

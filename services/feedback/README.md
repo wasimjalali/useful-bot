@@ -37,6 +37,17 @@ npx wrangler deploy
 `IP_SALT` is already set. A brand-new Worker can't take `wrangler secret put` before it exists, so
 the first deploy passed it with `--secrets-file` (a private temp file, deleted right after).
 
+## Deleting someone's feedback
+
+The privacy page promises deletion on request. Find the rows by the sender's reply email (or the
+id in their email), check them, then delete:
+
+```sh
+cd services/feedback
+npx wrangler d1 execute useful-bot-feedback --remote --command "SELECT id, created_at, kind FROM feedback WHERE reply_email = 'them@example.com'"
+npx wrangler d1 execute useful-bot-feedback --remote --command "DELETE FROM feedback WHERE id IN ('<id>')"
+```
+
 ## Check
 
 `npm run e2e` runs 32 cases against `wrangler dev` with a local D1 and simulated email: validation,
