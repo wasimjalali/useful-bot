@@ -161,6 +161,23 @@ The bots are the brand. Make them feel cute and premium.
 
 ## PR 5: Release readiness and live verification
 
+- **Status (2026-09-29):**
+  - License: PolyForm Noncommercial 1.0.0 or PolyForm Small Business 1.0.0, at the user's choice
+    (`LICENSE.md`). Personal use, noncommercial organizations and small companies are free, and
+    bigger companies buy a commercial license. That makes it source available, not open source,
+    and the bots' instructions say so.
+  - Source: it goes public as snapshots in `wasimjalali/useful-bot-source`
+    (`scripts/publish-source.mjs`, `docs/distribution.md`), because this repo's history holds the
+    owner's personal Gmail and real-chat screenshots. That repo exists, private, with a clean first
+    commit. Flip it public after this PR merges.
+  - The #144 lows are fixed. v1.0.0 is built locally (`macos/dist/release`), with nothing
+    uploaded.
+  - Waiting on the owner:
+    - The go to publish.
+    - Deleting the stray private repo `useful-bot-source-delete-me`.
+    - Restoring `devin-dist-prompt.md` (macOS blocks agents from reading the Trash).
+    - Installing Xcode (the Dock icon).
+
 - **Before starting:** put `devin-dist-prompt.md` back from
   `~/.Trash/useful-bot-root-cleanup-2026-09-28/` into `docs/plan/`.
 
@@ -183,9 +200,11 @@ The bots are the brand. Make them feel cute and premium.
     used, or an in-app route to Settings.
 - **Wasim's own switch:** Wasim moves to the installed release as a clean first-time user. Back up
   `~/.useful-bot` and the repo `.eve` first.
-- **Open source:** the bots' global instructions and the landing page say Useful Bot is open
-  source (Wasim's decision, 2026-09-29). Publish the source with a license before the release
-  ships, so that claim is true on day one.
+- **Source (was "Open source", superseded 2026-09-29):** the source is public as snapshots in
+  `wasimjalali/useful-bot-source` under the dual PolyForm license. **Hard gate:** flip that repo public
+  and run `scripts/publish-source.mjs` before the release ships, or the bots send people to a 404.
+  Re-capture `site/public/shots/chat.png` once the new About facts are installed, since the current
+  shot's reply ends "Useful Bot is also open source."
 - **Done when:** a fresh Mac installs from the landing page, runs first run end to end, and takes
   an update.
 

@@ -550,6 +550,20 @@ final class AppModel: ObservableObject {
         // carry, so a checkout set as `repoPath` must never be its target.
         if let bundled = RuntimeInstall.bundledRuntime(), config.repoPath == RuntimeInstall.installRoot.path {
             let root = RuntimeInstall.installRoot
+            // Held through `prepare`, so a second copy of the app starting now
+            // waits here and then finds the copy done.
+            let locked = await Task.detached { () -> Result<RuntimeInstall.InstallLock, Error> in
+                Result { try RuntimeInstall.InstallLock(root: root) }
+            }.value
+            guard !Task.isCancelled, attempt == startAttempt else { return }
+            let lock: RuntimeInstall.InstallLock
+            switch locked {
+            case .success(let held): lock = held
+            case .failure(let error):
+                startupError = "Useful Bot could not set up its local services: \(error)"
+                phase = .unavailable
+                return
+            }
             // After an update the previous version's services are still up
             // (they outlive the app) and would keep serving from files the
             // copy is about to replace, so they stop first and `ensure`
@@ -560,7 +574,7 @@ final class AppModel: ObservableObject {
             }
             let prepared = await Task.detached { () -> String? in
                 do {
-                    try RuntimeInstall.prepare(bundled: bundled, root: root)
+                    try RuntimeInstall.prepare(bundled: bundled, root: root, holding: lock)
                     return nil
                 } catch {
                     return String(describing: error)

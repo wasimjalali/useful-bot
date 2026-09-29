@@ -221,3 +221,11 @@ npm run brand:check
 Use the Node 24 runtime above. Brand tooling has its own lockfile to preserve the router's verified root dependency lock. The build creates `useful-bot-brand-assets.zip`; see [BRAND_ASSET_REPORT.md](BRAND_ASSET_REPORT.md) for the output inventory and verification results.
 
 The macOS bundle takes its app icon, logos, head-only bot avatars and native animation layers from `brand/`. Rebuild with `make -C macos bundle` after regenerating assets. Bot settings offer bright head colors with transparent surroundings. The app plays a head float and blink at launch and while working, respecting Reduce Motion. Old command-card icons and shape-based avatar renderers have been removed.
+
+## License
+
+Source available, under [PolyForm Noncommercial 1.0.0](LICENSE-NONCOMMERCIAL.md) or
+[PolyForm Small Business 1.0.0](LICENSE-SMALL-BUSINESS.md), at your choice (summary in
+[LICENSE.md](LICENSE.md)). Free for personal use, noncommercial organizations and companies with
+fewer than 100 people and under 1,000,000 USD (2019, inflation-adjusted) of prior-year revenue. Any
+other use needs a commercial license from Wasim Jalali (Useful Build): hello@usefulbuild.com.
