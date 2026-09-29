@@ -22,9 +22,27 @@ import Testing
 /// - a user who cannot write /Applications gets a failed copy instead of ~/Applications;
 /// - "Don't ask again" still asks;
 /// - hdiutil's report is misread, or an image with no mounted volume (or a
-///   malformed report) crashes the launch.
+///   malformed report) crashes the launch;
+/// - the app in /Applications, reached by another spelling (the Data volume
+///   firmlink, a symlinked parent), is "elsewhere": Move trashes the running
+///   bundle as the old destination, then the cleanup trashes the new copy;
+/// - any trash in a move hits the only copy left (source is destination);
+/// - a non-admin user with an admin-installed copy gets a second one in
+///   ~/Applications;
+/// - a force-quit copy leaves a hidden staging folder forever, or a launch
+///   deletes another launch's copy in progress.
 @Suite struct AppPlacementTests {
     private let home = "/Users/ada"
+
+    /// Other spellings of /Applications, as the disk would report them.
+    private static let aliases: [String: String] = [
+        "/System/Volumes/Data/Applications": "/Applications",
+        "/Users/ada/Apps": "/Applications",
+    ]
+    private static func fakeSame(_ a: String, _ b: String) -> Bool {
+        let canon = { (p: String) in aliases[p] ?? p }
+        return canon(a) == canon(b)
+    }
 
     private func classify(
         _ path: String,
@@ -37,7 +55,8 @@ import Testing
             translocated: translocated,
             originalPath: original,
             home: home,
-            diskImageMounts: mounts
+            diskImageMounts: mounts,
+            sameItem: Self.fakeSame
         )
     }
 
@@ -47,6 +66,48 @@ import Testing
         #expect(classify("/Users/ada/Applications/Useful Bot.app") == .applications)
         #expect(classify("/Applications/Useful Bot.app/") == .applications)
         #expect(classify("/applications/Useful Bot.app") == .applications)
+    }
+
+    @Test func otherSpellingsOfApplicationsAreHome() {
+        #expect(classify("/System/Volumes/Data/Applications/Useful Bot.app") == .applications)
+        #expect(classify("/Users/ada/Apps/Useful Bot.app") == .applications)
+        #expect(classify("/Users/ada/Apps/Tools/Useful Bot.app") == .applications)
+        #expect(classify("/Users/ada/Apps2/Useful Bot.app") == .elsewhere(path: "/Users/ada/Apps2/Useful Bot.app"))
+    }
+
+    /// The real identity check, on this Mac's disk.
+    @Test func sameItemSeesThroughSymlinksAndFirmlinks() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("AppPlacementTests-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let real = root.appendingPathComponent("Real")
+        try fm.createDirectory(at: real.appendingPathComponent("Useful Bot.app"), withIntermediateDirectories: true)
+        let link = root.appendingPathComponent("Link")
+        try fm.createSymbolicLink(at: link, withDestinationURL: real)
+        #expect(AppPlacement.sameItem(link.appendingPathComponent("Useful Bot.app").path, real.appendingPathComponent("Useful Bot.app").path))
+        #expect(!AppPlacement.sameItem(link.path, root.path))
+        #expect(!AppPlacement.sameItem(root.appendingPathComponent("Missing").path, root.appendingPathComponent("Missing").path))
+        #expect(AppPlacement.sameItem("/System/Volumes/Data/Applications", "/Applications"))
+        #expect(AppPlacement.classify(
+            bundlePath: "/System/Volumes/Data/Applications/Useful Bot.app",
+            translocated: false, originalPath: nil, home: NSHomeDirectory(), diskImageMounts: []
+        ) == .applications)
+    }
+
+    @Test func noTrashEverHitsTheOnlyCopy() {
+        let running = "/System/Volumes/Data/Applications/Useful Bot.app"
+        let destination = "/Applications/Useful Bot.app"
+        let same = { (a: String, b: String) in
+            Self.fakeSame((a as NSString).deletingLastPathComponent, (b as NSString).deletingLastPathComponent)
+                && (a as NSString).lastPathComponent == (b as NSString).lastPathComponent
+        }
+        // The old destination is the running app: keep it.
+        #expect(!AppPlacement.mayTrash(destination, keeping: [running], sameItem: same))
+        // The old copy is the new one: keep it.
+        #expect(!AppPlacement.mayTrash(running, keeping: [destination], sameItem: same))
+        #expect(!AppPlacement.mayTrash("/applications/Useful Bot.app/", keeping: [destination], sameItem: { _, _ in false }))
+        #expect(AppPlacement.mayTrash("/Users/ada/Downloads/Useful Bot.app", keeping: [destination], sameItem: same))
+        #expect(AppPlacement.mayTrash(destination, keeping: ["/Volumes/Useful Bot/Useful Bot.app"], sameItem: same))
     }
 
     @Test func lookalikeFoldersAreNot() {
@@ -89,8 +150,16 @@ import Testing
     }
 
     @Test func aUserWhoCannotWriteApplicationsGetsTheirOwn() {
-        #expect(AppPlacement.destinationFolder(applicationsWritable: true, home: home) == "/Applications")
-        #expect(AppPlacement.destinationFolder(applicationsWritable: false, home: home) == "/Users/ada/Applications")
+        #expect(AppPlacement.destination(applicationsWritable: true, sharedCopyExists: true, home: home) == .folder("/Applications"))
+        #expect(AppPlacement.destination(applicationsWritable: false, sharedCopyExists: false, home: home) == .folder("/Users/ada/Applications"))
+        #expect(AppPlacement.destination(applicationsWritable: false, sharedCopyExists: true, home: home) == .openSharedCopy("/Applications/Useful Bot.app"))
+    }
+
+    @Test func onlyAStaleStagingFolderIsRemoved() {
+        let now = Date()
+        #expect(AppPlacement.isStaleStaging(created: now.addingTimeInterval(-11 * 60), now: now))
+        #expect(!AppPlacement.isStaleStaging(created: now.addingTimeInterval(-30), now: now))
+        #expect(AppPlacement.isStaleStaging(created: nil, now: now))
     }
 
     @Test func whatHappensToTheCopyLeftBehind() {

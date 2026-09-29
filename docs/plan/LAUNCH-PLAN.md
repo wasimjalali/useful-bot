@@ -181,10 +181,10 @@ The bots are the brand. Make them feel cute and premium.
   run on this Mac instead.
 - **PR #144 lows:** fix every open low listed in its description.
 - **Release repo:** create the public repo `wasimjalali/useful-bot-releases` and publish v1.0.0
-  (`npm run release:mac`), only on Wasim's go. Then remove `data-release="soon"` from
-  `site/public/index.html`, put the JSON-LD `downloadUrl` back (the same URL as the CTA, now the DMG) and redeploy the site, and turn on
-  `ReleaseLinks.releasesRepoLive`
-  (What's new, Report a bug on GitHub).
+  (`npm run release:mac`), only on Wasim's go. Done: `data-release="soon"` is gone from
+  `site/public/index.html`, the JSON-LD `downloadUrl` is back and `ReleaseLinks.releasesRepoLive` is
+  on (What's new, Report a bug on GitHub). Since 2026-09-29 the CTA and `downloadUrl` point at the
+  DMG, so the site is redeployed only after a release that carries `Useful-Bot-macOS.dmg`.
 - **Live checks left from #145:**
   - "Install update" on a real update.
   - Back during the device-code fetch.

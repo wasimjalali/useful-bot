@@ -17,15 +17,28 @@ checked by Sparkle, which needs no Apple account.
   Useful Bot to Applications". Built headlessly by [dmgbuild](https://dmgbuild.readthedocs.io)
   (it writes the window's `.DS_Store` itself, no Finder scripting), compressed (UDZO), volume name
   "Useful Bot". The layout is `macos/dmg/settings.py`; the background is drawn at 1x and 2x by
-  `macos/dmg/background.swift` (Inter SemiBold from `brand/source/fonts`). dmgbuild lives in a venv
-  at `macos/.build/dmg-venv`, created and pinned by the release script on first use. Each build mounts
-  the DMG read-only out of Finder's sight, checks its contents, layout and code signature
-  (`macos/dmg/verify.py`) and detaches it.
+  `macos/dmg/background.swift` (Inter SemiBold from `brand/source/fonts`). Each build mounts the DMG
+  read-only out of Finder's sight and checks it (`macos/dmg/verify.py`): the entries, the app's version
+  and build, the window layout and bounds, the hidden bars, both background sizes and the volume name
+  the background alias records. It then checks the app's signature (`codesign --verify --strict --deep`)
+  and that its CDHash matches the zipped app, and detaches it. The DMG file itself is not signed or
+  notarized; only the app inside carries its ad-hoc signature.
 - `install.sh`: this release's installer, with the zip's URL and SHA-256 written in.
 - `appcast.xml`: the one-item Sparkle feed pointing at that zip, with its EdDSA signature.
 
 The zip stays the update and Terminal-install format; the DMG is only the browser download. The
-script prints both files' sizes and SHA-256 as JSON.
+script prints both files' sizes and SHA-256 as JSON. It writes the zip and the DMG first and
+`install.sh` and `appcast.xml` last, and deletes the folder if any step fails, so a folder with an
+appcast is a whole release.
+
+Prerequisites for the DMG:
+
+- Python 3.10 or later as `python3` (dmgbuild needs it; the Command Line Tools' python3 is 3.9, so
+  use Homebrew's). The script checks this before the long build.
+- Network on the first run: the script makes a venv at `macos/.build/dmg-venv` and pip-installs
+  `dmgbuild`, `ds_store` and `mac_alias`, all three at pinned versions. Later runs reuse it.
+- No volume named "Useful Bot" mounted: dmgbuild's working image would take the name "Useful Bot 1"
+  and the window background would point at it. The script refuses to start while one is mounted.
 
 The build number (`CFBundleVersion`) is the commit count, so it only grows. The release tree must be
 clean; `--allow-dirty` is for test builds only.
@@ -75,8 +88,15 @@ Privacy & Security > Open Anyway, once.
 A release opened from anywhere but `/Applications` or `~/Applications` asks once, before any service
 starts, "Move Useful Bot to Applications?" (`MoveToApplications.swift`, decisions in
 `AppPlacement.swift`). On Move it copies itself to `/Applications/Useful Bot.app` (or
-`~/Applications` when the user cannot write `/Applications`), puts any copy already there in the
-Trash, clears the quarantine flag on the new copy, reopens from there and quits. A copy left in
+`~/Applications` when the user cannot write `/Applications`) under a small progress panel, off the
+main thread. The copy goes to a hidden `.Useful Bot.app.moving` beside the destination first (a
+later launch removes one older than ten minutes). It then clears the quarantine flag, puts any copy
+already there in the Trash (put back if the final rename fails), reopens from there and quits. A
+user who cannot write `/Applications` while an admin's copy is there is sent to that copy instead of
+getting a second one. If a Useful Bot is already running from the destination, it comes forward and
+this copy quits. Paths are compared by file identity, not spelling, so the app already in
+`/Applications` under another name (`/System/Volumes/Data/Applications`, a symlinked folder) is never
+offered a move, and no step can trash the only copy. A copy left in
 Downloads or elsewhere goes to the Trash; a DMG it ran from is ejected once it has quit. When macOS
 runs the app from a translocated read-only copy, it finds the original through Security.framework;
 if it cannot, it asks the user to drag the app into Applications instead. "Not now" asks again next

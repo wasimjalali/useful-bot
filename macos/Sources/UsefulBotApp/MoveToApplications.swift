@@ -7,9 +7,9 @@ import UsefulBotCore
 /// (no runtime payload) never ask. The decisions are in `AppPlacement`.
 @MainActor
 enum MoveToApplications {
-    static let appName = "Useful Bot.app"
-
     static func offerIfNeeded() {
+        guard RuntimeInstall.bundledRuntime() != nil else { return }
+        removeStaleStaging()
         let defaults = UserDefaults.standard
         let bundle = Bundle.main.bundleURL
         let (translocated, original) = Translocation.original(of: bundle)
@@ -24,7 +24,7 @@ enum MoveToApplications {
             diskImageMounts: mounts
         )
         guard AppPlacement.shouldOffer(
-            isRelease: RuntimeInstall.bundledRuntime() != nil,
+            isRelease: true,
             suppressed: defaults.bool(forKey: AppPlacement.suppressedKey),
             location: location
         ) else { return }
@@ -57,46 +57,69 @@ enum MoveToApplications {
         let fm = FileManager.default
         // A translocated app is copied from where the user put it.
         let source = original ?? running
-        let folder = URL(fileURLWithPath: AppPlacement.destinationFolder(
+        let shared = "/Applications/\(AppPlacement.appName)"
+        let folder: URL
+        switch AppPlacement.destination(
             applicationsWritable: fm.isWritableFile(atPath: "/Applications"),
+            sharedCopyExists: fm.fileExists(atPath: shared),
             home: NSHomeDirectory()
-        ), isDirectory: true)
-        let destination = folder.appendingPathComponent(appName, isDirectory: true)
-        let staging = folder.appendingPathComponent(".\(appName).moving", isDirectory: true)
+        ) {
+        case .openSharedCopy(let path):
+            inform("Useful Bot is already in Applications", "This account can't replace that copy, so Useful Bot will open it instead.")
+            switchTo(URL(fileURLWithPath: path))
+        case .folder(let path):
+            folder = URL(fileURLWithPath: path, isDirectory: true)
+        }
+        let destination = folder.appendingPathComponent(AppPlacement.appName, isDirectory: true)
+        let staging = folder.appendingPathComponent(AppPlacement.stagingName, isDirectory: true)
+
+        // Already running from there: bring that one forward instead of
+        // starting a second set of services.
+        let current = NSRunningApplication.current
+        if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .contains(where: { $0 != current && AppPlacement.sameItem($0.bundleURL?.path ?? "", destination.path) }) {
+            switchTo(destination)
+        }
+        // The destination is this very copy under another spelling: nothing
+        // to move, and trashing it would lose the only copy.
+        guard AppPlacement.mayTrash(destination.path, keeping: [source.path, running.path]) else { return }
+
         do {
-            if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-                .contains(where: { $0.bundleURL?.standardizedFileURL == destination.standardizedFileURL }) {
-                throw MoveError("Useful Bot is already open from \(folder.path). Quit it, then try again.")
-            }
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            if fm.fileExists(atPath: staging.path) { try fm.removeItem(at: staging) }
             // Copied beside the destination first, so a copy cut short (a
             // full disk) leaves any installed copy as it was.
-            if fm.fileExists(atPath: staging.path) { try fm.removeItem(at: staging) }
-            try fm.copyItem(at: source, to: staging)
+            try copyShowingProgress(from: source, to: staging)
             // The user already opened this copy past Gatekeeper; without this
-            // the moved copy would be translocated on every launch.
-            try run("/usr/bin/xattr", ["-r", "-d", "com.apple.quarantine", staging.path], allowFailure: true)
+            // the moved copy would be translocated on every launch. -s keeps
+            // it from following the bundle's symlinks out of the bundle.
+            run("/usr/bin/xattr", ["-r", "-s", "-d", "com.apple.quarantine", staging.path])
+            var trashed: NSURL?
             if fm.fileExists(atPath: destination.path) {
-                try fm.trashItem(at: destination, resultingItemURL: nil)
+                try fm.trashItem(at: destination, resultingItemURL: &trashed)
             }
-            try fm.moveItem(at: staging, to: destination)
+            do {
+                try fm.moveItem(at: staging, to: destination)
+            } catch {
+                // Put the old copy back rather than leave Applications empty.
+                if let trashed = trashed as URL? { try? fm.moveItem(at: trashed, to: destination) }
+                throw error
+            }
         } catch {
             try? fm.removeItem(at: staging)
-            let failed = NSAlert()
-            failed.messageText = "Couldn't move Useful Bot"
-            failed.informativeText = (error as? MoveError)?.message ?? error.localizedDescription
-            failed.addButton(withTitle: "OK")
-            failed.runModal()
+            inform("Couldn't move Useful Bot", error.localizedDescription)
             return
         }
 
         var volume = ""
         switch AppPlacement.cleanup(after: location) {
         case .trash(let path):
-            do {
-                try fm.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
-            } catch {
-                NSLog("Useful Bot: moved, but the old copy at %@ stays: %@", path, error.localizedDescription)
+            if AppPlacement.mayTrash(path, keeping: [destination.path]) {
+                do {
+                    try fm.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+                } catch {
+                    NSLog("Useful Bot: moved, but the old copy at %@ stays: %@", path, error.localizedDescription)
+                }
             }
         case .eject(let path):
             volume = path
@@ -106,9 +129,77 @@ enum MoveToApplications {
         relaunch(destination, ejecting: volume)
     }
 
-    /// Opens the moved copy once this one has quit, then ejects the DMG it
+    /// The copy runs off the main thread (a release is some hundreds of MB,
+    /// tens of seconds from a DMG) under a small modal panel, so the app never
+    /// hangs without a word.
+    private static func copyShowingProgress(from source: URL, to target: URL) throws {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 84),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Useful Bot"
+        let label = NSTextField(labelWithString: "Moving Useful Bot to Applications…")
+        let bar = NSProgressIndicator()
+        bar.style = .bar
+        bar.isIndeterminate = true
+        bar.startAnimation(nil)
+        let stack = NSStackView(views: [label, bar])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
+        bar.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        panel.contentView = stack
+        panel.center()
+
+        final class Outcome: @unchecked Sendable { var result: Result<Void, Error> = .success(()) }
+        let outcome = Outcome()
+        DispatchQueue.global(qos: .userInitiated).async {
+            outcome.result = Result { try FileManager().copyItem(at: source, to: target) }
+            // Runs inside the modal session below: the main queue is served
+            // in the modal run loop mode, and not before runModal starts.
+            DispatchQueue.main.async { NSApp.stopModal() }
+        }
+        NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+        try outcome.result.get()
+    }
+
+    /// A staging folder a force-quit copy left behind, in either Applications folder.
+    private static func removeStaleStaging() {
+        let fm = FileManager.default
+        for folder in ["/Applications", (NSHomeDirectory() as NSString).appendingPathComponent("Applications")] {
+            let staging = URL(fileURLWithPath: folder).appendingPathComponent(AppPlacement.stagingName)
+            guard fm.fileExists(atPath: staging.path) else { continue }
+            let created = (try? staging.resourceValues(forKeys: [.creationDateKey]))?.creationDate
+            guard AppPlacement.isStaleStaging(created: created, now: Date()) else { continue }
+            do {
+                try fm.removeItem(at: staging)
+            } catch {
+                NSLog("Useful Bot: cannot remove the stale %@: %@", staging.path, error.localizedDescription)
+            }
+        }
+    }
+
+    private static func inform(_ title: String, _ body: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = body
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    /// Quits this copy and opens `app` instead.
+    private static func switchTo(_ app: URL) -> Never {
+        relaunch(app, ejecting: "")
+    }
+
+    /// Opens `app` once this copy has quit (opened any earlier, Launch
+    /// Services could hand back this very instance), then ejects the DMG it
     /// ran from (a volume cannot be ejected while an app on it runs).
-    private static func relaunch(_ app: URL, ejecting volume: String) {
+    private static func relaunch(_ app: URL, ejecting volume: String) -> Never {
         let script = """
         while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done
         /usr/bin/open "$2"
@@ -120,17 +211,15 @@ enum MoveToApplications {
         do {
             try waiter.run()
         } catch {
-            let failed = NSAlert()
-            failed.messageText = "Useful Bot moved"
-            failed.informativeText = "Open it from \(app.deletingLastPathComponent().path)."
-            failed.addButton(withTitle: "OK")
-            failed.runModal()
+            inform("Open Useful Bot from \(app.deletingLastPathComponent().path)", error.localizedDescription)
         }
         // Nothing has started yet (no window, no services), so there is
         // nothing to save or stop.
         exit(0)
     }
 
+    /// Mount points of attached disk images. hdiutil can hang on a stuck
+    /// image; after a few seconds the app gives up on the eject instead.
     private static func attachedDiskImageMounts() -> [String] {
         let pipe = Pipe()
         let hdiutil = Process()
@@ -143,25 +232,33 @@ enum MoveToApplications {
             NSLog("Useful Bot: hdiutil info failed: %@", error.localizedDescription)
             return []
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        final class Output: @unchecked Sendable { var data = Data() }
+        let output = Output()
+        let read = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            output.data = pipe.fileHandleForReading.readDataToEndOfFile()
+            read.signal()
+        }
+        guard read.wait(timeout: .now() + 3) == .success else {
+            NSLog("Useful Bot: hdiutil info took over 3 s; not ejecting")
+            hdiutil.terminate()
+            return []
+        }
         hdiutil.waitUntilExit()
-        return AppPlacement.diskImageMounts(hdiutilInfo: data)
+        return AppPlacement.diskImageMounts(hdiutilInfo: output.data)
     }
 
-    private static func run(_ tool: String, _ arguments: [String], allowFailure: Bool) throws {
+    /// Best effort: a failure is logged, not thrown.
+    private static func run(_ tool: String, _ arguments: [String]) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        if process.terminationStatus != 0 && !allowFailure {
-            throw MoveError("\(tool) failed (\(process.terminationStatus))")
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            NSLog("Useful Bot: %@ failed: %@", tool, error.localizedDescription)
         }
-    }
-
-    private struct MoveError: Error {
-        let message: String
-        init(_ message: String) { self.message = message }
     }
 }
 
