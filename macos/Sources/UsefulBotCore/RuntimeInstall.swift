@@ -216,7 +216,7 @@ public enum RuntimeInstall {
         guard process.terminationStatus == 0 else {
             let detail = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             throw Failure(description: "\((tool as NSString).lastPathComponent) exited \(process.terminationStatus): \(detail.suffix(400))",
-                          status: process.terminationStatus, output: detail)
+                          status: process.terminationReason == .exit ? process.terminationStatus : nil, output: detail)
         }
     }
 }

@@ -560,7 +560,8 @@ final class AppModel: ObservableObject {
             switch locked {
             case .success(let held): lock = held
             case .failure(let error):
-                startupError = "Useful Bot could not set up its local services: \(error)"
+                NSLog("Useful Bot: install lock failed: %@", String(describing: error))
+                startupError = "Useful Bot couldn't set up its local services. Details are in Console."
                 phase = .unavailable
                 return
             }
@@ -575,6 +576,13 @@ final class AppModel: ObservableObject {
             let prepared = await Task.detached { () -> Result<Bool, Error> in
                 Result { try RuntimeInstall.prepare(bundled: bundled, root: root, holding: lock) }
             }.value
+            // New credentials replace ones a running router, eve or web still
+            // holds (each reads them once at boot). The stop happens even for
+            // a cancelled attempt: the next launch sees a config and would
+            // keep the stale services.
+            if case .success(true) = prepared {
+                await services.stopOwnServices(config: config)
+            }
             guard !Task.isCancelled, attempt == startAttempt else { return }
             switch prepared {
             case .failure(let error as RuntimeInstall.SetupFailure):
@@ -584,17 +592,12 @@ final class AppModel: ObservableObject {
                 phase = .unavailable
                 return
             case .failure(let error):
-                startupError = "Useful Bot could not set up its local services: \(error)"
+                NSLog("Useful Bot: local setup failed: %@", String(describing: error))
+                startupError = "Useful Bot couldn't set up its local services. Details are in Console."
                 phase = .unavailable
                 return
-            case .success(let rebuilt):
-                // New credentials replaced ones a running router, eve or web
-                // still holds (each reads them once at boot), so they stop and
-                // `ensure` starts them on the new ones.
-                if rebuilt {
-                    await services.stopOwnServices(config: config)
-                    guard !Task.isCancelled, attempt == startAttempt else { return }
-                }
+            case .success:
+                break
             }
         }
         let outcome = await services.ensure(config: config)

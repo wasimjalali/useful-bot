@@ -438,6 +438,12 @@ async function main() {
   writeFileSync(tmpConfigPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   chmodSync(tmpConfigPath, 0o600);
 
+  // Checked again before any Keychain write, so a config written meanwhile
+  // (a setup run from a terminal) is never left pointing at replaced keys.
+  if (rebuildOrphaned && existsSync(configPath)) {
+    try { unlinkSync(tmpConfigPath); } catch { /* ignore */ }
+    fail({ error: "config_exists", config: configPath, hint: "a config appeared during the rebuild; rerun with --add-missing" });
+  }
   try {
     for (const entry of minted) {
       putKeychain(entry.keychain, entry.token);
