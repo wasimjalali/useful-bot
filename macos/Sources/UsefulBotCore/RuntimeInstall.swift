@@ -37,21 +37,39 @@ public enum RuntimeInstall {
         return wanted == nil || wanted != have
     }
 
+    /// Held from the `needsCopy` check through `prepare`. Two copies of the
+    /// app starting at once (a relaunch overlapping a slow quit) must not run
+    /// two copies into the same folder, and the second must not see the
+    /// first's copy half done, stop the services it has just started, and
+    /// copy again. Released when the value goes away.
+    public final class InstallLock: @unchecked Sendable {
+        private let fd: Int32
+
+        /// Blocking until the other holder lets go; call it off the main thread.
+        public init(root: URL = installRoot) throws {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let fd = open(root.appendingPathComponent(".ub-install.lock").path, O_CREAT | O_RDWR, 0o600)
+            guard fd >= 0 else { throw Failure(description: "cannot open the install lock (errno \(errno))") }
+            guard flock(fd, LOCK_EX) == 0 else {
+                let code = errno
+                close(fd)
+                throw Failure(description: "cannot take the install lock (errno \(code))")
+            }
+            self.fd = fd
+        }
+
+        deinit {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+    }
+
     /// Copies the payload into `root` when its version differs from the one
     /// already there, then mints any missing or expired local credentials.
-    /// Blocking; call it off the main thread, with the old services stopped
-    /// when `needsCopy` said so.
-    public static func prepare(bundled: URL, root: URL = installRoot) throws {
+    /// Blocking; call it off the main thread, holding `lock`, with the old
+    /// services stopped when `needsCopy` said so.
+    public static func prepare(bundled: URL, root: URL = installRoot, holding lock: InstallLock) throws {
         let fm = FileManager.default
-        try fm.createDirectory(at: root, withIntermediateDirectories: true)
-        // Two copies of the app starting at once (a relaunch overlapping a
-        // slow quit) must not run two copies into the same folder.
-        let lock = open(root.appendingPathComponent(".ub-install.lock").path, O_CREAT | O_RDWR, 0o600)
-        guard lock >= 0 else { throw Failure(description: "cannot open the install lock (errno \(errno))") }
-        defer { close(lock) }
-        guard flock(lock, LOCK_EX) == 0 else { throw Failure(description: "cannot take the install lock (errno \(errno))") }
-        defer { flock(lock, LOCK_UN) }
-
         let wanted = try String(contentsOf: bundled.appendingPathComponent(stampName), encoding: .utf8)
         let stamp = root.appendingPathComponent(stampName)
         if (try? String(contentsOf: stamp, encoding: .utf8)) != wanted {

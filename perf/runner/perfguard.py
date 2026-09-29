@@ -304,6 +304,9 @@ class Launch:
             for _ in range(40):
                 if self.scenario.get("restoreBotId") is None or self.last_event({"restored"}):
                     break
+                # A dead app writes no more marks; stop waiting for one.
+                if not self.app.running_pids():
+                    break
                 time.sleep(0.1)
             raise RuntimeError(f"{self.name}: the app aborted the scenario: {end.get('why')}")
         if end["ev"] == "exited":

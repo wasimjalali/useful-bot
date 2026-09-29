@@ -9,7 +9,7 @@
 // Run after the web build (macos/build-app.sh does, when UB_RELEASE=1).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,16 +52,29 @@ const TRACKED = [
 // Build output, not in git: copied whole, then scanned below.
 const BUILT = "web/.next/standalone";
 // Names that must never reach a published zip, outside third-party packages.
-const SECRET = /^(\.env(\..*)?|.*\.env|\.envrc|\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx|p8|jks|keystore|token)|secrets?(\..*)?|credentials?(\..*)?|client_secret.*|service-account.*\.json)$/i;
+const SECRET = /^(\.env(\..*)?|.*\.env|\.envrc|\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx|p8|jks|keystore|token|gpg|asc|kubeconfig|tfvars|tfstate)|kubeconfig|terraform\.tfstate.*|secrets?(\..*)?|credentials?(\..*)?|client_secret.*|service-account.*\.json)$/i;
+
+// Backup copies of a secret are secrets too: `prod.env.bak`, `id_rsa.orig`, `.tfstate~`.
+const BACKUP_SUFFIX = /(\.(bak|backup|orig|old|save|swp|tmp)|~)+$/i;
+function looksSecret(name) {
+  return SECRET.test(name) || SECRET.test(name.replace(BACKUP_SUFFIX, ""));
+}
 
 function sha256(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
 const target = path.resolve(out);
+// The real path of the nearest folder that exists, so a symlink inside the
+// checkout can't point the build (and its rmSync) somewhere outside it.
+function realTarget(p) {
+  let existing = p;
+  while (!existsSync(existing)) existing = path.dirname(existing);
+  return path.join(realpathSync(existing), path.relative(existing, p));
+}
 // A build stage lives in this checkout. Anywhere else (an installed runtime in
 // Application Support, a home folder) is never cleared by a build.
-if (!target.startsWith(ROOT + path.sep)) throw new Error(`${target} is outside the checkout; refusing to build a runtime there`);
+if (!realTarget(target).startsWith(realpathSync(ROOT) + path.sep)) throw new Error(`${target} is outside the checkout; refusing to build a runtime there`);
 // Only ever replace an earlier runtime, never an arbitrary folder given by mistake.
 if (existsSync(target) && readdirSync(target).length > 0 && !existsSync(path.join(target, ".ub-runtime-version"))) {
   throw new Error(`${target} is not empty and is not an earlier runtime; refusing to delete it`);
@@ -88,7 +101,7 @@ writeFileSync(path.join(target, BUILT, "web/package.json"), `${JSON.stringify({ 
 function scanForSecrets(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (SECRET.test(entry.name)) throw new Error(`refusing to ship ${path.relative(target, full)}: it looks like a secret`);
+    if (looksSecret(entry.name)) throw new Error(`refusing to ship ${path.relative(target, full)}: it looks like a secret`);
     if (entry.isDirectory() && entry.name !== "node_modules") scanForSecrets(full);
   }
 }
