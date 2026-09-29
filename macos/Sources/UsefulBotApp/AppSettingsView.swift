@@ -1080,7 +1080,7 @@ struct SettingsPopUpLabel: View {
 /// rows that need them stay hidden.
 enum ReleaseLinks {
     /// Flip when github.com/wasimjalali/useful-bot-releases is public.
-    static let releasesRepoLive = false
+    static let releasesRepoLive = true
     static let contactAddress = "hello@usefulbuild.com"
     static let contactMail = URL(string: "mailto:hello@usefulbuild.com")!
 
