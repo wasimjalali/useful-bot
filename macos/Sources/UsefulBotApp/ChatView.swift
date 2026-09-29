@@ -1041,34 +1041,42 @@ struct ChatView: View {
                 .font(.system(size: DesignTokens.FontSize.emptyTitle, weight: .semibold))
                 .tracking(DesignTokens.Tracking.tight * DesignTokens.FontSize.emptyTitle)
                 .foregroundStyle(Theme.C.ink)
-            Text(emptyCopy(bot))
-                .font(.system(size: DesignTokens.FontSize.emptyBody))
-                .lineSpacing(6)
-                .foregroundStyle(Theme.C.inkMuted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 448)
+            if bot.isGroup {
+                Text(groupCopy(bot))
+                    .font(.system(size: DesignTokens.FontSize.emptyBody))
+                    .lineSpacing(6)
+                    .foregroundStyle(Theme.C.inkMuted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 448)
+            } else {
+                everydayPrompts(bot)
+                    .padding(.top, 20)
+            }
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func emptyCopy(_ bot: ShellBot) -> String {
-        if bot.isGroup {
-            let names = members(bot).map(\.name)
-            return "Group chat with \(names.isEmpty ? "no members yet" : names.joined(separator: ", ")). Untargeted messages go to the orchestrator; @name directs one bot."
+    /// Four everyday things to start from. A tap fills the composer and sends
+    /// nothing; like the first chat's starters, the tiles step back while the
+    /// composer holds text.
+    private func everydayPrompts(_ bot: ShellBot) -> some View {
+        let typing = !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+            ForEach(StarterPrompt.everyday(inFolder: bot.workspace != nil)) { prompt in
+                StarterPromptButton(text: prompt.label) { model.fillDraft(prompt.prompt) }
+            }
         }
-        // The posture is the owner's own choice, so the flat promise this used
-        // to make was not true in every one of them.
-        if bot.isReadOnly {
-            return "Runs on this Mac and only reads. It changes nothing."
-        }
-        if bot.isFullAccess {
-            return "Runs on this Mac with full access. It only asks before wiping a folder or a disk."
-        }
-        if bot.workspace == nil {
-            return "Runs on this Mac. It asks before it changes your files, runs a command that changes something or writes to your apps."
-        }
-        return "Works in the attached folder. It asks before it deletes anything or writes to your apps."
+        .frame(maxWidth: 560)
+        .opacity(typing ? 0 : 1)
+        .allowsHitTesting(!typing)
+        .accessibilityHidden(typing)
+        .animation(Theme.ease(0.2), value: typing)
+    }
+
+    private func groupCopy(_ bot: ShellBot) -> String {
+        let names = members(bot).map(\.name)
+        return "Group chat with \(names.isEmpty ? "no members yet" : names.joined(separator: ", ")). Untargeted messages go to the orchestrator; @name directs one bot."
     }
 
     // MARK: - Composer column
@@ -2289,4 +2297,37 @@ struct StarterPrompt: Identifiable {
             prompt: "Create a copywriter bot for my brand. Ask me a few questions about my brand and voice first, then set it up."
         ),
     ]
+
+    /// Any empty chat's tiles: what most people ask a helper for first. A bot
+    /// that works in one folder gets a folder tile in place of the whole-Mac one.
+    static func everyday(inFolder: Bool) -> [StarterPrompt] {
+        var tiles = common
+        tiles.append(inFolder ? folderTour : diskSpace)
+        return tiles
+    }
+
+    private static let common = [
+        StarterPrompt(
+            label: "Research a topic and sum it up",
+            prompt: "Research a topic I'll name and sum it up in a short brief with sources."
+        ),
+        StarterPrompt(
+            label: "Write an email for me",
+            prompt: "Help me write a clear, friendly email. Ask me who it's for and what it needs to say."
+        ),
+        StarterPrompt(
+            label: "Summarize a document",
+            prompt: "Summarize a document for me: the key points, decisions and anything I need to act on. I'll attach it or tell you where it is."
+        ),
+    ]
+
+    private static let diskSpace = StarterPrompt(
+        label: "Find what's taking up space on my Mac",
+        prompt: "Find what's taking up the most space on my Mac. List the biggest folders and files with their sizes. Don't delete anything."
+    )
+
+    private static let folderTour = StarterPrompt(
+        label: "Tell me what's in this folder",
+        prompt: "Look through the attached folder and tell me what's in it and how it's organized. Don't change anything."
+    )
 }
