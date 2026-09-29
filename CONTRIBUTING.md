@@ -6,14 +6,18 @@ with the agreement below.
 
 ## Contributor license agreement
 
-By opening a pull request, you agree that:
+Each pull request you open is a contribution under these terms. You agree that:
 
-1. You wrote the contribution, or have the right to submit it, and it isn't subject to terms that
-   conflict with this agreement.
+1. You wrote the contribution, or have the right to submit it under these terms. If your employer,
+   school or a client may own what you create, you have their permission. The contribution carries
+   no third-party code whose license conflicts with these terms, and you name any third-party code
+   it does include.
 2. You license your contribution to everyone under the AGPL-3.0.
-3. You also grant Wasim Jalali a perpetual, worldwide, royalty-free, irrevocable license to use,
-   copy, modify, sublicense and distribute your contribution under any terms, including commercial
-   licenses, together with a license to any of your patents that the contribution needs.
-4. You keep the copyright in your contribution.
+3. You also grant Wasim Jalali, and his successors and assigns, a perpetual, worldwide,
+   royalty-free, irrevocable license to use, copy, modify, sublicense and distribute your
+   contribution under any terms, including commercial licenses. This includes a license to any of
+   your patents that the contribution needs.
+4. You won't assert moral rights or similar rights against those uses, as far as the law allows.
+5. You keep the copyright in your contribution, and you give it as is, without warranty.
 
-Say "I agree to the contributor license agreement in CONTRIBUTING.md" in your first pull request.
+Tick the agreement box in the pull request template. A pull request without it isn't merged.
