@@ -1,8 +1,8 @@
 // Draws the DMG window's background: the Useful canvas, a quiet arrow from
-// the app to Applications and one line of instruction plus the Open Anyway step. scripts/release-mac.mjs
-// runs it at 1x and 2x (dmgbuild combines background.png and background@2x.png
-// into one HiDPI image), so the picture always matches the layout in
-// macos/dmg/settings.py.
+// the app to Applications, one line of instruction and the Open Anyway step.
+// scripts/release-mac.mjs runs it at 1x and 2x (dmgbuild combines
+// background.png and background@2x.png into one HiDPI image), so the picture
+// always matches the layout in macos/dmg/settings.py.
 //
 //   swift macos/dmg/background.swift <out.png> <scale> <Inter-SemiBold.ttf>
 import CoreGraphics

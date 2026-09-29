@@ -32,9 +32,9 @@ struct ChatMarkdownView: View, Equatable {
     private func blockView(_ block: MarkdownBlock) -> some View {
         switch block {
         case .paragraph(let content):
-            LinkText(content: inline(content))
+            LinkText(content: inline(content), interactive: streamingKey == nil)
         case .heading(let level, let content):
-            LinkText(content: inline(content))
+            LinkText(content: inline(content), interactive: streamingKey == nil)
                 .font(Theme.font(headingSize(level), .semibold))
                 .tracking(-0.02 * headingSize(level))
                 .padding(.top, level == 1 ? 2 : 1)
@@ -47,7 +47,7 @@ struct ChatMarkdownView: View, Equatable {
                         // Wraps instead of truncating: inside a bubble that
                         // hugs its content the row is offered one line's
                         // height first, and took it.
-                        LinkText(content: inline(item))
+                        LinkText(content: inline(item), interactive: streamingKey == nil)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -63,7 +63,7 @@ struct ChatMarkdownView: View, Equatable {
                         // Wraps instead of truncating: inside a bubble that
                         // hugs its content the row is offered one line's
                         // height first, and took it.
-                        LinkText(content: inline(item))
+                        LinkText(content: inline(item), interactive: streamingKey == nil)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -72,7 +72,7 @@ struct ChatMarkdownView: View, Equatable {
         case .code(_, let body):
             CodeBlockView(text: body)
         case .table(let table):
-            MarkdownTableView(table: table) { inline($0) }
+            MarkdownTableView(table: table, interactiveLinks: streamingKey == nil) { inline($0) }
         case .quote(let inner):
             HStack(alignment: .top, spacing: 10) {
                 // The bar carries the quote; no tint, so a quoted line stays
@@ -172,6 +172,8 @@ struct ChatMarkdownView: View, Equatable {
 /// through the one thing the reader wants to read.
 struct MarkdownTableView: View {
     let table: MarkdownTable
+    /// False while the reply streams: see `LinkText.interactive`.
+    var interactiveLinks = true
     /// The row renderer's inline parser, passed in so the table draws bold,
     /// code and links inside cells exactly like the prose around it.
     let inline: (String) -> AttributedString
@@ -210,7 +212,7 @@ struct MarkdownTableView: View {
         let alignment = table.alignments.indices.contains(column)
             ? table.alignments[column]
             : .leading
-        return LinkText(content: inline(cell))
+        return LinkText(content: inline(cell), interactive: interactiveLinks)
             .font(header ? Theme.font(DesignTokens.FontSize.chatBody, .semibold) : nil)
             .multilineTextAlignment(textAlignment(alignment))
             // Wraps rather than truncating or forcing the column wider. No
@@ -408,9 +410,14 @@ struct CodeBlockView: View {
 /// rects. Text without a link, and macOS 14, stay on the plain `Text` path.
 struct LinkText: View {
     let content: AttributedString
+    /// False while the reply is still streaming. The hand then waits for the
+    /// finished reply, so a paragraph doesn't swap views mid-stream (dropping
+    /// a selection being made in it) when its first link completes, and the
+    /// hot streaming path stays on plain `Text`.
+    var interactive = true
 
     var body: some View {
-        if #available(macOS 15.0, *), content.runs.contains(where: { $0.link != nil }) {
+        if #available(macOS 15.0, *), interactive, content.runs.contains(where: { $0.link != nil }) {
             LinkHoverText(content: content)
         } else {
             Text(content)
@@ -444,7 +451,7 @@ private struct LinkHoverText: View {
     private var text: Text {
         content.runs.reduce(Text(verbatim: "")) { result, run in
             let piece = Text(AttributedString(content[run.range]))
-            return result + (run.link != nil ? piece.customAttribute(LinkMark()) : piece)
+            return Text("\(result)\(run.link != nil ? piece.customAttribute(LinkMark()) : piece)")
         }
     }
 }
