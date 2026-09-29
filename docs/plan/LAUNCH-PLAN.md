@@ -166,7 +166,7 @@ The bots are the brand. Make them feel cute and premium.
     (`LICENSE.md`). Personal use, noncommercial organizations and small companies are free, and
     bigger companies buy a commercial license. That makes it source available, not open source,
     and the bots' instructions say so.
-  - Source: it goes public as snapshots in `wasimjalali/useful-bot-source`
+  - Source: it goes public as snapshots in `wasimjalali/usefulbot` (renamed from useful-bot-source on the owner's call)
     (`scripts/publish-source.mjs`, `docs/distribution.md`), because this repo's history holds the
     owner's personal Gmail and real-chat screenshots. That repo exists, private, with a clean first
     commit. Flip it public after this PR merges.
@@ -201,7 +201,7 @@ The bots are the brand. Make them feel cute and premium.
 - **Wasim's own switch:** Wasim moves to the installed release as a clean first-time user. Back up
   `~/.useful-bot` and the repo `.eve` first.
 - **Source (was "Open source", superseded 2026-09-29):** the source is public as snapshots in
-  `wasimjalali/useful-bot-source` under the dual PolyForm license. **Hard gate:** flip that repo public
+  `wasimjalali/usefulbot` under the dual PolyForm license. **Hard gate:** flip that repo public
   and run `scripts/publish-source.mjs` before the release ships, or the bots send people to a 404.
   Re-capture `site/public/shots/chat.png` once the new About facts are installed, since the current
   shot's reply ends "Useful Bot is also open source."
