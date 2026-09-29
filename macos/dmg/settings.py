@@ -11,7 +11,9 @@ format = "UDZO"
 filesystem = "HFS+"
 files = [app]
 symlinks = {"Applications": "/Applications"}
-hide_extensions = [app_name]
+# No hide_extensions: it sets Finder info on the bundle, which breaks
+# `codesign --verify --strict` on the copy people drag out. Finder hides
+# ".app" by default anyway.
 
 background = defines["background"]  # noqa: F821
 show_status_bar = False
