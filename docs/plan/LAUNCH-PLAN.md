@@ -171,7 +171,7 @@ The bots are the brand. Make them feel cute and premium.
 - **PR #144 lows:** fix every open low listed in its description.
 - **Release repo:** create the public repo `wasimjalali/useful-bot-releases` and publish v1.0.0
   (`npm run release:mac`), only on Wasim's go. Then remove `data-release="soon"` from
-  `site/public/index.html`, put the JSON-LD `downloadUrl` back and redeploy the site, and turn on
+  `site/public/index.html`, put the JSON-LD `downloadUrl` back (the same zip URL as the CTA) and redeploy the site, and turn on
   `ReleaseLinks.releasesRepoLive`
   (What's new, Report a bug on GitHub).
 - **Live checks left from #145:**
