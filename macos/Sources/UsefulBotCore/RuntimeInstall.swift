@@ -98,10 +98,16 @@ public enum RuntimeInstall {
             // app cannot run without it. A refresh that fails leaves working
             // credentials in place, so it is logged, not fatal.
             let configured = fm.fileExists(atPath: fm.homeDirectoryForCurrentUser.appendingPathComponent(".useful-bot/config.json").path)
+            let node = root.appendingPathComponent("bin/node").path
+            let setup = root.appendingPathComponent("scripts/setup-local.mjs").path
             do {
-                try run(root.appendingPathComponent("bin/node").path,
-                        [root.appendingPathComponent("scripts/setup-local.mjs").path] + (configured ? ["--add-missing"] : []),
-                        cwd: root, timeout: 60)
+                try run(node, [setup] + (configured ? ["--add-missing"] : []), cwd: root, timeout: 60)
+            } catch let failure as Failure where !configured && failure.description.contains("already_configured") {
+                // No config, but Keychain items from an earlier install are
+                // still here (the data folder was deleted, the app kept). With
+                // no config nothing uses them, so they are replaced.
+                NSLog("Useful Bot: rebuilding local credentials left by an earlier install")
+                try run(node, [setup, "--rotate"], cwd: root, timeout: 60)
             } catch {
                 guard configured else { throw error }
                 NSLog("Useful Bot: credential refresh failed, keeping the current ones: %@", String(describing: error))
