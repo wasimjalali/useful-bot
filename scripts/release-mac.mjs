@@ -102,7 +102,10 @@ const out = path.resolve(values.out);
 // Only ever replace an earlier release folder, never an arbitrary one: every
 // entry in it must be a file a release writes.
 const RELEASE_FILES = new Set([ZIP, DMG, "install.sh", "appcast.xml", ".DS_Store"]);
-const foreign = existsSync(out) ? readdirSync(out).filter((name) => !RELEASE_FILES.has(name)) : [];
+// A folder or link wearing a release file's name is foreign too: only plain files are replaced.
+const foreign = existsSync(out)
+  ? readdirSync(out, { withFileTypes: true }).filter((entry) => !RELEASE_FILES.has(entry.name) || !entry.isFile()).map((entry) => entry.name)
+  : [];
 if (foreign.length > 0) {
   process.stderr.write(`${out} holds files a release does not write (${foreign.join(", ")}); refusing to delete it\n`);
   process.exit(1);
@@ -146,6 +149,8 @@ const detach = (mount) => {
 // the half-written release) before the error exits. Without these handlers
 // Node would die on the spot and skip it. A signal that lands after the last
 // step changes nothing: the release is whole, so its JSON prints and it exits 0.
+// A signal sent to node alone (a bare `kill`) is only logged, and the release
+// carries on to the end: stop it with Ctrl-C or by signalling the process group.
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 const onSignal = (signal) => process.stderr.write(`${signal}: finishing the current step, then cleaning up\n`);
 for (const signal of SIGNALS) process.on(signal, onSignal);

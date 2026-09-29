@@ -236,7 +236,8 @@ enum MoveToApplications {
                 } catch {
                     NSLog("Useful Bot: xattr failed: %@", error.localizedDescription)
                 }
-                outcome = .copied
+                // Cancel pressed during the quarantine pass still cancels.
+                outcome = job.lock.withLock { job.cancelled } ? .cancelled : .copied
             } else {
                 let reason = detail.trimmingCharacters(in: .whitespacesAndNewlines)
                 outcome = .failed(MoveError(reason.isEmpty ? "The copy stopped (ditto \(ditto.terminationStatus))." : reason))
@@ -251,7 +252,9 @@ enum MoveToApplications {
         let response = withExtendedLifetime(cancel) { NSApp.runModal(for: panel) }
         panel.orderOut(nil)
         guard response == .stop, let outcome = job.outcome else {
+            // Staging is removed next, so ditto must stop writing into it first.
             ditto.terminate()
+            ditto.waitUntilExit()
             return .failed(MoveError("The copy did not finish."))
         }
         return outcome
