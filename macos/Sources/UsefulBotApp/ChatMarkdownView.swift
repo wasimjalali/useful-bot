@@ -317,7 +317,9 @@ struct TableLayout: Layout {
         guard columns > 0 else { return ([], []) }
         let natural = cache.ideal.reduce(0, +)
         let width = (available.map { $0.isFinite ? $0 : natural } ?? natural).rounded(.down)
-        if let known = cache.byWidth[width] { return known }
+        // Every offer at or above the natural width lays out the same, so they share one entry.
+        let key = min(width, natural)
+        if let known = cache.byWidth[key] { return known }
         var widths = cache.ideal
         if natural > width {
             // Columns under an even share keep their line; the others split
@@ -343,7 +345,7 @@ struct TableLayout: Layout {
             let size = cell.sizeThatFits(ProposedViewSize(width: widths[index % columns], height: nil))
             heights[index / columns] = max(heights[index / columns], ceil(size.height))
         }
-        cache.byWidth[width] = (widths, heights)
+        cache.byWidth[key] = (widths, heights)
         return (widths, heights)
     }
 }

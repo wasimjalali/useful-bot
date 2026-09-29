@@ -23,13 +23,32 @@ Which of these hold in the real app, and what fixes them without regressing beha
 - Every variant: `npm run build:app`, then `perf/run.sh check --quick` (2 cold opens, 1
   no-snapshot open, 6 warm returns per long chat). Final build: full `npm run perf:check`.
 - Records, one per run, beside this file: `2026-09-29-perf-check-<HHMM>-<sha>/`. The quick
-  runs 1845 to 1911 were built from uncommitted variants of `e1b27bc`, listed below.
+  runs 1840 to 1911 were built from uncommitted working trees on top of `e1b27bc` (variant A, C
+  and the two probes were not saved as patches; only the rejected A patch below was kept, and B
+  became `eb0a0ad`).
 - The rejected A patch is kept as `2026-09-29-prelaunch-perf-fixes/rejected-incremental-first-paint.patch`.
 - Cost: local compute only, about 1.5 hours of the Mac.
 
 ## Numbers (Perf Long Replies, ms; quick runs are n = 2 cold, 1 no-snapshot, 6 warm)
 
-| Run | Variant | Cold open app | Cold open stall | Warm return app | Warm return stall | No-snapshot app |
+**The quick runs are not clean verdicts.** Checked against each record's README:
+
+| Run | Result | Why |
+|---|---|---|
+| 1840 | INCONCLUSIVE | busy at prep (279%) |
+| 1845 | INCONCLUSIVE | busy at prep (257%) |
+| 1851 | INCONCLUSIVE | busy at prep (360%), first_open_tools-1 (258%), warm (338%) and end (312%) |
+| 1857 | INCONCLUSIVE | busy at prep (280%) and first_open_tools-1 (330%) |
+| 1902 | FAIL | the no-snapshot replies open landed by the 10 s cap |
+| 1911 | INCONCLUSIVE | busy at warm (306%) |
+| **1936** | **PASS** | the only clean run; busiest sample of other work 224%, under the 250% limit |
+
+No busy peak fell in a cold-open or no-snapshot replies launch. The `warm` launch holds the
+warm-return cases, replies included, so the 1851 and 1911 warm-return numbers are the least
+trustworthy. The numbers below are still read as direction, not as verdicts, and only 1936 backs
+a claim.
+
+| Run | Variant | Cold open app | Cold open stall (worst) | Warm return app | Warm return stall (worst) | No-snapshot app |
 |---|---|---|---|---|---|---|
 | 1840 | Baseline, `e1b27bc` | 1311 | 923 | 1371 | 908 | 5478 |
 | 1845 | A: rest of window one message a frame | 1406 | 757 | 1385 | 780 | 5481 |
@@ -41,7 +60,7 @@ Which of these hold in the real app, and what fixes them without regressing beha
 
 Final full check (1936), all cases: **PASS**, no busy samples.
 
-| Case | App median before (1840) | App median after (1936) | Stall worst before | Stall worst after |
+| Case | App median before (1840, n = 2) | App median after (1936, n = 5) | Stall worst before (n = 2) | Stall worst after (n = 5) |
 |---|---|---|---|---|
 | cold_first_open_replies | 1311 | 496 | 923 | 327 |
 | warm_return_replies | 1371 | 496 | 908 | 340 |
@@ -61,8 +80,12 @@ Visual medians moved the same way: cold open replies 1513 to 571, warm return re
   also made the transcript visibly jump on every step (the tools chat's frame sheet in 1845 shows
   the rows shifting; its visual time went from 300 to 1,245 ms). Rejected.
 - **C made no difference in the app** (5,478 vs 5,395 ms, one sample each, noise). The
-  `fixedSize` stays, since it fixes the bubble truncation bug. The "440 ms slower since c450c11"
-  is within run-to-run spread today (full-run medians 5.5 to 5.6 s at both).
+  `fixedSize` stays, since it fixes the bubble truncation bug. The no-snapshot regression since
+  `c450c11` is real, not spread: the full records of 2026-09-27 at `c450c11` (2000, 1933, 1946 and
+  baseline 1919) have `cold_no_snapshot_replies` app medians of 5,043 to 5,101 ms, while today's
+  full runs at `5b4b5d0` (1719, 1733) sit at 5,476 and 5,631 ms, a ~400 to 550 ms slowdown. Variant C
+  ruled out `fixedSize` as the cause and the cause was not identified. It is superseded:
+  `TableLayout` brought the case to 4,221 ms, below the old ~5.1 s.
 - **B is the cause, and it is `Grid`, not text selection.** In the app, tables as plain text
   took the open from 1.3 s to 0.34 s with selection kept; dropping selection too only saved
   another 8 ms. So text selection stays exactly as it was. `Grid` sized every cell by probing it
@@ -82,8 +105,8 @@ Visual medians moved the same way: cold open replies 1513 to 571, warm return re
 
 - Swift tests: 447 passed.
 - Screenshots of the built app, repo root: `prelaunch-perf-replies-newest.png` (newest answer),
-  `prelaunch-perf-replies-table.png` (two tables with wrapped cells, rules and header band,
-  prose flowing under them with no overlap), `prelaunch-perf-replies-select.png`,
+  `prelaunch-perf-replies-table.png` (one full table with wrapped cells, rules and header band, and
+  the bottom of another, prose flowing under them with no overlap), `prelaunch-perf-replies-select.png`,
   `prelaunch-perf-short-chat.png` (a short chat's earlier bubbles whole after the last reply
   landed: no truncation).
 - Text selection: the `.textSelection(.enabled)` modifier is unchanged and table cells are the

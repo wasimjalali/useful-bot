@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shutil
 import statistics
 import subprocess
@@ -148,12 +149,20 @@ def program_name(command):
 
     A path with spaces ("/Applications/Useful Bot.app/Contents/MacOS/X --flag")
     splits wrong on whitespace, so the longest leading prefix that exists on
-    disk is the program.
+    disk is the program. Failing that, a bundle path (".app/Contents/MacOS/X")
+    in the first word of the command, or before the first flag, names the
+    program by its last component; a marker later in the arguments (a grep
+    for it) is ignored.
     """
     marker = ".app/Contents/MacOS/"
-    if marker in command:
-        return command.split(marker, 1)[1].split()[0]
+    head = re.split(r"\s-", command, 1)[0]
+    if marker in head:
+        rest = head.split(marker, 1)[1].split()
+        if rest:
+            return rest[0]
     words = command.split()
+    if not words:
+        return "?"
     for n in range(len(words), 0, -1):
         candidate = " ".join(words[:n])
         if os.path.isfile(candidate):
@@ -176,17 +185,20 @@ def external_cpu():
             continue
         # A command line with a newline in it spills onto more lines; those
         # carry no CPU column and belong to the process above.
-        try:
-            cpu = float(parts[0])
-        except ValueError:
+        if not re.fullmatch(r"\d+(\.\d+)?", parts[0]):
             continue
+        cpu = float(parts[0])
         command = parts[1]
         if any(p in command for p in own):
             continue
         total += cpu
         # Only the program's name goes into the record: a command line can carry
         # a key or a token (one on this machine does), and records are committed.
-        top.append((cpu, program_name(command)))
+        try:
+            name = program_name(command)
+        except Exception:
+            name = "?"
+        top.append((cpu, name))
     top.sort(reverse=True)
     return total, [f"{c:.0f}% {n}" for c, n in top[:3] if c >= 10]
 
@@ -645,7 +657,9 @@ def measure(args, quick):
                 selects = sum(1 for st in steps if st["op"] == "select")
                 launch.execute(timeout_s=max(300, selects * 45))
             except RuntimeError as err:
-                loads.append((name, round(max(before, getattr(launch, "peak_cpu", 0.0))), before_top))
+                launch_peak = getattr(launch, "peak_cpu", 0.0)
+                peak, peak_top = (launch_peak, launch.peak_top) if launch_peak > before else (before, before_top)
+                loads.append((name, round(peak), peak_top))
                 failures.append(str(err))
                 print(f"  {name}: FAILED {err}")
                 continue
