@@ -96,8 +96,6 @@ header.nav[data-scrolled="true"] { border-color: var(--rule); }
   background-size: 96px 96px; background-position: center -1px;
   -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 30%, transparent 62%); mask-image: linear-gradient(to bottom, #000 0, #000 30%, transparent 62%); }
 .hero-inner { position: relative; width: min(100%, 1248px); margin-inline: auto; padding: 80px 24px 0; }
-.kicker { display: inline-flex; align-items: center; gap: 10px; margin: 0 0 26px; color: var(--night-muted); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
-.kicker::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--night-ink); }
 h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight: 500; line-height: 0.98; letter-spacing: -0.045em; text-wrap: balance; }
 .hero-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 64px; align-items: start; margin-top: 34px; }
 .hero-row > * { min-width: 0; }
@@ -262,7 +260,6 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
         <div class="sheet">
           <div class="sheet-grid" aria-hidden="true"></div>
           <div class="hero-inner">
-            <p class="kicker" data-rise style="--i:0">Native Mac app</p>
             <h1 data-rise style="--i:0">A team of AI bots that lives on your Mac.</h1>
             <div class="hero-row" data-rise style="--i:1">
               <p class="lede">Give each bot one job: writing, research, your inbox or your files. They run on the model you already pay for, work in the apps you connect and ask before they touch anything you haven't allowed.</p>
@@ -289,8 +286,8 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
             </div>
             <div class="stage" data-rise style="--i:2">
               <figure>
-                <div class="window"><img alt="Useful Bot on a Mac: the rail of bots on the left and a chat where a bot answers with a launch checklist." src="/shots/chat.png" width="3178" height="2144" fetchpriority="high" /></div>
-                <figcaption>The real app. Every bot keeps its own chat, and what it's doing shows as it works.</figcaption>
+                <div class="window"><img alt="Useful Bot on a Mac: the Generalist bot explains what it can do, that it can set up other bots, where your data goes and that you can use any model." src="/shots/chat.png" width="3178" height="2106" fetchpriority="high" /></div>
+                <figcaption>The real app, asked two first questions.</figcaption>
               </figure>
             </div>
           </div>
