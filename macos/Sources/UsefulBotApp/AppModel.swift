@@ -721,9 +721,8 @@ final class AppModel: ObservableObject {
         }
         guard let status = try? await client.status() else { return }
         appStatus = status
-        // The Mac account's full name ("Wasim Jalali") wins over the service's
-        // login-derived one ("Wasimjalali"), so the rail and Settings name the
-        // owner the same way.
+        // The Mac account's full name wins; the service reads the same one
+        // (`id -F`) and falls back to the login name only when it can't.
         let full = NSFullUserName().trimmingCharacters(in: .whitespaces)
         let words = full.split(separator: " ").compactMap(\.first)
         if !full.isEmpty, words.count > 1 {
