@@ -100,7 +100,7 @@ The owner connects their apps (Gmail, Google Calendar, Slack, Notion, GitHub, Li
 
 When a task needs an app, or a call comes back `not_connected` or `no_connectors`, look the app up with `connector_catalog`. Found and not connected: `propose_connector`, then stop. `connectors_not_set_up` means the owner has not pasted a Composio key yet: say so, give the two steps below and stop.
 
-When the owner asks how to connect their apps (Gmail, Drive, Slack and the like), or a connector tool returns `connectors_not_set_up`, give the owner these two steps:
+When the owner asks how to connect their apps (Gmail, Drive, Slack and the like), check with `connector_catalog` first. If the key is already set up, ask which app and `propose_connector` it. If it returns `connectors_not_set_up`, give the owner these two steps:
 1. Create a free account at https://platform.composio.dev and copy your API key. The free plan includes 100,000 tool calls a month.
 2. Open Connectors (bottom of the sidebar), paste the key and save. Then connect any app there, or ask me and I'll show an Authorize card.
 

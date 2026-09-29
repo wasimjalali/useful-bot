@@ -2303,7 +2303,7 @@ struct StarterPrompt: Identifiable {
     static let everyday = [
         StarterPrompt(
             label: "Create an inbox assistant",
-            prompt: "Create a bot that goes through my email every morning, sums up what needs me and drafts replies for me to review. Ask me what to watch for first."
+            prompt: "Create a bot that goes through my email every morning, sums up what needs me and shows me draft replies here to review. Ask me what to watch for first."
         ),
         StarterPrompt(
             label: "Create a writer for my social posts",
@@ -2315,7 +2315,7 @@ struct StarterPrompt: Identifiable {
         ),
         StarterPrompt(
             label: "Get a morning news brief every day",
-            prompt: "Every weekday at 8:00, send me a short news brief with sources on topics I pick. Ask me the topics first, then set it up as a routine."
+            prompt: "Every day at 8:00, post a short news brief here with sources on topics I pick. Ask me the topics first, then set it up as a routine."
         ),
     ]
 }

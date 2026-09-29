@@ -119,7 +119,8 @@ h1 { max-width: 13em; margin: 0; font-size: clamp(40px, 6vw, 84px); font-weight:
 .cmd { display: flex; align-items: center; gap: 4px; max-width: 100%; margin-top: 22px; padding: 6px 6px 6px 16px; border: 1px solid #fafafa; border-radius: 12px; background: #fafafa; }
 .cmd code { flex: 1; min-width: 0; overflow-x: auto; color: #171717; font-family: var(--font-mono); font-size: 13px; line-height: 1.5; white-space: nowrap; scrollbar-width: none; }
 .cmd code::-webkit-scrollbar { display: none; }
-.cmd code span { color: #737373; user-select: none; }
+.cmd code span { color: #666666; user-select: none; }
+.cmd code::selection { background: #171717; color: #fafafa; }
 .cmd button { flex: none; min-width: 72px; min-height: 40px; padding: 0 12px; border: 0; border-radius: 8px; color: #fafafa; background: #171717; font: 500 13px var(--font-sans); cursor: pointer; transition: background-color 150ms var(--ease-out); }
 .cmd button:hover { background: #333333; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
