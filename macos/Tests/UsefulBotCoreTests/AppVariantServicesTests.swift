@@ -46,6 +46,52 @@ private final class StackRunner: ProcessRunner, @unchecked Sendable {
     }
 }
 
+/// The port frees the moment the listener is signalled, as Next's and eve's do,
+/// but the process (and a child under it) keeps running until it is let go.
+private final class DrainingRunner: ProcessRunner, @unchecked Sendable {
+    private let lock = NSLock()
+    var listening: [Int: [pid_t]] = [:]
+    var running: [OwnedProcess] = []
+    /// Processes that ignore SIGTERM and only die to SIGKILL.
+    var stubborn: Set<pid_t> = []
+    /// Polls of `processesStillRunning` after which a TERMed process exits (when not stubborn).
+    var exitAfterPolls = 3
+    private(set) var termed: [pid_t] = []
+    private(set) var killed: [pid_t] = []
+    private(set) var exitChecksWithPortFree = 0
+    private var polls = 0
+
+    func start(_ command: ServiceCommand) {}
+    func portAccepting(_ port: Int) -> Bool { !(listening[port] ?? []).isEmpty }
+    func listeners(port: Int) -> [pid_t] { listening[port] ?? [] }
+    func stopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) { listening[port] = [] }
+    func forceStopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) { listening[port] = [] }
+    func ownServiceProcesses(port: Int, owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] {
+        lock.lock(); defer { lock.unlock() }
+        return port == 4420 && !(listening[port] ?? []).isEmpty ? running : []
+    }
+    func processesStillRunning(_ processes: [OwnedProcess]) -> [OwnedProcess] {
+        lock.lock(); defer { lock.unlock() }
+        polls += 1
+        if listening.values.allSatisfy({ $0.isEmpty }) { exitChecksWithPortFree += 1 }
+        if polls >= exitAfterPolls {
+            running.removeAll { process in termed.contains(process.pid) && !stubborn.contains(process.pid) }
+        }
+        return processes.filter { process in running.contains(process) }
+    }
+    func signalProcesses(_ processes: [OwnedProcess], force: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        for process in processes where running.contains(process) {
+            if force {
+                killed.append(process.pid)
+                running.removeAll { $0 == process }
+            } else {
+                termed.append(process.pid)
+            }
+        }
+    }
+}
+
 /// A runner whose listeners carry a command line, so the ownership rule that
 /// `LocalServices` hands it is the one that decides.
 private final class LineRunner: ProcessRunner, @unchecked Sendable {
@@ -334,6 +380,43 @@ private final class ParentRunner: ProcessRunner, @unchecked Sendable {
         #expect(!runner.stopped.contains(4419))
         #expect(!runner.forceStopped.contains(4420))
         #expect(!runner.forceStopped.contains(4419))
+    }
+
+    @Test func stoppingServicesWaitsForTheProcessToExitNotJustThePort() async {
+        let runner = DrainingRunner()
+        runner.listening = [4420: [9001], 4419: [9002], 4421: [9003]]
+        // A listener and its child: the port frees at once, the processes drain later.
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)"), OwnedProcess(pid: 9004, args: "eve local-server-child")]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 5)
+        await services.stopOwnServices(config: devConfig)
+        #expect(runner.running.isEmpty, "returned while a process of the old version was still running")
+        #expect(runner.exitChecksWithPortFree >= 2, "the exit was awaited after the port had freed")
+        #expect(runner.killed.isEmpty, "a process that exited on SIGTERM is never SIGKILLed")
+        #expect(Set(runner.termed) == [9001, 9004])
+    }
+
+    @Test func aProcessThatIgnoresSigtermIsKilledAfterTheTimeoutAndAwaited() async {
+        let runner = DrainingRunner()
+        runner.listening = [4420: [9001], 4419: [9002], 4421: [9003]]
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)")]
+        runner.stubborn = [9001]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.3)
+        let started = Date()
+        await services.stopOwnServices(config: devConfig)
+        #expect(runner.killed == [9001], "SIGKILL follows the timeout")
+        #expect(runner.running.isEmpty)
+        #expect(Date().timeIntervalSince(started) >= 0.3, "SIGKILL came before the SIGTERM grace ran out")
+    }
+
+    @Test func aForeignStackServiceIsNeitherSignalledNorAwaited() async {
+        let runner = DrainingRunner()
+        runner.listening = [4420: [9001], 4419: [9002]]
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)")]
+        runner.stubborn = [9001]
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "daily"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.3)
+        await services.stopOwnServices(config: devConfig)
+        #expect(runner.termed.isEmpty)
+        #expect(runner.killed.isEmpty)
     }
 
     // MARK: - The dev runtime payload and its setup

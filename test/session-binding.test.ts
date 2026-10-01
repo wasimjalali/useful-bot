@@ -10,6 +10,7 @@ import {
   readSessionBot,
   readSessionOwners,
   resolveSessionBot,
+  sessionCarriesOverFor,
   unbindBot,
 } from "../shared/session-bindings.ts";
 import { bindTurnBody, turnRewriteFailure } from "../shared/eve-proxy.ts";
@@ -533,6 +534,30 @@ test("a routine on either of two bots naming the same unbound session refuses", 
     }
     assert.equal(eve.calls.length, 0, "nothing reached eve");
     assert.equal(readSessionBot("sess-shared"), null);
+  });
+});
+
+test("a carry-over is allowed only from the destination bot's own session", async () => {
+  await withWorld(({ alpha, beta }) => {
+    // Bound to Alpha: Alpha may, Beta may not.
+    bindSession("sess-a", alpha);
+    assert.equal(sessionCarriesOverFor("sess-a", alpha), true);
+    assert.equal(sessionCarriesOverFor("sess-a", beta), false);
+    // Both bots point at one unbound session: ambiguous, so neither may.
+    const shell = readShell();
+    const both: ShellStore = {
+      ...shell,
+      bots: shell.bots.map((bot) => (bot.id === alpha || bot.id === beta ? { ...bot, sessionId: "sess-both" } : bot)),
+    };
+    assert.equal(sessionCarriesOverFor("sess-both", alpha, both), false);
+    assert.equal(sessionCarriesOverFor("sess-both", beta, both), false);
+    // Only Beta points at it: Beta's own.
+    const one: ShellStore = {
+      ...shell,
+      bots: shell.bots.map((bot) => (bot.id === beta ? { ...bot, sessionId: "sess-only-b" } : bot)),
+    };
+    assert.equal(sessionCarriesOverFor("sess-only-b", beta, one), true);
+    assert.equal(sessionCarriesOverFor("sess-only-b", alpha, one), false);
   });
 });
 

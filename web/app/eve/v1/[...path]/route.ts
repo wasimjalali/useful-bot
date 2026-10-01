@@ -32,7 +32,7 @@ import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/a
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
-import { bindSession, readSessionBot, resolveSessionBot } from "../../../../../shared/session-bindings.ts";
+import { bindSession, resolveSessionBot, sessionCarriesOverFor } from "../../../../../shared/session-bindings.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 import { eveOrigin } from "../../../../../shared/stack.ts";
 
@@ -158,15 +158,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         } catch {
           owner = null;
         }
-        // A session another bot owns is never carried over into this bot.
-        let priorOwner: string | null = null;
+        // A session another bot owns, or that two bots both point at, is never
+        // carried over into this bot (the ambiguity-aware resolver decides).
+        let ownsPrior = false;
         try {
-          priorOwner = extras.continueFrom ? readSessionBot(extras.continueFrom) : null;
+          ownsPrior = Boolean(owner && extras.continueFrom && sessionCarriesOverFor(extras.continueFrom, owner.id, readShell()));
         } catch {
-          priorOwner = null;
+          ownsPrior = false;
         }
-        const verdict = suffix === "session" && owner && extras.continueFrom
-          && (priorOwner === null || priorOwner === owner.id)
+        const verdict = suffix === "session" && owner && extras.continueFrom && ownsPrior
           ? continueFromVerdict(owner, extras.continueFrom)
           : "refused";
         if (verdict === "moved") {

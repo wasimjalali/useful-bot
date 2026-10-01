@@ -271,6 +271,23 @@ export function resolveSessionBot(
   return readSessionBot(sessionId, path);
 }
 
+/**
+ * May `botId` carry `sessionId` over into a new session? Only if the session is
+ * its own: bound to it, or unbound and named by no other bot. A session bound
+ * to another bot, or one two bots point at (ambiguous, so unbound), is not.
+ */
+export function sessionCarriesOverFor(
+  sessionId: string,
+  botId: string,
+  shell: ShellStore | null = peekShell(),
+  path = defaultSessionOwnersPath(),
+): boolean {
+  const owner = resolveSessionBot(sessionId, shell, path);
+  if (owner !== null) return owner === botId;
+  const claimants = (shell?.bots ?? []).filter((bot) => bot.sessionId === sessionId || bot.continuedSessionId === sessionId);
+  return claimants.every((bot) => bot.id === botId);
+}
+
 /** Drop every row of a bot that was deleted. The only way a row leaves. */
 export function unbindBot(botId: string, path = defaultSessionOwnersPath()): number {
   if (!botId) return 0;
