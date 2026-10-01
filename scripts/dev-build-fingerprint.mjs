@@ -4,14 +4,14 @@
 // package-lock.json is left out: eve restamps it on first boot (same rule as web-mode.mjs).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertNoSymlink } from "./runtime-manifest.mjs";
 
 const SOURCES = [
   "macos/Sources", "macos/Package.swift", "macos/Package.resolved", "macos/bundle", "macos/build-app.sh",
-  "web/app", "web/lib", "web/next.config.ts", "web/tsconfig.json", "shared", "agent", "router/src", "brand",
+  "web/app", "web/lib", "web/next.config.ts", "web/tsconfig.json", "shared", "agent", "router/src", "router/package.json", "brand",
   "scripts", "package.json",
 ];
 
@@ -22,7 +22,7 @@ const listed = execFileSync("git", ["ls-files", "-z", "-co", "--exclude-standard
   maxBuffer: 64 * 1024 * 1024,
 }).split("\0").filter(Boolean);
 
-const files = [...new Set(listed)].filter((file) => existsSync(path.join(root, file))).sort();
+const files = [...new Set(listed)].filter((file) => lstatSync(path.join(root, file), { throwIfNoEntry: false })).sort();
 const hash = createHash("sha256");
 for (const file of files) {
   assertNoSymlink(root, file);

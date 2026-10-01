@@ -324,14 +324,27 @@ class Launch:
     def execute(self, timeout_s=900, record=True):
         self.app.quit_all()
         time.sleep(1.0)
-        self.t_launch = self.app.launch(self.scenario_path)
-        # Whatever ends this launch, an error, Ctrl-C or SIGTERM included, the app
-        # it started is quit, so two Useful Bot Dev never share one state folder.
+        failure = None
+        # Whatever ends this launch (done, quit, error, Ctrl-C, SIGTERM), the finally quits
+        # the app it started, so two Useful Bot Dev never share one state folder.
         try:
+            self.t_launch = self.app.launch(self.scenario_path)
             return self._run(timeout_s, record)
-        except BaseException:
-            self.app.quit_all()
+        except BaseException as err:
+            failure = err
             raise
+        finally:
+            # SIGTERM/SIGHUP stay blocked while quitting so a second signal can't skip the
+            # quit; a pending one is delivered on unblock.
+            old = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGHUP})
+            try:
+                self.app.quit_all()
+            except SystemExit:
+                if failure is not None:
+                    print(f"{self.name}: {failure!r}, and then the app would not quit", file=sys.stderr)
+                raise
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old)
 
     def _run(self, timeout_s, record):
         pid = None
@@ -351,11 +364,15 @@ class Launch:
                  "--fps", str(CONFIG["fps"]), "--scale", str(CONFIG["scale"]),
                  "--crop", f"{crop['left']},{crop['top']},{crop['right']},{crop['bottom']}"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            line = rec.stdout.readline()
-            if not line.startswith("recording"):
+            # A failure or signal before the main try below must not leave the recorder running.
+            try:
+                line = rec.stdout.readline()
+                if not line.startswith("recording"):
+                    raise RuntimeError(f"{self.name}: recorder failed: {line}{rec.stderr.read()}")
+                self.window = line.split()[1:]
+            except BaseException:
                 rec.kill()
-                raise RuntimeError(f"{self.name}: recorder failed: {line}{rec.stderr.read()}")
-            self.window = line.split()[1:]
+                raise
         deadline = time.time() + timeout_s
         end = None
         # Other work is sampled every ~2 s while the launch runs: a burst in
@@ -399,8 +416,6 @@ class Launch:
             raise RuntimeError(f"{self.name}: the app aborted the scenario: {end.get('why')}")
         if end["ev"] == "exited":
             raise RuntimeError(f"{self.name}: the app exited before the scenario ended")
-        if end["ev"] == "done":
-            self.app.quit_all()
         return self
 
     def marks(self):
