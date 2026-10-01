@@ -817,6 +817,21 @@ test("package installs, runs by name and paid-cloud create or deploy ask in Auto
     ["aws --region us-east-1 --profile p --output json ec2 run-instances", /cloud/],
     ["heroku apps:create demo", /cloud/],
     ["heroku addons:create heroku-postgresql", /cloud/],
+    // Round 2: value flags before the verb, unknown flags (fail closed), and config-folder destinations.
+    ["poetry update", /installs packages/],
+    ["npm --omit dev i", /installs packages/],
+    ["npm --cache /x i foo", /installs packages/],
+    ["npm --some-unknown-flag value install foo", /installs packages/],
+    ["pnpm --some-unknown-flag value add foo", /installs packages/],
+    ["pip --index-url https://x/simple install requests", /installs packages/],
+    ["mv stage .claude", /config folder name/],
+    ["mv stage ./.Claude/", /config folder name/],
+    ["cp -r stage .github", /config folder name/],
+    ["cp -R stage sub/.codex", /config folder name/],
+    ["cp -a stage .gemini", /config folder name/],
+    ["ln -s stage .cursor", /config folder name/],
+    ["rsync -a stage/ .claude/", /config folder name/],
+    ["ditto stage .claude", /config folder name/],
   ];
   for (const [command, reason] of asks) {
     const risk = commandRisk(command, root);
@@ -867,6 +882,19 @@ test("package installs, runs by name and paid-cloud create or deploy ask in Auto
     "uv run pytest",
     "poetry run pytest",
     "go test ./...",
+    // The value of a later flag is not a verb.
+    "aws lambda invoke --function-name create out.json",
+    "aws s3 ls --profile create",
+    "aws --region us-east-1 sts get-caller-identity",
+    // Everyday copies and links.
+    "cp file .claude-notes.txt",
+    "cp stage .claude",
+    "cp -r stage backup",
+    "mv a.txt b.txt",
+    "ln -s stage latest",
+    "rsync -a src/ dist/",
+    "npm --cache cache run add",
+    "npm --omit dev test",
   ]) {
     assert.equal(commandRisk(command, root), null, command);
   }

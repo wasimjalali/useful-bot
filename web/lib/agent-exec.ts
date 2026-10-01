@@ -37,7 +37,7 @@ import {
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
-import { bindSession } from "../../shared/session-bindings.ts";
+import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
 import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
@@ -706,7 +706,13 @@ async function runEveTurn(
   try {
     // The session this turn continues must belong to this bot. A pointer that
     // names another bot's session is refused before eve sees the turn.
-    if (sessionId) bindSession(sessionId, bot.id);
+    // Through the ambiguity-aware resolve: a session two bots point at, or one
+    // another bot owns, is refused. Only sessions eve creates below are bound
+    // unconditionally.
+    if (sessionId) {
+      const owner = resolveSessionBot(sessionId, readShell());
+      if (owner !== bot.id) throw new Error(owner ? "session_owner_conflict" : "session_binding_ambiguous");
+    }
     let historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
     if (sessionId) syncSessionWorkspaceFresh(sessionId, bot.id);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {

@@ -1,4 +1,7 @@
+import { foldPath } from "./fold-path.ts";
 import { DAILY } from "./stack.ts";
+
+export { foldPath };
 
 export type Alias = "workhorse" | "reviewer" | "image";
 export type Profile = "desktop" | "phone" | "reviewer" | "eval";
@@ -282,24 +285,24 @@ export const PLANTED_CONFIG_CREATE_ALLOW = [
 ] as const;
 
 /**
- * Entries that must not be CREATED under these names (mkdir, rename into,
- * symlink, hard link), in the sandbox profiles only. A planted `settings.json`
- * written into a folder called `stage` and then renamed or linked to `.claude`
- * matches none of the per-file rules above, and the tool reads it through the
- * new name. Writing INTO an existing folder of that name stays governed by the
- * name rules (owner decision, 2026-10-01).
+ * A planted `settings.json` written into a folder called `stage` and then
+ * linked or renamed to `.claude` matches none of the per-file rules above, and
+ * the tool reads it through the new name. Two narrower denies cover that
+ * without breaking `git clone`, `tar -x` or a first-time `codex login`
+ * (owner decision, 2026-10-01, round 2):
+ *
+ * - a SYMLINK whose last component is one of these, anywhere, in both profiles
+ *   (nothing legitimate links to a tool's config folder);
+ * - creating one of these, or `.config/git` or `.config/gh`, directly under the
+ *   owner's home, in the confined profile only (an approved line may create the
+ *   home folder so a first-time login works; planted files inside stay denied).
+ *
+ * Accepted residual: a script that renames a real directory to `.claude`
+ * inside a project is not caught by the kernel. The command card catches a
+ * direct `mv`, `cp -r`, `ln`, `rsync` or `ditto` to those names.
  */
-export const PLANTED_CONFIG_CREATE_DENY_LEAVES = [".claude", ".codex", ".gemini", ".cursor", ".github"] as const;
-
-/**
- * The form a path is compared in. The volume folds case and Unicode
- * compatibility forms alike (U+017F long s opens `.claude/settings.json` as
- * `.claude/\u017Fettings.json`), so lowercase alone lets a spelling through.
- * NFKC first, then up and down to fold what lowercasing leaves (Kelvin sign).
- */
-export function foldPath(text: string): string {
-  return text.normalize("NFKC").toUpperCase().toLowerCase();
-}
+export const PLANTED_CONFIG_SYMLINK_DENY_LEAVES = [".claude", ".codex", ".gemini", ".cursor", ".github"] as const;
+export const PLANTED_CONFIG_HOME_CREATE_DENY = [".claude", ".codex", ".gemini", ".cursor", ".github", ".config/git", ".config/gh"] as const;
 
 const PLANTED_NAME_TESTS = PLANTED_CONFIG_NAMES.map((name) => ({
   name,

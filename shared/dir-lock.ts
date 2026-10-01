@@ -35,21 +35,45 @@ function readOwner(lock: string): { pid: number; token: string } | null {
   }
 }
 
-/** Move a dead holder's lock aside (atomic, so one waiter wins) and drop it. */
-function reclaim(lock: string, expectedToken: string | null): void {
-  const aside = `${lock}.stale.${process.pid}.${randomUUID().slice(0, 8)}`;
+// The reclaim lock guards a critical section of a few syscalls, so only age
+// can mark one abandoned.
+const RECLAIM_STALE_MS = 5_000;
+
+/**
+ * Remove a dead holder's lock, exclusively. Whoever holds `<lock>.reclaim`
+ * re-reads the owner and removes the lock only after confirming, right then,
+ * that its holder is dead (or that an owner-less lock is past the stale age).
+ * A lock that was already replaced by a live holder is left alone, so two
+ * waiters racing over one dead owner cannot remove each other's live lock.
+ * Returns quietly when another waiter is reclaiming; throws on a real failure.
+ */
+function reclaim(lock: string, staleMs: number): void {
+  const guard = `${lock}.reclaim`;
   try {
-    renameSync(lock, aside);
-  } catch {
-    return; // another waiter got it first
-  }
-  const moved = readOwner(aside);
-  if (expectedToken !== null && moved?.token !== expectedToken) {
-    // A live lock replaced the dead one between the check and the move: put it back.
-    try { renameSync(aside, lock); } catch { rmSync(aside, { recursive: true, force: true }); }
+    mkdirSync(guard, { mode: 0o700 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    try {
+      if (Date.now() - statSync(guard).mtimeMs > RECLAIM_STALE_MS) rmSync(guard, { recursive: true, force: true });
+    } catch { /* gone already */ }
     return;
   }
-  rmSync(aside, { recursive: true, force: true });
+  try {
+    const holder = readOwner(lock);
+    let dead: boolean;
+    if (holder) {
+      dead = !pidAlive(holder.pid);
+    } else {
+      try {
+        dead = Date.now() - statSync(lock).mtimeMs > staleMs;
+      } catch {
+        return; // no lock any more
+      }
+    }
+    if (dead) rmSync(lock, { recursive: true, force: true });
+  } finally {
+    rmSync(guard, { recursive: true, force: true });
+  }
 }
 
 export function acquireDirLock(
@@ -71,6 +95,8 @@ export function acquireDirLock(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
+    // The deadline is checked on every pass, whatever happens below.
+    if (Date.now() > deadline) throw new Error(options.errorCode);
     const holder = readOwner(lock);
     let reclaimable = false;
     if (holder) {
@@ -83,10 +109,15 @@ export function acquireDirLock(
       }
     }
     if (reclaimable) {
-      reclaim(lock, holder?.token ?? null);
+      try {
+        reclaim(lock, options.staleMs);
+      } catch {
+        // Not "someone else reclaimed it": the store is locked as far as this caller can tell.
+        throw new Error(options.errorCode);
+      }
+      sleep(5);
       continue;
     }
-    if (Date.now() > deadline) throw new Error(options.errorCode);
     sleep(15);
   }
   return () => {

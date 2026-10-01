@@ -512,6 +512,30 @@ test("a pointer naming another bot's session is refused before eve sees the turn
   });
 });
 
+test("a routine on either of two bots naming the same unbound session refuses", async () => {
+  await withWorld(async ({ alpha, beta }) => {
+    const shell = readShell();
+    writeShell({
+      ...shell,
+      bots: shell.bots.map((bot) => (bot.id === alpha || bot.id === beta ? { ...bot, sessionId: "sess-shared" } : bot)),
+    });
+    const eve = fakeEve({ created: [] });
+    try {
+      for (const botId of [alpha, beta]) {
+        const routine = createRoutine({ botId, name: `Daily ${botId}`, instruction: "do it", schedules: [] });
+        await startRoutineNow(routine.id).catch(() => undefined);
+        const run = readRoutinesStore().routines.find((item) => item.id === routine.id)?.runHistory[0];
+        assert.equal(run?.status, "failed");
+        assert.match(run?.error ?? "", /session_binding_ambiguous/);
+      }
+    } finally {
+      eve.restore();
+    }
+    assert.equal(eve.calls.length, 0, "nothing reached eve");
+    assert.equal(readSessionBot("sess-shared"), null);
+  });
+});
+
 test("the default bot is bound like any other", async () => {
   await withWorld(async () => {
     point(DEFAULT_BOT_ID, "sess-default");

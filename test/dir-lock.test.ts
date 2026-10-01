@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireDirLock } from "../shared/dir-lock.ts";
@@ -50,3 +50,47 @@ function mkdirLockedBy(lock: string, pid: number, token: string): void {
   const result = spawnSync("/bin/sh", ["-c", `mkdir -p "${lock}" && printf '%s' '{"pid":${pid},"token":"${token}"}' > "${lock}/owner"`]);
   assert.equal(result.status, 0);
 }
+
+test("two processes racing to reclaim one dead lock both get it in turn, never together", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-lock-race-"));
+  const lock = join(dir, "x.lock");
+  const log = join(dir, "log.txt");
+  const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+  mkdirLockedBy(lock, Number(dead.stdout), "dead-token");
+  const script = join(dir, "child.ts");
+  writeFileSync(script, `
+    import { appendFileSync } from "node:fs";
+    import { acquireDirLock } from ${JSON.stringify(join(process.cwd(), "shared/dir-lock.ts"))};
+    const release = acquireDirLock(${JSON.stringify(lock)}, { timeoutMs: 10000, staleMs: 60000, errorCode: "locked" });
+    appendFileSync(${JSON.stringify(log)}, "enter " + process.pid + "\\n");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    appendFileSync(${JSON.stringify(log)}, "exit " + process.pid + "\\n");
+    release();
+  `);
+  const exits = await Promise.all([0, 1, 2].map(() => new Promise<number | null>((resolve) => {
+    const child = spawn(process.execPath, ["--experimental-strip-types", script], { stdio: "ignore" });
+    child.on("exit", resolve);
+  })));
+  assert.deepEqual(exits, [0, 0, 0]);
+  const lines = readFileSync(log, "utf8").trim().split("\n");
+  assert.equal(lines.length, 6);
+  // enter, exit, enter, exit...: a live holder was never removed under it.
+  lines.forEach((line, at) => assert.ok(line.startsWith(at % 2 === 0 ? "enter" : "exit"), lines.join(" | ")));
+  for (let at = 0; at < lines.length; at += 2) assert.equal(lines[at].split(" ")[1], lines[at + 1].split(" ")[1]);
+});
+
+test("a reclaim that fails for a real reason surfaces as the locked error instead of looping", () => {
+  const lock = fresh();
+  const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+  mkdirLockedBy(lock, Number(dead.stdout), "dead-token");
+  // The reclaim lock cannot be created in a read-only folder.
+  const parent = join(lock, "..");
+  chmodSync(parent, 0o500);
+  try {
+    const started = Date.now();
+    assert.throws(() => acquireDirLock(lock, options(5000, 60_000)), /test_locked/);
+    assert.ok(Date.now() - started < 2000);
+  } finally {
+    chmodSync(parent, 0o700);
+  }
+});

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { foldPath } from "../../shared/fold-path.ts";
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -315,7 +316,7 @@ const RESERVED_DERIVED_NAMES = new Set([
  * covering everything above it as well as the name itself.
  */
 function holdsProtectedStore(relative: string): boolean {
-  const lowered = relative.toLowerCase();
+  const lowered = foldPath(relative);
   return NEVER_DERIVED.some((name) => name.startsWith(`${lowered}/`));
 }
 
@@ -325,7 +326,7 @@ function holdsProtectedStore(relative: string): boolean {
  * rules are written, so `.config/fish` is caught as well as `.ssh`.
  */
 function namesProtectedStore(relative: string): boolean {
-  const lowered = relative.toLowerCase();
+  const lowered = foldPath(relative);
   return NEVER_DERIVED.some((name) => {
     if (lowered === name || lowered.startsWith(`${name}/`) || lowered.endsWith(`/${name}`) || lowered.includes(`/${name}/`)) {
       return true;
@@ -352,7 +353,7 @@ function namesProtectedStore(relative: string): boolean {
  * profile closes this door at the same time.
  */
 const NEVER_DERIVED = [
-  ...PROTECTED_NAMES.map((name) => name.toLowerCase()),
+  ...PROTECTED_NAMES.map((name) => foldPath(name)),
   // The word the profile matches with a pattern rather than a name.
   "secrets",
   // Not credential stores, but never a CLI's own state either.

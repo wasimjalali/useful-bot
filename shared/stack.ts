@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { foldPath } from "./fold-path.ts";
 
 /**
  * The one place that knows where this install keeps its state and which
@@ -198,8 +199,8 @@ export function keychainName(name: string, env: Env = process.env): string {
 // symlinks resolved (for a path that does not exist yet, its nearest existing
 // ancestor), compared case-insensitively (APFS folds case by default).
 
-/** The folding the comparison uses: Unicode-normalised and lower case. */
-const fold = (path: string): string => path.normalize("NFD").toLowerCase();
+/** The folding the comparison uses (shared/fold-path.ts). */
+const fold = foldPath;
 
 /** Resolve symlinks in the path or its nearest existing ancestor; a dangling link is followed too. */
 function canonicalPath(path: string, depth = 0): string {
@@ -533,7 +534,7 @@ const APP_STATE_IN_TEXT = /\.useful-bot(?![a-z0-9_])/i;
 
 /** True for one path segment that names an app-state folder. */
 export function isAppStateSegment(segment: string): boolean {
-  return APP_STATE_SEGMENT.test(segment);
+  return APP_STATE_SEGMENT.test(foldPath(segment));
 }
 
 /**
@@ -565,5 +566,5 @@ function mentionsRuntimeInstall(text: string): boolean {
 
 /** True when a shell line (or any text) names an app-state or runtime install folder anywhere in it. */
 export function mentionsAppState(text: string): boolean {
-  return APP_STATE_IN_TEXT.test(text) || mentionsRuntimeInstall(text);
+  return APP_STATE_IN_TEXT.test(foldPath(text)) || mentionsRuntimeInstall(text);
 }

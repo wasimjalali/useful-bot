@@ -7,6 +7,7 @@ import {
   type AvatarShape,
 } from "./bot-face.ts";
 import { parseModelSelection, type ModelSelection } from "./session-selection.ts";
+import { foldPath } from "./fold-path.ts";
 import { APP_STATE_DIR, isAppStateSegment, isRuntimeInstallPath } from "./stack.ts";
 
 /** Client-safe: this file must never pull in node builtins. */
@@ -505,7 +506,7 @@ export function isGrantableRootPath(path: string): boolean {
   for (const segment of path.split("/")) {
     if (!segment) continue;
     if (segment === "..") return false;
-    const lowered = segment.toLowerCase();
+    const lowered = foldPath(segment);
     if (isForbiddenGrantSegment(lowered)) return false;
   }
   return true;

@@ -79,5 +79,42 @@ per-file deny already refuses the LINK, because the source path matches it (`fil
 the source). `ln -s` to the same file creates a symlink at most, and a write through it is refused
 (`sl: Operation not permitted`). So no extra link rule was needed; the unit test locks it in.
 
-Cost: a bot can no longer `mkdir .github` (or the other four) itself. `git init` and `git clone` are not
-affected (they create `.git`, not these).
+Cost claimed here: a bot can no longer `mkdir .github` (or the other four) itself. "`git init` and `git clone`
+are not affected" was WRONG: a clone, `tar -x`, `unzip` or `cp -R` of a tree that contains `.github/` or
+`.claude/` creates exactly those directories, and a first-time `codex login` or `gemini` sign-in makes
+`~/.codex` or `~/.gemini`. Round 2 below replaces this broad deny.
+
+## Round 2: narrower create denies (2026-10-01)
+
+Round 2 review found the round-1 deny broke `git clone`, `tar -x`, `unzip`, `cp -R` of trees with `.github/` or
+`.claude/`, and first-time CLI sign-ins. Owner decision, replacing it:
+
+(a) deny creating a SYMLINK whose last component is `.claude`, `.codex`, `.gemini`, `.cursor` or `.github`,
+anywhere, in both profiles:
+`(deny file-write-create (require-all (vnode-type SYMLINK) (regex #"/\.claude$")))`.
+Note: SBPL ORs the filters of one rule, so `(vnode-type SYMLINK) (regex ...)` without `require-all` denied EVERY
+create (first attempt: `mkdir -p repo/.github/ISSUE_TEMPLATE` and `ln -s stage latest` were refused). `require-all`
+is the fix.
+(b) deny creating those five, plus `.config/git` and `.config/gh`, only directly under the owner's home
+(`^<home>/\.claude$`), in the confined profile only. The approved-line profile may create them, so a first-time
+login works; the planted files inside stay denied by the name rules.
+(c) the command card (`agent/lib/command-risk.ts`) asks in Auto for `mv`, `cp -r/-R/-a`, `ln`, `rsync` and `ditto`
+whose destination's last component is one of those names; Full access runs them.
+
+Method: `live2.ts` (scratchpad copy), same harness as above, `HOME` pointed at a fake home inside the scratch
+folder, a fresh project and home per line. Results (both profiles unless noted):
+
+| line | approved-line profile | confined profile |
+|---|---|---|
+| `mkdir -p repo/.github/ISSUE_TEMPLATE` | ok | ok |
+| `tar -xf t.tar` (tree with `.claude/notes.md`, `.github/ISSUE_TEMPLATE/bug.md`) | ok | ok |
+| `cp -R src copy` (tree with `.claude/`) | ok | ok |
+| `ln -s stage .claude`, `.Claude`, `.github`, `.cursor`, `.codex`, `.gemini` | refused | refused |
+| `ln -s stage latest` | ok | ok |
+| `mkdir <home>/.claude` | CREATED | refused |
+| `mkdir <home>/.codex <home>/.config/gh <home>/.config/git` | CREATED | refused |
+| write `<home>/.codex/config.toml` after creating the folder | refused | refused |
+| `mkdir stage; mv stage .claude` inside the project | allowed by the kernel | allowed by the kernel |
+
+Accepted residual: a script that renames a real directory to `.claude` inside a project is not caught by the
+kernel (the last row). The command card catches a direct `mv`, `cp -r`, `ln`, `rsync` or `ditto` to those names.

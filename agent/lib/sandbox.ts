@@ -1,11 +1,14 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { foldPath } from "../../shared/fold-path.ts";
 import { APP_STATE_DIR, RUNTIME_INSTALL_DIRS } from "../../shared/stack.ts";
 import { ownerPath, pathCandidates } from "../../shared/user-path.ts";
 import { delimiter, dirname, join } from "node:path";
 import {
   PLANTED_CONFIG_CREATE_ALLOW,
-  PLANTED_CONFIG_CREATE_DENY_LEAVES,
+  PLANTED_CONFIG_HOME_CREATE_DENY,
+  isPlantedConfigPath,
+  PLANTED_CONFIG_SYMLINK_DENY_LEAVES,
   PLANTED_CONFIG_NAMES,
   PLANTED_CONFIG_PATTERNS,
   PLANTED_CONFIG_WRITE_ALLOW,
@@ -185,19 +188,52 @@ export function toSbplRules(): string[] {
   return [
     ...PLANTED_CONFIG_NAMES.map((name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`),
     ...PLANTED_CONFIG_PATTERNS.map((pattern) => `(deny file-write* (regex #"${pattern}"))`),
-    ...PLANTED_CONFIG_CREATE_DENY_LEAVES.map((leaf) => `(deny file-write-create (regex #"/${regexEscape(leaf)}$"))`),
+    ...PLANTED_CONFIG_SYMLINK_DENY_LEAVES.map((leaf) => `(deny file-write-create (require-all (vnode-type SYMLINK) (regex #"/${regexEscape(leaf)}$")))`),
     ...PLANTED_CONFIG_WRITE_ALLOW.map((pattern) => `(allow file-write* (regex #"${pattern}"))`),
     ...PLANTED_CONFIG_CREATE_ALLOW.map((pattern) => `(allow file-write-create (regex #"${pattern}"))`),
   ];
 }
 
-function plantedConfigRules(allowToolInstall: boolean): string[] {
-  const rules = toSbplRules();
+/**
+ * Creating a tool's config folder directly under the owner's home, confined
+ * profile only: an approved line (a first-time `codex login` makes `~/.codex`)
+ * may, and planted files inside stay denied by the name rules either way.
+ */
+export function homeCreateRules(): string[] {
+  let home: string;
+  try {
+    home = realpathSync(homedir());
+  } catch {
+    home = homedir();
+  }
+  return PLANTED_CONFIG_HOME_CREATE_DENY.map((leaf) => `(deny file-write-create (regex #"^${regexEscape(home)}/${regexEscape(leaf)}$"))`);
+}
+
+function plantedConfigRules(allowToolInstall: boolean, confined = false): string[] {
+  const rules = [...toSbplRules(), ...(confined ? homeCreateRules() : [])];
   if (allowToolInstall) return rules;
   for (const path of toolBinDirs()) {
     rules.push(`(deny file-write* (subpath ${sbplString(path)}))`);
   }
   return rules;
+}
+
+/**
+ * Whether the guard would refuse a write at this absolute path: planted config,
+ * a tool's config folder name, a protected credential or app-state name, or a
+ * PATH directory. Used to tell a refusal this profile made from any other
+ * "Operation not permitted" (a macOS privacy prompt, a read-only volume).
+ */
+export function isGuardedPath(abs: string): boolean {
+  const folded = foldPath(abs);
+  if (isPlantedConfigPath(abs)) return true;
+  const segments = folded.split("/").filter(Boolean);
+  if (segments.some((segment) => PLANTED_CONFIG_SYMLINK_DENY_LEAVES.includes(segment as never))) return true;
+  if (PROTECTED_NAMES.some((name) => {
+    const n = foldPath(name);
+    return folded.endsWith(`/${n}`) || folded.includes(`/${n}/`) || folded.includes(`/${n}.`);
+  })) return true;
+  return toolBinDirs().some((dir) => folded === foldPath(dir) || folded.startsWith(`${foldPath(dir)}/`));
 }
 
 /**
@@ -314,7 +350,7 @@ export function sandboxProfile(
     // Last, so a planted hook stays refused even inside a store the rule
     // above just opened: `~/.codex` is readable to a codex line, but
     // `~/.codex/config.toml` is not writable by it.
-    ...plantedConfigRules(options.allowToolInstall === true),
+    ...plantedConfigRules(options.allowToolInstall === true, true),
   ].join("\n");
 }
 

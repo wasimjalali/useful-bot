@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
 import { approvedLineProfile, approvedCommand, sandboxAvailable, sandboxProfile, toSbplRules } from "../agent/lib/sandbox.ts";
 import { needsPathWrite } from "../agent/lib/command-risk.ts";
+import { protectedPathHint } from "../agent/lib/guard-hint.ts";
+import { isAppStateSegment, isRuntimeInstallPath, mentionsAppState } from "../shared/stack.ts";
 import { resetOwnerPath } from "../shared/user-path.ts";
 import { approvedWrite, setApprovalStore } from "../agent/lib/write.ts";
 import { resolveWorkspacePath } from "../agent/lib/workspace.ts";
@@ -40,11 +42,11 @@ const EXPECTED_RULES = [
   '(deny file-write* (regex #"/\\.mcp\\.json($|[/.])"))',
   '(deny file-write* (regex #"/\\.cursor/mcp\\.json($|[/.])"))',
   '(deny file-write* (regex #"/\\.git/hooks($|/)"))',
-  '(deny file-write-create (regex #"/\\.claude$"))',
-  '(deny file-write-create (regex #"/\\.codex$"))',
-  '(deny file-write-create (regex #"/\\.gemini$"))',
-  '(deny file-write-create (regex #"/\\.cursor$"))',
-  '(deny file-write-create (regex #"/\\.github$"))',
+  '(deny file-write-create (require-all (vnode-type SYMLINK) (regex #"/\\.claude$")))',
+  '(deny file-write-create (require-all (vnode-type SYMLINK) (regex #"/\\.codex$")))',
+  '(deny file-write-create (require-all (vnode-type SYMLINK) (regex #"/\\.gemini$")))',
+  '(deny file-write-create (require-all (vnode-type SYMLINK) (regex #"/\\.cursor$")))',
+  '(deny file-write-create (require-all (vnode-type SYMLINK) (regex #"/\\.github$")))',
   '(allow file-write* (regex #"/\\.git/hooks/[^/]+\\.sample$"))',
   '(allow file-write-create (regex #"/\\.git/hooks$"))',
 ];
@@ -243,16 +245,51 @@ function runProfile(profile: string, dir: string, line: string): void {
   }
 }
 
-test("no entry can be created under a planted parent name, in either profile", { skip: !darwin }, () => {
+test("a symlink named like a tool's config folder is refused anywhere; ordinary trees still unpack", { skip: !darwin }, () => {
   for (const mode of ["approved", "confined"] as const) {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-leaf-")));
-    const profile = mode === "approved" ? approvedLineProfile() : sandboxProfile(dir, "folder");
-    runProfile(profile, dir, "mkdir stage && echo h > stage/settings.json; mkdir .claude; mv stage .codex; ln -s stage .gemini; mkdir .cursor; mkdir .github; mv stage .Claude");
+    mkdirSync(join(dir, "src", ".claude"), { recursive: true });
+    mkdirSync(join(dir, "src", ".github", "ISSUE_TEMPLATE"), { recursive: true });
+    writeFileSync(join(dir, "src", ".claude", "notes.md"), "n");
+    writeFileSync(join(dir, "src", ".github", "ISSUE_TEMPLATE", "bug.md"), "b");
+    execFileSync("/usr/bin/tar", ["-cf", join(dir, "t.tar"), "-C", join(dir, "src"), "."]);
+    mkdirSync(join(dir, "proj"));
+    const profile = mode === "approved" ? approvedLineProfile() : sandboxProfile(join(dir, "proj"), "folder");
+    runProfile(profile, join(dir, "proj"), "mkdir stage; ln -s stage .claude; ln -s stage .Claude; ln -s stage .codex; ln -s stage .gemini; ln -s stage .cursor; ln -s stage .github; ln -s stage latest");
     for (const name of [".claude", ".codex", ".gemini", ".cursor", ".github"]) {
-      assert.equal(existsSync(join(dir, name)), false, `${mode} ${name}`);
+      assert.equal(existsSync(join(dir, "proj", name)), false, `${mode} ${name}`);
     }
-    runProfile(profile, dir, "mkdir src && echo ok > src/a.txt");
-    assert.equal(readFileSync(join(dir, "src", "a.txt"), "utf8").trim(), "ok", `${mode} src still works`);
+    assert.equal(lstatSync(join(dir, "proj", "latest")).isSymbolicLink(), true, `${mode} ordinary link`);
+    runProfile(profile, join(dir, "proj"), `mkdir -p repo/.github/ISSUE_TEMPLATE; tar -xf ${dir}/t.tar; cp -R ${dir}/src copy`);
+    assert.equal(existsSync(join(dir, "proj", "repo", ".github", "ISSUE_TEMPLATE")), true, `${mode} mkdir -p`);
+    assert.equal(readFileSync(join(dir, "proj", ".claude", "notes.md"), "utf8"), "n", `${mode} tar -x`);
+    assert.equal(existsSync(join(dir, "proj", ".github", "ISSUE_TEMPLATE", "bug.md")), true, `${mode} tar -x .github`);
+    assert.equal(existsSync(join(dir, "proj", "copy", ".claude", "notes.md")), true, `${mode} cp -R`);
+  }
+});
+
+test("a tool's config folder under the owner's home cannot be created by a confined line, but an approved login may", { skip: !darwin }, () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-home-")));
+  const previousHome = process.env.HOME;
+  process.env.HOME = join(dir, "home");
+  try {
+    const targets = [".claude", ".codex", ".gemini", ".cursor", ".github", ".config/git", ".config/gh"];
+    for (const mode of ["confined", "approved"] as const) {
+      rmSync(join(dir, "home"), { recursive: true, force: true });
+      mkdirSync(join(dir, "home", ".config"), { recursive: true });
+      mkdirSync(join(dir, "proj"), { recursive: true });
+      const profile = mode === "approved" ? approvedLineProfile() : sandboxProfile(join(dir, "proj"), "folder");
+      runProfile(profile, join(dir, "proj"), targets.map((name) => `mkdir "${join(dir, "home", name)}"`).join("; "));
+      for (const name of targets) {
+        assert.equal(existsSync(join(dir, "home", name)), mode === "approved", `${mode} ${name}`);
+      }
+      // Planted files inside stay denied in both.
+      runProfile(profile, join(dir, "proj"), `mkdir -p "${join(dir, "home", ".codex")}"; echo x > "${join(dir, "home", ".codex", "config.toml")}"`);
+      assert.equal(existsSync(join(dir, "home", ".codex", "config.toml")), false, `${mode} config.toml`);
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
   }
 });
 
@@ -305,7 +342,7 @@ test("an approved line the guard stops comes back with a hint naming the protect
   try {
     writeFileSync(join(box.project, "old.txt"), "x");
     const result = bash.execute(
-      { command: "rm old.txt; mkdir .claude" } as never,
+      { command: "rm old.txt; mkdir stage; ln -s stage .claude" } as never,
       { session: { id: "sess-1" } } as never,
     ) as Promise<{ exitCode: number; hint?: string }>;
     let cards = box.approvals.listPending();
@@ -316,9 +353,41 @@ test("an approved line the guard stops comes back with a hint naming the protect
     box.approvals.decide(cards[0].id, "approve", cards[0].actionSha256);
     const done = await result;
     assert.notEqual(done.exitCode, 0);
-    assert.match(done.hint ?? "", /refused ".claude"/);
+    assert.match(done.hint ?? "", /BEGIN-UNTRUSTED\(refused path\)[\s\S]*\.claude[\s\S]*END-UNTRUSTED/);
     assert.match(done.hint ?? "", /Terminal/);
   } finally {
     box.restore();
   }
+});
+
+test("the refusal hint fires only for a path the guard protects, and quotes it as untrusted data", () => {
+  const cwd = "/work/project";
+  assert.match(protectedPathHint("mkdir: .claude: Operation not permitted\n", cwd).hint ?? "", /UNTRUSTED/);
+  assert.match(protectedPathHint("/bin/sh: .claude/settings.json: Operation not permitted", cwd).hint ?? "", /settings\.json/);
+  assert.match(protectedPathHint("ln: .mcp.json: Operation not permitted", cwd).hint ?? "", /\.mcp\.json/);
+  // A macOS privacy refusal or a read-only volume is not the guard.
+  assert.deepEqual(protectedPathHint("ls: /Users/o/Library/Mail: Operation not permitted", cwd), {});
+  assert.deepEqual(protectedPathHint("touch: notes.txt: Operation not permitted", cwd), {});
+  assert.deepEqual(protectedPathHint("nothing relevant", cwd), {});
+});
+
+test("Unicode spellings of the app's own folders are refused too", () => {
+  assert.equal(isRuntimeInstallPath("/Users/o/Library/Application Support/U\u017Feful Bot Dev/app/x"), true);
+  assert.equal(isRuntimeInstallPath("/Users/o/Library/Application Support/Useful Bot/x"), true);
+  assert.equal(isRuntimeInstallPath("/Users/o/Library/Application Support/Useful Botany/x"), false);
+  assert.equal(isAppStateSegment(".u\u017Feful-bot-dev"), true);
+  assert.equal(mentionsAppState("cat ~/.u\u017Feful-bot/agents.json"), true);
+  assert.equal(mentionsAppState("cat ~/Library/Application\\ Support/U\u017Feful\\ Bot/x"), true);
+  assert.throws(() => resolveWorkspacePath("Library/Application Support/U\u017Feful Bot Dev/a", "/Users/o"), /path_forbidden/);
+});
+
+test("PATH writes are refused for installs from a local path, URL or git spec", () => {
+  for (const line of [
+    "npm i -g ./evil", "npm i -g ../evil", "npm i -g /tmp/evil", "npm i -g ~/evil", "npm i -g file:./evil", "npm i -g git+https://x/y.git",
+    "npm i -g github:owner/repo", "npm i -g owner/repo", "npm i -g https://x/y.tgz", "npm i -g evil.tgz", "pnpm add -g ./x",
+    "cargo install --path .", "cargo install --path=./x", "cargo install --git https://x/y", "go install ./x", "go install .",
+    "pipx install ./x", "pipx install git+https://x/y", "brew install ./x.rb", "brew install https://x/y.rb", "gem install ./x.gem".replace(".gem", ".rb"),
+  ]) assert.equal(needsPathWrite(line), false, line);
+  assert.equal(needsPathWrite("npm i -g @scope/pkg"), true);
+  assert.equal(needsPathWrite("go install example.com/x/t@latest"), true);
 });

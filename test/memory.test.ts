@@ -393,3 +393,17 @@ test("a transient read failure aborts the migration so it retries; a malformed n
   assert.equal(store.list("bot-b").length, 2);
   assert.equal(store.rebuildIndex().rejectedFiles.includes("broken.md"), true);
 });
+
+test("a note missing required metadata is rejected and reported, and never blocks an open", () => {
+  const { root } = legacyRoot();
+  const bare = (id: string, meta: Record<string, unknown>) =>
+    writeFileSync(join(root, "notes", `${id}.md`), `---\n${JSON.stringify({ schemaVersion: 1, id, ...meta })}\n---\nbody`);
+  bare("no-revision", { title: "t", updatedAt: "x", status: "active", tags: [] });
+  bare("no-title", { revision: 1, updatedAt: "x", status: "active", tags: [] });
+  bare("no-updated", { revision: 1, title: "t", status: "active", tags: [] });
+  const store = new MemoryStore(root);
+  assert.deepEqual([...store.migrationRejected].sort(), ["no-revision.md", "no-title.md", "no-updated.md"]);
+  // The good notes migrated, and a second open is just as fine.
+  assert.equal(store.list("bot-b").length, 2);
+  assert.equal(new MemoryStore(root).list("bot-useful").length, 1);
+});

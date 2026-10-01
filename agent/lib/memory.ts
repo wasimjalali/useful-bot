@@ -146,6 +146,7 @@ function normalizeMeta(rec: Record<string, unknown>): { meta: NoteMeta; legacy: 
     ...(rec as unknown as NoteMeta),
     tags: tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX)),
     audience: "desktop" as const,
+    expiresAt: typeof rec.expiresAt === "string" ? rec.expiresAt : null,
     botId,
     source,
   };
@@ -159,7 +160,20 @@ function parseNote(raw: string): { meta: NoteMeta; body: string; legacy: boolean
   }
   const parsed = JSON.parse(lines[1]) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("note_format");
-  const { meta, legacy } = normalizeMeta(parsed as Record<string, unknown>);
+  const rec = parsed as Record<string, unknown>;
+  // The record must carry what the index needs, or it is a malformed note and
+  // is rejected here rather than failing an insert later.
+  if (
+    typeof rec.id !== "string"
+    || !Number.isInteger(rec.revision) || (rec.revision as number) < 1
+    || typeof rec.title !== "string"
+    || typeof rec.updatedAt !== "string"
+    || (rec.expiresAt !== null && rec.expiresAt !== undefined && typeof rec.expiresAt !== "string")
+    || (rec.status !== "active" && rec.status !== "archived")
+  ) {
+    throw new Error("note_format");
+  }
+  const { meta, legacy } = normalizeMeta(rec);
   const body = lines.slice(3).join("\n");
   return { meta, body, legacy };
 }

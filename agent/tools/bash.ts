@@ -4,11 +4,12 @@ import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
 import { commandRisk, needsPathWrite, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
 import { approvedCommand, confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
+import { protectedPathHint } from "../lib/guard-hint.ts";
 import { credentialPathsFor } from "../lib/cli-registry.ts";
 import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
-import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { FORBIDDEN_PATH_SUBSTRINGS, foldPath } from "../../shared/policy.ts";
 import { APP_STATE_DIR, mentionsAppState } from "../../shared/stack.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -47,9 +48,9 @@ const BLOCKED_COMMAND_SUBSTRINGS = [
 const SCOPED_COMMAND_SUBSTRINGS = [".."];
 
 function blockedReason(command: string, scoped: boolean): string | null {
-  const lowered = command.toLowerCase();
+  const lowered = foldPath(command);
   for (const part of scoped ? [...BLOCKED_COMMAND_SUBSTRINGS, ...SCOPED_COMMAND_SUBSTRINGS] : BLOCKED_COMMAND_SUBSTRINGS) {
-    if (lowered.includes(part.toLowerCase())) return `command references ${part}`;
+    if (lowered.includes(foldPath(part))) return `command references ${part}`;
   }
   // The app's own stores: approvals, the roster, the grants. read_file and
   // list_dir refuse the same names; a shell line must not be the way round.
@@ -57,15 +58,6 @@ function blockedReason(command: string, scoped: boolean): string | null {
   // and both runtime install folders (Library/Application Support/Useful Bot[ Dev]).
   if (mentionsAppState(command)) return `command references ${APP_STATE_DIR} or the app's install folder`;
   return null;
-}
-
-/** The path a "Operation not permitted" line names, as a hint the model can pass on. */
-function protectedPathHint(stderr: string): { hint: string } | Record<string, never> {
-  const match = /(?:^|: )([^:\n]+): Operation not permitted/m.exec(stderr);
-  if (!match) return {};
-  return {
-    hint: `The write guard refused "${match[1].trim()}": it is config a tool runs, or a program folder on the PATH, so no bot can change it. Tell the owner they can run that step in Terminal themselves.`,
-  };
 }
 
 export default defineTool({
@@ -256,7 +248,7 @@ export default defineTool({
         ...(run.timedOut ? { timedOut: true, timeoutMs } : {}),
         // The sandbox refused a write the owner approved the line for: name the
         // path, so the model does not retry and the owner knows what to do.
-        ...(askOwner && run.exitCode !== 0 ? protectedPathHint(run.stderr) : {}),
+        ...(askOwner && run.exitCode !== 0 ? protectedPathHint(run.stderr, root) : {}),
       };
     });
   },
