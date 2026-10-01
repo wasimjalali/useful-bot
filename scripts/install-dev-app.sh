@@ -3,7 +3,8 @@
 # ~/Applications. It only ever touches the dev app: it quits a running
 # ai.useful.bot.dev by bundle id, replaces ~/Applications/Useful Bot Dev.app,
 # and unregisters other Launch Services copies of ai.useful.bot.dev. It never
-# looks at /Applications/Useful Bot.app or any ai.useful.bot entry.
+# looks at /Applications/Useful Bot.app or any ai.useful.bot entry. It refuses a
+# build that did not finish or is older than the working tree.
 set -eu
 
 DEV_ID="ai.useful.bot.dev"
@@ -21,6 +22,25 @@ SRC_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$SRC/Contents/
 SRC_VARIANT="$(/usr/libexec/PlistBuddy -c 'Print :UBVariant' "$SRC/Contents/Info.plist" 2>/dev/null || true)"
 if [ "$SRC_ID" != "$DEV_ID" ] || [ "$SRC_VARIANT" != "dev" ]; then
   echo "$SRC is not the dev app (id '$SRC_ID', UBVariant '$SRC_VARIANT'); expected $DEV_ID and dev. Not installing." >&2
+  exit 1
+fi
+
+# build-app.sh deletes the build record when a dev build starts and writes it just
+# before signing, so a missing one means the last build failed, and a different one
+# means the tree changed since.
+NODE=""
+for candidate in /usr/local/bin/node /opt/homebrew/bin/node; do
+  if [ -x "$candidate" ]; then NODE="$candidate"; break; fi
+done
+[ -n "$NODE" ] || { echo "node not found in /usr/local/bin or /opt/homebrew/bin" >&2; exit 1; }
+RECORD="$SRC/Contents/Resources/ub-dev-build.txt"
+if [ ! -f "$RECORD" ]; then
+  echo "The last dev build did not finish ($RECORD is missing). Run npm run build:dev-app and check it succeeded. Not installing." >&2
+  exit 1
+fi
+NOW="$("$NODE" "$ROOT/scripts/dev-build-fingerprint.mjs")"
+if [ "$(cat "$RECORD")" != "$NOW" ]; then
+  echo "The dev build is older than the working tree. Run npm run build:dev-app and check it succeeded. Not installing." >&2
   exit 1
 fi
 

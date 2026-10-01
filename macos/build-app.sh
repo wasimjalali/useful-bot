@@ -141,6 +141,15 @@ for candidate in /usr/local/bin/node /opt/homebrew/bin/node; do
   if [ -x "$candidate" ]; then NODE="$candidate"; break; fi
 done
 [ -n "$NODE" ] || { echo "node not found in /usr/local/bin or /opt/homebrew/bin" >&2; exit 1; }
+
+# A dev build records what it was made from, as its last step before signing
+# (scripts/install-dev-app.sh checks it). Taken now, so an edit made while the build
+# runs leaves the record stale. Dropping the old record first means a build that fails
+# from here on leaves a bundle with none.
+if [ "$VARIANT" = dev ]; then
+  DEV_FINGERPRINT="$("$NODE" ../scripts/dev-build-fingerprint.mjs)"
+  rm -f "dist/Useful Bot Dev.app/Contents/Resources/ub-dev-build.txt"
+fi
 (
   set -eu
   cd ..
@@ -254,6 +263,7 @@ find Sources Package.swift -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum 
   | shasum -a 256 | cut -d' ' -f1 > "$APP/Contents/Resources/ub-app-sources.sha256"
 # The only nested code is Sparkle.framework, already signed, so signing the
 # bundle directly is enough and avoids the discouraged --deep flag.
+if [ "$VARIANT" = dev ]; then printf '%s\n' "$DEV_FINGERPRINT" > "$APP/Contents/Resources/ub-dev-build.txt"; fi
 codesign --force --sign - "$APP" >/dev/null
 codesign --verify --strict "$APP"
 echo "built $APP"

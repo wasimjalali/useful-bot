@@ -23,6 +23,7 @@ import os
 import plistlib
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -324,6 +325,15 @@ class Launch:
         self.app.quit_all()
         time.sleep(1.0)
         self.t_launch = self.app.launch(self.scenario_path)
+        # Whatever ends this launch, an error, Ctrl-C or SIGTERM included, the app
+        # it started is quit, so two Useful Bot Dev never share one state folder.
+        try:
+            return self._run(timeout_s, record)
+        except BaseException:
+            self.app.quit_all()
+            raise
+
+    def _run(self, timeout_s, record):
         pid = None
         for _ in range(300):
             pid = self.app.pid_of_this_copy()
@@ -902,6 +912,10 @@ def main():
             p.add_argument("--resume", nargs=2, metavar=("KEY", "TURN"),
                            help="send one fixture's turns from TURN on, into its existing chat")
     args = ap.parse_args()
+    # SIGTERM and SIGHUP end Python without running except or finally blocks; as
+    # SystemExit they run the same cleanup as Ctrl-C (quit the app, reopen the installed one).
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda signum, frame: sys.exit(128 + signum))
     {"check": cmd_check, "baseline": cmd_baseline, "fixtures": cmd_fixtures, "lock": cmd_lock}[args.cmd](args)
 
 
