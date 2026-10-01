@@ -21,6 +21,41 @@ import Testing
         #expect(runner.strayServicePids(matching: matching).isEmpty)
     }
 
+    @Test func ownedProcessesAreFoundWithoutASocketAndSignalledOnlyWhileTheyAreTheSameProcess() async throws {
+        let marker = "\(Int.random(in: 100_000...999_999))"
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // A launcher with a child under it, neither holding a port.
+        child.arguments = ["-c", "sleep \(marker) & wait"]
+        try child.run()
+        defer { if child.isRunning { child.terminate() } }
+        let runner = FoundationProcessRunner()
+        let owns: @Sendable (String) -> Bool = { $0.contains("sleep \(marker)") }
+        // The shell and its sleep may take a moment to appear.
+        var found: [OwnedProcess] = []
+        for _ in 0..<40 where found.count < 2 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            found = runner.ownServiceProcesses(owns: owns)
+        }
+        #expect(found.count >= 2, "the launcher and its child are both found, with no listener")
+        #expect(found.contains { $0.pid == child.processIdentifier })
+        #expect(found.allSatisfy { !$0.started.isEmpty })
+        let shell = try #require(found.first { $0.pid == child.processIdentifier })
+        #expect(runner.isStillRunning(shell))
+        // The same pid with another start time or command line is another process.
+        let reusedStart = OwnedProcess(pid: shell.pid, args: shell.args, started: "Mon Jan 1 00:00:00 2001")
+        let reusedCommand = OwnedProcess(pid: shell.pid, args: "something else", started: shell.started)
+        #expect(!runner.isStillRunning(reusedStart))
+        #expect(!runner.isStillRunning(reusedCommand))
+        #expect(!runner.signalProcess(reusedStart, force: true))
+        #expect(!runner.signalProcess(reusedCommand, force: true))
+        #expect(child.isRunning, "a look-alike identity must not signal the real process")
+        for process in found.reversed() { _ = runner.signalProcess(process, force: true) }
+        child.waitUntilExit()
+        #expect(!runner.isStillRunning(shell))
+        #expect(runner.ownServiceProcesses(owns: owns).isEmpty)
+    }
+
     @Test func aListenerIsForeignUnlessTheOwnsRuleClaimsIt() throws {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         #expect(fd >= 0)

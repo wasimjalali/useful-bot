@@ -35,6 +35,8 @@ final class AppModel: ObservableObject {
     /// Why startup failed when the reason is more specific than a dead server,
     /// for example a missing node binary. Shown on the launch screen.
     @Published private(set) var startupError: String?
+    /// Shown when an older service would not exit, so the runtime is not replaced under it.
+    static let oldServiceWouldNotStop = "An older Useful Bot service would not stop. Quit it in Activity Monitor and open the app again."
     @Published private(set) var store: ShellStore? {
         didSet {
             // A chat deleted anywhere (the phone, a bot's own tool) leaves
@@ -603,8 +605,16 @@ final class AppModel: ObservableObject {
             // copy is about to replace, so they stop first and `ensure`
             // starts the new ones.
             if RuntimeInstall.needsCopy(bundled: bundled, root: root) {
-                await services.stopOwnServices(config: config)
+                let stopped = await services.stopOwnServices(config: config)
                 guard !Task.isCancelled, attempt == startAttempt else { return }
+                // An old-version process still running would write into the
+                // files the copy replaces: leave them alone and say so.
+                if stopped.didNotStop {
+                    NSLog("Useful Bot: old services would not stop: %@", String(describing: stopped))
+                    startupError = Self.oldServiceWouldNotStop
+                    phase = .unavailable
+                    return
+                }
             }
             let prepared = await Task.detached { () -> Result<Bool, Error> in
                 Result { try RuntimeInstall.prepare(bundled: bundled, root: root, holding: lock) }
@@ -613,10 +623,17 @@ final class AppModel: ObservableObject {
             // holds (each reads them once at boot). The stop happens even for
             // a cancelled attempt: the next launch sees a config and would
             // keep the stale services.
+            var staleServicesRemain = false
             if case .success(true) = prepared {
-                await services.stopOwnServices(config: config)
+                staleServicesRemain = await services.stopOwnServices(config: config).didNotStop
             }
             guard !Task.isCancelled, attempt == startAttempt else { return }
+            if staleServicesRemain {
+                NSLog("Useful Bot: old services would not stop after the runtime copy")
+                startupError = Self.oldServiceWouldNotStop
+                phase = .unavailable
+                return
+            }
             switch prepared {
             case .failure(let error as RuntimeInstall.SetupFailure):
                 // The owner gets a sentence; the raw tool output goes to Console.

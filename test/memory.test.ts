@@ -407,3 +407,34 @@ test("a note missing required metadata is rejected and reported, and never block
   assert.equal(store.list("bot-b").length, 2);
   assert.equal(new MemoryStore(root).list("bot-useful").length, 1);
 });
+
+test("a legacy offset expiry is normalised to UTC, so a note already past in UTC no longer shows", () => {
+  const { root } = legacyRoot();
+  const note = (id: string, expiresAt: unknown) => writeFileSync(
+    join(root, "notes", `${id}.md`),
+    `---\n${JSON.stringify({
+      schemaVersion: 1, id, revision: 1, title: id, tags: ["bot:bot-b"], audience: "desktop",
+      createdAt: "x", updatedAt: "x", expiresAt, sourceSessionId: "s", approvedBy: "owner", status: "active",
+    })}\n---\nexpiry body ${id}`,
+  );
+  // Half an hour ago in UTC, written at +14:00: the wall-clock text reads
+  // thirteen and a half hours into the future, so a string comparison with
+  // "now" in UTC would keep it alive.
+  const past = new Date(Date.now() - 30 * 60_000);
+  const wall = new Date(past.getTime() + 14 * 3_600_000).toISOString().replace("Z", "+14:00");
+  note("offset-past", wall);
+  // Far future with an offset: stays live.
+  note("offset-future", "2099-01-01T12:00:00+01:00");
+  note("bad-expiry", "next tuesday");
+  const store = new MemoryStore(root);
+  const live = store.list("bot-b").map((item) => item.id);
+  assert.equal(live.includes("offset-past"), false);
+  assert.equal(live.includes("offset-future"), true);
+  assert.equal(store.search("expiry", "bot-b").some((hit) => hit.id === "offset-past"), false);
+  assert.throws(() => store.read("offset-past", "bot-b"), /memory_not_found/);
+  assert.ok(store.migrationRejected.includes("bad-expiry.md"));
+  // The files carry UTC now.
+  const meta = (id: string) => JSON.parse(readFileSync(join(root, "notes", `${id}.md`), "utf8").split("\n")[1]) as { expiresAt: string };
+  assert.equal(meta("offset-future").expiresAt, "2099-01-01T11:00:00.000Z");
+  assert.equal(meta("offset-past").expiresAt, past.toISOString());
+});

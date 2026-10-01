@@ -130,17 +130,27 @@ function normalizeMeta(rec: Record<string, unknown>): { meta: NoteMeta; legacy: 
   const botId = typeof rec.botId === "string" && rec.botId !== ""
     ? rec.botId
     : botTagId !== "" ? botTagId : DEFAULT_BOT_ID;
+  // Every expiry check compares strings with a UTC instant, so an offset form
+  // is rewritten to UTC here (and the file with it, by the migration). An
+  // expiry that is not a time at all makes the note malformed.
+  let expiresAt: string | null = null;
+  if (typeof rec.expiresAt === "string") {
+    const at = Date.parse(rec.expiresAt);
+    if (!Number.isFinite(at)) throw new Error("note_format");
+    expiresAt = new Date(at).toISOString();
+  }
   const source: NoteSource = rec.source === "owner" || rec.source === "model" ? rec.source : "model";
   const legacy = typeof rec.botId !== "string"
     || rec.botId === ""
     || rec.audience !== "desktop"
     || rec.source !== source
+    || expiresAt !== (rec.expiresAt ?? null)
     || tags.some((tag) => tag.startsWith(BOT_TAG_PREFIX));
   const meta = {
     ...(rec as unknown as NoteMeta),
     tags: tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX)),
     audience: "desktop" as const,
-    expiresAt: typeof rec.expiresAt === "string" ? rec.expiresAt : null,
+    expiresAt,
     botId,
     source,
   };

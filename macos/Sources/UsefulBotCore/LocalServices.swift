@@ -402,16 +402,20 @@ public struct LocalServices: Sendable {
     /// listener alone. The services outlive the app, so after an update the
     /// old version is still serving; its files are about to be replaced.
     ///
-    /// Returns only once the stopped services' processes have exited, not when
-    /// their ports are free: Next and eve close the listener first and drain
-    /// (a write in flight, a child shutting down) after, and an old-version
-    /// writer that survived into the runtime swap would write into the new
-    /// files. The processes are recorded before anything is signalled, by the
-    /// same ownership rule as the listeners, children included (`next-server`,
-    /// eve's local-server-child). SIGTERM, wait up to `stopExitGraceSeconds`,
-    /// SIGKILL, wait again. A pid is only ever signalled while it still runs the
-    /// command line it was recorded with.
-    public func stopOwnServices(config: ServerConfig) async {
+    /// Returns only once every process of this install has exited, not when a
+    /// port is free: Next and eve close the listener first and drain after (a
+    /// write in flight, a child shutting down), and an old-version writer that
+    /// survived into the runtime swap would write into the new files. The
+    /// processes are found from the process table by the install-path ownership
+    /// rule, independent of sockets (one already draining holds no port), with
+    /// everything below them. SIGTERM, wait up to `stopExitGraceSeconds`,
+    /// SIGKILL, wait again, then look again: anything still there (or newly
+    /// there) gets a second round, and after that `.wouldNotStop` comes back and
+    /// the caller must leave the files alone. Each signal is preceded by a fresh
+    /// check that the pid still has the start time and command line it was
+    /// recorded with.
+    @discardableResult
+    public func stopOwnServices(config: ServerConfig) async -> ServiceStopResult {
         let repoPath = config.repoPath
         let owns: @Sendable (String) -> Bool = { [supervisor] line in
             supervisor.isOwnNodeProcess(line, repoPath: repoPath)
@@ -422,43 +426,48 @@ public struct LocalServices: Sendable {
             (variant.evePort, variant.eveHealthURL, false),
             (variant.routerPort, variant.routerHealthURL, true),
         ]
-        // The services this will stop, and what runs under each, read before
-        // any of them is signalled while the parent links still exist.
-        var stopping: [(port: Int, health: URL, checksStack: Bool)] = []
-        var owned: [OwnedProcess] = []
-        for service in services {
+        // Read before any signal, while the parent links still exist.
+        var owned = runner.ownServiceProcesses(owns: owns)
+        for (port, health, checksStack) in services {
             // Another stack's service on this port is not ours to stop.
-            if service.checksStack, case .foreign = variant.readiness(of: await probe.read(service.health)) { continue }
-            stopping.append(service)
-            owned += runner.ownServiceProcesses(port: service.port, owns: owns)
-        }
-        for (port, _, _) in stopping {
+            if checksStack, case .foreign = variant.readiness(of: await probe.read(health)) { continue }
             runner.stopOwnListeners(port: port, owns: owns)
             if await waitForPortFree(port: port, timeout: 5_000) { continue }
             // A cancelled wait returns at once; force-killing then would cut
             // eve off mid-write. The retry's own boot stops them again.
-            if Task.isCancelled { return }
+            if Task.isCancelled { return .cancelled }
             runner.forceStopOwnListeners(port: port, owns: owns)
             _ = await waitForPortFree(port: port, timeout: 1_000)
         }
-        guard !owned.isEmpty else { return }
-        // The listeners were told; the rest of each tree was not.
-        runner.signalProcesses(owned, force: false)
-        var remaining = await waitForExit(owned, seconds: stopExitGraceSeconds)
-        if remaining.isEmpty || Task.isCancelled { return }
-        runner.signalProcesses(remaining, force: true)
-        remaining = await waitForExit(remaining, seconds: stopExitGraceSeconds)
+        for _ in 0..<2 {
+            if owned.isEmpty { owned = runner.ownServiceProcesses(owns: owns) }
+            if owned.isEmpty { return .stopped }
+            // Children first: a parent signalled first would reparent them away.
+            for process in owned.reversed() { _ = runner.signalProcess(process, force: false) }
+            var remaining = await waitForExit(owned, seconds: stopExitGraceSeconds)
+            if Task.isCancelled { return .cancelled }
+            if !remaining.isEmpty {
+                for process in remaining.reversed() { _ = runner.signalProcess(process, force: true) }
+                remaining = await waitForExit(remaining, seconds: stopExitGraceSeconds)
+                if Task.isCancelled { return .cancelled }
+            }
+            // Look again, from the table: whatever remains, and anything the
+            // old version started while it was going down.
+            owned = runner.ownServiceProcesses(owns: owns)
+            if owned.isEmpty { return .stopped }
+        }
+        return .wouldNotStop(owned.map(\.args))
     }
 
-    /// Polls until none of `processes` is still running what it was recorded
-    /// running, or the time is up. Returns what is still running.
+    /// Polls until none of `processes` is still the process that was recorded,
+    /// or the time is up. Returns what is still running.
     private func waitForExit(_ processes: [OwnedProcess], seconds: Double) async -> [OwnedProcess] {
         let deadline = Date().addingTimeInterval(seconds)
-        var running = runner.processesStillRunning(processes)
+        var running = processes.filter { runner.isStillRunning($0) }
         while !running.isEmpty, Date() < deadline {
             if Task.isCancelled { return running }
             try? await Task.sleep(nanoseconds: 50_000_000)
-            running = runner.processesStillRunning(running)
+            running = running.filter { runner.isStillRunning($0) }
         }
         return running
     }
@@ -491,14 +500,34 @@ public struct LocalServices: Sendable {
     }
 }
 
-/// A process recorded with the command line it was running, so a later signal
-/// or exit check can tell it from an unrelated process that reused its pid.
+/// A process recorded with its start time and the command line it was running,
+/// so a later signal or exit check can tell it from an unrelated process that
+/// reused its pid. All three have to match, checked fresh before each signal.
 public struct OwnedProcess: Equatable, Sendable {
     public let pid: pid_t
     public let args: String
-    public init(pid: pid_t, args: String) {
+    /// `ps` start time, whitespace-collapsed ("Thu Oct 2 09:15:30 2026").
+    public let started: String
+    public init(pid: pid_t, args: String, started: String = "") {
         self.pid = pid
         self.args = args
+        self.started = started
+    }
+}
+
+/// What `stopOwnServices` achieved.
+public enum ServiceStopResult: Equatable, Sendable {
+    /// No process of this install is running any more.
+    case stopped
+    /// The attempt was cancelled before it could say.
+    case cancelled
+    /// These were still running after SIGTERM and SIGKILL (their command lines).
+    /// The caller must not replace the files they run from.
+    case wouldNotStop([String])
+
+    public var didNotStop: Bool {
+        if case .wouldNotStop = self { return true }
+        return false
     }
 }
 
@@ -536,21 +565,24 @@ public protocol ProcessRunner: Sendable {
     /// recorded below its launcher and that is still alive and unchanged: a
     /// descendant that ignored the SIGTERM, or outlived its launcher.
     func killTermedSurvivors()
-    /// Each own listener on `port` and everything below it, with the command
-    /// lines they run now. Read before anything is signalled.
-    func ownServiceProcesses(port: Int, owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess]
-    /// The subset of `processes` still running the command line they were
-    /// recorded with.
-    func processesStillRunning(_ processes: [OwnedProcess]) -> [OwnedProcess]
-    /// SIGTERM (SIGKILL when `force`) to those of `processes` still running the
-    /// command line they were recorded with, deepest first.
-    func signalProcesses(_ processes: [OwnedProcess], force: Bool)
+    /// Every process of this install, found from the process table and not from
+    /// a socket (a service that has closed its listener and is draining holds no
+    /// port): each one `owns` accepts (its own command line, its parent's, or for
+    /// a renamed `next-server` its working directory), and everything below
+    /// them. Read before anything is signalled.
+    func ownServiceProcesses(owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess]
+    /// True while `process` is still the same process: pid, start time and
+    /// command line all as recorded. Read fresh on every call.
+    func isStillRunning(_ process: OwnedProcess) -> Bool
+    /// SIGTERM (SIGKILL when `force`) to `process` if, checked immediately
+    /// before the signal, it is still the same process. False when it was not.
+    func signalProcess(_ process: OwnedProcess, force: Bool) -> Bool
 }
 
 extension ProcessRunner {
-    public func ownServiceProcesses(port: Int, owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] { [] }
-    public func processesStillRunning(_ processes: [OwnedProcess]) -> [OwnedProcess] { [] }
-    public func signalProcesses(_ processes: [OwnedProcess], force: Bool) {}
+    public func ownServiceProcesses(owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] { [] }
+    public func isStillRunning(_ process: OwnedProcess) -> Bool { false }
+    public func signalProcess(_ process: OwnedProcess, force: Bool) -> Bool { false }
     public func hasLiveSpawn(of mode: ServiceMode) -> Bool { false }
     public func liveSpawnAge(of mode: ServiceMode) -> TimeInterval? { nil }
     public func terminateSpawn(of mode: ServiceMode, force: Bool) {}
@@ -689,6 +721,53 @@ struct ProcessTable {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return parse(String(data: data, encoding: .utf8) ?? "")
+    }
+
+    /// `ps` start times for every process, whitespace-collapsed.
+    static func startTimes() -> [pid_t: String] {
+        guard let text = run(["-axo", "pid=,lstart="]) else { return [:] }
+        var out: [pid_t: String] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let space = trimmed.firstIndex(of: " "), let pid = pid_t(trimmed[..<space]) else { continue }
+            out[pid] = collapse(String(trimmed[space...]))
+        }
+        return out
+    }
+
+    /// One process's start time and command line, read now; nil when it is gone.
+    /// `lstart` is a fixed 24 characters, so the command line starts after them.
+    static func identity(of pid: pid_t) -> (started: String, args: String)? {
+        guard let text = run(["-o", "lstart=,args=", "-p", String(pid)]) else { return nil }
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count > 24 else { return nil }
+        let started = collapse(String(trimmed.prefix(24)))
+        let args = String(trimmed.dropFirst(24)).trimmingCharacters(in: .whitespaces)
+        return args.isEmpty ? nil : (started, args)
+    }
+
+    static func collapse(_ text: String) -> String {
+        text.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+    }
+
+    private static func run(_ arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        // `ps -p` exits 1 when the process is gone.
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     static func parse(_ text: String) -> [Row] {
@@ -853,34 +932,46 @@ public struct FoundationProcessRunner: ProcessRunner {
         }
     }
 
-    public func ownServiceProcesses(port: Int, owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] {
+    public func ownServiceProcesses(owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] {
         let rows = ProcessTable.read()
         let byPid = Dictionary(rows.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
-        var found: [OwnedProcess] = []
+        let me = getpid()
+        var roots: [pid_t] = []
+        for row in rows where row.pid != me {
+            var owned = registry.contains(pid: row.pid) || owns(row.args)
+            // The launcher's line carries the install path that Next's renamed
+            // `next-server (vX)` drops, the same fallback `ownsProcess` uses.
+            if !owned, let parent = byPid[row.ppid] { owned = owns(row.args + " " + parent.args) }
+            // A renamed child whose launcher is gone: its working directory.
+            if !owned, row.args.contains("next-server"), let cwd = workingDirectory(pid: row.pid) {
+                owned = owns(row.args + " " + cwd)
+            }
+            if owned { roots.append(row.pid) }
+        }
+        guard !roots.isEmpty else { return [] }
+        let starts = ProcessTable.startTimes()
         var seen: Set<pid_t> = []
-        for pid in listenerPids(port: port) where ownsProcess(pid: pid, owns: owns) {
-            // The listener first, then everything below it.
-            for member in [pid] + ProcessTable.descendants(of: pid, in: rows) {
-                guard let row = byPid[member], seen.insert(member).inserted else { continue }
-                found.append(OwnedProcess(pid: member, args: row.args))
+        var found: [OwnedProcess] = []
+        for root in roots {
+            // The process first, then everything below it.
+            for member in [root] + ProcessTable.descendants(of: root, in: rows) where member != me {
+                guard seen.insert(member).inserted, let row = byPid[member], let started = starts[member] else { continue }
+                found.append(OwnedProcess(pid: member, args: row.args, started: started))
             }
         }
         return found
     }
 
-    public func processesStillRunning(_ processes: [OwnedProcess]) -> [OwnedProcess] {
-        let fresh = Dictionary(ProcessTable.read().map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
-        return processes.filter { fresh[$0.pid]?.args == $0.args }
+    public func isStillRunning(_ process: OwnedProcess) -> Bool {
+        guard let now = ProcessTable.identity(of: process.pid) else { return false }
+        return now.started == process.started && now.args == process.args
     }
 
-    public func signalProcesses(_ processes: [OwnedProcess], force: Bool) {
-        let fresh = Dictionary(ProcessTable.read().map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
-        // Recorded listener-first, so the reverse puts the children before the
-        // parent that would otherwise reparent them away.
-        for process in processes.reversed() {
-            guard fresh[process.pid]?.args == process.args else { continue }
-            _ = kill(process.pid, force ? SIGKILL : SIGTERM)
-        }
+    public func signalProcess(_ process: OwnedProcess, force: Bool) -> Bool {
+        // Checked now, not at the snapshot: the pid may have exited and been
+        // reused since, and only the same pid, start time and command is ours.
+        guard isStillRunning(process) else { return false }
+        return kill(process.pid, force ? SIGKILL : SIGTERM) == 0
     }
 
     public func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool {
