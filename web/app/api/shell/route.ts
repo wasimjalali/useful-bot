@@ -20,7 +20,7 @@ import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
-import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
+import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 import { webOrigin } from "../../../../shared/stack.ts";
 
@@ -394,6 +394,15 @@ export async function PUT(request: Request) {
     // runs when a turn starts, so without this a detach leaves the capability
     // live for the rest of an in-flight turn and for any approval card still
     // open — the owner's decision has to take effect when they make it.
+    // The selection the running turn was stamped with, read before the
+    // revoke below can delete the grant: a permission or folder change must
+    // not move an in-flight turn's model (see syncSessionWorkspace).
+    const priorSelection = (action?.type === "setPermission" || action?.type === "setWorkspace")
+      ? (() => {
+        const sessionId = next.bots.find((item) => item.id === action.botId)?.sessionId;
+        return sessionId ? readSessionGrant(sessionId)?.selection : undefined;
+      })()
+      : undefined;
     revokeGrantsFor(action, current, next);
     // A permission or folder change takes effect now, not at the next turn:
     // the tools re-read the grant before spending a card, so a card raised
@@ -412,7 +421,7 @@ export async function PUT(request: Request) {
             // (as syncSessionWorkspaceFresh does).
             removeSessionGrant(bot.sessionId);
           } else {
-            syncSessionWorkspace(bot.sessionId, fresh, store, { keepSelection: true });
+            syncSessionWorkspace(bot.sessionId, fresh, store, { keptSelection: priorSelection });
           }
         } catch {
           // The roster action stood but the grant still says the old

@@ -36,9 +36,9 @@ import {
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
-import { readSessionGrant, removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
+import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
-import { botSelection } from "../../shared/session-selection.ts";
+import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
 import { eveOrigin } from "../../shared/stack.ts";
 
@@ -90,11 +90,12 @@ export function syncSessionWorkspace(
   store: ProviderStore = readProviderStore(),
   // A permission or folder change mid-turn re-stamps the grant but must not
   // move the turn's model: the no-turn-id freeze path reads the grant every
-  // step. Such callers keep the selection the turn start stamped.
-  options: { keepSelection?: boolean } = {},
+  // step. Such callers pass the selection the turn start stamped, read
+  // before anything revoked the grant (a detach revokes it first).
+  options: { keptSelection?: ModelSelection } = {},
 ): void {
   if (!sessionId) return;
-  const kept = options.keepSelection ? readSessionGrant(sessionId)?.selection : undefined;
+  const kept = options.keptSelection;
   // Always stamped: the permission is the bot's whether or not a folder is
   // attached. No folder means the bot works under the owner's home.
   // The model rides in the same write, so the agent reads one grant for both:

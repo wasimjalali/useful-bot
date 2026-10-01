@@ -24,7 +24,7 @@ import {
 } from "../shared/session-selection.ts";
 import { applyShellAction, parseShell, withBotSelection } from "../shared/shell-store.ts";
 import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
-import { readSessionGrant, upsertSessionGrant } from "../shared/workspace-store.ts";
+import { readSessionGrant, removeSessionGrant, upsertSessionGrant } from "../shared/workspace-store.ts";
 import { exactModelOption, snapComposer } from "../shared/models.ts";
 import { catalogFor } from "../shared/live-models.ts";
 import { ensureBotSelections, modelSelectionRefusal, pumpHandoffs, startRoutineNow, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
@@ -899,7 +899,11 @@ test("a permission or folder re-stamp keeps the turn's stamped selection", async
     // The owner picks another model for A mid-turn, then changes its permission.
     updateShell((current) => withBotSelection(current, aId, selGo5));
     const moved = readShell().bots.find((bot) => bot.id === aId)!;
-    syncSessionWorkspace("sess-keep", { ...moved, permission: "read_only" }, readProviderStore(), { keepSelection: true });
+    // The route reads the stamped selection first, because a detach revokes
+    // the grant before it re-stamps.
+    const prior = readSessionGrant("sess-keep")?.selection;
+    removeSessionGrant("sess-keep");
+    syncSessionWorkspace("sess-keep", { ...moved, permission: "read_only" }, readProviderStore(), { keptSelection: prior });
     const grant = readSessionGrant("sess-keep");
     assert.equal(grant?.permission, "read_only");
     assert.equal(grant?.selection?.modelId, selGo.modelId);
