@@ -6,6 +6,7 @@ import {
   type AvatarColor,
   type AvatarShape,
 } from "./bot-face.ts";
+import { APP_STATE_DIR, isAppStateSegment } from "./stack.ts";
 
 /** Client-safe: this file must never pull in node builtins. */
 export type WorkspacePermission = "read_only" | "auto" | "full_access";
@@ -470,7 +471,7 @@ export function isGrantableRootPath(path: string): boolean {
     if (!segment) continue;
     if (segment === "..") return false;
     const lowered = segment.toLowerCase();
-    if (FORBIDDEN_GRANT_SEGMENTS.has(lowered)) return false;
+    if (isForbiddenGrantSegment(lowered)) return false;
   }
   return true;
 }
@@ -481,10 +482,12 @@ export function isGrantableRootPath(path: string): boolean {
  * `.docker/config.json` does not. Used for the grant root and, in
  * `resolveWorkspacePath`, for everything under it.
  */
-export const FORBIDDEN_CHILD_SEGMENTS = new Set([
+const FORBIDDEN_CHILD_SEGMENTS = new Set([
   // The app's own stores: approvals, the roster, the grants. A bot that
-  // could edit these could approve itself.
-  ".useful-bot",
+  // could edit these could approve itself. This is the exact name only;
+  // `isForbiddenChildSegment` adds the dashed siblings (.useful-bot-dev,
+  // .useful-bot-dev-app), so go through it rather than `.has()`.
+  APP_STATE_DIR,
   // Shell startup files: a line planted in one runs in the owner's own
   // shell next time they open a terminal, outside every gate here.
   ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
@@ -501,6 +504,11 @@ export const FORBIDDEN_CHILD_SEGMENTS = new Set([
   "id_ecdsa",
   "id_ed25519",
 ]);
+
+/** A segment that is a credential store or one of the app's own state folders. */
+export function isForbiddenChildSegment(lowered: string): boolean {
+  return FORBIDDEN_CHILD_SEGMENTS.has(lowered) || isAppStateSegment(lowered);
+}
 
 const FORBIDDEN_GRANT_SEGMENTS = new Set([
   ...FORBIDDEN_CHILD_SEGMENTS,
@@ -520,6 +528,10 @@ const FORBIDDEN_GRANT_SEGMENTS = new Set([
   "netrc",
   "cookies",
 ]);
+
+function isForbiddenGrantSegment(lowered: string): boolean {
+  return FORBIDDEN_GRANT_SEGMENTS.has(lowered) || isAppStateSegment(lowered);
+}
 
 function parseRecent(raw: unknown): ShellRecent {
   if (!raw || typeof raw !== "object") throw new Error("shell_recent_invalid");

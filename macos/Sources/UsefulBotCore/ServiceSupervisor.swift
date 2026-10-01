@@ -5,11 +5,15 @@ public struct ServiceCommand: Equatable, Sendable {
     public var executable: String
     public var arguments: [String]
     public var workingDirectory: String
+    /// Added to the service's environment on top of the runner's whitelist.
+    /// Empty for the daily app, so its services start as they always did.
+    public var environment: [String: String]
 
-    public init(executable: String, arguments: [String], workingDirectory: String) {
+    public init(executable: String, arguments: [String], workingDirectory: String, environment: [String: String] = [:]) {
         self.executable = executable
         self.arguments = arguments
         self.workingDirectory = workingDirectory
+        self.environment = environment
     }
 }
 
@@ -20,17 +24,10 @@ public enum ServiceMode: String, Sendable {
 }
 
 public struct ServiceSupervisor: Sendable {
-    public static let webPort = 4320
-    public static let routerPort = 4319
-    public static let evePort = 4321
-
     /// Node in the order Homebrew and the installer put it. Intel Homebrew and
     /// the setup script use `/usr/local`; Apple Silicon Homebrew uses
     /// `/opt/homebrew`, so a single hardcoded path would fail there.
     public static let nodeCandidates = ["/usr/local/bin/node", "/opt/homebrew/bin/node"]
-
-    public static let routerHealthURL = URL(string: "http://127.0.0.1:4319/health/live")!
-    public static let eveHealthURL = URL(string: "http://127.0.0.1:4321/eve/v1/health")!
 
     /// Executable check, injectable so a test can exercise the node-missing
     /// path without touching the filesystem.
@@ -59,11 +56,12 @@ public struct ServiceSupervisor: Sendable {
         (repoPath as NSString).appendingPathComponent("scripts/service.mjs")
     }
 
-    public func command(mode: ServiceMode, repoPath: String) -> ServiceCommand {
+    public func command(mode: ServiceMode, repoPath: String, variant: AppVariant = .current) -> ServiceCommand {
         ServiceCommand(
             executable: Self.resolveNodePath(repoPath: repoPath),
             arguments: [scriptPath(repoPath: repoPath), mode.rawValue],
-            workingDirectory: repoPath
+            workingDirectory: repoPath,
+            environment: variant.serviceEnvironment(home: FileManager.default.homeDirectoryForCurrentUser)
         )
     }
 

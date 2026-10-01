@@ -88,6 +88,11 @@ public enum BudgetInput {
 
     public static func requestLabel(_ requests: Int) -> String { grouped(requests) }
 
+    /// "0 of 12,345": exact, matching the stepper, never rounded to 12K.
+    public static func requestUsage(used: Int, cap: Int) -> String {
+        cap > 0 ? "\(grouped(used)) of \(grouped(cap))" : grouped(used)
+    }
+
     /// A meter's fill. A budget lowered below what the day already used reads
     /// as full: never past it, never negative.
     public static func meterFraction(used: Int, cap: Int) -> Double {
@@ -102,5 +107,30 @@ public enum BudgetInput {
 
     private static func grouped(_ value: Int) -> String {
         value.formatted(.number.grouping(.automatic).locale(Locale(identifier: "en_US")))
+    }
+}
+
+/// Validation and refusal messages for the two budget fields, kept apart from
+/// the usage poll's own error so a refresh can never wipe them.
+public struct BudgetMessages: Equatable, Sendable {
+    public enum Field: Sendable { case tokens, requests }
+    public private(set) var tokens: String?
+    public private(set) var requests: String?
+
+    public init() {}
+
+    public func message(for field: Field) -> String? {
+        field == .tokens ? tokens : requests
+    }
+
+    /// The one line to show under the group.
+    public var current: String? { tokens ?? requests }
+
+    public mutating func set(_ field: Field, _ message: String) {
+        if field == .tokens { tokens = message } else { requests = message }
+    }
+
+    public mutating func clear(_ field: Field) {
+        if field == .tokens { tokens = nil } else { requests = nil }
     }
 }

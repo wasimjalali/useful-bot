@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { toolRouterIds } from "../lib/router-identity.ts";
+import { routerOrigin } from "../../shared/stack.ts";
 
 /** The router allows one search a second per caller, and says how long is left. */
 const MAX_SEARCH_WAIT_MS = 2_500;
@@ -24,7 +25,7 @@ export default defineTool({
     const ids = toolRouterIds(ctx);
     let res: Response;
     for (let attempt = 1; ; attempt += 1) {
-      res = await fetch("http://127.0.0.1:4319/v1/search", {
+      res = await fetch(`${routerOrigin()}/v1/search`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,

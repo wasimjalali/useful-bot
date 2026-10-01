@@ -21,7 +21,7 @@ struct OAuthPending: Equatable {
 
 /// Snapshot writes are a cache: a failure costs the next open its speed, not
 /// its rows, so it is logged rather than surfaced.
-private let snapshotLog = Logger(subsystem: "com.usefulbot.app", category: "chat-snapshot")
+private let snapshotLog = Logger(subsystem: AppVariant.current.logSubsystem, category: "chat-snapshot")
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -180,6 +180,7 @@ final class AppModel: ObservableObject {
     private var oauthPoll: Task<Void, Never>?
     @Published private(set) var usage: UsagePayload?
     @Published var usageError: String?
+    @Published var budgetMessages = BudgetMessages()
     /// A budget change in flight, so the stepper cannot fire twice.
     @Published private(set) var usageBusy = false
     /// Bumped on every budget write, so a poll from before it is discarded.
@@ -544,10 +545,18 @@ final class AppModel: ObservableObject {
         threadError = nil
         stickyThreadError = nil
         saveError = nil
-        // A release build first lays out the services it carries (a copy only
-        // after an update) and refreshes the local credentials.
+        // A build with a payload (the release, and the dev app) first lays out
+        // the services it carries (a copy only after an update) and refreshes
+        // the local credentials.
         // Only into its own folder: the copy deletes what the payload does not
         // carry, so a checkout set as `repoPath` must never be its target.
+        if AppVariant.current == .dev, RuntimeInstall.bundledRuntime() == nil {
+            // The dev app never runs the checkout: a bundle built before it carried
+            // a payload has nothing to run.
+            startupError = "This Useful Bot Dev build carries no services. Rebuild it with npm run build:dev-app and install it with npm run install:dev-app."
+            phase = .unavailable
+            return
+        }
         if let bundled = RuntimeInstall.bundledRuntime(), config.repoPath == RuntimeInstall.installRoot.path {
             let root = RuntimeInstall.installRoot
             // Held through `prepare`, so a second copy of the app starting now
@@ -611,6 +620,20 @@ final class AppModel: ObservableObject {
             startupError = "Node.js was not found at "
                 + ServiceSupervisor.nodeCandidates.joined(separator: " or ")
                 + ". Install Node 24, or run scripts/setup-local.mjs once."
+            phase = .unavailable
+            return
+        }
+        // Something healthy answers on this app's ports as another stack. It is
+        // never adopted, started over or stopped: say so and stay out of it.
+        if outcome == .foreignStack {
+            startupError = "A service on this app's ports belongs to another Useful Bot stack, so \(AppVariant.current.displayName) won't use or stop it. Quit the other stack and try again."
+            phase = .unavailable
+            return
+        }
+        // A process this app started is still alive but never opened its port.
+        // It is named and left running: starting another would only stack.
+        if case .neverBound(let modes) = outcome {
+            startupError = LocalServices.neverBoundMessage(modes, variant: AppVariant.current)
             phase = .unavailable
             return
         }
@@ -3156,22 +3179,26 @@ final class AppModel: ObservableObject {
     }
 
     /// A limit the pane refused before it ever reached the server.
-    func reportUsageError(_ message: String) {
-        usageError = message
+    func reportBudgetError(_ field: BudgetMessages.Field, _ message: String) {
+        budgetMessages.set(field, message)
+    }
+
+    func clearBudgetError(_ field: BudgetMessages.Field) {
+        budgetMessages.clear(field)
     }
 
     /// Move the router's daily token budget. The answer carries the budget the
     /// server stored, so a refused number never sticks on screen.
     func setDailyTokenBudget(_ tokens: Int?) {
-        writeBudget { try await $0.setDailyTokenBudget(tokens) }
+        writeBudget(.tokens) { try await $0.setDailyTokenBudget(tokens) }
     }
 
     /// Move the daily request budget, independently of the token one.
     func setDailyRequestBudget(_ requests: Int?) {
-        writeBudget { try await $0.setDailyRequestBudget(requests) }
+        writeBudget(.requests) { try await $0.setDailyRequestBudget(requests) }
     }
 
-    private func writeBudget(_ send: @escaping (BackendClient) async throws -> UsagePayload) {
+    private func writeBudget(_ field: BudgetMessages.Field, _ send: @escaping (BackendClient) async throws -> UsagePayload) {
         guard !usageBusy else { return }
         usageBusy = true
         usageError = nil
@@ -3184,10 +3211,11 @@ final class AppModel: ObservableObject {
                 // And any poll started while the write was in flight.
                 self.usageGeneration &+= 1
                 self.usage = confirmed
+                self.budgetMessages.clear(field)
             } catch BackendError.provider(let code) {
-                self.usageError = BudgetInput.serverMessage(for: code) ?? "Could not change the limit."
+                self.budgetMessages.set(field, BudgetInput.serverMessage(for: code) ?? "Could not change the limit.")
             } catch {
-                self.usageError = "Could not change the limit."
+                self.budgetMessages.set(field, "Could not change the limit.")
             }
             self.usageBusy = false
         }

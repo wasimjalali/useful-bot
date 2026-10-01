@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
   connectionId,
   parseConnectionId,
@@ -25,6 +25,7 @@ import {
   type EffortId,
   type SpeedId,
 } from "./models.ts";
+import { statePath } from "./stack.ts";
 
 /** @deprecated Slice 2 owns provider ids now. Use the catalogue connection id instead. */
 export type ProviderId = "opencode-go" | "openai" | "anthropic" | "openrouter" | "google";
@@ -209,7 +210,7 @@ export interface RolePublic {
 
 export function providersPath(root = process.env.UB_PROVIDERS_PATH): string {
   if (root) return root;
-  return join(process.env.HOME ?? "/tmp", ".useful-bot/providers.json");
+  return statePath("providers.json");
 }
 
 export function emptyProviderStore(): ProviderStore {

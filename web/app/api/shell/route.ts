@@ -21,6 +21,7 @@ import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellActio
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
+import { webOrigin } from "../../../../shared/stack.ts";
 
 export async function GET(request: Request) {
   const gate = await requireOwner(request);
@@ -132,13 +133,13 @@ function detachBot(botId: string): string | null {
  */
 function connectCallbackUrl(profile: string): string {
   const tailnet = profile === "phone" ? runtimeConfig()?.tailnet : null;
-  const base = tailnet?.httpsOrigin || process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
+  const base = tailnet?.httpsOrigin || webOrigin();
   return new URL("/api/connectors/callback", base).toString();
 }
 
 function serverCallbackUrl(profile: string): string {
   const tailnet = profile === "phone" ? runtimeConfig()?.tailnet : null;
-  const base = tailnet?.httpsOrigin || process.env.UB_WEB_BASE_URL || "http://127.0.0.1:4320";
+  const base = tailnet?.httpsOrigin || webOrigin();
   return new URL("/api/connections/callback", base).toString();
 }
 

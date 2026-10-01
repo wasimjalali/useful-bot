@@ -38,6 +38,7 @@ import { peekShell, readShell, shellWasReseeded, updateShell } from "../../share
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { eveOrigin } from "../../shared/stack.ts";
 
 /**
  * Handoff delivery. The sending agent tool only writes a queue record, so a
@@ -46,7 +47,7 @@ import { recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts
  * reply, and appends the result to the receiving transcript.
  */
 
-const EVE = "http://127.0.0.1:4321";
+const EVE = eveOrigin();
 /**
  * A handoff is a bot waiting on another bot inside its own turn, so the wait
  * has to stay short: two minutes, then the sender is told it got nothing.

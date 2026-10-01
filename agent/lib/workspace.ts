@@ -2,7 +2,7 @@ import { resolve, relative, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { lstatSync, realpathSync } from "node:fs";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
-import { FORBIDDEN_CHILD_SEGMENTS, isGrantableRootPath } from "../../shared/shell-store.ts";
+import { isForbiddenChildSegment, isGrantableRootPath } from "../../shared/shell-store.ts";
 import {
   readSessionGrant,
   type SessionGrant,
@@ -137,7 +137,7 @@ export function resolveWorkspacePath(inputPath: string, root: string = workspace
   // Exact segment names, so a credential store is refused without `.docker`
   // also refusing the `.dockerignore` next to it.
   for (const segment of loweredRel.split(/[/\\]/)) {
-    if (segment && FORBIDDEN_CHILD_SEGMENTS.has(segment)) {
+    if (segment && isForbiddenChildSegment(segment)) {
       throw new Error("path_forbidden");
     }
   }

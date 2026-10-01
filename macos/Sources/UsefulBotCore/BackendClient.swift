@@ -293,7 +293,7 @@ public actor BackendClient {
     private var exchangeClosed = false
 
     public init(
-        base: URL = URL(string: "http://127.0.0.1:4320")!,
+        base: URL = AppVariant.current.webBaseURL,
         tokenStore: any DeviceTokenStore,
         endpointPolicy: any EndpointPolicy
     ) throws {
@@ -320,8 +320,8 @@ public actor BackendClient {
     /// from the login Keychain through `security`, and a non-loopback base
     /// resolves to the supervised local service.
     public init(
-        base: URL = URL(string: "http://127.0.0.1:4320")!,
-        tokenService: String = "com.usefulbot.device.desktop"
+        base: URL = AppVariant.current.webBaseURL,
+        tokenService: String = AppVariant.current.deviceTokenService
     ) throws {
         try self.init(
             base: base,

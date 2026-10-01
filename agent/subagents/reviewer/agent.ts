@@ -4,6 +4,7 @@ import { POLICY_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import { routerFetch } from "../../lib/router-fetch.ts";
 import { turnIdOf, type RouterIds } from "../../lib/router-identity.ts";
 import { perSessionModel } from "../../lib/session-model.ts";
+import { routerApiBase } from "../../../shared/stack.ts";
 
 // One model handle per child eve session the review runs in: the router gates
 // one model call per session, so a process-wide id made two bots' reviews one
@@ -39,7 +40,7 @@ function reviewerModel(ids: () => RouterIds) {
   // the call, not the process.
   const provider = createOpenAICompatible({
     name: "useful-bot-router",
-    baseURL: process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1",
+    baseURL: routerApiBase(),
     apiKey: "reviewer-unconfigured",
     // The router refuses /v1/chat/completions without the x-useful-* UUIDs,
     // so every call carries the session and turn plus a fresh request id.

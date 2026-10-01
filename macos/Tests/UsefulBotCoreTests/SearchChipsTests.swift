@@ -297,6 +297,25 @@ import Testing
         #expect(!BudgetInput.tokenBudgetAboveDefault(tokens: 500_000_000, default: 500_000_000))
     }
 
+    @Test func requestUsageIsExact() {
+        #expect(BudgetInput.requestUsage(used: 0, cap: 12_345) == "0 of 12,345")
+        #expect(BudgetInput.requestUsage(used: 1_234, cap: 12_345) == "1,234 of 12,345")
+        #expect(BudgetInput.requestUsage(used: 7, cap: 0) == "7")
+    }
+
+    @Test func budgetMessagesStayPerFieldAndSurvivePolls() {
+        var messages = BudgetMessages()
+        messages.set(.requests, "Has to be at least 1 request.")
+        #expect(messages.message(for: .requests) == "Has to be at least 1 request.")
+        #expect(messages.message(for: .tokens) == nil)
+        #expect(messages.current == "Has to be at least 1 request.")
+        messages.set(.tokens, "Type the limit in millions, like 500 or 3.5.")
+        messages.clear(.requests)
+        #expect(messages.current == "Type the limit in millions, like 500 or 3.5.")
+        messages.clear(.tokens)
+        #expect(messages.current == nil)
+    }
+
     @Test func decodesStatus() throws {
         let data = Data("""
         {"ok":true,"eve":"available","operator":{"name":"Wasim","initials":"WA"},

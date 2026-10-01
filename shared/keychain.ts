@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { DAILY, keychainName, keychainPrefix } from "./stack.ts";
 
 /**
  * Generic-password Keychain items, same write path as setup-local.mjs:
@@ -12,7 +13,8 @@ export type KeychainDriver = {
 };
 
 const ACCOUNT = "useful-bot";
-const SERVICE = /^com\.usefulbot\.[a-z0-9][a-z0-9._-]{0,120}$/;
+// The part after the stack's prefix: `device.desktop`, `connection.<id>`.
+const SERVICE_TAIL = /^[a-z0-9][a-z0-9._-]{0,120}$/;
 
 let driver: KeychainDriver | null = null;
 
@@ -36,8 +38,19 @@ export function memoryKeychain(): KeychainDriver & { store: Map<string, string> 
   };
 }
 
+/**
+ * A service must be `<this stack's prefix>.<name>`. The daily stack also
+ * refuses anything under `dev.`, so it can never read or write the dev
+ * stack's items (`com.usefulbot.dev.*`), and the dev stack refuses every
+ * daily name.
+ */
 function assertService(service: string): string {
-  if (!SERVICE.test(service)) throw new Error("keychain_service");
+  if (typeof service !== "string") throw new Error("keychain_service");
+  const prefix = keychainPrefix();
+  if (!service.startsWith(`${prefix}.`)) throw new Error("keychain_service");
+  const tail = service.slice(prefix.length + 1);
+  if (!SERVICE_TAIL.test(tail)) throw new Error("keychain_service");
+  if (prefix === DAILY.keychainPrefix && tail.startsWith("dev.")) throw new Error("keychain_service");
   return service;
 }
 
@@ -105,5 +118,5 @@ export function keychainDel(service: string): void {
 
 export function connectionSecretService(id: string): string {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(id)) throw new Error("keychain_service");
-  return `com.usefulbot.connection.${id}`;
+  return keychainName(`connection.${id}`);
 }

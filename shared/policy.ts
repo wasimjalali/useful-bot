@@ -1,3 +1,5 @@
+import { DAILY } from "./stack.ts";
+
 export type Alias = "workhorse" | "reviewer" | "image";
 export type Profile = "desktop" | "phone" | "reviewer" | "eval";
 export type SandboxBackendName = "microsandbox" | "docker" | "just-bash";
@@ -10,9 +12,13 @@ export const POLICY_NODE_MAJOR = 24;
 export const POLICY_EVE_VERSION = "0.54.3";
 export const ABSOLUTE_NODE = "/usr/local/bin/node";
 export const ROUTER_HOST = "127.0.0.1";
-export const ROUTER_PORT = 4319;
+/**
+ * The daily default only. Runtime code asks `routerPort()` in shared/stack.ts,
+ * which honours UB_ROUTER_PORT; this stays for the frozen pre-fix router
+ * fixture (test/fixtures/router-index-pre-fix.ts.txt) that still imports it.
+ */
+export const ROUTER_PORT = DAILY.routerPort;
 export const EVE_HOST = "127.0.0.1";
-export const EVE_PORT = 4321;
 export const BODY_LIMIT_BYTES = 1_048_576;
 /**
  * A completion body carries the conversation, and a conversation with images

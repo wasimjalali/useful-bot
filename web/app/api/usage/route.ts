@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../lib/desktop-gate";
 import { apiError, errorCode, rateLimited, readJson } from "../../../lib/api-guard";
@@ -20,6 +19,7 @@ import {
 } from "../../../../shared/limits-store.ts";
 import { parseConnectionId } from "../../../../shared/provider-catalog.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
+import { routerDbPath } from "../../../../shared/stack.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -27,7 +27,7 @@ const WEEK_MS = 7 * DAY_MS;
 const DESKTOP_CALLER = "desktop";
 
 function usageDbPath(): string {
-  return process.env.UB_ROUTER_DB ?? join(process.env.HOME ?? "/tmp", ".useful-bot/router/usage.sqlite");
+  return routerDbPath();
 }
 
 // The pane polls every few seconds, so one store per process path: a fresh

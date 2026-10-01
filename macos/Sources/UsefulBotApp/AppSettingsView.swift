@@ -385,9 +385,7 @@ struct AppSettingsView: View {
                                 .font(.system(size: 14))
                                 .foregroundStyle(Theme.C.ink)
                             Spacer(minLength: 0)
-                            settingsValue(usage.caps.requests24h > 0
-                                ? "\(compact(usage.requests)) of \(compact(usage.caps.requests24h))"
-                                : compact(usage.requests))
+                            settingsValue(BudgetInput.requestUsage(used: usage.requests, cap: usage.caps.requests24h))
                         }
                     }
                 }
@@ -402,6 +400,7 @@ struct AppSettingsView: View {
                                 if !budget.isDefault {
                                     Button("Reset") {
                                         editedBudget = nil
+                                        model.clearBudgetError(.tokens)
                                         model.setDailyTokenBudget(nil)
                                     }
                                     .buttonStyle(.plain)
@@ -421,6 +420,7 @@ struct AppSettingsView: View {
                                     if !requestBudget.isDefault {
                                         Button("Reset") {
                                             editedRequests = nil
+                                            model.clearBudgetError(.requests)
                                             model.setDailyRequestBudget(nil)
                                         }
                                         .buttonStyle(.plain)
@@ -433,7 +433,13 @@ struct AppSettingsView: View {
                                 }
                             }
                         }
-                        if BudgetInput.tokenBudgetAboveDefault(tokens: budget.tokens, default: budget.default) {
+                        if let error = model.budgetMessages.current {
+                            Text(error)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.C.danger)
+                                .padding(.leading, 4)
+                                .padding(.top, 8)
+                        } else if BudgetInput.tokenBudgetAboveDefault(tokens: budget.tokens, default: budget.default) {
                             Text("Higher limits can mean higher provider bills.")
                                 .font(.system(size: 13))
                                 .foregroundStyle(Theme.C.inkMuted)
@@ -527,7 +533,7 @@ struct AppSettingsView: View {
         return limitStepper(
             text: Binding(
                 get: { editedBudget ?? BudgetInput.tokenLabel(budget.tokens) },
-                set: { editedBudget = $0 }
+                set: { editedBudget = $0; model.clearBudgetError(.tokens) }
             ),
             focused: $budgetFieldFocused,
             atMin: budget.tokens <= budget.min,
@@ -535,7 +541,7 @@ struct AppSettingsView: View {
             lower: { commitBudget(budget.tokens - step, budget) },
             raise: { commitBudget(budget.tokens + step, budget) },
             submit: { commitTypedBudget(budget) },
-            changed: { editedBudget = nil },
+            changed: { editedBudget = nil; model.clearBudgetError(.tokens) },
             value: budget.tokens,
             lowerLabel: "Lower the daily token limit",
             raiseLabel: "Raise the daily token limit",
@@ -548,7 +554,7 @@ struct AppSettingsView: View {
         return limitStepper(
             text: Binding(
                 get: { editedRequests ?? BudgetInput.requestLabel(budget.requests) },
-                set: { editedRequests = $0 }
+                set: { editedRequests = $0; model.clearBudgetError(.requests) }
             ),
             focused: $requestFieldFocused,
             atMin: budget.requests <= budget.min,
@@ -556,7 +562,7 @@ struct AppSettingsView: View {
             lower: { commitRequests(budget.requests - step, budget) },
             raise: { commitRequests(budget.requests + step, budget) },
             submit: { commitTypedRequests(budget) },
-            changed: { editedRequests = nil },
+            changed: { editedRequests = nil; model.clearBudgetError(.requests) },
             value: budget.requests,
             lowerLabel: "Lower the daily request limit",
             raiseLabel: "Raise the daily request limit",
@@ -647,7 +653,7 @@ struct AppSettingsView: View {
         guard let typed = editedBudget else { return }
         switch BudgetInput.tokens(typed, min: budget.min, max: budget.max) {
         case .failure(let error):
-            model.reportUsageError(error.message)
+            model.reportBudgetError(.tokens, error.message)
         case .success(let tokens):
             guard tokens != budget.tokens else {
                 editedBudget = nil
@@ -661,7 +667,7 @@ struct AppSettingsView: View {
         guard let typed = editedRequests else { return }
         switch BudgetInput.requests(typed, min: budget.min, max: budget.max) {
         case .failure(let error):
-            model.reportUsageError(error.message)
+            model.reportBudgetError(.requests, error.message)
         case .success(let requests):
             guard requests != budget.requests else {
                 editedRequests = nil
@@ -852,6 +858,8 @@ struct AppSettingsView: View {
     /// of the same name overrides it for a local check. Nil means this build
     /// cannot send.
     private static var feedbackURL: URL? {
+        // The dev app never posts to the production Worker, even with a defaults override.
+        guard AppVariant.current.allowsFeedback else { return nil }
         let raw = UserDefaults.standard.string(forKey: "UBFeedbackURL")
             ?? Bundle.main.object(forInfoDictionaryKey: "UBFeedbackURL") as? String
         guard let raw, let url = URL(string: raw), url.scheme == "https" || url.scheme == "http" else { return nil }

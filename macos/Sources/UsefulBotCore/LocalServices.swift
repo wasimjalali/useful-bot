@@ -8,6 +8,13 @@ public enum EnsureOutcome: Equatable, Sendable {
     case ready
     case nodeMissing
     case unavailable
+    /// A service on this stack's port answers, but as another stack (or does
+    /// not say which). It is never adopted, started over or signalled.
+    case foreignStack
+    /// A process this app started for each of these services is still alive
+    /// but never opened its port inside the budget (wedged, or waiting on a
+    /// macOS permission prompt). None of them was started a second time.
+    case neverBound([ServiceMode])
 }
 
 public struct LocalServices: Sendable {
@@ -20,7 +27,7 @@ public struct LocalServices: Sendable {
     /// loop that never converges. Zero in tests.
     private let startGraceSeconds: Double
     /// How often a still-missing service is started again while `ensure` waits.
-    private static let restartInterval: Double = 15
+    private let restartIntervalSeconds: Double
 
     public init(
         runner: ProcessRunner = FoundationProcessRunner(),
@@ -28,8 +35,10 @@ public struct LocalServices: Sendable {
         supervisor: ServiceSupervisor = ServiceSupervisor(),
         // Long enough for a cold Next dev server, which holds its port well
         // before it serves. A genuinely wedged listener costs this once.
-        startGraceSeconds: Double = 20
+        startGraceSeconds: Double = 20,
+        restartIntervalSeconds: Double = 15
     ) {
+        self.restartIntervalSeconds = restartIntervalSeconds
         self.runner = runner
         self.probe = probe
         self.supervisor = supervisor
@@ -42,7 +51,11 @@ public struct LocalServices: Sendable {
     /// starting up. The default covers a cold start of all three services,
     /// where the web is a Next dev server.
     public func ensure(config: ServerConfig, timeoutSeconds: Int = 90) async -> EnsureOutcome {
-        if await allReady(config: config) { return .ready }
+        switch await stackState(config: config) {
+        case .ready: return .ready
+        case .foreign: return .foreignStack
+        case .notReady: break
+        }
         // Without a node binary nothing can start; report it now instead of
         // waiting out the health timeout on a launch that can never succeed.
         guard supervisor.isNodeAvailable(repoPath: config.repoPath) else { return .nodeMissing }
@@ -53,13 +66,17 @@ public struct LocalServices: Sendable {
         // part of the budget, and three of them used to run outside it.
         let deadline = Date().addingTimeInterval(Double(timeoutSeconds))
         await startMissing(config: config, deadline: deadline)
-        var nextStart = Date().addingTimeInterval(Self.restartInterval)
+        var nextStart = Date().addingTimeInterval(restartIntervalSeconds)
         while Date() < deadline {
             // A retry cancels the attempt it replaces, and an abandoned
             // attempt must stop supervising ports rather than run its budget
             // out alongside the new one.
             if Task.isCancelled { return .unavailable }
-            if await allReady(config: config) { return .ready }
+            switch await stackState(config: config) {
+            case .ready: return .ready
+            case .foreign: return .foreignStack
+            case .notReady: break
+            }
             if Date() >= deadline { break }
             // A start can fail, and a started service can exit a second later.
             // Polling alone would then wait out the whole budget on a port that
@@ -74,12 +91,38 @@ public struct LocalServices: Sendable {
                 // the same wait, forever. The retry only fills a port that is
                 // still empty.
                 await startMissing(config: config, allowRestart: false)
-                nextStart = Date().addingTimeInterval(Self.restartInterval)
+                nextStart = Date().addingTimeInterval(restartIntervalSeconds)
                 continue
             }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-        return await allReady(config: config) ? .ready : .unavailable
+        switch await stackState(config: config) {
+        case .ready: return .ready
+        case .foreign: return .foreignStack
+        case .notReady:
+            // A service this app started that is still alive but never opened
+            // its port is named, not retried: another one would only join it.
+            let hung = hungServices(config: config)
+            return hung.isEmpty ? .unavailable : .neverBound(hung)
+        }
+    }
+
+    private static let allModes: [ServiceMode] = [.router, .eve, .web]
+
+    private func port(of mode: ServiceMode, variant: AppVariant) -> Int {
+        switch mode {
+        case .router: return variant.routerPort
+        case .eve: return variant.evePort
+        case .web: return variant.webPort
+        }
+    }
+
+    /// Services with a live process of ours behind them and nothing listening
+    /// on their port.
+    private func hungServices(config: ServerConfig) -> [ServiceMode] {
+        Self.allModes.filter { mode in
+            runner.hasLiveSpawn(of: mode) && runner.listeners(port: port(of: mode, variant: config.variant)).isEmpty
+        }
     }
 
     /// All three, not just the one the app talks to.
@@ -88,16 +131,43 @@ public struct LocalServices: Sendable {
     /// was never noticed or restarted: the app opened looking healthy and every
     /// turn failed at the model call instead. The three are asked at once, so
     /// one unreachable service costs one probe timeout rather than three.
-    private func allReady(config: ServerConfig) async -> Bool {
-        async let web = probe.probe(config.healthURL)
-        async let router = probe.probe(ServiceSupervisor.routerHealthURL)
-        async let eve = probe.probe(ServiceSupervisor.eveHealthURL)
-        // Each is awaited into a value: `&&` takes an autoclosure, which
-        // cannot capture an `async let`.
-        let webReady = await web
-        let routerReady = await router
-        let eveReady = await eve
-        return webReady && routerReady && eveReady
+    ///
+    /// Ready also means it is OUR stack: the web and the router say which
+    /// stack they belong to, and one that says another (or, for dev, nothing)
+    /// is foreign. eve is a third-party service with no stack field; its port
+    /// is the variant's own, so up is all that is asked of it.
+    private func stackState(config: ServerConfig) async -> StackState {
+        let variant = config.variant
+        async let web = probe.read(config.healthURL)
+        async let router = probe.read(variant.routerHealthURL)
+        async let eve = probe.read(variant.eveHealthURL)
+        let webState = variant.readiness(of: await web)
+        let routerState = variant.readiness(of: await router)
+        let eveUp = await eve != nil
+        if case .foreign = webState { return .foreign }
+        if case .foreign = routerState { return .foreign }
+        return webState == .ready && routerState == .ready && eveUp ? .ready : .notReady
+    }
+
+    /// What the owner is told when `ensure` ends in `.neverBound`.
+    public static func neverBoundMessage(_ modes: [ServiceMode], variant: AppVariant) -> String {
+        let ports: (ServiceMode) -> Int = { mode in
+            switch mode {
+            case .router: return variant.routerPort
+            case .eve: return variant.evePort
+            case .web: return variant.webPort
+            }
+        }
+        let named = modes.map { "the \($0.rawValue) (port \(ports($0)))" }.joined(separator: ", ")
+        let logs = variant.logsDirectory(home: FileManager.default.homeDirectoryForCurrentUser).path
+        return "\(variant.displayName) started \(named) but it never opened its port. "
+            + "It may be waiting on a macOS permission prompt or have stalled. The service logs are in \(logs)."
+    }
+
+    private enum StackState {
+        case ready
+        case notReady
+        case foreign
     }
 
     /// `allowRestart` is the permission to treat an occupied but unhealthy port
@@ -107,25 +177,28 @@ public struct LocalServices: Sendable {
     func startMissing(config: ServerConfig, allowRestart: Bool = true, deadline: Date? = nil) async {
         await ensureService(
             mode: .router,
-            port: ServiceSupervisor.routerPort,
-            health: ServiceSupervisor.routerHealthURL,
+            port: config.variant.routerPort,
+            health: config.variant.routerHealthURL,
             repoPath: config.repoPath,
+            variant: config.variant,
             allowRestart: allowRestart,
             deadline: deadline
         )
         await ensureService(
             mode: .eve,
-            port: ServiceSupervisor.evePort,
-            health: ServiceSupervisor.eveHealthURL,
+            port: config.variant.evePort,
+            health: config.variant.eveHealthURL,
             repoPath: config.repoPath,
+            variant: config.variant,
             allowRestart: allowRestart,
             deadline: deadline
         )
         await ensureService(
             mode: .web,
-            port: ServiceSupervisor.webPort,
+            port: config.variant.webPort,
             health: config.healthURL,
             repoPath: config.repoPath,
+            variant: config.variant,
             allowRestart: allowRestart,
             deadline: deadline
         )
@@ -140,11 +213,14 @@ public struct LocalServices: Sendable {
         port: Int,
         health: URL,
         repoPath: String,
+        variant: AppVariant,
         allowRestart: Bool = true,
         deadline: Date? = nil
     ) async {
         if Task.isCancelled { return }
-        if await probe.probe(health) { return }
+        // Anything that answers is left alone, whichever stack it says it is:
+        // a foreign one is reported by `ensure`, never started over or killed.
+        if await probe.read(health) != nil { return }
         let owns: @Sendable (String) -> Bool = { [supervisor] line in
             supervisor.isOwnNodeProcess(line, repoPath: repoPath)
         }
@@ -155,11 +231,13 @@ public struct LocalServices: Sendable {
             // cancellation can land inside it, and a cancelled attempt must not
             // start a service the retry is about to start itself.
             if !Task.isCancelled, runner.listeners(port: port).isEmpty {
-                runner.start(supervisor.command(mode: mode, repoPath: repoPath))
+                startUnlessAlive(mode: mode, repoPath: repoPath, variant: variant)
             }
             return
         }
+        var signalled = false
         if !runner.listeners(port: port).isEmpty {
+            signalled = true
             // A port that is open but not yet serving is usually a service
             // still coming up, not a wedged one. Give it a moment: killing a
             // slow starter here restarts it into the same race, every time.
@@ -185,8 +263,32 @@ public struct LocalServices: Sendable {
         // A foreign listener survives the own-only signals above, so this
         // stays false and we never start a duplicate on an occupied port.
         if !Task.isCancelled, runner.listeners(port: port).isEmpty {
-            runner.start(supervisor.command(mode: mode, repoPath: repoPath))
+            // The listener just signalled may take a moment to exit after its
+            // port is free; it is not "alive" for the check below once it has.
+            if signalled { _ = await waitForSpawnExit(mode, timeout: 1_000) }
+            startUnlessAlive(mode: mode, repoPath: repoPath, variant: variant)
         }
+    }
+
+    /// Never a second process for a mode while one this app started for it is
+    /// still running, whether or not it has opened its port yet. A service
+    /// blocked before it binds (a macOS permission prompt) leaves its port
+    /// empty for as long as it is blocked, and a fresh set every retry round
+    /// leaked 32 node processes in four minutes. A process that has exited is
+    /// not alive, so a start that failed or a service that died is still filled.
+    private func startUnlessAlive(mode: ServiceMode, repoPath: String, variant: AppVariant) {
+        if runner.hasLiveSpawn(of: mode) { return }
+        runner.start(supervisor.command(mode: mode, repoPath: repoPath, variant: variant))
+    }
+
+    /// Polls until no process of ours is running for `mode`. True when none is.
+    private func waitForSpawnExit(_ mode: ServiceMode, timeout: Int) async -> Bool {
+        let deadline = Date().addingTimeInterval(Double(timeout) / 1000)
+        while runner.hasLiveSpawn(of: mode) {
+            if Task.isCancelled || Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return true
     }
 
     /// Stops this checkout's own router, eve and web, leaving any foreign
@@ -197,7 +299,15 @@ public struct LocalServices: Sendable {
         let owns: @Sendable (String) -> Bool = { [supervisor] line in
             supervisor.isOwnNodeProcess(line, repoPath: repoPath)
         }
-        for port in [ServiceSupervisor.webPort, ServiceSupervisor.evePort, ServiceSupervisor.routerPort] {
+        let variant = config.variant
+        let services: [(port: Int, health: URL, checksStack: Bool)] = [
+            (variant.webPort, config.healthURL, true),
+            (variant.evePort, variant.eveHealthURL, false),
+            (variant.routerPort, variant.routerHealthURL, true),
+        ]
+        for (port, health, checksStack) in services {
+            // Another stack's service on this port is not ours to stop.
+            if checksStack, case .foreign = variant.readiness(of: await probe.read(health)) { continue }
             runner.stopOwnListeners(port: port, owns: owns)
             if await waitForPortFree(port: port, timeout: 5_000) { continue }
             // A cancelled wait returns at once; force-killing then would cut
@@ -238,10 +348,17 @@ public struct LocalServices: Sendable {
 
 public protocol ProcessRunner: Sendable {
     func start(_ command: ServiceCommand)
+    /// True while a process this runner started for `mode` is still running,
+    /// whether or not it has opened its port.
+    func hasLiveSpawn(of mode: ServiceMode) -> Bool
     func portAccepting(_ port: Int) -> Bool
     func listeners(port: Int) -> [pid_t]
     func stopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool)
     func forceStopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool)
+}
+
+extension ProcessRunner {
+    public func hasLiveSpawn(of mode: ServiceMode) -> Bool { false }
 }
 
 /// Reference box shared by every copy of `FoundationProcessRunner`: it keeps
@@ -251,15 +368,24 @@ public protocol ProcessRunner: Sendable {
 private final class SpawnRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var processes: [pid_t: Process] = [:]
+    private var modes: [pid_t: ServiceMode] = [:]
     private var reportedUnknown: Set<String> = []
 
-    func add(pid: pid_t, process: Process) {
+    func add(pid: pid_t, process: Process, mode: ServiceMode?) {
         lock.lock()
         defer { lock.unlock() }
         // A process that exits at once can run its termination handler before
         // this call: recording it then would store an entry nothing removes.
         guard process.isRunning else { return }
         processes[pid] = process
+        modes[pid] = mode
+    }
+
+    /// True while a process started for `mode` is still running.
+    func hasLive(mode: ServiceMode) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return processes.contains { pid, process in modes[pid] == mode && process.isRunning }
     }
 
     /// True while the recorded process is still alive. The `isRunning` check
@@ -275,6 +401,7 @@ private final class SpawnRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         processes.removeValue(forKey: pid)
+        modes.removeValue(forKey: pid)
     }
 
     /// One log line per port/pid pair so a permanently foreign listener does
@@ -312,19 +439,10 @@ public struct FoundationProcessRunner: ProcessRunner {
         // launched. The names below are what the service needs to work out the
         // owner's real PATH for itself (see shared/user-path.ts), which is what
         // lets a bot run the CLIs this Mac has installed.
-        var env: [String: String] = [
-            // Apple Silicon Homebrew lives under /opt/homebrew; without it a
-            // Homebrew-node subtree cannot see its sibling tools.
-            "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME": NSHomeDirectory(),
-        ]
-        let inherited = ProcessInfo.processInfo.environment
-        for name in ["SHELL", "USER", "LOGNAME", "LANG", "TZ"] {
-            if let value = inherited[name], !value.isEmpty {
-                env[name] = value
-            }
-        }
-        process.environment = env
+        process.environment = Self.environment(
+            base: Self.baseEnvironment(home: NSHomeDirectory(), inherited: ProcessInfo.processInfo.environment),
+            adding: command.environment
+        )
         process.terminationHandler = { [registry, handle] finished in
             let pid = finished.processIdentifier
             registry.remove(pid: pid)
@@ -339,11 +457,37 @@ public struct FoundationProcessRunner: ProcessRunner {
         }
         do {
             try process.run()
-            registry.add(pid: process.processIdentifier, process: process)
+            registry.add(pid: process.processIdentifier, process: process, mode: ServiceMode(rawValue: label))
         } catch {
             if let handle { try? handle.close() }
             Self.appendEvent("failed to launch \(label): \(error.localizedDescription)", to: logURL)
         }
+    }
+
+    public func hasLiveSpawn(of mode: ServiceMode) -> Bool {
+        registry.hasLive(mode: mode)
+    }
+
+    /// The short list a service (or setup) starts from.
+    static func baseEnvironment(home: String, inherited: [String: String]) -> [String: String] {
+        var env: [String: String] = [
+            // Apple Silicon Homebrew lives under /opt/homebrew; without it a
+            // Homebrew-node subtree cannot see its sibling tools.
+            "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": home,
+        ]
+        for name in ["SHELL", "USER", "LOGNAME", "LANG", "TZ"] {
+            if let value = inherited[name], !value.isEmpty {
+                env[name] = value
+            }
+        }
+        return env
+    }
+
+    /// The whitelist plus what the command adds. The whitelist wins a clash:
+    /// a command can add settings, not replace the user's PATH or HOME.
+    static func environment(base: [String: String], adding extra: [String: String]) -> [String: String] {
+        extra.merging(base) { _, whitelisted in whitelisted }
     }
 
     /// Probes both loopback stacks. A server bound only to `::1` would read as
@@ -504,8 +648,7 @@ public struct FoundationProcessRunner: ProcessRunner {
     // MARK: - Logging
 
     private static let logDirectory: URL = {
-        let directory = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Logs/UsefulBot", isDirectory: true)
+        let directory = AppVariant.current.logsDirectory(home: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }()

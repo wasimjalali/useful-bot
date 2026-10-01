@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import {
   existsSync,
   mkdirSync,
@@ -12,7 +11,8 @@ import {
   rmdirSync,
   statSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { statePath } from "./stack.ts";
 import { createHash, randomUUID } from "node:crypto";
 // The permission vocabulary is client-safe and lives beside the bot fields
 // that carry it; this store only adds persistence on top.
@@ -63,7 +63,7 @@ export type WorkspaceStore = {
 
 export function defaultWorkspacePath(): string {
   if (process.env.UB_WORKSPACE_STORE_PATH) return process.env.UB_WORKSPACE_STORE_PATH;
-  return join(homedir(), ".useful-bot", "workspace.json");
+  return statePath("workspace.json");
 }
 
 function seedStore(at = new Date()): WorkspaceStore {

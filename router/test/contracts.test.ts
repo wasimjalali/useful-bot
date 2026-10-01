@@ -135,7 +135,7 @@ test("live is unauthenticated", async () => {
   await withRouter(async (base) => {
     const res = await fetch(`${base}/health/live`);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true });
+    assert.deepEqual(await res.json(), { ok: true, stack: "daily" });
   });
 });
 

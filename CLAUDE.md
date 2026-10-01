@@ -41,10 +41,19 @@ This arrangement expires on 2026-10-15; ask Wasim what to move to rather than fa
 ## Verification
 
 A UI change is verified with a real screenshot of the running macOS app, not with tests
-alone. Any live check that sends a message goes to the bot named "Test Bot": pick it in
-the rail, or create it first if it is missing. Never send a test turn to any other bot;
-those hold real conversations. `/Applications/Useful Bot.app` is the installed copy people
-use; rebuilding means `npm run build:app` then `npm run install:app` (not a bare `ditto`).
+alone. **Every live check runs in Useful Bot Dev, never the daily app** (decided 2026-10-01,
+UB-004). `/Applications/Useful Bot.app` is the owner's daily install with his real bots: agents
+never launch, quit, screenshot-test or send to it. Useful Bot Dev is a separate identity
+(`ai.useful.bot.dev`, `~/Applications/Useful Bot Dev.app`, state in `~/.useful-bot-dev-app`,
+`com.usefulbot.dev.*` Keychain items, ports 4419/4420/4421). Build and install it with
+`npm run build:dev-app` then `npm run install:dev-app`. The dev app carries a runtime built from
+the working tree (stage `macos/.build/runtime-stage-dev`, stamp `<version>-dev+<sha>.<hash>`) and
+runs its services from a copy under `~/Library/Application Support/Useful Bot Dev/app`, never from
+the checkout (an ad hoc signed bundle gets a fresh Desktop-folder privacy prompt on every rebuild,
+and a service reading the checkout blocks on it). Inside the dev app, a check that sends
+a message still goes to "Test Bot" (create it if missing). Never use `~/.useful-bot-dev`: it
+holds older owner data. Releasing the daily app is unchanged: `npm run build:app` then
+`npm run install:app` (not a bare `ditto`), and only when the owner asks for it.
 
 **Logo and icon gotcha.** Launch Services keeps a record for every bundle with the id
 `ai.useful.bot` it has ever seen: `macos/dist`, agent scratch copies, old "before" builds. At
@@ -70,8 +79,9 @@ auto-install rewrites `package-lock.json`, and the router refuses a changed lock
 
 Until launch, PRs don't run `npm run perf:check` (decided 2026-09-28, to stop spending 20 minutes
 on every PR). The check runs once before the macOS app ships to users (after the landing page and
-the rest of launch are done): on `main` and on the newest open branch, each on its own `build:app`
-(about 20 minutes; it quits and relaunches the app in the background), and the records it writes
+the rest of launch are done): on `main` and on the newest open branch, each on its own
+`build:dev-app` (about 20 minutes; it drives only Useful Bot Dev and never quits or relaunches
+the daily app), and the records it writes
 under `evals/results/` are committed. After launch, every change that touches `macos/`, `shared/`,
 `agent/`, `router/src` or `web/` runs it again before merge. A breach is fixed, or the
 budget in `perf/budgets.json` is raised in a reviewed edit that says why; a re-run never erases a

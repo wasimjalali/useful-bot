@@ -11,8 +11,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { statePath } from "./stack.ts";
 import type { ConnectionAuthKind, ConnectionKind } from "./connections-store.ts";
 
 /**
@@ -207,7 +207,7 @@ const EVENT_KINDS = new Set<AgentEventKind>([
 
 export function agentStorePath(): string {
   if (process.env.UB_AGENT_STORE_PATH) return process.env.UB_AGENT_STORE_PATH;
-  return join(homedir(), ".useful-bot", "agents.json");
+  return statePath("agents.json");
 }
 
 export function newEventId(prefix = "evt"): string {

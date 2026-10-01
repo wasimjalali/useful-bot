@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_ACTIVE_IMAGE, MAX_ACTIVE_SEARCH, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
+import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_ACTIVE_IMAGE, MAX_ACTIVE_SEARCH, MAX_MESSAGE_COUNT, MAX_TOOL_SCHEMAS, MAX_TOOL_SCHEMA_BYTES, POLICY_NODE_MAJOR, ROUTER_HOST } from "../../shared/policy.ts";
+import { enforceStack, routerDbPath, routerPort, stackName } from "../../shared/stack.ts";
 import { IMAGE_DATA_URL, MAX_IMAGE_DATA_URL_CHARS, MAX_IMAGE_PARTS } from "../../shared/attachments.ts";
 import { AuthTable } from "./auth.ts";
 import { AliasCircuit } from "./circuit.ts";
@@ -484,10 +485,10 @@ function validateImageGeneration(body: unknown): {
 }
 
 export function startRouter(options?: { port?: number; configPath?: string; lockPath?: string; dbPath?: string }) {
-  const port = options?.port ?? Number(process.env.UB_ROUTER_PORT || ROUTER_PORT);
+  const port = options?.port ?? routerPort();
   const configPath = options?.configPath ?? process.env.UB_ROUTER_CONFIG;
   const lockPath = options?.lockPath ?? join(process.cwd(), "package-lock.json");
-  const dbPath = options?.dbPath ?? process.env.UB_ROUTER_DB ?? join(process.env.HOME ?? "/tmp", ".useful-bot/router/usage.sqlite");
+  const dbPath = options?.dbPath ?? routerDbPath();
   if (!configPath) {
     throw new Error("UB_ROUTER_CONFIG is required");
   }
@@ -509,7 +510,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
       }
       const url = new URL(req.url, `http://${ROUTER_HOST}`);
       if (req.method === "GET" && url.pathname === "/health/live") {
-        send(res, 200, { ok: true });
+        send(res, 200, { ok: true, stack: stackName() });
         return;
       }
       assertHost(req, (server.address() as { port: number }).port);
@@ -528,7 +529,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         if (caller.profile !== "ops") {
           throw new RouterError({ status: 403, type: "permission_error", code: "capability_forbidden", message: "capability_forbidden" });
         }
-        send(res, 200, { ok: true, registryVersion: 1, upstream: process.env.UB_OPENCODE_GO_KEY ? "unknown" : "limited" });
+        send(res, 200, { ok: true, stack: stackName(), registryVersion: 1, upstream: process.env.UB_OPENCODE_GO_KEY ? "unknown" : "limited" });
         return;
       }
       const caller = auth.authenticate(req.headers.authorization ?? null);
@@ -937,5 +938,6 @@ function isEntryPoint(): boolean {
 }
 
 if (isEntryPoint()) {
+  enforceStack("router");
   startRouter();
 }

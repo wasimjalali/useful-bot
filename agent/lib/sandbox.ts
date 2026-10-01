@@ -1,5 +1,6 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { APP_STATE_DIR } from "../../shared/stack.ts";
 import { ownerPath, pathCandidates } from "../../shared/user-path.ts";
 import { delimiter, dirname, join } from "node:path";
 
@@ -31,7 +32,7 @@ export const PROTECTED_NAMES = [
   // tripwire lowercases, the kernel does not.
   "Library/Keychains", "Library/Cookies",
   // The app's own stores and the launch agents that start it.
-  ".useful-bot", "LaunchAgents",
+  APP_STATE_DIR, "LaunchAgents",
   // Shell startup files: a planted line runs in the owner's own shell.
   ".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout",
   ".bash_profile", ".bashrc", ".bash_login", ".bash_logout", ".profile", ".inputrc",
@@ -91,6 +92,14 @@ const SECRETS_DENY_PATTERN = "/secrets($|[/.])";
  * is the same class of bug this rule exists to fix.
  */
 const SECRETS_ALLOW_PATTERN = "/python3\\.[0-9]+/([^/]+/)*secrets\\.(py|pyc|pyi|so)$";
+
+/**
+ * The app's other state folders, `.useful-bot-dev` and `.useful-bot-dev-app`
+ * (the dev stack's). The name list above matches `.useful-bot` followed by an
+ * end, a slash or a dot, which a dashed sibling does not satisfy, so these
+ * get their own rule. `.useful-botany` still matches neither.
+ */
+const APP_STATE_DASHED_PATTERN = `/${regexEscape(APP_STATE_DIR)}-[^/]*($|/)`;
 
 export type SandboxScope = "folder" | "computer";
 
@@ -321,6 +330,7 @@ export function sandboxProfile(
   const cache = join(dirname(temp), "C");
   const protectedRules = [
     ...PROTECTED_NAMES.map((name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`),
+    `(deny file-write* (regex #"${APP_STATE_DASHED_PATTERN}"))`,
     `(deny file-write* (regex #"${SECRETS_DENY_PATTERN}"))`,
   ];
   // Inside a project folder the build tooling reads its own .env and the
@@ -333,6 +343,7 @@ export function sandboxProfile(
     : READ_DENIED_NAMES;
   const readRules = [
     ...readDenied.map((name) => `(deny file-read* (regex #"/${regexEscape(name)}($|[/.])"))`),
+    `(deny file-read* (regex #"${APP_STATE_DASHED_PATTERN}"))`,
     `(deny file-read* (regex #"${SECRETS_DENY_PATTERN}"))`,
     `(allow file-read* (regex #"${SECRETS_ALLOW_PATTERN}"))`,
     ...(tooling && unbounded && real !== null

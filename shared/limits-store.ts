@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { AGGREGATE_LIMITS, CALLER_LIMITS } from "./policy.ts";
+import { statePath } from "./stack.ts";
 
 /**
  * The owner's daily budgets for the model router: tokens and requests, the two
@@ -53,7 +54,7 @@ export const DAILY_REQUEST_BUDGET_STEP = 500;
 
 export function limitsPath(root = process.env.UB_LIMITS_PATH): string {
   if (root) return root;
-  return join(process.env.HOME ?? "/tmp", ".useful-bot/limits.json");
+  return statePath("limits.json");
 }
 
 export function emptyLimitsStore(): LimitsStore {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { toolRouterIds } from "../lib/router-identity.ts";
+import { routerApiBase } from "../../shared/stack.ts";
 
 // The router refuses /v1/chat/completions without the session, turn and request
 // UUIDs, and gates one call per session: the session is the calling bot's, so
@@ -30,7 +31,7 @@ export default defineTool({
     // the chat path is appended here rather than baked into the default.
     // No session means no bot to collide with, so a call-unique id is honest.
     const ids = toolRouterIds(ctx) ?? { sessionId: randomUUID(), turnId: randomUUID() };
-    const base = process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1";
+    const base = routerApiBase();
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: {

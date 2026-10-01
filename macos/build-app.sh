@@ -3,6 +3,28 @@
 set -eu
 cd "$(dirname "$0")"
 
+# UB_VARIANT=dev builds "Useful Bot Dev": its own bundle id, name, executable and
+# output folder, so it runs beside the daily app and shares nothing with it
+# (UsefulBotCore/AppVariant.swift holds every other value). It never carries
+# the updater or the production feedback URL. It carries a runtime payload like
+# a release does, staged apart from the release one (macos/.build/runtime-stage-dev,
+# from the working tree, stamped <package version>-dev+<git sha>.<content hash>),
+# because the app runs its services from a copy under its own Application
+# Support folder, never from the checkout (a build signed ad hoc gets a new
+# macOS privacy grant for the Desktop folder on every rebuild). The daily build
+# is what runs when UB_VARIANT is unset.
+VARIANT="${UB_VARIANT:-daily}"
+case "$VARIANT" in
+  daily) ;;
+  dev)
+    if [ -n "${UB_RELEASE:-}${UB_FEED_URL:-}${UB_ED_PUBLIC_KEY:-}${UB_FEEDBACK_URL:-}${UB_VERSION:-}${UB_BUILD:-}" ]; then
+      echo "UB_VARIANT=dev cannot be combined with the release settings (UB_RELEASE, UB_FEED_URL, UB_ED_PUBLIC_KEY, UB_FEEDBACK_URL, UB_VERSION, UB_BUILD)" >&2
+      exit 1
+    fi
+    ;;
+  *) echo "UB_VARIANT must be unset or dev, not \"$VARIANT\"" >&2; exit 1 ;;
+esac
+
 # The web service the app talks to. scripts/service.mjs serves this build while
 # the sources still hash to what it was built from and falls back to `next dev`
 # otherwise, so a release always leaves a fresh one behind. The standalone
@@ -34,19 +56,38 @@ done
     git checkout -- web/next-env.d.ts
   fi
   "$NODE" scripts/web-mode.mjs --stamp
-  # A release carries the services it runs (scripts/build-runtime.mjs).
-  if [ -n "${UB_RELEASE:-}" ]; then
+  # A release carries the services it runs (scripts/build-runtime.mjs), and so
+  # does the dev app, from its own stage so a release stage is never mixed in.
+  if [ "$VARIANT" = dev ]; then
+    PKG_VERSION="$("$NODE" -p "require('./package.json').version")"
+    "$NODE" scripts/build-runtime.mjs macos/.build/runtime-stage-dev "$PKG_VERSION-dev+$(git rev-parse --short HEAD)" --dev
+  elif [ -n "${UB_RELEASE:-}" ]; then
     "$NODE" scripts/build-runtime.mjs macos/.build/runtime-stage "${UB_VERSION:?UB_RELEASE needs UB_VERSION}+${UB_BUILD:?UB_RELEASE needs UB_BUILD}"
   fi
 )
 
 swift build -c release
-APP="dist/Useful Bot.app"
+if [ "$VARIANT" = dev ]; then
+  APP="dist/Useful Bot Dev.app"
+  EXE="UsefulBotDevApp"
+else
+  APP="dist/Useful Bot.app"
+  EXE="UsefulBotApp"
+fi
 BIN=".build/release/UsefulBotApp"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/UsefulBotApp"
-chmod +x "$APP/Contents/MacOS/UsefulBotApp"
+cp "$BIN" "$APP/Contents/MacOS/$EXE"
+chmod +x "$APP/Contents/MacOS/$EXE"
 cp bundle/Info.plist "$APP/Contents/Info.plist"
+if [ "$VARIANT" = dev ]; then
+  # Keep these in step with AppVariant.dev; the app refuses to start when the
+  # id, executable and UBVariant disagree.
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ai.useful.bot.dev" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleName Useful Bot Dev" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Useful Bot Dev" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $EXE" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :UBVariant string dev" "$APP/Contents/Info.plist"
+fi
 # Sparkle ships signed by its authors; ditto keeps that signature. The updater
 # only runs when a release build writes its feed and key (UB_FEED_URL and
 # UB_ED_PUBLIC_KEY, set by scripts/release-mac.mjs); dev builds carry neither.
@@ -64,7 +105,12 @@ if [ -n "${UB_FEED_URL:-}" ]; then
 fi
 # Where Settings > Feedback posts (services/feedback). Every build carries it;
 # UB_FEEDBACK_URL points a build at another Worker.
-/usr/libexec/PlistBuddy -c "Add :UBFeedbackURL string ${UB_FEEDBACK_URL:-https://feedback.usefulbuild.com/v1/feedback}" "$APP/Contents/Info.plist"
+# The dev build carries none: its Send is off.
+if [ "$VARIANT" = dev ]; then
+  /usr/libexec/PlistBuddy -c "Add :UBFeedbackURL string" "$APP/Contents/Info.plist"
+else
+  /usr/libexec/PlistBuddy -c "Add :UBFeedbackURL string ${UB_FEEDBACK_URL:-https://feedback.usefulbuild.com/v1/feedback}" "$APP/Contents/Info.plist"
+fi
 # Chat snapshots are trusted across builds while the replay logic they were
 # folded under is unchanged (AppModel.snapshotKey). That logic is the fold in
 # UsefulBotCore plus AppModel, which feeds it (the resume follower, the replay
@@ -96,7 +142,9 @@ mkdir -p "$APP/Contents/Resources/Brand/motion" "$APP/Contents/Resources/Brand/p
 cp -R ../brand/motion/native "$APP/Contents/Resources/Brand/motion/"
 cp ../brand/providers/*.svg "$APP/Contents/Resources/Brand/providers/"
 rm -rf "$APP/Contents/Resources/runtime"
-if [ -n "${UB_RELEASE:-}" ]; then
+if [ "$VARIANT" = dev ]; then
+  ditto .build/runtime-stage-dev "$APP/Contents/Resources/runtime"
+elif [ -n "${UB_RELEASE:-}" ]; then
   ditto .build/runtime-stage "$APP/Contents/Resources/runtime"
 fi
 # What the binary was built from, so the performance guard can refuse to time
