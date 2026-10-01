@@ -180,6 +180,26 @@ The build is verified with screenshots of Useful Bot Dev, and a 30 fps recording
 - **UI:** the Settings mockup is approved: https://claude.ai/artifact/FJeB9XnxttLJWaxg8Vhipo
 - **Deferred items:** real routing of group mentions to the member; hiding teammate tool schemas (phase 2).
 
-## 12. Final check
+## 12. Step 0 results (spikes and probe, 2026-10-01)
+
+Records are in `evals/results/2026-10-01-ub009-spikes/`. All were verified in eve 0.54.3 source; the SBPL result was observed live.
+
+- **Payload baseline** (Test Bot turn, GLM 5.3 Flash):
+  - one system message of 19,018 characters;
+  - **39 tools whose schemas total 30,483 characters**, the biggest fixed cost (largest: `generate_image`, `todo`, `agent`, `create_routine`, `update_routine`);
+  - the teammate prefix on the first user message.
+- **JWT bot claim: works.** It's per request, reaches `auth.current.attributes` on the first turn and is persisted for turns eve starts itself.
+  - **New:** nothing ties a session to a bot today. The proxy trusts the body's `botId`. PR A's binding takes the bot from the durable record by the session id in the path, never the body. `channelAuth` checks the claim on stream and cancel too.
+  - The in-eve refusal lives in the `step.started` model resolver, because a throwing instruction resolver is skipped.
+- **Memory slot: works, preferred.** Delivery is user-role `memory.load`, and the same id plus the same content is a no-op.
+  - It needs a sentinel record, because a blank recall throws and recall can't retract.
+  - Cache the rendered block per `operationId`. `null` scope hides the slot; a throw fails the turn.
+- **OpenAPI approval policy: works.** It can await the app's card.
+  - It must never throw. Cap the wait at about 150 s (router `REQUEST_TOTAL_MS` 180 s), with one live long-wait test.
+  - `operations.allow` is honored.
+- **`disableTool()`: works** for `agent` and `task_cancel` (two one-line files). The unused `agent/subagents/reviewer` keeps eve's agent-messaging block alive, so remove it if no reference remains.
+- **SBPL:** this Mac's volume folds case, and the kernel matched the lowercase deny against `.Claude/Settings.json`. `(?i)` loads but matches nothing, so never use it.
+
+## 13. Final check
 
 Fable 5.1 (high), 2026-10-01: **ready with fixes**, 0 critical, 3 high, 6 medium, 8 low (`final/fable-5.1-check.md`). All 17 are applied above and in `final/`. Fable confirmed two premises the plan relied on: custom JWT claims reach `auth.current.attributes`, and eve's connection `approval` takes a custom async policy.

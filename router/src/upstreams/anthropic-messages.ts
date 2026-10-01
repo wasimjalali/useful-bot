@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { RouterError } from "../errors.ts";
+import { dumpUpstreamBody } from "../payload-probe.ts";
 
 /**
  * anthropic-messages protocol: translate the router's chat-completions
@@ -489,6 +490,7 @@ export async function postMessages(input: {
   fetchImpl?: typeof fetch;
 }): Promise<Response> {
   const outgoing = buildMessagesBody(input.body, { model: input.model, cache: input.cache });
+  dumpUpstreamBody("anthropic-messages", input.model, outgoing);
   const url = `${input.baseUrl.replace(/\/$/, "")}/messages`;
   const res = await (input.fetchImpl ?? fetch)(url, {
     method: "POST",

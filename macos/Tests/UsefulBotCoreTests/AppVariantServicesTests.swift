@@ -453,6 +453,16 @@ private final class ParentRunner: ProcessRunner, @unchecked Sendable {
         ))
     }
 
+    @Test func onlyTheDevVariantPassesThePayloadProbeDir() {
+        let inherited = ["UB_PAYLOAD_PROBE_DIR": "/tmp/probe", "SHELL": "/bin/zsh"]
+        let daily = FoundationProcessRunner.baseEnvironment(home: "/Users/test", inherited: inherited, variant: .daily)
+        let dev = FoundationProcessRunner.baseEnvironment(home: "/Users/test", inherited: inherited, variant: .dev)
+        #expect(daily["UB_PAYLOAD_PROBE_DIR"] == nil)
+        #expect(dev["UB_PAYLOAD_PROBE_DIR"] == "/tmp/probe")
+        #expect(FoundationProcessRunner.baseEnvironment(home: "/Users/test", inherited: inherited)["UB_PAYLOAD_PROBE_DIR"] == nil)
+        #expect(FoundationProcessRunner.baseEnvironment(home: "/Users/test", inherited: ["SHELL": "/bin/zsh"], variant: .dev)["UB_PAYLOAD_PROBE_DIR"] == nil)
+    }
+
     @Test func dailyPrepareRunsSetupWithAnExplicitEnvironment() throws {
         let folders = try makeRuntimeFolders()
         defer { try? FileManager.default.removeItem(at: folders.root) }
