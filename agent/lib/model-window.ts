@@ -27,35 +27,41 @@ export function windowTokensFor(selection: ModelSelection): number {
 
 /**
  * The bot that owns a session: it holds the session id (or opened it as a
- * carry-over), else the bot a test or probe pins with UB_ACTIVE_BOT_ID. Never
- * the selected bot and never a guess: the selected bot is only where the owner
- * last looked, the wrong model for a routine or handoff opening a new chat.
+ * carry-over). Never the selected bot and never a guess: the selected bot is
+ * only where the owner last looked, the wrong model for a routine or handoff
+ * opening a new chat.
  */
 function sessionOwner(shell: ShellStore | null, eveSessionId: string): ShellBot | undefined {
-  if (!shell) return undefined;
-  const owner = shell.bots.find((bot) => bot.sessionId === eveSessionId || bot.continuedSessionId === eveSessionId);
-  if (owner) return owner;
+  return shell?.bots.find((bot) => bot.sessionId === eveSessionId || bot.continuedSessionId === eveSessionId);
+}
+
+/** The bot a test or probe pins with UB_ACTIVE_BOT_ID, the last resort for an unowned session. */
+function pinnedBot(shell: ShellStore | null): ShellBot | undefined {
   const pinned = process.env.UB_ACTIVE_BOT_ID;
-  return pinned ? shell.bots.find((bot) => bot.id === pinned) : undefined;
+  return pinned ? shell?.bots.find((bot) => bot.id === pinned) : undefined;
 }
 
 /**
  * What a turn runs on, read once at its first step and held for the whole turn
- * (see session-model.ts). The session's grant carries the bot's selection,
- * stamped at turn start by the web layer. A grant that has none yet (the first
- * step of a brand new session can run before the stamp lands, or the grants
- * store could not be read) falls back to the bot that owns the session, then
- * to the bot UB_ACTIVE_BOT_ID names (tests, probes). Anything else throws
- * `turn_stamp_missing`: running a turn on the selected bot's model or on the
- * last pick would be the wrong model for someone else's chat. The store is
- * only read here, never written.
+ * (see session-model.ts), so a pick made mid-turn applies to the next turn.
+ * The source, in order: the bot that owns the session, by its CURRENT
+ * selection (turns eve starts by itself, sub-agent reports and background
+ * task notifications, never pass the proxy stamp, so the grant can still hold
+ * the previous turn's pick); else the grant's selection (a brand new session
+ * whose owner pointer has not landed yet); else the bot UB_ACTIVE_BOT_ID names
+ * (tests, probes). Anything else throws `turn_stamp_missing`: running a turn
+ * on the selected bot's model or on the last pick would be the wrong model for
+ * someone else's chat. The store is only read here, never written.
  */
 export function freezeTurnSelection(eveSessionId: string): TurnSelection {
-  let selection: ModelSelection | null = readSessionGrant(eveSessionId)?.selection ?? null;
+  const shell = peekShell();
+  const owner = sessionOwner(shell, eveSessionId);
+  let selection: ModelSelection | null = owner ? botSelection(owner, readProviderStore()) : null;
+  if (!selection) selection = readSessionGrant(eveSessionId)?.selection ?? null;
   if (!selection) {
-    const owner = sessionOwner(peekShell(), eveSessionId);
-    if (!owner) throw new Error("turn_stamp_missing");
-    selection = botSelection(owner, readProviderStore());
+    const pinned = pinnedBot(shell);
+    if (!pinned) throw new Error("turn_stamp_missing");
+    selection = botSelection(pinned, readProviderStore());
   }
   return { ...selection, windowTokens: windowTokensFor(selection) };
 }
@@ -69,14 +75,15 @@ const STAMP_POLL_MS = 50;
  * layer can only stamp the grant once that call answers with the session id.
  * The first step can therefore run before the stamp lands, and no bot owns
  * the session yet either, so there is nothing safe to read. Wait, bounded,
- * until the grant carries a selection or a bot owns the session. Returns at
+ * until a bot owns the session or the grant carries a selection. Returns at
  * once for every session that already has either.
  */
 export async function awaitTurnStamp(eveSessionId: string, timeoutMs = STAMP_WAIT_MS): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (readSessionGrant(eveSessionId)?.selection) return true;
     if (sessionOwner(peekShell(), eveSessionId)) return true;
+    if (readSessionGrant(eveSessionId)?.selection) return true;
+    if (pinnedBot(peekShell())) return true;
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, STAMP_POLL_MS));
   }

@@ -181,6 +181,12 @@ export async function completeUpstream(input: {
   callerId: string;
   signal: AbortSignal;
   resolved: ResolvedUpstream;
+  /**
+   * Called once for an attempt the upstream refused with a 401 that is about
+   * to be refreshed and retried, so the caller can log that call too: one
+   * upstream_usage line per dispatched call, the retry being the second.
+   */
+  onRefusedAttempt?: (attempt: { startedAt: number; firstByteAt: number | null; endedAt: number }) => void;
 }): Promise<{
   response: Response;
   providerId: string;
@@ -284,8 +290,12 @@ export async function completeUpstream(input: {
     return postChatCompletions({ baseUrl: resolved.baseUrl, body: forwarded, headers, signal: input.signal, fetchImpl });
   };
   let response = await dispatch();
+  const answeredAt = Date.now();
   // One refresh and one retry on an oauth 401, then the auth failure below.
   if (response.status === 401 && credential.kind === "oauth") {
+    // The refused attempt's own timing, taken before the retry resets it. A
+    // 401 body is never read, so its first byte falls back to the headers.
+    input.onRefusedAttempt?.({ startedAt: timing.startedAt, firstByteAt: timing.firstByteAt ?? answeredAt, endedAt: answeredAt });
     try {
       await response.body?.cancel();
     } catch { /* the retry carries on regardless */ }

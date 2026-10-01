@@ -28,7 +28,7 @@ import { readSessionGrant, upsertSessionGrant } from "../shared/workspace-store.
 import { exactModelOption, snapComposer } from "../shared/models.ts";
 import { catalogFor } from "../shared/live-models.ts";
 import { ensureBotSelections, modelSelectionRefusal, pumpHandoffs, startRoutineNow, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
-import { applyProvidersDelete, applyProvidersPut } from "../web/lib/providers-write.ts";
+import { applyProvidersDelete, applyProvidersPut, CONNECTION_REMOVED_BOTS_PINNED } from "../web/lib/providers-write.ts";
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
 import { listThreadEvents } from "../shared/agent-store.ts";
@@ -695,5 +695,95 @@ test("a turn's snapshot survives the handle being evicted: the same turn keeps i
 
     modelFor("sess-evict-1", "turn-T2");
     assert.equal(rebuilt.selection()?.modelId, selOa.modelId, "a new turn picks up the grant");
+  });
+});
+
+test("a turn eve starts by itself (a report) freezes the owner's CURRENT selection, not the stale grant", () => {
+  withWorld(({ shell }) => {
+    const { aId } = twoBots(selGo, null, shell);
+    updateShell((current) => ({
+      ...current,
+      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-report" } : bot)),
+    }));
+    // The last proxied turn stamped X; the owner has since picked Y.
+    upsertSessionGrant({ sessionId: "sess-report", path: null, permission: "auto", selection: selGo });
+    applyProvidersPut({ botId: aId, modelId: `${OA}::gpt-4.1` });
+    assert.equal(readSessionGrant("sess-report")?.selection?.connectionId, GO, "the grant still says X");
+    assert.equal(freezeTurnSelection("sess-report").connectionId, OA, "the report turn runs on Y");
+    assert.equal(freezeTurnSelection("sess-report").modelId, "gpt-4.1");
+
+    // Mid-turn picks apply to the next turn only.
+    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, freezeTurnSelection);
+    const handle = modelFor("sess-report", "turn-r1");
+    applyProvidersPut({ botId: aId, modelId: `${GO}::glm-5` });
+    modelFor("sess-report", "turn-r1");
+    assert.equal(handle.selection()?.modelId, "gpt-4.1");
+    modelFor("sess-report", "turn-r2");
+    assert.equal(handle.selection()?.modelId, "glm-5");
+  });
+});
+
+test("a report turn after the connection was deleted freezes the usable default, not the deleted connection", () => {
+  withWorld(({ shell }) => {
+    const { aId } = twoBots(selOa, null, shell);
+    updateShell((current) => ({
+      ...current,
+      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-gone" } : bot)),
+    }));
+    upsertSessionGrant({ sessionId: "sess-gone", path: null, permission: "auto", selection: selOa });
+    applyProvidersDelete({ connectionId: OA });
+    assert.equal(readShell(shell).bots.find((bot) => bot.id === aId)!.model, null);
+    const frozen = freezeTurnSelection("sess-gone");
+    assert.equal(frozen.connectionId, GO);
+    assert.deepEqual({ ...frozen, windowTokens: undefined }, { ...effectiveDefault(readProviderStore()), windowTokens: undefined });
+  });
+});
+
+test("a new session no bot owns yet still freezes from its grant", () => {
+  withWorld(() => {
+    upsertSessionGrant({ sessionId: "sess-fresh", path: null, permission: "auto", selection: selOa });
+    assert.equal(freezeTurnSelection("sess-fresh").connectionId, OA);
+    assert.equal(freezeTurnSelection("sess-fresh").modelId, selOa.modelId);
+  });
+});
+
+test("an effort-only or speed-only pick on a bot whose model is gone is refused, and nothing is written", () => {
+  withWorld(({ providers, shell }) => {
+    const gone: ModelSelection = { connectionId: GO, modelId: "glm-retired", effort: "low", speed: "standard" };
+    const { aId } = twoBots(gone, null, shell);
+    const before = snapshotStores(providers, shell);
+    assert.throws(() => applyProvidersPut({ botId: aId, effort: "high" }), /model_selection_unavailable/);
+    assert.throws(() => applyProvidersPut({ botId: aId, speed: "standard" }), /model_selection_unavailable/);
+    assert.deepEqual(snapshotStores(providers, shell), before, "no pins, no last-pick move");
+    assert.throws(
+      () => applyBotPick(readProviderStore(), gone, { effort: "high" }),
+      (error: unknown) => error instanceof ModelSelectionUnavailableError && error.reason === "model_missing",
+    );
+  });
+});
+
+test("a per-bot PUT with an effort or speed that is not a known id is invalid_request and writes nothing", () => {
+  withWorld(({ providers, shell }) => {
+    const { aId } = twoBots(null, selGo5, shell);
+    const before = snapshotStores(providers, shell);
+    assert.throws(() => applyProvidersPut({ botId: aId, modelId: `${OA}::gpt-4.1`, effort: "turbo" }), /^Error: invalid_request$/);
+    assert.throws(() => applyProvidersPut({ botId: aId, effort: 5 }), /^Error: invalid_request$/);
+    assert.throws(() => applyProvidersPut({ botId: aId, speed: "warp" }), /^Error: invalid_request$/);
+    assert.deepEqual(snapshotStores(providers, shell), before);
+    // null effort is a real value, not an invalid one: it is accepted (and snapped to the model's levels).
+    assert.doesNotThrow(() => applyProvidersPut({ botId: aId, effort: null }));
+  });
+});
+
+test("a DELETE whose bot reset fails twice reports that the connection was removed but bots still name it", () => {
+  withWorld(({ dir, shell }) => {
+    twoBots(selOa, null, shell);
+    // A path under a regular file: every shell write fails.
+    writeFileSync(join(dir, "not-a-dir"), "x");
+    process.env.UB_SHELL_PATH = join(dir, "not-a-dir", "shell.json");
+    assert.throws(() => applyProvidersDelete({ connectionId: OA }), (error: unknown) => (
+      error instanceof Error && error.message === CONNECTION_REMOVED_BOTS_PINNED && /removed.*still name it/.test(error.message)
+    ));
+    assert.equal(readProviderStore().connections[OA], undefined, "the providers write landed");
   });
 });

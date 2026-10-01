@@ -84,6 +84,12 @@ export interface ProvidersPutBody {
 export function applyProvidersPut(body: ProvidersPutBody): { store: ProviderStore; bot: ShellBot | null } {
   if (body.botId !== undefined && (typeof body.botId !== "string" || !body.botId)) throw new Error("invalid");
   const botId = body.botId as string | undefined;
+  // A per-bot pick with an effort or speed that is not one of the known ids is
+  // refused up front, not silently dropped to "unchanged".
+  if (botId !== undefined) {
+    if (body.effort !== undefined && body.effort !== null && !isEffortId(body.effort)) throw new Error("invalid_request");
+    if (body.speed !== undefined && !isSpeedId(body.speed)) throw new Error("invalid_request");
+  }
   // Before the providers lock and before any write: an unknown bot changes nothing.
   if (botId !== undefined && !readShell().bots.some((item) => item.id === botId)) {
     throw new Error("shell_bot_missing");
@@ -157,7 +163,10 @@ export function applyProvidersPut(body: ProvidersPutBody): { store: ProviderStor
     // per-bot pick is the one write that would otherwise move them. A connect,
     // a default-model change or a role write is not: those bots keep following
     // the default, as the old global chip did. A failure here aborts the
-    // providers write too.
+    // providers write too. The shell pins go BEFORE the providers write on
+    // purpose: if that write fails after the pins, only bot B keeps its new
+    // pick and nobody follows a moved default. The reverse order could let
+    // null bots follow B's pick.
     if (botPick) {
       const { botId: pickedId, selection } = botPick;
       ensureBotSelections(current);
@@ -169,6 +178,10 @@ export function applyProvidersPut(body: ProvidersPutBody): { store: ProviderStor
   if (botId !== undefined && !bot) throw new Error("shell_bot_missing");
   return { store, bot };
 }
+
+/** The DELETE error when the connection is gone but resetting the bots that named it failed twice. */
+export const CONNECTION_REMOVED_BOTS_PINNED =
+  "The connection was removed, but some bots still name it. They show as unavailable until you pick a model for them again.";
 
 /**
  * Apply one DELETE. Bots pinned to a connection that goes away are reset to
@@ -191,6 +204,18 @@ export function applyProvidersDelete(body: { connectionId?: unknown; providerId?
     removed = Object.keys(current.connections).filter((id) => !next.connections[id]);
     return next;
   });
-  for (const id of removed) updateShell((shell) => clearConnectionSelections(shell, id));
+  for (const id of removed) {
+    try {
+      updateShell((shell) => clearConnectionSelections(shell, id));
+    } catch {
+      // One retry; the providers write already landed, so a second failure is
+      // reported, not rolled back.
+      try {
+        updateShell((shell) => clearConnectionSelections(shell, id));
+      } catch {
+        throw new Error(CONNECTION_REMOVED_BOTS_PINNED);
+      }
+    }
+  }
   return store;
 }

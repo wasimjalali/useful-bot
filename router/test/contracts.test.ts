@@ -11,7 +11,7 @@ import { CEILING_RETRY_AFTER_MS, ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs, upstreamLimitError } from "../src/retry-after.ts";
 import { AliasCircuit } from "../src/circuit.ts";
 import { RouterError } from "../src/errors.ts";
-import { upstreamConfigError } from "../src/upstreams/opencode.ts";
+import { completeUpstream, upstreamConfigError, type ResolvedUpstream } from "../src/upstreams/opencode.ts";
 import { readPrefix } from "../src/read-capped.ts";
 import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
 import { emptyProviderStore, readProviderStore, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
@@ -1588,4 +1588,64 @@ test("runtime config rejects malformed credentials", () => {
   assert.throws(() => loadRuntimeConfig(write({ ...base, expiresAt: "whenever" })), /runtime_config_credential/);
   assert.throws(() => loadRuntimeConfig(write({ ...base, kind: "bogus" })), /runtime_config_credential/);
   assert.throws(() => loadRuntimeConfig(write({ ...base, profile: "bogus" })), /runtime_config_credential/);
+});
+
+test("an oauth 401 then refresh then retry reports the refused attempt on its own, with its timing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-oauth-retry-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(String(req.headers.authorization ?? ""));
+    if (seen.length === 1) {
+      setTimeout(() => {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "expired" } }));
+      }, 30);
+      return;
+    }
+    jsonFixture(req, res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    // Copilot's direct-token mode: the refresh needs no network and returns the credential.
+    const credential = { kind: "oauth", accessToken: "gh-token-12345678", refreshToken: null, expiresAt: null, accountId: null } as const;
+    const resolved = {
+      connection: { id: "github-copilot:oauth" },
+      providerId: "github-copilot",
+      mode: { headers: {} },
+      modelId: "gpt-5.4-mini",
+      model: "gpt-5.4-mini",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: "openai-chat",
+      keyHeader: "bearer",
+      credential,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    const attempts: { startedAt: number; firstByteAt: number | null; endedAt: number }[] = [];
+    const out = await completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+      body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+      sessionId: randomUUID(),
+      callerId: "desktop",
+      signal: new AbortController().signal,
+      resolved,
+      onRefusedAttempt: (attempt) => attempts.push(attempt),
+    });
+    assert.equal(out.response.status, 200);
+    assert.equal(seen.length, 2, "one refused attempt and one retry reached the upstream");
+    assert.equal(attempts.length, 1, "exactly the refused attempt is reported");
+    assert.ok(attempts[0].endedAt - attempts[0].startedAt >= 25, "its own timing, not the retry's");
+    assert.ok(attempts[0].firstByteAt !== null && attempts[0].firstByteAt <= attempts[0].endedAt);
+    assert.ok(out.timing.startedAt >= attempts[0].endedAt, "the retry's timing starts after the refused one ended");
+    await out.response.body?.cancel();
+  } finally {
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
 });

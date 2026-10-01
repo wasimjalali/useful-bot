@@ -1305,6 +1305,10 @@ export function applyBotPick(
     if (!verdict.available) throw new ModelSelectionUnavailableError(verdict.reason);
   }
   if (patch.modelId !== undefined || patch.effort !== undefined || patch.speed !== undefined) {
+    // The RESULTING selection, so an effort-only or speed-only pick on a bot
+    // whose model or connection is gone is refused too, with nothing written.
+    const verdict = selectionAvailability(store, selection, env);
+    if (!verdict.available) throw new ModelSelectionUnavailableError(verdict.reason);
     const conn = selectionConnection(store, selection.connectionId, env);
     if (!conn || !isConnected(conn)) throw new ModelSelectionUnavailableError(conn ? "provider_disconnected" : "connection_missing");
     const name = conn.providerId === "custom" && conn.fields.name ? conn.fields.name : providerDef(conn.providerId).name;

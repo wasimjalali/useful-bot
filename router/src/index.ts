@@ -647,6 +647,23 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               callerId: caller.callerId,
               signal,
               resolved,
+              onRefusedAttempt: (attempt) => {
+                log({
+                  request_id: requestId,
+                  event: "upstream_usage",
+                  outcome: "refused",
+                  providerId: resolved.providerId,
+                  connectionId: resolved.connection.id,
+                  modelId: resolved.modelId,
+                  sessionId,
+                  inputTokens: null,
+                  cachedInputTokens: null,
+                  cacheWriteTokens: null,
+                  outputTokens: null,
+                  ttfbMs: attempt.firstByteAt === null ? null : attempt.firstByteAt - attempt.startedAt,
+                  totalMs: attempt.endedAt - attempt.startedAt,
+                });
+              },
             });
           } catch (error) {
             if (error instanceof RouterError) {

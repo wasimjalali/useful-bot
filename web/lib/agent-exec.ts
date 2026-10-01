@@ -109,7 +109,8 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
  * inheriting, exactly as before. The pin is the effective default (the model
  * `composerState` resolves, with its snapped effort and speed), not the raw
  * stored model, so it is what the owner's chip showed. When that default is
- * not usable (nothing connected yet) nothing is pinned and the bots stay null.
+ * not usable (nothing connected yet) nothing is pinned and the bots stay null,
+ * by design: they had no running selection, so they follow the next usable pick.
  * Idempotent: bots that already chose are untouched.
  */
 export function ensureBotSelections(providerStore: ProviderStore = readProviderStore()): void {

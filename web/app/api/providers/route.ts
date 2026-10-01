@@ -16,6 +16,7 @@ import {
 } from "../../../../shared/providers.ts";
 import {
   applyProvidersDelete,
+  CONNECTION_REMOVED_BOTS_PINNED,
   applyProvidersPut,
   isStringRecord,
   legacyMode,
@@ -133,6 +134,12 @@ export async function DELETE(request: Request) {
     await syncProviderModels(store, { force: true });
     return NextResponse.json(payload(store));
   } catch (err) {
+    if (err instanceof Error && err.message === CONNECTION_REMOVED_BOTS_PINNED) {
+      return NextResponse.json(
+        { ok: false, error: "connection_removed_bots_pinned", message: CONNECTION_REMOVED_BOTS_PINNED },
+        { status: 500 },
+      );
+    }
     return NextResponse.json({ ok: false, error: errorCode(err) }, { status: 400 });
   }
 }

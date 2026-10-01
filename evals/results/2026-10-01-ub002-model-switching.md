@@ -11,7 +11,8 @@ say once the router logs them?
 - Two bots: "Test Bot" and "Test Bot 2". Test Bot 2 was created by asking Test Bot for it, then
   "Add teammate".
 - Driven with cua-driver in the background (no pointer, no focus).
-- Data: the router's new `upstream_usage` line, one per completed upstream call. Raw lines are in
+- Data: the router's new `upstream_usage` line. The first build wrote one per completed upstream
+  call; since review round 1 it writes one per dispatched call, with an `outcome` field. Raw lines are in
   `2026-10-01-ub002-model-switching-usage.jsonl` (29 calls, 15:09 to 15:17 UTC).
 - Screenshots beside this file: `2026-10-01-ub002-running-model.png` and
   `2026-10-01-ub002-overlap.png`.
@@ -40,8 +41,10 @@ Time to first byte (TTFB) is the median time from dispatch to the first upstream
 | kimi-k3 | 8 | 1 | 2,102 ms | 1,397 ms | 85.8% |
 | glm-5.3-flash | 9 | 3 | 722 ms | 512 ms | 55.3% |
 
-- The first call after a switch to a new model reads 0 cached tokens, and the next calls hit.
-  That fits caches being per model: the switch costs one uncached prompt, no more.
+- Test Bot's switch from GLM 5.3 Flash to Kimi K3 is the one model switch in this run. Its first
+  Kimi call read 0 cached tokens and every later call hit, which fits caches being per model. One
+  switch is not enough to call that a rule. DeepSeek's first call in its new session reported no
+  cache field at all (null), which is not the same as a miss.
 - GLM 5.3 Flash's three misses: the session's first call (15:09:33), the first call after five
   idle minutes (15:14:34), and one call in the middle of a turn (15:14:39) with the same session
   header. That last one is the provider's routing, not something this build controls.
@@ -64,8 +67,10 @@ Time to first byte (TTFB) is the median time from dispatch to the first upstream
   just before a per-bot pick moves the default. Removing a connection resets the bots pinned to it to
   "inherit". Pinning every bot at connect, sign-out and turn start had stranded a fresh install's
   default bot on an unconnected provider.
-- After the round 1 fixes, a sanity turn on Test Bot 2 stayed on `deepseek-v4-flash`, the new
-  `outcome` field was logged on every call, and no turn waited on a missing stamp.
+- After the round 1 fixes, a sanity turn on Test Bot 2 stayed on `deepseek-v4-flash`. Both calls
+  logged `outcome: "ok"`, and the eve log has no `turn_stamp_missing` line. Raw lines:
+  `2026-10-01-ub002-round1-sanity-usage.jsonl`. The first call's 26.9 s TTFB is measured from the
+  router's dispatch, so the wait was upstream.
 
 ## Conclusion
 - Per-bot selection, next-turn switching and concurrent bots on different models work live on
