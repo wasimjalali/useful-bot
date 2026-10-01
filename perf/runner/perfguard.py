@@ -334,17 +334,26 @@ class Launch:
             failure = err
             raise
         finally:
-            # SIGTERM/SIGHUP stay blocked while quitting so a second signal can't skip the
-            # quit; a pending one is delivered on unblock.
-            old = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGHUP})
+            # A handler defers SIGTERM/SIGHUP while quitting, not a signal mask: a blocked mask
+            # is inherited by the osascript children quit_all execs, a Python handler is not.
+            # A signal that arrives is re-delivered once the quit is done.
+            seen = []
+            saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+            for s in saved:
+                signal.signal(s, lambda signum, _frame: seen.append(signum))
+            quit_failed = True
             try:
                 self.app.quit_all()
+                quit_failed = False
             except SystemExit:
                 if failure is not None:
                     print(f"{self.name}: {failure!r}, and then the app would not quit", file=sys.stderr)
                 raise
             finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, old)
+                for s, h in saved.items():
+                    signal.signal(s, h)
+                if seen and not quit_failed:
+                    signal.raise_signal(seen[0])
 
     def _run(self, timeout_s, record):
         pid = None
@@ -372,6 +381,10 @@ class Launch:
                 self.window = line.split()[1:]
             except BaseException:
                 rec.kill()
+                try:
+                    rec.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
                 raise
         deadline = time.time() + timeout_s
         end = None
