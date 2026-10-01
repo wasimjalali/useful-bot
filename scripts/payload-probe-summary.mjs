@@ -19,7 +19,13 @@ function text(content) {
 const one = (value, max) => text(value).slice(0, max).replace(/\s+/g, " ");
 
 for (const name of readdirSync(dir).filter((file) => file.endsWith(".json")).sort()) {
-  const body = JSON.parse(readFileSync(join(dir, name), "utf8"));
+  let body;
+  try {
+    body = JSON.parse(readFileSync(join(dir, name), "utf8"));
+  } catch (error) {
+    console.log(`== ${name}\nskipped: ${error.message}`);
+    continue;
+  }
   const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : [];
   const roles = (m) => m?.role;
   // chat bodies carry system messages in `messages`; Messages carries `system`; Responses carries `instructions`.

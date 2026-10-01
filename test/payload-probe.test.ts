@@ -35,7 +35,7 @@ test("on dev the body is written with keys, auth fields and bearer tokens scrubb
   assert.ok(file);
   const files = readdirSync(dir);
   assert.equal(files.length, 1);
-  assert.match(files[0], /^\d{4}-.*-openai-chat-glm_test_1\.json$/);
+  assert.match(files[0], /^\d{4}-.*-[0-9a-f]{6}-openai-chat-glm_test_1\.json$/);
   const raw = readFileSync(file, "utf8");
   assert.ok(!raw.includes("sk-test-"), "fake key survived");
   assert.ok(!/Bearer\s+abcdefghij/.test(raw), "bearer survived");
@@ -56,4 +56,25 @@ test("the summary script reads a dump", () => {
   assert.match(out, /system messages: 1 \[\d+ chars\]/);
   assert.match(out, /tools: 1, schema chars: \d+/);
   assert.match(out, /first user: hello/);
+});
+
+test("an invalid UB_STACK is refused without throwing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-probe-"));
+  assert.equal(dumpUpstreamBody("openai-chat", "m", body, { UB_STACK: "bogus", UB_PAYLOAD_PROBE_DIR: join(dir, "d") }), null);
+  assert.equal(existsSync(join(dir, "d")), false);
+});
+
+test("wide key names, more key shapes and data URIs are handled, and same-millisecond dumps do not collide", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-probe-"));
+  const env = { UB_STACK: "dev", UB_PAYLOAD_PROBE_DIR: dir };
+  const big = { cookie: "a=b", x_auth_header: "zzz", messages: [
+    { role: "user", content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(5000)}` } }, { type: "text", text: "gsk_abcdefgh1234 xai-abcdefgh1234 nvapi-abcdefgh1234 sk_live_abcdefgh1234" }] },
+  ], tools: [{ parameters: { properties: { key: { type: "string" } } } }] };
+  const a = dumpUpstreamBody("openai-chat", "m", big, env);
+  const b = dumpUpstreamBody("openai-chat", "m", big, env);
+  assert.notEqual(a, b);
+  const raw = readFileSync(a!, "utf8");
+  for (const leaked of ["gsk_abc", "xai-abc", "nvapi-abc", "sk_live_abc", "AAAAAAAAAA", "a=b", "zzz"]) assert.ok(!raw.includes(leaked), leaked);
+  assert.match(raw, /\[data uri, \d+ bytes\]/);
+  assert.deepEqual(JSON.parse(raw).tools[0].parameters.properties.key, { type: "string" });
 });
