@@ -7,7 +7,10 @@ It measures the **dev app** ("Useful Bot Dev", bundle id `ai.useful.bot.dev`), w
 state (`~/.useful-bot-dev-app`), ports (4419 router, 4420 web, 4421 eve), Keychain items and
 logs (`~/Library/Logs/UsefulBotDev`). The daily app and its services are never quit, launched,
 signalled or measured, and the run refuses any other bundle id. Quitting the daily app first is
-not needed, but its CPU counts as other work while it is busy.
+not needed, but its CPU counts as other work while it is busy. The installed daily app should be
+a release build (one with a runtime payload): `build:dev-app` refuses when `/Applications/Useful
+Bot.app` has none, since that app runs this checkout and the dev build would swap its web build
+underneath it.
 
 ```sh
 npm run build:dev-app      # the candidate: it carries its own runtime (services + production web build)

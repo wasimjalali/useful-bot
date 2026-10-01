@@ -26,37 +26,83 @@ case "$VARIANT" in
 esac
 
 # The dev build rebuilds the checkout's web/.next and restamps its web-mode
-# (below). A daily app with no runtime payload (a `npm run build:app` install,
-# not a release) runs its services from this checkout and serves that same
-# build, so a dev build would change what the daily app serves under it. Refuse
+# (below). A daily app with no runtime payload (a plain `npm run build:app` +
+# `install:app`, not a release) runs its services from this checkout and serves
+# that same build, so a dev build would swap its web build underneath it. Refuse
 # rather than touch it. A release install carries a payload and is unaffected.
-# UB_DAILY_APP names the installed copy to check; it exists for tests only.
+# UB_TEST_DAILY_APP names the installed copy to check; it exists for tests only
+# and the path being checked is always printed.
 if [ "$VARIANT" = dev ]; then
-  DAILY_APP="${UB_DAILY_APP:-/Applications/Useful Bot.app}"
+  DAILY_APP="${UB_TEST_DAILY_APP:-/Applications/Useful Bot.app}"
+  echo "Checking the daily app for a runtime payload: $DAILY_APP"
   if [ -d "$DAILY_APP" ] && [ ! -d "$DAILY_APP/Contents/Resources/runtime" ]; then
-    echo "Refusing to build the dev app: $DAILY_APP has no Contents/Resources/runtime, so it runs its services from this checkout," >&2
-    echo "and the dev build rebuilds web/.next and restamps web-mode there, which that app would then serve." >&2
-    echo "Install a release build of the daily app (or remove it), then run npm run build:dev-app again." >&2
+    echo "Refusing to build the dev app: $DAILY_APP has no Contents/Resources/runtime." >&2
+    echo "Why: a daily app without a runtime payload (what a plain npm run build:app + install:app produces) runs its services from this checkout," >&2
+    echo "and the dev build rebuilds web/.next and restamps web-mode here, which would swap that app's web build underneath it." >&2
+    echo "Fix: install a release build of the daily app, which carries a runtime payload (for example the latest GitHub release), then run npm run build:dev-app again." >&2
     exit 1
   fi
 fi
 
 # One build at a time: two runs (daily and dev, or two of either) would race on
-# web/.next and macos/.build. A plain mkdir lock; a lock left by a run that died
-# is taken over once its pid is gone.
-mkdir -p .build
+# web/.next and macos/.build. The lock is a file holding the owner's pid. It is
+# written to a temp file first and hard-linked into place, so it appears whole
+# or not at all and `ln` fails if it exists. A lock whose pid is gone is moved
+# aside (only one racer's mv can win) and taken again; a pid-less lock younger
+# than 10 s is treated as held, and ownership is re-read after taking it.
 LOCK=".build/build-app.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  HOLDER="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  if [ -n "$HOLDER" ] && kill -0 "$HOLDER" 2>/dev/null; then
-    echo "Another build-app.sh run (pid $HOLDER) holds macos/$LOCK. Wait for it to finish; two builds race on web/.next and macos/.build." >&2
-    exit 1
+
+lock_holder() {
+  if [ -d "$LOCK" ]; then cat "$LOCK/pid" 2>/dev/null || true; else cat "$LOCK" 2>/dev/null || true; fi
+}
+
+lock_age() {
+  _mtime="$(stat -f %m "$LOCK" 2>/dev/null || true)"
+  if [ -n "$_mtime" ]; then echo $(( $(date +%s) - _mtime )); else echo 0; fi
+}
+
+take_build_lock() {
+  mkdir -p .build
+  _mine=".build/build-app.lock.$$"
+  echo "$$" > "$_mine"
+  _tries=0
+  while :; do
+    if [ ! -e "$LOCK" ] && ln "$_mine" "$LOCK" 2>/dev/null; then break; fi
+    _tries=$((_tries + 1))
+    HOLDER="$(lock_holder)"
+    if [ -n "$HOLDER" ]; then
+      if kill -0 "$HOLDER" 2>/dev/null; then
+        rm -f "$_mine"
+        echo "Another build-app.sh run (pid $HOLDER) holds macos/$LOCK. Wait for it to finish; two builds race on web/.next and macos/.build." >&2
+        return 1
+      fi
+    elif [ -e "$LOCK" ] && [ "$(lock_age)" -lt 10 ]; then
+      rm -f "$_mine"
+      echo "macos/$LOCK is held by a run that has not written its pid yet. Wait a few seconds and try again." >&2
+      return 1
+    fi
+    if [ "$_tries" -ge 5 ]; then
+      rm -f "$_mine"
+      echo "Could not take macos/$LOCK" >&2
+      return 1
+    fi
+    # Stale: move it aside so exactly one racer clears it, then try again.
+    if [ -e "$LOCK" ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then rm -rf "$LOCK.stale.$$"; fi
+  done
+  rm -f "$_mine"
+  if [ "$(lock_holder)" != "$$" ]; then
+    echo "Lost macos/$LOCK to another build-app.sh run; try again." >&2
+    return 1
   fi
-  rm -rf "$LOCK"
-  mkdir "$LOCK" || { echo "Could not take macos/$LOCK" >&2; exit 1; }
-fi
-echo "$$" > "$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
+}
+
+release_build_lock() {
+  if [ -f "$LOCK" ] && [ "$(cat "$LOCK" 2>/dev/null || true)" = "$$" ]; then rm -f "$LOCK"; fi
+  rm -f ".build/build-app.lock.$$"
+}
+
+take_build_lock || exit 1
+trap 'release_build_lock' EXIT
 trap 'exit 1' INT TERM HUP
 
 # The web service the app talks to. scripts/service.mjs serves this build while

@@ -30,6 +30,9 @@ public struct LocalServices: Sendable {
     private let restartIntervalSeconds: Double
     /// How long a SIGTERM is given before the process is sent SIGKILL.
     private let terminateGraceSeconds: Double
+    /// Where the dev app runs its services from. A daily app never adopts an
+    /// eve running from here.
+    private let devRuntimeRoot: String
 
     public init(
         runner: ProcessRunner = FoundationProcessRunner(),
@@ -39,8 +42,10 @@ public struct LocalServices: Sendable {
         // before it serves. A genuinely wedged listener costs this once.
         startGraceSeconds: Double = 20,
         restartIntervalSeconds: Double = 15,
-        terminateGraceSeconds: Double = 3
+        terminateGraceSeconds: Double = 3,
+        devRuntimeRoot: String = RuntimeInstall.installRoot(variant: .dev).path
     ) {
+        self.devRuntimeRoot = devRuntimeRoot
         self.terminateGraceSeconds = terminateGraceSeconds
         self.restartIntervalSeconds = restartIntervalSeconds
         self.runner = runner
@@ -194,12 +199,28 @@ public struct LocalServices: Sendable {
         if case .foreign = webState { return .foreign }
         if case .foreign = routerState { return .foreign }
         if eveUp {
-            let supervisor = self.supervisor
-            let repoPath = config.repoPath
-            let owns: @Sendable (String) -> Bool = { supervisor.isOwnNodeProcess($0, repoPath: repoPath) }
-            if runner.hasForeignListener(port: variant.evePort, owns: owns) { return .foreign }
+            if runner.hasForeignListener(port: variant.evePort, owns: eveOwnership(config: config)) { return .foreign }
         }
         return webState == .ready && routerState == .ready && eveUp ? .ready : .notReady
+    }
+
+    private func eveOwnership(config: ServerConfig) -> @Sendable (String) -> Bool {
+        let supervisor = self.supervisor
+        let repoPath = config.repoPath
+        let variant = config.variant
+        let devRoot = devRuntimeRoot
+        return { supervisor.isOwnEveProcess($0, variant: variant, repoPath: repoPath, devRuntimeRoot: devRoot) }
+    }
+
+    /// For a `.foreignStack` outcome caused by the eve listener: which process
+    /// holds the port, with the path it runs from. Nil when it is not eve.
+    public func foreignListenerDetail(config: ServerConfig) -> String? {
+        let owns = eveOwnership(config: config)
+        guard let foreign = runner.listenerDescriptions(port: config.variant.evePort).first(where: { !owns($0.line) }) else {
+            return nil
+        }
+        let line = foreign.line.count > 200 ? String(foreign.line.prefix(200)) + "..." : foreign.line
+        return "The agent (eve) on port \(config.variant.evePort) is process \(foreign.pid), running from: \(line)"
     }
 
     /// What the owner is told when `ensure` ends in `.neverBound`.
@@ -417,6 +438,9 @@ public protocol ProcessRunner: Sendable {
     /// True when something listens on `port` and none of it is ours (`owns`
     /// takes the same command-line text as the stop calls).
     func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool
+    /// Each listener on `port` with its command line and its parent's, the text
+    /// `owns` is asked about. For naming a foreign one.
+    func listenerDescriptions(port: Int) -> [(pid: pid_t, line: String)]
     /// Processes whose command line `matching` accepts that hold no listening
     /// port and are not a spawn of this runner: what an earlier launch left
     /// behind when its service never bound.
@@ -430,6 +454,7 @@ extension ProcessRunner {
     public func liveSpawnAge(of mode: ServiceMode) -> TimeInterval? { nil }
     public func terminateSpawn(of mode: ServiceMode, force: Bool) {}
     public func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool { false }
+    public func listenerDescriptions(port: Int) -> [(pid: pid_t, line: String)] { [] }
     public func strayServicePids(matching: @escaping @Sendable (String) -> Bool) -> [pid_t] { [] }
     public func terminate(pids: [pid_t], force: Bool) {}
 }
@@ -466,12 +491,11 @@ private final class SpawnRegistry: @unchecked Sendable {
         return starts.min().map { Date().timeIntervalSince($0) }
     }
 
-    /// Signals every live process started for `mode`.
-    func signal(mode: ServiceMode, signal: Int32) {
+    /// Every live process started for `mode`.
+    func livePids(mode: ServiceMode) -> [pid_t] {
         lock.lock()
-        let pids = processes.compactMap { pid, process in modes[pid] == mode && process.isRunning ? pid : nil }
-        lock.unlock()
-        for pid in pids { kill(pid, signal) }
+        defer { lock.unlock() }
+        return processes.compactMap { pid, process in modes[pid] == mode && process.isRunning ? pid : nil }
     }
 
     /// True while a process started for `mode` is still running.
@@ -510,10 +534,83 @@ private final class SpawnRegistry: @unchecked Sendable {
     }
 }
 
+/// One `ps` snapshot of every process: enough to walk a launcher's children and
+/// to tell how long a process has been up.
+struct ProcessTable {
+    struct Row: Equatable {
+        let pid: pid_t
+        let ppid: pid_t
+        let elapsed: TimeInterval
+        let args: String
+    }
+
+    static func read() -> [Row] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,ppid=,etime=,args="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return []
+        }
+        // Read before waiting: a full pipe would otherwise block the child.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return parse(String(data: data, encoding: .utf8) ?? "")
+    }
+
+    static func parse(_ text: String) -> [Row] {
+        text.split(whereSeparator: \.isNewline).compactMap { line in
+            let fields = line.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
+            guard fields.count == 4, let pid = pid_t(fields[0]), let ppid = pid_t(fields[1]),
+                  let elapsed = seconds(fromElapsed: String(fields[2])) else { return nil }
+            return Row(pid: pid, ppid: ppid, elapsed: elapsed, args: fields[3].trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    /// `ps` etime: `[[dd-]hh:]mm:ss`, or bare seconds.
+    static func seconds(fromElapsed text: String) -> TimeInterval? {
+        var rest = Substring(text)
+        var days = 0.0
+        if let dash = rest.firstIndex(of: "-") {
+            guard let d = Double(rest[rest.startIndex..<dash]) else { return nil }
+            days = d
+            rest = rest[rest.index(after: dash)...]
+        }
+        let parts = rest.split(separator: ":", omittingEmptySubsequences: false).map { Double($0) }
+        guard (1...3).contains(parts.count), !parts.contains(where: { $0 == nil }) else { return nil }
+        return days * 86_400 + parts.reduce(0) { $0 * 60 + $1! }
+    }
+
+    /// Every process below `pid`, however deep, in the given snapshot.
+    static func descendants(of pid: pid_t, in rows: [Row]) -> [pid_t] {
+        var children: [pid_t: [pid_t]] = [:]
+        for row in rows { children[row.ppid, default: []].append(row.pid) }
+        var found: [pid_t] = []
+        var queue = children[pid] ?? []
+        var seen: Set<pid_t> = [pid]
+        while let next = queue.popLast() {
+            guard seen.insert(next).inserted else { continue }
+            found.append(next)
+            queue += children[next] ?? []
+        }
+        return found
+    }
+}
+
 public struct FoundationProcessRunner: ProcessRunner {
     private let registry = SpawnRegistry()
+    /// A launcher younger than this is never a stray: a healthy one holds no
+    /// port itself (its child does) and may simply still be starting. The
+    /// default is the startup budget `ensure` waits.
+    private let strayMinAge: TimeInterval
 
-    public init() {}
+    public init(strayMinAge: TimeInterval = 90) {
+        self.strayMinAge = strayMinAge
+    }
 
     public func start(_ command: ServiceCommand) {
         let label = command.arguments.last ?? "service"
@@ -567,7 +664,25 @@ public struct FoundationProcessRunner: ProcessRunner {
     }
 
     public func terminateSpawn(of mode: ServiceMode, force: Bool) {
-        registry.signal(mode: mode, signal: force ? SIGKILL : SIGTERM)
+        for pid in registry.livePids(mode: mode) { Self.signalTree(pid, signal: force ? SIGKILL : SIGTERM) }
+    }
+
+    /// The launcher and everything below it. eve forks its server detached, so
+    /// killing only the launcher would leave that child running, reparented to
+    /// launchd, and holding the port. The tree is read before anything is
+    /// signalled, while the parent links still exist. Not a process group:
+    /// eve's child starts its own session, which a group signal would miss.
+    private static func signalTree(_ pid: pid_t, signal: Int32) {
+        let below = ProcessTable.descendants(of: pid, in: ProcessTable.read())
+        for target in [pid] + below {
+            // A child that already exited is expected; only the launcher failing is news.
+            if kill(target, signal) != 0, target == pid {
+                appendEvent(
+                    "kill(\(signal)) failed for pid \(pid): \(String(cString: strerror(errno)))",
+                    to: supervisorLogURL
+                )
+            }
+        }
     }
 
     public func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool {
@@ -585,40 +700,28 @@ public struct FoundationProcessRunner: ProcessRunner {
         }
     }
 
-    public func strayServicePids(matching: @escaping @Sendable (String) -> Bool) -> [pid_t] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,args="]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return []
+    public func listenerDescriptions(port: Int) -> [(pid: pid_t, line: String)] {
+        listenerPids(port: port).map { pid in
+            var text = commandLine(pid: pid)
+            if let parent = parentPid(of: pid) { text += " \(commandLine(pid: parent))" }
+            return (pid, text)
         }
-        // Read before waiting: a full pipe would otherwise block the child.
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        let text = String(data: data, encoding: .utf8) ?? ""
+    }
+
+    public func strayServicePids(matching: @escaping @Sendable (String) -> Bool) -> [pid_t] {
+        let rows = ProcessTable.read()
         let me = getpid()
-        return text.split(whereSeparator: \.isNewline).compactMap { line in
-            let trimmed = line.drop(while: { $0 == " " })
-            guard let space = trimmed.firstIndex(of: " "), let pid = pid_t(trimmed[trimmed.startIndex..<space]),
-                  pid != me, !registry.contains(pid: pid),
-                  matching(String(trimmed[space...]).trimmingCharacters(in: .whitespaces)),
-                  !holdsListeningPort(pid: pid) else { return nil }
-            return pid
+        return rows.compactMap { row in
+            guard row.pid != me, !registry.contains(pid: row.pid), row.elapsed >= strayMinAge,
+                  matching(row.args) else { return nil }
+            // A healthy launcher holds no port of its own; its child does.
+            let tree = [row.pid] + ProcessTable.descendants(of: row.pid, in: rows)
+            return tree.contains(where: { holdsListeningPort(pid: $0) }) ? nil : row.pid
         }
     }
 
     public func terminate(pids: [pid_t], force: Bool) {
-        for pid in pids where kill(pid, force ? SIGKILL : SIGTERM) != 0 {
-            Self.appendEvent(
-                "kill(\(force ? SIGKILL : SIGTERM)) failed for stray pid \(pid): \(String(cString: strerror(errno)))",
-                to: Self.supervisorLogURL
-            )
-        }
+        for pid in pids { Self.signalTree(pid, signal: force ? SIGKILL : SIGTERM) }
     }
 
     func holdsListeningPort(pid: pid_t) -> Bool {

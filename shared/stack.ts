@@ -45,8 +45,8 @@ export const DEV = {
 export const APP_STATE_DIR = DAILY.stateDir;
 
 /**
- * Every per-store override a module still honours. On the dev stack each one
- * that is set must resolve inside the dev state root. test/dev-stack.test.ts
+ * Every per-store override a module still honours. The dev stack refuses all of
+ * them (stores derive from UB_STATE_ROOT). test/dev-stack.test.ts
  * scans the code for UB_*_PATH / _DIR / _ROOT / _DB / _CONFIG reads and fails
  * when one is missing here (or from its short list of reasoned exemptions), so
  * a new store can never quietly bypass the dev state root.
@@ -71,6 +71,9 @@ const PORT_VARS = [
 ] as const;
 
 // The part after the stack's prefix: `device.desktop`, `connection.<id>`.
+/** The dev state root's folder name: inside what the sandbox's `.useful-bot-` deny rule protects. */
+const DEV_STATE_NAME = /^\.useful-bot-[a-z0-9]+(-[a-z0-9]+)*$/;
+
 const SERVICE_TAIL = /^[a-z0-9][a-z0-9._-]{0,120}$/;
 
 export class StackConfigError extends Error {
@@ -271,6 +274,11 @@ function pathForms(name: string, value: string, problems: string[]): string[] | 
     problems.push(`${name} must be an absolute path, got "${value}"`);
     return null;
   }
+  // `..` is judged before anything is resolved: normalising it ahead of following links lands somewhere else.
+  if (value.split("/").includes("..")) {
+    problems.push(`${name} must not contain a ".." segment, got "${value}"`);
+    return null;
+  }
   try {
     return [...new Set([fold(resolve(value)), fold(canonicalPath(value))])];
   } catch (error) {
@@ -372,10 +380,11 @@ export function stackProblems(env: Env = process.env): string[] {
         const hit = forms === null ? null : touches(rootForms, forms);
         if (hit) problems.push(`UB_STATE_ROOT ${RELATION_TEXT[hit.how]} ${folder.label} (${hit.folder})`);
       }
-      // The bots' deny-lists key on the folder's name, as given and as the kernel sees it.
-      for (const name of new Set([basename(resolve(root)), basename(rootForms[rootForms.length - 1])])) {
-        if (!isAppStateSegment(name)) {
-          problems.push(`UB_STATE_ROOT's folder name "${name}" must be an app-state name such as .useful-bot-dev-app, so the bots' deny-lists cover it`);
+      // The kernel sandbox denies `.useful-bot-` plus anything up to the next slash, case-sensitively.
+      // Hold the name to a stricter, lowercase shape, as given and as the disk resolves it.
+      for (const name of new Set([basename(resolve(root)), basename(canonicalPath(root))])) {
+        if (!DEV_STATE_NAME.test(name)) {
+          problems.push(`UB_STATE_ROOT's folder name "${name}" must be lowercase .useful-bot-<words joined by hyphens>, such as .useful-bot-dev-app, so the bots' deny-lists cover it`);
         }
       }
     }
@@ -395,17 +404,13 @@ export function stackProblems(env: Env = process.env): string[] {
     }
   }
 
-  // Every per-store override that is set must land inside the dev state root,
-  // as the disk resolves it.
-  if (rootForms !== null) {
-    const canonicalRoot = rootForms[rootForms.length - 1];
-    for (const name of STORE_OVERRIDE_VARS) {
-      if (!set(name)) continue;
-      const forms = pathForms(name, env[name] as string, problems);
-      if (forms !== null && relation(forms[forms.length - 1], canonicalRoot) !== "under") {
-        problems.push(`${name} is ${forms[forms.length - 1]}, outside the dev state root (${canonicalRoot})`);
-      }
-    }
+  // The dev stack takes no per-store override: its stores derive from UB_STATE_ROOT.
+  // The one exception is UB_ROUTER_CONFIG spelled exactly as that derived path,
+  // which scripts/service.mjs passes to the router and web children.
+  for (const name of STORE_OVERRIDE_VARS) {
+    if (!set(name)) continue;
+    if (name === "UB_ROUTER_CONFIG" && root && env[name] === join(root, "config.json")) continue;
+    problems.push(`${name} is not allowed on the dev stack; dev stores live under UB_STATE_ROOT`);
   }
 
   // The bots' working root is normally $HOME; it may not be, or sit inside, a store.

@@ -63,3 +63,19 @@ import Testing
         #expect(pending.next() == nil)
     }
 }
+
+@Suite struct BudgetInputLeadingZeroTests {
+    @Test func aLeadingZeroInAGroupedWholePartIsRefused() {
+        #expect(BudgetInput.requests("0,500", min: 1).errorMessage != nil)
+        #expect(BudgetInput.requests("001,000", min: 1).errorMessage != nil)
+        #expect(BudgetInput.tokens("0,500", min: 1_000_000, max: nil).errorMessage != nil)
+        #expect(BudgetInput.tokens("001,000M", min: 1_000_000, max: nil).errorMessage != nil)
+    }
+
+    @Test func plainAndGroupedNumbersStillParse() {
+        #expect(BudgetInput.requests("1,500", min: 1) == .success(1500))
+        #expect(BudgetInput.requests("007", min: 1) == .success(7))
+        #expect(BudgetInput.tokens("0.5", min: 100_000, max: nil) == .success(500_000))
+        #expect(BudgetInput.tokens("1,000", min: 1_000_000, max: nil) == .success(1_000_000_000))
+    }
+}

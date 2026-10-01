@@ -116,7 +116,8 @@ public enum BudgetInput {
         func digits(_ part: Substring) -> Bool { part.allSatisfy { $0.isASCII && $0.isNumber } }
         let groups = text.split(separator: ",", omittingEmptySubsequences: false)
         if groups.count == 1 { return digits(groups[0]) }
-        guard let first = groups.first, (1...3).contains(first.count), digits(first) else { return false }
+        // No leading zero once there are groups: "0,500" and "001,000" are typos.
+        guard let first = groups.first, (1...3).contains(first.count), digits(first), first.first != "0" else { return false }
         return groups.dropFirst().allSatisfy { $0.count == 3 && digits($0) }
     }
 

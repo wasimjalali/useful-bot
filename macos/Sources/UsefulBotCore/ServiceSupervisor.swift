@@ -95,6 +95,32 @@ public struct ServiceSupervisor: Sendable {
             || commandLine.contains("web/.next/standalone/web/server.js")
             || commandLine.contains("router/src/index.ts")
             || commandLine.contains("eve/bin/eve.js")
+            // eve forks its server as a detached child; once its launcher is
+            // gone this is the process that holds the eve port.
+            || commandLine.contains("eve/dist/src/cli/dev/local-server-child.js")
+    }
+
+    /// Whether the process holding the eve port may be ADOPTED (counted as
+    /// not foreign). Only ever a readiness question: nothing is signalled on
+    /// the strength of it, the stop and recovery paths use `isOwnNodeProcess`.
+    /// Dev keeps the strict rule: only its own repoPath. Daily adopts an actual
+    /// eve (its launcher or server child, matched by script path) that is not
+    /// running from the dev app's runtime, so the checkout build and the
+    /// release build (different repoPaths, same ports) can take over from each
+    /// other. Anything else on the port is foreign. The command line may carry
+    /// the parent's too (see `ownsProcess`).
+    public func isOwnEveProcess(
+        _ commandLine: String, variant: AppVariant, repoPath: String, devRuntimeRoot: String
+    ) -> Bool {
+        switch variant {
+        case .dev:
+            return isOwnNodeProcess(commandLine, repoPath: repoPath)
+        case .daily:
+            let isEve = commandLine.contains("eve/bin/eve.js")
+                || commandLine.contains("eve/dist/src/cli/dev/local-server-child.js")
+            let underDevRuntime = commandLine.contains(devRuntimeRoot + "/") || commandLine.hasSuffix(devRuntimeRoot)
+            return isEve && !underDevRuntime
+        }
     }
 }
 #endif

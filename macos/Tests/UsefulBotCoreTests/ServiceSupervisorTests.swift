@@ -19,6 +19,42 @@ import Testing
         #expect(ServiceSupervisor.resolveNodePath(exists: { $0 == "/opt/homebrew/bin/node" }) == "/opt/homebrew/bin/node")
     }
 
+    @Test func eveServerChildOfThisInstallIsOwnAndAnotherInstallsIsNot() {
+        let supervisor = ServiceSupervisor(nodeExists: { _ in true })
+        let child = "node \(repo)/node_modules/eve/dist/src/cli/dev/local-server-child.js"
+        #expect(supervisor.isOwnNodeProcess(child, repoPath: repo))
+        #expect(!supervisor.isOwnNodeProcess(child, repoPath: "/Users/wasim/Desktop/other"))
+        // The same file name outside this repo is not ours.
+        #expect(!supervisor.isOwnNodeProcess("node /elsewhere/eve/dist/src/cli/dev/local-server-child.js", repoPath: repo))
+    }
+
+    @Test func dailyOnlyRefusesAnEveRunningFromTheDevRuntime() {
+        let supervisor = ServiceSupervisor(nodeExists: { _ in true })
+        let devRoot = "/Users/x/Library/Application Support/Useful Bot Dev/app"
+        let release = "/Users/x/Library/Application Support/Useful Bot/app"
+        let checkout = "/Users/x/Desktop/useful-bot"
+        func own(_ line: String, _ variant: AppVariant, _ repoPath: String) -> Bool {
+            supervisor.isOwnEveProcess(line, variant: variant, repoPath: repoPath, devRuntimeRoot: devRoot)
+        }
+        let devEve = "node \(devRoot)/node_modules/eve/bin/eve.js dev"
+        let releaseEve = "node \(release)/node_modules/eve/dist/src/cli/dev/local-server-child.js"
+        let checkoutEve = "node \(checkout)/node_modules/eve/bin/eve.js dev"
+        // Daily: a release build and a checkout build adopt each other's eve.
+        #expect(own(releaseEve, .daily, checkout))
+        #expect(own(checkoutEve, .daily, release))
+        // Not an eve at all: foreign for daily too.
+        #expect(!own("node something-unrelated", .daily, release))
+        #expect(!own("python3 -m http.server 4321", .daily, release))
+        #expect(!own(devEve, .daily, release))
+        #expect(!own("node child.js \(devRoot)", .daily, checkout))
+        // A sibling folder that merely starts with the dev path is not the dev runtime.
+        #expect(own("node \(devRoot)-old/eve/bin/eve.js", .daily, release))
+        // Dev stays strict: only its own repoPath.
+        #expect(own(devEve, .dev, devRoot))
+        #expect(!own(releaseEve, .dev, devRoot))
+        #expect(!own(checkoutEve, .dev, devRoot))
+    }
+
     @Test func ownsUsefulBotNodeProcessesOnly() {
         let supervisor = ServiceSupervisor()
         #expect(supervisor.isOwnNodeProcess("/usr/local/bin/node \(repo)/scripts/service.mjs web", repoPath: repo))

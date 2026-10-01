@@ -73,6 +73,23 @@ import Testing
         }
     }
 
+    @Test func moreFileExtensionsThatAreCountryCodesAreNotLinks() {
+        for text in ["main.tf", "Makefile.am", "player.gd", "Code.gs", "obj.at"] {
+            #expect(links(text).isEmpty, "\(text)")
+            #expect(links("see \(text) here").isEmpty, "\(text)")
+        }
+        // With a path they are still a site.
+        #expect(links("see example.at/wien").map(\.href) == ["https://example.at/wien"])
+    }
+
+    @Test func anAppBundlePathIsNotALink() {
+        for text in ["Xcode.app/Contents/Developer", "Safari.app/Contents", "Xcode.app/Contents/"] {
+            #expect(links(text).isEmpty, "\(text)")
+            #expect(links("run \(text) now").isEmpty, "\(text)")
+        }
+        #expect(links("see usefulbuild.app/contents").map(\.href) == ["https://usefulbuild.app/contents"])
+    }
+
     @Test func ambiguousTldsLinkWithAPathOrWww() {
         #expect(links("see example.dev/docs").map(\.href) == ["https://example.dev/docs"])
         #expect(links("see www.example.dev").map(\.href) == ["https://www.example.dev"])

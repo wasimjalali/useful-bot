@@ -485,37 +485,94 @@ test("a dev media folder that is, sits under, contains or links to daily data is
 });
 
 // ---------------------------------------------------------------------------
-// 3c. Every per-store override that a module still honours stays inside the dev state root.
+// 3c. The dev stack takes no per-store override at all: stores derive from UB_STATE_ROOT.
 
-test("on dev, each per-store override must resolve inside the dev state root", () => {
+test("on dev, every per-store override is refused, however it is spelled; daily still honours them", () => {
   const home = homeWithDailyData();
   try {
-    const stateInside = join(home, ".useful-bot-dev-app");
-    mkdirSync(stateInside);
+    const state = join(home, ".useful-bot-dev-app");
+    mkdirSync(join(state, "router"), { recursive: true });
     mkdirSync(join(home, "elsewhere"));
-    symlinkSync(join(home, "elsewhere"), join(stateInside, "escape"));
-    symlinkSync(join(home, ".useful-bot"), join(stateInside, "to-daily"));
     for (const name of STORE_OVERRIDE_VARS) {
-      const refused: Array<[string, string]> = [
-        ["outside everything", join(home, "elsewhere", "x")],
-        ["the daily root", join(home, ".useful-bot", "x.json")],
-        ["older dev data", join(home, ".useful-bot-dev", "x.json")],
-        ["a sibling that shares the prefix", `${stateInside}-sibling/x`],
-        ["a relative path", "x.json"],
-        ["a dotted escape", join(stateInside, "..", "elsewhere", "x")],
-        ["a symlink out of the root", join(stateInside, "escape", "x")],
-        ["a symlink to the daily root", join(stateInside, "to-daily", "x.json")],
-        ["a differently cased daily path", join(home, ".USEFUL-BOT", "x.json")],
-      ];
-      for (const [label, value] of refused) {
+      for (const value of [join(state, "x.json"), join(home, "elsewhere", "x"), "x.json"]) {
         const problems = problemsFor(home, { [name]: value });
-        assert.ok(problems.some((problem) => problem.includes(name)), `${name} ${label}: ${value}`);
+        assert.ok(
+          problems.some((problem) => problem.includes(`${name} is not allowed on the dev stack; dev stores live under UB_STATE_ROOT`)),
+          `${name}: ${value}`,
+        );
       }
-      for (const ok of [join(stateInside, "x"), join(stateInside, "deep", "er", "x.json"), join(stateInside, "..", ".useful-bot-dev-app", "x")]) {
-        assert.deepEqual(problemsFor(home, { [name]: ok }), [], `${name} ${ok}`);
-      }
-      // The daily stack is not constrained by these: a test or an owner may point them anywhere.
       assert.deepEqual(withEnv({ HOME: home, [name]: join(home, "elsewhere", "x") }, () => stackProblems()), [], `${name} daily`);
+    }
+    // scripts/service.mjs hands the router and web children UB_ROUTER_CONFIG as the path derived from the state root.
+    assert.deepEqual(problemsFor(home, { UB_ROUTER_CONFIG: join(state, "config.json") }), []);
+    assert.ok(problemsFor(home, { UB_ROUTER_CONFIG: `${state}/./config.json` }).some((p) => p.includes("UB_ROUTER_CONFIG")));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("on dev, the dotted-link and linked-file overrides that reach daily data are refused", () => {
+  const home = homeWithDailyData();
+  try {
+    const state = join(home, ".useful-bot-dev-app");
+    mkdirSync(state);
+    mkdirSync(join(home, ".useful-bot", "router"));
+    // dev/bridge -> daily/router, so dev/bridge/../router/usage.sqlite is daily/router/../router/... on disk.
+    symlinkSync(join(home, ".useful-bot", "router"), join(state, "bridge"));
+    mkdirSync(join(state, "router"));
+    assert.ok(problemsFor(home, { UB_ROUTER_DB: `${state}/bridge/../router/usage.sqlite` }).some((p) => p.includes("UB_ROUTER_DB")));
+    // A daily file that is a link into dev: the atomic write would replace the daily file.
+    writeFileSync(join(state, "limits.json"), "{}");
+    symlinkSync(join(state, "limits.json"), join(home, ".useful-bot", "limits.json"));
+    assert.ok(problemsFor(home, { UB_LIMITS_PATH: join(home, ".useful-bot", "limits.json") }).some((p) => p.includes("UB_LIMITS_PATH")));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("on dev, a '..' segment in the state root, media folder or workspace root is refused before resolving", () => {
+  const home = homeWithDailyData();
+  try {
+    const state = join(home, ".useful-bot-dev-app");
+    mkdirSync(state);
+    symlinkSync(join(home, ".useful-bot"), join(state, "bridge"));
+    for (const [name, value] of [
+      ["UB_STATE_ROOT", `${state}/bridge/../.useful-bot-dev-app`],
+      ["UB_STATE_ROOT", `${home}/x/../.useful-bot-dev-app`],
+      ["UB_MEDIA_DIR", `${state}/bridge/../Documents/Useful Bot Dev`],
+      ["UB_WORKSPACE_ROOT", `${state}/bridge/../elsewhere`],
+    ]) {
+      const problems = problemsFor(home, { [name]: value });
+      assert.ok(problems.some((p) => p.includes(name) && p.includes("..")), `${name}: ${value}`);
+    }
+    assert.deepEqual(problemsFor(home, {}), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("on dev, the state root's folder name must be a lowercase .useful-bot-<word> the kernel sandbox protects", () => {
+  const home = homeWithDailyData();
+  try {
+    for (const bad of [".useful-bot+dev", ".Useful-Bot-Dev", ".useful-bot_dev", ".useful-bot-", ".useful-bot--dev", ".useful-bot-dev.app", ".useful-bot"]) {
+      const problems = problemsFor(home, { UB_STATE_ROOT: join(home, bad) });
+      assert.ok(problems.length > 0, bad);
+    }
+    // The name as resolved counts too: a good link name onto a bad directory name.
+    mkdirSync(join(home, ".useful-bot+real"));
+    symlinkSync(join(home, ".useful-bot+real"), join(home, ".useful-bot-goodlink"));
+    assert.ok(problemsFor(home, { UB_STATE_ROOT: join(home, ".useful-bot-goodlink") }).some((p) => p.includes("folder name")));
+    // Every accepted name is denied, for read and write, by the sandbox's own regexes.
+    const rules = [sandboxProfile(null), sandboxProfile(null, "computer", true)].flatMap((profile) =>
+      [...profile.matchAll(/\(deny file-(read|write)\* \(regex #"([^"]*)"\)\)/g)].map((m) => ({ op: m[1], re: new RegExp(m[2]) })),
+    );
+    for (const good of [".useful-bot-dev-app", ".useful-bot-test", ".useful-bot-a", ".useful-bot-x1-y2-z3", ".useful-bot-9"]) {
+      assert.deepEqual(problemsFor(home, { UB_STATE_ROOT: join(home, good) }), [], good);
+      for (const op of ["read", "write"]) {
+        for (const path of [`${home}/${good}`, `${home}/${good}/router/usage.sqlite`]) {
+          assert.ok(rules.some((rule) => rule.op === op && rule.re.test(path)), `${op} ${path} must be denied`);
+        }
+      }
     }
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -940,7 +997,10 @@ async function withRouter<T>(env: Record<string, string>, port: number, fn: () =
   const clean = { ...process.env } as Record<string, string>;
   for (const key of ALL_VARS) delete clean[key];
   const future = new Date(Date.now() + 86400_000).toISOString();
-  const configPath = env.UB_ROUTER_CONFIG ?? join(base, "config.json");
+  // A dev environment takes no store override: the database derives from UB_STATE_ROOT, and the config
+  // is passed (as scripts/service.mjs does) only as exactly that derived path.
+  const dev = env.UB_STACK === "dev";
+  const configPath = dev ? join(env.UB_STATE_ROOT, "config.json") : env.UB_ROUTER_CONFIG ?? join(base, "config.json");
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify({
     schemaVersion: 1,
@@ -958,8 +1018,7 @@ async function withRouter<T>(env: Record<string, string>, port: number, fn: () =
     env: {
       ...clean,
       HOME: base,
-      UB_ROUTER_CONFIG: join(base, "config.json"),
-      UB_ROUTER_DB: join(base, "usage.sqlite"),
+      ...(dev ? { UB_ROUTER_CONFIG: configPath } : { UB_ROUTER_CONFIG: join(base, "config.json"), UB_ROUTER_DB: join(base, "usage.sqlite") }),
       ...env,
       UB_ROUTER_PORT: String(port),
     },
@@ -996,9 +1055,8 @@ test("router /health/live says daily by default and dev when it is the dev stack
   const devPort = await freePort();
   const home = tempHome();
   try {
-    // The dev stack keeps its config and usage database inside its state root.
-    const state = devEnv(home).UB_STATE_ROOT;
-    await withRouter({ ...devEnv(home), UB_ROUTER_CONFIG: join(state, "config.json"), UB_ROUTER_DB: join(state, "usage.sqlite") }, devPort, async () => {
+    // The dev stack takes no store override: config and usage database derive from UB_STATE_ROOT.
+    await withRouter(devEnv(home), devPort, async () => {
       const live = await rawGet(devPort, "/health/live", `127.0.0.1:${devPort}`);
       assert.equal(live.status, 200);
       assert.deepEqual(JSON.parse(live.body), { ok: true, stack: "dev" });

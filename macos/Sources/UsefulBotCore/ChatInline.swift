@@ -216,6 +216,8 @@ public enum ChatInline {
         }
         let tld = labels[labels.count - 1].lowercased()
         guard tlds.contains(tld) else { return false }
+        // `Xcode.app/Contents/Developer` is a path inside an app bundle, not a site.
+        if tld == "app", candidate[hostEnd...].hasPrefix("/Contents") { return false }
         if hasPath { return true }
         if fileLikeTLDs.contains(tld) { return false }
         return !ambiguousTLDs.contains(tld) || labels[0].lowercased() == "www"
@@ -235,6 +237,8 @@ public enum ChatInline {
     /// TLDs that are also file extensions: a bare `name.<ext>` is a file.
     private static let fileLikeTLDs: Set<String> = [
         "md", "py", "sh", "zip", "mov", "rs", "pl", "cc", "cs", "so", "pm", "ps", "cr", "ml", "mm", "sc", "mk",
+        // main.tf, Makefile.am, player.gd, Code.gs, obj.at
+        "tf", "am", "gd", "gs", "at",
     ]
 
     /// Generic TLDs people actually write, plus every country code.

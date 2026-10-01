@@ -542,6 +542,10 @@ final class AppModel: ObservableObject {
     }
 
     private func boot() async {
+        // Consumed here, not at `ensure`: a retry whose setup fails first would
+        // otherwise leave the flag set for an unrelated later start.
+        let replaceHung = ownerRetried
+        ownerRetried = false
         startAttempt += 1
         let attempt = startAttempt
         phase = .starting
@@ -613,8 +617,6 @@ final class AppModel: ObservableObject {
                 break
             }
         }
-        let replaceHung = ownerRetried
-        ownerRetried = false
         let outcome = await services.ensure(config: config, replaceHung: replaceHung)
         // A cancelled attempt paints nothing at all: the retry that cancelled
         // it owns the screen from here, and `startAttempt` is only bumped once
@@ -632,7 +634,9 @@ final class AppModel: ObservableObject {
         // Something healthy answers on this app's ports as another stack. It is
         // never adopted, started over or stopped: say so and stay out of it.
         if outcome == .foreignStack {
-            startupError = "A service on this app's ports belongs to another Useful Bot stack, so \(AppVariant.current.displayName) won't use or stop it. Quit the other stack and try again."
+            var message = "A service on this app's ports belongs to another Useful Bot stack, so \(AppVariant.current.displayName) won't use or stop it. Quit the other stack and try again."
+            if let detail = services.foreignListenerDetail(config: config) { message += " " + detail + "." }
+            startupError = message
             phase = .unavailable
             return
         }

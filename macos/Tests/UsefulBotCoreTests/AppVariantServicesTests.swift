@@ -46,7 +46,104 @@ private final class StackRunner: ProcessRunner, @unchecked Sendable {
     }
 }
 
+/// A runner whose listeners carry a command line, so the ownership rule that
+/// `LocalServices` hands it is the one that decides.
+private final class LineRunner: ProcessRunner, @unchecked Sendable {
+    var listening: [Int: [(pid: pid_t, line: String)]] = [:]
+    private(set) var signalled = 0
+    private(set) var started = 0
+    func start(_ command: ServiceCommand) { started += 1 }
+    func portAccepting(_ port: Int) -> Bool { !(listening[port] ?? []).isEmpty }
+    func listeners(port: Int) -> [pid_t] { (listening[port] ?? []).map(\.pid) }
+    func listenerDescriptions(port: Int) -> [(pid: pid_t, line: String)] { listening[port] ?? [] }
+    /// What the rule handed to a stop call says about each listener on the port.
+    private(set) var stopVerdicts: [Bool] = []
+    func stopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) {
+        signalled += 1
+        stopVerdicts += (listening[port] ?? []).map { owns($0.line) }
+    }
+    func forceStopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) {
+        signalled += 1
+        stopVerdicts += (listening[port] ?? []).map { owns($0.line) }
+    }
+    func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool {
+        (listening[port] ?? []).contains { !owns($0.line) }
+    }
+}
+
 @Suite struct AppVariantServicesTests {
+    private let devRoot = "/Users/x/Library/Application Support/Useful Bot Dev/app"
+    private let releaseRoot = "/Users/x/Library/Application Support/Useful Bot/app"
+
+    private func eveStack(_ variant: AppVariant, line: String, repoPath: String, pid: pid_t = 4242) -> (LocalServices, LineRunner, ServerConfig) {
+        let runner = LineRunner()
+        runner.listening[variant.evePort] = [(pid, line)]
+        let probe = allHealthy(variant, stack: variant == .dev ? "dev" : nil)
+        let services = LocalServices(
+            runner: runner, probe: probe, supervisor: nodeOK, startGraceSeconds: 0, devRuntimeRoot: devRoot
+        )
+        return (services, runner, ServerConfig(repoPath: repoPath, port: variant == .dev ? 4420 : 4320, variant: variant))
+    }
+
+    @Test func dailyAdoptsAnEveFromAnotherDailyRuntime() async {
+        // The checkout build and the release build share the daily ports and must
+        // be able to take over from each other across a repoPath switch.
+        let (services, runner, config) = eveStack(
+            .daily, line: "node /Users/x/Desktop/useful-bot/node_modules/eve/bin/eve.js dev", repoPath: releaseRoot)
+        #expect(await services.ensure(config: config, timeoutSeconds: 0) == .ready)
+        #expect(runner.started == 0 && runner.signalled == 0)
+    }
+
+    @Test func dailyRefusesAListenerThatIsNotEveAndNamesIt() async {
+        let (services, runner, config) = eveStack(.daily, line: "python3 -m http.server 4321", repoPath: releaseRoot, pid: 7007)
+        #expect(await services.ensure(config: config, timeoutSeconds: 0) == .foreignStack)
+        #expect(runner.started == 0 && runner.signalled == 0)
+        #expect(services.foreignListenerDetail(config: config)?.contains("7007") == true)
+    }
+
+    @Test func noStopPathEverTargetsAnEveTheStrictRuleDoesNotOwn() async {
+        // Adoption is lenient for daily; signalling never is. An unhealthy eve from
+        // the checkout, seen by a release-path app, is adopted for readiness but its
+        // stop rule must say "not ours", while the app's own eve is.
+        let foreignToRepo = "node /Users/x/Desktop/useful-bot/node_modules/eve/bin/eve.js dev"
+        let ownLine = "node \(releaseRoot)/node_modules/eve/bin/eve.js dev"
+        for (line, expected) in [(foreignToRepo, false), (ownLine, true)] {
+            let runner = LineRunner()
+            runner.listening[AppVariant.daily.evePort] = [(4343, line)]
+            let probe = allHealthy(.daily, stack: nil)
+            probe.set(AppVariant.daily.eveHealthURL, nil)
+            let services = LocalServices(
+                runner: runner, probe: probe, supervisor: nodeOK, startGraceSeconds: 0, devRuntimeRoot: devRoot)
+            _ = await services.ensure(
+                config: ServerConfig(repoPath: releaseRoot, port: 4320, variant: .daily), timeoutSeconds: 0)
+            #expect(!runner.stopVerdicts.isEmpty)
+            #expect(runner.stopVerdicts.allSatisfy { $0 == expected }, "\(line)")
+        }
+    }
+
+    @Test func dailyRefusesAnEveRunningFromTheDevRuntimeAndNamesIt() async {
+        let (services, runner, config) = eveStack(
+            .daily, line: "node \(devRoot)/node_modules/eve/bin/eve.js dev", repoPath: releaseRoot, pid: 5150)
+        #expect(await services.ensure(config: config, timeoutSeconds: 0) == .foreignStack)
+        #expect(runner.started == 0 && runner.signalled == 0)
+        let detail = services.foreignListenerDetail(config: config)
+        #expect(detail?.contains("5150") == true)
+        #expect(detail?.contains(devRoot) == true)
+    }
+
+    @Test func devKeepsStrictEveOwnership() async {
+        let (services, runner, config) = eveStack(
+            .dev, line: "node \(releaseRoot)/node_modules/eve/bin/eve.js dev", repoPath: devRoot, pid: 6001)
+        #expect(await services.ensure(config: config, timeoutSeconds: 0) == .foreignStack)
+        #expect(runner.started == 0 && runner.signalled == 0)
+        let detail = services.foreignListenerDetail(config: config)
+        #expect(detail?.contains("6001") == true)
+        #expect(detail?.contains(releaseRoot) == true)
+        let own = eveStack(.dev, line: "node \(devRoot)/node_modules/eve/bin/eve.js dev", repoPath: devRoot)
+        #expect(await own.0.ensure(config: own.2, timeoutSeconds: 0) == .ready)
+        #expect(own.0.foreignListenerDetail(config: own.2) == nil)
+    }
+
     private let devConfig = ServerConfig(repoPath: "/repo", port: 4420, variant: .dev)
     private let dailyConfig = ServerConfig(repoPath: "/repo", port: 4320, variant: .daily)
     private let nodeOK = ServiceSupervisor(nodeExists: { _ in true })
