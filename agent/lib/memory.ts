@@ -68,12 +68,6 @@ const PREVIEW_CHARS = 1024;
 const NOTE_ID_PATTERN = /^[A-Za-z0-9-]{1,80}$/;
 // Long enough to wait out a first-open migration of a big store.
 const LOCK_TIMEOUT_MS = 30_000;
-/**
- * Only a lock whose owner file never appeared is aged out by this; a lock with
- * an owner is reclaimed when its holder pid is dead, never by a timer.
- */
-const LOCK_STALE_MS = 2000;
-
 /** Note ids are file names; anything else is a path traversal or a bad key. */
 function assertNoteId(id: string): void {
   if (!NOTE_ID_PATTERN.test(id)) {
@@ -354,7 +348,6 @@ export class MemoryStore {
     // timer; only a dead holder's lock is reclaimed.
     return acquireDirLock(join(this.root, "index.lock"), {
       timeoutMs: LOCK_TIMEOUT_MS,
-      staleMs: LOCK_STALE_MS,
       errorCode: "memory_store_locked",
     });
   }

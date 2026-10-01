@@ -195,8 +195,9 @@ export function toSbplRules(): string[] {
 }
 
 /**
- * Creating a tool's config folder directly under the owner's home, Auto's
- * confined profile only (not Full access): an approved line (a first-time `codex login` makes `~/.codex`)
+ * Creating a tool's config folder directly under the owner's home, in every
+ * confined profile except a registered coding-tool CLI's own line at Full
+ * access: an approved line (a first-time `codex login` makes `~/.codex`)
  * may, and planted files inside stay denied by the name rules either way.
  */
 export function homeCreateRules(): string[] {
@@ -292,6 +293,8 @@ export type ConfineOptions = {
    * approved line runs unconfined anyway.
    */
   credentialPaths?: readonly string[];
+  /** The line is a single plain run of a registered coding-tool CLI (first-time sign-in may create its home folder). */
+  registeredCli?: boolean;
   /** The line is an install of a named CLI the owner approved. */
   allowToolInstall?: boolean;
 };
@@ -350,10 +353,12 @@ export function sandboxProfile(
     // Last, so a planted hook stays refused even inside a store the rule
     // above just opened: `~/.codex` is readable to a codex line, but
     // `~/.codex/config.toml` is not writable by it.
-    // The home-folder create deny is for Auto's confined line only: Full access
-    // (unbounded) may make `~/.codex`, `~/.gemini`, `~/.config/gh` so a first-time
-    // sign-in works, and the planted files inside stay denied by the name rules.
-    ...plantedConfigRules(options.allowToolInstall === true, !unbounded),
+    // The home-folder create deny applies in Auto AND Full access, except for a
+    // single plain line that runs a registered coding-tool CLI (codex, claude,
+    // gemini, gh...): its first-time sign-in may make `~/.codex` and the like,
+    // and the planted files inside stay denied by the name rules. Any other line
+    // cannot plant `~/.gemini` by renaming a prepared directory.
+    ...plantedConfigRules(options.allowToolInstall === true, !(unbounded && options.registeredCli === true)),
   ].join("\n");
 }
 

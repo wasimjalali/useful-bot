@@ -117,7 +117,6 @@ function writeStoreFile(store: SessionOwnersStore, path: string): void {
 }
 
 const LOCK_TIMEOUT_MS = 8000;
-const LOCK_STALE_MS = 3000;
 
 function updateStore<T>(
   mutate: (store: SessionOwnersStore) => { store: SessionOwnersStore; result: T },
@@ -127,7 +126,6 @@ function updateStore<T>(
   // Owned lock: a live writer is never robbed, and only the holder releases.
   const release = acquireDirLock(`${path}.lock`, {
     timeoutMs: LOCK_TIMEOUT_MS,
-    staleMs: LOCK_STALE_MS,
     errorCode: "session_owners_locked",
   });
   try {

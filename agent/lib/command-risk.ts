@@ -226,7 +226,7 @@ export function needsPathWrite(line: string): boolean {
     case "brew": return ["install", "reinstall", "upgrade"].includes(verbs(new Set())[0] ?? "");
     case "cargo": case "go": case "gem": return verbs(new Set())[0] === "install";
     case "uv": { const v = verbs(new Set()); return v[0] === "tool" && v[1] === "install"; }
-    case "pipx": return verbs(new Set())[0] === "install";
+    // pipx is left out: a bare name can resolve to a local project, not the registry.
     case "corepack": return verbs(new Set())[0] === "enable";
     default: return false;
   }
@@ -332,7 +332,7 @@ function configFolderDestinationRisk(name: string, flags: string[]): string | nu
   // A destination this cannot read cannot be told from a config folder.
   const destinations = [...targets, ...(args.length > 0 ? [args[args.length - 1]] : [])];
   const dynamic = destinations.find((value) => /[$`]/.test(value));
-  if (dynamic !== undefined) return `puts something at a destination this cannot read (${label} ... ${dynamic})`;
+  if (dynamic !== undefined) return `puts something at a variable or substitution destination this cannot read (${label} ... ${dynamic})`;
   for (const value of [...args, ...targets]) {
     const leaf = foldPath(basename(value.replace(/\/+$/, "")));
     if (CONFIG_FOLDER_NAMES.has(leaf)) return `puts something at or from a tool's config folder name (${label} ... ${leaf})`;
@@ -430,7 +430,7 @@ export function commandRisk(command: string, root: string, depth = 0): string | 
   // The tokenizer turns a backtick into a separator, which drops the operand
   // a substitution stands for; a move, copy, link or sync with one fails closed.
   const backtickDestination = /(?:^|[\s;&|(])(?:git\s+(?:-\S+\s+)*mv|mv|cp|ln|rsync|ditto|install)\s[^;&|\n]*`/.exec(command);
-  if (backtickDestination) return "puts something at a destination this cannot read (a backtick substitution)";
+  if (backtickDestination) return "puts something at a variable or substitution destination this cannot read (a backtick substitution)";
   for (const segment of split(tokenize(command))) {
     // What the command does comes first: `sudo rm -rf /` is "runs as root",
     // which says more than the path it reaches.

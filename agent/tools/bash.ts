@@ -5,7 +5,7 @@ import { effectiveRoot } from "../lib/workspace.ts";
 import { commandRisk, needsPathWrite, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
 import { approvedCommand, confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
 import { protectedPathHint } from "../lib/guard-hint.ts";
-import { credentialPathsFor } from "../lib/cli-registry.ts";
+import { credentialPathsFor, isRegisteredCliLine } from "../lib/cli-registry.ts";
 import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -198,6 +198,7 @@ export default defineTool({
           // that runs anything else. An approved line skips this because
           // credential stores are open to it anyway.
           credentialPaths: unbounded ? credentialPathsFor(input.command) : [],
+          registeredCli: unbounded && isRegisteredCliLine(input.command),
         });
       }
       const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;

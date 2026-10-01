@@ -294,9 +294,10 @@ export const PLANTED_CONFIG_CREATE_ALLOW = [
  * - a SYMLINK whose last component is one of these, anywhere, in both profiles
  *   (nothing legitimate links to a tool's config folder);
  * - creating one of these, or `.config/git` or `.config/gh`, directly under the
- *   owner's home, in Auto's confined profile only (an approved line and Full
- *   access may create the home folder so a first-time login works; planted
- *   files inside stay denied).
+ *   owner's home, in the confined profiles (Auto and Full access). Exempt: an
+ *   approved line, and at Full access a single plain line that runs a
+ *   registered coding-tool CLI (codex, claude, gemini, gh...), so a first-time
+ *   sign-in works. Planted files inside stay denied either way.
  *
  * Accepted residual: a script that renames a real directory to `.claude`
  * inside a project is not caught by the kernel. In Auto the command card

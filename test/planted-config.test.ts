@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
 import { approvedLineProfile, approvedCommand, sandboxAvailable, sandboxProfile, toSbplRules } from "../agent/lib/sandbox.ts";
+import { isRegisteredCliLine } from "../agent/lib/cli-registry.ts";
 import { needsPathWrite } from "../agent/lib/command-risk.ts";
 import { protectedPathHint } from "../agent/lib/guard-hint.ts";
 import { isAppStateSegment, isRuntimeInstallPath, mentionsAppState } from "../shared/stack.ts";
@@ -318,7 +319,7 @@ test("an approved install may write the PATH, any other approved line may not", 
     for (const line of [
       "npm i -g left-pad", "npm install --global left-pad", "npm --prefix x i -g y", "pnpm add -g zod", "yarn global add zod",
       "bun add -g zod", "brew install jq", "brew reinstall jq", "brew upgrade", "cargo install ripgrep", "go install example.com/t@latest",
-      "uv tool install ruff", "pipx install black", "gem install rake", "corepack enable",
+      "uv tool install ruff", "gem install rake", "corepack enable",
     ]) assert.equal(needsPathWrite(line), true, line);
     for (const line of [
       // Local installs do not need the PATH.
@@ -405,23 +406,28 @@ test("PATH writes are refused for every spelling that hides a local or remote pa
   }
 });
 
-test("Full access may create a tool's config folder under the home, Auto's confined line may not, planted files stay denied", { skip: !darwin }, () => {
+test("the home-folder create deny holds at Full access too, except for a registered coding-tool CLI's own line", { skip: !darwin }, () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-fullhome-")));
   const previousHome = process.env.HOME;
   process.env.HOME = join(dir, "home");
   try {
     mkdirSync(join(dir, "home", ".config"), { recursive: true });
     mkdirSync(join(dir, "proj"), { recursive: true });
-    const full = sandboxProfile(join(dir, "proj"), "folder", true);
-    const auto = sandboxProfile(join(dir, "proj"), "folder", false);
-    assert.equal(full.includes(`(regex #"^${join(dir, "home")}/\\.codex$")`), false);
-    assert.ok(auto.includes(`(regex #"^${join(dir, "home")}/\\.codex$")`));
-    runProfile(full, join(dir, "proj"), `mkdir "${dir}/home/.codex" "${dir}/home/.gemini" "${dir}/home/.config/gh"; echo x > "${dir}/home/.codex/config.toml"; echo y > "${dir}/home/.codex/auth.json"; ln -s stage "${dir}/home/.claude"`);
-    assert.equal(existsSync(join(dir, "home", ".codex")), true);
-    assert.equal(existsSync(join(dir, "home", ".gemini")), true);
-    assert.equal(existsSync(join(dir, "home", ".config", "gh")), true);
+    const rule = `(regex #"^${join(dir, "home")}/\\.codex$")`;
+    assert.ok(sandboxProfile(join(dir, "proj"), "folder", false).includes(rule), "Auto");
+    assert.ok(sandboxProfile(join(dir, "proj"), "folder", true).includes(rule), "Full access, any line");
+    assert.equal(sandboxProfile(join(dir, "proj"), "folder", true, { registeredCli: true }).includes(rule), false, "Full access, registered CLI line");
+    assert.ok(sandboxProfile(join(dir, "proj"), "folder", false, { registeredCli: true }).includes(rule), "Auto never lifts it");
+    // Full access, an ordinary line: cannot make the folders.
+    const ordinary = sandboxProfile(join(dir, "proj"), "folder", true);
+    runProfile(ordinary, join(dir, "proj"), `mkdir "${dir}/home/.codex" "${dir}/home/.gemini" "${dir}/home/.config/gh"`);
+    for (const name of [".codex", ".gemini", ".config/gh"]) assert.equal(existsSync(join(dir, "home", name)), false, name);
+    // Full access, a registered CLI's sign-in line: may; planted files inside and symlinks stay denied.
+    const signIn = sandboxProfile(join(dir, "proj"), "folder", true, { registeredCli: true });
+    runProfile(signIn, join(dir, "proj"), `mkdir "${dir}/home/.codex" "${dir}/home/.gemini" "${dir}/home/.config/gh"; echo x > "${dir}/home/.codex/config.toml"; ln -s stage "${dir}/home/.claude"`);
+    for (const name of [".codex", ".gemini", ".config/gh"]) assert.equal(existsSync(join(dir, "home", name)), true, name);
     assert.equal(existsSync(join(dir, "home", ".codex", "config.toml")), false, "planted file inside stays denied");
-    assert.equal(existsSync(join(dir, "home", ".claude")), false, "symlink to a config folder name stays denied");
+    assert.equal(existsSync(join(dir, "home", ".claude")), false, "symlink stays denied");
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
@@ -438,4 +444,17 @@ test("a confined (no card) refusal also comes back with the hint", { skip: !darw
   } finally {
     box.restore();
   }
+});
+
+test("only a single plain line that runs a registered CLI counts as its sign-in", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-cli-")));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  for (const name of ["codex", "mytool"]) writeFileSync(join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(isRegisteredCliLine("codex login", bin), true);
+  assert.equal(isRegisteredCliLine(`${bin}/codex login`, bin), true);
+  assert.equal(isRegisteredCliLine("mytool login", bin), false, "not in the registry");
+  assert.equal(isRegisteredCliLine("codex login && mv stage ~/.gemini", bin), false, "compound");
+  assert.equal(isRegisteredCliLine("./codex login", bin), false, "relative program");
+  assert.equal(isRegisteredCliLine("gemini login", bin), false, "not installed");
 });
