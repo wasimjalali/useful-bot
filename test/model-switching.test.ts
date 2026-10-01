@@ -570,7 +570,7 @@ test("fresh install: connecting a provider leaves a null bot inheriting the new 
     const before = readShell(shell).bots[0];
     assert.equal(before.model, null);
     assert.equal(effectiveDefault(readProviderStore()), null, "nothing usable to pin to yet");
-    const refusal = modelSelectionRefusal(before);
+    const refusal = modelSelectionRefusal(before, readProviderStore());
     assert.ok(refusal, "no connection: refused");
     assert.equal(refusal.status, 409);
     assert.deepEqual(await refusal.json(), {
@@ -585,7 +585,7 @@ test("fresh install: connecting a provider leaves a null bot inheriting the new 
     assert.equal(after.model, null, "connect does not pin");
     assert.equal(botSelection(after, store).connectionId, OA);
     assert.deepEqual(botSelection(after, store), effectiveDefault(store));
-    assert.equal(modelSelectionRefusal(after), null, "the send goes through");
+    assert.equal(modelSelectionRefusal(after, readProviderStore()), null, "the send goes through");
   }, { connections: {}, cache: {} });
 });
 
@@ -618,7 +618,7 @@ test("upgrade: a stored model missing from a live list resolves to the substitut
     const a = readShell(shell).bots.find((item) => item.id === aId)!;
     assert.equal(botSelection(a, store).modelId, oldChip.modelId);
     assert.equal(botSelection(a, store).effort, oldChip.effort);
-    assert.equal(modelSelectionRefusal(a), null, "a null bot still runs on the substitute");
+    assert.equal(modelSelectionRefusal(a, readProviderStore()), null, "a null bot still runs on the substitute");
 
     applyProvidersPut({ botId: bId, modelId: `${OA}::gpt-4.1` });
     const pinned = readShell(shell).bots.find((item) => item.id === aId)!;
@@ -847,5 +847,64 @@ test("a DELETE whose bot reset fails twice is refused, the connection stays and 
       error instanceof Error && error.message === CONNECTION_REMOVED_BOTS_PINNED
     ));
     assert.notEqual(readProviderStore().connections[OA], undefined, "the providers write did not land");
+  });
+});
+
+const OA2 = "openai:oauth";
+const selOa2: ModelSelection = { connectionId: OA2, modelId: "gpt-4.1", effort: "low", speed: "standard" };
+const twoOpenAi = {
+  connections: {
+    [GO]: connection(GO, "opencode-go", "plan", "go-key-12345678"),
+    [OA]: connection(OA, "openai", "api", "oa-key-12345678"),
+    [OA2]: connection(OA2, "openai", "oauth", "oa2-key-12345678"),
+  },
+};
+
+test("a DELETE of two connections whose bot reset fails leaves the roster as it was and both connections stay", () => {
+  withWorld(({ dir, shell }) => {
+    const { aId, bId } = twoBots(selOa, selOa2, shell);
+    const rosterBefore = readFileSync(shell, "utf8");
+    // A path under a regular file: the one shell write fails, twice.
+    writeFileSync(join(dir, "not-a-dir"), "x");
+    process.env.UB_SHELL_PATH = join(dir, "not-a-dir", "shell.json");
+    assert.throws(() => applyProvidersDelete({ providerId: "openai" }), (error: unknown) => (
+      error instanceof Error && error.message === CONNECTION_REMOVED_BOTS_PINNED
+    ));
+    process.env.UB_SHELL_PATH = shell;
+    assert.equal(readFileSync(shell, "utf8"), rosterBefore, "no bot was reset");
+    assert.equal(readShell(shell).bots.find((bot) => bot.id === aId)!.model?.connectionId, OA);
+    assert.equal(readShell(shell).bots.find((bot) => bot.id === bId)!.model?.connectionId, OA2);
+    assert.notEqual(readProviderStore().connections[OA], undefined, "the providers write did not land");
+    assert.notEqual(readProviderStore().connections[OA2], undefined, "the providers write did not land");
+  }, twoOpenAi);
+});
+
+test("a DELETE of two connections resets the bots on both ids in one go", () => {
+  withWorld(({ shell }) => {
+    const { aId, bId } = twoBots(selOa, selOa2, shell);
+    applyProvidersDelete({ providerId: "openai" });
+    const roster = readShell(shell);
+    assert.equal(roster.bots.find((bot) => bot.id === aId)!.model, null);
+    assert.equal(roster.bots.find((bot) => bot.id === bId)!.model, null);
+    assert.equal(readProviderStore().connections[OA], undefined);
+    assert.equal(readProviderStore().connections[OA2], undefined);
+  }, twoOpenAi);
+});
+
+test("a permission or folder re-stamp keeps the turn's stamped selection", async () => {
+  await withWorld(async ({ shell }) => {
+    const { aId } = twoBots(selGo, null, shell);
+    syncSessionWorkspace("sess-keep", readShell().bots.find((bot) => bot.id === aId)!);
+    assert.equal(readSessionGrant("sess-keep")?.selection?.modelId, selGo.modelId);
+    // The owner picks another model for A mid-turn, then changes its permission.
+    updateShell((current) => withBotSelection(current, aId, selGo5));
+    const moved = readShell().bots.find((bot) => bot.id === aId)!;
+    syncSessionWorkspace("sess-keep", { ...moved, permission: "read_only" }, readProviderStore(), { keepSelection: true });
+    const grant = readSessionGrant("sess-keep");
+    assert.equal(grant?.permission, "read_only");
+    assert.equal(grant?.selection?.modelId, selGo.modelId);
+    // The next turn's stamp (no keepSelection) takes the new pick.
+    syncSessionWorkspace("sess-keep", moved);
+    assert.equal(readSessionGrant("sess-keep")?.selection?.modelId, selGo5.modelId);
   });
 });

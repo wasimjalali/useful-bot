@@ -36,7 +36,7 @@ import {
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
-import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
+import { readSessionGrant, removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
@@ -88,8 +88,13 @@ export function syncSessionWorkspace(
   // A caller that read the roster passes a store read taken BEFORE that roster
   // read (see syncSessionWorkspaceFresh): the same order the agent freezes in.
   store: ProviderStore = readProviderStore(),
+  // A permission or folder change mid-turn re-stamps the grant but must not
+  // move the turn's model: the no-turn-id freeze path reads the grant every
+  // step. Such callers keep the selection the turn start stamped.
+  options: { keepSelection?: boolean } = {},
 ): void {
   if (!sessionId) return;
+  const kept = options.keepSelection ? readSessionGrant(sessionId)?.selection : undefined;
   // Always stamped: the permission is the bot's whether or not a folder is
   // attached. No folder means the bot works under the owner's home.
   // The model rides in the same write, so the agent reads one grant for both:
@@ -99,7 +104,7 @@ export function syncSessionWorkspace(
     sessionId,
     path: bot.workspace?.path ?? null,
     permission: bot.permission,
-    selection: botSelection(bot, store),
+    selection: kept ?? botSelection(bot, store),
   });
 }
 
@@ -132,8 +137,8 @@ export function ensureBotSelections(providerStore: ProviderStore = readProviderS
  * turn, or null when it can. The same envelope as the proxy's other errors.
  * Pure of eve: the caller answers with it before any fetch to eve.
  */
-export function modelSelectionRefusal(bot: ShellBot): Response | null {
-  if (botSelectionUsable(bot)) return null;
+export function modelSelectionRefusal(bot: ShellBot, store: ProviderStore): Response | null {
+  if (botSelectionUsable(bot, store)) return null;
   return Response.json(
     {
       ok: false,
@@ -144,9 +149,13 @@ export function modelSelectionRefusal(bot: ShellBot): Response | null {
   );
 }
 
-/** Whether the bot's selection can carry a turn: its connection is live and its model is still listed. */
-export function botSelectionUsable(bot: ShellBot): boolean {
-  const store = readProviderStore();
+/**
+ * Whether the bot's selection can carry a turn: its connection is live and its
+ * model is still listed. The caller reads `store` BEFORE the roster the bot
+ * came from (the order the freeze and the stamps use), so a fresh store never
+ * pairs with an older roster.
+ */
+export function botSelectionUsable(bot: ShellBot, store: ProviderStore): boolean {
   return selectionAvailability(store, botSelection(bot, store)).available;
 }
 
@@ -646,8 +655,10 @@ async function runEveTurn(
   // The bot's own model has to be servable before the turn exists. The code is
   // the message, so a routine's failure note and a handoff's failure record
   // carry it as they do the other codes here. Never a substitute model.
+  // Providers store first, then the roster, as the freeze reads them.
+  const store = readProviderStore();
   const current = readShell().bots.find((item) => item.id === bot.id) ?? bot;
-  if (!botSelectionUsable(current)) throw new Error("model_selection_unavailable");
+  if (!botSelectionUsable(current, store)) throw new Error("model_selection_unavailable");
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
   // The body the proxy would have built for this bot: identity prefix first,
   // then the caller's text. readHandoffStream arms on this exact string,

@@ -5,7 +5,7 @@ import {
 } from "../../shared/provider-catalog.ts";
 import { botSelection } from "../../shared/session-selection.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
-import { clearConnectionSelections, withBotSelection, type ShellBot } from "../../shared/shell-store.ts";
+import { clearConnectionSelections, withBotSelection, type ShellBot, type ShellStore } from "../../shared/shell-store.ts";
 import {
   applyBotPick,
   clearConnection,
@@ -193,9 +193,9 @@ export const CONNECTION_REMOVED_BOTS_PINNED =
  * gone, bot still pinned". An explicit owner action on the connection, visible
  * on every affected chip, not a substitution inside a running turn. If the
  * providers write then fails, the reset bots just inherit the unchanged default.
- * Every removed id is attempted (one retry each) before the one error is
- * raised, and that error comes before the providers write, so nothing is
- * left half done.
+ * Every removed id is reset in ONE shell write (one retry), so a failure leaves
+ * the roster exactly as it was, and the error is raised before the providers
+ * write, so nothing is left half done.
  */
 export function applyProvidersDelete(body: { connectionId?: unknown; providerId?: unknown }): ProviderStore {
   return updateProviderStore((current) => {
@@ -209,20 +209,20 @@ export function applyProvidersDelete(body: { connectionId?: unknown; providerId?
       throw new Error("invalid");
     }
     const removed = Object.keys(current.connections).filter((id) => !next.connections[id]);
-    let failed = false;
-    for (const id of removed) {
+    if (removed.length > 0) {
+      // One write for all ids: two writes could land the first and fail the
+      // second, leaving some bots reset and the connections still there.
+      const reset = (shell: ShellStore) => removed.reduce(clearConnectionSelections, shell);
       try {
-        updateShell((shell) => clearConnectionSelections(shell, id));
+        updateShell(reset);
       } catch {
-        // One retry per id; every id is attempted before the single throw.
         try {
-          updateShell((shell) => clearConnectionSelections(shell, id));
+          updateShell(reset);
         } catch {
-          failed = true;
+          throw new Error(CONNECTION_REMOVED_BOTS_PINNED);
         }
       }
     }
-    if (failed) throw new Error(CONNECTION_REMOVED_BOTS_PINNED);
     return next;
   });
 }

@@ -406,8 +406,14 @@ export async function PUT(request: Request) {
           // freeze uses: a per-bot pick pins this bot before it moves the
           // default, so a store read first never pairs with an older roster.
           const store = readProviderStore();
-          const fresh = readShell().bots.find((item) => item.id === bot.id) ?? bot;
-          syncSessionWorkspace(bot.sessionId, fresh, store);
+          const fresh = readShell().bots.find((item) => item.id === bot.id);
+          if (!fresh) {
+            // Deleted in the gap: revoke rather than stamp the stale bot
+            // (as syncSessionWorkspaceFresh does).
+            removeSessionGrant(bot.sessionId);
+          } else {
+            syncSessionWorkspace(bot.sessionId, fresh, store, { keepSelection: true });
+          }
         } catch {
           // The roster action stood but the grant still says the old
           // permission, and a card already open re-reads that grant before

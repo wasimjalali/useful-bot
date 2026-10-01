@@ -156,6 +156,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // the call, and the session would retire on the failed turn. A model
       // the catalog does not know goes through, and the upstream decides.
       let sender: ShellBot | null = null;
+      // Providers store before the roster the sender comes from, the order the
+      // freeze and the stamps use.
+      let senderStore: ProviderStore;
+      try {
+        senderStore = readProviderStore();
+      } catch (err) {
+        console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
+        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+      }
       try {
         const sent = JSON.parse(new TextDecoder().decode(body)) as { message?: unknown; botId?: unknown };
         const parsed = parseTurnMessage(sent.message);
@@ -175,7 +184,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // a quiet switch to another model. A cheap refusal too, so it sits above
       // the carry-over read.
       try {
-        const refusal = sender === null ? null : modelSelectionRefusal(sender);
+        const refusal = sender === null ? null : modelSelectionRefusal(sender, senderStore);
         if (refusal) return refusal;
       } catch (err) {
         console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
