@@ -65,6 +65,18 @@ public struct ServiceSupervisor: Sendable {
         )
     }
 
+    /// True for the `service.mjs` launcher of exactly this install and mode: the
+    /// command line ends in `<repoPath>/scripts/service.mjs <mode>` and that
+    /// path starts a token, so `Useful Bot/app` never matches `Useful Bot Dev/app`
+    /// or a longer path that merely ends the same way.
+    public func isStrayServiceLine(_ commandLine: String, mode: ServiceMode, repoPath: String) -> Bool {
+        let tail = scriptPath(repoPath: repoPath) + " " + mode.rawValue
+        let line = commandLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard line.hasSuffix(tail) else { return false }
+        let before = line.dropLast(tail.count)
+        return before.isEmpty || before.last == " "
+    }
+
     /// True only for the supervised stack of this checkout. The supervised
     /// script is matched by its full path; the relative markers additionally
     /// require the command line to sit inside `repoPath`, so an unrelated

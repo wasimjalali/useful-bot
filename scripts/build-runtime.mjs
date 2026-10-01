@@ -7,9 +7,11 @@
 //   node scripts/build-runtime.mjs <out-dir> <version-stamp> [--dev]
 //
 // Run after the web build (macos/build-app.sh does, for a release and for the
-// dev app). `--dev` stages the working tree instead of git's index and appends a
-// content hash to the stamp (scripts/runtime-manifest.mjs); the dev app
-// installs it under its own folder, ~/Library/Application Support/Useful Bot Dev/app.
+// dev app). `--dev` stages the files git tracks with their working-tree content
+// (uncommitted edits in; untracked files out, so `git add` a new file before
+// `npm run build:dev-app`) and appends a content hash to the stamp
+// (scripts/runtime-manifest.mjs); the dev app installs it under its own folder,
+// ~/Library/Application Support/Useful Bot Dev/app. A symlink is refused in both.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";

@@ -1,5 +1,6 @@
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 /**
  * The one place that knows where this install keeps its state and which
@@ -35,8 +36,33 @@ export const DAILY = {
   mediaDir: "Useful Bot",
 } as const;
 
+/** What the dev build uses where it must differ from the daily one. */
+export const DEV = {
+  keychainPrefix: "com.usefulbot.dev",
+} as const;
+
 /** The folder name the app's own stores live under, in any stack. */
 export const APP_STATE_DIR = DAILY.stateDir;
+
+/**
+ * Every per-store override a module still honours. On the dev stack each one
+ * that is set must resolve inside the dev state root. test/dev-stack.test.ts
+ * scans the code for UB_*_PATH / _DIR / _ROOT / _DB / _CONFIG reads and fails
+ * when one is missing here (or from its short list of reasoned exemptions), so
+ * a new store can never quietly bypass the dev state root.
+ */
+export const STORE_OVERRIDE_VARS = [
+  "UB_ROUTER_CONFIG", "UB_ROUTER_DB", "UB_AGENT_STORE_PATH", "UB_SHELL_PATH", "UB_APPROVALS_PATH",
+  "UB_WORKSPACE_STORE_PATH", "UB_ROUTINES_PATH", "UB_WEB_SESSIONS_PATH", "UB_HANDOFF_DIR", "UB_MEMORY_ROOT",
+  "UB_WIDGETS_DIR", "UB_IMAGES_DIR", "UB_MEDIA_INDEX_PATH", "UB_PROVIDERS_PATH", "UB_PROVIDER_OAUTH_PATH",
+  "UB_MODELS_CACHE_PATH", "UB_CONNECTORS_PATH", "UB_CONNECTIONS_PATH", "UB_CONNECTION_TOOLS_PATH",
+  "UB_OAUTH_PENDING_PATH", "UB_CATALOGUE_PATH", "UB_LIMITS_PATH",
+] as const;
+
+/** Base-URL overrides. On the dev stack none may aim at a loopback host on a daily port. */
+export const ORIGIN_OVERRIDE_VARS = ["UB_ROUTER_BASE_URL", "UB_WEB_BASE_URL", "UB_OPENCODE_GO_BASE"] as const;
+
+const DAILY_PORTS: readonly number[] = [DAILY.routerPort, DAILY.webPort, DAILY.evePort];
 
 const PORT_VARS = [
   ["UB_ROUTER_PORT", DAILY.routerPort],
@@ -44,8 +70,8 @@ const PORT_VARS = [
   ["UB_EVE_PORT", DAILY.evePort],
 ] as const;
 
-// Reverse-DNS shape, lower case, no trailing dot: "com.usefulbot", "com.usefulbot.dev".
-const PREFIX_SHAPE = /^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$/;
+// The part after the stack's prefix: `device.desktop`, `connection.<id>`.
+const SERVICE_TAIL = /^[a-z0-9][a-z0-9._-]{0,120}$/;
 
 export class StackConfigError extends Error {
   readonly problems: string[];
@@ -127,13 +153,36 @@ export function webOrigin(env: Env = process.env): string {
   return env.UB_WEB_BASE_URL || `http://${LOOPBACK}:${webPort(env)}`;
 }
 
+/**
+ * The Keychain namespace belongs to the stack, it is not a setting: exactly
+ * `com.usefulbot` on daily and `com.usefulbot.dev` on dev. UB_KEYCHAIN_PREFIX
+ * may only repeat that value; anything else throws, so a stale or mistyped
+ * variable can never aim one stack at the other's items.
+ */
 export function keychainPrefix(env: Env = process.env): string {
+  const stack = stackName(env);
+  const fixed = stack === "dev" ? DEV.keychainPrefix : DAILY.keychainPrefix;
   const raw = env.UB_KEYCHAIN_PREFIX;
-  if (raw === undefined || raw === "") return DAILY.keychainPrefix;
-  if (!PREFIX_SHAPE.test(raw)) {
-    throw new Error(`UB_KEYCHAIN_PREFIX must look like com.usefulbot.dev (lower case, dot separated), got "${raw}"`);
+  if (raw !== undefined && raw !== "" && raw !== fixed) {
+    throw new Error(`UB_KEYCHAIN_PREFIX must be exactly ${fixed} on the ${stack} stack, got "${raw}"`);
   }
-  return raw;
+  return fixed;
+}
+
+/**
+ * Whether a Keychain service name sits in this stack's namespace: `<prefix>.<name>`
+ * with a plain name. The daily stack also refuses `com.usefulbot.dev` and
+ * everything under it, so it can never touch the dev stack's items. Throws when
+ * UB_KEYCHAIN_PREFIX is not the stack's own value.
+ */
+export function keychainServiceAllowed(service: string, env: Env = process.env): boolean {
+  if (typeof service !== "string") return false;
+  const prefix = keychainPrefix(env);
+  if (!service.startsWith(`${prefix}.`)) return false;
+  const tail = service.slice(prefix.length + 1);
+  if (!SERVICE_TAIL.test(tail)) return false;
+  if (prefix === DAILY.keychainPrefix && (tail === "dev" || tail.startsWith("dev."))) return false;
+  return true;
 }
 
 /** A Keychain service name in this stack: `<prefix>.<name>`. */
@@ -141,11 +190,133 @@ export function keychainName(name: string, env: Env = process.env): string {
   return `${keychainPrefix(env)}.${name}`;
 }
 
+// ---------------------------------------------------------------------------
+// Where a path really is. Every dev-stack path is judged on its canonical form:
+// symlinks resolved (for a path that does not exist yet, its nearest existing
+// ancestor), compared case-insensitively (APFS folds case by default).
+
+/** The folding the comparison uses: Unicode-normalised and lower case. */
+const fold = (path: string): string => path.normalize("NFD").toLowerCase();
+
+/** Resolve symlinks in the path or its nearest existing ancestor; a dangling link is followed too. */
+function canonicalPath(path: string, depth = 0): string {
+  if (depth > 40) throw new Error("too many symbolic links");
+  const tail: string[] = [];
+  let current = resolve(path);
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...tail);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    }
+    try {
+      if (lstatSync(current).isSymbolicLink()) {
+        return canonicalPath(join(resolve(dirname(current), readlinkSync(current)), ...tail), depth + 1);
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    }
+    const parent = dirname(current);
+    if (parent === current) return join(current, ...tail);
+    tail.unshift(basename(current));
+    current = parent;
+  }
+}
+
+type Relation = "same" | "under" | "over" | null;
+
+/** How `a` sits against `b`: the same folder, inside it, or containing it. Both already folded. */
+function relation(a: string, b: string): Relation {
+  if (a === b) return "same";
+  const slash = (path: string) => (path.endsWith("/") ? path : `${path}/`);
+  if (slash(a).startsWith(slash(b))) return "under";
+  if (slash(b).startsWith(slash(a))) return "over";
+  return null;
+}
+
+const RELATION_TEXT = { same: "is", under: "sits inside", over: "contains" } as const;
+
+/** The folders the dev stack must never be, sit inside or contain, spelled for each home that might be in play. */
+function dailyFolders(env: Env, includeDevInstall: boolean): Array<{ label: string; path: string }> {
+  const homes = new Set<string>([homeDir(env)]);
+  try {
+    homes.add(userInfo().homedir);
+  } catch {
+    // No passwd entry: the environment's HOME is all there is.
+  }
+  const folders: Array<{ label: string; path: string }> = [];
+  for (const home of homes) {
+    if (!home) continue;
+    folders.push(
+      { label: "the daily state root", path: join(home, DAILY.stateDir) },
+      { label: "older owner data", path: join(home, ".useful-bot-dev") },
+      { label: "the daily media folder", path: join(home, "Documents", DAILY.mediaDir) },
+      { label: "the daily app install", path: join(home, RUNTIME_INSTALL_DIRS[0]) },
+    );
+    if (includeDevInstall) folders.push({ label: "the dev app install", path: join(home, RUNTIME_INSTALL_DIRS[1]) });
+  }
+  return folders;
+}
+
+/**
+ * Both spellings of a path, folded: the lexical one (resolve(), nothing followed)
+ * and the canonical one (symlinks followed). Containment is judged on every
+ * pairing, so a link planted on either side cannot hide it. An unresolvable
+ * path is a problem, never a skipped check.
+ */
+function pathForms(name: string, value: string, problems: string[]): string[] | null {
+  if (!isAbsolute(value)) {
+    problems.push(`${name} must be an absolute path, got "${value}"`);
+    return null;
+  }
+  try {
+    return [...new Set([fold(resolve(value)), fold(canonicalPath(value))])];
+  } catch (error) {
+    problems.push(`${name} cannot be resolved: ${(error as Error).message}`);
+    return null;
+  }
+}
+
+/** The first way any form of `a` sits against any form of `b` (limited to `hows`), with the form of `b` that matched. */
+function touches(
+  a: string[],
+  b: string[],
+  hows: ReadonlyArray<Exclude<Relation, null>> = ["same", "under", "over"],
+): { how: Exclude<Relation, null>; folder: string } | null {
+  for (const want of hows) {
+    for (const left of a) {
+      for (const right of b) {
+        if (relation(left, right) === want) return { how: want, folder: right };
+      }
+    }
+  }
+  return null;
+}
+
+function isLoopbackHost(rawHost: string): boolean {
+  let host = rawHost.toLowerCase().replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+  if (v4) return Number(v4[1]) === 127 || host === "0.0.0.0";
+  if (host === "::1" || host === "::") return true;
+  // ::ffff:7f00:1 is how URL spells ::ffff:127.0.0.1.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (mapped) {
+    const high = parseInt(mapped[1], 16);
+    return high >> 8 === 127 || (high === 0 && parseInt(mapped[2], 16) === 0);
+  }
+  return false;
+}
+
 /**
  * Everything wrong with this environment for the stack it names. Empty means
  * fine. A daily environment is checked only for malformed values it chose to
- * set; a dev one must also set every stack value and none of them may equal
- * the daily one.
+ * set; a dev one must also set every stack value, none of them may equal or
+ * touch a daily one, and every place it points at is judged on its real,
+ * symlink-resolved, case-folded location.
  */
 export function stackProblems(env: Env = process.env): string[] {
   const problems: string[] = [];
@@ -156,9 +327,9 @@ export function stackProblems(env: Env = process.env): string[] {
     return [(error as Error).message];
   }
   const dev = stack === "dev";
-  const home = homeDir(env);
   const set = (name: string) => env[name] !== undefined && env[name] !== "";
 
+  const devPorts = new Map<number, string>();
   for (const [name, daily] of PORT_VARS) {
     if (!set(name)) {
       if (dev) problems.push(`${name} is required on the dev stack`);
@@ -166,7 +337,12 @@ export function stackProblems(env: Env = process.env): string[] {
     }
     try {
       const value = portFrom(env, name, daily);
-      if (dev && value === daily) problems.push(`${name} is ${value}, the daily port`);
+      if (dev) {
+        if (DAILY_PORTS.includes(value)) problems.push(`${name} is ${value}, a daily port`);
+        const other = devPorts.get(value);
+        if (other) problems.push(`${other} and ${name} are the same port (${value})`);
+        else devPorts.set(value, name);
+      }
     } catch (error) {
       problems.push((error as Error).message);
     }
@@ -176,30 +352,91 @@ export function stackProblems(env: Env = process.env): string[] {
     if (dev) problems.push("UB_KEYCHAIN_PREFIX is required on the dev stack");
   } else {
     try {
-      const value = keychainPrefix(env);
-      if (dev && value === DAILY.keychainPrefix) problems.push(`UB_KEYCHAIN_PREFIX is ${value}, the daily prefix`);
+      keychainPrefix(env);
     } catch (error) {
       problems.push((error as Error).message);
     }
   }
 
-  if (dev) {
-    const root = env.UB_STATE_ROOT;
-    if (!root) {
-      problems.push("UB_STATE_ROOT is required on the dev stack");
-    } else if (!root.startsWith("/")) {
-      problems.push(`UB_STATE_ROOT must be an absolute path, got "${root}"`);
-    } else if (resolve(root) === resolve(home, DAILY.stateDir)) {
-      problems.push(`UB_STATE_ROOT is ${resolve(root)}, the daily state root`);
-    } else if (resolve(root) === resolve(home, ".useful-bot-dev")) {
-      // The owner's older dev data lives there; the dev stack never adopts it.
-      problems.push(`UB_STATE_ROOT is ${resolve(root)}, which holds older owner data`);
+  if (!dev) return problems;
+
+  const root = env.UB_STATE_ROOT;
+  let rootForms: string[] | null = null;
+  if (!root) {
+    problems.push("UB_STATE_ROOT is required on the dev stack");
+  } else {
+    rootForms = pathForms("UB_STATE_ROOT", root, problems);
+    if (rootForms !== null) {
+      for (const folder of dailyFolders(env, false)) {
+        const forms = pathForms(`protected folder ${folder.path}`, folder.path, problems);
+        const hit = forms === null ? null : touches(rootForms, forms);
+        if (hit) problems.push(`UB_STATE_ROOT ${RELATION_TEXT[hit.how]} ${folder.label} (${hit.folder})`);
+      }
+      // The bots' deny-lists key on the folder's name, as given and as the kernel sees it.
+      for (const name of new Set([basename(resolve(root)), basename(rootForms[rootForms.length - 1])])) {
+        if (!isAppStateSegment(name)) {
+          problems.push(`UB_STATE_ROOT's folder name "${name}" must be an app-state name such as .useful-bot-dev-app, so the bots' deny-lists cover it`);
+        }
+      }
     }
-    const media = env.UB_MEDIA_DIR;
-    if (!media) {
-      problems.push("UB_MEDIA_DIR is required on the dev stack");
-    } else if (resolve(media) === resolve(home, "Documents", DAILY.mediaDir)) {
-      problems.push(`UB_MEDIA_DIR is ${resolve(media)}, the daily media folder`);
+  }
+
+  const media = env.UB_MEDIA_DIR;
+  if (!media) {
+    problems.push("UB_MEDIA_DIR is required on the dev stack");
+  } else {
+    const mediaForms = pathForms("UB_MEDIA_DIR", media, problems);
+    if (mediaForms !== null) {
+      for (const folder of dailyFolders(env, false)) {
+        const forms = pathForms(`protected folder ${folder.path}`, folder.path, problems);
+        const hit = forms === null ? null : touches(mediaForms, forms);
+        if (hit) problems.push(`UB_MEDIA_DIR ${RELATION_TEXT[hit.how]} ${folder.label} (${hit.folder})`);
+      }
+    }
+  }
+
+  // Every per-store override that is set must land inside the dev state root,
+  // as the disk resolves it.
+  if (rootForms !== null) {
+    const canonicalRoot = rootForms[rootForms.length - 1];
+    for (const name of STORE_OVERRIDE_VARS) {
+      if (!set(name)) continue;
+      const forms = pathForms(name, env[name] as string, problems);
+      if (forms !== null && relation(forms[forms.length - 1], canonicalRoot) !== "under") {
+        problems.push(`${name} is ${forms[forms.length - 1]}, outside the dev state root (${canonicalRoot})`);
+      }
+    }
+  }
+
+  // The bots' working root is normally $HOME; it may not be, or sit inside, a store.
+  if (set("UB_WORKSPACE_ROOT")) {
+    const workForms = pathForms("UB_WORKSPACE_ROOT", env.UB_WORKSPACE_ROOT as string, problems);
+    if (workForms !== null) {
+      const stores = dailyFolders(env, true);
+      if (root && isAbsolute(root)) stores.push({ label: "the dev state root", path: root });
+      for (const store of stores) {
+        const forms = pathForms(`protected folder ${store.path}`, store.path, problems);
+        const hit = forms === null ? null : touches(workForms, forms, ["same", "under"]);
+        if (hit) {
+          problems.push(`UB_WORKSPACE_ROOT ${RELATION_TEXT[hit.how]} ${store.label} (${hit.folder})`);
+        }
+      }
+    }
+  }
+
+  // An origin override must not point a dev service at a daily one.
+  for (const name of ORIGIN_OVERRIDE_VARS) {
+    if (!set(name)) continue;
+    let url: URL;
+    try {
+      url = new URL(env[name] as string);
+    } catch {
+      problems.push(`${name} is not a URL, got "${env[name]}"`);
+      continue;
+    }
+    const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+    if (isLoopbackHost(url.hostname) && DAILY_PORTS.includes(port)) {
+      problems.push(`${name} points at ${url.hostname}:${port}, a daily service`);
     }
   }
   return problems;
@@ -235,7 +472,34 @@ export function isAppStateSegment(segment: string): boolean {
   return APP_STATE_SEGMENT.test(segment);
 }
 
-/** True when a shell line (or any text) names an app-state folder anywhere in it. */
+/**
+ * The runtime install roots, one per stack: the service code and the `.eve/`
+ * session transcripts live under them, so a bot may not read or write there
+ * any more than in the state folders. Whole folders, compared case-insensitively
+ * (APFS folds case). Other `Application Support` folders are not covered, and
+ * neither is `Useful Botany`.
+ */
+export const RUNTIME_INSTALL_DIRS = [
+  "Library/Application Support/Useful Bot",
+  "Library/Application Support/Useful Bot Dev",
+] as const;
+
+const RUNTIME_INSTALL_PATH = /(^|\/)library\/application support\/useful bot( dev)?(\/|$)/;
+const RUNTIME_INSTALL_IN_TEXT = /library\/application support\/useful bot(?: dev)?(?![a-z0-9_])/;
+
+/** True when an absolute or resolved path is at or inside either stack's runtime install folder. */
+export function isRuntimeInstallPath(path: string): boolean {
+  const segments = path.split("/").filter((segment) => segment !== "" && segment !== ".");
+  return RUNTIME_INSTALL_PATH.test(fold(segments.join("/")));
+}
+
+/** True when text, a shell line included, names a runtime install folder, with its spaces backslashed or quoted. */
+function mentionsRuntimeInstall(text: string): boolean {
+  const plain = text.replace(/\\(.)/g, "$1").replace(/["']/g, "").replace(/\/{2,}/g, "/");
+  return RUNTIME_INSTALL_IN_TEXT.test(fold(plain));
+}
+
+/** True when a shell line (or any text) names an app-state or runtime install folder anywhere in it. */
 export function mentionsAppState(text: string): boolean {
-  return APP_STATE_IN_TEXT.test(text);
+  return APP_STATE_IN_TEXT.test(text) || mentionsRuntimeInstall(text);
 }

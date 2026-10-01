@@ -25,6 +25,40 @@ case "$VARIANT" in
   *) echo "UB_VARIANT must be unset or dev, not \"$VARIANT\"" >&2; exit 1 ;;
 esac
 
+# The dev build rebuilds the checkout's web/.next and restamps its web-mode
+# (below). A daily app with no runtime payload (a `npm run build:app` install,
+# not a release) runs its services from this checkout and serves that same
+# build, so a dev build would change what the daily app serves under it. Refuse
+# rather than touch it. A release install carries a payload and is unaffected.
+# UB_DAILY_APP names the installed copy to check; it exists for tests only.
+if [ "$VARIANT" = dev ]; then
+  DAILY_APP="${UB_DAILY_APP:-/Applications/Useful Bot.app}"
+  if [ -d "$DAILY_APP" ] && [ ! -d "$DAILY_APP/Contents/Resources/runtime" ]; then
+    echo "Refusing to build the dev app: $DAILY_APP has no Contents/Resources/runtime, so it runs its services from this checkout," >&2
+    echo "and the dev build rebuilds web/.next and restamps web-mode there, which that app would then serve." >&2
+    echo "Install a release build of the daily app (or remove it), then run npm run build:dev-app again." >&2
+    exit 1
+  fi
+fi
+
+# One build at a time: two runs (daily and dev, or two of either) would race on
+# web/.next and macos/.build. A plain mkdir lock; a lock left by a run that died
+# is taken over once its pid is gone.
+mkdir -p .build
+LOCK=".build/build-app.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  HOLDER="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$HOLDER" ] && kill -0 "$HOLDER" 2>/dev/null; then
+    echo "Another build-app.sh run (pid $HOLDER) holds macos/$LOCK. Wait for it to finish; two builds race on web/.next and macos/.build." >&2
+    exit 1
+  fi
+  rm -rf "$LOCK"
+  mkdir "$LOCK" || { echo "Could not take macos/$LOCK" >&2; exit 1; }
+fi
+echo "$$" > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+trap 'exit 1' INT TERM HUP
+
 # The web service the app talks to. scripts/service.mjs serves this build while
 # the sources still hash to what it was built from and falls back to `next dev`
 # otherwise, so a release always leaves a fresh one behind. The standalone

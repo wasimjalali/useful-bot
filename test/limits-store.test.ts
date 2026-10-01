@@ -72,11 +72,57 @@ test("a token budget below the floor, or not a number, is refused with the rule 
 
 test("whole tokens are kept as typed, never snapped to the stepper's million", () => {
   assert.deepEqual(checkTokenBudget(3_500_000), { ok: true, value: 3_500_000 });
-  assert.deepEqual(checkTokenBudget(30_600_000.4), { ok: true, value: 30_600_000 });
+  assert.deepEqual(checkTokenBudget(30_600_000), { ok: true, value: 30_600_000 });
   assert.equal(normalizeBudget(30_400_000), 30_400_000);
   assert.equal(normalizeBudget(MIN_DAILY_TOKEN_BUDGET - 1), undefined);
   assert.equal(normalizeBudget(Number.MAX_SAFE_INTEGER + 1), undefined);
   assert.equal(normalizeBudget("30000000"), undefined);
+});
+
+test("a fractional token count is refused as invalid, never rounded into or across a bound", () => {
+  // Rounding before validating turned 1000000.5 into 1000001 and let 999999.6
+  // through the floor. The macOS app converts "3.5M" to whole tokens itself.
+  for (const fractional of [1_000_000.5, 999_999.6, 999_999.4, 30_600_000.4, 3_500_000.000001, 1e6 + 0.1, -0.5, 0.2]) {
+    rejected(checkTokenBudget(fractional), "token_budget_invalid");
+    assert.equal(normalizeBudget(fractional), undefined, String(fractional));
+  }
+  // Whole numbers keep their own errors: the floor and the safe-integer ceiling.
+  rejected(checkTokenBudget(999_999), "token_budget_min");
+  rejected(checkTokenBudget(Number.MAX_SAFE_INTEGER + 1), "token_budget_max");
+  // A fractional value inside a PUT body refuses the whole update.
+  const start = { ...emptyLimitsStore(), dailyRequestBudget: 7_000 };
+  rejected(applyLimitsUpdate(start, { dailyTokenBudget: 1_000_000.5 }, "2026-10-01T00:00:00.000Z"), "token_budget_invalid");
+  rejected(applyLimitsUpdate(start, { dailyTokenBudget: 999_999.6, dailyRequestBudget: 10 }, "2026-10-01T00:00:00.000Z"), "token_budget_invalid");
+});
+
+test("a stored file with a fractional token budget falls back to the default, not a rounded value", () => {
+  const box = sandbox();
+  try {
+    writeFileSync(box.path, JSON.stringify({ schemaVersion: 1, dailyTokenBudget: 1_000_000.5, dailyRequestBudget: 10, updatedAt: null }));
+    const store = readLimitsStore(box.path);
+    assert.equal(store.dailyTokenBudget, null);
+    assert.equal(store.dailyRequestBudget, 10);
+  } finally {
+    box.cleanup();
+  }
+});
+
+test("scaling is exact integer math: the identity budget stays exact up to the safe integer", () => {
+  // desktop input24h is the baseline itself, so a budget scales by exactly 1.
+  for (const budget of [9_007_199_254_740_987, 9_007_199_254_740_991, 4_503_599_627_370_497, 8_999_999_999_999_999]) {
+    const limits = effectiveLimits("desktop", budget, null);
+    assert.equal(limits.dailyTokenBudget, budget);
+    assert.equal(limits.caller.input24h, budget, `desktop input ${budget}`);
+  }
+  assert.equal(effectiveLimits("phone", 9_007_199_254_740_987, null).caller.input24h, 9_007_199_254_740_987);
+  // Request budgets too: the desktop count is the budget verbatim, the aggregate a ratio.
+  assert.equal(effectiveLimits("desktop", null, 9_007_199_254_740_987).caller.requests24h, 9_007_199_254_740_987);
+  // A ratio rounds half up on exact integers and never exceeds the safe integer.
+  const big = effectiveLimits("desktop", 9_007_199_254_740_987, 9_007_199_254_740_987);
+  assert.equal(big.aggregate.requests24h, Number.MAX_SAFE_INTEGER);
+  assert.equal(big.aggregate.input24h, Number.MAX_SAFE_INTEGER);
+  // Half rounds up: 1 request of 4,000 baseline against an aggregate of N.
+  assert.equal(effectiveLimits("desktop", null, 1).aggregate.requests24h, Math.max(1, Math.round(AGGREGATE_LIMITS.requests24h / 4_000)));
 });
 
 test("a request budget: 1 up to the safe integer, whole numbers only", () => {

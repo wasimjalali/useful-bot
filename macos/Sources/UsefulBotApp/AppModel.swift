@@ -183,6 +183,7 @@ final class AppModel: ObservableObject {
     @Published var budgetMessages = BudgetMessages()
     /// A budget change in flight, so the stepper cannot fire twice.
     @Published private(set) var usageBusy = false
+    private var pendingBudgetWrites = PendingBudgetWrites<(BackendClient) async throws -> UsagePayload>()
     /// Bumped on every budget write, so a poll from before it is discarded.
     private var usageGeneration: UInt64 = 0
     /// Connectors dialog: the catalogue, the key state and one in-flight
@@ -283,6 +284,9 @@ final class AppModel: ObservableObject {
     private var bootTask: Task<Void, Never>?
     /// A retry already tearing down and restarting the stack.
     private var retrying = false
+    /// Set by `retry()` for the boot it starts, so a service that hung without
+    /// binding is replaced rather than waited on again.
+    private var ownerRetried = false
 
     init() {
         let config = ServerConfig.resolved()
@@ -609,7 +613,9 @@ final class AppModel: ObservableObject {
                 break
             }
         }
-        let outcome = await services.ensure(config: config)
+        let replaceHung = ownerRetried
+        ownerRetried = false
+        let outcome = await services.ensure(config: config, replaceHung: replaceHung)
         // A cancelled attempt paints nothing at all: the retry that cancelled
         // it owns the screen from here, and `startAttempt` is only bumped once
         // this task has been awaited, so it cannot stand in for this check.
@@ -718,6 +724,7 @@ final class AppModel: ObservableObject {
         pending = false
         backgroundWorking = false
         started = false
+        ownerRetried = true
         await start()
     }
 
@@ -3199,7 +3206,12 @@ final class AppModel: ObservableObject {
     }
 
     private func writeBudget(_ field: BudgetMessages.Field, _ send: @escaping (BackendClient) async throws -> UsagePayload) {
-        guard !usageBusy else { return }
+        // One write at a time, but a second one is held rather than dropped: the
+        // newest per field goes out when the one in flight finishes.
+        guard !usageBusy else {
+            pendingBudgetWrites.hold(send, for: field)
+            return
+        }
         usageBusy = true
         usageError = nil
         // Any poll already in flight belongs to the budget before this write.
@@ -3218,6 +3230,9 @@ final class AppModel: ObservableObject {
                 self.budgetMessages.set(field, "Could not change the limit.")
             }
             self.usageBusy = false
+            if let held = self.pendingBudgetWrites.next() {
+                self.writeBudget(held.field, held.write)
+            }
         }
     }
 

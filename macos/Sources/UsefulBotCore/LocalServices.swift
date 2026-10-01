@@ -28,6 +28,8 @@ public struct LocalServices: Sendable {
     private let startGraceSeconds: Double
     /// How often a still-missing service is started again while `ensure` waits.
     private let restartIntervalSeconds: Double
+    /// How long a SIGTERM is given before the process is sent SIGKILL.
+    private let terminateGraceSeconds: Double
 
     public init(
         runner: ProcessRunner = FoundationProcessRunner(),
@@ -36,8 +38,10 @@ public struct LocalServices: Sendable {
         // Long enough for a cold Next dev server, which holds its port well
         // before it serves. A genuinely wedged listener costs this once.
         startGraceSeconds: Double = 20,
-        restartIntervalSeconds: Double = 15
+        restartIntervalSeconds: Double = 15,
+        terminateGraceSeconds: Double = 3
     ) {
+        self.terminateGraceSeconds = terminateGraceSeconds
         self.restartIntervalSeconds = restartIntervalSeconds
         self.runner = runner
         self.probe = probe
@@ -50,7 +54,7 @@ public struct LocalServices: Sendable {
     /// to stretch a 40 second budget into minutes of a window that says it is
     /// starting up. The default covers a cold start of all three services,
     /// where the web is a Next dev server.
-    public func ensure(config: ServerConfig, timeoutSeconds: Int = 90) async -> EnsureOutcome {
+    public func ensure(config: ServerConfig, timeoutSeconds: Int = 90, replaceHung: Bool = false) async -> EnsureOutcome {
         switch await stackState(config: config) {
         case .ready: return .ready
         case .foreign: return .foreignStack
@@ -61,6 +65,11 @@ public struct LocalServices: Sendable {
         guard supervisor.isNodeAvailable(repoPath: config.repoPath) else { return .nodeMissing }
         // The checks above were awaits of their own, so nothing is started for
         // an attempt that has already been replaced.
+        if Task.isCancelled { return .unavailable }
+        // A process that never bound is not left to block every start after it:
+        // ours is replaced on a Retry or once it has outlived a whole budget,
+        // and the ones an earlier launch left behind are stopped.
+        await recoverUnboundServices(config: config, budgetSeconds: timeoutSeconds, replaceHung: replaceHung)
         if Task.isCancelled { return .unavailable }
         // Before the first start, not after: the grace a held port is given is
         // part of the budget, and three of them used to run outside it.
@@ -117,6 +126,42 @@ public struct LocalServices: Sendable {
         }
     }
 
+    /// For each service whose port is empty: stops our own live spawn when the
+    /// owner pressed Retry or it has run for a whole budget without binding
+    /// (SIGTERM, then SIGKILL), and stops the `service.mjs <mode>` launchers of
+    /// this exact install that hold no port, left by an earlier launch (the
+    /// registry is empty after a relaunch, so nothing else would ever find
+    /// them). A service with a listening port is never touched here.
+    private func recoverUnboundServices(config: ServerConfig, budgetSeconds: Int, replaceHung: Bool) async {
+        let repoPath = config.repoPath
+        let supervisor = self.supervisor
+        for mode in Self.allModes {
+            if Task.isCancelled { return }
+            guard runner.listeners(port: port(of: mode, variant: config.variant)).isEmpty else { continue }
+            if let age = runner.liveSpawnAge(of: mode), replaceHung || age >= Double(budgetSeconds) {
+                runner.terminateSpawn(of: mode, force: false)
+                if !(await waitForSpawnExit(mode, timeout: Int(terminateGraceSeconds * 1000))) {
+                    if Task.isCancelled { return }
+                    runner.terminateSpawn(of: mode, force: true)
+                    _ = await waitForSpawnExit(mode, timeout: 1_000)
+                }
+            }
+            let matches: @Sendable (String) -> Bool = { line in
+                supervisor.isStrayServiceLine(line, mode: mode, repoPath: repoPath)
+            }
+            let strays = runner.strayServicePids(matching: matches)
+            guard !strays.isEmpty else { continue }
+            runner.terminate(pids: strays, force: false)
+            let deadline = Date().addingTimeInterval(terminateGraceSeconds)
+            while !runner.strayServicePids(matching: matches).isEmpty, Date() < deadline {
+                if Task.isCancelled { return }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            let remaining = runner.strayServicePids(matching: matches)
+            if !remaining.isEmpty, !Task.isCancelled { runner.terminate(pids: remaining, force: true) }
+        }
+    }
+
     /// Services with a live process of ours behind them and nothing listening
     /// on their port.
     private func hungServices(config: ServerConfig) -> [ServiceMode] {
@@ -135,7 +180,9 @@ public struct LocalServices: Sendable {
     /// Ready also means it is OUR stack: the web and the router say which
     /// stack they belong to, and one that says another (or, for dev, nothing)
     /// is foreign. eve is a third-party service with no stack field; its port
-    /// is the variant's own, so up is all that is asked of it.
+    /// is the variant's own, so up is asked of it, plus that whatever listens
+    /// there is a process of this install: another install's eve (or anything
+    /// else that answers 200) is foreign, never adopted or signalled.
     private func stackState(config: ServerConfig) async -> StackState {
         let variant = config.variant
         async let web = probe.read(config.healthURL)
@@ -146,6 +193,12 @@ public struct LocalServices: Sendable {
         let eveUp = await eve != nil
         if case .foreign = webState { return .foreign }
         if case .foreign = routerState { return .foreign }
+        if eveUp {
+            let supervisor = self.supervisor
+            let repoPath = config.repoPath
+            let owns: @Sendable (String) -> Bool = { supervisor.isOwnNodeProcess($0, repoPath: repoPath) }
+            if runner.hasForeignListener(port: variant.evePort, owns: owns) { return .foreign }
+        }
         return webState == .ready && routerState == .ready && eveUp ? .ready : .notReady
     }
 
@@ -355,10 +408,30 @@ public protocol ProcessRunner: Sendable {
     func listeners(port: Int) -> [pid_t]
     func stopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool)
     func forceStopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool)
+    /// Seconds since the live process this runner started for `mode` was
+    /// started; nil when there is none.
+    func liveSpawnAge(of mode: ServiceMode) -> TimeInterval?
+    /// SIGTERM (SIGKILL when `force`) to the live process this runner started
+    /// for `mode`. Only ever the runner's own spawn.
+    func terminateSpawn(of mode: ServiceMode, force: Bool)
+    /// True when something listens on `port` and none of it is ours (`owns`
+    /// takes the same command-line text as the stop calls).
+    func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool
+    /// Processes whose command line `matching` accepts that hold no listening
+    /// port and are not a spawn of this runner: what an earlier launch left
+    /// behind when its service never bound.
+    func strayServicePids(matching: @escaping @Sendable (String) -> Bool) -> [pid_t]
+    /// SIGTERM (SIGKILL when `force`) to exactly these pids.
+    func terminate(pids: [pid_t], force: Bool)
 }
 
 extension ProcessRunner {
     public func hasLiveSpawn(of mode: ServiceMode) -> Bool { false }
+    public func liveSpawnAge(of mode: ServiceMode) -> TimeInterval? { nil }
+    public func terminateSpawn(of mode: ServiceMode, force: Bool) {}
+    public func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool { false }
+    public func strayServicePids(matching: @escaping @Sendable (String) -> Bool) -> [pid_t] { [] }
+    public func terminate(pids: [pid_t], force: Bool) {}
 }
 
 /// Reference box shared by every copy of `FoundationProcessRunner`: it keeps
@@ -369,6 +442,7 @@ private final class SpawnRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var processes: [pid_t: Process] = [:]
     private var modes: [pid_t: ServiceMode] = [:]
+    private var started: [pid_t: Date] = [:]
     private var reportedUnknown: Set<String> = []
 
     func add(pid: pid_t, process: Process, mode: ServiceMode?) {
@@ -379,6 +453,25 @@ private final class SpawnRegistry: @unchecked Sendable {
         guard process.isRunning else { return }
         processes[pid] = process
         modes[pid] = mode
+        started[pid] = Date()
+    }
+
+    /// Seconds the oldest live process for `mode` has been running.
+    func liveAge(mode: ServiceMode) -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        let starts = processes.compactMap { pid, process in
+            modes[pid] == mode && process.isRunning ? started[pid] : nil
+        }
+        return starts.min().map { Date().timeIntervalSince($0) }
+    }
+
+    /// Signals every live process started for `mode`.
+    func signal(mode: ServiceMode, signal: Int32) {
+        lock.lock()
+        let pids = processes.compactMap { pid, process in modes[pid] == mode && process.isRunning ? pid : nil }
+        lock.unlock()
+        for pid in pids { kill(pid, signal) }
     }
 
     /// True while a process started for `mode` is still running.
@@ -402,6 +495,7 @@ private final class SpawnRegistry: @unchecked Sendable {
         defer { lock.unlock() }
         processes.removeValue(forKey: pid)
         modes.removeValue(forKey: pid)
+        started.removeValue(forKey: pid)
     }
 
     /// One log line per port/pid pair so a permanently foreign listener does
@@ -466,6 +560,83 @@ public struct FoundationProcessRunner: ProcessRunner {
 
     public func hasLiveSpawn(of mode: ServiceMode) -> Bool {
         registry.hasLive(mode: mode)
+    }
+
+    public func liveSpawnAge(of mode: ServiceMode) -> TimeInterval? {
+        registry.liveAge(mode: mode)
+    }
+
+    public func terminateSpawn(of mode: ServiceMode, force: Bool) {
+        registry.signal(mode: mode, signal: force ? SIGKILL : SIGTERM)
+    }
+
+    public func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool {
+        listenerPids(port: port).contains { pid in
+            guard ownsProcess(pid: pid, owns: owns) else {
+                if registry.shouldReport(port: port, pid: pid) {
+                    Self.appendEvent(
+                        "port \(port): listener pid \(pid) is not an own process; leaving it alive",
+                        to: Self.supervisorLogURL
+                    )
+                }
+                return true
+            }
+            return false
+        }
+    }
+
+    public func strayServicePids(matching: @escaping @Sendable (String) -> Bool) -> [pid_t] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,args="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return []
+        }
+        // Read before waiting: a full pipe would otherwise block the child.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let me = getpid()
+        return text.split(whereSeparator: \.isNewline).compactMap { line in
+            let trimmed = line.drop(while: { $0 == " " })
+            guard let space = trimmed.firstIndex(of: " "), let pid = pid_t(trimmed[trimmed.startIndex..<space]),
+                  pid != me, !registry.contains(pid: pid),
+                  matching(String(trimmed[space...]).trimmingCharacters(in: .whitespaces)),
+                  !holdsListeningPort(pid: pid) else { return nil }
+            return pid
+        }
+    }
+
+    public func terminate(pids: [pid_t], force: Bool) {
+        for pid in pids where kill(pid, force ? SIGKILL : SIGTERM) != 0 {
+            Self.appendEvent(
+                "kill(\(force ? SIGKILL : SIGTERM)) failed for stray pid \(pid): \(String(cString: strerror(errno)))",
+                to: Self.supervisorLogURL
+            )
+        }
+    }
+
+    func holdsListeningPort(pid: pid_t) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-nP", "-a", "-p", String(pid), "-iTCP", "-sTCP:LISTEN", "-t"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            // Not knowing is not a licence to kill.
+            return true
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return !data.isEmpty
     }
 
     /// The short list a service (or setup) starts from.
@@ -536,23 +707,7 @@ public struct FoundationProcessRunner: ProcessRunner {
 
     func signalOwnListeners(port: Int, signal: Int32, owns: @escaping @Sendable (String) -> Bool) {
         for pid in listenerPids(port: port) {
-            // Next rewrites its argv to `next-server (vX)`, dropping the repo
-            // path, so include the parent command line: the service.mjs
-            // launcher still carries it and keeps the match repo-scoped.
-            var text = commandLine(pid: pid)
-            if let parent = parentPid(of: pid) {
-                text += " \(commandLine(pid: parent))"
-            }
-            // Fallbacks when the argv and parent line cannot identify it: a
-            // pid this app spawned, or the listener's working directory (the
-            // repo root the launcher was started in) which survives the
-            // service.mjs parent dying and the child being reparented.
-            var owned = registry.contains(pid: pid) || owns(text)
-            if !owned, let cwd = workingDirectory(pid: pid) {
-                text += " \(cwd)"
-                owned = owns(text)
-            }
-            guard owned else {
+            guard ownsProcess(pid: pid, owns: owns) else {
                 if registry.shouldReport(port: port, pid: pid) {
                     Self.appendEvent(
                         "port \(port): listener pid \(pid) is not an own process; leaving it alive",
@@ -568,6 +723,26 @@ public struct FoundationProcessRunner: ProcessRunner {
                 )
             }
         }
+    }
+
+    /// Whether `pid` belongs to this install. Next rewrites its argv to
+    /// `next-server (vX)`, dropping the repo path, so include the parent
+    /// command line: the service.mjs launcher still carries it and keeps the
+    /// match repo-scoped. Fallbacks when the argv and parent line cannot
+    /// identify it: a pid this app spawned, or the process's working directory
+    /// (the repo root the launcher was started in) which survives the
+    /// service.mjs parent dying and the child being reparented.
+    func ownsProcess(pid: pid_t, owns: @Sendable (String) -> Bool) -> Bool {
+        var text = commandLine(pid: pid)
+        if let parent = parentPid(of: pid) {
+            text += " \(commandLine(pid: parent))"
+        }
+        var owned = registry.contains(pid: pid) || owns(text)
+        if !owned, let cwd = workingDirectory(pid: pid) {
+            text += " \(cwd)"
+            owned = owns(text)
+        }
+        return owned
     }
 
     func workingDirectory(pid: pid_t) -> String? {

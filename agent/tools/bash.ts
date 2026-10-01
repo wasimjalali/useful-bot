@@ -53,8 +53,9 @@ function blockedReason(command: string, scoped: boolean): string | null {
   }
   // The app's own stores: approvals, the roster, the grants. read_file and
   // list_dir refuse the same names; a shell line must not be the way round.
-  // Every state folder, in either stack (.useful-bot, .useful-bot-dev-app).
-  if (mentionsAppState(command)) return `command references ${APP_STATE_DIR}`;
+  // Every state folder, in either stack (.useful-bot, .useful-bot-dev-app),
+  // and both runtime install folders (Library/Application Support/Useful Bot[ Dev]).
+  if (mentionsAppState(command)) return `command references ${APP_STATE_DIR} or the app's install folder`;
   return null;
 }
 

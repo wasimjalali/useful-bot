@@ -681,6 +681,8 @@ struct AppSettingsView: View {
     /// rather than erroring. Typed input takes the stricter path above.
     private func commitBudget(_ tokens: Int, _ budget: UsagePayload.Budget) {
         let clamped = max(budget.min, min(budget.max ?? BudgetInput.maxSafe, tokens))
+        // A click is a new answer: a refusal about earlier typed text is stale.
+        model.clearBudgetError(.tokens)
         guard clamped != budget.tokens else { return }
         editedBudget = nil
         model.setDailyTokenBudget(clamped)
@@ -688,6 +690,7 @@ struct AppSettingsView: View {
 
     private func commitRequests(_ requests: Int, _ budget: UsagePayload.RequestBudget) {
         let clamped = max(budget.min, min(budget.max ?? BudgetInput.maxSafe, requests))
+        model.clearBudgetError(.requests)
         guard clamped != budget.requests else { return }
         editedRequests = nil
         model.setDailyRequestBudget(clamped)

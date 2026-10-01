@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { lstatSync, realpathSync } from "node:fs";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
 import { isForbiddenChildSegment, isGrantableRootPath } from "../../shared/shell-store.ts";
+import { isRuntimeInstallPath } from "../../shared/stack.ts";
 import {
   readSessionGrant,
   type SessionGrant,
@@ -141,6 +142,10 @@ export function resolveWorkspacePath(inputPath: string, root: string = workspace
       throw new Error("path_forbidden");
     }
   }
+  // The runtime install folders (service code, eve transcripts) are three
+  // segments long, so they are matched on the whole resolved path. That also
+  // covers a root granted above them, or one inside them.
+  if (isRuntimeInstallPath(resolved)) throw new Error("path_forbidden");
   assertNoSymlinkComponents(root, rel);
   return resolved;
 }

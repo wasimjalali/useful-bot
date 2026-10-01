@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { DAILY, keychainName, keychainPrefix } from "./stack.ts";
+import { keychainName, keychainServiceAllowed } from "./stack.ts";
 
 /**
  * Generic-password Keychain items, same write path as setup-local.mjs:
@@ -13,8 +13,6 @@ export type KeychainDriver = {
 };
 
 const ACCOUNT = "useful-bot";
-// The part after the stack's prefix: `device.desktop`, `connection.<id>`.
-const SERVICE_TAIL = /^[a-z0-9][a-z0-9._-]{0,120}$/;
 
 let driver: KeychainDriver | null = null;
 
@@ -39,18 +37,14 @@ export function memoryKeychain(): KeychainDriver & { store: Map<string, string> 
 }
 
 /**
- * A service must be `<this stack's prefix>.<name>`. The daily stack also
- * refuses anything under `dev.`, so it can never read or write the dev
- * stack's items (`com.usefulbot.dev.*`), and the dev stack refuses every
- * daily name.
+ * A service must be `<this stack's prefix>.<name>` (shared/stack.ts owns the
+ * rule): daily is `com.usefulbot.*` minus everything under `dev.`, dev is
+ * `com.usefulbot.dev.*`. Every read, write and delete goes through here, so a
+ * stack can never touch the other's items. A UB_KEYCHAIN_PREFIX that is not the
+ * stack's own value throws.
  */
 function assertService(service: string): string {
-  if (typeof service !== "string") throw new Error("keychain_service");
-  const prefix = keychainPrefix();
-  if (!service.startsWith(`${prefix}.`)) throw new Error("keychain_service");
-  const tail = service.slice(prefix.length + 1);
-  if (!SERVICE_TAIL.test(tail)) throw new Error("keychain_service");
-  if (prefix === DAILY.keychainPrefix && tail.startsWith("dev.")) throw new Error("keychain_service");
+  if (!keychainServiceAllowed(service)) throw new Error("keychain_service");
   return service;
 }
 

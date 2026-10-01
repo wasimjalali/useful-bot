@@ -103,8 +103,8 @@ public enum RuntimeInstall {
         public var tool: String
         public var arguments: [String]
         public var cwd: URL?
-        /// The whole environment the tool gets. Nil inherits the app's, which is
-        /// what the daily app has always done.
+        /// The whole environment the tool gets. Nil inherits the app's; setup
+        /// never does (see `setupEnvironment`).
         public var environment: [String: String]?
 
         public init(tool: String, arguments: [String], cwd: URL? = nil, environment: [String: String]? = nil) {
@@ -248,20 +248,18 @@ public enum RuntimeInstall {
         }
     }
 
-    /// What `setup-local.mjs` runs with. Daily inherits the app's environment,
-    /// exactly as it always has. Dev gets an explicit one: the same short list a
-    /// service gets, plus the dev settings and nothing else, so no `UB_*` value
-    /// from however the app was launched can point setup at another stack.
+    /// What `setup-local.mjs` runs with, for either variant: the same short
+    /// list a service gets plus the variant's own settings (none for daily), so
+    /// no `UB_*` value from however the app was launched can point setup at
+    /// another stack. setup-local honours `UB_STACK`, `UB_STATE_ROOT` and
+    /// `UB_KEYCHAIN_PREFIX`, so inheriting them would let a launch from a dev
+    /// shell rotate the daily credentials. Never nil, so the app's environment is
+    /// not inherited.
     static func setupEnvironment(variant: AppVariant, home: URL, inherited: [String: String] = ProcessInfo.processInfo.environment) -> [String: String]? {
-        switch variant {
-        case .daily:
-            return nil
-        case .dev:
-            return FoundationProcessRunner.environment(
-                base: FoundationProcessRunner.baseEnvironment(home: home.path, inherited: inherited),
-                adding: variant.serviceEnvironment(home: home)
-            )
-        }
+        FoundationProcessRunner.environment(
+            base: FoundationProcessRunner.baseEnvironment(home: home.path, inherited: inherited),
+            adding: variant.serviceEnvironment(home: home)
+        )
     }
 
     /// Runs a tool to completion, or kills it after `timeout` seconds.

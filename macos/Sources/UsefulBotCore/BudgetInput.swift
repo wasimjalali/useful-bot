@@ -21,16 +21,21 @@ public enum BudgetInput {
     private static let million = 1_000_000.0
 
     /// The token field is in millions: "500", "3.5", "3.5M" and "1,000" all mean
-    /// what they look like.
+    /// what they look like. A comma is only a thousands separator ("1,000",
+    /// never "3,5"), and the M goes at the end only.
     public static func tokens(_ text: String, min: Int, max: Int?) -> Result<Int, BudgetInputError> {
-        let cleaned = text
-            .replacingOccurrences(of: ",", with: "")
-            .replacingOccurrences(of: "M", with: "", options: [.caseInsensitive])
-            .trimmingCharacters(in: .whitespaces)
-        guard !cleaned.isEmpty,
-              cleaned.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }),
-              cleaned.filter({ $0 == "." }).count <= 1,
-              let millions = Double(cleaned), millions.isFinite else {
+        var body = text.trimmingCharacters(in: .whitespaces)
+        if let last = body.last, last == "M" || last == "m" {
+            body.removeLast()
+            body = body.trimmingCharacters(in: .whitespaces)
+        }
+        let parts = body.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let whole = parts.first.map(String.init) ?? ""
+        let fraction = parts.count > 1 ? String(parts[1]) : ""
+        guard parts.count <= 2, isDigitGroups(whole, allowEmpty: !fraction.isEmpty),
+              fraction.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let millions = Double((whole.isEmpty ? "0" : whole.replacingOccurrences(of: ",", with: "")) + "." + (fraction.isEmpty ? "0" : fraction)),
+              millions.isFinite else {
             return .failure(.init(message: "Type the limit in millions, like 500 or 3.5."))
         }
         let tokens = (millions * million).rounded()
@@ -46,15 +51,13 @@ public enum BudgetInput {
 
     /// The request field is a whole number, plain or grouped.
     public static func requests(_ text: String, min: Int, max: Int? = nil) -> Result<Int, BudgetInputError> {
-        let cleaned = text
-            .replacingOccurrences(of: ",", with: "")
-            .trimmingCharacters(in: .whitespaces)
-        guard !cleaned.isEmpty, cleaned.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+        let cleaned = text.trimmingCharacters(in: .whitespaces)
+        guard isDigitGroups(cleaned, allowEmpty: false) else {
             return .failure(.init(message: "Type the request limit as a whole number."))
         }
         let ceiling = Swift.min(max ?? maxSafe, maxSafe)
         // Int(cleaned) is nil on overflow, which is also "too big".
-        guard let value = Int(cleaned), value <= ceiling else {
+        guard let value = Int(cleaned.replacingOccurrences(of: ",", with: "")), value <= ceiling else {
             return .failure(.init(message: "Has to be at most \(grouped(ceiling)) requests."))
         }
         if value < min {
@@ -105,6 +108,18 @@ public enum BudgetInput {
         tokens > shipped
     }
 
+    /// ASCII digits, either plain ("1500") or in strict thousands groups
+    /// ("1,500", "12,345,678"): one to three digits, then groups of exactly three.
+    /// Anything looser is a typo, not a number ("3,5" is not 35).
+    private static func isDigitGroups(_ text: String, allowEmpty: Bool) -> Bool {
+        if text.isEmpty { return allowEmpty }
+        func digits(_ part: Substring) -> Bool { part.allSatisfy { $0.isASCII && $0.isNumber } }
+        let groups = text.split(separator: ",", omittingEmptySubsequences: false)
+        if groups.count == 1 { return digits(groups[0]) }
+        guard let first = groups.first, (1...3).contains(first.count), digits(first) else { return false }
+        return groups.dropFirst().allSatisfy { $0.count == 3 && digits($0) }
+    }
+
     private static func grouped(_ value: Int) -> String {
         value.formatted(.number.grouping(.automatic).locale(Locale(identifier: "en_US")))
     }
@@ -132,5 +147,25 @@ public struct BudgetMessages: Equatable, Sendable {
 
     public mutating func clear(_ field: Field) {
         if field == .tokens { tokens = nil } else { requests = nil }
+    }
+}
+
+/// Budget writes held while another is in flight: one slot per field, so the
+/// newest value for a field replaces an older one that never went out.
+public struct PendingBudgetWrites<Write> {
+    private var tokens: Write?
+    private var requests: Write?
+
+    public init() {}
+
+    public mutating func hold(_ write: Write, for field: BudgetMessages.Field) {
+        if field == .tokens { tokens = write } else { requests = write }
+    }
+
+    /// The next held write (tokens first), removed from the queue.
+    public mutating func next() -> (field: BudgetMessages.Field, write: Write)? {
+        if let write = tokens { tokens = nil; return (.tokens, write) }
+        if let write = requests { requests = nil; return (.requests, write) }
+        return nil
     }
 }

@@ -68,16 +68,20 @@ export type BudgetCheck =
 /**
  * A token budget the store will accept, or the rule it broke.
  *
- * Whole tokens, from the floor up to the safe integer. It deliberately does not
- * snap to the stepper's million: a budget typed as 3.5M has to be stored as
- * 3,500,000, not rounded up to 4,000,000, because rounding a spend limit up is
- * a raise the owner did not ask for.
+ * Whole tokens, from the floor up to the safe integer; a fractional count is
+ * refused, never rounded. It deliberately does not snap to the stepper's
+ * million: a budget typed as 3.5M has to be stored as 3,500,000, not rounded up
+ * to 4,000,000, because rounding a spend limit up is a raise the owner did not
+ * ask for.
  */
 export function checkTokenBudget(value: unknown): BudgetCheck {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return { ok: false, error: "token_budget_invalid", message: "Type the token budget as a number." };
+  // Validate before anything else: rounding first turned 1000000.5 into
+  // 1000001 and let 999999.6 through the floor. The macOS app converts "3.5M"
+  // to whole tokens itself, so a fractional count here is a bug upstream.
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+    return { ok: false, error: "token_budget_invalid", message: "Type the token budget as a whole number of tokens." };
   }
-  const whole = Math.round(value);
+  const whole = value;
   if (whole < MIN_DAILY_TOKEN_BUDGET) {
     return { ok: false, error: "token_budget_min", message: "Has to be at least 1M tokens." };
   }
@@ -205,13 +209,21 @@ export interface EffectiveLimits {
 
 /**
  * Scale a shipped 24h limit by `budget / baseline`. `0` means unlimited. The
- * multiply comes before the divide so a factor like 500M/30M is not rounded
- * twice, and the result is held to the safe integer so a 10-figure budget can
- * never turn a limit into an inexact number.
+ * arithmetic is exact (BigInt, rounded half up once) so a budget near the safe
+ * integer scales to itself when the ratio is 1, and the result is held to the
+ * safe integer so a 10-figure budget can never turn a limit into an inexact
+ * number.
  */
 function scaled(limit: number, budget: number, baseline: number): number {
   if (limit <= 0) return limit;
-  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.round((limit * budget) / baseline)));
+  if (!Number.isSafeInteger(limit) || !Number.isSafeInteger(budget) || !Number.isSafeInteger(baseline) || baseline <= 0) {
+    throw new Error("limits_budget");
+  }
+  const numerator = BigInt(limit) * BigInt(budget);
+  const divisor = BigInt(baseline);
+  const rounded = (numerator * 2n + divisor) / (divisor * 2n);
+  const capped = rounded > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : rounded;
+  return Math.max(1, Number(capped));
 }
 
 export function effectiveLimits(

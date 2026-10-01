@@ -303,8 +303,38 @@ private final class StackRunner: ProcessRunner, @unchecked Sendable {
         #expect(env?["UB_KEYCHAIN_PREFIX"] == "com.usefulbot.dev")
         #expect(env?["UB_STATE_ROOT"] == "/Users/test/.useful-bot-dev-app")
         #expect(env?["NODE_OPTIONS"] == nil)
-        // Daily keeps inheriting the app's environment, as it always has.
-        #expect(RuntimeInstall.setupEnvironment(variant: .daily, home: home, inherited: inherited) == nil)
+    }
+
+    @Test func dailySetupGetsTheServiceWhitelistAndNoUBKeys() throws {
+        // setup-local honours UB_STACK, UB_STATE_ROOT and UB_KEYCHAIN_PREFIX, so a
+        // daily setup must not inherit them from however the app was launched.
+        let inherited = [
+            "UB_STACK": "dev", "UB_STATE_ROOT": "/Users/test/.useful-bot-dev-app", "UB_KEYCHAIN_PREFIX": "com.usefulbot.dev",
+            "UB_ROUTER_PORT": "4419", "UB_ANYTHING": "x",
+            "NODE_OPTIONS": "--inspect", "DYLD_INSERT_LIBRARIES": "/x.dylib", "SHELL": "/bin/zsh", "USER": "test",
+        ]
+        let home = URL(fileURLWithPath: "/Users/test", isDirectory: true)
+        let env = try #require(RuntimeInstall.setupEnvironment(variant: .daily, home: home, inherited: inherited))
+        #expect(env.keys.filter { $0.hasPrefix("UB_") }.isEmpty)
+        #expect(env["NODE_OPTIONS"] == nil && env["DYLD_INSERT_LIBRARIES"] == nil)
+        #expect(env["HOME"] == "/Users/test")
+        #expect(env["SHELL"] == "/bin/zsh" && env["USER"] == "test")
+        // The same list a daily service starts from.
+        #expect(env == FoundationProcessRunner.environment(
+            base: FoundationProcessRunner.baseEnvironment(home: home.path, inherited: inherited),
+            adding: AppVariant.daily.serviceEnvironment(home: home)
+        ))
+    }
+
+    @Test func dailyPrepareRunsSetupWithAnExplicitEnvironment() throws {
+        let folders = try makeRuntimeFolders()
+        defer { try? FileManager.default.removeItem(at: folders.root) }
+        let log = ToolLog()
+        let lock = try RuntimeInstall.InstallLock(root: folders.install)
+        try RuntimeInstall.prepare(bundled: folders.bundled, root: folders.install, holding: lock, variant: .daily, home: folders.home, runTool: log.runner)
+        let setup = try #require(log.setupCalls.first)
+        let env = try #require(setup.environment)
+        #expect(env.keys.filter { $0.hasPrefix("UB_") }.isEmpty)
     }
 
     @Test func devAConfiguredDevStateIsRefreshedNotRotated() throws {
@@ -348,8 +378,8 @@ private final class StackRunner: ProcessRunner, @unchecked Sendable {
         #expect(envs[1]?["UB_STATE_ROOT"] == AppVariant.dev.stateRoot(home: folders.home).path)
     }
 
-    @Test func dailyPrepareIsUnchanged() throws {
-        // Daily setup inherits the app's environment (nil) and runs the same flags.
+    @Test func dailyPrepareRunsTheSameFlagsOnTheWhitelistEnvironment() throws {
+        // Daily setup runs the same flags, now on the service whitelist rather than the app's environment.
         let folders = try makeRuntimeFolders(stamp: "1.0.0+1")
         defer { try? FileManager.default.removeItem(at: folders.root) }
         try writeConfig(under: AppVariant.daily.stateRoot(home: folders.home))
@@ -358,7 +388,7 @@ private final class StackRunner: ProcessRunner, @unchecked Sendable {
         try RuntimeInstall.prepare(bundled: folders.bundled, root: folders.install, holding: lock, variant: .daily, home: folders.home, runTool: log.runner)
         #expect(log.invocations.map(\.tool) == ["/usr/bin/rsync", "/usr/bin/xattr", folders.install.appendingPathComponent("bin/node").path])
         #expect(log.setupCalls.map(\.arguments.last) == ["--add-missing"])
-        #expect(log.setupCalls.allSatisfy { $0.environment == nil })
+        #expect(log.setupCalls.allSatisfy { $0.environment?.keys.contains { $0.hasPrefix("UB_") } == false })
     }
 
     @Test func eachVariantRefusesTheOthersInstallRoot() throws {

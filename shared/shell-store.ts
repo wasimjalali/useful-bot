@@ -6,7 +6,7 @@ import {
   type AvatarColor,
   type AvatarShape,
 } from "./bot-face.ts";
-import { APP_STATE_DIR, isAppStateSegment } from "./stack.ts";
+import { APP_STATE_DIR, isAppStateSegment, isRuntimeInstallPath } from "./stack.ts";
 
 /** Client-safe: this file must never pull in node builtins. */
 export type WorkspacePermission = "read_only" | "auto" | "full_access";
@@ -467,6 +467,9 @@ export function isGrantableRootPath(path: string): boolean {
   // pass it while it covers every credential store on the machine. A grant is
   // a folder the owner picked, never the whole disk.
   if (path.replace(/\/+$/, "") === "") return false;
+  // The runtime install folders span three segments (Library/Application
+  // Support/Useful Bot[ Dev]), so they cannot be a per-segment name.
+  if (isRuntimeInstallPath(path)) return false;
   for (const segment of path.split("/")) {
     if (!segment) continue;
     if (segment === "..") return false;

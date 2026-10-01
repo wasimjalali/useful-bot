@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
-import { enforceStack, keychainName, stateRoot, webOrigin } from "../shared/stack.ts";
+import { enforceStack, keychainName, keychainServiceAllowed, stateRoot, webOrigin } from "../shared/stack.ts";
 
 const [NODE_MAJOR, NODE_MINOR, NODE_PATCH] = process.versions.node.split(".").map(Number);
 if (NODE_MAJOR !== 24 || NODE_MINOR < 11 || (NODE_MINOR === 11 && NODE_PATCH < 1)) {
@@ -43,12 +43,23 @@ function digest(token) {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
+// Every Keychain call below goes through this: an item outside the running
+// stack's namespace (daily refuses com.usefulbot.dev.*, dev refuses anything
+// not com.usefulbot.dev.*) is never read, written or deleted, in any mode.
+function assertOwnItem(service) {
+  if (!keychainServiceAllowed(service)) {
+    process.stderr.write(`${JSON.stringify({ error: "keychain_item_foreign", item: service })}\n`);
+    process.exit(1);
+  }
+}
+
 // A bare `-w` makes security prompt for the value and a retype, both read
 // from stdin, and on a mismatch it stores an empty password and still exits
 // 0: a token piped once ended up as an empty item. Command mode (-i) takes
 // the whole command on stdin instead, so the value never reaches argv and a
 // failure is a non-zero status. Tokens are base64url, so no quoting is needed.
 function putKeychain(service, token) {
+  assertOwnItem(service);
   const input = Buffer.from(`add-generic-password -U -s ${service} -a useful-bot -w ${token}\n`, "utf8");
   const result = spawnSync("/usr/bin/security", ["-i"], { input, stdio: ["pipe", "ignore", "ignore"] });
   input.fill(0);
@@ -61,6 +72,7 @@ function putKeychain(service, token) {
 // is absent or empty. An empty value is what the old prompt driven write left
 // behind, and a service reading it gets nothing.
 function readKeychain(service) {
+  assertOwnItem(service);
   const result = spawnSync("/usr/bin/security", ["find-generic-password", "-s", service, "-a", "useful-bot", "-w"], {
     stdio: ["ignore", "pipe", "ignore"],
     encoding: "utf8",
@@ -74,6 +86,7 @@ function hasKeychain(service) {
 }
 
 function deleteKeychain(service) {
+  assertOwnItem(service);
   spawnSync("/usr/bin/security", ["delete-generic-password", "-s", service, "-a", "useful-bot"], {
     stdio: ["ignore", "ignore", "ignore"],
   });
