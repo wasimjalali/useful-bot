@@ -1,13 +1,17 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { callerOf } from "../lib/permission.ts";
 import { sharedMemoryStore } from "../lib/memory.ts";
+import { readShell } from "../../shared/shell-io.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 
 export default defineTool({
-  description: "Read one desktop memory note by id.",
+  description: "Read one of this bot's own memory notes by id, in full.",
   inputSchema: z.object({ id: z.string() }),
-  execute(input) {
-    const note = sharedMemoryStore().read(input.id, "desktop");
+  async execute(input, ctx) {
+    const who = await callerOf(readShell(), ctx);
+    if (!who.ok) return who.result;
+    const note = sharedMemoryStore().read(input.id, who.caller.id);
     return {
       ...note,
       title: wrapUntrusted(`memory:${note.id} title`, note.title),

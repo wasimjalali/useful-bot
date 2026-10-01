@@ -17,7 +17,8 @@ import { deliverFirstBrief, fanOut, syncSessionWorkspace } from "../../../lib/ag
 import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
-import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { unbindBot } from "../../../../shared/session-bindings.ts";
+import { applyShellAction, isGrantableRootPath, profileCardIsCurrent, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
 import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
@@ -122,6 +123,13 @@ function detachBot(botId: string): string | null {
     deleteThread(botId);
   } catch (err) {
     errors.push(`transcript:${errorCode(err, "detach_failed")}`);
+  }
+  // The deleted bot's session bindings go with it: the only way a row leaves
+  // the identity store.
+  try {
+    unbindBot(botId);
+  } catch (err) {
+    errors.push(`sessions:${errorCode(err, "detach_failed")}`);
   }
   return errors.length > 0 ? errors.join(",") : null;
 }
@@ -365,6 +373,15 @@ export async function PUT(request: Request) {
         if (!proposalMatchesAction(existing, body.action)) {
           return NextResponse.json({ ok: false, error: "proposal_mismatch" }, { status: 400 });
         }
+        // A profile card is bound to the exact text it showed and to the
+        // revision of the profile it was raised against. A profile that moved
+        // on since is a stale card: confirming it would overwrite newer text.
+        if (existing.kind === "updateBotProfile") {
+          const target = current.bots.find((bot) => bot.id === existing.botId);
+          if (!profileCardIsCurrent(target, existing.baseRevision)) {
+            return NextResponse.json({ ok: false, error: "proposal_stale" }, { status: 409 });
+          }
+        }
       }
       claimed = claimProposal(body.proposalId, status);
       if (!claimed) {
@@ -383,8 +400,15 @@ export async function PUT(request: Request) {
     // The roster commit is what assigns a new bot its id, and the brief below
     // has to reach that exact bot.
     let createdBotId: string | undefined;
+    const profileCard = claimed?.kind === "updateBotProfile" && claimed.status === "confirmed" ? claimed : null;
     const next = action
       ? updateShell((shell) => {
+        // The revision is checked again under the roster lock: the pre-check
+        // above read an earlier snapshot.
+        if (profileCard) {
+          const target = shell.bots.find((bot) => bot.id === profileCard.botId);
+          if (!profileCardIsCurrent(target, profileCard.baseRevision)) throw new Error("proposal_stale");
+        }
         const applied = applyShellAction(shell, action);
         createdBotId = applied.createdId;
         return applied.store;

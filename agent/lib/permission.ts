@@ -1,6 +1,11 @@
+import { peekShell } from "../../shared/shell-io.ts";
+import { orchestratorId, type ShellBot, type ShellStore } from "../../shared/shell-store.ts";
 import { readSessionGrant, type WorkspacePermission } from "../../shared/workspace-store.ts";
+import { awaitActiveBotId, BOT_CONTEXT_MISSING, isBotContextMissing } from "./active-bot.ts";
 import type { ApprovalStore } from "./approvals.ts";
 import { waitUntilNotPending } from "./approvals.ts";
+
+export { orchestratorId };
 
 /**
  * The bot's permission for this session. A session with no grant is one the
@@ -56,3 +61,70 @@ export async function settle(
 
 /** The blocked result every gated tool returns when Read only refuses it. */
 export const READ_ONLY_BLOCKED = { status: "blocked", error: "workspace_read_only" } as const;
+
+/**
+ * The cross-bot rule. Who is calling decides how far a tool reaches:
+ * - `orchestrator`: the default bot (or the first visible bot when it is gone),
+ *   which may act on any bot;
+ * - `bot`: a plain bot, which acts only on itself and its own routines;
+ * - `group`: a group session, which acts on itself (its routines, its chat,
+ *   its notes under the group id) and may message its own members.
+ * Checked at execution time against the resolved target.
+ */
+export type CallerRole = "orchestrator" | "bot" | "group";
+
+export type Caller = { id: string; role: CallerRole; bot: ShellBot };
+
+export function callerRole(shell: Pick<ShellStore, "bots">, bot: ShellBot): CallerRole {
+  if (bot.kind === "group") return "group";
+  return bot.id === orchestratorId(shell) ? "orchestrator" : "bot";
+}
+
+export type CallerResult =
+  | { ok: true; caller: Caller }
+  | { ok: false; result: typeof BOT_CONTEXT_MISSING };
+
+/**
+ * The acting bot and its class, from the durable session binding (after a
+ * bounded wait for a just-created session). An unbound or child session, or a
+ * bound bot the roster no longer has, is `bot_context_missing`.
+ */
+export async function callerOf(
+  shell: ShellStore,
+  ctx?: { session?: { id?: string; parent?: unknown } },
+): Promise<CallerResult> {
+  let id: string;
+  try {
+    id = await awaitActiveBotId(shell, ctx);
+  } catch (err) {
+    if (isBotContextMissing(err)) return { ok: false, result: BOT_CONTEXT_MISSING };
+    throw err;
+  }
+  const bot = shell.bots.find((item) => item.id === id);
+  if (!bot) return { ok: false, result: BOT_CONTEXT_MISSING };
+  return { ok: true, caller: { id, role: callerRole(shell, bot), bot } };
+}
+
+/** Only the orchestrator acts on a bot other than itself. */
+export function mayActOn(caller: Caller, targetBotId: string): boolean {
+  return caller.role === "orchestrator" || caller.id === targetBotId;
+}
+
+/**
+ * `mayActOn` again against the roster as it stands now, for the moment an
+ * approval card is spent: the caller can have lost the orchestrator role, or
+ * been deleted, while the owner was deciding.
+ */
+export function mayStillActOn(callerId: string, targetBotId: string, shell: ShellStore | null = peekShell()): boolean {
+  const actor = shell?.bots.find((bot) => bot.id === callerId);
+  if (!shell || !actor) return false;
+  return callerId === targetBotId || callerRole(shell, actor) === "orchestrator";
+}
+
+/** The refusal every cross-bot check returns. */
+export function notAvailable(hint: string) {
+  return { status: "blocked", error: "not_available_for_this_bot", hint } as const;
+}
+
+export const ORCHESTRATOR_ONLY_HINT = "Only the Generalist does that. Ask the owner, or hand it to the Generalist.";
+export const SELF_ONLY_HINT = "This bot can only do that for itself.";

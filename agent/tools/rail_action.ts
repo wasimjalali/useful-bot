@@ -1,11 +1,21 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { activeBotId } from "../lib/active-bot.ts";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
-import { inAppGate, READ_ONLY_BLOCKED, sessionPermission, settle } from "../lib/permission.ts";
+import {
+  callerOf,
+  inAppGate,
+  mayActOn,
+  notAvailable,
+  ORCHESTRATOR_ONLY_HINT,
+  orchestratorId,
+  READ_ONLY_BLOCKED,
+  SELF_ONLY_HINT,
+  sessionPermission,
+  settle,
+} from "../lib/permission.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
-import { applyShellAction, DEFAULT_BOT_ID, type ShellAction } from "../../shared/shell-store.ts";
+import { applyShellAction, type ShellAction } from "../../shared/shell-store.ts";
 
 /**
  * The rail actions the owner can take from a bot row or a section header.
@@ -37,6 +47,9 @@ export default defineTool({
   }),
   async execute(input, ctx) {
     const shell = readShell();
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
+    const caller = who.caller;
     const sectionOnly = input.action === "createSection"
       || input.action === "renameSection"
       || input.action === "updateSection"
@@ -64,6 +77,13 @@ export default defineTool({
         return { status: "not_found", error: `no bot matches ${requested}`, hint: "Call listBots for exact ids." };
       }
       botId = target.id;
+      // A plain bot or a group arranges only its own row; the rest of the
+      // sidebar is the orchestrator's.
+      if (!mayActOn(caller, botId)) return notAvailable(SELF_ONLY_HINT);
+    } else if (caller.role !== "orchestrator") {
+      // Sections are shared by every row, so no one but the orchestrator
+      // creates, renames or removes one.
+      return notAvailable(ORCHESTRATOR_ONLY_HINT);
     }
 
     if (input.action === "removeSection") {
@@ -136,12 +156,12 @@ export default defineTool({
         action = { type: "pin", botId, pinned: false };
         break;
       case "hide":
-        if (botId === DEFAULT_BOT_ID) {
-          // The default bot answers untargeted group turns and owns the app's
+        if (botId === orchestratorId(shell)) {
+          // The orchestrator answers untargeted group turns and owns the app's
           // own chat; hiding it also makes handoffs to it fail.
           return { status: "refused", error: "the default Useful Bot cannot be hidden" };
         }
-        if (botId === activeBotId(shell, ctx)) {
+        if (botId === caller.id) {
           // Hiding the chat the owner is standing in takes the thread they are
           // talking to off the rail mid-conversation. `delete_bot` refuses the
           // same move for the same reason.

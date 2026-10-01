@@ -37,6 +37,7 @@ import {
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
+import { bindSession } from "../../shared/session-bindings.ts";
 import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
@@ -646,6 +647,20 @@ export async function cancelEveTurn(sessionId: string, jwt: string): Promise<voi
   } catch { /* the turn outlives us either way */ }
 }
 
+/**
+ * Bind a session eve just opened (or answered on) to its bot before the
+ * grant stamp and before any tool of the turn can ask whose it is. A session
+ * that cannot be bound would run unowned, so its turn is stopped.
+ */
+async function bindCreatedSession(sessionId: string, botId: string, jwt: string): Promise<void> {
+  try {
+    bindSession(sessionId, botId);
+  } catch (err) {
+    await cancelEveTurn(sessionId, jwt);
+    throw err;
+  }
+}
+
 async function runEveTurn(
   bot: ShellBot,
   message: string,
@@ -689,6 +704,9 @@ async function runEveTurn(
   let sessionId = bot.sessionId ?? "";
   let reply = "";
   try {
+    // The session this turn continues must belong to this bot. A pointer that
+    // names another bot's session is refused before eve sees the turn.
+    if (sessionId) bindSession(sessionId, bot.id);
     let historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
     if (sessionId) syncSessionWorkspaceFresh(sessionId, bot.id);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
@@ -727,6 +745,7 @@ async function runEveTurn(
         const retryBody = await retry.json() as { sessionId?: string };
         sessionId = retryBody.sessionId ?? "";
         if (!sessionId) throw new Error("eve_session_missing");
+        await bindCreatedSession(sessionId, bot.id, jwt);
         // Persist the fresh pointer now, so a crash before the reply still
         // leaves later handoffs and routines on the live session.
         // Only over the retired pointer: if the owner's app replaced it in
@@ -771,6 +790,7 @@ async function runEveTurn(
     const body = await res.json() as { sessionId?: string };
     sessionId = body.sessionId ?? sessionId;
     if (!sessionId) throw new Error("eve_session_missing");
+    await bindCreatedSession(sessionId, bot.id, jwt);
     syncSessionWorkspaceFresh(sessionId, bot.id);
     const stream = await fetch(`${EVE}/eve/v1/session/${sessionId}/stream?startIndex=0`, {
       headers: { authorization: `Bearer ${jwt}` },

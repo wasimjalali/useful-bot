@@ -13,17 +13,32 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { statePath } from "../../shared/stack.ts";
 
-export type Audience = "desktop" | "shared-phone";
+/**
+ * Every note is desktop memory. `shared-phone` rows from before ownership
+ * existed fold into `desktop` in the index migration below.
+ */
+export type Audience = "desktop";
+
+/** Who wrote the note last: the owner (Settings) or the model (memory_upsert). */
+export type NoteSource = "owner" | "model";
 
 export interface NoteMeta {
   schemaVersion: 1;
   id: string;
   revision: number;
   title: string;
+  /** User tags only. Ownership lives in `botId`, never in a tag. */
   tags: string[];
   audience: Audience;
+  /**
+   * The bot this note belongs to, immutable once written. Search, read and
+   * upsert all check it, so one bot cannot see or overwrite another's notes.
+   */
+  botId: string;
+  source: NoteSource;
   createdAt: string;
   updatedAt: string;
   expiresAt: string | null;
@@ -45,6 +60,12 @@ export interface MemoryNoteCard extends MemoryExcerpt {
   updatedAt: string;
 }
 
+/** Index schema: 2 added `bot_id` and folded `shared-phone` into `desktop`. */
+const INDEX_SCHEMA_VERSION = 2;
+/** The legacy ownership tag, read only by the migration. */
+const BOT_TAG_PREFIX = "bot:";
+/** Search and list return previews this long; `read` returns the whole note. */
+const PREVIEW_CHARS = 1024;
 const NOTE_ID_PATTERN = /^[A-Za-z0-9-]{1,80}$/;
 const LOCK_TIMEOUT_MS = 5000;
 /**
@@ -116,18 +137,59 @@ export function memoryRoot(): string {
   return statePath("memory");
 }
 
-function parseNote(raw: string): { meta: NoteMeta; body: string } {
+/**
+ * A note's meta as this build reads it, whatever wrote the file. A note from
+ * before ownership carries its bot in a `bot:<id>` tag; an untagged one
+ * belongs to the Generalist. `legacy` says the file on disk should be
+ * rewritten into the current shape (the migration does that once).
+ */
+function normalizeMeta(rec: Record<string, unknown>): { meta: NoteMeta; legacy: boolean } {
+  const tags = Array.isArray(rec.tags) ? rec.tags.filter((tag): tag is string => typeof tag === "string") : [];
+  const botTagId = tags.find((tag) => tag.startsWith(BOT_TAG_PREFIX))?.slice(BOT_TAG_PREFIX.length) ?? "";
+  const botId = typeof rec.botId === "string" && rec.botId !== ""
+    ? rec.botId
+    : botTagId !== "" ? botTagId : DEFAULT_BOT_ID;
+  const source: NoteSource = rec.source === "owner" || rec.source === "model" ? rec.source : "model";
+  const legacy = typeof rec.botId !== "string"
+    || rec.botId === ""
+    || rec.audience !== "desktop"
+    || rec.source !== source
+    || tags.some((tag) => tag.startsWith(BOT_TAG_PREFIX));
+  const meta = {
+    ...(rec as unknown as NoteMeta),
+    tags: tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX)),
+    audience: "desktop" as const,
+    botId,
+    source,
+  };
+  return { meta, legacy };
+}
+
+function parseNote(raw: string): { meta: NoteMeta; body: string; legacy: boolean } {
   const lines = raw.split("\n");
   if (lines[0] !== "---" || lines[2] !== "---") {
     throw new Error("note_format");
   }
-  const meta = JSON.parse(lines[1]) as NoteMeta;
+  const parsed = JSON.parse(lines[1]) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("note_format");
+  const { meta, legacy } = normalizeMeta(parsed as Record<string, unknown>);
   const body = lines.slice(3).join("\n");
-  return { meta, body };
+  return { meta, body, legacy };
 }
 
 function serializeNote(meta: NoteMeta, body: string): string {
   return `---\n${JSON.stringify(meta)}\n---\n${body}`;
+}
+
+/** A note as search and list show it: the body clipped to a preview. */
+function previewOf(note: { id: string; revision: number; title: string }, body: string): MemoryExcerpt {
+  return {
+    id: note.id,
+    revision: note.revision,
+    title: note.title,
+    body: body.slice(0, PREVIEW_CHARS),
+    truncated: body.length > PREVIEW_CHARS,
+  };
 }
 
 export class MemoryStore {
@@ -146,12 +208,18 @@ export class MemoryStore {
     mkdirSync(this.notesDir, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(this.indexPath);
     this.db.exec("PRAGMA journal_mode=WAL");
+    this.migrateIfNeeded();
+    this.repairIfDirty();
+  }
+
+  private createTables(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS notes (
         id TEXT PRIMARY KEY,
         revision INTEGER NOT NULL,
         body_sha TEXT NOT NULL,
         audience TEXT NOT NULL,
+        bot_id TEXT NOT NULL,
         tags TEXT NOT NULL,
         title TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -160,7 +228,52 @@ export class MemoryStore {
       );
       CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(title, tags, body, id UNINDEXED);
     `);
-    this.repairIfDirty();
+  }
+
+  private schemaVersion(): number {
+    return (this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  }
+
+  /**
+   * One-time migration to ownership, safe to run twice and from two processes
+   * (the web server and the agent both open the store). Under the store lock
+   * it rewrites every legacy note file into the current shape (bot from the
+   * `bot:<id>` tag, untagged notes to the Generalist, `shared-phone` to
+   * `desktop`), then rebuilds the index with the `bot_id` column.
+   */
+  private migrateIfNeeded(): void {
+    if (this.schemaVersion() >= INDEX_SCHEMA_VERSION) {
+      this.createTables();
+      return;
+    }
+    const release = this.acquire();
+    try {
+      // Re-checked under the lock: the other process may have finished first.
+      if (this.schemaVersion() >= INDEX_SCHEMA_VERSION) {
+        this.createTables();
+        return;
+      }
+      for (const name of readdirSync(this.notesDir)) {
+        if (!name.endsWith(".md")) continue;
+        const path = join(this.notesDir, name);
+        try {
+          const { meta, body, legacy } = parseNote(readFileSync(path, "utf8"));
+          if (!legacy || !NOTE_ID_PATTERN.test(meta.id)) continue;
+          const tmp = join(this.notesDir, `.${meta.id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+          writeFileSync(tmp, serializeNote(meta, body), { encoding: "utf8", mode: 0o600, flag: "wx" });
+          renameSync(tmp, path);
+        } catch {
+          // A file this build cannot parse is rejected by the rebuild below,
+          // the same way a rebuild has always treated it.
+        }
+      }
+      this.db.exec("DROP TABLE IF EXISTS notes; DROP TABLE IF EXISTS notes_fts;");
+      this.createTables();
+      this.rebuildRows();
+      this.db.exec(`PRAGMA user_version = ${INDEX_SCHEMA_VERSION}`);
+    } finally {
+      release();
+    }
   }
 
   /** Rows that could not be read during the last list or search. */
@@ -238,122 +351,138 @@ export class MemoryStore {
   rebuildIndex(): { indexed: number; rejected: number } {
     const release = this.acquire();
     try {
-      let indexed = 0;
-      let rejected = 0;
-      this.transaction(() => {
-        this.db.exec("DELETE FROM notes; DELETE FROM notes_fts;");
-        for (const name of readdirSync(this.notesDir)) {
-          if (!name.endsWith(".md")) continue;
-          try {
-            const raw = readFileSync(join(this.notesDir, name), "utf8");
-            const { meta, body } = parseNote(raw);
-            // A legacy or hand-edited file can carry an id that is unsafe as a
-            // file name. Skip it rather than poison the whole index.
-            if (!NOTE_ID_PATTERN.test(meta.id)) {
-              rejected += 1;
-              continue;
-            }
-            this.insertIndex(meta, body);
-            indexed += 1;
-          } catch {
-            rejected += 1;
-          }
-        }
-      });
-      return { indexed, rejected };
+      return this.rebuildRows();
     } finally {
       release();
     }
   }
 
-  search(query: string, audience: Audience): MemoryExcerpt[] {
+  /** The rebuild itself; the caller holds the store lock. */
+  private rebuildRows(): { indexed: number; rejected: number } {
+    let indexed = 0;
+    let rejected = 0;
+    this.transaction(() => {
+      this.db.exec("DELETE FROM notes; DELETE FROM notes_fts;");
+      for (const name of readdirSync(this.notesDir)) {
+        if (!name.endsWith(".md")) continue;
+        try {
+          const raw = readFileSync(join(this.notesDir, name), "utf8");
+          const { meta, body } = parseNote(raw);
+          // A legacy or hand-edited file can carry an id that is unsafe as a
+          // file name. Skip it rather than poison the whole index.
+          if (!NOTE_ID_PATTERN.test(meta.id)) {
+            rejected += 1;
+            continue;
+          }
+          this.insertIndex(meta, body);
+          indexed += 1;
+        } catch {
+          rejected += 1;
+        }
+      }
+    });
+    return { indexed, rejected };
+  }
+
+  /**
+   * A bot's own notes matching a query. The bot filter and the expiry check
+   * are in the SQL, before LIMIT: the index holds every bot's notes, so
+   * filtering afterwards would let other bots' notes fill the window.
+   */
+  search(query: string, botId: string): MemoryExcerpt[] {
+    if (!botId) throw new Error("memory_bot_required");
     const now = new Date().toISOString();
     let rows: Array<{ id: string }>;
     if (query.trim() === "") {
       rows = this.db.prepare(
-        "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT 5",
-      ).all(audience, now) as Array<{ id: string }>;
+        "SELECT id FROM notes WHERE status = 'active' AND bot_id = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT 5",
+      ).all(botId, now) as Array<{ id: string }>;
     } else {
       const match = ftsQuery(query);
       if (match === "") return [];
       rows = this.db.prepare(
         `SELECT notes.id AS id FROM notes_fts
          JOIN notes ON notes.id = notes_fts.id
-         WHERE notes_fts MATCH ? AND notes.status = 'active' AND notes.audience = ?
+         WHERE notes_fts MATCH ? AND notes.status = 'active' AND notes.bot_id = ?
            AND (notes.expires_at IS NULL OR notes.expires_at > ?)
          ORDER BY rank, notes.updated_at DESC, notes.id
          LIMIT 5`,
-      ).all(match, audience, now) as Array<{ id: string }>;
+      ).all(match, botId, now) as Array<{ id: string }>;
     }
     const excerpts: MemoryExcerpt[] = [];
     for (const row of rows) {
-      const excerpt = this.readExcerpt(row.id, audience);
+      const excerpt = this.readExcerpt(row.id, botId);
       if (excerpt) excerpts.push(excerpt);
     }
     return excerpts;
   }
 
-  list(audience: Audience, limit = 100, botId?: string): MemoryNoteCard[] {
+  list(botId: string, limit = 100): MemoryNoteCard[] {
+    if (!botId) throw new Error("memory_bot_required");
     const now = new Date().toISOString();
-    // The bot filter must land before LIMIT: the index holds every bot's
-    // notes, so limiting the audience first drops a bot's own note once
-    // newer notes from other bots fill the window. Tags are stored
-    // space-joined, so the tag is matched with space boundaries the same way
-    // noteBelongsToBot does it, untagged notes included.
-    const rows = (botId
-      ? this.db.prepare(
-          "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) AND instr(' ' || tags || ' ', ?) > 0 ORDER BY updated_at DESC, id LIMIT ?",
-        ).all(audience, now, ` ${botTag(botId)} `, limit)
-      : this.db.prepare(
-          "SELECT id FROM notes WHERE status = 'active' AND audience = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT ?",
-        ).all(audience, now, limit)) as Array<{ id: string }>;
+    const rows = this.db.prepare(
+      "SELECT id FROM notes WHERE status = 'active' AND bot_id = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id LIMIT ?",
+    ).all(botId, now, limit) as Array<{ id: string }>;
     const cards: MemoryNoteCard[] = [];
     for (const row of rows) {
-      const excerpt = this.readExcerpt(row.id, audience);
-      if (!excerpt) continue;
       try {
-        const { meta } = parseNote(readFileSync(join(this.notesDir, `${row.id}.md`), "utf8"));
-        cards.push({ ...excerpt, tags: meta.tags, updatedAt: meta.updatedAt });
+        const { meta, body } = parseNote(readFileSync(join(this.notesDir, `${row.id}.md`), "utf8"));
+        // The index is a cache of the files: a row whose file now says
+        // another owner, or an expiry, is not this bot's live note.
+        if (!this.isLiveFor(meta, botId)) continue;
+        cards.push({ ...previewOf(meta, body), tags: meta.tags, updatedAt: meta.updatedAt });
       } catch {
         this.skippedRows += 1;
       }
     }
-    if (!botId) return cards;
-    return cards.filter((card) => noteBelongsToBot(card.tags, botId));
+    return cards;
+  }
+
+  private isLiveFor(meta: NoteMeta, botId: string): boolean {
+    if (meta.botId !== botId || meta.status !== "active") return false;
+    return meta.expiresAt === null || meta.expiresAt > new Date().toISOString();
   }
 
   /**
    * An index row can outlive or disagree with its markdown file (a legacy id, a
    * deleted file, a crash mid-write). One bad row must not fail the whole read,
    * so it is skipped and counted; `read` keeps the strict id check for callers
-   * that name a single note.
+   * that name a single note. A preview, clipped: only `read` returns a whole note.
    */
-  private readExcerpt(id: string, audience: Audience): MemoryExcerpt | null {
+  private readExcerpt(id: string, botId: string): MemoryExcerpt | null {
     try {
-      return this.read(id, audience);
+      const note = this.read(id, botId);
+      return previewOf(note, note.body);
     } catch {
       this.skippedRows += 1;
       return null;
     }
   }
 
-  read(id: string, audience: Audience): MemoryExcerpt {
+  /**
+   * One note, whole (up to the 8,192-byte write cap). Refused for a bot that
+   * does not own it, and an expired note reads as gone.
+   */
+  read(id: string, botId: string): MemoryExcerpt {
     assertNoteId(id);
+    if (!botId) throw new Error("memory_bot_required");
     const path = join(this.notesDir, `${id}.md`);
     if (!existsSync(path)) {
       throw new Error("memory_not_found");
     }
     const { meta, body } = parseNote(readFileSync(path, "utf8"));
-    if (meta.audience !== audience || meta.status !== "active") {
+    if (meta.botId !== botId || meta.status !== "active") {
       throw new Error("memory_forbidden");
     }
-    const clipped = body.slice(0, 1024);
+    if (meta.expiresAt !== null && meta.expiresAt <= new Date().toISOString()) {
+      throw new Error("memory_not_found");
+    }
     return {
       id: meta.id,
       revision: meta.revision,
       title: meta.title,
-      body: clipped,
-      truncated: body.length > 1024,
+      body,
+      truncated: false,
     };
   }
 
@@ -363,10 +492,13 @@ export class MemoryStore {
     title: string;
     tags: string[];
     body: string;
-    audience: Audience;
+    /** The bot writing. A new note is owned by it; an existing one must be. */
+    botId: string;
+    source: NoteSource;
     expiresAt: string | null;
     sessionId: string;
   }): { id: string; revision: number } {
+    if (!input.botId) throw new Error("memory_bot_required");
     if (Buffer.byteLength(input.body, "utf8") > 8192) {
       throw new Error("memory_too_large");
     }
@@ -394,13 +526,15 @@ export class MemoryStore {
       const now = new Date().toISOString();
       if (existsSync(existingPath)) {
         const prev = parseNote(readFileSync(existingPath, "utf8"));
+        // Ownership is the first check, under the write lock and before the
+        // revision check, so a bot that guessed another bot's id learns
+        // nothing about its revision and cannot overwrite it. A note is
+        // never retagged.
+        if (prev.meta.botId !== input.botId) {
+          throw new Error("memory_forbidden");
+        }
         if (input.expectedRevision !== prev.meta.revision) {
           throw new Error("memory_revision_conflict");
-        }
-        // Audience is an integrity boundary: a desktop note must not be
-        // rewritten as shared-phone without an explicit recreate.
-        if (input.audience !== prev.meta.audience) {
-          throw new Error("memory_audience_change");
         }
         revision = prev.meta.revision + 1;
       } else if (count >= 10_000) {
@@ -411,8 +545,11 @@ export class MemoryStore {
         id,
         revision,
         title: input.title,
-        tags: input.tags,
-        audience: input.audience,
+        // The legacy ownership tag is never stored: owner is `botId`.
+        tags: input.tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX)),
+        audience: "desktop",
+        botId: input.botId,
+        source: input.source,
         createdAt: now,
         updatedAt: now,
         expiresAt,
@@ -450,13 +587,13 @@ export class MemoryStore {
   private insertIndex(meta: NoteMeta, body: string): void {
     const sha = createHash("sha256").update(body).digest("hex");
     this.db.prepare(
-      `INSERT INTO notes (id, revision, body_sha, audience, tags, title, updated_at, expires_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO notes (id, revision, body_sha, audience, bot_id, tags, title, updated_at, expires_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          revision=excluded.revision, body_sha=excluded.body_sha, audience=excluded.audience,
-         tags=excluded.tags, title=excluded.title, updated_at=excluded.updated_at,
-         expires_at=excluded.expires_at, status=excluded.status`,
-    ).run(meta.id, meta.revision, sha, meta.audience, meta.tags.join(" "), meta.title, meta.updatedAt, meta.expiresAt, meta.status);
+         bot_id=excluded.bot_id, tags=excluded.tags, title=excluded.title,
+         updated_at=excluded.updated_at, expires_at=excluded.expires_at, status=excluded.status`,
+    ).run(meta.id, meta.revision, sha, meta.audience, meta.botId, meta.tags.join(" "), meta.title, meta.updatedAt, meta.expiresAt, meta.status);
     this.db.prepare("DELETE FROM notes_fts WHERE id = ?").run(meta.id);
     this.db.prepare("INSERT INTO notes_fts (title, tags, body, id) VALUES (?, ?, ?, ?)").run(
       meta.title,
@@ -465,24 +602,6 @@ export class MemoryStore {
       meta.id,
     );
   }
-}
-
-export const BOT_TAG_PREFIX = "bot:";
-
-export function botTag(botId: string): string {
-  return `${BOT_TAG_PREFIX}${botId}`;
-}
-
-export function tagsForBot(tags: string[], botId: string): string[] {
-  // The bot tag must survive: a note with eight user tags would otherwise
-  // lose it to the slice and never show in that bot's list.
-  const next = tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX) && tag.trim()).slice(0, 7);
-  next.push(botTag(botId));
-  return next;
-}
-
-export function noteBelongsToBot(tags: string[], botId: string): boolean {
-  return tags.includes(botTag(botId));
 }
 
 export function resetMemoryDir(root: string): void {

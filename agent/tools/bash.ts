@@ -3,7 +3,7 @@ import { z } from "zod";
 import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
 import { commandRisk, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
-import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
+import { approvedCommand, confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
 import { credentialPathsFor } from "../lib/cli-registry.ts";
 import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
@@ -171,16 +171,32 @@ export default defineTool({
       // write refused, an everyday line with writes kept inside the scope,
       // so a line the classifier misjudged still cannot write outside it.
       // Full access writes anywhere but into credential files and the
-      // app's own stores. A line the owner approved runs as they read it.
+      // app's own stores. A line the owner approved runs as they read it, under
+      // the planted-config and PATH write denies only.
       const unbounded = permission === "full_access" && !readOnly;
-      const args = askOwner
-        ? ["/bin/sh", "-c", input.command]
-        : confinedCommand(readOnly ? null : root, input.command, scope, unbounded, {
-            // The store of the CLI this line runs, and nothing for a line
-            // that runs anything else. An approved line skips this because
-            // it is not confined at all: the owner read it and said yes.
-            credentialPaths: unbounded ? credentialPathsFor(input.command) : [],
-          });
+      // A line the owner approved is not confined, but it is not bare either:
+      // it runs with everything allowed except writes to planted config and
+      // the PATH directories. If that profile cannot be built the line is
+      // refused, never run without it.
+      let args: string[];
+      if (askOwner) {
+        try {
+          args = approvedCommand(input.command);
+        } catch (error) {
+          return {
+            status: "blocked",
+            error: "approved_line_profile_unavailable",
+            hint: `The approved line was not run: the write guard could not be set up (${error instanceof Error ? error.message : "unknown error"}). Nothing was changed.`,
+          };
+        }
+      } else {
+        args = confinedCommand(readOnly ? null : root, input.command, scope, unbounded, {
+          // The store of the CLI this line runs, and nothing for a line
+          // that runs anything else. An approved line skips this because
+          // credential stores are open to it anyway.
+          credentialPaths: unbounded ? credentialPathsFor(input.command) : [],
+        });
+      }
       const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       // A line that exits non-zero (`grep` with no match, a failing test) is
       // a result, not a tool failure, and so is one the timeout killed: the

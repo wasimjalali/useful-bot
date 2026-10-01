@@ -43,8 +43,8 @@ function fail(code, item) {
 }
 
 // The reviewer credential arrived after the first installs. A service must
-// still boot without it: the review tool and the reviewer subagent answer
-// reviewer_unconfigured per call, so the miss is logged once here instead of
+// still boot without it: the review tool answers reviewer_unconfigured per
+// call, so the miss is logged once here instead of
 // taking chat down with it.
 async function reviewerToken() {
   try {

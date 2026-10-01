@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { inAppGate, READ_ONLY_BLOCKED, sessionPermission } from "../lib/permission.ts";
+import { callerOf, inAppGate, mayActOn, notAvailable, READ_ONLY_BLOCKED, SELF_ONLY_HINT, sessionPermission } from "../lib/permission.ts";
+import { readShell } from "../../shared/shell-io.ts";
 import { readRoutine, requestRoutineRun } from "../../shared/routines-store.ts";
 
 export default defineTool({
@@ -9,14 +10,18 @@ export default defineTool({
   inputSchema: z.object({
     routineId: z.string().min(1).max(120),
   }),
-  execute(input, ctx) {
+  async execute(input, ctx) {
     // A run starts a teammate turn and writes transcripts, so Read only
     // refuses it like every other change inside the app.
     if (inAppGate(sessionPermission(ctx)) === "refuse") return READ_ONLY_BLOCKED;
+    const who = await callerOf(readShell(), ctx);
+    if (!who.ok) return who.result;
     const routine = readRoutine(input.routineId);
     if (!routine) {
       return { status: "not_found", error: `no routine with id ${input.routineId}`, hint: "Call listRoutines." };
     }
+    // A routine resolves to its owner: a plain bot runs only its own.
+    if (!mayActOn(who.caller, routine.botId)) return notAvailable(SELF_ONLY_HINT);
     if (!routine.active) {
       // Paused means paused for the agent path. The owner's own Test run
       // button is an explicit click on that routine; a model deciding to wake

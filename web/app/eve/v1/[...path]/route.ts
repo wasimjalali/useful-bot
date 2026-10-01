@@ -1,6 +1,7 @@
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
+  bindTurnBody,
   eveGetAllowed,
   evePostAllowed,
   eveSessionRoute,
@@ -30,6 +31,7 @@ import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/a
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
+import { bindSession, readSessionBot, resolveSessionBot } from "../../../../../shared/session-bindings.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
 import { eveOrigin } from "../../../../../shared/stack.ts";
 
@@ -119,6 +121,27 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       throw err;
     }
     if (isEveSessionPost(suffix)) {
+      // Identity first. A turn into an existing session belongs to the bot the
+      // durable binding names for that session id, never to the bot the body
+      // says: nothing else ties a session to a bot, and the body is the one
+      // field a client chooses. A body that names another bot is refused, and
+      // a session nobody bound is refused before eve sees it (a turn eve
+      // accepts and then fails retires the session).
+      if (suffix !== "session") {
+        const sessionId = suffix.split("/")[1] ?? "";
+        let bound: string | null;
+        try {
+          bound = resolveSessionBot(sessionId, readShell());
+        } catch (err) {
+          console.error("session binding could not be read", err instanceof Error ? err.message : err);
+          return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+        }
+        const turn = bindTurnBody(new TextDecoder().decode(body), bound);
+        if (!turn.ok) {
+          return Response.json({ ok: false, error: turn.error }, { status: 400 });
+        }
+        body = new TextEncoder().encode(turn.body);
+      }
       let bot: ShellBot | null = null;
       // Outside the rewrite's catch on purpose: that one forwards the original
       // body when anything throws, and a carry-over that failed its check must
@@ -134,7 +157,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         } catch {
           owner = null;
         }
+        // A session another bot owns is never carried over into this bot.
+        let priorOwner: string | null = null;
+        try {
+          priorOwner = extras.continueFrom ? readSessionBot(extras.continueFrom) : null;
+        } catch {
+          priorOwner = null;
+        }
         const verdict = suffix === "session" && owner && extras.continueFrom
+          && (priorOwner === null || priorOwner === owner.id)
           ? continueFromVerdict(owner, extras.continueFrom)
           : "refused";
         if (verdict === "moved") {
@@ -317,6 +348,19 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         created = (JSON.parse(text) as { sessionId?: string }).sessionId ?? "";
       } catch {
         /* a body this build cannot parse still belongs to the caller */
+      }
+      if (created && route) {
+        // The new session is bound to the bot before anything else happens to
+        // it, so every tool the first turn runs finds its owner. eve minted
+        // the id inside this call, so this is the earliest point it exists.
+        // A session that cannot be bound is stopped: it would run unowned.
+        try {
+          bindSession(created, route.threadId);
+        } catch (err) {
+          console.error("new session could not be bound", err instanceof Error ? err.message : err);
+          await cancelEveTurn(created, jwt ?? "");
+          return Response.json({ ok: false, error: "session_bind_failed" }, { status: 503 });
+        }
       }
       if (created && carriedFrom) {
         // Recorded here, not by the client: this is the one place that knows

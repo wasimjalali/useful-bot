@@ -1,0 +1,287 @@
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { peekShell } from "./shell-io.ts";
+import type { ShellStore } from "./shell-store.ts";
+import { statePath } from "./stack.ts";
+
+/**
+ * Which bot owns an eve session: the durable identity record behind
+ * `activeBotId`, the memory tools and the eve proxy.
+ *
+ * `SessionGrant` (workspace-store.ts) is a capability cache: capped at 64 and
+ * evicted, so it cannot hold identity. This store is identity. A row is
+ * written once and never changes, so a session can never be re-pointed at a
+ * different bot. There is no eviction cap; a row goes only when its bot is
+ * deleted (`unbindBot`).
+ *
+ * One file, two processes (the web server and the eve agent), so writes go
+ * through the same directory lock plus atomic replace as the other stores.
+ */
+
+export const SESSION_OWNERS_SCHEMA = 1;
+
+/** Same alphabet as the proxy's session ids: no dots, no slashes. */
+const SESSION_ID = /^[A-Za-z0-9_-]{1,200}$/;
+const BOT_ID = /^.{1,80}$/;
+
+export type SessionBinding = { botId: string; createdAt: string };
+
+export type SessionOwnersStore = {
+  schemaVersion: 1;
+  sessions: Record<string, SessionBinding>;
+};
+
+export function defaultSessionOwnersPath(): string {
+  if (process.env.UB_SESSION_OWNERS_PATH) return process.env.UB_SESSION_OWNERS_PATH;
+  // A test that forgot to isolate this store must not write into the owner's
+  // real state folder, so under the runner the default is a per-process temp
+  // file. Each test file is its own process.
+  if (process.env.NODE_TEST_CONTEXT) return join(tmpdir(), `ub-session-owners-${process.pid}.json`);
+  return statePath("session-owners.json");
+}
+
+function seedStore(): SessionOwnersStore {
+  return { schemaVersion: SESSION_OWNERS_SCHEMA, sessions: {} };
+}
+
+/**
+ * Strict: a bad shape is refused, never repaired. This is identity, so a row
+ * that cannot be read as written must not be dropped quietly (a dropped row
+ * is an unbound session) or reinterpreted.
+ */
+export function parseSessionOwners(raw: unknown): SessionOwnersStore {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("session_owners_invalid");
+  const rec = raw as Record<string, unknown>;
+  if (rec.schemaVersion !== SESSION_OWNERS_SCHEMA) throw new Error("session_owners_schema");
+  const sessions = rec.sessions;
+  if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) throw new Error("session_owners_sessions");
+  const out: Record<string, SessionBinding> = {};
+  for (const [sessionId, value] of Object.entries(sessions as Record<string, unknown>)) {
+    if (!SESSION_ID.test(sessionId)) throw new Error("session_owners_session_id");
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("session_owners_row");
+    const row = value as Record<string, unknown>;
+    if (typeof row.botId !== "string" || !BOT_ID.test(row.botId)) throw new Error("session_owners_bot_id");
+    if (typeof row.createdAt !== "string" || !Number.isFinite(Date.parse(row.createdAt))) {
+      throw new Error("session_owners_created_at");
+    }
+    out[sessionId] = { botId: row.botId, createdAt: row.createdAt };
+  }
+  return { schemaVersion: SESSION_OWNERS_SCHEMA, sessions: out };
+}
+
+function peekStoreFile(path: string): SessionOwnersStore | null {
+  if (!existsSync(path)) return null;
+  try {
+    return parseSessionOwners(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Readers see an unreadable file as an empty one: a session with no row is
+ * unbound, and unbound fails closed everywhere. The next write backs the bad
+ * file up and says so.
+ */
+export function readSessionOwners(path = defaultSessionOwnersPath()): SessionOwnersStore {
+  return peekStoreFile(path) ?? seedStore();
+}
+
+function writeStoreFile(store: SessionOwnersStore, path: string): void {
+  const parsed = parseSessionOwners(store);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}.tmp`;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    const fd = openSync(tmp, "r");
+    fsyncSync(fd);
+    closeSync(fd);
+    renameSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
+// Stale below timeout, so a waiter can reclaim a dead lock before giving up.
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 3000;
+
+function sleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function updateStore<T>(
+  mutate: (store: SessionOwnersStore) => { store: SessionOwnersStore; result: T },
+  path: string,
+): T {
+  const lock = `${path}.lock`;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let held = false;
+  while (!held) {
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      held = true;
+    } catch {
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
+      } catch { /* lock vanished; retry */ }
+      if (Date.now() > deadline) break;
+      sleep(15);
+    }
+  }
+  if (!held) throw new Error("session_owners_locked");
+  try {
+    let previous = peekStoreFile(path);
+    if (previous === null && existsSync(path)) {
+      const bak = `${path}.invalid.${process.pid}.${Date.now()}`;
+      try { renameSync(path, bak); } catch { /* ignore */ }
+      console.warn(`[useful-bot] session owners store was unreadable; backed up to ${bak}`);
+    }
+    const out = mutate(previous ?? seedStore());
+    if (out.store !== previous) writeStoreFile(out.store, path);
+    return out.result;
+  } finally {
+    try { rmdirSync(lock); } catch { /* ignore */ }
+  }
+}
+
+/** The bot a session is bound to, or null. No backfill: see `resolveSessionBot`. */
+export function readSessionBot(sessionId: string, path = defaultSessionOwnersPath()): string | null {
+  if (!sessionId || !SESSION_ID.test(sessionId)) return null;
+  return readSessionOwners(path).sessions[sessionId]?.botId ?? null;
+}
+
+/**
+ * Bind a session to a bot. Immutable: the same bot again is a no-op, another
+ * bot is refused with `session_owner_conflict`.
+ */
+export function bindSession(
+  sessionId: string,
+  botId: string,
+  at = new Date(),
+  path = defaultSessionOwnersPath(),
+): "created" | "exists" {
+  if (!SESSION_ID.test(sessionId)) throw new Error("session_owners_session_id");
+  if (!BOT_ID.test(botId)) throw new Error("session_owners_bot_id");
+  return updateStore((store) => {
+    const current = store.sessions[sessionId];
+    if (current) {
+      if (current.botId !== botId) throw new Error("session_owner_conflict");
+      return { store, result: "exists" as const };
+    }
+    return {
+      store: {
+        ...store,
+        sessions: { ...store.sessions, [sessionId]: { botId, createdAt: at.toISOString() } },
+      },
+      result: "created" as const,
+    };
+  }, path);
+}
+
+const loggedConflicts = new Set<string>();
+
+/**
+ * Bind every session pointer the roster holds (`sessionId`, `continuedSessionId`)
+ * that is not bound yet. A pointer naming a session another bot already owns
+ * is skipped and logged (once per pair per process): the binding wins over a
+ * pointer. Returns how many rows it added.
+ */
+export function backfillSessionOwners(
+  shell: ShellStore,
+  at = new Date(),
+  path = defaultSessionOwnersPath(),
+): number {
+  const wanted: Array<{ sessionId: string; botId: string }> = [];
+  const known = readSessionOwners(path).sessions;
+  for (const bot of shell.bots) {
+    for (const sessionId of [bot.sessionId, bot.continuedSessionId]) {
+      if (!sessionId || !SESSION_ID.test(sessionId)) continue;
+      const owner = known[sessionId]?.botId;
+      if (owner === bot.id) continue;
+      if (owner) {
+        const key = `${sessionId}:${bot.id}`;
+        if (!loggedConflicts.has(key)) {
+          loggedConflicts.add(key);
+          console.warn(`[useful-bot] session ${sessionId} is bound to ${owner}; the pointer on ${bot.id} was skipped`);
+        }
+        continue;
+      }
+      wanted.push({ sessionId, botId: bot.id });
+    }
+  }
+  if (wanted.length === 0) return 0;
+  return updateStore((store) => {
+    const sessions = { ...store.sessions };
+    let added = 0;
+    for (const item of wanted) {
+      // Re-checked under the lock: another process may have bound it since.
+      const current = sessions[item.sessionId];
+      if (current) {
+        if (current.botId !== item.botId) {
+          const key = `${item.sessionId}:${item.botId}`;
+          if (!loggedConflicts.has(key)) {
+            loggedConflicts.add(key);
+            console.warn(`[useful-bot] session ${item.sessionId} is bound to ${current.botId}; the pointer on ${item.botId} was skipped`);
+          }
+        }
+        continue;
+      }
+      sessions[item.sessionId] = { botId: item.botId, createdAt: at.toISOString() };
+      added += 1;
+    }
+    return added === 0
+      ? { store, result: 0 }
+      : { store: { ...store, sessions }, result: added };
+  }, path);
+}
+
+/**
+ * The bot a session belongs to: the stored binding, else one backfill from the
+ * roster's pointers and a second look. Null means unbound.
+ */
+export function resolveSessionBot(
+  sessionId: string,
+  shell: ShellStore | null = peekShell(),
+  path = defaultSessionOwnersPath(),
+): string | null {
+  const bound = readSessionBot(sessionId, path);
+  if (bound) return bound;
+  if (!shell || !SESSION_ID.test(sessionId)) return null;
+  const points = shell.bots.some((bot) => bot.sessionId === sessionId || bot.continuedSessionId === sessionId);
+  if (!points) return null;
+  backfillSessionOwners(shell, new Date(), path);
+  return readSessionBot(sessionId, path);
+}
+
+/** Drop every row of a bot that was deleted. The only way a row leaves. */
+export function unbindBot(botId: string, path = defaultSessionOwnersPath()): number {
+  if (!botId) return 0;
+  const known = readSessionOwners(path).sessions;
+  if (!Object.values(known).some((row) => row.botId === botId)) return 0;
+  return updateStore((store) => {
+    const sessions: Record<string, SessionBinding> = {};
+    let removed = 0;
+    for (const [id, row] of Object.entries(store.sessions)) {
+      if (row.botId === botId) removed += 1;
+      else sessions[id] = row;
+    }
+    return removed === 0 ? { store, result: 0 } : { store: { ...store, sessions }, result: removed };
+  }, path);
+}

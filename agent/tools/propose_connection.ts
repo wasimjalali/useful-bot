@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { activeBotId } from "../lib/active-bot.ts";
+import { callerOf } from "../lib/permission.ts";
 import {
   appendAgentEvent,
   createProposal,
@@ -65,7 +65,9 @@ export default defineTool({
     if (existing) return { status: "already_connected", id: existing.id, name: existing.name };
 
     const shell = readShell();
-    const botId = activeBotId(shell, ctx);
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
+    const botId = who.caller.id;
     const threadId = threadIdFor(botId);
     const open = listPendingProposals(threadId).find(
       (item) => item.kind === "connectServer" && (item.phase === "proposed" || item.phase === "waiting"),

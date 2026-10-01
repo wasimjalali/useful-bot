@@ -102,10 +102,10 @@ test("a line is judged by the script it runs", () => {
       const risk = commandRisk(command, box.root);
       assert.ok(risk !== null && reason.test(risk), `${command} -> ${risk}`);
     }
-    // Installing runs the project's lifecycle scripts; a project without
-    // any installs freely.
-    assert.equal(commandRisk("npm install", box.root), null);
-    assert.equal(commandRisk("npm ci", box.root), null);
+    // Installing runs the project's lifecycle scripts, and those of whatever
+    // it fetches: a project without any still asks (owner decision P1).
+    assert.match(commandRisk("npm install", box.root) ?? "", /installs packages/);
+    assert.match(commandRisk("npm ci", box.root) ?? "", /installs packages/);
     const hooks = join(box.root, "hooks");
     assert.match(commandRisk("npm install", hooks) ?? "", /package\.json postinstall: deletes files/);
     assert.match(commandRisk("pnpm i", hooks) ?? "", /postinstall/);
@@ -146,7 +146,6 @@ test("everyday work runs without a card in Auto mode", () => {
     "grep -rn TODO src",
     "npm test",
     "npm run build",
-    "npm install",
     "git status",
     "git config user.name",
     "git config --get remote.origin.url",
@@ -160,13 +159,11 @@ test("everyday work runs without a card in Auto mode", () => {
     "CI=1 npm test",
     "python3 -m pytest",
     "python3 -m http.server 8000",
-    "python -m pip install requests",
     "git fetch origin",
     "git submodule update --init",
     "git submodule foreach git status",
     "git bisect run npm test",
     "git pull",
-    "bun install",
     "bun run dev",
     "git add -A && git commit -m 'feat: delete old rows from the table view'",
     "git push origin feat/x",
@@ -745,5 +742,87 @@ test("Full access runs the everyday delete, the reach outside and the destructiv
     assert.equal(wipeRisk("bash bin/missing.sh", realHome, realHome), null);
   } finally {
     rmSync(realHome, { recursive: true, force: true });
+  }
+});
+
+test("package installs, runs by name and paid-cloud create or deploy ask in Auto", () => {
+  const asks: [string, RegExp][] = [
+    ["npm install", /installs packages/],
+    ["npm i", /installs packages/],
+    ["npm install left-pad", /installs packages/],
+    ["npm add left-pad", /installs packages/],
+    ["npm ci", /installs packages/],
+    ["npm --prefix web install", /installs packages/],
+    ["pnpm install", /installs packages/],
+    ["pnpm add zod", /installs packages/],
+    ["yarn", /installs packages/],
+    ["yarn add zod", /installs packages/],
+    ["yarn global add zod", /installs packages/],
+    ["bun install", /installs packages/],
+    ["bun add zod", /installs packages/],
+    ["pip install requests", /installs packages/],
+    ["pip3 install requests", /installs packages/],
+    ["python -m pip install requests", /installs packages/],
+    ["python3 -m pip install requests", /installs packages/],
+    ["uv pip install requests", /installs packages/],
+    ["brew install jq", /installs packages/],
+    ["cargo install ripgrep", /installs packages/],
+    ["gem install rake", /installs packages/],
+    ["go install example.com/tool@latest", /installs packages/],
+    ["npx some-remote-tool", /downloads and runs a package/],
+    ["pnpm dlx create-thing", /downloads and runs a package/],
+    ["bunx some-remote-tool", /downloads and runs a package/],
+    ["uvx ruff", /downloads and runs a package/],
+    ["pipx run black", /downloads and runs a package/],
+    ["vercel deploy", /cloud/],
+    ["vercel", /cloud/],
+    ["vercel --prod", /cloud/],
+    ["wrangler deploy", /cloud/],
+    ["wrangler pages deploy dist", /cloud/],
+    ["aws ec2 run-instances --image-id ami-1", /cloud/],
+    ["aws s3api create-bucket --bucket x", /cloud/],
+    ["doctl compute droplet create web", /cloud/],
+    ["gcloud compute instances create vm", /cloud/],
+    ["gcloud run deploy api", /cloud/],
+    ["fly deploy", /cloud/],
+    ["flyctl launch", /cloud/],
+    ["terraform apply", /cloud/],
+    ["pulumi up", /cloud/],
+    ["cd web && npm install", /installs packages/],
+  ];
+  for (const [command, reason] of asks) {
+    const risk = commandRisk(command, root);
+    assert.ok(risk !== null && reason.test(risk), `${command} -> ${risk}`);
+  }
+  // Everyday lines stay free.
+  for (const command of [
+    "npm test",
+    "npm run build",
+    "npm run dev",
+    "npm ls",
+    "pnpm run build",
+    "yarn --version",
+    "yarn build",
+    "bun run dev",
+    "pip list",
+    "pip --version",
+    "python3 -m pytest",
+    "brew list",
+    "cargo build",
+    "cargo test",
+    "go build ./...",
+    "go test ./...",
+    "gem list",
+    "vercel --version",
+    "vercel env ls",
+    "wrangler dev",
+    "aws s3 ls",
+    "aws sts get-caller-identity",
+    "gcloud config list",
+    "doctl compute droplet list",
+    "fly status",
+    "terraform plan",
+  ]) {
+    assert.equal(commandRisk(command, root), null, command);
   }
 });

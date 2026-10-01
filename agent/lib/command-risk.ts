@@ -88,7 +88,7 @@ const EDITORS: Record<string, string> = {
 const VERB_CLIS = new Set([
   "npm", "pnpm", "yarn", "bun", "npx",
   "pip", "pip3", "pipx", "uv", "poetry",
-  "brew", "cargo", "gem", "go",
+  "brew", "cargo", "gem", "go", "uvx",
   "docker", "podman", "kubectl", "helm", "terraform", "pulumi",
   "gh", "aws", "gcloud", "az", "vercel", "wrangler", "supabase", "flyctl", "fly",
   "heroku", "netlify", "firebase", "doctl", "railway", "stripe",
@@ -99,6 +99,54 @@ const DESTRUCTIVE_VERBS = new Set([
   "remove", "rm", "rmi", "rimraf", "uninstall", "unpublish", "publish", "deprecate",
   "reset", "teardown", "kill", "clean", "cleanup",
 ]);
+
+/**
+ * Paid-cloud CLIs, and the words that create or deploy something there
+ * (owner decision P1, 2026-10-01). A false card costs a click, a miss costs
+ * money, so the words are matched anywhere in the first few.
+ */
+const CLOUD_CLIS = new Set([
+  "aws", "gcloud", "az", "vercel", "wrangler", "supabase", "flyctl", "fly",
+  "heroku", "netlify", "firebase", "doctl", "railway", "terraform", "pulumi",
+]);
+const CLOUD_DEPLOY_WORDS = new Set([
+  "deploy", "create", "launch", "run-instances", "apply", "up",
+]);
+const INSTALL_WORDS = new Set(["install", "i", "add", "ci"]);
+
+/** Package installs and runs-by-name run other people's code (owner decision P1). */
+function packageInstallRisk(name: string, words: string[], flags: string[]): string | null {
+  const first = words.slice(0, 2);
+  if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") {
+    if (first.some((word) => INSTALL_WORDS.has(word))) return `installs packages (${name} ${first.find((word) => INSTALL_WORDS.has(word))})`;
+    // A bare `yarn` installs.
+    if (name === "yarn" && words.length === 0 && !flags.some((flag) => ["-v", "--version", "-h", "--help"].includes(flag))) {
+      return "installs packages (yarn)";
+    }
+    return null;
+  }
+  if ((name === "pip" || name === "pip3") && words[0] === "install") return `installs packages (${name} install)`;
+  if (name === "uv" && ((words[0] === "pip" && words[1] === "install") || (words[0] === "tool" && (words[1] === "install" || words[1] === "run")))) {
+    return `installs packages (uv ${words[0]} ${words[1]})`;
+  }
+  if (name === "pipx" && (words[0] === "run" || words[0] === "install")) return `downloads and runs a package (pipx ${words[0]})`;
+  if (name === "uvx") return `downloads and runs a package (uvx${words[0] ? ` ${words[0]}` : ""})`;
+  if ((name === "brew" || name === "cargo" || name === "gem" || name === "go") && words[0] === "install") {
+    return `installs packages (${name} install)`;
+  }
+  return null;
+}
+
+function cloudDeployRisk(name: string, words: string[], flags: string[]): string | null {
+  if (!CLOUD_CLIS.has(name)) return null;
+  const hit = words.slice(0, 4).find((word) => CLOUD_DEPLOY_WORDS.has(word) || word.startsWith("create-"));
+  if (hit) return `creates or deploys something in the cloud (${name} ${hit})`;
+  // A bare `vercel` deploys the folder.
+  if (name === "vercel" && words.length === 0 && !flags.some((flag) => ["-v", "--version", "-h", "--help"].includes(flag))) {
+    return "creates or deploys something in the cloud (vercel)";
+  }
+  return null;
+}
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "fish", "csh", "tcsh", "ash", "yash", "pwsh", "powershell", "nu", "elvish"]);
 /** Interpreters whose inline-code flag can do anything a shell can. */
@@ -687,6 +735,7 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
       if ((module === "pip" || module === "pip3") && flags.includes("install") && flags.some(isLocalInstall)) {
         return "runs the project's setup (pip install .)";
       }
+      if ((module === "pip" || module === "pip3") && flags.includes("install")) return "installs packages (python -m pip install)";
       return null;
     }
     if (name === "deno") {
@@ -763,13 +812,16 @@ function commandReason(tokens: Token[], root: string, afterPipe: boolean, depth 
     const hit = verbs.find((verb) => DESTRUCTIVE_VERBS.has(verb));
     if (hit) return `${hit === "publish" ? "publishes" : "removes something"} (${name} ${hit})`;
     if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") {
-      return packageScriptRisk(name, words, root, depth);
+      // What the project's own lifecycle scripts do is the sharper reason;
+      // an install with nothing worse in it still asks, because it runs
+      // install scripts of whatever it fetches.
+      return packageScriptRisk(name, words, root, depth) ?? packageInstallRisk(name, words, flags);
     }
     // Installing the project itself runs its setup code.
     if ((name === "pip" || name === "pip3" || name === "uv") && words[0] === "install" && flags.some(isLocalInstall)) {
       return `runs the project's setup (${name} install .)`;
     }
-    return null;
+    return packageInstallRisk(name, words, flags) ?? cloudDeployRisk(name, words, flags);
   }
   // A script from the folder run by path: judged by what it does.
   const script = fileUnderRoot(head.text, root);

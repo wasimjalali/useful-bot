@@ -107,6 +107,11 @@ export type ProfileProposal = {
   kind: "updateBotProfile";
   botId: string;
   patch: BotProfileDraft;
+  /**
+   * The target's `profileRevision` when the card was raised. The confirm path
+   * refuses the card once the profile has moved on (shell-store.ts).
+   */
+  baseRevision: number;
   sourceBotId: string | null;
   threadId: string;
 };
@@ -339,6 +344,11 @@ function parseProposal(raw: unknown): Proposal | null {
       ...base,
       kind: "updateBotProfile",
       botId: isId(rec.botId) ? rec.botId : "",
+      // A card with no recorded revision is stale by construction: -1 never
+      // matches a bot's revision.
+      baseRevision: Number.isInteger(rec.baseRevision) && (rec.baseRevision as number) >= 0
+        ? (rec.baseRevision as number)
+        : -1,
       patch: {
         name: clip(patchRaw.name, 80),
         petname: clip(patchRaw.petname, 80),
@@ -668,6 +678,38 @@ export function createProposal<P extends ProposalPayload>(
     store.proposals.push(proposal);
     const keep = store.proposals.filter((item) => Date.now() - Date.parse(item.createdAt) < PROPOSAL_TTL_MS * 7);
     store.proposals = keep.slice(-80);
+    return proposal;
+  }, path);
+}
+
+/**
+ * Raise a profile card unless the target bot already has one waiting: one
+ * pending profile proposal per bot. The check and the write share one lock, so
+ * two concurrent calls cannot both land. Returns null when one is pending.
+ */
+export function createProfileProposalOnce(
+  payload: ProfileProposal,
+  path = agentStorePath(),
+): (ProfileProposal & Pick<Proposal, "id" | "createdAt" | "expiresAt" | "status">) | null {
+  type Stored = ProfileProposal & Pick<Proposal, "id" | "createdAt" | "expiresAt" | "status">;
+  return withAgentStore((store) => {
+    const now = Date.now();
+    const waiting = store.proposals.some((item) => (
+      item.kind === "updateBotProfile"
+      && item.botId === payload.botId
+      && item.status === "pending"
+      && Date.parse(item.expiresAt) > now
+    ));
+    if (waiting) return null;
+    const proposal = {
+      ...payload,
+      id: newProposalId(),
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + PROPOSAL_TTL_MS).toISOString(),
+      status: "pending",
+    } as Stored;
+    store.proposals.push(proposal);
+    store.proposals = store.proposals.slice(-80);
     return proposal;
   }, path);
 }

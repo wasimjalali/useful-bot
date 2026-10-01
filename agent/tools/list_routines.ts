@@ -1,6 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { activeBotId } from "../lib/active-bot.ts";
+import { callerOf, mayActOn, notAvailable, SELF_ONLY_HINT } from "../lib/permission.ts";
 import { listRoutines, routineNextRun } from "../../shared/routines-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
@@ -11,13 +11,16 @@ export default defineTool({
   inputSchema: z.object({
     botId: z.string().min(1).max(80).optional(),
   }),
-  execute(input, ctx) {
+  async execute(input, ctx) {
     const shell = readShell();
-    const botId = input.botId?.trim() || activeBotId(shell, ctx);
+    const who = await callerOf(shell, ctx);
+    if (!who.ok) return who.result;
+    const botId = input.botId?.trim() || who.caller.id;
     const bot = shell.bots.find((item) => item.id === botId) ?? null;
     if (!bot) {
       return { status: "not_found", error: `no bot with id ${botId}`, hint: "Call listBots for exact ids." };
     }
+    if (!mayActOn(who.caller, bot.id)) return notAvailable(SELF_ONLY_HINT);
     const now = new Date();
     return {
       status: "ok",

@@ -7,18 +7,23 @@ import { isAuthHeaderName, type ConnectionEntry } from "../../shared/connections
 import { bearerFromKeychain, oauthToken } from "../../shared/connection-auth.ts";
 import { eagerConnections, ensureMeasured, isEagerConnection } from "../../shared/connection-tools.ts";
 import { readConnectionsStore } from "../../shared/connections-store.ts";
+import { openApiGate as gateFor } from "../lib/openapi-approval.ts";
 
 function definitionFor(entry: ConnectionEntry) {
   const tools = entry.toolsAllow ? { allow: entry.toolsAllow } : undefined;
   if (entry.kind === "openapi") {
+    // Every operation passes the owner's permission before it runs, and only
+    // the operations the owner allowed exist at all (spike 3).
+    const openApiGate = gateFor(entry);
     if (entry.authKind === "none") {
-      return defineOpenAPIConnection({ spec: entry.url, description: entry.description });
+      return defineOpenAPIConnection({ spec: entry.url, description: entry.description, ...openApiGate });
     }
     if (entry.authKind === "apiKey") {
       const header = isAuthHeaderName(entry.authHeader) ? entry.authHeader : "X-Api-Key";
       return defineOpenAPIConnection({
         spec: entry.url,
         description: entry.description,
+        ...openApiGate,
         headers: { [header]: async () => (await bearerFromKeychain(entry.id)).token },
       });
     }
@@ -26,6 +31,7 @@ function definitionFor(entry: ConnectionEntry) {
       return defineOpenAPIConnection({
         spec: entry.url,
         description: entry.description,
+        ...openApiGate,
         instanceKey: entry.id,
         auth: { getToken: () => oauthToken(entry) },
       });

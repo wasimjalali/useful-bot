@@ -57,6 +57,31 @@ export function relayedEveCode(status: number, body: string): string | null {
 
 export type SessionRoute = Route & { mentionNames: string[] };
 
+export type BoundTurn =
+  | { ok: true; body: string }
+  | { ok: false; error: "session_unbound" | "eve_message_invalid" | "session_bot_mismatch" };
+
+/**
+ * The turn body for a send into an EXISTING session. The bot comes from the
+ * durable session binding (`bound`, the owner of the session id in the path),
+ * never from the body: a session nobody bound is refused, and so is a body
+ * that names a different bot. On success the body carries the bound bot id,
+ * which is what every later step of the proxy reads.
+ */
+export function bindTurnBody(raw: string, bound: string | null): BoundTurn {
+  if (!bound) return { ok: false, error: "session_unbound" };
+  let sent: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    sent = parsed as Record<string, unknown>;
+  } catch {
+    return { ok: false, error: "eve_message_invalid" };
+  }
+  if (sent.botId !== undefined && sent.botId !== bound) return { ok: false, error: "session_bot_mismatch" };
+  return { ok: true, body: JSON.stringify({ ...sent, botId: bound }) };
+}
+
 /**
  * A file part's name goes verbatim into eve's `[file: name (type)]` transcript
  * line and into the model's context, so it takes the same alphabet
