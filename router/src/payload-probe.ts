@@ -14,11 +14,10 @@ import { stackName } from "../../shared/stack.ts";
 
 type Env = Record<string, string | undefined>;
 
-// A key name that contains one of these has its STRING value replaced. Objects
-// and arrays under such a name are still walked, so a tool schema with a
-// property called "key" stays readable.
+// A key name that contains one of these has its string values replaced (also
+// strings in an array under it). Numbers and objects are left to the walk.
 const SECRET_KEY = /key|token|secret|password|auth|cookie/i;
-const DATA_URI = /data:[^;,\s"']{1,100};base64,[A-Za-z0-9+/=]+/g;
+const DATA_URI = /data:[^,\s"']{0,200};base64,[A-Za-z0-9+/=]+/g;
 const SECRET_VALUE = [
   /\bsk-[A-Za-z0-9_-]{8,}/g,
   /\bsk_(?:live|test)_[A-Za-z0-9]{8,}/g,
@@ -29,18 +28,26 @@ const SECRET_VALUE = [
 ];
 export const REDACTED = "[redacted]";
 
-export function scrub(value: unknown): unknown {
+export function scrub(value: unknown, secret = false): unknown {
   if (typeof value === "string") {
+    if (secret) return REDACTED;
     // Data URIs (images) go first: they are large and hold no credential.
     const text = value.replace(DATA_URI, (uri) => `[data uri, ${uri.length} bytes]`);
+    // Tool-call arguments arrive as a JSON string: scrub what is inside it.
+    if (/^\s*[[{]/.test(text)) {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed && typeof parsed === "object") return JSON.stringify(scrub(parsed));
+      } catch { /* not JSON: scrub it as text */ }
+    }
     return SECRET_VALUE.reduce((out, pattern) => out.replace(pattern, REDACTED), text);
   }
-  if (Array.isArray(value)) return value.map(scrub);
+  // Array elements inherit the context (`"api_keys": ["abc"]`); an object's
+  // own keys decide for their values, so a schema property named "key" stays readable.
+  if (Array.isArray(value)) return value.map((item) => scrub(item, secret));
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
-    for (const [key, inner] of Object.entries(value)) {
-      out[key] = typeof inner === "string" && SECRET_KEY.test(key) ? REDACTED : scrub(inner);
-    }
+    for (const [key, inner] of Object.entries(value)) out[key] = scrub(inner, SECRET_KEY.test(key));
     return out;
   }
   return value;

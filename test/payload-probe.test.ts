@@ -78,3 +78,24 @@ test("wide key names, more key shapes and data URIs are handled, and same-millis
   assert.match(raw, /\[data uri, \d+ bytes\]/);
   assert.deepEqual(JSON.parse(raw).tools[0].parameters.properties.key, { type: "string" });
 });
+
+test("secret context reaches array elements, tool-call argument strings are scrubbed, params data URIs collapse, numbers stay", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-probe-"));
+  const file = dumpUpstreamBody("openai-chat", "m", {
+    api_keys: ["abc123", "def456"],
+    max_tokens: 4096,
+    messages: [{ role: "assistant", tool_calls: [{ function: { name: "f", arguments: JSON.stringify({ password: "hunter2", note: "hi", list: ["x"], nested: { access_token: "tok999" } }) } }] },
+      { role: "user", content: `see data:text/plain;charset=utf-8;base64,${"QUJD".repeat(500)} end` }],
+  }, { UB_STACK: "dev", UB_PAYLOAD_PROBE_DIR: dir });
+  const raw = readFileSync(file!, "utf8");
+  for (const leaked of ["abc123", "def456", "hunter2", "tok999", "QUJDQUJD"]) assert.ok(!raw.includes(leaked), leaked);
+  const written = JSON.parse(raw);
+  assert.deepEqual(written.api_keys, [REDACTED, REDACTED]);
+  assert.equal(written.max_tokens, 4096);
+  const args = JSON.parse(written.messages[0].tool_calls[0].function.arguments);
+  assert.equal(args.password, REDACTED);
+  assert.equal(args.note, "hi");
+  assert.deepEqual(args.list, ["x"]);
+  assert.equal(args.nested.access_token, REDACTED);
+  assert.match(written.messages[1].content, /^see \[data uri, \d+ bytes\] end$/);
+});
