@@ -13,6 +13,7 @@ import { AliasCircuit } from "../src/circuit.ts";
 import { RouterError } from "../src/errors.ts";
 import { upstreamConfigError } from "../src/upstreams/opencode.ts";
 import { readPrefix } from "../src/read-capped.ts";
+import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
 import { emptyProviderStore, readProviderStore, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
 import { loadRuntimeConfig } from "../../shared/runtime.ts";
 import { CALLER_LIMITS, MAX_ACTIVE_UPSTREAM, MAX_TOOL_SCHEMAS, SEARCH_LIMITS } from "../../shared/policy.ts";
@@ -1063,7 +1064,8 @@ test("hit enforces 24h token budgets", () => {
   const store = new LimitStore(join(dir, "usage.sqlite"));
   const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
   const now = Date.now();
-  store.recordUsage({ callerId: "desktop", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 0, outputTokens: 3_000_000, at: now });
+  // The default budget is 500M, so the desktop output cap is 50M (30M x 16.67 baseline factor).
+  store.recordUsage({ callerId: "desktop", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 0, outputTokens: 50_000_000, at: now });
   assert.throws(() => store.hit(caller, now), /caller_budget_exhausted/);
 });
 
@@ -1072,8 +1074,75 @@ test("hit enforces the aggregate 24h token budget", () => {
   const store = new LimitStore(join(dir, "usage.sqlite"));
   const caller = { callerId: "phone", profile: "phone" as const, aliases: ["workhorse"], search: true };
   const now = Date.now();
-  store.recordUsage({ callerId: "ghost", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 32_000_000, outputTokens: 0, at: now });
+  store.recordUsage({ callerId: "ghost", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 533_333_334, outputTokens: 0, at: now });
   assert.throws(() => store.hit(caller, now), /global_budget_exhausted/);
+});
+
+function budgetSandbox(tokens: number | null, requests: number | null): () => void {
+  const prior = process.env.UB_LIMITS_PATH;
+  const dir = mkdtempSync(join(tmpdir(), "ub-limits-budget-"));
+  const path = join(dir, "limits.json");
+  process.env.UB_LIMITS_PATH = path;
+  writeLimitsStore({ ...emptyLimitsStore(), dailyTokenBudget: tokens, dailyRequestBudget: requests }, path);
+  resetBudgetCache();
+  return () => {
+    process.env.UB_LIMITS_PATH = prior;
+    resetBudgetCache();
+  };
+}
+
+test("a token budget lowered below what the day already used blocks the next hit, and a raise frees it", () => {
+  const restore = budgetSandbox(null, null);
+  try {
+    const store = new LimitStore(join(mkdtempSync(join(tmpdir(), "ub-limits-")), "usage.sqlite"));
+    const caller = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+    const now = Date.now();
+    store.recordUsage({ callerId: "desktop", provider: "opencode-go", model: "glm-5.3-flash", inputTokens: 5_000_000, outputTokens: 0, at: now });
+    store.hit(caller, now);
+    const path = process.env.UB_LIMITS_PATH!;
+    writeLimitsStore({ ...emptyLimitsStore(), dailyTokenBudget: 2_000_000 }, path);
+    resetBudgetCache(path);
+    assert.throws(() => store.hit(caller, now), /caller_budget_exhausted/);
+    assert.throws(() => store.hit(caller, now), /caller_budget_exhausted/, "still blocked, predictably");
+    writeLimitsStore({ ...emptyLimitsStore(), dailyTokenBudget: 10_000_000_000 }, path);
+    resetBudgetCache(path);
+    store.hit(caller, now);
+  } finally {
+    restore();
+  }
+});
+
+test("the request budget is enforced for desktop and phone, lowered below the count blocks, tokens stay independent", () => {
+  const restore = budgetSandbox(null, 3);
+  try {
+    const store = new LimitStore(join(mkdtempSync(join(tmpdir(), "ub-limits-")), "usage.sqlite"));
+    const path = process.env.UB_LIMITS_PATH!;
+    const desktop = { callerId: "desktop", profile: "desktop" as const, aliases: ["workhorse"], search: true };
+    const now = Date.now();
+    store.hit(desktop, now);
+    store.hit(desktop, now + 1);
+    store.hit(desktop, now + 2);
+    assert.throws(() => store.hit(desktop, now + 3), /caller_budget_exhausted/);
+    writeLimitsStore({ ...emptyLimitsStore(), dailyRequestBudget: 2 }, path);
+    resetBudgetCache(path);
+    assert.throws(() => store.hit(desktop, now + 4), /caller_budget_exhausted/, "lowered below the count used");
+    writeLimitsStore({ ...emptyLimitsStore(), dailyRequestBudget: 1_000_000 }, path);
+    resetBudgetCache(path);
+    store.hit(desktop, now + 5);
+  } finally {
+    restore();
+  }
+  // The phone shares the desktop budget: the same cap applies to its own count.
+  const restorePhone = budgetSandbox(null, 1);
+  try {
+    const store = new LimitStore(join(mkdtempSync(join(tmpdir(), "ub-limits-")), "usage.sqlite"));
+    const phone = { callerId: "phone", profile: "phone" as const, aliases: ["workhorse"], search: true };
+    const now = Date.now();
+    store.hit(phone, now);
+    assert.throws(() => store.hit(phone, now + 1), /caller_budget_exhausted/);
+  } finally {
+    restorePhone();
+  }
 });
 
 test("reserve charges a ledger entry and reconcile records observed usage", () => {

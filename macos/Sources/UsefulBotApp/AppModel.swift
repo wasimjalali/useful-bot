@@ -3163,6 +3163,15 @@ final class AppModel: ObservableObject {
     /// Move the router's daily token budget. The answer carries the budget the
     /// server stored, so a refused number never sticks on screen.
     func setDailyTokenBudget(_ tokens: Int?) {
+        writeBudget { try await $0.setDailyTokenBudget(tokens) }
+    }
+
+    /// Move the daily request budget, independently of the token one.
+    func setDailyRequestBudget(_ requests: Int?) {
+        writeBudget { try await $0.setDailyRequestBudget(requests) }
+    }
+
+    private func writeBudget(_ send: @escaping (BackendClient) async throws -> UsagePayload) {
         guard !usageBusy else { return }
         usageBusy = true
         usageError = nil
@@ -3171,12 +3180,12 @@ final class AppModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let confirmed = try await self.client.setDailyTokenBudget(tokens)
+                let confirmed = try await send(self.client)
                 // And any poll started while the write was in flight.
                 self.usageGeneration &+= 1
                 self.usage = confirmed
-            } catch BackendError.provider(let code) where code == "budget_range" {
-                self.usageError = "That budget is outside the range this router accepts."
+            } catch BackendError.provider(let code) {
+                self.usageError = BudgetInput.serverMessage(for: code) ?? "Could not change the limit."
             } catch {
                 self.usageError = "Could not change the limit."
             }

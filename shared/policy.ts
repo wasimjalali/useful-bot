@@ -34,6 +34,9 @@ export const CALLER_LIMITS = {
   // 10 bots x 50 turns x 8 steps is 4,000. The daily TOKEN budgets beside them
   // are unchanged: they are the spend guard, and the owner sets them in
   // Settings.
+  //
+  // These are the BASELINE the owner's budgets scale against (shared/
+  // limits-store.ts). The shipped defaults are 500M tokens and 5,000 requests.
   desktop: { aliases: ["workhorse", "image"], search: true, rpm: 60, requests24h: 4_000, input24h: 30_000_000, output24h: 3_000_000 },
   // The phone profile is the owner's own phone, with the desktop budget
   // verbatim (spec S1): there is one owner inference budget, and which device

@@ -1108,14 +1108,22 @@ public actor BackendClient {
 
     /// Move the router's daily token budget. `nil` restores the shipped
     /// default. Answers with the refreshed usage so the pane never shows a
-    /// number the server did not accept.
+    /// number the server did not accept. The request budget is left alone.
     public func setDailyTokenBudget(_ tokens: Int?) async throws -> UsagePayload {
+        try await putBudget(["dailyTokenBudget": tokens as Any? ?? NSNull()])
+    }
+
+    /// Move the daily request budget; same contract as the token one.
+    public func setDailyRequestBudget(_ requests: Int?) async throws -> UsagePayload {
+        try await putBudget(["dailyRequestBudget": requests as Any? ?? NSNull()])
+    }
+
+    private func putBudget(_ body: [String: Any]) async throws -> UsagePayload {
         let (data, response) = try await perform { client, token in
             var request = URLRequest(url: client.base.appendingPathComponent("api/usage"))
             request.httpMethod = "PUT"
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
-            let body: [String: Any] = ["dailyTokenBudget": tokens as Any? ?? NSNull()]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             return request
         }
