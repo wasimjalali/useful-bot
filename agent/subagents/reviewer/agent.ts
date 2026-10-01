@@ -1,6 +1,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { defineAgent, defineDynamic } from "eve";
 import { POLICY_WINDOW_TOKENS } from "../../../shared/policy.ts";
+import { reviewerWindowTokens } from "../../lib/model-window.ts";
 import { routerFetch } from "../../lib/router-fetch.ts";
 import { turnIdOf, type RouterIds } from "../../lib/router-identity.ts";
 import { perSessionModel } from "../../lib/session-model.ts";
@@ -65,7 +66,9 @@ export default defineAgent({
     events: {
       "step.started": (event, ctx) => ({
         model: reviewerFor(ctx.session.id, turnIdOf(event)),
-        modelContextWindowTokens: POLICY_WINDOW_TOKENS,
+        // The window of the model the reviewer role resolves to, not a fixed
+        // 131,072: a small reviewer model would overflow before eve compacted.
+        modelContextWindowTokens: process.env.UB_S2_FIXTURE === "1" ? POLICY_WINDOW_TOKENS : reviewerWindowTokens(),
       }),
     },
   }),

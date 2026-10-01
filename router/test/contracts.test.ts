@@ -11,7 +11,7 @@ import { CEILING_RETRY_AFTER_MS, ConcurrencyGate } from "../src/concurrency.ts";
 import { retryAfterMs, upstreamLimitError } from "../src/retry-after.ts";
 import { AliasCircuit } from "../src/circuit.ts";
 import { RouterError } from "../src/errors.ts";
-import { upstreamConfigError } from "../src/upstreams/opencode.ts";
+import { completeUpstream, upstreamConfigError, type ResolvedUpstream } from "../src/upstreams/opencode.ts";
 import { readPrefix } from "../src/read-capped.ts";
 import { emptyLimitsStore, resetBudgetCache, writeLimitsStore } from "../../shared/limits-store.ts";
 import { emptyProviderStore, readProviderStore, setProviderKey, writeProviderStore } from "../../shared/providers.ts";
@@ -1588,4 +1588,223 @@ test("runtime config rejects malformed credentials", () => {
   assert.throws(() => loadRuntimeConfig(write({ ...base, expiresAt: "whenever" })), /runtime_config_credential/);
   assert.throws(() => loadRuntimeConfig(write({ ...base, kind: "bogus" })), /runtime_config_credential/);
   assert.throws(() => loadRuntimeConfig(write({ ...base, profile: "bogus" })), /runtime_config_credential/);
+});
+
+test("an oauth 401 then refresh then retry reports the refused attempt on its own, with its timing", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-oauth-retry-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(String(req.headers.authorization ?? ""));
+    if (seen.length === 1) {
+      setTimeout(() => {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "expired" } }));
+      }, 30);
+      return;
+    }
+    jsonFixture(req, res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    // Copilot's direct-token mode: the refresh needs no network and returns the credential.
+    const credential = { kind: "oauth", accessToken: "gh-token-12345678", refreshToken: null, expiresAt: null, accountId: null } as const;
+    const resolved = {
+      connection: { id: "github-copilot:oauth" },
+      providerId: "github-copilot",
+      mode: { headers: {} },
+      modelId: "gpt-5.4-mini",
+      model: "gpt-5.4-mini",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: "openai-chat",
+      keyHeader: "bearer",
+      credential,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    const attempts: { startedAt: number; firstByteAt: number | null; endedAt: number }[] = [];
+    const out = await completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+      body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+      sessionId: randomUUID(),
+      callerId: "desktop",
+      signal: new AbortController().signal,
+      resolved,
+      onRefusedAttempt: (attempt) => attempts.push(attempt),
+    });
+    assert.equal(out.response.status, 200);
+    assert.equal(seen.length, 2, "one refused attempt and one retry reached the upstream");
+    assert.equal(attempts.length, 1, "exactly the refused attempt is reported");
+    assert.ok(attempts[0].endedAt - attempts[0].startedAt >= 25, "its own timing, not the retry's");
+    assert.ok(attempts[0].firstByteAt !== null && attempts[0].firstByteAt <= attempts[0].endedAt);
+    assert.ok(out.timing.startedAt >= attempts[0].endedAt, "the retry's timing starts after the refused one ended");
+    await out.response.body?.cancel();
+  } finally {
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+});
+
+// Each real upstream request is one usage line: the router counts onDispatch
+// (a request leaving) and onRefusedAttempt (that request settled as refused).
+// Both cases below use OpenAI, whose refresh throws without a refresh token.
+async function oauthRefreshFailure(expiresAt: number | null, status: number) {
+  const dir = mkdtempSync(join(tmpdir(), "ub-oauth-refresh-fail-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  let reached = 0;
+  const server = createServer((_req, res) => {
+    reached += 1;
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "expired" } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt, accountId: null } as const;
+    const resolved = {
+      connection: { id: "openai:oauth" },
+      providerId: "openai",
+      mode: { headers: {} },
+      modelId: "gpt-5.4-mini",
+      model: "gpt-5.4-mini",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: "openai-chat",
+      keyHeader: "bearer",
+      credential,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    let dispatches = 0;
+    let refused = 0;
+    await assert.rejects(
+      completeUpstream({
+        entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+        body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+        sessionId: randomUUID(),
+        callerId: "desktop",
+        signal: new AbortController().signal,
+        resolved,
+        onDispatch: () => { dispatches += 1; },
+        onRefusedAttempt: () => { refused += 1; },
+      }),
+    );
+    return { reached, dispatches, refused };
+  } finally {
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+}
+
+test("a 401 whose refresh fails is one dispatch and one refused attempt, no second request", async () => {
+  const out = await oauthRefreshFailure(null, 401);
+  assert.deepEqual(out, { reached: 1, dispatches: 1, refused: 1 });
+});
+
+test("an expired credential whose refresh fails sends nothing and reports no dispatch", async () => {
+  const out = await oauthRefreshFailure(Date.now() - 60_000, 401);
+  assert.deepEqual(out, { reached: 0, dispatches: 0, refused: 0 });
+});
+
+// A request the adapter cannot build (never sent) is not a dispatch, and a model
+// with no catalog window sizes its output cap from the agent's unknown window.
+async function runCompleteUpstream(options: {
+  protocol: "openai-chat" | "anthropic-messages";
+  body: Record<string, unknown>;
+  maxOutputTokens: number;
+  expectReject: boolean;
+}) {
+  const dir = mkdtempSync(join(tmpdir(), "ub-dispatch-build-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  let reached = 0;
+  let forwarded: Record<string, unknown> | null = null;
+  const server = createServer((req, res) => {
+    reached += 1;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        id: "cmpl_test",
+        object: "chat.completion",
+        model: "mystery-1",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt: null, accountId: null } as const;
+    const resolved = {
+      connection: { id: "custom:no-catalog" },
+      providerId: "openai",
+      mode: { headers: {} },
+      modelId: "mystery-1",
+      model: "mystery-1",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: options.protocol,
+      keyHeader: "bearer",
+      credential,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    let dispatches = 0;
+    const run = completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: options.maxOutputTokens } as never,
+      body: options.body,
+      sessionId: randomUUID(),
+      callerId: "desktop",
+      signal: new AbortController().signal,
+      resolved,
+      onDispatch: () => { dispatches += 1; },
+    });
+    if (options.expectReject) await assert.rejects(run);
+    else await run;
+    return { reached, dispatches, forwarded: forwarded as Record<string, unknown> | null };
+  } finally {
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+}
+
+test("malformed Anthropic tool arguments throw before any fetch and report zero dispatches", async () => {
+  const out = await runCompleteUpstream({
+    protocol: "anthropic-messages",
+    maxOutputTokens: 1024,
+    expectReject: true,
+    body: {
+      model: "workhorse",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "t", arguments: "{not json" } }] },
+      ],
+    },
+  });
+  assert.deepEqual({ reached: out.reached, dispatches: out.dispatches }, { reached: 0, dispatches: 0 });
+});
+
+test("a model with no catalog window caps its output at a tenth of 32768, not of 131072", async () => {
+  const out = await runCompleteUpstream({
+    protocol: "openai-chat",
+    maxOutputTokens: 32_768,
+    expectReject: false,
+    body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(out.dispatches, 1);
+  assert.equal(out.forwarded?.max_tokens, 3_276);
 });

@@ -660,7 +660,8 @@ struct ChatView: View {
                                     bot: bot,
                                     activity: model.activity,
                                     since: model.activitySince,
-                                    toolkits: model.connectorApps
+                                    toolkits: model.connectorApps,
+                                    runningModel: model.runningModelNote(for: bot.id)
                                 )
                             } else if let since = model.runningTaskSince {
                                 // The turn that started a sub-agent is over,
@@ -1733,6 +1734,9 @@ private struct WorkingRow: View {
     let since: Date
     /// The connected apps, for the logo and name of a connector step.
     let toolkits: [ConnectorToolkit]
+    /// The model this turn is still on when the owner has picked another
+    /// since it started. Nil when they match.
+    var runningModel: String?
 
     /// The avatar's box, which is also the slot the transcript reserves.
     static let height: CGFloat = 24
@@ -1749,7 +1753,8 @@ private struct WorkingRow: View {
 
     var body: some View {
         let connector = connector
-        let label = connector?.label ?? activity.label
+        let step = connector?.label ?? activity.label
+        let label = runningModel.map { "\(step) · \($0)" } ?? step
         // Sits where the reply will, so the text does not jump sideways
         // when the first token lands.
         HStack(alignment: .center, spacing: 10) {

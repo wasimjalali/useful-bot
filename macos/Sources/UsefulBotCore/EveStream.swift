@@ -278,8 +278,26 @@ public struct TurnFailure: Codable, Equatable, Sendable {
         return formatter.string(from: date)
     }
 
+    /// Also what a refused send says, so the composer note and a failed
+    /// turn's row read the same.
+    public static let modelSelectionUnavailableCopy = "This bot's model isn't available any more. Pick another model below."
+
     public var reason: String? {
         let haystack = "\(code) \(detail)".lowercased()
+        // The bot's own pick is gone (its connection was removed or
+        // disconnected). Nothing was substituted, so the owner chooses.
+        if haystack.contains("model_selection_unavailable") {
+            return Self.modelSelectionUnavailableCopy
+        }
+        if haystack.contains("model_unavailable") {
+            return "The provider doesn't offer this model right now. Pick another model."
+        }
+        if haystack.contains("upstream_auth_failed") || haystack.contains("upstream_credential_missing") {
+            return "Sign-in to the model provider expired. Reconnect it in Settings."
+        }
+        if haystack.contains("provider_disconnected") {
+            return "The model provider is disconnected. Reconnect it in Settings."
+        }
         // The provider's own limits, from the 429 body: no wait lifts these
         // in a turn's time, so the copy says what ran out and what to do.
         if haystack.contains("upstream_usage_limit") {
@@ -424,6 +442,28 @@ public struct FailureMark: Identifiable, Codable, Equatable, Sendable {
 
     /// The transcript row id this mark renders as.
     public var rowId: String { "failure-\(id)" }
+}
+
+/// Where eve compacted a conversation: the row it goes under and when. The
+/// summary replaces the history for good, so the transcript keeps a quiet
+/// line at that point. Keyed by the event's id, so a replay of the same
+/// event never adds a second line.
+public struct CompactionMark: Identifiable, Codable, Equatable, Sendable {
+    public var id: String
+    /// The last row the transcript held when compaction finished.
+    public var anchorId: String?
+    public var at: Date?
+
+    public init(id: String, anchorId: String?, at: Date?) {
+        self.id = id
+        self.anchorId = anchorId
+        self.at = at
+    }
+
+    /// The transcript row id this mark renders as.
+    public var rowId: String { "compaction-\(id)" }
+
+    public static let text = "Conversation compacted to fit the model's window"
 }
 
 /// How a send ended, and whether the banner it put up may be retried by
@@ -857,6 +897,8 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     /// Every failed turn still worth showing, in the order they failed. A
     /// retry that gets somewhere takes its failure's mark away.
     public private(set) var failureMarks: [FailureMark] = []
+    /// Every compaction eve ran in this session, in order.
+    public private(set) var compactionMarks: [CompactionMark] = []
     /// The mark of the failure `failed` is about, while it is.
     private var liveFailureMarkId: String?
     /// The one failure row that may still be retried: the newest turn's, and
@@ -909,6 +951,7 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             // in the eviction order.
             + turns.count * 128
             + failureMarks.reduce(0) { $0 + $1.failure.detail.utf8.count + 128 }
+            + compactionMarks.count * 128
     }
     /// The one session every positioned event here was read from, or nil when
     /// there were none or more than one. A send that moved to a fresh session
@@ -1270,6 +1313,9 @@ public struct StreamProjection: Codable, Equatable, Sendable {
     private mutating func reanchorFailures(from old: String, to new: String) {
         for index in failureMarks.indices where failureMarks[index].anchorId == old {
             failureMarks[index].anchorId = new
+        }
+        for index in compactionMarks.indices where compactionMarks[index].anchorId == old {
+            compactionMarks[index].anchorId = new
         }
     }
 
@@ -1692,6 +1738,14 @@ public struct StreamProjection: Codable, Equatable, Sendable {
             guard case .current = turnOwner(of: event) else { break }
             activity = .compacting
         case "compaction.completed":
+            // The history was replaced whichever turn this belonged to, so
+            // the note is kept for a stepped-off turn too. The event's id
+            // already deduped a replay at the top of `apply`.
+            compactionMarks.append(CompactionMark(
+                id: event.id ?? mintId("c"),
+                anchorId: messages.last?.id,
+                at: stamp
+            ))
             guard case .current = turnOwner(of: event) else { break }
             activity = .thinking
         case "reasoning.appended", "reasoning.completed":

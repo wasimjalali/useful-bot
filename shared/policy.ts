@@ -6,6 +6,14 @@ export type SandboxBackendName = "microsandbox" | "docker" | "just-bash";
 export type Isolation = "verified-vm" | "non-vm";
 
 export const POLICY_WINDOW_TOKENS = 131_072;
+/**
+ * The window used to size compaction and the router's output cap when the catalog does not say what the
+ * selected model's is (a custom server, Ollama, LM Studio, an unlisted id).
+ * Deliberately small: guessing 131,072 let a small local model overflow before
+ * eve compacted. A model that really has more only compacts earlier than it
+ * had to, which costs a summary, never a failed turn.
+ */
+export const UNKNOWN_WINDOW_TOKENS = 32_768;
 export const POLICY_OUTPUT_TOKENS = 4_096;
 export const POLICY_APPROVAL_TTL_MS = 5 * 60 * 1000;
 export const POLICY_NODE_MAJOR = 24;
@@ -86,7 +94,7 @@ export const MAX_ACTIVE_IMAGE = 4;
 /**
  * A count, like `MAX_TOOL_SCHEMAS` below, and not the real bound either:
  * `COMPLETION_BODY_LIMIT_BYTES` is what keeps the upstream payload sane, and
- * eve compacts a session at 90% of the model's window long before a
+ * eve compacts a session at 75% of the model's window (agent/agent.ts) long before a
  * conversation of this length is a problem for anyone.
  *
  * It was 256, which a bot doing real work walks through in an afternoon: every

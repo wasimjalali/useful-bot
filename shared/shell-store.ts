@@ -6,6 +6,7 @@ import {
   type AvatarColor,
   type AvatarShape,
 } from "./bot-face.ts";
+import { parseModelSelection, type ModelSelection } from "./session-selection.ts";
 import { APP_STATE_DIR, isAppStateSegment, isRuntimeInstallPath } from "./stack.ts";
 
 /** Client-safe: this file must never pull in node builtins. */
@@ -90,6 +91,14 @@ export type ShellBot = {
    */
   permission: WorkspacePermission;
   workspace: BotWorkspace | null;
+  /**
+   * The model, connection, effort and speed this bot runs on. Null means it
+   * inherits the default (the last pick, as the old global chip resolved it).
+   * A bot is pinned only where a pick would otherwise move it: a per-bot chip
+   * pick pins every null bot first (ensureBotSelections). Every create path
+   * leaves it null, and so does a roster from before this field.
+   */
+  model: ModelSelection | null;
 };
 
 export type BotProfilePatch = Partial<
@@ -232,6 +241,7 @@ export function seedStore(at = new Date()): ShellStore {
         avatarCustom: false,
         permission: "auto",
         workspace: null,
+        model: null,
       },
     ],
     recents: [],
@@ -304,6 +314,7 @@ function parseBot(raw: unknown): ShellBot {
       ?? parseWorkspace(rec.workspace)?.permission
       ?? "auto",
     workspace: parseWorkspace(rec.workspace),
+    model: parseModelSelection(rec.model),
   };
 }
 
@@ -711,6 +722,7 @@ export function applyShellAction(
         avatarCustom: true,
         permission: "auto",
         workspace: null,
+        model: null,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [bot, ...store.bots] },
@@ -747,6 +759,7 @@ export function applyShellAction(
         avatarCustom: true,
         permission: "auto",
         workspace: null,
+        model: null,
       };
       return {
         store: { ...store, selectedBotId: id, bots: [group, ...store.bots] },
@@ -1092,6 +1105,40 @@ export function applyShellAction(
     default:
       throw new Error("shell_action_unknown");
   }
+}
+
+/**
+ * Give every bot that has no selection the one passed in (the last pick as it
+ * stands now). Bots that already chose are untouched, so it is idempotent.
+ */
+export function freezeNullSelections(store: ShellStore, pick: ModelSelection): ShellStore {
+  if (!store.bots.some((bot) => bot.model === null)) return store;
+  return {
+    ...store,
+    bots: store.bots.map((bot) => (bot.model === null ? { ...bot, model: { ...pick } } : bot)),
+  };
+}
+
+/**
+ * Reset every bot pinned to one connection back to "inherit the default"
+ * (null). Used when the owner signs that connection out: the bot's chip then
+ * shows the new default instead of an unavailable model.
+ */
+export function clearConnectionSelections(store: ShellStore, connectionId: string): ShellStore {
+  if (!store.bots.some((bot) => bot.model?.connectionId === connectionId)) return store;
+  return {
+    ...store,
+    bots: store.bots.map((bot) => (bot.model?.connectionId === connectionId ? { ...bot, model: null } : bot)),
+  };
+}
+
+/** Set one bot's selection. Only that row changes, so a pick never moves another bot. */
+export function withBotSelection(store: ShellStore, botId: string, selection: ModelSelection): ShellStore {
+  if (!store.bots.some((bot) => bot.id === botId)) throw new Error("shell_bot_missing");
+  return {
+    ...store,
+    bots: store.bots.map((bot) => (bot.id === botId ? { ...bot, model: { ...selection } } : bot)),
+  };
 }
 
 export function selectedBot(store: ShellStore): ShellBot {

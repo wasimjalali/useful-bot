@@ -25,14 +25,23 @@ When a change touches more than one surface, do the macOS work first and complet
 
 ## Change management
 
-Adversarial review in Claude Code runs one Opus 5.5 reviewer (up to two for a large diff) plus
-one Sonnet 5.5 reviewer, in parallel, each on the areas it suits. Sonnet runs at medium for most
-reviews and high for tough ones (the orchestrator picks); never xhigh or max. SWE-2 was retired
-here on 2026-09-28; other harnesses (Codex, Devin) may still use it, with the briefing rules in
-the global rules. Not Muse Spark or GLM in opencode, not `/code-review`. Check out the branch
-under review first: the reviewer reads the files, and a diff against code that is not in the
-tree wastes the pass. Never accept a bare empty array, ask for the list
-of what it dismissed and why. Fix every finding above low (critical, high, medium, major) and
+Since 2026-10-01, Opus 5.5 plans, orchestrates and verifies. Sonnet 5.5 writes the code:
+`sonnet-worker` (medium) for scoped jobs, `sonnet-sweeper` (high) for audits. Opus checks every
+worker's result before it lands.
+
+Reviews run in parallel, split by area so every file in the diff has an owner:
+- **Small, non-sensitive PRs:** Sonnet 5.5 alone.
+- **Bigger or sensitive PRs:** Sonnet 5.5 plus GPT-6.1-Sol at medium through Codex
+  (`codex exec -m gpt-6.1-sol -c model_reasoning_effort="medium" --sandbox read-only
+  --output-last-message <file> - < <brief>`).
+- **Tough or very sensitive work:** add one Opus 5.5 reviewer at medium.
+- **Muse Spark in opencode:** may join as an extra free reviewer when it's available, never as
+  the only one.
+
+Not `/code-review`. Write briefs and commit messages with the Write tool: the bash guard blocks
+heredocs with odd quotes. Check out the branch under review first: the reviewer reads the files,
+and a diff against code that is not in the tree wastes the pass. Never accept a bare empty array,
+ask for the DISMISSED list of what it considered and why. Fix every finding above low (critical, high, medium, major) and
 review again until a pass from every reviewer has none. Then fix every low too; lows need no
 further pass. Then merge, sync local `main`, and rebuild and reinstall Useful Bot Dev from it
 (`npm run build:dev-app`, `npm run install:dev-app`). The daily app is not rebuilt per PR: it

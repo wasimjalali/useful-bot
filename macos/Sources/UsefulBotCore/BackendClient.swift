@@ -21,6 +21,9 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case decoding
     /// `/api/providers` answered with its own error code.
     case provider(String)
+    /// `/api/providers` removed the connection but could not finish: the server's
+    /// own sentence (`message`) says what is left to do, so it is shown as is.
+    case providerNotice(code: String, message: String)
     /// `/api/attachments` answered with its own error code.
     case attachment(String)
     /// `/api/shell` answered with its own error code.
@@ -37,6 +40,9 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case modelNoVision
     /// Regenerate on a lost image answered with its own error code.
     case regenerate(String)
+    /// The send was refused before reaching eve: the bot's stored model or
+    /// connection is gone, and the server never substitutes another.
+    case modelSelectionUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -78,6 +84,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The local server sent data this app could not read."
         case .provider(let code):
             return code
+        case .providerNotice(_, let message):
+            return message
         case .attachment(let code):
             return code
         case .shell(let code):
@@ -92,6 +100,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The connection dropped before the reply finished."
         case .modelNoVision:
             return "This model can't see images. Pick one that can from the model menu."
+        case .modelSelectionUnavailable:
+            return TurnFailure.modelSelectionUnavailableCopy
         }
     }
 
@@ -135,6 +145,7 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// The `/api/providers` error code, when the failure came from that route.
     public var providerCode: String? {
         if case .provider(let code) = self { return code }
+        if case .providerNotice(let code, _) = self { return code }
         return nil
     }
 
@@ -182,7 +193,7 @@ private struct ProvidersResponse: Decodable {
     let providers: [ProviderPublic]?
     let error: String?
 }
-private struct ProvidersErrorResponse: Decodable { let error: String? }
+private struct ProvidersErrorResponse: Decodable { let error: String?; let message: String? }
 private struct ApprovalsResponse: Decodable { let approvals: [ApprovalItem] }
 private struct ConnectorAuthorizeResponse: Decodable {
     let ok: Bool?
@@ -909,13 +920,23 @@ public actor BackendClient {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a connect was refused.
-            let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
+            throw Self.providersFailure(status: http.statusCode, data: data)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersPayload.self, from: data) else {
             throw BackendError.decoding
         }
         return decoded
+    }
+
+    /// A failed `/api/providers` write as the error the app shows. A removed
+    /// connection that left pinned bots behind carries the server's message,
+    /// not a bare code, because the code alone reads as "nothing happened".
+    static func providersFailure(status: Int, data: Data) -> BackendError {
+        let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
+        if decoded?.error == "connection_removed_bots_pinned", let message = decoded?.message, !message.isEmpty {
+            return .providerNotice(code: "connection_removed_bots_pinned", message: message)
+        }
+        return failure(status: status, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
     }
 
     /// Start a device flow for one OAuth provider. Answers with what the
@@ -984,8 +1005,7 @@ public actor BackendClient {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a key was refused.
-            let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data)
-            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
+            throw Self.providersFailure(status: http.statusCode, data: data)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
             throw BackendError.decoding
@@ -1276,9 +1296,17 @@ public actor BackendClient {
         return decoded.notes
     }
 
-    public func composer() async throws -> ComposerState? {
+    /// The chip's state for one bot: its own model, effort and speed. Without
+    /// a bot id the server answers with the last pick, which is only right
+    /// before a bot is known.
+    public func composer(botId: String? = nil) async throws -> ComposerState? {
         let (data, response) = try await perform { client, _ in
-            URLRequest(url: client.base.appendingPathComponent("api/providers"))
+            var url = client.base.appendingPathComponent("api/providers")
+            if let botId, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                parts.queryItems = [URLQueryItem(name: "botId", value: botId)]
+                if let withQuery = parts.url { url = withQuery }
+            }
+            return URLRequest(url: url)
         }
         try Self.expectOK(data, response)
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
@@ -1398,6 +1426,12 @@ public actor BackendClient {
            failure.code == "session_moved" {
             throw BackendError.sessionMoved
         }
+        // The bot's stored model or connection is gone. The proxy refuses the
+        // turn before eve and never swaps in another model.
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           Self.refusalCode(in: data) == "model_selection_unavailable" {
+            throw BackendError.modelSelectionUnavailable
+        }
         // The proxy refuses a picture for a model that cannot look at it
         // before the turn exists, so the draft and its files come back.
         if let http = response as? HTTPURLResponse, http.statusCode == 400,
@@ -1413,6 +1447,16 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         return sid
+    }
+
+    /// The code of a refusal body, whichever shape carries it: a top-level
+    /// `code`, an `error` string, or `error: { code }`.
+    static func refusalCode(in data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let code = object["code"] as? String { return code }
+        if let error = object["error"] as? String { return error }
+        if let error = object["error"] as? [String: Any] { return error["code"] as? String }
+        return nil
     }
 
     /// Persist the session pointer and preview for a bot, the same shell
@@ -1739,11 +1783,8 @@ public actor BackendClient {
 
     /// Persist effort/speed/model choices from the composer chip.
     @discardableResult
-    public func updateComposer(modelId: String? = nil, effort: String? = nil, speed: String? = nil) async throws -> ComposerState? {
-        var patch: [String: Any] = [:]
-        if let modelId { patch["modelId"] = modelId }
-        if let effort { patch["effort"] = effort }
-        if let speed { patch["speed"] = speed }
+    public func updateComposer(botId: String? = nil, modelId: String? = nil, effort: String? = nil, speed: String? = nil) async throws -> ComposerState? {
+        let patch = Self.composerPatch(botId: botId, modelId: modelId, effort: effort, speed: speed)
         let (data, response) = try await perform { client, token in
             var request = URLRequest(url: client.base.appendingPathComponent("api/providers"))
             request.httpMethod = "PUT"
@@ -1757,6 +1798,17 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         return decoded.composer
+    }
+
+    /// The PUT body for a chip save. The bot id rides in the body so the
+    /// server writes that bot's selection and not only the last pick.
+    static func composerPatch(botId: String?, modelId: String?, effort: String?, speed: String?) -> [String: Any] {
+        var patch: [String: Any] = [:]
+        if let botId { patch["botId"] = botId }
+        if let modelId { patch["modelId"] = modelId }
+        if let effort { patch["effort"] = effort }
+        if let speed { patch["speed"] = speed }
+        return patch
     }
 
     /// Upload one attachment for the composer. The caller is responsible for

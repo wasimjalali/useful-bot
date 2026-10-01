@@ -326,6 +326,10 @@ public struct ComposerState: Codable, Equatable, Sendable {
     public var speeds: [Option]
     public var models: [Option]
     public var groups: [Group]
+    /// False when this bot's stored connection is gone or disconnected, or its
+    /// model has left the catalogue. `modelLabel` is still the stored model,
+    /// never a stand-in, and a send is refused until another is picked.
+    public var available: Bool
 
     /// What the chip shows after the model name: effort plus fast, or nil
     /// when neither applies.
@@ -335,7 +339,7 @@ public struct ComposerState: Codable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case connectionId, modelId, modelLabel, effort, effortLabel, speed, efforts, speeds, models, groups
+        case connectionId, modelId, modelLabel, effort, effortLabel, speed, efforts, speeds, models, groups, available
     }
 
     public init(from decoder: Decoder) throws {
@@ -350,7 +354,54 @@ public struct ComposerState: Codable, Equatable, Sendable {
         speeds = (try? c.decode([Option].self, forKey: .speeds)) ?? []
         models = (try? c.decode([Option].self, forKey: .models)) ?? []
         groups = (try? c.decode([Group].self, forKey: .groups)) ?? []
+        // A server without the field predates per-bot selection and has no
+        // way to say a model is gone.
+        available = (try? c.decodeIfPresent(Bool.self, forKey: .available)) ?? true
     }
+}
+
+/// Which bot's chip state the composer shows, and when an answer may change
+/// it. Every read and save names its bot, and an answer for a bot the owner
+/// has since left only fills that bot's cache: the chip never shows another
+/// bot's model, and a save for bot A landing after a move to bot B cannot
+/// overwrite B's chip. A read that began before a save started is dropped,
+/// so a slow poll cannot put the old pick back over the new one.
+public struct ComposerSelection: Equatable, Sendable {
+    public private(set) var selectedBotId: String?
+    /// What the chip shows now: the selected bot's own state, or nil.
+    public private(set) var shown: ComposerState?
+    private var byBot: [String: ComposerState] = [:]
+    private var epoch = 0
+
+    public init() {}
+
+    /// The owner opened another bot: its last read paints at once, or the
+    /// placeholder when none was read yet.
+    public mutating func select(_ botId: String?) {
+        selectedBotId = botId
+        shown = botId.flatMap { byBot[$0] }
+    }
+
+    /// A save is about to go out. Returns the token a read must carry.
+    public mutating func beginSave() { epoch &+= 1 }
+
+    /// The token a read takes before it asks the server.
+    public var readToken: Int { epoch }
+
+    /// Record an answer for `botId`. `readToken` is the token a read took
+    /// before asking; a save's answer passes nil. Returns whether the chip
+    /// changed.
+    @discardableResult
+    public mutating func apply(_ state: ComposerState, for botId: String?, readToken: Int? = nil) -> Bool {
+        if let readToken, readToken != epoch { return false }
+        if let botId { byBot[botId] = state }
+        guard botId == selectedBotId, state != shown else { return false }
+        shown = state
+        return true
+    }
+
+    /// The cached model label for a bot, whether or not it is open.
+    public func modelLabel(for botId: String) -> String? { byBot[botId]?.modelLabel }
 }
 
 /// A file that survived `POST /api/attachments`.

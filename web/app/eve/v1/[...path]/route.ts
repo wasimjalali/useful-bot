@@ -14,9 +14,17 @@ import {
   type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
 import { catalogFor } from "../../../../../shared/live-models.ts";
-import { modelOption, modelSeesImages } from "../../../../../shared/models.ts";
-import { composerState, readProviderStore } from "../../../../../shared/providers.ts";
-import { cancelEveTurn, channelJwt, continuationBriefFor, sessionHasCompletedTurn, syncSessionWorkspace } from "../../../../lib/agent-exec";
+import { exactModelOption, modelSeesImages } from "../../../../../shared/models.ts";
+import { readProviderStore, type ProviderStore } from "../../../../../shared/providers.ts";
+import { botSelection, lastPick } from "../../../../../shared/session-selection.ts";
+import {
+  cancelEveTurn,
+  channelJwt,
+  continuationBriefFor,
+  modelSelectionRefusal,
+  sessionHasCompletedTurn,
+  syncSessionWorkspace,
+} from "../../../../lib/agent-exec";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
@@ -27,11 +35,15 @@ import { eveOrigin } from "../../../../../shared/stack.ts";
 
 const EVE = eveOrigin();
 
-/** True only when the catalog says the active model is text-only. */
-function rejectsImages(): boolean {
-  const composer = composerState(readProviderStore());
-  const catalog = catalogFor(composer.connectionId || composer.providerId);
-  const model = modelOption(composer.providerId, composer.modelId, catalog);
+/**
+ * True only when the catalog says the bot's own model is text-only. The model
+ * is the one the turn will run on (the bot's selection), looked up exactly: a
+ * model the catalog does not list is unknown, not the list's first model.
+ */
+function rejectsImages(bot: ShellBot | null): boolean {
+  const store = readProviderStore();
+  const selection = bot ? botSelection(bot, store) : lastPick(store);
+  const model = exactModelOption(selection.modelId, catalogFor(selection.connectionId));
   return modelSeesImages(model) === false;
 }
 
@@ -143,13 +155,40 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // turn exists: eve would stage the bytes, the upstream would reject
       // the call, and the session would retire on the failed turn. A model
       // the catalog does not know goes through, and the upstream decides.
+      let sender: ShellBot | null = null;
+      // Providers store before the roster the sender comes from, the order the
+      // freeze and the stamps use.
+      let senderStore: ProviderStore;
       try {
-        const parsed = parseTurnMessage((JSON.parse(new TextDecoder().decode(body)) as { message?: unknown }).message);
-        if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
+        senderStore = readProviderStore();
+      } catch (err) {
+        console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
+        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+      }
+      try {
+        const sent = JSON.parse(new TextDecoder().decode(body)) as { message?: unknown; botId?: unknown };
+        const parsed = parseTurnMessage(sent.message);
+        sender = typeof sent.botId === "string"
+          ? readShell().bots.find((item) => item.id === sent.botId) ?? null
+          : null;
+        if (parsed !== null && turnHasImages(parsed) && rejectsImages(sender)) {
           return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
         }
       } catch {
         /* a malformed body is judged by the rewrite below, as before */
+      }
+      // The bot's own model has to be servable before the turn reaches eve:
+      // its connection signed in and its model still in the live list. The
+      // router would refuse it too, but a turn eve has accepted and failed
+      // retires the session, so the owner is told here and picks again. Never
+      // a quiet switch to another model. A cheap refusal too, so it sits above
+      // the carry-over read.
+      try {
+        const refusal = sender === null ? null : modelSelectionRefusal(sender, senderStore);
+        if (refusal) return refusal;
+      } catch (err) {
+        console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
+        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
       }
       if (carriedFrom) notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
       if (suffix !== "session") {
@@ -185,8 +224,11 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       }
       if (extras.retry) notes.push(RETRY_NOTE);
+      let stampStore: ProviderStore | null = null;
       try {
         const raw = new TextDecoder().decode(body);
+        // Store before roster, as the agent freezes (see syncSessionWorkspaceFresh).
+        stampStore = readProviderStore();
         const shell = readShell();
         route = eveSessionRoute(raw, shell);
         if (!route) {
@@ -221,7 +263,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const sessionId = suffix.split("/")[1] ?? "";
         if (sessionId) {
           try {
-            if (bot) syncSessionWorkspace(sessionId, bot);
+            if (bot) syncSessionWorkspace(sessionId, bot, stampStore ?? undefined);
             else removeSessionGrant(sessionId);
           } catch {
             return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
@@ -310,8 +352,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       }
       if (created) {
         try {
+          // Store before roster, as the agent freezes.
+          const store = readProviderStore();
           const bot = readShell().bots.find((item) => item.id === route?.threadId) ?? null;
-          if (bot) syncSessionWorkspace(created, bot);
+          if (bot) syncSessionWorkspace(created, bot, store);
           else removeSessionGrant(created);
         } catch {
           // The session exists upstream either way, so the body goes back. What
