@@ -663,6 +663,7 @@ const PLACE_VAR_EXEMPT: Record<string, string> = {
   UB_WORKSPACE_ROOT: "the bot's working root, checked against the protected daily dirs in stackProblems",
   UB_OWNER_PATH: "a PATH search list for child processes, not a place that is written",
   UB_INSTALL_DIR: "scripts/install.sh, the installer for the app bundle; never runs inside a stack",
+  UB_PAYLOAD_PROBE_DIR: "router/src/payload-probe.ts, a dump folder that the router itself refuses outside the dev stack",
   UB_FEED_URL: "scripts/release-mac.mjs, the public update feed baked into a release build",
 };
 

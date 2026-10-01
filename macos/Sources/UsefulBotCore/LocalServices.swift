@@ -709,7 +709,7 @@ public struct FoundationProcessRunner: ProcessRunner {
         // owner's real PATH for itself (see shared/user-path.ts), which is what
         // lets a bot run the CLIs this Mac has installed.
         process.environment = Self.environment(
-            base: Self.baseEnvironment(home: NSHomeDirectory(), inherited: ProcessInfo.processInfo.environment),
+            base: Self.baseEnvironment(home: NSHomeDirectory(), inherited: ProcessInfo.processInfo.environment, variant: .current),
             adding: command.environment
         )
         process.terminationHandler = { [registry, handle] finished in
@@ -881,15 +881,18 @@ public struct FoundationProcessRunner: ProcessRunner {
         return !data.isEmpty
     }
 
-    /// The short list a service (or setup) starts from.
-    static func baseEnvironment(home: String, inherited: [String: String]) -> [String: String] {
+    /// The short list a service (or setup) starts from. The dev variant alone
+    /// also passes `UB_PAYLOAD_PROBE_DIR` (router/src/payload-probe.ts); the
+    /// daily app never does, whatever it was launched with.
+    static func baseEnvironment(home: String, inherited: [String: String], variant: AppVariant = .daily) -> [String: String] {
         var env: [String: String] = [
             // Apple Silicon Homebrew lives under /opt/homebrew; without it a
             // Homebrew-node subtree cannot see its sibling tools.
             "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": home,
         ]
-        for name in ["SHELL", "USER", "LOGNAME", "LANG", "TZ"] {
+        let names = variant == .dev ? ["SHELL", "USER", "LOGNAME", "LANG", "TZ", "UB_PAYLOAD_PROBE_DIR"] : ["SHELL", "USER", "LOGNAME", "LANG", "TZ"]
+        for name in names {
             if let value = inherited[name], !value.isEmpty {
                 env[name] = value
             }

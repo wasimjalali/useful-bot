@@ -1,4 +1,5 @@
 import { RouterError } from "../errors.ts";
+import { dumpUpstreamBody } from "../payload-probe.ts";
 import { resetOf, usedLimitCode, usedLimitMessage, zaiResetOf } from "../retry-after.ts";
 
 /**
@@ -562,6 +563,7 @@ export async function postResponses(input: {
   fetchImpl?: typeof fetch;
 }): Promise<Response> {
   const outgoing = buildResponsesBody(input.body, { model: input.model, chatgpt: input.chatgpt });
+  dumpUpstreamBody("openai-responses", input.model, outgoing);
   const url = `${input.baseUrl.replace(/\/$/, "")}/responses`;
   const res = await (input.fetchImpl ?? fetch)(url, {
     method: "POST",
