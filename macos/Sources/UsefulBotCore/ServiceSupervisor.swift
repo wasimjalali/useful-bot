@@ -104,23 +104,41 @@ public struct ServiceSupervisor: Sendable {
     /// not foreign). Only ever a readiness question: nothing is signalled on
     /// the strength of it, the stop and recovery paths use `isOwnNodeProcess`.
     /// Dev keeps the strict rule: only its own repoPath. Daily adopts an actual
-    /// eve (its launcher or server child, matched by script path) that is not
-    /// running from the dev app's runtime, so the checkout build and the
-    /// release build (different repoPaths, same ports) can take over from each
-    /// other. Anything else on the port is foreign. The command line may carry
-    /// the parent's too (see `ownsProcess`).
+    /// eve (its launcher or server child) whose script sits under this app's
+    /// repoPath, the checkout or the release install root, so the checkout
+    /// build and the release build (different repoPaths, same ports) can take
+    /// over from each other. The root has to start a token and be followed by
+    /// `/node_modules/eve/...`, so `/x/steve/bin/eve.js` or another project's
+    /// `node_modules/eve` is foreign. Anything running from the dev app's
+    /// runtime is refused. The command line may carry the parent's too (see
+    /// `ownsProcess`).
     public func isOwnEveProcess(
-        _ commandLine: String, variant: AppVariant, repoPath: String, devRuntimeRoot: String
+        _ commandLine: String, variant: AppVariant, repoPath: String, devRuntimeRoot: String,
+        releaseRuntimeRoot: String = RuntimeInstall.installRoot(variant: .daily).path,
+        checkoutRoot: String = (ServerConfig.defaultRepoPath as NSString).expandingTildeInPath
     ) -> Bool {
         switch variant {
         case .dev:
             return isOwnNodeProcess(commandLine, repoPath: repoPath)
         case .daily:
-            let isEve = commandLine.contains("eve/bin/eve.js")
-                || commandLine.contains("eve/dist/src/cli/dev/local-server-child.js")
             let underDevRuntime = commandLine.contains(devRuntimeRoot + "/") || commandLine.hasSuffix(devRuntimeRoot)
-            return isEve && !underDevRuntime
+            guard !underDevRuntime else { return false }
+            let scripts = ["/node_modules/eve/bin/eve.js", "/node_modules/eve/dist/src/cli/dev/local-server-child.js"]
+            for root in [repoPath, releaseRuntimeRoot, checkoutRoot] where !root.isEmpty {
+                for script in scripts where Self.containsAtTokenStart(commandLine, root + script) { return true }
+            }
+            return false
         }
+    }
+
+    /// `needle` occurs in `text` with a space (or the start) right before it.
+    private static func containsAtTokenStart(_ text: String, _ needle: String) -> Bool {
+        var from = text.startIndex
+        while let range = text.range(of: needle, range: from..<text.endIndex) {
+            if range.lowerBound == text.startIndex || text[text.index(before: range.lowerBound)] == " " { return true }
+            from = range.upperBound
+        }
+        return false
     }
 }
 #endif

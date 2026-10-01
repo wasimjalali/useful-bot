@@ -34,7 +34,9 @@ import Testing
         let release = "/Users/x/Library/Application Support/Useful Bot/app"
         let checkout = "/Users/x/Desktop/useful-bot"
         func own(_ line: String, _ variant: AppVariant, _ repoPath: String) -> Bool {
-            supervisor.isOwnEveProcess(line, variant: variant, repoPath: repoPath, devRuntimeRoot: devRoot)
+            supervisor.isOwnEveProcess(
+                line, variant: variant, repoPath: repoPath, devRuntimeRoot: devRoot,
+                releaseRuntimeRoot: release, checkoutRoot: checkout)
         }
         let devEve = "node \(devRoot)/node_modules/eve/bin/eve.js dev"
         let releaseEve = "node \(release)/node_modules/eve/dist/src/cli/dev/local-server-child.js"
@@ -47,8 +49,18 @@ import Testing
         #expect(!own("python3 -m http.server 4321", .daily, release))
         #expect(!own(devEve, .daily, release))
         #expect(!own("node child.js \(devRoot)", .daily, checkout))
-        // A sibling folder that merely starts with the dev path is not the dev runtime.
-        #expect(own("node \(devRoot)-old/eve/bin/eve.js", .daily, release))
+        // Neither is it one of daily's roots: only the checkout, the release root and repoPath count.
+        #expect(!own("node \(devRoot)-old/node_modules/eve/bin/eve.js", .daily, release))
+        // The eve path needs a path boundary and has to sit under one of those roots.
+        #expect(!own("node /x/steve/bin/eve.js", .daily, release))
+        #expect(!own("node /Users/x/Desktop/other/node_modules/eve/bin/eve.js dev", .daily, release))
+        #expect(!own("node /Users/x/Desktop/other/node_modules/eve/dist/src/cli/dev/local-server-child.js", .daily, checkout))
+        #expect(!own("node /elsewhere\(checkout)/node_modules/eve/bin/eve.js", .daily, release))
+        #expect(!own("node \(checkout)-2/node_modules/eve/bin/eve.js", .daily, release))
+        // Parent argv carried after the child's still counts.
+        #expect(own("node child.js /bin/zsh \(checkoutEve)", .daily, release))
+        // A stored repoPath elsewhere is adopted too.
+        #expect(own("node /srv/ub/node_modules/eve/bin/eve.js", .daily, "/srv/ub"))
         // Dev stays strict: only its own repoPath.
         #expect(own(devEve, .dev, devRoot))
         #expect(!own(releaseEve, .dev, devRoot))

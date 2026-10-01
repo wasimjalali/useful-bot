@@ -217,10 +217,20 @@ public enum ChatInline {
         let tld = labels[labels.count - 1].lowercased()
         guard tlds.contains(tld) else { return false }
         // `Xcode.app/Contents/Developer` is a path inside an app bundle, not a site.
-        if tld == "app", candidate[hostEnd...].hasPrefix("/Contents") { return false }
+        // Case-insensitive and on a path boundary: `Foo.app/contents/x` is a bundle path,
+        // `usefulbuild.app/ContentsPage` is a site.
+        if tld == "app" {
+            let rest = candidate[hostEnd...].lowercased()
+            if rest.hasPrefix("/contents") {
+                let next = rest.dropFirst("/contents".count).first
+                if next == nil || "/?#".contains(next!) { return false }
+            }
+        }
         if hasPath { return true }
+        // `www.` is a site whatever the TLD (`www.orf.at`, `www.example.am`).
+        if labels[0].lowercased() == "www" { return true }
         if fileLikeTLDs.contains(tld) { return false }
-        return !ambiguousTLDs.contains(tld) || labels[0].lowercased() == "www"
+        return !ambiguousTLDs.contains(tld)
     }
 
     /// A word of this length or more is left as text (see `autolink`).

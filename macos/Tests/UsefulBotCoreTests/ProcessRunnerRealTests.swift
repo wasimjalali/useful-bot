@@ -130,5 +130,63 @@ import Testing
         #expect(Set(ProcessTable.descendants(of: 10, in: rows)) == [11, 12])
         #expect(ProcessTable.descendants(of: 20, in: rows).isEmpty)
     }
+
+    @Test func aDescendantThatIgnoresSigtermIsKilledAfterTheLauncherExits() async throws {
+        let marker = "\(Int.random(in: 100_000...999_999))"
+        // The launcher dies on SIGTERM; its child ignores it and is reparented.
+        let parent = try launcher(script: "# \(marker)\n(trap '' TERM; exec sleep \(marker)) & wait")
+        defer { if parent.isRunning { parent.terminate() } }
+        let runner = FoundationProcessRunner(strayMinAge: 0)
+        var childPid: pid_t?
+        _ = await waitUntil {
+            childPid = ProcessTable.read().first { $0.ppid == parent.processIdentifier && $0.args.hasSuffix("sleep \(marker)") }?.pid
+            return childPid != nil
+        }
+        let child = try #require(childPid)
+        defer { kill(child, SIGKILL) }
+        let matching: @Sendable (String) -> Bool = { $0.contains("/bin/sh") && $0.contains(marker) }
+        #expect(runner.strayServicePids(matching: matching) == [parent.processIdentifier])
+        runner.terminate(pids: [parent.processIdentifier], force: false)
+        #expect(await waitUntil { !parent.isRunning })
+        // The launcher is gone and nothing ever sends it SIGKILL, but the child is still up.
+        #expect(alive(child))
+        runner.killTermedSurvivors()
+        #expect(await waitUntil { !alive(child) })
+    }
+
+    @Test func aPidWhoseCommandLineChangedSinceTheScanIsNotSignalled() async throws {
+        let marker = "\(Int.random(in: 100_000...999_999))"
+        let stdin = Pipe()
+        let parent = Process()
+        parent.executableURL = URL(fileURLWithPath: "/bin/sh")
+        parent.arguments = ["-c", "# \(marker)\nread x; exec sleep \(marker)"]
+        parent.standardInput = stdin
+        try parent.run()
+        defer { if parent.isRunning { kill(parent.processIdentifier, SIGKILL) } }
+        let runner = FoundationProcessRunner(strayMinAge: 0)
+        let matching: @Sendable (String) -> Bool = { $0.contains("/bin/sh") && $0.contains(marker) }
+        #expect(runner.strayServicePids(matching: matching) == [parent.processIdentifier])
+        // The same pid now runs something else, as a reused pid would.
+        stdin.fileHandleForWriting.write(Data("go\n".utf8))
+        #expect(await waitUntil { ProcessTable.read().first { $0.pid == parent.processIdentifier }?.args.hasSuffix("sleep \(marker)") == true })
+        runner.terminate(pids: [parent.processIdentifier], force: false)
+        runner.terminate(pids: [parent.processIdentifier], force: true)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(parent.isRunning)
+    }
+
+    @Test func aTreeIsOrderedDeepestFirst() {
+        let rows = ProcessTable.parse("""
+          10     1       00:10 launcher
+          11    10       00:09 child
+          12    11       00:08 deep
+          13    10       00:08 sibling
+          20     1       00:07 other
+        """)
+        let order = ProcessTable.treeDeepestFirst(of: 10, in: rows).map(\.pid)
+        #expect(order.first == 12 && order.last == 10)
+        #expect(Set(order) == [10, 11, 12, 13])
+        #expect(order.firstIndex(of: 12)! < order.firstIndex(of: 11)!)
+    }
 }
 #endif

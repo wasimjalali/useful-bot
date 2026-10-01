@@ -44,11 +44,15 @@ if [ "$VARIANT" = dev ]; then
   fi
 fi
 
+# UB_GUARD_ONLY exists for macos/test-build-guard.sh only: exit 0 right after the
+# guard above, before anything is built or locked.
+if [ -n "${UB_GUARD_ONLY:-}" ]; then exit 0; fi
+
 # One build at a time: two runs (daily and dev, or two of either) would race on
 # web/.next and macos/.build. The lock is a file holding the owner's pid. It is
 # written to a temp file first and hard-linked into place, so it appears whole
 # or not at all and `ln` fails if it exists. A lock whose pid is gone is moved
-# aside (only one racer's mv can win) and taken again; a pid-less lock younger
+# aside under the takeover mutex (re-checked there) and taken again; a pid-less lock younger
 # than 10 s is treated as held, and ownership is re-read after taking it.
 LOCK=".build/build-app.lock"
 
@@ -81,13 +85,30 @@ take_build_lock() {
       echo "macos/$LOCK is held by a run that has not written its pid yet. Wait a few seconds and try again." >&2
       return 1
     fi
-    if [ "$_tries" -ge 5 ]; then
+    if [ "$_tries" -ge 20 ]; then
       rm -f "$_mine"
       echo "Could not take macos/$LOCK" >&2
       return 1
     fi
-    # Stale: move it aside so exactly one racer clears it, then try again.
-    if [ -e "$LOCK" ] && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then rm -rf "$LOCK.stale.$$"; fi
+    # Stale. A bare mv of the lock could move a fresh lock a faster racer just
+    # took, so clearing goes through a mutex (mkdir is atomic): one racer at a
+    # time re-reads the holder and removes the lock only if it is still the
+    # stale one judged above. Nobody else removes the lock, and a new one
+    # cannot appear while the stale one is in place (ln fails on an existing
+    # name), so what is removed is exactly what was checked.
+    if mkdir "$LOCK.takeover" 2>/dev/null; then
+      echo "$$" > "$LOCK.takeover/pid"
+      _now="$(lock_holder)"
+      if [ -e "$LOCK" ] && [ "$_now" = "$HOLDER" ] && { [ -z "$_now" ] || ! kill -0 "$_now" 2>/dev/null; }; then
+        if mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then rm -rf "$LOCK.stale.$$"; fi
+      fi
+      rm -rf "$LOCK.takeover"
+    else
+      # Another racer is clearing it; a mutex left by a dead run is cleared.
+      _taker="$(cat "$LOCK.takeover/pid" 2>/dev/null || true)"
+      if [ -n "$_taker" ] && ! kill -0 "$_taker" 2>/dev/null; then rm -rf "$LOCK.takeover"; fi
+      sleep 0.1
+    fi
   done
   rm -f "$_mine"
   if [ "$(lock_holder)" != "$$" ]; then

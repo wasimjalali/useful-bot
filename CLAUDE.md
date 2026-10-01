@@ -52,11 +52,12 @@ runs its services from a copy under `~/Library/Application Support/Useful Bot De
 the checkout (an ad hoc signed bundle gets a fresh Desktop-folder privacy prompt on every rebuild,
 and a service reading the checkout blocks on it). Inside the dev app, a check that sends
 a message still goes to "Test Bot" (create it if missing). Never use `~/.useful-bot-dev`: it
-holds older owner data. Releasing the daily app is unchanged: `npm run build:app` then
-`npm run install:app` (not a bare `ditto`), and only when the owner asks for it. The installed
-daily app should be a release build (one with a runtime payload): a checkout-run daily app (a
-plain `build:app` + `install:app`) makes `build:dev-app` refuse by design, because the dev build
-would swap that app's web build underneath it.
+holds older owner data. The daily app is a release build with a runtime payload: it comes from
+`npm run release:mac` (installed from the DMG or by Sparkle), and only when the owner asks for it.
+A plain `npm run build:app` then `npm run install:app` installs a checkout-run daily app instead
+(no runtime payload, services read this checkout); while one is installed, `build:dev-app` refuses
+by design, because the dev build would swap that app's web build underneath it. Use that path only
+when the owner asks for it, and reinstall a release before the next dev build.
 
 **Logo and icon gotcha.** Launch Services keeps a record for every bundle with the id
 `ai.useful.bot` it has ever seen: `macos/dist`, agent scratch copies, old "before" builds. At

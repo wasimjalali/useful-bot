@@ -87,7 +87,20 @@ import Testing
             #expect(links(text).isEmpty, "\(text)")
             #expect(links("run \(text) now").isEmpty, "\(text)")
         }
-        #expect(links("see usefulbuild.app/contents").map(\.href) == ["https://usefulbuild.app/contents"])
+        // The Contents rule ignores case and needs a path boundary.
+        for text in ["Foo.app/contents/x", "Foo.app/CONTENTS", "Foo.app/contents?x"] {
+            #expect(links(text).isEmpty, "\(text)")
+        }
+        #expect(links("see usefulbuild.app/ContentsPage").map(\.href) == ["https://usefulbuild.app/ContentsPage"])
+        #expect(links("see usefulbuild.app/contents-of").map(\.href) == ["https://usefulbuild.app/contents-of"])
+    }
+
+    @Test func wwwLinksEvenOnAFileLikeTld() {
+        #expect(links("see www.orf.at").map(\.href) == ["https://www.orf.at"])
+        #expect(links("see www.example.am ok").map(\.href) == ["https://www.example.am"])
+        #expect(links("see WWW.example.tf").map(\.href) == ["https://WWW.example.tf"])
+        // Without www. a file-like name is still a file.
+        #expect(links("see main.tf").isEmpty)
     }
 
     @Test func ambiguousTldsLinkWithAPathOrWww() {

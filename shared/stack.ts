@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -319,6 +319,64 @@ function isLoopbackHost(rawHost: string): boolean {
   return false;
 }
 
+const STATE_WALK_MAX_PROBLEMS = 5;
+const STATE_WALK_MAX_ENTRIES = 50_000;
+
+/**
+ * Threat model: this is a startup check against a dev state folder that was
+ * wired back to daily state (by a stray link, a copied folder, a script). It
+ * is not a defence against a process swapping files in while services run:
+ * anything that can write there at runtime already has the owner's file
+ * access and could read daily state directly, and bots in either stack are
+ * kernel-denied every .useful-bot* folder.
+ *
+ * Every symlink or hard link inside the dev state folder is refused,
+ * regardless of target: a link in there (config.json, memory/x, ...) can lead
+ * a dev service back into daily data. Walks with lstat and never follows a
+ * link. A missing root is fine; an unreadable folder or a walk past the entry
+ * cap is itself a problem.
+ */
+export function stateRootLinkProblems(root: string, maxEntries: number = STATE_WALK_MAX_ENTRIES): string[] {
+  const problems: string[] = [];
+  const stack = [root];
+  let seen = 0;
+  while (stack.length > 0 && problems.length < STATE_WALK_MAX_PROBLEMS) {
+    const dir = stack.pop() as string;
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && dir === root) return problems;
+      problems.push(`${dir} could not be checked for links (${(error as Error).message})`);
+      continue;
+    }
+    for (const name of names) {
+      if (++seen > maxEntries) {
+        problems.push(`the dev state folder has too many entries to check for links (over ${maxEntries})`);
+        return problems;
+      }
+      const path = join(dir, name);
+      try {
+        const stat = lstatSync(path);
+        if (stat.isSymbolicLink()) {
+          problems.push(`${path} is a symlink; the dev state folder may not contain links`);
+          if (problems.length >= STATE_WALK_MAX_PROBLEMS) return problems;
+        } else if (stat.isDirectory()) {
+          stack.push(path);
+        } else if (stat.nlink > 1) {
+          // A hard link is a second name for a file that may live in daily state.
+          problems.push(`${path} is a hard link; the dev state folder may not contain links`);
+          if (problems.length >= STATE_WALK_MAX_PROBLEMS) return problems;
+        }
+      } catch (error) {
+        problems.push(`${path} could not be checked for links (${(error as Error).message})`);
+        if (problems.length >= STATE_WALK_MAX_PROBLEMS) return problems;
+      }
+    }
+  }
+  return problems;
+}
+
 /**
  * Everything wrong with this environment for the stack it names. Empty means
  * fine. A daily environment is checked only for malformed values it chose to
@@ -387,6 +445,7 @@ export function stackProblems(env: Env = process.env): string[] {
           problems.push(`UB_STATE_ROOT's folder name "${name}" must be lowercase .useful-bot-<words joined by hyphens>, such as .useful-bot-dev-app, so the bots' deny-lists cover it`);
         }
       }
+      problems.push(...stateRootLinkProblems(root));
     }
   }
 

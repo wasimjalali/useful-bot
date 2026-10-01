@@ -635,7 +635,7 @@ final class AppModel: ObservableObject {
         // never adopted, started over or stopped: say so and stay out of it.
         if outcome == .foreignStack {
             var message = "A service on this app's ports belongs to another Useful Bot stack, so \(AppVariant.current.displayName) won't use or stop it. Quit the other stack and try again."
-            if let detail = services.foreignListenerDetail(config: config) { message += " " + detail + "." }
+            if let detail = await services.foreignListenerDetail(config: config) { message += " " + detail + "." }
             startupError = message
             phase = .unavailable
             return

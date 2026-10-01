@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, linkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
@@ -54,6 +54,7 @@ import {
   routerPort,
   stackName,
   stackProblems,
+  stateRootLinkProblems,
   STORE_OVERRIDE_VARS,
   stateRoot,
   webOrigin,
@@ -410,6 +411,69 @@ test("a dev state root that is, sits under, contains or links to daily data is r
   }
 });
 
+test("on dev, any symlink inside the state root is refused, wherever it points", () => {
+  const home = homeWithDailyData();
+  try {
+    const root = join(home, ".useful-bot-dev-app");
+    // Clean: regular files and nested folders pass, as does a root that does not exist yet.
+    assert.deepEqual(problemsFor(home, {}), []);
+    mkdirSync(join(root, "memory", "deep"), { recursive: true });
+    mkdirSync(join(root, "router"), { recursive: true });
+    writeFileSync(join(root, "providers.json"), "{}");
+    writeFileSync(join(root, "memory", "deep", "note.md"), "x");
+    writeFileSync(join(root, "router", "usage.sqlite"), "");
+    assert.deepEqual(problemsFor(home, {}), []);
+    // config.json linked to a daily config, with UB_ROUTER_CONFIG spelled exactly as allowed.
+    writeFileSync(join(home, ".useful-bot", "config.json"), "{}");
+    symlinkSync(join(home, ".useful-bot", "config.json"), join(root, "config.json"));
+    const withConfig = problemsFor(home, { UB_ROUTER_CONFIG: join(root, "config.json") });
+    assert.ok(withConfig.some((p) => p.includes(join(root, "config.json")) && /is a symlink/.test(p)), withConfig.join("; "));
+    rmSync(join(root, "config.json"));
+    // config.json hard-linked to the daily config is a regular file, but still a second name for it.
+    linkSync(join(home, ".useful-bot", "config.json"), join(root, "config.json"));
+    const hard = problemsFor(home, { UB_ROUTER_CONFIG: join(root, "config.json") });
+    assert.ok(hard.some((p) => p.includes(join(root, "config.json")) && /is a hard link/.test(p)), hard.join("; "));
+    rmSync(join(root, "config.json"));
+    // A nested link to daily memory.
+    symlinkSync(join(home, ".useful-bot"), join(root, "memory", "x"));
+    const nested = problemsFor(home, {});
+    assert.ok(nested.some((p) => p.includes(join(root, "memory", "x")) && /is a symlink/.test(p)), nested.join("; "));
+    unlinkSync(join(root, "memory", "x"));
+    // A link that stays inside the dev root is refused too: no links at all.
+    symlinkSync(join(root, "providers.json"), join(root, "providers-copy.json"));
+    const inside = problemsFor(home, {});
+    assert.ok(inside.some((p) => p.includes("providers-copy.json") && /is a symlink/.test(p)), inside.join("; "));
+    // A dangling link counts as well.
+    symlinkSync(join(home, "nowhere"), join(root, "router", "dangling"));
+    assert.ok(problemsFor(home, {}).some((p) => p.includes("dangling")));
+    // assertStack fails on it.
+    assert.throws(() => withEnv({ ...devEnv(home) }, () => assertStack()), /symlink/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("on dev, the state root walk reports at most 5 links and fails closed past its entry cap", () => {
+  const home = realpathSync(tempHome());
+  try {
+    const root = join(home, ".useful-bot-dev-app");
+    mkdirSync(root);
+    for (let i = 0; i < 8; i++) symlinkSync(home, join(root, `l${i}`));
+    const many = stateRootLinkProblems(root);
+    assert.equal(many.filter((p) => /is a symlink/.test(p)).length, 5, many.join("; "));
+    // Cap: 30 plain files with a limit of 10 is a problem, never a pass.
+    const big = join(home, ".useful-bot-dev-big");
+    mkdirSync(big);
+    for (let i = 0; i < 30; i++) writeFileSync(join(big, `f${i}`), "");
+    const capped = stateRootLinkProblems(big, 10);
+    assert.ok(capped.some((p) => /too many entries|could not be checked/.test(p)), capped.join("; "));
+    assert.deepEqual(stateRootLinkProblems(big, 1000), []);
+    assert.deepEqual(stateRootLinkProblems(join(home, "missing")), []);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("a protected daily folder that cannot be resolved is a problem, never a skipped check", () => {
   const home = realpathSync(tempHome());
   try {
@@ -545,7 +609,8 @@ test("on dev, a '..' segment in the state root, media folder or workspace root i
       const problems = problemsFor(home, { [name]: value });
       assert.ok(problems.some((p) => p.includes(name) && p.includes("..")), `${name}: ${value}`);
     }
-    assert.deepEqual(problemsFor(home, {}), []);
+    // The planted bridge itself is now refused as a link, and nothing else is wrong.
+    assert.deepEqual(problemsFor(home, {}).filter((p) => !/bridge is a symlink/.test(p)), []);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -71,6 +71,23 @@ private final class LineRunner: ProcessRunner, @unchecked Sendable {
     }
 }
 
+/// Reports a foreign listener the way the real runner does: its own command and
+/// its parent's apart, picked by the ownership rule it is handed.
+private final class ParentRunner: ProcessRunner, @unchecked Sendable {
+    var listening: [Int: [(pid: pid_t, command: String, parent: String?)]] = [:]
+    func start(_ command: ServiceCommand) {}
+    func portAccepting(_ port: Int) -> Bool { !(listening[port] ?? []).isEmpty }
+    func listeners(port: Int) -> [pid_t] { (listening[port] ?? []).map(\.pid) }
+    func stopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) {}
+    func forceStopOwnListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) {}
+    func foreignListeners(port: Int, owns: @escaping @Sendable (String) -> Bool) -> [(pid: pid_t, command: String, parent: String?)] {
+        (listening[port] ?? []).filter { !owns($0.command + " " + ($0.parent ?? "")) }
+    }
+    func hasForeignListener(port: Int, owns: @escaping @Sendable (String) -> Bool) -> Bool {
+        !foreignListeners(port: port, owns: owns).isEmpty
+    }
+}
+
 @Suite struct AppVariantServicesTests {
     private let devRoot = "/Users/x/Library/Application Support/Useful Bot Dev/app"
     private let releaseRoot = "/Users/x/Library/Application Support/Useful Bot/app"
@@ -80,7 +97,8 @@ private final class LineRunner: ProcessRunner, @unchecked Sendable {
         runner.listening[variant.evePort] = [(pid, line)]
         let probe = allHealthy(variant, stack: variant == .dev ? "dev" : nil)
         let services = LocalServices(
-            runner: runner, probe: probe, supervisor: nodeOK, startGraceSeconds: 0, devRuntimeRoot: devRoot
+            runner: runner, probe: probe, supervisor: nodeOK, startGraceSeconds: 0, devRuntimeRoot: devRoot,
+            releaseRuntimeRoot: releaseRoot, checkoutRoot: "/Users/x/Desktop/useful-bot"
         )
         return (services, runner, ServerConfig(repoPath: repoPath, port: variant == .dev ? 4420 : 4320, variant: variant))
     }
@@ -98,7 +116,7 @@ private final class LineRunner: ProcessRunner, @unchecked Sendable {
         let (services, runner, config) = eveStack(.daily, line: "python3 -m http.server 4321", repoPath: releaseRoot, pid: 7007)
         #expect(await services.ensure(config: config, timeoutSeconds: 0) == .foreignStack)
         #expect(runner.started == 0 && runner.signalled == 0)
-        #expect(services.foreignListenerDetail(config: config)?.contains("7007") == true)
+        #expect(await services.foreignListenerDetail(config: config)?.contains("7007") == true)
     }
 
     @Test func noStopPathEverTargetsAnEveTheStrictRuleDoesNotOwn() async {
@@ -113,7 +131,8 @@ private final class LineRunner: ProcessRunner, @unchecked Sendable {
             let probe = allHealthy(.daily, stack: nil)
             probe.set(AppVariant.daily.eveHealthURL, nil)
             let services = LocalServices(
-                runner: runner, probe: probe, supervisor: nodeOK, startGraceSeconds: 0, devRuntimeRoot: devRoot)
+                runner: runner, probe: probe, supervisor: nodeOK, startGraceSeconds: 0, devRuntimeRoot: devRoot,
+                releaseRuntimeRoot: releaseRoot, checkoutRoot: "/Users/x/Desktop/useful-bot")
             _ = await services.ensure(
                 config: ServerConfig(repoPath: releaseRoot, port: 4320, variant: .daily), timeoutSeconds: 0)
             #expect(!runner.stopVerdicts.isEmpty)
@@ -126,9 +145,20 @@ private final class LineRunner: ProcessRunner, @unchecked Sendable {
             .daily, line: "node \(devRoot)/node_modules/eve/bin/eve.js dev", repoPath: releaseRoot, pid: 5150)
         #expect(await services.ensure(config: config, timeoutSeconds: 0) == .foreignStack)
         #expect(runner.started == 0 && runner.signalled == 0)
-        let detail = services.foreignListenerDetail(config: config)
+        let detail = await services.foreignListenerDetail(config: config)
         #expect(detail?.contains("5150") == true)
         #expect(detail?.contains(devRoot) == true)
+    }
+
+    @Test func foreignDetailShowsChildAndParentAsTwoParts() async {
+        let runner = ParentRunner()
+        runner.listening[AppVariant.daily.evePort] = [(pid: 9001, command: "python3 -m http.server", parent: "/bin/zsh -l")]
+        let services = LocalServices(
+            runner: runner, probe: allHealthy(.daily, stack: nil), supervisor: nodeOK, startGraceSeconds: 0,
+            devRuntimeRoot: devRoot, releaseRuntimeRoot: releaseRoot, checkoutRoot: "/Users/x/Desktop/useful-bot")
+        let config = ServerConfig(repoPath: releaseRoot, port: 4320, variant: .daily)
+        let detail = await services.foreignListenerDetail(config: config)
+        #expect(detail?.hasSuffix("pid 9001: python3 -m http.server (parent: /bin/zsh -l)") == true)
     }
 
     @Test func devKeepsStrictEveOwnership() async {
@@ -136,12 +166,12 @@ private final class LineRunner: ProcessRunner, @unchecked Sendable {
             .dev, line: "node \(releaseRoot)/node_modules/eve/bin/eve.js dev", repoPath: devRoot, pid: 6001)
         #expect(await services.ensure(config: config, timeoutSeconds: 0) == .foreignStack)
         #expect(runner.started == 0 && runner.signalled == 0)
-        let detail = services.foreignListenerDetail(config: config)
+        let detail = await services.foreignListenerDetail(config: config)
         #expect(detail?.contains("6001") == true)
         #expect(detail?.contains(releaseRoot) == true)
         let own = eveStack(.dev, line: "node \(devRoot)/node_modules/eve/bin/eve.js dev", repoPath: devRoot)
         #expect(await own.0.ensure(config: own.2, timeoutSeconds: 0) == .ready)
-        #expect(own.0.foreignListenerDetail(config: own.2) == nil)
+        #expect(await own.0.foreignListenerDetail(config: own.2) == nil)
     }
 
     private let devConfig = ServerConfig(repoPath: "/repo", port: 4420, variant: .dev)
