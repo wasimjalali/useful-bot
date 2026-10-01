@@ -1656,7 +1656,7 @@ final class AppModel: ObservableObject {
         pending = true
         // The turn runs on the model the chip shows now, whatever is picked
         // after this.
-        if let label = composerSelection.modelLabel(for: bot.id) { runningModelLabels[bot.id] = label }
+        if let label = composerSelection.modelLabel(for: bot.id), !label.isEmpty { runningModelLabels[bot.id] = label }
         // The local send owns the working row from here; a background flag
         // left over from the follower must not outlive it.
         backgroundWorking = false

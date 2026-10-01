@@ -15,6 +15,7 @@ import {
   updateProviderStore,
 } from "../shared/providers.ts";
 import {
+  botComposer,
   botSelection,
   encodeSelectionHeader,
   lastPick,
@@ -395,6 +396,32 @@ test("a routine and a handoff each run on their own bot's selection, not the las
     assert.equal(handoffGrants.length, 1);
     assert.deepEqual(handoffGrants[0]?.selection, selGo5);
     assert.equal(readHandoff(handoff.id)?.status, "delivered");
+  });
+});
+
+test("the chip names no model with nothing connected, and keeps a chosen model that is gone", async () => {
+  withWorld(() => {
+    const store = readProviderStore();
+    const none = { ...store, connections: {} };
+    // Never chose, nothing connected: the built-in default is not the owner's pick.
+    const unchosen = botComposer({ model: null }, none);
+    assert.equal(unchosen.modelLabel, "");
+    assert.equal(unchosen.modelId, "");
+    assert.equal(unchosen.available, false);
+    // Chose a model, its provider is gone: still named and unavailable.
+    const chosen: ModelSelection = { connectionId: GO, modelId: "glm-5.3-flash", effort: null, speed: "standard" };
+    const kept = botComposer({ model: chosen }, none);
+    assert.equal(kept.modelId, "glm-5.3-flash");
+    assert.notEqual(kept.modelLabel, "");
+    assert.equal(kept.available, false);
+    // A connected provider whose chosen model left its list: named, unavailable.
+    const gone: ModelSelection = { connectionId: GO, modelId: "glm-gone", effort: null, speed: "standard" };
+    const goneComposer = botComposer({ model: gone }, store);
+    assert.equal(goneComposer.modelId, "glm-gone");
+    assert.notEqual(goneComposer.modelLabel, "");
+    assert.equal(goneComposer.available, false);
+    // Connected, never chose: follows the last pick as before.
+    assert.equal(botComposer({ model: null }, store).modelId, botComposerState(store, botSelection({ model: null }, store)).modelId);
   });
 });
 

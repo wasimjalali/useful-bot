@@ -1,6 +1,7 @@
 import { isEffortId, isSpeedId, type EffortId, type SpeedId } from "./models.ts";
 import { parseConnectionId, providerMode } from "./provider-catalog.ts";
-import { effectiveDefault, type ProviderStore } from "./providers.ts";
+import { botComposerState, effectiveDefault, type ProviderStore } from "./providers.ts";
+import type { ComposerPublic } from "./models.ts";
 
 /**
  * What one bot runs on: the connection, the model and how hard it thinks.
@@ -134,4 +135,16 @@ export function lastPick(store: ProviderStore): ModelSelection {
 /** A bot's own selection, else the effective default (a bot that has not chosen follows it). */
 export function botSelection(bot: { model: ModelSelection | null }, store: ProviderStore): ModelSelection {
   return bot.model ?? lastPick(store);
+}
+
+/**
+ * The composer a bot's chip shows. A bot that never chose a model, with no
+ * provider connected at all, has no model to name: the built-in default would
+ * read as the owner's pick, so the label is blank (the chip says "Model") and
+ * it stays unavailable. A chosen model that is gone keeps its name.
+ */
+export function botComposer(bot: { model: ModelSelection | null }, store: ProviderStore): ComposerPublic {
+  const composer = botComposerState(store, botSelection(bot, store));
+  if (bot.model || composer.groups.length > 0) return composer;
+  return { ...composer, modelId: "", modelLabel: "" };
 }
