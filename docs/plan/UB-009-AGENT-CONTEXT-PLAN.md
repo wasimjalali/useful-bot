@@ -1,6 +1,6 @@
 # UB-009: agent instructions and per-bot context, final plan
 
-Status: **final, waiting for the owner's approval** (2026-10-01). Council and Fable 5.1 final check done.
+Status: **approved by the owner** (2026-10-01). Implementation in progress.
 
 Process and evidence: `docs/plan/UB-009-AGENT-CONTEXT-COUNCIL.md`, `docs/audit/UB-009-GENERALIST-PROMPT.md`,
 and `evals/results/2026-10-01-ub009-council/` (packet, round 1 from five seats, round 2 critiques,
@@ -169,14 +169,15 @@ The build is verified with screenshots of Useful Bot Dev, and a 30 fps recording
 - **Folder versus shell reach in "This turn" (Muse r2 16a):** the tool results already report real paths and the refusal says why; no extra line.
 - **"Several system messages" rationale for one resolver (Fable):** withdrawn. One resolver stays for one wait, one marker and a fixed order.
 
-## 11. Decisions for the owner
+## 11. Owner decisions (2026-10-01)
 
-- **P1, cards in code:** should Auto with a folder put up a card for package installs, paid-cloud create/deploy and `create_routine`? The prompt asks either way. The PR #62 balance says no.
-- **P2, Full access:** the new "Ask first" lets Full access do the listed actions without asking when the task calls for them, but never on the bot's own initiative. Is that right, or should Full access also ask first?
-- **G1:** may teammates post to groups (`post_to_group`)? Today the code allows it.
-- **F1:** a project-root `AGENTS.md`/`CLAUDE.md` is read by coding tools. Should a write to one show a card in Auto (Full runs)?
-- **S1:** reword the three starters that imply reading PDFs, screenshots on disk and spreadsheets, so they match what works.
-- **E1, em dashes:** the shared prompt keeps "No em dashes" for every user's bots (your house style). Keep it, or drop it as a personal rule?
+- **P1, cards in code:** yes, in Auto with a folder. A card is required for package installs (`npm`/`pnpm`/`yarn`/`bun add|install`, `pip`/`uv pip install`, `brew install`, `cargo install`, `gem install`, and `npx`/`uvx` running a package) and for paid-cloud create or deploy verbs. Routine creation stays a prompt rule (visible and pausable in Settings). Goes in PR A (`command-risk.ts`), with the eval cases.
+- **P2, Full access:** the bot may do the "ask first" actions when the owner's request calls for them, never on its own initiative (the text in `final/instructions.md`).
+- **G1:** teammates may post to group chats (`post_to_group` stays allowed for plain bots).
+- **F1:** writing `AGENTS.md`/`CLAUDE.md` in an attached project folder runs without a card in Auto.
+- **S1:** reword the three starters to match what the app can do.
+- **E1:** keep "No em dashes".
+- **UI:** the Settings mockup is approved: https://claude.ai/artifact/FJeB9XnxttLJWaxg8Vhipo
 - **Deferred items:** real routing of group mentions to the member; hiding teammate tool schemas (phase 2).
 
 ## 12. Final check
