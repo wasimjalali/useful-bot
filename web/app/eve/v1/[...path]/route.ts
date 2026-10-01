@@ -2,6 +2,7 @@ import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
   bindTurnBody,
+  turnRewriteFailure,
   eveGetAllowed,
   evePostAllowed,
   eveSessionRoute,
@@ -271,14 +272,17 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           : [];
         body = new TextEncoder().encode(rewriteEveTurnBody(raw, bot, route, members, notes));
         headers.set("content-type", "application/json");
-      } catch {
-        // A carry-over or a retry note that could not be folded in is refused
-        // here: forwarding the original body would relay those fields to eve
-        // and record a carry-over the new session does not hold.
-        if (notes.length > 0) {
-          return Response.json({ ok: false, error: "eve_message_invalid" }, { status: 400 });
-        }
-        /* keep the original body: a malformed turn must fail at eve, not here */
+      } catch (err) {
+        // Routing and rewriting fail closed. Forwarding the original body
+        // would open a session this proxy never resolved a route for, which
+        // would stay unbound, and would relay carry-over fields eve must not
+        // see. A bad message is the caller's 400; a store failure is a 503.
+        console.error("turn could not be routed", err instanceof Error ? err.message : err);
+        const failure = turnRewriteFailure(err);
+        return Response.json({ ok: false, error: failure.error }, { status: failure.status });
+      }
+      if (!route) {
+        return Response.json({ ok: false, error: "session_route_failed" }, { status: 503 });
       }
       // Outside the body-rewrite try on purpose. The tools that run during
       // this turn read the workspace grant for the session, so it has to be

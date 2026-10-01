@@ -9,9 +9,11 @@ import {
   normalizeMembers,
   orchestratorId,
   profileCardIsCurrent,
+  proposerMayConfirm,
   type ShellStore,
 } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
+import { callerOf } from "../agent/lib/permission.ts";
 import { bindSession } from "../shared/session-bindings.ts";
 import { upsertSessionGrant, type WorkspacePermission } from "../shared/workspace-store.ts";
 import { createRoutine, readRoutine } from "../shared/routines-store.ts";
@@ -456,5 +458,80 @@ test("memory tools keep each bot's notes to itself, even by a guessed id", async
       if (previous === undefined) delete process.env.UB_MEMORY_ROOT;
       else process.env.UB_MEMORY_ROOT = previous;
     }
+  });
+});
+
+// MARK: - Review round 1
+
+test("a caller is classified against the roster after the binding wait, not the snapshot read before it", async () => {
+  await withWorld(async (w) => {
+    // A snapshot taken before the roster changed: the default bot hidden, so
+    // by it nobody holds the Generalist role for this bot.
+    const stale: ShellStore = {
+      ...readShell(),
+      bots: readShell().bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, hidden: true } : bot)),
+    };
+    const who = await callerOf(stale, w.ctx.gen);
+    assert.equal(who.ok && who.caller.role, "orchestrator");
+  });
+});
+
+test("rail and clear authority is re-checked inside the write, after the card is settled", async () => {
+  await withWorld(async (w) => {
+    // An approval store that demotes the orchestrator at the moment the card
+    // is approved: the caller's authority is gone when the write runs.
+    class DemotingStore extends ApprovalStore {
+      armed = false;
+      override decide(...args: Parameters<ApprovalStore["decide"]>) {
+        if (this.armed) {
+          const shell = readShell();
+          writeShell({ ...shell, bots: shell.bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, hidden: true } : bot)) });
+        }
+        return super.decide(...args);
+      }
+    }
+    const demoting = new DemotingStore(() => 1_000);
+    setApprovalStore(demoting);
+
+    // removeSection: the orchestrator creates a section, then loses the role as it settles.
+    const made = await run<{ sectionId: string }>(railAction, { action: "createSection", name: "Temp" }, w.ctx.gen);
+    demoting.armed = true;
+    await assert.rejects(run(railAction, { action: "removeSection", sectionId: made.sectionId }, w.ctx.gen), /not_available_for_this_bot/);
+    assert.equal(readShell().sections.some((section) => section.id === made.sectionId), true);
+
+    // clear_history all: same, through the card.
+    writeShell({ ...readShell(), bots: readShell().bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, hidden: false } : bot)) });
+    demoting.armed = false;
+    const clearing = run(clearHistory, { all: true }, w.ctx.gen);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const card = demoting.listPending()[0];
+    assert.equal(card?.tool, "clear_history");
+    demoting.armed = true;
+    demoting.decide(card.id, "approve", card.actionSha256);
+    await assert.rejects(clearing, /not_available_for_this_bot/);
+  });
+});
+
+test("a card is applied only while the bot that raised it still holds the authority it needs", async () => {
+  await withWorld(async (w) => {
+    const shell = readShell();
+    const card = (kind: "createBot" | "createGroup" | "updateBotProfile", proposerId?: string) =>
+      ({ kind, proposerId, botId: w.alpha });
+    assert.equal(proposerMayConfirm(shell, card("createBot", DEFAULT_BOT_ID)), true);
+    assert.equal(proposerMayConfirm(shell, card("createGroup", DEFAULT_BOT_ID)), true);
+    // A plain bot cannot have a create applied, but can have its own profile edit applied.
+    assert.equal(proposerMayConfirm(shell, card("createBot", w.alpha)), false);
+    assert.equal(proposerMayConfirm(shell, card("updateBotProfile", w.alpha)), true);
+    assert.equal(proposerMayConfirm(shell, card("updateBotProfile", w.beta)), false);
+    // No proposer, or a proposer that is gone, is refused.
+    assert.equal(proposerMayConfirm(shell, card("createBot", undefined)), false);
+    assert.equal(proposerMayConfirm(shell, card("createBot", "ghost")), false);
+    // The orchestrator hidden: it no longer holds the role, so its card is stale.
+    const demoted: ShellStore = { ...shell, bots: shell.bots.map((bot) => (bot.id === DEFAULT_BOT_ID ? { ...bot, hidden: true } : bot)) };
+    assert.equal(proposerMayConfirm(demoted, card("createBot", DEFAULT_BOT_ID)), false);
+    // And the tools record who raised the card.
+    const proposed = await run<{ proposalId: string }>(proposeBot, { name: "Sidekick" }, w.ctx.gen);
+    assert.equal(readAgentStore().proposals.find((item) => item.id === proposed.proposalId)?.kind === "createBot"
+      && (readAgentStore().proposals.find((item) => item.id === proposed.proposalId) as { proposerId?: string }).proposerId, DEFAULT_BOT_ID);
   });
 });

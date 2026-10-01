@@ -73,6 +73,7 @@ export default defineTool({
       // lock. The card is bound to the revision it was raised against.
       proposal = createProfileProposalOnce({
         kind: "updateBotProfile",
+        proposerId: who.caller.id,
         botId: target.id,
         patch,
         baseRevision: target.profileRevision,

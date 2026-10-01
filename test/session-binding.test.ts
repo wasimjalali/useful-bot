@@ -12,7 +12,7 @@ import {
   resolveSessionBot,
   unbindBot,
 } from "../shared/session-bindings.ts";
-import { bindTurnBody } from "../shared/eve-proxy.ts";
+import { bindTurnBody, turnRewriteFailure } from "../shared/eve-proxy.ts";
 import { applyShellAction, DEFAULT_BOT_ID, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 import { upsertSessionGrant } from "../shared/workspace-store.ts";
@@ -251,6 +251,49 @@ test("the acting bot is the session's bound bot, not the selected one or the env
     assert.throws(() => activeBotId(shell, { session: { id: "sess-unbound" } }), BotContextMissingError);
     assert.throws(() => activeBotId(shell), /bot_context_missing/);
   });
+});
+
+test("a real session with no binding is refused even while the env pin names a bot", async () => {
+  await withWorld(({ beta }) => {
+    process.env.UB_ACTIVE_BOT_ID = beta;
+    const runner = process.env.NODE_TEST_CONTEXT;
+    // Outside the test runner, as in a running app: the pin never stands in
+    // for a missing binding. A call with no session at all still takes it.
+    delete process.env.NODE_TEST_CONTEXT;
+    try {
+      assert.throws(() => activeBotId(readShell(), { session: { id: "sess-unbound" } }), /bot_context_missing/);
+      assert.equal(activeBotId(readShell()), beta);
+    } finally {
+      if (runner !== undefined) process.env.NODE_TEST_CONTEXT = runner;
+    }
+  });
+});
+
+test("backfill binds neither bot when two point at the same unbound session", async () => {
+  await withWorld(({ alpha, beta }) => {
+    const shell = readShell();
+    const roster: ShellStore = {
+      ...shell,
+      bots: shell.bots.map((bot) => (bot.id === alpha || bot.id === beta ? { ...bot, sessionId: "sess-both" } : bot)),
+    };
+    assert.equal(backfillSessionOwners(roster), 0);
+    assert.equal(readSessionBot("sess-both"), null);
+    assert.equal(resolveSessionBot("sess-both", roster), null);
+    // An ordinary pointer next to it still binds.
+    const withOne: ShellStore = {
+      ...roster,
+      bots: roster.bots.map((bot) => (bot.id === alpha ? { ...bot, continuedSessionId: "sess-alpha-only" } : bot)),
+    };
+    assert.equal(backfillSessionOwners(withOne), 1);
+    assert.equal(readSessionBot("sess-alpha-only"), alpha);
+    assert.equal(readSessionBot("sess-both"), null);
+  });
+});
+
+test("a routing or store failure on a create is a controlled refusal, never a forwarded body", () => {
+  assert.deepEqual(turnRewriteFailure(new Error("eve_message")), { status: 400, error: "eve_message_invalid" });
+  assert.deepEqual(turnRewriteFailure(new Error("workspace_locked")), { status: 503, error: "session_route_failed" });
+  assert.deepEqual(turnRewriteFailure("boom"), { status: 503, error: "session_route_failed" });
 });
 
 test("a child session is unbound by design and refuses even when its id is bound", async () => {

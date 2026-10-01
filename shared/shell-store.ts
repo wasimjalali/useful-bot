@@ -675,6 +675,23 @@ export function profileCardIsCurrent(bot: Pick<ShellBot, "profileRevision"> | un
 }
 
 /**
+ * Whether the bot that raised a card may still have it applied: it must still
+ * exist and still hold the authority the proposal needs. Creating a bot or a
+ * group is the orchestrator's; a profile edit is the orchestrator's or the
+ * bot's own. A card with no recorded proposer is refused.
+ */
+export function proposerMayConfirm(
+  store: Pick<ShellStore, "bots">,
+  card: { kind: "createBot" | "createGroup" | "updateBotProfile"; proposerId?: string; botId?: string },
+): boolean {
+  const proposer = card.proposerId ? store.bots.find((bot) => bot.id === card.proposerId) : undefined;
+  if (!proposer) return false;
+  const orchestrator = proposer.kind === "bot" && proposer.id === orchestratorId(store);
+  if (card.kind === "updateBotProfile") return orchestrator || proposer.id === card.botId;
+  return orchestrator;
+}
+
+/**
  * The bot with orchestrator authority: the default bot while it is present and
  * visible, else the first visible 1:1 bot (the same rule the first-run flow
  * lands on). Null only when no visible 1:1 bot exists. Every authority check

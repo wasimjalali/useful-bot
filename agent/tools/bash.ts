@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
-import { commandRisk, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
+import { commandRisk, needsPathWrite, readOnlyRisk, wipeRisk } from "../lib/command-risk.ts";
 import { approvedCommand, confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
 import { credentialPathsFor } from "../lib/cli-registry.ts";
 import { runCommand } from "../lib/run-command.ts";
@@ -57,6 +57,15 @@ function blockedReason(command: string, scoped: boolean): string | null {
   // and both runtime install folders (Library/Application Support/Useful Bot[ Dev]).
   if (mentionsAppState(command)) return `command references ${APP_STATE_DIR} or the app's install folder`;
   return null;
+}
+
+/** The path a "Operation not permitted" line names, as a hint the model can pass on. */
+function protectedPathHint(stderr: string): { hint: string } | Record<string, never> {
+  const match = /(?:^|: )([^:\n]+): Operation not permitted/m.exec(stderr);
+  if (!match) return {};
+  return {
+    hint: `The write guard refused "${match[1].trim()}": it is config a tool runs, or a program folder on the PATH, so no bot can change it. Tell the owner they can run that step in Terminal themselves.`,
+  };
 }
 
 export default defineTool({
@@ -181,7 +190,9 @@ export default defineTool({
       let args: string[];
       if (askOwner) {
         try {
-          args = approvedCommand(input.command);
+          // Only a single, plain global tool install the owner approved may
+          // write the PATH directories; every other approved line keeps the denies.
+          args = approvedCommand(input.command, { allowToolInstall: needsPathWrite(input.command) });
         } catch (error) {
           return {
             status: "blocked",
@@ -243,6 +254,9 @@ export default defineTool({
         // Named, so the model reads "this ran out of time" instead of
         // guessing at exit 124 and retrying the same line unchanged.
         ...(run.timedOut ? { timedOut: true, timeoutMs } : {}),
+        // The sandbox refused a write the owner approved the line for: name the
+        // path, so the model does not retry and the owner knows what to do.
+        ...(askOwner && run.exitCode !== 0 ? protectedPathHint(run.stderr) : {}),
       };
     });
   },

@@ -1,7 +1,7 @@
 import { resolve, relative, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { lstatSync, realpathSync } from "node:fs";
-import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { FORBIDDEN_PATH_SUBSTRINGS, foldPath } from "../../shared/policy.ts";
 import { isForbiddenChildSegment, isGrantableRootPath } from "../../shared/shell-store.ts";
 import { isRuntimeInstallPath } from "../../shared/stack.ts";
 import {
@@ -129,9 +129,9 @@ export function resolveWorkspacePath(inputPath: string, root: string = workspace
   // owner picked (or configured) by name, so a project that happens to live in
   // a path containing one of these words stays reachable; anything inside it
   // — a `.env`, a `.git/config`, a `secrets/` directory — is still refused.
-  const loweredRel = rel.toLowerCase();
+  const loweredRel = foldPath(rel);
   for (const part of FORBIDDEN_PATH_SUBSTRINGS) {
-    if (loweredRel.includes(part.toLowerCase())) {
+    if (loweredRel.includes(foldPath(part))) {
       throw new Error("path_forbidden");
     }
   }

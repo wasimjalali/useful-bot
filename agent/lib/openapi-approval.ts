@@ -1,4 +1,5 @@
-import { findConnectionById, type ConnectionEntry } from "../../shared/connections-store.ts";
+import { bearerFromKeychain, oauthToken } from "../../shared/connection-auth.ts";
+import { findConnectionById, isAuthHeaderName, type ConnectionEntry } from "../../shared/connections-store.ts";
 import type { WorkspacePermission } from "../../shared/workspace-store.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending, type ApprovalStore } from "./approvals.ts";
 import { sessionPermission } from "./permission.ts";
@@ -18,8 +19,8 @@ import { getApprovalStore } from "./write.ts";
  * session, so nothing escapes: every error becomes a denial.
  */
 
-/** Router `REQUEST_TOTAL_MS` is 180 s; stay under it. */
-export const OPENAPI_APPROVAL_WAIT_MS = 150_000;
+/** Router `REQUEST_TOTAL_MS` is 180 s and counts the model's own generation too; 120 s leaves room for it. */
+export const OPENAPI_APPROVAL_WAIT_MS = 120_000;
 /** The card shows every argument the hash binds, so a call too long to show is refused. */
 const CARD_ARGS_MAX = 4000;
 
@@ -55,7 +56,7 @@ export function openApiApproval(entry: ConnectionEntry, overrides: Partial<OpenA
     try {
       const permission = deps.permission(ctx);
       if (permission === "read_only") {
-        return denied("Read only: this changes things in another app. It needs Auto or Full access. Tell the owner to switch the permission.");
+        return denied("Read only: this needs Auto or Full access. Tell the owner to switch the permission.");
       }
       if (permission === "full_access") return { type: "approved" };
 
@@ -91,7 +92,7 @@ export function openApiApproval(entry: ConnectionEntry, overrides: Partial<OpenA
           // Retire the card, so an owner who answers late is not left holding
           // one that does nothing. Best effort: the record expires on its own.
           try { approvals.decide(rec.id, "deny", hash); } catch { /* already decided or expired */ }
-          return denied("The owner did not answer in time (150 seconds). Ask them, then try again.");
+          return denied(`The owner did not answer in time (${Math.round(deps.waitMs / 1000)} seconds). Ask them, then try again.`);
         }
         throw error;
       }
@@ -125,4 +126,22 @@ export function openApiGate(entry: ConnectionEntry) {
     approval: openApiApproval(entry),
     ...(entry.toolsAllow ? { operations: { allow: entry.toolsAllow } } : {}),
   };
+}
+
+/**
+ * Everything `defineOpenAPIConnection` gets for one entry, whatever its auth
+ * kind. The gate is spread into every branch here, once, so a new auth kind
+ * cannot be added without it (the bearer branch missed it in the first cut).
+ */
+export function openApiOptions(entry: ConnectionEntry) {
+  const base = { spec: entry.url, description: entry.description, ...openApiGate(entry) };
+  if (entry.authKind === "none") return base;
+  if (entry.authKind === "apiKey") {
+    const header = isAuthHeaderName(entry.authHeader) ? entry.authHeader : "X-Api-Key";
+    return { ...base, headers: { [header]: async () => (await bearerFromKeychain(entry.id)).token } };
+  }
+  if (entry.authKind === "oauth") {
+    return { ...base, instanceKey: entry.id, auth: { getToken: () => oauthToken(entry) } };
+  }
+  return { ...base, instanceKey: entry.id, auth: { getToken: () => bearerFromKeychain(entry.id) } };
 }

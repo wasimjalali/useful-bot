@@ -5,14 +5,13 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
-  rmdirSync,
   rmSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { acquireDirLock } from "../../shared/dir-lock.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { statePath } from "../../shared/stack.ts";
 
@@ -67,30 +66,18 @@ const BOT_TAG_PREFIX = "bot:";
 /** Search and list return previews this long; `read` returns the whole note. */
 const PREVIEW_CHARS = 1024;
 const NOTE_ID_PATTERN = /^[A-Za-z0-9-]{1,80}$/;
-const LOCK_TIMEOUT_MS = 5000;
+// Long enough to wait out a first-open migration of a big store.
+const LOCK_TIMEOUT_MS = 30_000;
 /**
- * A crashed holder must be reclaimable well before the acquire deadline, or
- * every caller blocks for the difference and then throws. Stale stays under the
- * timeout so a reclaim plus a retry still fits inside it.
+ * Only a lock whose owner file never appeared is aged out by this; a lock with
+ * an owner is reclaimed when its holder pid is dead, never by a timer.
  */
 const LOCK_STALE_MS = 2000;
-const SLEEP_SIGNAL = new Int32Array(new SharedArrayBuffer(4));
 
 /** Note ids are file names; anything else is a path traversal or a bad key. */
 function assertNoteId(id: string): void {
   if (!NOTE_ID_PATTERN.test(id)) {
     throw new Error("memory_id_invalid");
-  }
-}
-
-function sleep(ms: number): void {
-  try {
-    Atomics.wait(SLEEP_SIGNAL, 0, 0, ms);
-  } catch {
-    const until = Date.now() + ms;
-    while (Date.now() < until) {
-      /* fallback for runtimes without Atomics.wait */
-    }
   }
 }
 
@@ -177,6 +164,16 @@ function parseNote(raw: string): { meta: NoteMeta; body: string; legacy: boolean
   return { meta, body, legacy };
 }
 
+/** The note file's text, or null when it vanished; any other failure throws. */
+function readNoteFile(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
+
 function serializeNote(meta: NoteMeta, body: string): string {
   return `---\n${JSON.stringify(meta)}\n---\n${body}`;
 }
@@ -199,6 +196,8 @@ export class MemoryStore {
   private readonly db: DatabaseSync;
   private readonly dirtyPath: string;
   private skippedRows = 0;
+  /** Note files the last migration or rebuild could not parse, by name. */
+  migrationRejected: string[] = [];
 
   constructor(root: string = memoryRoot()) {
     this.root = root;
@@ -256,20 +255,30 @@ export class MemoryStore {
       for (const name of readdirSync(this.notesDir)) {
         if (!name.endsWith(".md")) continue;
         const path = join(this.notesDir, name);
+        // An operational failure (a read, a rename) aborts the migration
+        // before it is marked done, so the next open retries. Only a note
+        // that is itself malformed is skipped, and the rebuild reports it.
+        const raw = readNoteFile(path);
+        if (raw === null) continue;
+        let note: ReturnType<typeof parseNote>;
         try {
-          const { meta, body, legacy } = parseNote(readFileSync(path, "utf8"));
-          if (!legacy || !NOTE_ID_PATTERN.test(meta.id)) continue;
-          const tmp = join(this.notesDir, `.${meta.id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
-          writeFileSync(tmp, serializeNote(meta, body), { encoding: "utf8", mode: 0o600, flag: "wx" });
-          renameSync(tmp, path);
+          note = parseNote(raw);
         } catch {
-          // A file this build cannot parse is rejected by the rebuild below,
-          // the same way a rebuild has always treated it.
+          continue;
         }
+        const { meta, body, legacy } = note;
+        if (!legacy || !NOTE_ID_PATTERN.test(meta.id)) continue;
+        const tmp = join(this.notesDir, `.${meta.id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+        writeFileSync(tmp, serializeNote(meta, body), { encoding: "utf8", mode: 0o600, flag: "wx" });
+        renameSync(tmp, path);
       }
       this.db.exec("DROP TABLE IF EXISTS notes; DROP TABLE IF EXISTS notes_fts;");
       this.createTables();
-      this.rebuildRows();
+      const rebuilt = this.rebuildRows();
+      this.migrationRejected = rebuilt.rejectedFiles;
+      if (rebuilt.rejectedFiles.length > 0) {
+        console.warn(`[useful-bot] memory migration skipped ${rebuilt.rejectedFiles.length} malformed note file(s): ${rebuilt.rejectedFiles.join(", ")}`);
+      }
       this.db.exec(`PRAGMA user_version = ${INDEX_SCHEMA_VERSION}`);
     } finally {
       release();
@@ -326,29 +335,17 @@ export class MemoryStore {
   }
 
   private acquire(): () => void {
-    const lock = join(this.root, "index.lock");
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    let held = false;
-    while (!held) {
-      try {
-        mkdirSync(lock, { mode: 0o700 });
-        held = true;
-      } catch {
-        try {
-          if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
-        } catch { /* lock vanished; retry */ }
-        if (Date.now() > deadline) break;
-        sleep(15);
-      }
-    }
-    if (!held) throw new Error("memory_store_locked");
-    return () => {
-      try { rmdirSync(lock); } catch { /* ignore */ }
-    };
+    // Owned lock: a live holder (a long migration, say) is never robbed by a
+    // timer; only a dead holder's lock is reclaimed.
+    return acquireDirLock(join(this.root, "index.lock"), {
+      timeoutMs: LOCK_TIMEOUT_MS,
+      staleMs: LOCK_STALE_MS,
+      errorCode: "memory_store_locked",
+    });
   }
 
-  rebuildIndex(): { indexed: number; rejected: number } {
+  rebuildIndex(): { indexed: number; rejected: number; rejectedFiles: string[] } {
     const release = this.acquire();
     try {
       return this.rebuildRows();
@@ -357,31 +354,38 @@ export class MemoryStore {
     }
   }
 
-  /** The rebuild itself; the caller holds the store lock. */
-  private rebuildRows(): { indexed: number; rejected: number } {
+  /**
+   * The rebuild itself; the caller holds the store lock. A malformed note is
+   * rejected and named in `rejectedFiles`; an operational failure (an
+   * unreadable file, a failed insert) throws, so nothing is marked done.
+   */
+  private rebuildRows(): { indexed: number; rejected: number; rejectedFiles: string[] } {
     let indexed = 0;
-    let rejected = 0;
+    const rejectedFiles: string[] = [];
     this.transaction(() => {
       this.db.exec("DELETE FROM notes; DELETE FROM notes_fts;");
       for (const name of readdirSync(this.notesDir)) {
         if (!name.endsWith(".md")) continue;
+        const raw = readNoteFile(join(this.notesDir, name));
+        if (raw === null) continue;
+        let note: ReturnType<typeof parseNote>;
         try {
-          const raw = readFileSync(join(this.notesDir, name), "utf8");
-          const { meta, body } = parseNote(raw);
-          // A legacy or hand-edited file can carry an id that is unsafe as a
-          // file name. Skip it rather than poison the whole index.
-          if (!NOTE_ID_PATTERN.test(meta.id)) {
-            rejected += 1;
-            continue;
-          }
-          this.insertIndex(meta, body);
-          indexed += 1;
+          note = parseNote(raw);
         } catch {
-          rejected += 1;
+          rejectedFiles.push(name);
+          continue;
         }
+        // A legacy or hand-edited file can carry an id that is unsafe as a
+        // file name. Skip it rather than poison the whole index.
+        if (!NOTE_ID_PATTERN.test(note.meta.id)) {
+          rejectedFiles.push(name);
+          continue;
+        }
+        this.insertIndex(note.meta, note.body);
+        indexed += 1;
       }
     });
-    return { indexed, rejected };
+    return { indexed, rejected: rejectedFiles.length, rejectedFiles };
   }
 
   /**

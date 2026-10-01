@@ -281,9 +281,29 @@ export const PLANTED_CONFIG_CREATE_ALLOW = [
   "/\\.git/hooks$",
 ] as const;
 
+/**
+ * Entries that must not be CREATED under these names (mkdir, rename into,
+ * symlink, hard link), in the sandbox profiles only. A planted `settings.json`
+ * written into a folder called `stage` and then renamed or linked to `.claude`
+ * matches none of the per-file rules above, and the tool reads it through the
+ * new name. Writing INTO an existing folder of that name stays governed by the
+ * name rules (owner decision, 2026-10-01).
+ */
+export const PLANTED_CONFIG_CREATE_DENY_LEAVES = [".claude", ".codex", ".gemini", ".cursor", ".github"] as const;
+
+/**
+ * The form a path is compared in. The volume folds case and Unicode
+ * compatibility forms alike (U+017F long s opens `.claude/settings.json` as
+ * `.claude/\u017Fettings.json`), so lowercase alone lets a spelling through.
+ * NFKC first, then up and down to fold what lowercasing leaves (Kelvin sign).
+ */
+export function foldPath(text: string): string {
+  return text.normalize("NFKC").toUpperCase().toLowerCase();
+}
+
 const PLANTED_NAME_TESTS = PLANTED_CONFIG_NAMES.map((name) => ({
   name,
-  test: new RegExp(`(^|/)${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[/.])`),
+  test: new RegExp(`(^|/)${foldPath(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[/.])`),
 }));
 const PLANTED_PATTERN_TESTS = PLANTED_CONFIG_PATTERNS.map((pattern) => new RegExp(pattern));
 const PLANTED_ALLOW_TESTS = PLANTED_CONFIG_WRITE_ALLOW.map((pattern) => new RegExp(pattern));
@@ -294,7 +314,7 @@ const PLANTED_ALLOW_TESTS = PLANTED_CONFIG_WRITE_ALLOW.map((pattern) => new RegE
  * that folds case. Same `(^|/)NAME($|[/.])` reading as the sandbox rules.
  */
 export function plantedConfigMatch(absPath: string): string | null {
-  const lowered = absPath.toLowerCase();
+  const lowered = foldPath(absPath);
   for (const { name, test } of PLANTED_NAME_TESTS) {
     if (test.test(lowered)) return name;
   }

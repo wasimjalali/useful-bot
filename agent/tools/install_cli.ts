@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 import { homedir, tmpdir } from "node:os";
 import { effectiveRoot } from "../lib/workspace.ts";
-import { confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
+import { approvedCommand, confinedCommand, sandboxAvailable } from "../lib/sandbox.ts";
 import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
@@ -89,9 +89,23 @@ export default defineTool({
       // Approved on a card: run it as the owner read it. Full access: run it
       // confined, which at that posture still refuses the credential files
       // and the app's own stores.
-      const argv = gate === "ask"
-        ? ["/bin/sh", "-c", entry.install]
-        : confinedCommand(root, entry.install, scope, true, { allowToolInstall: true });
+      let argv: string[];
+      if (gate === "ask") {
+        // Approved: not confined to the folder, but not bare either. Everything
+        // is allowed except planted config; the PATH denies are lifted because
+        // putting the program on the PATH is the point.
+        try {
+          argv = approvedCommand(entry.install, { allowToolInstall: true });
+        } catch (error) {
+          return {
+            status: "blocked",
+            error: "approved_line_profile_unavailable",
+            hint: `The install was not run: the write guard could not be set up (${error instanceof Error ? error.message : "unknown error"}). Nothing was changed.`,
+          };
+        }
+      } else {
+        argv = confinedCommand(root, entry.install, scope, true, { allowToolInstall: true });
+      }
       const run = await runCommand(argv, {
         cwd: root,
         env: {

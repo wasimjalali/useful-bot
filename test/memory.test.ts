@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -369,4 +369,27 @@ test("migration is idempotent: a second open and a second process change nothing
   assert.equal(third.read(added.id, "bot-b").title, "After");
   assert.equal(second.list("bot-b").length, 3);
   assert.ok(ids.tagged);
+});
+
+test("a transient read failure aborts the migration so it retries; a malformed note is skipped and reported", () => {
+  const { root, ids } = legacyRoot();
+  writeFileSync(join(root, "notes", "broken.md"), "this is not a note");
+  const blocked = join(root, "notes", `${ids.tagged}.md`);
+  chmodSync(blocked, 0o000);
+  try {
+    // An unreadable file is an operational failure: the open throws and the
+    // index is not marked migrated.
+    assert.throws(() => new MemoryStore(root), /EACCES/);
+    const db = new DatabaseSync(join(root, "index.sqlite"));
+    const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    db.close();
+    assert.equal(version, 0);
+  } finally {
+    chmodSync(blocked, 0o600);
+  }
+  // The retry succeeds, finishes the migration, and names the malformed file.
+  const store = new MemoryStore(root);
+  assert.deepEqual(store.migrationRejected, ["broken.md"]);
+  assert.equal(store.list("bot-b").length, 2);
+  assert.equal(store.rebuildIndex().rejectedFiles.includes("broken.md"), true);
 });

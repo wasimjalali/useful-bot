@@ -57,6 +57,13 @@ export function relayedEveCode(status: number, body: string): string | null {
 
 export type SessionRoute = Route & { mentionNames: string[] };
 
+/** How a failure while routing or rewriting a turn is answered: never by forwarding it. */
+export function turnRewriteFailure(err: unknown): { status: 400 | 503; error: "eve_message_invalid" | "session_route_failed" } {
+  return err instanceof Error && err.message === "eve_message"
+    ? { status: 400, error: "eve_message_invalid" }
+    : { status: 503, error: "session_route_failed" };
+}
+
 export type BoundTurn =
   | { ok: true; body: string }
   | { ok: false; error: "session_unbound" | "eve_message_invalid" | "session_bot_mismatch" };

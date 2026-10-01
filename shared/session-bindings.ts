@@ -6,11 +6,10 @@ import {
   openSync,
   readFileSync,
   renameSync,
-  rmdirSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { acquireDirLock } from "./dir-lock.ts";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -117,35 +116,20 @@ function writeStoreFile(store: SessionOwnersStore, path: string): void {
   }
 }
 
-// Stale below timeout, so a waiter can reclaim a dead lock before giving up.
 const LOCK_TIMEOUT_MS = 8000;
 const LOCK_STALE_MS = 3000;
-
-function sleep(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 function updateStore<T>(
   mutate: (store: SessionOwnersStore) => { store: SessionOwnersStore; result: T },
   path: string,
 ): T {
-  const lock = `${path}.lock`;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  let held = false;
-  while (!held) {
-    try {
-      mkdirSync(lock, { mode: 0o700 });
-      held = true;
-    } catch {
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmdirSync(lock);
-      } catch { /* lock vanished; retry */ }
-      if (Date.now() > deadline) break;
-      sleep(15);
-    }
-  }
-  if (!held) throw new Error("session_owners_locked");
+  // Owned lock: a live writer is never robbed, and only the holder releases.
+  const release = acquireDirLock(`${path}.lock`, {
+    timeoutMs: LOCK_TIMEOUT_MS,
+    staleMs: LOCK_STALE_MS,
+    errorCode: "session_owners_locked",
+  });
   try {
     let previous = peekStoreFile(path);
     if (previous === null && existsSync(path)) {
@@ -157,7 +141,7 @@ function updateStore<T>(
     if (out.store !== previous) writeStoreFile(out.store, path);
     return out.result;
   } finally {
-    try { rmdirSync(lock); } catch { /* ignore */ }
+    release();
   }
 }
 
@@ -210,9 +194,28 @@ export function backfillSessionOwners(
 ): number {
   const wanted: Array<{ sessionId: string; botId: string }> = [];
   const known = readSessionOwners(path).sessions;
+  // Two bots naming the same unbound session is ambiguous: roster order must
+  // not decide who owns it, so neither is bound.
+  const claimants = new Map<string, Set<string>>();
   for (const bot of shell.bots) {
     for (const sessionId of [bot.sessionId, bot.continuedSessionId]) {
-      if (!sessionId || !SESSION_ID.test(sessionId)) continue;
+      if (!sessionId || !SESSION_ID.test(sessionId) || known[sessionId]) continue;
+      claimants.set(sessionId, (claimants.get(sessionId) ?? new Set()).add(bot.id));
+    }
+  }
+  const ambiguous = new Set<string>();
+  for (const [sessionId, bots] of claimants) {
+    if (bots.size < 2) continue;
+    ambiguous.add(sessionId);
+    const key = `ambiguous:${sessionId}`;
+    if (!loggedConflicts.has(key)) {
+      loggedConflicts.add(key);
+      console.warn(`[useful-bot] session ${sessionId} is named by ${[...bots].join(", ")}; bound to none`);
+    }
+  }
+  for (const bot of shell.bots) {
+    for (const sessionId of [bot.sessionId, bot.continuedSessionId]) {
+      if (!sessionId || !SESSION_ID.test(sessionId) || ambiguous.has(sessionId)) continue;
       const owner = known[sessionId]?.botId;
       if (owner === bot.id) continue;
       if (owner) {

@@ -1,4 +1,4 @@
-import { peekShell } from "../../shared/shell-io.ts";
+import { peekShell, readShell } from "../../shared/shell-io.ts";
 import { orchestratorId, type ShellBot, type ShellStore } from "../../shared/shell-store.ts";
 import { readSessionGrant, type WorkspacePermission } from "../../shared/workspace-store.ts";
 import { awaitActiveBotId, BOT_CONTEXT_MISSING, isBotContextMissing } from "./active-bot.ts";
@@ -100,9 +100,12 @@ export async function callerOf(
     if (isBotContextMissing(err)) return { ok: false, result: BOT_CONTEXT_MISSING };
     throw err;
   }
-  const bot = shell.bots.find((item) => item.id === id);
+  // Classified against the roster as it stands after the wait: the snapshot
+  // the tool read before waiting may predate the binding and a roster change.
+  const live = readShell();
+  const bot = live.bots.find((item) => item.id === id);
   if (!bot) return { ok: false, result: BOT_CONTEXT_MISSING };
-  return { ok: true, caller: { id, role: callerRole(shell, bot), bot } };
+  return { ok: true, caller: { id, role: callerRole(live, bot), bot } };
 }
 
 /** Only the orchestrator acts on a bot other than itself. */

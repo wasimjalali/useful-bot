@@ -93,6 +93,11 @@ export type BotProposal = {
   sourceBotId: string | null;
   threadId: string;
   brief: string;
+  /**
+   * The bot whose tool call raised the card. Confirming re-checks that bot's
+   * authority against the live roster; a card with no proposer is refused.
+   */
+  proposerId?: string;
 };
 
 export type GroupProposal = {
@@ -101,6 +106,8 @@ export type GroupProposal = {
   memberIds: string[];
   sourceBotId: string | null;
   threadId: string;
+  /** See `BotProposal.proposerId`. */
+  proposerId?: string;
 };
 
 export type ProfileProposal = {
@@ -114,6 +121,8 @@ export type ProfileProposal = {
   baseRevision: number;
   sourceBotId: string | null;
   threadId: string;
+  /** See `BotProposal.proposerId`. */
+  proposerId?: string;
 };
 
 export type FanoutProposal = {
@@ -330,19 +339,27 @@ function parseProposal(raw: unknown): Proposal | null {
       description: clip(rec.description, 500),
       sectionId: isId(rec.sectionId) ? rec.sectionId : null,
       brief: clip(rec.brief, 1000),
+      proposerId: isId(rec.proposerId) ? rec.proposerId : "",
     };
   }
   if (rec.kind === "createGroup") {
     const memberIds = Array.isArray(rec.memberIds)
       ? rec.memberIds.filter((id): id is string => isId(id)).slice(0, 6)
       : [];
-    return { ...base, kind: "createGroup", name: clip(rec.name, 80), memberIds };
+    return {
+      ...base,
+      kind: "createGroup",
+      name: clip(rec.name, 80),
+      memberIds,
+      proposerId: isId(rec.proposerId) ? rec.proposerId : "",
+    };
   }
   if (rec.kind === "updateBotProfile") {
     const patchRaw = (rec.patch ?? {}) as Record<string, unknown>;
     return {
       ...base,
       kind: "updateBotProfile",
+      proposerId: isId(rec.proposerId) ? rec.proposerId : "",
       botId: isId(rec.botId) ? rec.botId : "",
       // A card with no recorded revision is stale by construction: -1 never
       // matches a bot's revision.

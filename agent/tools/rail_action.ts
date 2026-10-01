@@ -4,6 +4,7 @@ import { actionSha256, approvalActor, executeIfApproved } from "../lib/approvals
 import { getApprovalStore } from "../lib/write.ts";
 import {
   callerOf,
+  callerRole,
   inAppGate,
   mayActOn,
   notAvailable,
@@ -15,7 +16,7 @@ import {
   settle,
 } from "../lib/permission.ts";
 import { readShell, updateShell } from "../../shared/shell-io.ts";
-import { applyShellAction, type ShellAction } from "../../shared/shell-store.ts";
+import { applyShellAction, type ShellAction, type ShellStore } from "../../shared/shell-store.ts";
 
 /**
  * The rail actions the owner can take from a bot row or a section header.
@@ -55,6 +56,22 @@ export default defineTool({
       || input.action === "updateSection"
       || input.action === "removeSection";
     let botId = "";
+    // Authority is judged again against the live roster inside every write:
+    // the caller can have lost the orchestrator role, or the target's
+    // protection can have changed, between the check above and the commit.
+    const assertStillAllowed = (current: ShellStore) => {
+      const actor = current.bots.find((bot) => bot.id === caller.id);
+      if (!actor) throw new Error("bot_missing");
+      const role = callerRole(current, actor);
+      if (sectionOnly) {
+        if (role !== "orchestrator") throw new Error("not_available_for_this_bot");
+        return;
+      }
+      if (role !== "orchestrator" && actor.id !== botId) throw new Error("not_available_for_this_bot");
+      if (input.action === "hide" && (botId === orchestratorId(current) || botId === caller.id)) {
+        throw new Error("hide_refused");
+      }
+    };
     if (!sectionOnly) {
       const requested = input.botId?.trim() ?? "";
       if (!requested) return { status: "invalid", error: `${input.action} needs a botId` };
@@ -134,6 +151,7 @@ export default defineTool({
         // owner was deciding. The approval belongs to the empty section on the
         // card, so one that gained a bot or a new name is not removed.
         updateShell((current) => {
+          assertStillAllowed(current);
           const live = current.sections.find((item) => item.id === section.id);
           if (!live) throw new Error("section_missing");
           if (live.name !== section.name) throw new Error("section_changed");
@@ -209,6 +227,7 @@ export default defineTool({
 
     let createdId: string | undefined;
     updateShell((current) => {
+      assertStillAllowed(current);
       const result = applyShellAction(current, action);
       createdId = result.createdId;
       return result.store;

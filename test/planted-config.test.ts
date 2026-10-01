@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlink
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApprovalStore } from "../agent/lib/approvals.ts";
-import { approvedLineProfile, approvedCommand, sandboxAvailable, toSbplRules } from "../agent/lib/sandbox.ts";
+import { approvedLineProfile, approvedCommand, sandboxAvailable, sandboxProfile, toSbplRules } from "../agent/lib/sandbox.ts";
+import { needsPathWrite } from "../agent/lib/command-risk.ts";
+import { resetOwnerPath } from "../shared/user-path.ts";
 import { approvedWrite, setApprovalStore } from "../agent/lib/write.ts";
 import { resolveWorkspacePath } from "../agent/lib/workspace.ts";
 import bash from "../agent/tools/bash.ts";
@@ -38,6 +40,11 @@ const EXPECTED_RULES = [
   '(deny file-write* (regex #"/\\.mcp\\.json($|[/.])"))',
   '(deny file-write* (regex #"/\\.cursor/mcp\\.json($|[/.])"))',
   '(deny file-write* (regex #"/\\.git/hooks($|/)"))',
+  '(deny file-write-create (regex #"/\\.claude$"))',
+  '(deny file-write-create (regex #"/\\.codex$"))',
+  '(deny file-write-create (regex #"/\\.gemini$"))',
+  '(deny file-write-create (regex #"/\\.cursor$"))',
+  '(deny file-write-create (regex #"/\\.github$"))',
   '(allow file-write* (regex #"/\\.git/hooks/[^/]+\\.sample$"))',
   '(allow file-write-create (regex #"/\\.git/hooks$"))',
 ];
@@ -203,6 +210,114 @@ test("an owner-approved bash line that writes planted config is refused by the k
     assert.equal(existsSync(join(box.project, ".claude", "settings.json")), false);
     // The rest of the line still ran: it was approved.
     assert.equal(existsSync(join(box.project, "old.txt")), false);
+  } finally {
+    box.restore();
+  }
+});
+
+test("Unicode spellings the volume folds are planted too", async () => {
+  // U+017F (long s) opens the same file on this volume; Kelvin sign folds to k.
+  for (const path of ["/p/.claude/\u017Fettings.json", "/p/.mcp.j\u017Fon", "/p/.claude/hook\u017F/x", "/p/.claude/\u017Fkills/x"]) {
+    assert.equal(isPlantedConfigPath(path), true, path);
+  }
+  assert.equal(isPlantedConfigPath("/p/.mcp.j\u017Fon"), true);
+  const box = grantFixture("auto");
+  try {
+    for (const name of [".claude/\u017Fettings.json", ".mcp.j\u017Fon", ".claude/hook\u017F/x", ".claude/\u017Fkills/s/SKILL.md"]) {
+      await assert.rejects(() => write(name), /path_planted_config/, name);
+    }
+    // The credential screens fold the same way.
+    for (const name of [".\u017Fsh/id", "a/.aw\u017F/credentials", "auth.j\u017Fon"]) {
+      assert.throws(() => resolveWorkspacePath(name, box.project), /path_forbidden/, name);
+    }
+  } finally {
+    box.restore();
+  }
+});
+
+function runProfile(profile: string, dir: string, line: string): void {
+  try {
+    execFileSync("/usr/bin/sandbox-exec", ["-p", profile, "/bin/sh", "-c", `cd "${dir}"; ${line}`], { stdio: "ignore" });
+  } catch {
+    // A refused line exits non-zero; the test reads the disk.
+  }
+}
+
+test("no entry can be created under a planted parent name, in either profile", { skip: !darwin }, () => {
+  for (const mode of ["approved", "confined"] as const) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-leaf-")));
+    const profile = mode === "approved" ? approvedLineProfile() : sandboxProfile(dir, "folder");
+    runProfile(profile, dir, "mkdir stage && echo h > stage/settings.json; mkdir .claude; mv stage .codex; ln -s stage .gemini; mkdir .cursor; mkdir .github; mv stage .Claude");
+    for (const name of [".claude", ".codex", ".gemini", ".cursor", ".github"]) {
+      assert.equal(existsSync(join(dir, name)), false, `${mode} ${name}`);
+    }
+    runProfile(profile, dir, "mkdir src && echo ok > src/a.txt");
+    assert.equal(readFileSync(join(dir, "src", "a.txt"), "utf8").trim(), "ok", `${mode} src still works`);
+  }
+});
+
+test("a hard link to a planted file cannot be made, so it cannot be written through", { skip: !darwin }, () => {
+  for (const mode of ["approved", "confined"] as const) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-hl-")));
+    mkdirSync(join(dir, "proj"));
+    mkdirSync(join(dir, "home", ".claude"), { recursive: true });
+    writeFileSync(join(dir, "home", ".claude", "settings.json"), "orig\n");
+    const profile = mode === "approved" ? approvedLineProfile() : sandboxProfile(join(dir, "proj"), "folder");
+    runProfile(profile, join(dir, "proj"), `ln ../home/.claude/settings.json hl; echo evil >> hl; echo evil >> ../home/.claude/settings.json`);
+    assert.equal(readFileSync(join(dir, "home", ".claude", "settings.json"), "utf8"), "orig\n", mode);
+  }
+});
+
+test("an approved install may write the PATH, any other approved line may not", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-path-")));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const previous = process.env.UB_OWNER_PATH;
+  process.env.UB_OWNER_PATH = bin;
+  resetOwnerPath();
+  try {
+    assert.ok(approvedLineProfile().includes(`(deny file-write* (subpath "${bin}"))`));
+    assert.equal(approvedLineProfile({ allowToolInstall: true }).includes(`(deny file-write* (subpath "${bin}"))`), false);
+    for (const line of [
+      "npm i -g left-pad", "npm install --global left-pad", "npm --prefix x i -g y", "pnpm add -g zod", "yarn global add zod",
+      "bun add -g zod", "brew install jq", "brew reinstall jq", "brew upgrade", "cargo install ripgrep", "go install example.com/t@latest",
+      "uv tool install ruff", "pipx install black", "gem install rake", "corepack enable",
+    ]) assert.equal(needsPathWrite(line), true, line);
+    for (const line of [
+      // Local installs do not need the PATH.
+      "npm i", "npm install left-pad", "pnpm add zod", "yarn add zod", "bun add zod", "pip install requests", "brew bundle", "uv add x",
+      // Compound lines and substitutions do not get it, whatever they start with.
+      "npm i -g x && cp evil /usr/local/bin/git", "brew install jq; cp evil /opt/homebrew/bin/git", "npm i -g x || true",
+      "npm i -g x | tee log", "npm i -g x &", "npm i -g x\ncp evil /usr/local/bin/git", "npm i -g $(cp evil /usr/local/bin/git)",
+      "npm i -g `cp evil /usr/local/bin/git`", "brew install jq > /opt/homebrew/bin/git", "cargo install x < /dev/null",
+      // Not installs at all.
+      "rm -rf build", "npx some-remote-tool", "cp evil /usr/local/bin/git", "npm run build -g", "",
+    ]) assert.equal(needsPathWrite(line), false, line);
+  } finally {
+    if (previous === undefined) delete process.env.UB_OWNER_PATH;
+    else process.env.UB_OWNER_PATH = previous;
+    resetOwnerPath();
+  }
+});
+
+test("an approved line the guard stops comes back with a hint naming the protected path", { skip: !darwin }, async () => {
+  const box = grantFixture("auto");
+  try {
+    writeFileSync(join(box.project, "old.txt"), "x");
+    const result = bash.execute(
+      { command: "rm old.txt; mkdir .claude" } as never,
+      { session: { id: "sess-1" } } as never,
+    ) as Promise<{ exitCode: number; hint?: string }>;
+    let cards = box.approvals.listPending();
+    for (let i = 0; i < 40 && cards.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      cards = box.approvals.listPending();
+    }
+    box.approvals.decide(cards[0].id, "approve", cards[0].actionSha256);
+    const done = await result;
+    assert.notEqual(done.exitCode, 0);
+    assert.match(done.hint ?? "", /refused ".claude"/);
+    assert.match(done.hint ?? "", /Terminal/);
   } finally {
     box.restore();
   }

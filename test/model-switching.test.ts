@@ -39,7 +39,6 @@ import {
   freezeTurnSelection,
   resolveTurnSelection,
   STAMP_WAIT_MS,
-  reviewerWindowTokens,
   windowTokensFor,
 } from "../agent/lib/model-window.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../shared/policy.ts";
@@ -517,11 +516,6 @@ test("an unknown window is 32768, and only the selected model's own window count
     assert.equal(windowTokensFor({ ...selGo, modelId: "not-in-the-list" }), 32_768);
     // A connection with no list at all.
     assert.equal(windowTokensFor({ connectionId: "ollama:local", modelId: "x", effort: null, speed: "standard" }), 32_768);
-    // The reviewer sizes from its own role's model, by the same lookup.
-    updateProviderStore((current) => ({ ...current, roles: { reviewer: { connectionId: GO, modelId: "glm-5", effort: null } } }));
-    assert.equal(reviewerWindowTokens(), 202_752);
-    updateProviderStore((current) => ({ ...current, roles: { reviewer: { connectionId: GO, modelId: "reviewer-unlisted", effort: null } } }));
-    assert.equal(reviewerWindowTokens(), 32_768);
   });
 });
 

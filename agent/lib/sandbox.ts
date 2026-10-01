@@ -5,6 +5,7 @@ import { ownerPath, pathCandidates } from "../../shared/user-path.ts";
 import { delimiter, dirname, join } from "node:path";
 import {
   PLANTED_CONFIG_CREATE_ALLOW,
+  PLANTED_CONFIG_CREATE_DENY_LEAVES,
   PLANTED_CONFIG_NAMES,
   PLANTED_CONFIG_PATTERNS,
   PLANTED_CONFIG_WRITE_ALLOW,
@@ -184,6 +185,7 @@ export function toSbplRules(): string[] {
   return [
     ...PLANTED_CONFIG_NAMES.map((name) => `(deny file-write* (regex #"/${regexEscape(name)}($|[/.])"))`),
     ...PLANTED_CONFIG_PATTERNS.map((pattern) => `(deny file-write* (regex #"${pattern}"))`),
+    ...PLANTED_CONFIG_CREATE_DENY_LEAVES.map((leaf) => `(deny file-write-create (regex #"/${regexEscape(leaf)}$"))`),
     ...PLANTED_CONFIG_WRITE_ALLOW.map((pattern) => `(allow file-write* (regex #"${pattern}"))`),
     ...PLANTED_CONFIG_CREATE_ALLOW.map((pattern) => `(allow file-write-create (regex #"${pattern}"))`),
   ];

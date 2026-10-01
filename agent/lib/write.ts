@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, readFileSync, unlinkSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { ApprovalStore, actionSha256, defaultApprovalsPath, executeIfApproved, waitUntilNotPending } from "./approvals.ts";
 import { autoApproved, effectiveRoot, resolveWorkspacePath } from "./workspace.ts";
 import { WRITE_MAX_BYTES, isPlantedConfigPath } from "../../shared/policy.ts";
@@ -184,6 +184,9 @@ function writeAtomically(target: string, root: string, content: string): { bytes
   if (!parentReal.startsWith(`${rootReal}/`) && parentReal !== rootReal) {
     throw new Error("path_escape");
   }
+  // The planted-config check on where the file really lands: a parent swapped
+  // for a link to a config folder after the lexical check cannot slip through.
+  assertNotPlantedConfig(join(parentReal, basename(target)));
   const tmp = join(
     parent,
     `.${createHash("sha256").update(target).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`,

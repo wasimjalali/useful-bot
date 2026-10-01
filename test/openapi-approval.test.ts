@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ApprovalStore, waitUntilNotPending } from "../agent/lib/approvals.ts";
-import { OPENAPI_APPROVAL_WAIT_MS, openApiApproval, openApiGate } from "../agent/lib/openapi-approval.ts";
+import { OPENAPI_APPROVAL_WAIT_MS, openApiApproval, openApiGate, openApiOptions } from "../agent/lib/openapi-approval.ts";
 import { fenceWebFetch } from "../agent/lib/web-fetch-fence.ts";
 import review from "../agent/tools/review.ts";
 import webFetchTool from "../agent/tools/web_fetch.ts";
@@ -46,7 +46,8 @@ test("Read only is refused without a card", async () => {
   const { approvals, policy } = setup({ permission: () => "read_only" });
   const result = await policy(ctx);
   assert.equal(result.type, "denied");
-  assert.match(result.reason ?? "", /Auto or Full access/);
+  assert.match(result.reason ?? "", /needs Auto or Full access/);
+  assert.doesNotMatch(result.reason ?? "", /changes things/);
   assert.equal(approvals.records.size, 0);
 });
 
@@ -86,7 +87,7 @@ test("a card nobody answers in time is denied with a hint, and the card is retir
   assert.equal(result.type, "denied");
   assert.match(result.reason ?? "", /did not answer in time/);
   assert.equal(approvals.listPending().length, 0, "the unanswered card must not stay open");
-  assert.equal(OPENAPI_APPROVAL_WAIT_MS, 150_000);
+  assert.equal(OPENAPI_APPROVAL_WAIT_MS, 120_000);
 });
 
 test("a store that throws is a denial, never a throw", async () => {
@@ -140,6 +141,17 @@ test("the gate passes the owner's operation list to eve, and nothing when there 
   assert.deepEqual(openApiGate({ ...entry, toolsAllow: ["list_pets", "get_pet"] }).operations, { allow: ["list_pets", "get_pet"] });
   assert.equal("operations" in openApiGate(entry), false);
   assert.equal(typeof openApiGate(entry).approval, "function");
+});
+
+test("every auth kind of an OpenAPI connection carries the gate and the owner's operation list", () => {
+  for (const authKind of ["none", "apiKey", "bearer", "oauth"] as const) {
+    const plain = openApiOptions({ ...entry, authKind, authHeader: authKind === "apiKey" ? "X-Api-Key" : null });
+    assert.equal(typeof plain.approval, "function", `${authKind} approval`);
+    assert.equal("operations" in plain, false, `${authKind} no list`);
+    const narrowed = openApiOptions({ ...entry, authKind, authHeader: authKind === "apiKey" ? "X-Api-Key" : null, toolsAllow: ["get_pet"] });
+    assert.equal(typeof narrowed.approval, "function", `${authKind} approval (narrowed)`);
+    assert.deepEqual((narrowed as { operations?: unknown }).operations, { allow: ["get_pet"] }, `${authKind} operations`);
+  }
 });
 
 test("web_fetch results come back fenced, whole or streamed", async () => {

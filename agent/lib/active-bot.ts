@@ -33,7 +33,8 @@ const BINDING_POLL_MS = 50;
  * `bot_context_missing`. A child session (eve `ctx.session.parent`) is unbound
  * by design and refuses too, whatever the pin says.
  * UB_ACTIVE_BOT_ID stays as the explicit test and probe override, ahead of
- * the binding, for a call that has no session.
+ * the binding, for a call that has no session; under the test runner it also
+ * covers an unbound session.
  */
 function resolveNow(shell: ShellStore | null, ctx?: ActiveBotContext): string | null {
   if (ctx?.session?.parent) throw new BotContextMissingError();
@@ -41,7 +42,9 @@ function resolveNow(shell: ShellStore | null, ctx?: ActiveBotContext): string | 
   if (!sessionId) return process.env.UB_ACTIVE_BOT_ID || null;
   const bound = resolveSessionBot(sessionId, shell);
   if (bound) return bound;
-  return process.env.UB_ACTIVE_BOT_ID || null;
+  // A real session with no binding is refused. The pin stands in for a missing
+  // binding only under the test runner, never in a running app.
+  return process.env.NODE_TEST_CONTEXT ? process.env.UB_ACTIVE_BOT_ID || null : null;
 }
 
 /** Synchronous, no wait: for callers that cannot await. Throws `bot_context_missing`. */

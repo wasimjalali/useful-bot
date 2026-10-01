@@ -42,6 +42,7 @@ export default defineTool({
     try {
       proposal = createProposal({
         kind: "createGroup",
+        proposerId: who.caller.id,
         name: input.name.trim(),
         memberIds: members.map((member) => member.id),
         sourceBotId,

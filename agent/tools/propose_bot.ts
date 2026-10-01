@@ -38,6 +38,7 @@ export default defineTool({
     try {
       proposal = createProposal({
         kind: "createBot",
+        proposerId: who.caller.id,
         name: input.name.trim(),
         petname: nextPetname(shell),
         title: (input.title ?? "").trim(),

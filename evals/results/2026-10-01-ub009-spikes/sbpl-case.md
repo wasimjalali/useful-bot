@@ -46,3 +46,38 @@ All start with `(version 1)\n(allow default)\n` then one rule:
    "the kernel matches the path as the line spelled it", which this spike did not reproduce on this
    host: the kernel matched case-insensitively. Letter classes there are harmless belt and braces.
    Not tested: a case-sensitive volume.
+
+## Review round 1 follow-up: parent create, rename, symlink, hard link (2026-10-01)
+
+Question (PR #175 review, Sonnet): the per-file denies are leaf-name regexes, so can a planted file be put
+under a planted parent name by creating the parent (mkdir, rename, symlink) or by a hard link?
+
+Decision (owner): deny creating an entry whose last component is `.claude`, `.codex`, `.gemini`, `.cursor`
+or `.github`, in the confined and the approved-line profiles, with
+`(deny file-write-create (regex #"/\.claude$"))` and the same for the other four. Writing into an EXISTING
+folder of that name stays governed by the per-file rules. The leaf list is
+`PLANTED_CONFIG_CREATE_DENY_LEAVES` in `shared/policy.ts`.
+
+Method: a script (`live.ts`, scratch copy only) builds `approvedLineProfile()` and
+`sandboxProfile(<proj>, "folder")`, runs each line with
+`/usr/bin/sandbox-exec -p <profile> /bin/sh -c 'cd <proj>; <line>'` in a fresh folder under the session
+scratchpad (`<dir>/proj` is the project, `<dir>/home/.claude/settings.json` stands for a real config file).
+Run on macOS 26.6.2, same host as above.
+
+| line (in `proj`) | approved-line profile | confined (folder) profile |
+|---|---|---|
+| `mkdir .claude` | Operation not permitted | Operation not permitted |
+| `mkdir stage; echo h > stage/settings.json; mv stage .claude` | mv refused | mv refused |
+| `mkdir stage; echo h > stage/settings.json; ln -s stage .claude` | ln refused | ln refused |
+| `mv stage .Claude` (case) | refused | refused |
+| `mkdir .github`, `.cursor`, `.codex`, `.gemini` | all refused | all refused |
+| `mkdir src` | ok | ok |
+
+Hard link (the review's medium finding): `ln ../home/.claude/settings.json hl` then `echo evil >> hl`.
+Result: `ln: hl: Operation not permitted` in both profiles, and the original file is unchanged. The existing
+per-file deny already refuses the LINK, because the source path matches it (`file-link` is checked against
+the source). `ln -s` to the same file creates a symlink at most, and a write through it is refused
+(`sl: Operation not permitted`). So no extra link rule was needed; the unit test locks it in.
+
+Cost: a bot can no longer `mkdir .github` (or the other four) itself. `git init` and `git clone` are not
+affected (they create `.git`, not these).

@@ -88,7 +88,7 @@ const EDITORS: Record<string, string> = {
 const VERB_CLIS = new Set([
   "npm", "pnpm", "yarn", "bun", "npx",
   "pip", "pip3", "pipx", "uv", "poetry",
-  "brew", "cargo", "gem", "go", "uvx",
+  "brew", "cargo", "gem", "go", "uvx", "corepack", "tofu",
   "docker", "podman", "kubectl", "helm", "terraform", "pulumi",
   "gh", "aws", "gcloud", "az", "vercel", "wrangler", "supabase", "flyctl", "fly",
   "heroku", "netlify", "firebase", "doctl", "railway", "stripe",
@@ -103,43 +103,136 @@ const DESTRUCTIVE_VERBS = new Set([
 /**
  * Paid-cloud CLIs, and the words that create or deploy something there
  * (owner decision P1, 2026-10-01). A false card costs a click, a miss costs
- * money, so the words are matched anywhere in the first few.
+ * money, so the verb is looked for among the first few words (flag values
+ * included, since a value flag may sit before it).
  */
 const CLOUD_CLIS = new Set([
   "aws", "gcloud", "az", "vercel", "wrangler", "supabase", "flyctl", "fly",
-  "heroku", "netlify", "firebase", "doctl", "railway", "terraform", "pulumi",
+  "heroku", "netlify", "firebase", "doctl", "railway", "terraform", "tofu", "pulumi",
 ]);
-const CLOUD_DEPLOY_WORDS = new Set([
-  "deploy", "create", "launch", "run-instances", "apply", "up",
+/** Words that create or deploy, for any cloud CLI. */
+const CLOUD_DEPLOY_WORDS = new Set(["deploy", "create", "launch", "run-instances"]);
+/** Words that only mean it for one CLI (`up` and `apply` are everyday words elsewhere). */
+const CLOUD_CLI_WORDS: Record<string, string[]> = {
+  terraform: ["apply"], tofu: ["apply"], pulumi: ["up"], railway: ["up"], az: ["up"],
+};
+
+/**
+ * The non-flag words of a line, with the value that follows a value-taking
+ * flag skipped, so `npm --prefix app --workspace x i` has `i` first.
+ * `--flag=value` carries its own value.
+ */
+function positional(tokens: string[], valued: Set<string>): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === "--") {
+      out.push(...tokens.slice(i + 1));
+      break;
+    }
+    if (token.startsWith("-")) {
+      if (valued.has(token)) i += 1;
+      continue;
+    }
+    out.push(token);
+  }
+  return out;
+}
+
+const NPM_INSTALL_VERBS = new Set([
+  "install", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal", "isntall", "add",
+  "ci", "clean-install", "ic", "install-clean", "cit", "clean-install-test", "sit", "install-ci-test",
+  "it", "install-test", "update", "up", "upgrade", "udpate",
 ]);
-const INSTALL_WORDS = new Set(["install", "i", "add", "ci"]);
+const PNPM_INSTALL_VERBS = new Set(["install", "i", "add", "update", "up", "upgrade", "fetch"]);
+const YARN_INSTALL_VERBS = new Set(["install", "add", "up", "upgrade", "upgrade-interactive"]);
+const BUN_INSTALL_VERBS = new Set(["install", "i", "add", "update", "ci", "upgrade"]);
+const MANAGER_VALUED: Record<string, Set<string>> = {
+  npm: new Set(["--prefix", "--workspace", "-w", "--registry", "--userconfig", "--globalconfig", "--cache", "--tag", "--loglevel", "--otp", "--script-shell"]),
+  pnpm: new Set(["-C", "--dir", "--filter", "-F", "--filter-prod", "--registry", "--config", "--reporter", "--loglevel"]),
+  yarn: new Set(["--cwd", "--registry", "--use-yarnrc", "--emoji"]),
+  bun: new Set(["--cwd", "--registry", "--config", "-c"]),
+};
+
+/**
+ * Whether an owner-approved line is a single, plain GLOBAL tool install: one
+ * that genuinely writes a PATH directory (`npm i -g`, `brew install`, `cargo
+ * install`...). Only such a line may run with the PATH denies lifted. A local
+ * install (`npm i` in a project) does not need them, and a compound line or one
+ * with a substitution or redirect could use them for anything else.
+ */
+export function needsPathWrite(line: string): boolean {
+  if (/[;&|\n`<>]|\$\(|\$\{/.test(line)) return false;
+  const tokens = line.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) return false;
+  const name = basename(tokens[0]);
+  const rest = tokens.slice(1);
+  const isGlobal = rest.some((token) => token === "-g" || token === "--global" || token === "--location=global");
+  const verbs = (valued: Set<string>) => positional(rest, valued);
+  switch (name) {
+    case "npm": return isGlobal && NPM_INSTALL_VERBS.has(verbs(MANAGER_VALUED.npm)[0] ?? "");
+    case "pnpm": return isGlobal && PNPM_INSTALL_VERBS.has(verbs(MANAGER_VALUED.pnpm)[0] ?? "");
+    case "bun": return isGlobal && BUN_INSTALL_VERBS.has(verbs(MANAGER_VALUED.bun)[0] ?? "");
+    case "yarn": {
+      const v = verbs(MANAGER_VALUED.yarn);
+      return v[0] === "global" && v[1] === "add";
+    }
+    case "brew": return ["install", "reinstall", "upgrade"].includes(verbs(new Set())[0] ?? "");
+    case "cargo": case "go": case "gem": return verbs(new Set())[0] === "install";
+    case "uv": { const v = verbs(new Set()); return v[0] === "tool" && v[1] === "install"; }
+    case "pipx": return verbs(new Set())[0] === "install";
+    case "corepack": return verbs(new Set())[0] === "enable";
+    default: return false;
+  }
+}
 
 /** Package installs and runs-by-name run other people's code (owner decision P1). */
 function packageInstallRisk(name: string, words: string[], flags: string[]): string | null {
-  const first = words.slice(0, 2);
   if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") {
-    if (first.some((word) => INSTALL_WORDS.has(word))) return `installs packages (${name} ${first.find((word) => INSTALL_WORDS.has(word))})`;
+    const verbs = positional(flags, MANAGER_VALUED[name]);
+    const installVerbs = name === "npm" ? NPM_INSTALL_VERBS : name === "pnpm" ? PNPM_INSTALL_VERBS : name === "yarn" ? YARN_INSTALL_VERBS : BUN_INSTALL_VERBS;
+    let at = 0;
+    // `yarn global add x` and `yarn workspace pkg add x`.
+    if (name === "yarn" && verbs[0] === "global") at = 1;
+    else if (name === "yarn" && verbs[0] === "workspace") at = 2;
+    const verb = verbs[at];
+    if (verb !== undefined && installVerbs.has(verb)) return `installs packages (${name} ${verb})`;
     // A bare `yarn` installs.
-    if (name === "yarn" && words.length === 0 && !flags.some((flag) => ["-v", "--version", "-h", "--help"].includes(flag))) {
+    if (name === "yarn" && verbs.length === 0 && !flags.some((flag) => ["-v", "--version", "-h", "--help"].includes(flag))) {
       return "installs packages (yarn)";
     }
     return null;
   }
+  // corepack downloads and runs a package manager, in every form.
+  if (name === "corepack") return "downloads and runs a package manager (corepack)";
   if ((name === "pip" || name === "pip3") && words[0] === "install") return `installs packages (${name} install)`;
-  if (name === "uv" && ((words[0] === "pip" && words[1] === "install") || (words[0] === "tool" && (words[1] === "install" || words[1] === "run")))) {
-    return `installs packages (uv ${words[0]} ${words[1]})`;
+  if (name === "uv") {
+    const verbs = positional(flags, new Set(["--directory", "--project", "--python", "-p", "--index-url", "--config-file"]));
+    if (verbs[0] === "add" || verbs[0] === "sync") return `installs packages (uv ${verbs[0]})`;
+    if ((verbs[0] === "pip" && verbs[1] === "install") || (verbs[0] === "tool" && (verbs[1] === "install" || verbs[1] === "run"))) {
+      return `installs packages (uv ${verbs[0]} ${verbs[1]})`;
+    }
+    return null;
+  }
+  if (name === "poetry") {
+    const verb = positional(flags, new Set(["-C", "--directory", "-P", "--project"]))[0];
+    return verb === "install" || verb === "add" ? `installs packages (poetry ${verb})` : null;
   }
   if (name === "pipx" && (words[0] === "run" || words[0] === "install")) return `downloads and runs a package (pipx ${words[0]})`;
   if (name === "uvx") return `downloads and runs a package (uvx${words[0] ? ` ${words[0]}` : ""})`;
-  if ((name === "brew" || name === "cargo" || name === "gem" || name === "go") && words[0] === "install") {
-    return `installs packages (${name} install)`;
+  if (name === "brew" && ["install", "reinstall", "upgrade", "bundle"].includes(words[0] ?? "")) {
+    return `installs packages (brew ${words[0]})`;
   }
+  if ((name === "cargo" || name === "gem") && words[0] === "install") return `installs packages (${name} install)`;
+  if (name === "go" && (words[0] === "install" || words[0] === "get")) return `installs packages (go ${words[0]})`;
   return null;
 }
 
 function cloudDeployRisk(name: string, words: string[], flags: string[]): string | null {
   if (!CLOUD_CLIS.has(name)) return null;
-  const hit = words.slice(0, 4).find((word) => CLOUD_DEPLOY_WORDS.has(word) || word.startsWith("create-"));
+  const own = CLOUD_CLI_WORDS[name] ?? [];
+  const hit = words.slice(0, 8).find((word) => CLOUD_DEPLOY_WORDS.has(word) || own.includes(word)
+    || word.startsWith("create-") || word.endsWith(":create") || word.endsWith(":deploy"));
   if (hit) return `creates or deploys something in the cloud (${name} ${hit})`;
   // A bare `vercel` deploys the folder.
   if (name === "vercel" && words.length === 0 && !flags.some((flag) => ["-v", "--version", "-h", "--help"].includes(flag))) {

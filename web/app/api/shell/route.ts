@@ -18,7 +18,7 @@ import { startConnectAuthorize } from "../../../../shared/connect-flow.ts";
 import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { unbindBot } from "../../../../shared/session-bindings.ts";
-import { applyShellAction, isGrantableRootPath, profileCardIsCurrent, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
+import { applyShellAction, isGrantableRootPath, profileCardIsCurrent, proposerMayConfirm, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
 import { readProviderStore } from "../../../../shared/providers.ts";
 import { readSessionGrant, removeSessionGrant } from "../../../../shared/workspace-store.ts";
@@ -382,6 +382,15 @@ export async function PUT(request: Request) {
             return NextResponse.json({ ok: false, error: "proposal_stale" }, { status: 409 });
           }
         }
+        // The bot that raised the card must still be allowed to: a bot that
+        // lost the orchestrator role, or was deleted, cannot have its card
+        // applied after the fact.
+        if (
+          (existing.kind === "createBot" || existing.kind === "createGroup" || existing.kind === "updateBotProfile")
+          && !proposerMayConfirm(current, existing)
+        ) {
+          return NextResponse.json({ ok: false, error: "proposal_stale" }, { status: 409 });
+        }
       }
       claimed = claimProposal(body.proposalId, status);
       if (!claimed) {
@@ -401,10 +410,16 @@ export async function PUT(request: Request) {
     // has to reach that exact bot.
     let createdBotId: string | undefined;
     const profileCard = claimed?.kind === "updateBotProfile" && claimed.status === "confirmed" ? claimed : null;
+    const proposedCard = claimed
+      && claimed.status === "confirmed"
+      && (claimed.kind === "createBot" || claimed.kind === "createGroup" || claimed.kind === "updateBotProfile")
+      ? claimed
+      : null;
     const next = action
       ? updateShell((shell) => {
         // The revision is checked again under the roster lock: the pre-check
         // above read an earlier snapshot.
+        if (proposedCard && !proposerMayConfirm(shell, proposedCard)) throw new Error("proposal_stale");
         if (profileCard) {
           const target = shell.bots.find((bot) => bot.id === profileCard.botId);
           if (!profileCardIsCurrent(target, profileCard.baseRevision)) throw new Error("proposal_stale");
