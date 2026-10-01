@@ -53,6 +53,14 @@ final class AppModel: ObservableObject {
             // Leaving a chat means its end wasn't seen, so a handoff ending
             // after the switch still counts as an unread reply.
             if selectedBotId != oldValue { selectedAtLastTick = nil }
+            // The chip is per bot: show this bot's last read at once (or the
+            // placeholder) and read the server's, never keep the last bot's.
+            if selectedBotId != oldValue {
+                composerSelection.select(selectedBotId)
+                composer = composerSelection.shown
+                composerError = nil
+                Task { @MainActor [weak self] in await self?.refreshComposer() }
+            }
         }
     }
     @Published private(set) var transcript: [TranscriptRow] = []
@@ -110,7 +118,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var busyProposals: Set<String> = []
     @Published private(set) var operatorName = "Desktop owner"
     @Published private(set) var operatorInitials = "DO"
+    /// The selected bot's own model chip. Never another bot's: every read and
+    /// write names the bot and lands here only while that bot is selected.
     @Published private(set) var composer: ComposerState?
+    /// The per-bot chip cache and its stale-answer guards.
+    private var composerSelection = ComposerSelection()
+    /// The chip label each bot's running turn started on, by bot id. A pick
+    /// made while the turn runs applies to the next turn; the working row says
+    /// which model this one is still on.
+    @Published private(set) var runningModelLabels: [String: String] = [:]
     /// A model, effort or speed pick the router would not store, shown by the
     /// composer so the chip reverting does not read as the tap doing nothing.
     @Published private(set) var composerError: String?
@@ -1522,19 +1538,39 @@ final class AppModel: ObservableObject {
     }
 
     func refreshComposer() async {
-        if let next = try? await client.composer(), next != composer {
-            composer = next
+        let botId = selectedBotId
+        let token = composerSelection.readToken
+        guard let next = try? await client.composer(botId: botId) else { return }
+        applyComposer(next, for: botId, readToken: token)
+    }
+
+    /// Keep a bot's chip state, and show it only while that bot is open.
+    private func applyComposer(_ next: ComposerState, for botId: String?, readToken: Int? = nil) {
+        if composerSelection.apply(next, for: botId, readToken: readToken) {
+            composer = composerSelection.shown
         }
     }
 
     func saveComposer(modelId: String? = nil, effort: String? = nil, speed: String? = nil) async {
-        if let next = try? await client.updateComposer(modelId: modelId, effort: effort, speed: speed) {
-            composer = next
-            composerError = nil
+        let botId = selectedBotId
+        composerSelection.beginSave()
+        if let next = try? await client.updateComposer(botId: botId, modelId: modelId, effort: effort, speed: speed) {
+            applyComposer(next, for: botId)
+            if botId == selectedBotId { composerError = nil }
         } else {
-            await refreshComposer()
-            composerError = "That setting did not save."
+            if botId == selectedBotId {
+                await refreshComposer()
+                composerError = "That setting did not save."
+            }
         }
+    }
+
+    /// What the working row adds when the owner has picked another model since
+    /// this bot's turn started: the model the running turn is on.
+    func runningModelNote(for botId: String) -> String? {
+        guard let running = runningModelLabels[botId], let current = composerSelection.modelLabel(for: botId),
+              running != current else { return nil }
+        return running
     }
 
     // MARK: - Send
@@ -1618,6 +1654,9 @@ final class AppModel: ObservableObject {
         // background must not be cancelled because the owner sent here.
         cancelSend(for: bot.id)
         pending = true
+        // The turn runs on the model the chip shows now, whatever is picked
+        // after this.
+        if let label = composerSelection.modelLabel(for: bot.id) { runningModelLabels[bot.id] = label }
         // The local send owns the working row from here; a background flag
         // left over from the follower must not outlive it.
         backgroundWorking = false
@@ -2097,6 +2136,7 @@ final class AppModel: ObservableObject {
         var next = workingBotIds
         if running { next.insert(botId) } else { next.remove(botId) }
         if next != workingBotIds { workingBotIds = next }
+        if !running, runningModelLabels[botId] != nil { runningModelLabels[botId] = nil }
         if running {
             if replyReady.contains(botId) { replyReady.remove(botId) }
         } else {
@@ -2460,7 +2500,8 @@ final class AppModel: ObservableObject {
         var rows = Transcript.merge(
             events: durableEvents,
             messages: projection.messages,
-            failures: projection.failureMarks
+            failures: projection.failureMarks,
+            compactions: projection.compactionMarks
         )
         publishFailureRetry()
         let seenWidgets = Set(rows.filter { $0.kind == .widget }.compactMap { $0.text })
@@ -2697,9 +2738,10 @@ final class AppModel: ObservableObject {
         reviewerRole = payload.reviewerRole
         imageRole = payload.imageRole
         providers = payload.legacyProviders
-        if let next = payload.composer, next != composer {
-            composer = next
-        }
+        // The payload's composer is the last pick, not this bot's. The chip
+        // reads its own bot's state; a connection change can alter whether
+        // that model is available, so read it again.
+        Task { @MainActor [weak self] in await self?.refreshComposer() }
     }
 
     /// The server error code in plain words for the connect sheet.

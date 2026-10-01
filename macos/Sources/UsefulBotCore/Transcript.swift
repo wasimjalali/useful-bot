@@ -74,7 +74,8 @@ public enum Transcript {
     public static func merge(
         events: [AgentEvent],
         messages: [ChatMessage],
-        failures: [FailureMark] = []
+        failures: [FailureMark] = [],
+        compactions: [CompactionMark] = []
     ) -> [TranscriptRow] {
         var durable: [TranscriptRow] = []
         var durableUserCounts: [String: Int] = [:]
@@ -123,6 +124,18 @@ public enum Transcript {
         var failuresByAnchor: [String: [FailureMark]] = [:]
         var unplaced: [FailureMark] = []
         let messageIds = Set(messages.map(\.id))
+        var compactionsByAnchor: [String: [CompactionMark]] = [:]
+        var unplacedCompactions: [CompactionMark] = []
+        for mark in compactions {
+            if let anchor = mark.anchorId, messageIds.contains(anchor) {
+                compactionsByAnchor[anchor, default: []].append(mark)
+            } else {
+                unplacedCompactions.append(mark)
+            }
+        }
+        func compactionRow(_ mark: CompactionMark, after message: ChatMessage?) -> TranscriptRow {
+            TranscriptRow(id: mark.rowId, kind: .note, text: CompactionMark.text, at: mark.at ?? message?.at)
+        }
         for mark in failures {
             if let anchor = mark.anchorId, messageIds.contains(anchor) {
                 failuresByAnchor[anchor, default: []].append(mark)
@@ -135,6 +148,9 @@ public enum Transcript {
         }
         for message in messages {
             defer {
+                for mark in compactionsByAnchor.removeValue(forKey: message.id) ?? [] {
+                    live.append(compactionRow(mark, after: message))
+                }
                 for mark in failuresByAnchor.removeValue(forKey: message.id) ?? [] {
                     live.append(failureRow(mark, after: message))
                 }
@@ -162,6 +178,7 @@ public enum Transcript {
             }
         }
         // A mark whose row is gone still says what happened, at the end.
+        live.append(contentsOf: unplacedCompactions.map { compactionRow($0, after: nil) })
         live.append(contentsOf: unplaced.map { failureRow($0, after: nil) })
         return interleave(durable: durable, live: live)
     }

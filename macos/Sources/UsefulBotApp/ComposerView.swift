@@ -427,8 +427,12 @@ struct ComposerView: View {
         } label: {
             // The model by name, then its effort, like the Providers page chip.
             HStack(spacing: 4) {
+                // A model that is gone stays named, struck through and muted:
+                // the chip never swaps in another model on its own.
+                let unavailable = model.composer?.available == false
                 Text(ComposerView.chipLabel(model.composer?.modelLabel, max: 24) ?? "Model")
-                    .foregroundStyle(Theme.C.ink)
+                    .strikethrough(unavailable)
+                    .foregroundStyle(unavailable ? Theme.C.inkMuted : Theme.C.ink)
                     .lineLimit(1)
                 if let meta = model.composer?.chipMeta {
                     Text(meta)
@@ -1087,11 +1091,12 @@ private struct ComposerModeMenu: View {
                 .frame(height: 1)
             MenuRowButton(action: { flyout = .model }) {
                 HStack {
-                    Text("Model")
+                    Text(composer.available ? "Model" : "Model unavailable")
                         .font(.system(size: 13))
                     Spacer(minLength: 0)
                     HStack(spacing: 2) {
                         Text(composer.modelLabel)
+                            .strikethrough(!composer.available)
                             .lineLimit(1)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 11))

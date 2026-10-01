@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isGateError, requireOwner } from "../../../../../lib/desktop-gate";
 import { errorCode, rateLimited } from "../../../../../lib/api-guard";
 import { syncProviderModels } from "../../../../../lib/sync-models";
+import { ensureBotSelections } from "../../../../../lib/agent-exec";
 import {
   connectionId,
   parseConnectionId,
@@ -86,6 +87,9 @@ export async function POST(request: Request, context: { params: Promise<{ pollId
       const { providerId, credential } = result;
       if (!providerId) throw new Error("oauth_poll_unknown");
       const store = updateProviderStore((current) => {
+        // Signing in can move the last pick: bots without a model of their own
+        // are pinned to the current one first.
+        ensureBotSelections(current);
         let next = setOAuthCredential(current, providerId, credential);
         if (!activeUsable(next)) next = setActiveConnection(next, connectionId(providerId, "oauth"));
         return next;

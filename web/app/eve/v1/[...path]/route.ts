@@ -14,9 +14,18 @@ import {
   type SessionRoute,
 } from "../../../../../shared/eve-proxy.ts";
 import { catalogFor } from "../../../../../shared/live-models.ts";
-import { modelOption, modelSeesImages } from "../../../../../shared/models.ts";
-import { composerState, readProviderStore } from "../../../../../shared/providers.ts";
-import { cancelEveTurn, channelJwt, continuationBriefFor, sessionHasCompletedTurn, syncSessionWorkspace } from "../../../../lib/agent-exec";
+import { exactModelOption, modelSeesImages } from "../../../../../shared/models.ts";
+import { readProviderStore } from "../../../../../shared/providers.ts";
+import { botSelection, lastPick } from "../../../../../shared/session-selection.ts";
+import {
+  botSelectionUsable,
+  cancelEveTurn,
+  channelJwt,
+  continuationBriefFor,
+  ensureBotSelections,
+  sessionHasCompletedTurn,
+  syncSessionWorkspace,
+} from "../../../../lib/agent-exec";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
@@ -27,11 +36,15 @@ import { eveOrigin } from "../../../../../shared/stack.ts";
 
 const EVE = eveOrigin();
 
-/** True only when the catalog says the active model is text-only. */
-function rejectsImages(): boolean {
-  const composer = composerState(readProviderStore());
-  const catalog = catalogFor(composer.connectionId || composer.providerId);
-  const model = modelOption(composer.providerId, composer.modelId, catalog);
+/**
+ * True only when the catalog says the bot's own model is text-only. The model
+ * is the one the turn will run on (the bot's selection), looked up exactly: a
+ * model the catalog does not list is unknown, not the list's first model.
+ */
+function rejectsImages(bot: ShellBot | null): boolean {
+  const store = readProviderStore();
+  const selection = bot ? botSelection(bot, store) : lastPick(store);
+  const model = exactModelOption(selection.modelId, catalogFor(selection.connectionId));
   return modelSeesImages(model) === false;
 }
 
@@ -144,8 +157,12 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // the call, and the session would retire on the failed turn. A model
       // the catalog does not know goes through, and the upstream decides.
       try {
-        const parsed = parseTurnMessage((JSON.parse(new TextDecoder().decode(body)) as { message?: unknown }).message);
-        if (parsed !== null && turnHasImages(parsed) && rejectsImages()) {
+        const sent = JSON.parse(new TextDecoder().decode(body)) as { message?: unknown; botId?: unknown };
+        const parsed = parseTurnMessage(sent.message);
+        const sender = typeof sent.botId === "string"
+          ? readShell().bots.find((item) => item.id === sent.botId) ?? null
+          : null;
+        if (parsed !== null && turnHasImages(parsed) && rejectsImages(sender)) {
           return Response.json({ ok: false, error: "model_no_vision" }, { status: 400 });
         }
       } catch {
@@ -185,6 +202,16 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       }
       if (extras.retry) notes.push(RETRY_NOTE);
+      // Pin any bot that has no model of its own to the current last pick
+      // before the roster is read for this turn. Outside the rewrite's catch
+      // on purpose: a pin that failed must not let the turn run on a model
+      // that a later pick could move.
+      try {
+        ensureBotSelections();
+      } catch (err) {
+        console.error("bot selections could not be pinned", err instanceof Error ? err.message : err);
+        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+      }
       try {
         const raw = new TextDecoder().decode(body);
         const shell = readShell();
@@ -206,6 +233,30 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           return Response.json({ ok: false, error: "eve_message_invalid" }, { status: 400 });
         }
         /* keep the original body: a malformed turn must fail at eve, not here */
+      }
+      // The bot's own model has to be servable before the turn reaches eve:
+      // its connection signed in and its model still in the live list. The
+      // router would refuse it too, but a turn eve has accepted and failed
+      // retires the session, so the owner is told here and picks again. Never
+      // a quiet switch to another model.
+      let usable = true;
+      try {
+        usable = bot === null || botSelectionUsable(bot);
+      } catch (err) {
+        console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
+        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
+      }
+      if (!usable) {
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "model_selection_unavailable",
+              message: "This bot's model or its connection is no longer available. Pick a model for it again.",
+            },
+          },
+          { status: 409 },
+        );
       }
       // Outside the body-rewrite try on purpose. The tools that run during
       // this turn read the workspace grant for the session, so it has to be

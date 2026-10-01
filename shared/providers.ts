@@ -11,7 +11,7 @@ import {
   type Protocol,
   type ProviderMode,
 } from "./provider-catalog.ts";
-import { catalogFor } from "./live-models.ts";
+import { cachedModels, catalogFor } from "./live-models.ts";
 import {
   effortLabel,
   humanizeModelId,
@@ -23,8 +23,10 @@ import {
   type ComposerGroup,
   type ComposerPublic,
   type EffortId,
+  type ModelOption,
   type SpeedId,
 } from "./models.ts";
+import type { ModelSelection } from "./session-selection.ts";
 import { statePath } from "./stack.ts";
 
 /** @deprecated Slice 2 owns provider ids now. Use the catalogue connection id instead. */
@@ -1066,27 +1068,33 @@ export function legacyProviders(store: ProviderStore, env: NodeJS.ProcessEnv = p
   return rows;
 }
 
-export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ComposerPublic {
+/**
+ * One group per connected connection, the given one first. Same per
+ * connection lists the roles picker reads, so the flyout never disagrees.
+ */
+function composerGroups(store: ProviderStore, env: NodeJS.ProcessEnv, firstId: string | undefined): ComposerGroup[] {
   const implicit = !store.connections["opencode-go:plan"] ? envConnection(env) : null;
   const listed = [...Object.values(store.connections)];
   if (implicit) listed.push(implicit);
   const connected = listed.filter((conn) => conn.id === implicit?.id || isConnected(conn));
-  const envActive = !store.activeConnectionId || store.activeConnectionId === "opencode-go:plan";
-  const conn = activeConnection(store, env)
-    ?? ((envActive && env.UB_OPENCODE_GO_KEY) ? envConnection(env) : null);
-  // One group per connected connection, the active one first. Same per
-  // connection lists the roles picker reads, so the flyout never disagrees.
   const ordered = [...connected].sort((a, b) => {
-    if (a.id === conn?.id) return -1;
-    if (b.id === conn?.id) return 1;
+    if (a.id === firstId) return -1;
+    if (b.id === firstId) return 1;
     return 0;
   });
-  const groups: ComposerGroup[] = ordered.map((row) => ({
+  return ordered.map((row) => ({
     connectionId: row.id,
     label: connectionLabel(row),
     icon: providerDef(row.providerId).icon,
     models: modelRows(row.id),
   }));
+}
+
+export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ComposerPublic {
+  const envActive = !store.activeConnectionId || store.activeConnectionId === "opencode-go:plan";
+  const conn = activeConnection(store, env)
+    ?? ((envActive && env.UB_OPENCODE_GO_KEY) ? envConnection(env) : null);
+  const groups = composerGroups(store, env, conn?.id);
   if (!conn) {
     return {
       providerId: "",
@@ -1101,6 +1109,7 @@ export function composerState(store: ProviderStore, env: NodeJS.ProcessEnv = pro
       speeds: [],
       models: [],
       groups,
+      available: false,
     };
   }
   const mode = providerMode(conn.providerId, conn.mode);
@@ -1149,6 +1158,170 @@ export function pickComposerModel(store: ProviderStore, pick: string, env: NodeJ
   return modelId ? setComposer(next, { modelId }) : next;
 }
 
+/**
+ * A bot's own pick cannot be served: its connection is gone or signed out, or
+ * its model left a live list. Carries the code the router and the apps map to
+ * a plain sentence. Never a reason to run something else: the caller refuses.
+ */
+export class ModelSelectionUnavailableError extends Error {
+  readonly code = "model_selection_unavailable";
+  readonly reason: "connection_missing" | "provider_disconnected" | "model_missing";
+  constructor(reason: "connection_missing" | "provider_disconnected" | "model_missing") {
+    super("model_selection_unavailable");
+    this.reason = reason;
+  }
+}
+
+/** The connection a selection names, including the implicit env-key Go plan row. */
+function selectionConnection(store: ProviderStore, id: string, env: NodeJS.ProcessEnv): Connection | undefined {
+  return store.connections[id] ?? (id === "opencode-go:plan" ? envConnection(env) ?? undefined : undefined);
+}
+
+/**
+ * The vendor's own list as last fetched, or empty when there is none. Same
+ * lookup as `catalogFor` minus its static fallback: the static list is only the
+ * mode's two defaults, so a model absent from it says nothing, while one absent
+ * from a fetched list was really removed.
+ */
+function liveCatalog(id: string): ModelOption[] {
+  const live = cachedModels(id);
+  if (live.length > 0) return live;
+  try {
+    return cachedModels(parseConnectionId(id).providerId);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Can this selection carry a turn right now. A model is only refused when a
+ * fetched list exists and lacks it: custom servers, Ollama and LM Studio
+ * often have no list, and a free-form id there must go through.
+ */
+export function selectionAvailability(
+  store: ProviderStore,
+  selection: ModelSelection,
+  env: NodeJS.ProcessEnv = process.env,
+): { available: true } | { available: false; reason: ModelSelectionUnavailableError["reason"] } {
+  const conn = selectionConnection(store, selection.connectionId, env);
+  if (!conn) return { available: false, reason: "connection_missing" };
+  if (!isConnected(conn)) return { available: false, reason: "provider_disconnected" };
+  const live = liveCatalog(conn.id);
+  if (live.length > 0 && !live.some((item) => item.id === selection.modelId)) {
+    return { available: false, reason: "model_missing" };
+  }
+  return { available: true };
+}
+
+/**
+ * The composer for one bot's selection. Effort and speed snap to the stored
+ * model's own levels, but a model that is missing is shown as stored, with
+ * `available: false`, and never replaced by another one.
+ */
+export function botComposerState(
+  store: ProviderStore,
+  selection: ModelSelection,
+  env: NodeJS.ProcessEnv = process.env,
+): ComposerPublic {
+  const conn = selectionConnection(store, selection.connectionId, env);
+  const usable = conn !== undefined && isConnected(conn);
+  const groups = composerGroups(store, env, usable ? conn.id : selection.connectionId);
+  if (!conn || !usable) {
+    let providerId = selection.connectionId;
+    let providerName = "";
+    try {
+      providerId = parseConnectionId(selection.connectionId).providerId;
+      providerName = providerDef(providerId).name;
+    } catch {
+      /* a connection id the catalogue no longer knows shows blank, still unavailable */
+    }
+    return {
+      providerId,
+      connectionId: selection.connectionId,
+      providerName,
+      modelId: selection.modelId,
+      modelLabel: humanizeModelId(selection.modelId),
+      effort: selection.effort,
+      effortLabel: selection.effort ? effortLabel(selection.effort) : null,
+      speed: selection.speed,
+      efforts: [],
+      speeds: [],
+      models: [],
+      groups,
+      available: false,
+    };
+  }
+  const name = conn.providerId === "custom" && conn.fields.name ? conn.fields.name : providerDef(conn.providerId).name;
+  const snapped = snapComposer(conn.id, name, selection.modelId, selection.effort, selection.speed, catalogFor(conn.id), groups, true);
+  return { ...snapped, available: selectionAvailability(store, selection, env).available };
+}
+
+/**
+ * One bot's pick, applied to that bot's selection and nothing else. Returns the
+ * new selection and the store with the last pick moved to it (the default for
+ * bots that have not chosen). A full pick ("<connection>::<model>") goes
+ * through the same code as the legacy global pick; effort and speed snap to
+ * the model's own levels without ever re-resolving the model, so a bot whose
+ * model dropped out of a list keeps it, and the change is refused instead.
+ */
+export function applyBotPick(
+  store: ProviderStore,
+  base: ModelSelection,
+  patch: { modelId?: string; effort?: EffortId | null; speed?: SpeedId },
+  env: NodeJS.ProcessEnv = process.env,
+): { store: ProviderStore; selection: ModelSelection } {
+  let working = store;
+  let selection = base;
+  if (patch.modelId !== undefined) {
+    const start: ProviderStore = {
+      ...store,
+      activeConnectionId: base.connectionId,
+      selectedModel: base.modelId,
+      effort: base.effort,
+      speed: base.speed,
+    };
+    // A bare model id means "on this bot's connection", which has to exist.
+    if (!patch.modelId.includes("::")) {
+      const conn = selectionConnection(store, base.connectionId, env);
+      if (!conn || !isConnected(conn)) throw new ModelSelectionUnavailableError(conn ? "provider_disconnected" : "connection_missing");
+    }
+    working = pickComposerModel(start, patch.modelId, env);
+    if (!working.activeConnectionId || !working.selectedModel) throw new ModelSelectionUnavailableError("model_missing");
+    selection = {
+      connectionId: working.activeConnectionId,
+      modelId: working.selectedModel,
+      effort: working.effort,
+      speed: working.speed,
+    };
+  }
+  if (patch.effort !== undefined || patch.speed !== undefined) {
+    const conn = selectionConnection(working, selection.connectionId, env);
+    if (!conn || !isConnected(conn)) throw new ModelSelectionUnavailableError(conn ? "provider_disconnected" : "connection_missing");
+    const name = conn.providerId === "custom" && conn.fields.name ? conn.fields.name : providerDef(conn.providerId).name;
+    const snapped = snapComposer(
+      conn.id,
+      name,
+      selection.modelId,
+      patch.effort !== undefined ? patch.effort : selection.effort,
+      patch.speed !== undefined ? patch.speed : selection.speed,
+      catalogFor(conn.id),
+      [],
+      true,
+    );
+    selection = { ...selection, effort: snapped.effort, speed: snapped.speed };
+  }
+  return {
+    selection,
+    store: {
+      ...working,
+      activeConnectionId: selection.connectionId,
+      selectedModel: selection.modelId,
+      effort: selection.effort,
+      speed: selection.speed,
+    },
+  };
+}
+
 function substituteBaseUrl(mode: ProviderMode, fields: Record<string, string>): string {
   return mode.baseUrl.replace(/\{(\w+)\}/g, (_, name: string) => fields[name] ?? "");
 }
@@ -1165,6 +1338,14 @@ export function resolveUpstream(
   store: ProviderStore,
   alias: "workhorse" | "reviewer" | "image",
   env: NodeJS.ProcessEnv = process.env,
+  /**
+   * A turn's frozen selection (workhorse only). Resolved exactly: that
+   * connection with its current credential, that model, effort and speed
+   * snapped to what the model takes. A selection that cannot be served throws
+   * `model_selection_unavailable`; there is no fallback to the env key, to
+   * another connection or to the last pick.
+   */
+  selection?: ModelSelection,
 ): {
   connection: Connection;
   mode: ProviderMode;
@@ -1218,6 +1399,35 @@ export function resolveUpstream(
       fallback: !(sel && sel.connectionId === picked.id),
       model: modelId,
       key: credentialKey(picked.credential),
+    };
+  }
+  if (selection && alias === "workhorse") {
+    const verdict = selectionAvailability(store, selection, env);
+    if (!verdict.available) throw new ModelSelectionUnavailableError(verdict.reason);
+    const chosen = selectionConnection(store, selection.connectionId, env) as Connection;
+    const mode = providerMode(chosen.providerId, chosen.mode);
+    const name = chosen.providerId === "custom" && chosen.fields.name
+      ? chosen.fields.name
+      : providerDef(chosen.providerId).name;
+    const snapped = snapComposer(chosen.id, name, selection.modelId, selection.effort, selection.speed, catalogFor(chosen.id), [], true);
+    const baseUrl = chosen.providerId === "opencode-go" && env.UB_OPENCODE_GO_BASE
+      ? env.UB_OPENCODE_GO_BASE
+      : substituteBaseUrl(mode, chosen.fields);
+    return {
+      connection: chosen,
+      mode,
+      providerId: chosen.providerId,
+      modelId: selection.modelId,
+      effort: snapped.effort,
+      speed: snapped.speed,
+      baseUrl,
+      protocol: mode.protocol,
+      keyHeader: mode.keyHeader,
+      credential: chosen.credential,
+      opencodeSession: mode.opencodeSession ?? false,
+      fallback: false,
+      model: selection.modelId,
+      key: credentialKey(chosen.credential),
     };
   }
   const live = activeConnection(store, env);

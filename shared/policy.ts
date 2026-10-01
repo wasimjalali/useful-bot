@@ -86,7 +86,7 @@ export const MAX_ACTIVE_IMAGE = 4;
 /**
  * A count, like `MAX_TOOL_SCHEMAS` below, and not the real bound either:
  * `COMPLETION_BODY_LIMIT_BYTES` is what keeps the upstream payload sane, and
- * eve compacts a session at 90% of the model's window long before a
+ * eve compacts a session at 75% of the model's window (agent/agent.ts) long before a
  * conversation of this length is a problem for anyone.
  *
  * It was 256, which a bot doing real work walks through in an afternoon: every

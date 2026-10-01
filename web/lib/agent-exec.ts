@@ -37,7 +37,9 @@ import {
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
-import { recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { botSelection, lastPick } from "../../shared/session-selection.ts";
+import { readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
 import { eveOrigin } from "../../shared/stack.ts";
 
 /**
@@ -84,11 +86,42 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
   if (!sessionId) return;
   // Always stamped: the permission is the bot's whether or not a folder is
   // attached. No folder means the bot works under the owner's home.
+  // The model rides in the same write, so the agent reads one grant for both:
+  // the bot's own selection, or the last pick for a bot that has none yet
+  // (callers run ensureBotSelections first, so that is the same thing).
   upsertSessionGrant({
     sessionId,
     path: bot.workspace?.path ?? null,
     permission: bot.permission,
+    selection: botSelection(bot, readProviderStore()),
   });
+}
+
+/**
+ * Give every bot that has no model of its own the last pick as it stands now.
+ *
+ * A bot created after the per-bot change, or one from an older roster, has
+ * `model: null` and would follow whatever is picked next. This pins it to the
+ * current last pick, under the shell lock, so the pick that comes after
+ * belongs to one bot only. Call it BEFORE anything that moves the last pick
+ * (a model pick, a connect or sign-out), and before stamping a turn. Pass the
+ * store a caller holds under its own lock to pin to exactly that state.
+ * Idempotent: bots that already chose are untouched, and nothing is written
+ * when there is none to pin.
+ *
+ * Every bot is born through applyShellAction (createBot, createGroup, the
+ * seed), which leaves `model` null, so this one rule covers every path.
+ */
+export function ensureBotSelections(providerStore: ProviderStore = readProviderStore()): void {
+  if (!readShell().bots.some((bot) => bot.model === null)) return;
+  const pick = lastPick(providerStore);
+  updateShell((current) => freezeNullSelections(current, pick));
+}
+
+/** Whether the bot's selection can carry a turn: its connection is live and its model is still listed. */
+export function botSelectionUsable(bot: ShellBot): boolean {
+  const store = readProviderStore();
+  return selectionAvailability(store, botSelection(bot, store)).available;
 }
 
 /**
@@ -580,6 +613,12 @@ async function runEveTurn(
 ): Promise<{ sessionId: string; reply: string }> {
   const jwt = channelJwt();
   if (!jwt) throw new Error("channel_credential_missing");
+  // The bot's own model has to be servable before the turn exists. The code is
+  // the message, so a routine's failure note and a handoff's failure record
+  // carry it as they do the other codes here. Never a substitute model.
+  ensureBotSelections();
+  const current = readShell().bots.find((item) => item.id === bot.id) ?? bot;
+  if (!botSelectionUsable(current)) throw new Error("model_selection_unavailable");
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
   // The body the proxy would have built for this bot: identity prefix first,
   // then the caller's text. readHandoffStream arms on this exact string,

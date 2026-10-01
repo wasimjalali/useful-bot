@@ -7,16 +7,17 @@ import { BODY_LIMIT_BYTES, COMPLETION_BODY_LIMIT_BYTES, MAX_ACTIVE_IMAGE, MAX_AC
 import { enforceStack, routerDbPath, routerPort, stackName } from "../../shared/stack.ts";
 import { IMAGE_DATA_URL, MAX_IMAGE_DATA_URL_CHARS, MAX_IMAGE_PARTS } from "../../shared/attachments.ts";
 import { AuthTable } from "./auth.ts";
-import { AliasCircuit } from "./circuit.ts";
+import { AliasCircuit, circuitKey } from "./circuit.ts";
+import { SELECTION_HEADER, parseSelectionHeader, type ModelSelection } from "../../shared/session-selection.ts";
 import { ConcurrencyGate } from "./concurrency.ts";
 import { RouterError, errorBody } from "./errors.ts";
 import { LimitStore, estimateInputUnits } from "./limits.ts";
 import { entryFor, loadRegistry } from "./registry.ts";
 import { search } from "./search.ts";
-import { completeUpstream } from "./upstreams/opencode.ts";
+import { completeUpstream, resolveFor } from "./upstreams/opencode.ts";
 import { generateImage, IMAGE_USAGE_TOKENS } from "./upstreams/images.ts";
 import { readCapped } from "./read-capped.ts";
-import { usageFromPayload, usageFromSseBlock } from "../../shared/usage-parse.ts";
+import { usageFromPayload, usageFromSseBlock, type ObservedUsage } from "../../shared/usage-parse.ts";
 import { settleCompletion, settleStreamBlock } from "./tool-finish.ts";
 import { createThinkStream, flushThinkStream, noteInlineThink, splitThinkBlock, splitThinkCompletion } from "./inline-think.ts";
 
@@ -583,7 +584,21 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         const parsed = validateCompletion(body);
         const alias = auth.assertAlias(caller, parsed.model);
         const entry = entryFor(registry, alias);
-        circuit.assertClosed(entry.alias);
+        // The upstream is resolved first so the circuit can be keyed by it: a
+        // rate limit or refusal on one model must not stop the others.
+        let selection: ModelSelection | null = null;
+        if (entry.alias === "workhorse") {
+          const rawSelection = req.headers[SELECTION_HEADER];
+          try {
+            selection = parseSelectionHeader(typeof rawSelection === "string" ? rawSelection : null);
+          } catch {
+            // The header is the app's own; a malformed one is a bug to surface, not to ignore.
+            throw validationError("invalid_request", "selection_header");
+          }
+        }
+        const resolved = resolveFor(entry.alias, selection);
+        const circuitId = circuitKey(entry.alias, resolved.connection.id, resolved.modelId);
+        circuit.assertClosed(circuitId);
         const release = concurrency.acquire(ConcurrencyGate.key(caller.callerId, sessionId));
         try {
           limits.rememberRequest(stepId, caller.callerId, Date.now());
@@ -610,10 +625,11 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               sessionId,
               callerId: caller.callerId,
               signal,
+              resolved,
             });
           } catch (error) {
             if (error instanceof RouterError) {
-              circuit.recordFailure(entry.alias, error);
+              circuit.recordFailure(circuitId, error);
               throw error;
             }
             // A header-phase abort is not a RouterError: a client disconnect
@@ -623,7 +639,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (kind === "client") return;
             if (kind === "idle" || kind === "total") {
               const timeout = timeoutError(false);
-              circuit.recordFailure(entry.alias, timeout);
+              circuit.recordFailure(circuitId, timeout);
               throw timeout;
             }
             throw error;
@@ -642,8 +658,30 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             log({ request_id: requestId, event: "upstream_fallback", alias: entry.alias, provider: upstream.providerId });
           }
           void turnId;
-          const record = (usage: { inputTokens: number; outputTokens: number } | null) => {
+          // The last usage the upstream reported, for the one log line per call.
+          let lastUsage: ObservedUsage | null = null;
+          // Source for the cache and latency evals: ids and counts only, never
+          // prompt text or keys. ttfbMs is the time to the first upstream body byte.
+          const logUsage = () => {
+            const firstByteAt = upstream.timing.firstByteAt;
+            log({
+              request_id: requestId,
+              event: "upstream_usage",
+              providerId: upstream.providerId,
+              connectionId: upstream.connectionId,
+              modelId: upstream.model,
+              sessionId,
+              inputTokens: lastUsage ? lastUsage.inputTokens : null,
+              cachedInputTokens: lastUsage ? lastUsage.cachedInputTokens ?? null : null,
+              cacheWriteTokens: lastUsage ? lastUsage.cacheWriteTokens ?? null : null,
+              outputTokens: lastUsage ? lastUsage.outputTokens : null,
+              ttfbMs: firstByteAt === null ? null : firstByteAt - upstream.timing.startedAt,
+              totalMs: Date.now() - upstream.timing.startedAt,
+            });
+          };
+          const record = (usage: ObservedUsage | null) => {
             if (!usage || upstream.response.status >= 400) return;
+            lastUsage = usage;
             const reconciled = limits.reconcile(
               reservationId,
               usage,
@@ -666,7 +704,8 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (!upstream.response.body) {
               writeHeaders();
               res.end();
-              circuit.recordSuccess(entry.alias);
+              logUsage();
+              circuit.recordSuccess(circuitId);
               return;
             }
             const reader = upstream.response.body.getReader();
@@ -747,7 +786,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             } catch (error) {
               // Mid-stream protocol and timeout failures feed the circuit the
               // way header-phase ones do, so three in a minute open the alias.
-              if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
+              if (error instanceof RouterError) circuit.recordFailure(circuitId, error);
               throw error;
             } finally {
               clearTimeout(idleTimer);
@@ -768,7 +807,8 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (held) tail += `${held}\n\n`;
             if (tail) res.end(tail);
             else res.end();
-            circuit.recordSuccess(entry.alias);
+            logUsage();
+            circuit.recordSuccess(circuitId);
             return;
           }
           const firstByteTimer = setTimeout(() => controller.abort(new Error("idle_timeout")), FIRST_EVENT_MS);
@@ -782,10 +822,10 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             // feed the circuit before they propagate.
             if (kind === "idle" || kind === "total") {
               const timeout = timeoutError(false);
-              circuit.recordFailure(entry.alias, timeout);
+              circuit.recordFailure(circuitId, timeout);
               throw timeout;
             }
-            if (error instanceof RouterError) circuit.recordFailure(entry.alias, error);
+            if (error instanceof RouterError) circuit.recordFailure(circuitId, error);
             throw error;
           } finally {
             clearTimeout(firstByteTimer);
@@ -799,7 +839,8 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           settleCompletion(json);
           if (splitThinkCompletion(json)) learnInlineThink(requestId, upstream.providerId, upstream.model);
           send(res, upstream.response.status, json, outHeaders);
-          if (upstream.response.status < 500) circuit.recordSuccess(entry.alias);
+          logUsage();
+          if (upstream.response.status < 500) circuit.recordSuccess(circuitId);
           return;
         } finally {
           release();

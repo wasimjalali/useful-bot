@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { RouterError } from "../errors.ts";
 import type { RegistryEntry } from "../registry.ts";
 import { applyReasoning, modelOption, modelSeesImages } from "../../../shared/models.ts";
-import { rewrapThinkHistory, usesInlineThink } from "../inline-think.ts";
+import { rewrapThinkHistory, stripEarlierReasoning, usesInlineThink } from "../inline-think.ts";
+import { UpstreamRefusalError } from "../circuit.ts";
+import type { ModelSelection } from "../../../shared/session-selection.ts";
 import { catalogFor } from "../../../shared/live-models.ts";
 import { POLICY_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
@@ -20,12 +22,34 @@ import { postResponses } from "./openai-responses.ts";
 import { upstreamLimitError } from "../retry-after.ts";
 import { readPrefix } from "../read-capped.ts";
 
-export function sessionHeader(callerId: string, sessionId: string, role: string): string {
-  return createHash("sha256").update(`${callerId}:${sessionId}:${role}`).digest("hex");
+/**
+ * `scope` ties the key to the connection and model the call goes to, so a
+ * switch starts a fresh provider-side cache and routing key instead of reusing
+ * one that holds another model's prefix. Ids only, never a credential.
+ */
+export function sessionHeader(callerId: string, sessionId: string, role: string, scope = ""): string {
+  return createHash("sha256").update(`${callerId}:${sessionId}:${role}${scope ? `:${scope}` : ""}`).digest("hex");
+}
+
+/** The prompt_cache_key OpenAI documents: a stable string per conversation and model. */
+export function promptCacheKey(callerId: string, sessionId: string, connectionId: string, modelId: string): string {
+  return createHash("sha256").update(`${callerId}:${sessionId}:${connectionId}:${modelId}`).digest("hex").slice(0, 32);
 }
 
 export function upstreamConfigError(error: unknown): RouterError {
   const raw = error instanceof Error ? error.message : "";
+  // The bot's own pick is gone or disconnected. A refusal the owner can fix by
+  // choosing again: 4xx, so it never counts toward a circuit, and never a
+  // quiet switch to another model.
+  const thrownCode = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  if (raw === "model_selection_unavailable" || thrownCode === "model_selection_unavailable") {
+    return new RouterError({
+      status: 422,
+      type: "invalid_request_error",
+      code: "model_selection_unavailable",
+      message: "model_selection_unavailable",
+    });
+  }
   const known = raw === "upstream_credential_missing"
     || raw === "provider_unknown"
     || raw === "provider_incompatible"
@@ -115,19 +139,60 @@ export function clearConnectionError(connectionId: string): void {
   } catch { /* best effort */ }
 }
 
+export type ResolvedUpstream = ReturnType<typeof resolveUpstream>;
+
+/**
+ * Which upstream a call goes to, resolved on its own so the router can key its
+ * circuit by it before dispatching. A selection (the bot's own pick, from
+ * `x-useful-selection`) wins over the stored last pick; none means last pick.
+ */
+export function resolveFor(alias: RegistryEntry["alias"], selection?: ModelSelection | null): ResolvedUpstream {
+  try {
+    return resolveUpstream(readProviderStore(), alias, process.env, selection ?? undefined);
+  } catch (error) {
+    throw upstreamConfigError(error);
+  }
+}
+
+/**
+ * Wraps fetch so the first byte of the upstream body is timed, whatever the
+ * adapter does with the body afterwards. Headers arrive earlier than the first
+ * byte on a stream; the byte is what the eval wants.
+ */
+function timedFetch(timing: { firstByteAt: number | null }): typeof fetch {
+  return async (url, init) => {
+    timing.firstByteAt = null;
+    const res = await fetch(url, init);
+    if (!res.body) return res;
+    const body = res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        if (timing.firstByteAt === null) timing.firstByteAt = Date.now();
+        controller.enqueue(chunk);
+      },
+    }));
+    return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+  };
+}
+
 export async function completeUpstream(input: {
   entry: RegistryEntry;
   body: unknown;
   sessionId: string;
   callerId: string;
   signal: AbortSignal;
-}): Promise<{ response: Response; providerId: string; model: string; fallback: boolean }> {
-  let resolved: ReturnType<typeof resolveUpstream>;
-  try {
-    resolved = resolveUpstream(readProviderStore(), input.entry.alias, process.env);
-  } catch (error) {
-    throw upstreamConfigError(error);
-  }
+  resolved: ResolvedUpstream;
+}): Promise<{
+  response: Response;
+  providerId: string;
+  connectionId: string;
+  model: string;
+  fallback: boolean;
+  /** Wall-clock marks for the usage log line; the first byte is null until one arrives. */
+  timing: { startedAt: number; firstByteAt: number | null };
+}> {
+  const resolved = input.resolved;
+  const timing: { startedAt: number; firstByteAt: number | null } = { startedAt: Date.now(), firstByteAt: null };
+  const fetchImpl = timedFetch(timing);
   let credential = resolved.credential;
   if (credential.kind === "oauth") {
     if (accessTokenFor(resolved.providerId, credential).expired) {
@@ -160,7 +225,9 @@ export async function completeUpstream(input: {
   // model's own window may size its cap.
   const sized = option?.id === model && option.contextTokens && option.contextTokens > 0 ? option.contextTokens : null;
   const outputCap = Math.min(input.entry.maxOutputTokens, Math.floor((sized ?? POLICY_WINDOW_TOKENS) / 10));
-  const history = withoutImagesForTextModel(forwardedBody.messages, sees);
+  // Reasoning from earlier turns may belong to another model: only the
+  // current turn keeps it (see stripEarlierReasoning).
+  const history = withoutImagesForTextModel(stripEarlierReasoning(forwardedBody.messages), sees);
   const forwarded = applyReasoning(resolved.providerId, resolved.effort, resolved.speed, {
     ...forwardedBody,
     // A model that writes its thinking inline gets it back the same way.
@@ -168,6 +235,10 @@ export async function completeUpstream(input: {
       ? rewrapThinkHistory(history)
       : history,
     model,
+    // OpenAI documents prompt_cache_key; other vendors may refuse the field.
+    ...(resolved.providerId === "openai"
+      ? { prompt_cache_key: promptCacheKey(input.callerId, input.sessionId, resolved.connection.id, model) }
+      : {}),
     max_tokens: typeof payload.max_tokens === "number" ? Math.min(payload.max_tokens, outputCap) : outputCap,
   });
   const dispatch = (): Promise<Response> => {
@@ -184,10 +255,12 @@ export async function completeUpstream(input: {
       else headers.authorization = `Bearer ${auth.token}`;
     }
     if (resolved.opencodeSession) {
-      headers["x-opencode-session"] = sessionHeader(input.callerId, input.sessionId, "root");
+      headers["x-opencode-session"] = sessionHeader(input.callerId, input.sessionId, "root", `${resolved.connection.id}:${model}`);
     }
+    timing.startedAt = Date.now();
     if (resolved.protocol === "openai-responses") {
       return postResponses({
+        fetchImpl,
         baseUrl: resolved.baseUrl,
         model,
         chatgpt: resolved.providerId === "openai",
@@ -197,9 +270,18 @@ export async function completeUpstream(input: {
       });
     }
     if (resolved.protocol === "anthropic-messages") {
-      return postMessages({ baseUrl: resolved.baseUrl, model, body: forwarded, headers, signal: input.signal });
+      return postMessages({
+        baseUrl: resolved.baseUrl,
+        model,
+        body: forwarded,
+        headers,
+        signal: input.signal,
+        // Top-level cache_control is Anthropic's own documented feature.
+        cache: resolved.providerId === "anthropic",
+        fetchImpl,
+      });
     }
-    return postChatCompletions({ baseUrl: resolved.baseUrl, body: forwarded, headers, signal: input.signal });
+    return postChatCompletions({ baseUrl: resolved.baseUrl, body: forwarded, headers, signal: input.signal, fetchImpl });
   };
   let response = await dispatch();
   // One refresh and one retry on an oauth 401, then the auth failure below.
@@ -218,7 +300,7 @@ export async function completeUpstream(input: {
   }
   if (response.status >= 200 && response.status < 300) {
     clearConnectionError(resolved.connection.id);
-    return { response, providerId: resolved.providerId, model, fallback: resolved.fallback };
+    return { response, providerId: resolved.providerId, connectionId: resolved.connection.id, model, fallback: resolved.fallback, timing };
   }
   if (response.status >= 300 && response.status < 400) {
     throw new RouterError({
@@ -250,7 +332,11 @@ export async function completeUpstream(input: {
     });
   }
   const refusal = await upstreamRefusal(response);
-  throw new RouterError({
+  // A 4xx is the provider refusing this request (context overflow, invalid
+  // request, tools or images it does not take), not the upstream failing: it
+  // keeps the code the app reads, but the circuit never counts it.
+  const Failure = response.status < 500 ? UpstreamRefusalError : RouterError;
+  throw new Failure({
     status: 502,
     type: "upstream_error",
     code: "upstream_protocol_error",
