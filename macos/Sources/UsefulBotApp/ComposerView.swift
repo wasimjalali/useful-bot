@@ -1093,12 +1093,13 @@ private struct ComposerModeMenu: View {
                 .frame(height: 1)
             MenuRowButton(action: { flyout = .model }) {
                 HStack {
-                    Text(composer.available ? "Model" : "Model unavailable")
+                    let named = ComposerView.chipLabel(composer.modelLabel) != nil
+                    Text(composer.available || !named ? "Model" : "Model unavailable")
                         .font(.system(size: 13))
                     Spacer(minLength: 0)
                     HStack(spacing: 2) {
                         Text(composer.modelLabel)
-                            .strikethrough(!composer.available)
+                            .strikethrough(!composer.available && named)
                             .lineLimit(1)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 11))
