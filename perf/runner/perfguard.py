@@ -23,6 +23,7 @@ import os
 import plistlib
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -323,7 +324,38 @@ class Launch:
     def execute(self, timeout_s=900, record=True):
         self.app.quit_all()
         time.sleep(1.0)
-        self.t_launch = self.app.launch(self.scenario_path)
+        failure = None
+        # Whatever ends this launch (done, quit, error, Ctrl-C, SIGTERM), the finally quits
+        # the app it started, so two Useful Bot Dev never share one state folder.
+        try:
+            self.t_launch = self.app.launch(self.scenario_path)
+            return self._run(timeout_s, record)
+        except BaseException as err:
+            failure = err
+            raise
+        finally:
+            # A handler defers SIGTERM/SIGHUP while quitting, not a signal mask: a blocked mask
+            # is inherited by the osascript children quit_all execs, a Python handler is not.
+            # A signal that arrives is re-delivered once the quit is done.
+            seen = []
+            saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+            for s in saved:
+                signal.signal(s, lambda signum, _frame: seen.append(signum))
+            quit_failed = True
+            try:
+                self.app.quit_all()
+                quit_failed = False
+            except SystemExit:
+                if failure is not None:
+                    print(f"{self.name}: {failure!r}, and then the app would not quit", file=sys.stderr)
+                raise
+            finally:
+                for s, h in saved.items():
+                    signal.signal(s, h)
+                if seen and not quit_failed:
+                    signal.raise_signal(seen[0])
+
+    def _run(self, timeout_s, record):
         pid = None
         for _ in range(300):
             pid = self.app.pid_of_this_copy()
@@ -341,11 +373,19 @@ class Launch:
                  "--fps", str(CONFIG["fps"]), "--scale", str(CONFIG["scale"]),
                  "--crop", f"{crop['left']},{crop['top']},{crop['right']},{crop['bottom']}"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            line = rec.stdout.readline()
-            if not line.startswith("recording"):
+            # A failure or signal before the main try below must not leave the recorder running.
+            try:
+                line = rec.stdout.readline()
+                if not line.startswith("recording"):
+                    raise RuntimeError(f"{self.name}: recorder failed: {line}{rec.stderr.read()}")
+                self.window = line.split()[1:]
+            except BaseException:
                 rec.kill()
-                raise RuntimeError(f"{self.name}: recorder failed: {line}{rec.stderr.read()}")
-            self.window = line.split()[1:]
+                try:
+                    rec.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
         deadline = time.time() + timeout_s
         end = None
         # Other work is sampled every ~2 s while the launch runs: a burst in
@@ -389,8 +429,6 @@ class Launch:
             raise RuntimeError(f"{self.name}: the app aborted the scenario: {end.get('why')}")
         if end["ev"] == "exited":
             raise RuntimeError(f"{self.name}: the app exited before the scenario ended")
-        if end["ev"] == "done":
-            self.app.quit_all()
         return self
 
     def marks(self):
@@ -902,6 +940,10 @@ def main():
             p.add_argument("--resume", nargs=2, metavar=("KEY", "TURN"),
                            help="send one fixture's turns from TURN on, into its existing chat")
     args = ap.parse_args()
+    # SIGTERM and SIGHUP end Python without running except or finally blocks; as
+    # SystemExit they run the same cleanup as Ctrl-C (quit the app, reopen the installed one).
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda signum, frame: sys.exit(128 + signum))
     {"check": cmd_check, "baseline": cmd_baseline, "fixtures": cmd_fixtures, "lock": cmd_lock}[args.cmd](args)
 
 
