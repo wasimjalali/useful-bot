@@ -4,13 +4,16 @@
     perfguard.py check     [--app PATH] [--quick]   measure every case, compare to budgets.json
     perfguard.py baseline  [--app PATH]             measure, then propose budgets from the numbers
     perfguard.py fixtures  [--app PATH]             build the frozen fixture chats, then lock them
-    perfguard.py lock      [--app PATH]             re-read the fixtures and write fixtures.lock.json
+    perfguard.py lock      [--app PATH]             re-read the fixtures and write the lock file (config.json fixtureLock)
 
 The app does the driving: launched with `-UsefulBotPerfRun <scenario.json>`
 it runs the scenario's steps and writes timed marks (CLOCK_UPTIME_RAW ns).
 `perfrec` records the window at 60 fps and scores how much the chat column
 changed on each frame, on the same clock. This script launches, records,
 lines the two up and judges. See perf/README.md for the method and its limits.
+
+It drives the dev app ("Useful Bot Dev", its own state and ports) only, and
+refuses any other bundle. The daily app is never quit, launched or measured.
 """
 import argparse
 import datetime
@@ -70,6 +73,14 @@ class App:
         with open(info, "rb") as f:
             plist = plistlib.load(f)
         self.bundle_id = plist["CFBundleIdentifier"]
+        # The run quits, launches and kills by this bundle id and executable
+        # name. It drives the dev app on the dev stack and nothing else: the
+        # daily app and its services are the owner's and are never touched.
+        if self.bundle_id == "ai.useful.bot" or self.bundle_id != CONFIG["bundleId"]:
+            sys.exit(f"{self.path} is {self.bundle_id}; the perf run only drives {CONFIG['bundleId']} "
+                     f"(build it with npm run build:dev-app)")
+        if plist["CFBundleExecutable"] != CONFIG["executable"]:
+            sys.exit(f"{self.path} runs {plist['CFBundleExecutable']}, not {CONFIG['executable']}")
         self.exe = os.path.join(self.path, "Contents/MacOS", plist["CFBundleExecutable"])
         with open(self.exe, "rb") as f:
             self.exe_sha = hashlib.sha256(f.read()).hexdigest()
@@ -121,7 +132,7 @@ def owner_selection():
     early leaves a fixture open, and every later run then "restored" the
     fixture. The last non-fixture selection is remembered across runs.
     """
-    path = os.path.join(PERF, ".runs", "owner-selection.json")
+    path = os.path.join(ROOT, CONFIG["ownerSelectionFile"])
     state = shell_state()
     names = {b["id"]: b["name"] for b in state["bots"]}
     current = state.get("selectedBotId")
@@ -234,13 +245,32 @@ def preflight(app):
     if cpu > CONFIG["maxExternalCpu"]:
         problems.append(f"the machine is busy ({cpu:.0f}% CPU in other work, limit {CONFIG['maxExternalCpu']}%: "
                         f"{'; '.join(top)}): it would be timed too")
-    # The web service serves its production build only while the sources still
-    # hash to what it was built from, and only a process started after that
-    # build serves it. Anything else is `next dev`, which is several times slower.
-    fresh = run([CONFIG["node"], "--input-type=module", "-e",
-                 "import('./scripts/web-mode.mjs').then(m => console.log(m.webLaunch(process.cwd()).mode))"], cwd=ROOT).stdout.strip()
-    stamp = os.path.join(ROOT, CONFIG["webBuildStamp"])
-    pids = run(["pgrep", "-f", CONFIG["webServiceProcess"]]).stdout.split()
+    # The dev app runs its services from a copy of the runtime it carries, under
+    # its own Application Support folder, never from this checkout. That copy
+    # serves the production web build, and only a process started after the copy
+    # does. A copy that is not the one in the app under test (the app was built
+    # but not opened since) is the previous build's code.
+    install = os.path.expanduser(CONFIG["devInstallRoot"])
+    stamp = os.path.join(install, ".ub-runtime-version")
+    def read_stamp(path):
+        try:
+            return open(path).read().strip()
+        except OSError:
+            return None
+    carried = read_stamp(os.path.join(app.path, "Contents/Resources/runtime/.ub-runtime-version"))
+    installed = read_stamp(stamp)
+    facts["runtimeStamp"] = installed
+    if carried is None:
+        problems.append(f"the app carries no runtime ({CONFIG['buildHint']})")
+    elif installed != carried:
+        problems.append(f"the dev services run runtime {installed or 'none'}, the app carries {carried} ({CONFIG['buildHint']})")
+    fresh = "unknown"
+    if installed is not None:
+        fresh = run([CONFIG["node"], "--input-type=module", "-e",
+                     "import('./scripts/web-mode.mjs').then(m => console.log(m.webLaunch(process.argv[1]).mode))", install], cwd=ROOT).stdout.strip()
+    # Found by the dev web port, never by process name: a name match would
+    # also find the daily app's web service.
+    pids = run(["lsof", "-nP", "-t", f"-iTCP:{CONFIG['webPort']}", "-sTCP:LISTEN"]).stdout.split()
     started_after = False
     if pids and os.path.exists(stamp):
         lstart = run(["ps", "-o", "lstart=", "-p", pids[0]]).stdout.strip()
@@ -764,7 +794,7 @@ def write_record(outdir):
 
 def cmd_check(args):
     budgets = load_json(os.path.join(PERF, "budgets.json"))
-    lock = load_json(os.path.join(PERF, "fixtures.lock.json"))
+    lock = load_json(os.path.join(ROOT, CONFIG["fixtureLock"]))
     app, facts, outdir, stamp, samples, summary, failures, done, seconds = measure(args, args.quick)
     breaches = judge(summary, budgets) + fixture_check(samples, lock)
     report(args, "check", app, facts, outdir, stamp, samples, summary, failures, done, seconds, breaches)
@@ -773,7 +803,7 @@ def cmd_check(args):
 
 
 def cmd_baseline(args):
-    lock = load_json(os.path.join(PERF, "fixtures.lock.json"))
+    lock = load_json(os.path.join(ROOT, CONFIG["fixtureLock"]))
     app, facts, outdir, stamp, samples, summary, failures, done, seconds = measure(args, False)
     problems = fixture_check(samples, lock) + [f"{c}: {p}" for c, g in summary.items() for p in g["problems"]]
     dest = report(args, "baseline", app, facts, outdir, stamp, samples, summary, failures, done, seconds, problems)
@@ -856,7 +886,7 @@ def cmd_lock(args):
             bot = ids[m["bot"]]
             lock["bots"][bot["name"]] = {"sessionId": bot.get("sessionId"), "events": m.get("events"),
                                          "rows": m.get("rows"), "blocks": m.get("blocks")}
-    write_json(os.path.join(PERF, "fixtures.lock.json"), lock)
+    write_json(os.path.join(ROOT, CONFIG["fixtureLock"]), lock)
     print(json.dumps(lock, indent=2))
 
 

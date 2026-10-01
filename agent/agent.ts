@@ -5,6 +5,7 @@ import { currentWindowTokens } from "./lib/model-window.ts";
 import { routerFetch } from "./lib/router-fetch.ts";
 import { turnIdOf } from "./lib/router-identity.ts";
 import { perSessionModel } from "./lib/session-model.ts";
+import { routerApiBase } from "../shared/stack.ts";
 
 const PLANTED = "S2-TOOL-PLANT-001";
 
@@ -152,7 +153,7 @@ const routerModel = perSessionModel((ids) => {
   }
   const provider = createOpenAICompatible({
     name: "useful-bot-router",
-    baseURL: process.env.UB_ROUTER_BASE_URL ?? "http://127.0.0.1:4319/v1",
+    baseURL: routerApiBase(),
     apiKey: token,
     fetch: routerFetch({ ids }),
   });

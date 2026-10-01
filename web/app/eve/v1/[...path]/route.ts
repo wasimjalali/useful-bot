@@ -23,8 +23,9 @@ import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
 import { carryOverLineage, continueFromVerdict, settleContinuation, type ShellBot } from "../../../../../shared/shell-store.ts";
 import { removeSessionGrant } from "../../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../../shared/threads.ts";
+import { eveOrigin } from "../../../../../shared/stack.ts";
 
-const EVE = "http://127.0.0.1:4321";
+const EVE = eveOrigin();
 
 /** True only when the catalog says the active model is text-only. */
 function rejectsImages(): boolean {

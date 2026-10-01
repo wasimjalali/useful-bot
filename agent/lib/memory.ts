@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { statePath } from "../../shared/stack.ts";
 
 export type Audience = "desktop" | "shared-phone";
 
@@ -109,10 +110,10 @@ function containsSecret(lowered: string): boolean {
   return SECRET_KEY_PATTERN.test(lowered);
 }
 
-function memoryRoot(): string {
+export function memoryRoot(): string {
   const fromEnv = process.env.UB_MEMORY_ROOT;
   if (fromEnv) return fromEnv;
-  return join(process.env.HOME ?? "/tmp", ".useful-bot/memory");
+  return statePath("memory");
 }
 
 function parseNote(raw: string): { meta: NoteMeta; body: string } {

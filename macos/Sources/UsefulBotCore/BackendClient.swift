@@ -293,7 +293,7 @@ public actor BackendClient {
     private var exchangeClosed = false
 
     public init(
-        base: URL = URL(string: "http://127.0.0.1:4320")!,
+        base: URL = AppVariant.current.webBaseURL,
         tokenStore: any DeviceTokenStore,
         endpointPolicy: any EndpointPolicy
     ) throws {
@@ -320,8 +320,8 @@ public actor BackendClient {
     /// from the login Keychain through `security`, and a non-loopback base
     /// resolves to the supervised local service.
     public init(
-        base: URL = URL(string: "http://127.0.0.1:4320")!,
-        tokenService: String = "com.usefulbot.device.desktop"
+        base: URL = AppVariant.current.webBaseURL,
+        tokenService: String = AppVariant.current.deviceTokenService
     ) throws {
         try self.init(
             base: base,
@@ -1108,14 +1108,22 @@ public actor BackendClient {
 
     /// Move the router's daily token budget. `nil` restores the shipped
     /// default. Answers with the refreshed usage so the pane never shows a
-    /// number the server did not accept.
+    /// number the server did not accept. The request budget is left alone.
     public func setDailyTokenBudget(_ tokens: Int?) async throws -> UsagePayload {
+        try await putBudget(["dailyTokenBudget": tokens as Any? ?? NSNull()])
+    }
+
+    /// Move the daily request budget; same contract as the token one.
+    public func setDailyRequestBudget(_ requests: Int?) async throws -> UsagePayload {
+        try await putBudget(["dailyRequestBudget": requests as Any? ?? NSNull()])
+    }
+
+    private func putBudget(_ body: [String: Any]) async throws -> UsagePayload {
         let (data, response) = try await perform { client, token in
             var request = URLRequest(url: client.base.appendingPathComponent("api/usage"))
             request.httpMethod = "PUT"
             request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
-            let body: [String: Any] = ["dailyTokenBudget": tokens as Any? ?? NSNull()]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             return request
         }

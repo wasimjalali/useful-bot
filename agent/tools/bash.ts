@@ -9,6 +9,7 @@ import { runCommand } from "../lib/run-command.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
 import { FORBIDDEN_PATH_SUBSTRINGS } from "../../shared/policy.ts";
+import { APP_STATE_DIR, mentionsAppState } from "../../shared/stack.ts";
 import { ownerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 
@@ -30,9 +31,6 @@ const MAX_TIMEOUT_MS = 30 * 60_000;
  */
 const BLOCKED_COMMAND_SUBSTRINGS = [
   ...FORBIDDEN_PATH_SUBSTRINGS,
-  // The app's own stores: approvals, the roster, the grants. read_file and
-  // list_dir refuse the same name; a shell line must not be the way round.
-  ".useful-bot",
   "/etc",
   "/private/etc",
   "/var/db",
@@ -53,6 +51,11 @@ function blockedReason(command: string, scoped: boolean): string | null {
   for (const part of scoped ? [...BLOCKED_COMMAND_SUBSTRINGS, ...SCOPED_COMMAND_SUBSTRINGS] : BLOCKED_COMMAND_SUBSTRINGS) {
     if (lowered.includes(part.toLowerCase())) return `command references ${part}`;
   }
+  // The app's own stores: approvals, the roster, the grants. read_file and
+  // list_dir refuse the same names; a shell line must not be the way round.
+  // Every state folder, in either stack (.useful-bot, .useful-bot-dev-app),
+  // and both runtime install folders (Library/Application Support/Useful Bot[ Dev]).
+  if (mentionsAppState(command)) return `command references ${APP_STATE_DIR} or the app's install folder`;
   return null;
 }
 

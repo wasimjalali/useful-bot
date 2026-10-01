@@ -11,8 +11,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { statePath } from "./stack.ts";
 import type { ThreadKind } from "./agent-store.ts";
 
 /**
@@ -70,7 +70,7 @@ export type HandoffDraft = Pick<
 
 export function handoffDir(): string {
   if (process.env.UB_HANDOFF_DIR) return process.env.UB_HANDOFF_DIR;
-  return join(homedir(), ".useful-bot", "handoffs");
+  return statePath("handoffs");
 }
 
 function clip(value: unknown, max: number): string {

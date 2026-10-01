@@ -12,8 +12,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { statePath } from "../../shared/stack.ts";
 import { POLICY_APPROVAL_TTL_MS } from "../../shared/policy.ts";
 
 /**
@@ -120,7 +120,7 @@ export function approvalActor(ctx?: ApprovalActorContext): {
 
 export function defaultApprovalsPath(): string {
   if (process.env.UB_APPROVALS_PATH) return process.env.UB_APPROVALS_PATH;
-  return join(homedir(), ".useful-bot", "approvals.json");
+  return statePath("approvals.json");
 }
 
 /**

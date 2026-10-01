@@ -742,13 +742,24 @@ public struct UsagePayload: Codable, Equatable, Sendable {
         }
     }
 
-    /// The owner's daily token budget and the range the control may move it in.
+    /// The owner's daily token budget and the floor the control may move it to.
+    /// `max` is null: there is no product ceiling, only the safe integer.
     public struct Budget: Codable, Equatable, Sendable {
         public let tokens: Int
         public let isDefault: Bool
         public let `default`: Int
         public let min: Int
-        public let max: Int
+        public let max: Int?
+        public let step: Int
+    }
+
+    /// The owner's daily request budget, shaped like the token one.
+    public struct RequestBudget: Codable, Equatable, Sendable {
+        public let requests: Int
+        public let isDefault: Bool
+        public let `default`: Int
+        public let min: Int
+        public let max: Int?
         public let step: Int
     }
 
@@ -759,6 +770,7 @@ public struct UsagePayload: Codable, Equatable, Sendable {
     public let caps: Caps
     public let week: Window?
     public let budget: Budget?
+    public let requestBudget: RequestBudget?
     public let charged: Charged?
 
     /// Tokens spent in the rolling 24 hours the caps are measured over.
@@ -777,6 +789,7 @@ public struct UsagePayload: Codable, Equatable, Sendable {
         case caps
         case week
         case budget
+        case requestBudget
         case charged
     }
 }

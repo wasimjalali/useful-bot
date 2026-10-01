@@ -8,7 +8,7 @@ import { appendAgentEvent, releaseSend, reserveSend } from "../../shared/agent-s
 import { writeImage } from "../../shared/images-store.ts";
 import { saveImage } from "../../shared/media-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
-import { ROUTER_HOST, ROUTER_PORT } from "../../shared/policy.ts";
+import { routerOrigin } from "../../shared/stack.ts";
 
 /** Image models answer slowly; two and a half minutes is the tool's ceiling. */
 const GENERATE_TIMEOUT_MS = 150_000;
@@ -41,7 +41,7 @@ export default defineTool({
     }
     let res: Response;
     try {
-      res = await fetch(`http://${ROUTER_HOST}:${ROUTER_PORT}/v1/images/generations`, {
+      res = await fetch(`${routerOrigin()}/v1/images/generations`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
