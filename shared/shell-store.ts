@@ -209,6 +209,14 @@ function isId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 80;
 }
 
+// New bots prepend, except behind a pinned, visible Generalist that is already first: that keeps
+// the starter on top of the pinned group. If the owner unpins, hides or moves it, nothing forces it back.
+function withNewBot(bots: ShellBot[], bot: ShellBot): ShellBot[] {
+  const first = bots[0];
+  if (first && first.id === DEFAULT_BOT_ID && first.pinned && !first.hidden) return [first, bot, ...bots.slice(1)];
+  return [bot, ...bots];
+}
+
 export function seedStore(at = new Date()): ShellStore {
   const stamp = nowIso(at);
   return {
@@ -226,7 +234,7 @@ export function seedStore(at = new Date()): ShellStore {
         label: "",
         description: "The starter bot. General work on this Mac, and creates other bots with a name and instructions.",
         notify: false,
-        pinned: false,
+        pinned: true,
         hidden: false,
         sectionId: null,
         sessionId: null,
@@ -725,7 +733,7 @@ export function applyShellAction(
         model: null,
       };
       return {
-        store: { ...store, selectedBotId: id, bots: [bot, ...store.bots] },
+        store: { ...store, selectedBotId: id, bots: withNewBot(store.bots, bot) },
         createdId: id,
       };
     }
@@ -762,7 +770,7 @@ export function applyShellAction(
         model: null,
       };
       return {
-        store: { ...store, selectedBotId: id, bots: [group, ...store.bots] },
+        store: { ...store, selectedBotId: id, bots: withNewBot(store.bots, group) },
         createdId: id,
       };
     }

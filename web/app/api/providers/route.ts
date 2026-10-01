@@ -5,9 +5,8 @@ import { keyRejectedFor, syncProviderModels } from "../../../lib/sync-models";
 import { connectionId, parseConnectionId } from "../../../../shared/provider-catalog.ts";
 import { readShell } from "../../../../shared/shell-io.ts";
 import type { ShellBot } from "../../../../shared/shell-store.ts";
-import { botSelection } from "../../../../shared/session-selection.ts";
+import { botComposer } from "../../../../shared/session-selection.ts";
 import {
-  botComposerState,
   composerState,
   legacyProviders,
   publicProviders,
@@ -41,7 +40,7 @@ function payload(store: ProviderStore, bot: ShellBot | null = null) {
   return {
     ok: true as const,
     ...publicProviders(store),
-    composer: bot ? botComposerState(store, botSelection(bot, store)) : composerState(store),
+    composer: bot ? botComposer(bot, store) : composerState(store),
     providers: legacyProviders(store),
     activeProviderId: legacyActiveId(store),
   };

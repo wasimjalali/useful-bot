@@ -70,9 +70,91 @@ test("seed store has compact Generalist in Unassigned", () => {
   const store = seedStore(new Date("2026-09-12T00:00:00Z"));
   assert.equal(store.bots.length, 1);
   assert.equal(store.bots[0].id, DEFAULT_BOT_ID);
-  assert.equal(store.bots[0].pinned, false);
+  assert.equal(store.bots[0].pinned, true);
+  assert.equal(store.bots[0].hidden, false);
   assert.equal(store.bots[0].sectionId, null);
   assert.equal(selectedBot(store).name, "Generalist");
+});
+
+function createNamed(store: ReturnType<typeof seedStore>, name: string) {
+  return applyShellAction(store, { type: "createBot", name });
+}
+
+test("UB-010: three bots on a fresh seed, two pinned, keep the Generalist on top of the pinned group", () => {
+  let store = seedStore();
+  const a = createNamed(store, "Alpha");
+  const b = createNamed(a.store, "Beta");
+  const c = createNamed(b.store, "Gamma");
+  store = applyShellAction(c.store, { type: "pin", botId: a.createdId! }).store;
+  store = applyShellAction(store, { type: "pin", botId: c.createdId! }).store;
+  assert.deepEqual(
+    pinnedBots(store).map((bot) => bot.name),
+    ["Generalist", "Gamma", "Alpha"],
+  );
+  assert.equal(store.bots[0].id, DEFAULT_BOT_ID);
+  assert.deepEqual(store.bots.filter((bot) => !bot.pinned).map((bot) => bot.name), ["Beta"]);
+  const d = createNamed(store, "Delta");
+  assert.deepEqual(d.store.bots.map((bot) => bot.name), ["Generalist", "Delta", "Gamma", "Beta", "Alpha"]);
+});
+
+test("UB-010: unpinned Generalist is not forced back, new bots prepend", () => {
+  let store = seedStore();
+  store = applyShellAction(store, { type: "pin", botId: DEFAULT_BOT_ID, pinned: false }).store;
+  const made = createNamed(store, "Alpha");
+  assert.equal(made.store.bots[0].id, made.createdId);
+  assert.equal(made.store.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.pinned, false);
+});
+
+test("UB-010: re-pinning a Generalist that is not first does not move it, new bots prepend", () => {
+  let store = seedStore();
+  store = createNamed(store, "Alpha").store;
+  store = applyShellAction(store, { type: "pin", botId: DEFAULT_BOT_ID, pinned: false }).store;
+  store = createNamed(store, "Beta").store;
+  assert.equal(store.bots[0].name, "Beta");
+  store = applyShellAction(store, { type: "pin", botId: DEFAULT_BOT_ID, pinned: true }).store;
+  assert.equal(store.bots.findIndex((bot) => bot.id === DEFAULT_BOT_ID), 1);
+  assert.equal(store.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.pinned, true);
+  store = createNamed(store, "Gamma").store;
+  assert.deepEqual(store.bots.map((bot) => bot.name), ["Gamma", "Beta", "Generalist", "Alpha"]);
+});
+
+test("UB-010: createGroup on a fresh seed keeps the Generalist first", () => {
+  let store = seedStore();
+  const a = createNamed(store, "Alpha");
+  const b = createNamed(a.store, "Beta");
+  const group = applyShellAction(b.store, {
+    type: "createGroup",
+    name: "Desk",
+    memberIds: [a.createdId!, b.createdId!],
+  });
+  assert.deepEqual(group.store.bots.map((bot) => bot.name), ["Generalist", "Desk", "Beta", "Alpha"]);
+});
+
+test("UB-010: restart keeps pins and order, and an existing file is not reseeded", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-shell-"));
+  const path = join(dir, "shell.json");
+  let store = readShell(path);
+  assert.equal(store.bots[0].pinned, true);
+  const a = createNamed(store, "Alpha");
+  const b = createNamed(a.store, "Beta");
+  store = applyShellAction(b.store, { type: "pin", botId: b.createdId! }).store;
+  store = applyShellAction(store, { type: "pin", botId: DEFAULT_BOT_ID, pinned: false }).store;
+  writeShell(store, path);
+  const loaded = readShell(path);
+  assert.deepEqual(loaded.bots.map((bot) => [bot.name, bot.pinned]), store.bots.map((bot) => [bot.name, bot.pinned]));
+  assert.equal(loaded.bots.find((bot) => bot.id === DEFAULT_BOT_ID)?.pinned, false);
+});
+
+test("UB-010: a pre-UB-010 store (unpinned Generalist, last, old name) parses unchanged", () => {
+  const seed = seedStore();
+  const old = { ...seed.bots[0], name: "Useful Bot", pinned: false };
+  const other = createNamed(seed, "Alpha").store.bots.find((bot) => bot.name === "Alpha")!;
+  const legacy = { ...seed, selectedBotId: DEFAULT_BOT_ID, bots: [other, old] };
+  const parsed = parseShell(JSON.parse(JSON.stringify(legacy)));
+  assert.deepEqual(parsed.bots.map((bot) => [bot.id, bot.name, bot.pinned]), [
+    [other.id, "Alpha", false],
+    [DEFAULT_BOT_ID, "Useful Bot", false],
+  ]);
 });
 
 test("create section pin move hide delete and new chat", () => {
@@ -94,7 +176,7 @@ test("create section pin move hide delete and new chat", () => {
   assert.equal(selectedBot(store).avatarShape, defaultFaceFor(created.createdId!).shape);
   assert.equal(selectedBot(store).avatarColor, defaultFaceFor(created.createdId!).color);
   store = applyShellAction(store, { type: "pin", botId: created.createdId! }).store;
-  assert.equal(pinnedBots(store).length, 1);
+  assert.equal(pinnedBots(store).length, 2);
   assert.equal(sectionBots(store, section.createdId!).length, 0);
   store = applyShellAction(store, { type: "pin", botId: created.createdId!, pinned: false }).store;
   store = applyShellAction(store, { type: "move", botId: created.createdId!, sectionId: null }).store;

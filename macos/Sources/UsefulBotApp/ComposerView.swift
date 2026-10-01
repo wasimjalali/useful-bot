@@ -428,8 +428,10 @@ struct ComposerView: View {
             // The model by name, then its effort, like the Providers page chip.
             HStack(spacing: 4) {
                 // A model that is gone stays named, struck through and muted:
-                // the chip never swaps in another model on its own.
+                // the chip never swaps in another model on its own. With no
+                // model named at all (nothing connected) it is a plain "Model".
                 let unavailable = model.composer?.available == false
+                    && ComposerView.chipLabel(model.composer?.modelLabel, max: 24) != nil
                 Text(ComposerView.chipLabel(model.composer?.modelLabel, max: 24) ?? "Model")
                     .strikethrough(unavailable)
                     .foregroundStyle(unavailable ? Theme.C.inkMuted : Theme.C.ink)
