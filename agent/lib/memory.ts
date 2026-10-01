@@ -349,6 +349,9 @@ export class MemoryStore {
     return acquireDirLock(join(this.root, "index.lock"), {
       timeoutMs: LOCK_TIMEOUT_MS,
       errorCode: "memory_store_locked",
+      // A previous-version process may still be running during a restart and
+      // holds the old directory lock. Remove one release after this ships.
+      legacyDir: true,
     });
   }
 
