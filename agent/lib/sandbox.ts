@@ -195,8 +195,8 @@ export function toSbplRules(): string[] {
 }
 
 /**
- * Creating a tool's config folder directly under the owner's home, confined
- * profile only: an approved line (a first-time `codex login` makes `~/.codex`)
+ * Creating a tool's config folder directly under the owner's home, Auto's
+ * confined profile only (not Full access): an approved line (a first-time `codex login` makes `~/.codex`)
  * may, and planted files inside stay denied by the name rules either way.
  */
 export function homeCreateRules(): string[] {
@@ -350,7 +350,10 @@ export function sandboxProfile(
     // Last, so a planted hook stays refused even inside a store the rule
     // above just opened: `~/.codex` is readable to a codex line, but
     // `~/.codex/config.toml` is not writable by it.
-    ...plantedConfigRules(options.allowToolInstall === true, true),
+    // The home-folder create deny is for Auto's confined line only: Full access
+    // (unbounded) may make `~/.codex`, `~/.gemini`, `~/.config/gh` so a first-time
+    // sign-in works, and the planted files inside stay denied by the name rules.
+    ...plantedConfigRules(options.allowToolInstall === true, !unbounded),
   ].join("\n");
 }
 

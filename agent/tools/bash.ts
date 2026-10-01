@@ -246,9 +246,9 @@ export default defineTool({
         // Named, so the model reads "this ran out of time" instead of
         // guessing at exit 124 and retrying the same line unchanged.
         ...(run.timedOut ? { timedOut: true, timeoutMs } : {}),
-        // The sandbox refused a write the owner approved the line for: name the
+        // The sandbox refused a write (an approved line or a confined one): name the
         // path, so the model does not retry and the owner knows what to do.
-        ...(askOwner && run.exitCode !== 0 ? protectedPathHint(run.stderr, root) : {}),
+        ...(run.exitCode !== 0 ? protectedPathHint(run.stderr, root) : {}),
       };
     });
   },

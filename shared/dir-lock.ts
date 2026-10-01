@@ -35,27 +35,45 @@ function readOwner(lock: string): { pid: number; token: string } | null {
   }
 }
 
-// The reclaim lock guards a critical section of a few syscalls, so only age
-// can mark one abandoned.
-const RECLAIM_STALE_MS = 5_000;
+// A guard with no owner file (its taker died between mkdir and the write, or
+// is about to write) is the only kind aged out; one with an owner is never
+// taken by age, so a live reclaimer that pauses keeps it.
+const GUARD_OWNERLESS_STALE_MS = 5_000;
 
 /**
- * Remove a dead holder's lock, exclusively. Whoever holds `<lock>.reclaim`
- * re-reads the owner and removes the lock only after confirming, right then,
- * that its holder is dead (or that an owner-less lock is past the stale age).
- * A lock that was already replaced by a live holder is left alone, so two
- * waiters racing over one dead owner cannot remove each other's live lock.
- * Returns quietly when another waiter is reclaiming; throws on a real failure.
+ * Remove a dead holder's lock, exclusively. The guard `<lock>.reclaim` has the
+ * same durable ownership as the lock: pid plus token, reclaimed only when its
+ * holder pid is dead, released only by its own token. Under the guard the
+ * owner is read, judged dead, and read once more right before the removal; the
+ * removal happens only if the guard is still ours and the owner is unchanged.
+ * A lock a live holder has since taken is never removed. Returns quietly when
+ * another waiter is reclaiming; throws on a real failure.
  */
 function reclaim(lock: string, staleMs: number): void {
   const guard = `${lock}.reclaim`;
+  const token = randomUUID();
   try {
     mkdirSync(guard, { mode: 0o700 });
+    try {
+      writeFileSync(join(guard, "owner"), JSON.stringify({ pid: process.pid, token }), { mode: 0o600 });
+    } catch (err) {
+      rmSync(guard, { recursive: true, force: true });
+      throw err;
+    }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    try {
-      if (Date.now() - statSync(guard).mtimeMs > RECLAIM_STALE_MS) rmSync(guard, { recursive: true, force: true });
-    } catch { /* gone already */ }
+    // Someone holds the guard. Take it over only from a dead holder (or an
+    // ownerless one past its age), re-reading the token right before removing.
+    const holder = readOwner(guard);
+    let abandoned = false;
+    if (holder) {
+      abandoned = !pidAlive(holder.pid);
+    } else {
+      try {
+        abandoned = Date.now() - statSync(guard).mtimeMs > GUARD_OWNERLESS_STALE_MS;
+      } catch { /* gone already */ }
+    }
+    if (abandoned && readOwner(guard)?.token === holder?.token) rmSync(guard, { recursive: true, force: true });
     return;
   }
   try {
@@ -70,9 +88,13 @@ function reclaim(lock: string, staleMs: number): void {
         return; // no lock any more
       }
     }
-    if (dead) rmSync(lock, { recursive: true, force: true });
+    // One more look right before removing: the owner must be the one judged
+    // dead, and the guard must still be ours.
+    if (dead && readOwner(lock)?.token === holder?.token && readOwner(guard)?.token === token) {
+      rmSync(lock, { recursive: true, force: true });
+    }
   } finally {
-    rmSync(guard, { recursive: true, force: true });
+    if (readOwner(guard)?.token === token) rmSync(guard, { recursive: true, force: true });
   }
 }
 

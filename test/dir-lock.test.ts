@@ -94,3 +94,39 @@ test("a reclaim that fails for a real reason surfaces as the locked error instea
     chmodSync(parent, 0o700);
   }
 });
+
+test("a reclaimer that pauses holding the guard keeps it: nobody reclaims by age, and the live lock is never removed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ub-lock-pause-"));
+  const lock = join(dir, "x.lock");
+  const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+  mkdirLockedBy(lock, Number(dead.stdout), "dead-token");
+  const ready = join(dir, "ready");
+  const script = join(dir, "pauser.ts");
+  // The paused reclaimer: takes the guard as a live process, signals, then
+  // sleeps well past the old 5 s age before letting go of it.
+  writeFileSync(script, `
+    import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+    const guard = ${JSON.stringify(`${lock}.reclaim`)};
+    mkdirSync(guard);
+    writeFileSync(guard + "/owner", JSON.stringify({ pid: process.pid, token: "pauser" }));
+    writeFileSync(${JSON.stringify(ready)}, "1");
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    rmSync(guard, { recursive: true, force: true });
+  `);
+  const child = spawn(process.execPath, ["--experimental-strip-types", script], { stdio: "ignore" });
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  for (let i = 0; i < 100 && !existsSync(ready); i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(existsSync(ready), true);
+  const started = Date.now();
+  const release = acquireDirLock(lock, { timeoutMs: 20_000, staleMs: 60_000, errorCode: "test_locked" });
+  const waited = Date.now() - started;
+  // The old behaviour took the guard from the paused holder after 5 s; now the
+  // waiter has to wait for it to let go.
+  assert.ok(waited >= 6000, `waited only ${waited} ms`);
+  const owner = JSON.parse(readFileSync(join(lock, "owner"), "utf8")) as { pid: number };
+  assert.equal(owner.pid, process.pid, "the lock is ours, not removed or replaced");
+  await exited;
+  assert.equal(existsSync(lock), true, "the live lock survived the paused reclaimer's resume");
+  release();
+  assert.equal(existsSync(lock), false);
+});

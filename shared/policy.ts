@@ -294,12 +294,14 @@ export const PLANTED_CONFIG_CREATE_ALLOW = [
  * - a SYMLINK whose last component is one of these, anywhere, in both profiles
  *   (nothing legitimate links to a tool's config folder);
  * - creating one of these, or `.config/git` or `.config/gh`, directly under the
- *   owner's home, in the confined profile only (an approved line may create the
- *   home folder so a first-time login works; planted files inside stay denied).
+ *   owner's home, in Auto's confined profile only (an approved line and Full
+ *   access may create the home folder so a first-time login works; planted
+ *   files inside stay denied).
  *
  * Accepted residual: a script that renames a real directory to `.claude`
- * inside a project is not caught by the kernel. The command card catches a
- * direct `mv`, `cp -r`, `ln`, `rsync` or `ditto` to those names.
+ * inside a project is not caught by the kernel. In Auto the command card
+ * catches a direct `mv`, `git mv`, `cp -r`, `ln`, `rsync` or `ditto` to those
+ * names; Full access runs such a line without a card.
  */
 export const PLANTED_CONFIG_SYMLINK_DENY_LEAVES = [".claude", ".codex", ".gemini", ".cursor", ".github"] as const;
 export const PLANTED_CONFIG_HOME_CREATE_DENY = [".claude", ".codex", ".gemini", ".cursor", ".github", ".config/git", ".config/gh"] as const;

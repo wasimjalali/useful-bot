@@ -832,6 +832,23 @@ test("package installs, runs by name and paid-cloud create or deploy ask in Auto
     ["ln -s stage .cursor", /config folder name/],
     ["rsync -a stage/ .claude/", /config folder name/],
     ["ditto stage .claude", /config folder name/],
+    ["git mv stage .claude", /config folder name/],
+    ["cp -t .claude x", /config folder name/],
+    ["cp -r -t .claude x", /config folder name/],
+    ["mv -t .codex x", /config folder name/],
+    ["cp -r --target-directory=.github x", /config folder name/],
+    ["mv .claude/ y", /config folder name/],
+    ["ln -s stage ./.Claude/", /config folder name/],
+    ["install -d .claude", /config folder name/],
+    ["cp -r .gemini backup", /config folder name/],
+    ["git -C app mv stage .github", /config folder name/],
+    ["mv stage $DEST", /cannot read/],
+    ["mv stage \"$(echo .claude)\"", /cannot read/],
+    ["cp -r stage $(echo .claude)", /cannot read/],
+    ["cp -r stage `echo .claude`", /cannot read/],
+    ["git mv a `echo b`", /cannot read/],
+    ["pip --foo bar install requests", /installs packages/],
+    ["pip3 --cache-dir c --unknown val install requests", /installs packages/],
   ];
   for (const [command, reason] of asks) {
     const risk = commandRisk(command, root);
@@ -895,6 +912,17 @@ test("package installs, runs by name and paid-cloud create or deploy ask in Auto
     "rsync -a src/ dist/",
     "npm --cache cache run add",
     "npm --omit dev test",
+    "pip list",
+    "pip freeze",
+    "pip show requests",
+    "pip --version",
+    "git mv a.txt b.txt",
+    "mv a.txt b.txt",
+    "echo `date` && mv a b",
+    "mv -t out a.txt",
+    "cp -t out a.txt",
+    "install -d out",
+    "git status",
   ]) {
     assert.equal(commandRisk(command, root), null, command);
   }

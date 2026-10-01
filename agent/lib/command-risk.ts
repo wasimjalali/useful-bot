@@ -186,20 +186,33 @@ function installVerbIn(verbs: string[], installVerbs: Set<string>, from: number)
  * install (`npm i` in a project) does not need them, and a compound line or one
  * with a substitution or redirect could use them for anything else.
  */
+const PLAIN_NPM_NAME = /^(@[\w.-]+\/)?\w[\w.-]*(@[\w.^~<>=*+-]+)?$/;
+/** Go modules and Homebrew taps have slashes; still no leading `.`, `/` or `~`. */
+const PLAIN_OTHER_NAME = /^\w[\w.-]*(\/[\w.-]+)*(@[\w.^~<>=*+-]+)?$/;
+const PLAIN_FLAG = /^--?[A-Za-z][\w-]*(=[\w.@^~<>=*+-]*)?$/;
+
 export function needsPathWrite(line: string): boolean {
   if (/[;&|\n`<>]|\$\(|\$\{/.test(line)) return false;
-  const tokens = line.trim().split(/\s+/).filter(Boolean);
+  const tokens = line.trim().split(/[ \t]+/).filter(Boolean);
   if (tokens.length === 0 || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) return false;
   const name = basename(tokens[0]);
   const rest = tokens.slice(1);
-  // Not a registry install: a local path, a URL, a git or file spec, a tarball
-  // or a github shorthand runs code from somewhere else and does not get PATH writes.
-  const shorthand = ["npm", "pnpm", "yarn", "bun"].includes(name);
-  if (rest.some((token) =>
-    /^(\.{1,2}(\/|$)|\/|~)/.test(token) || /^(--path|--git|--url)(=|$)/.test(token)
-    || /:\/\//.test(token) || /^(file:|git\+|git:|github:|gitlab:|bitbucket:|link:|portal:|workspace:)/.test(token)
-    || /\.(tgz|tar|tar\.gz|zip|rb|whl)$/.test(token)
-    || (shorthand && /^[\w.-]+\/[\w.-]+(#.*)?$/.test(token)))) return false;
+  // Allow-list, not a deny-list: every token must be a plain registry name,
+  // version or known-shape flag. Anything with a quote, backslash, `$`, glob,
+  // brace, `~`, a leading `.` or `/`, a tarball name, or a file/git/github/http/
+  // link/workspace spec (`foo@file:../x`) is a package from somewhere else and
+  // does not get PATH writes. Control characters other than space and tab fail.
+  if (/[\x00-\x08\x0a-\x1f\x7f]/.test(line)) return false;
+  const npmFamily = ["npm", "pnpm", "yarn", "bun"].includes(name);
+  const plain = npmFamily ? PLAIN_NPM_NAME : PLAIN_OTHER_NAME;
+  const refused = (token: string) => token.split("/").some((part) => part === "." || part === "..") || /\.(tgz|tar|tar\.gz|zip|rb|whl|gem)$/i.test(token) || /@(file|git|github|gitlab|bitbucket|http|https|link|portal|workspace|npm|ssh)/i.test(token);
+  for (const token of rest) {
+    if (token.startsWith("-")) {
+      if (!PLAIN_FLAG.test(token) || /^--(path|git|url|root|manifest-path|index|repo|tap)(=|$)/.test(token)) return false;
+    } else if (!plain.test(token) || refused(token)) {
+      return false;
+    }
+  }
   const isGlobal = rest.some((token) => token === "-g" || token === "--global" || token === "--location=global");
   const verbs = (valued: Set<string>) => positional(rest, valued);
   switch (name) {
@@ -236,7 +249,7 @@ function packageInstallRisk(name: string, words: string[], flags: string[]): str
   }
   // corepack downloads and runs a package manager, in every form.
   if (name === "corepack") return "downloads and runs a package manager (corepack)";
-  if ((name === "pip" || name === "pip3") && positional(flags, PIP_VALUED)[0] === "install") return `installs packages (${name} install)`;
+  if ((name === "pip" || name === "pip3") && installVerbIn(positional(flags, PIP_VALUED), new Set(["install"]), 0) !== null) return `installs packages (${name} install)`;
   if (name === "uv") {
     const verbs = positional(flags, new Set(["--directory", "--project", "--python", "-p", "--index-url", "--config-file"]));
     if (verbs[0] === "add" || verbs[0] === "sync") return `installs packages (uv ${verbs[0]})`;
@@ -279,18 +292,52 @@ function cloudDeployRisk(name: string, words: string[], flags: string[]): string
  * Folders a tool reads its config from. A planted file under one of these
  * names runs in the owner's next session, and the kernel cannot tell a
  * directory renamed to `.claude` inside a project (accepted residual,
- * shared/policy.ts), so a direct move, copy, link or sync to such a name asks.
+ * shared/policy.ts), so a direct move, copy, link or sync naming such a folder asks.
  */
 const CONFIG_FOLDER_NAMES = new Set([".claude", ".codex", ".gemini", ".cursor", ".github"]);
 
 function configFolderDestinationRisk(name: string, flags: string[]): string | null {
-  if (!["mv", "cp", "ln", "rsync", "ditto"].includes(name)) return null;
+  let operands = flags;
+  let label = name;
+  if (name === "git") {
+    const at = flags.indexOf("mv");
+    if (at < 0) return null;
+    operands = flags.slice(at + 1);
+    label = "git mv";
+  } else if (!["mv", "cp", "ln", "rsync", "ditto", "install"].includes(name)) {
+    return null;
+  }
   // A plain `cp file dest` makes a file, not a folder.
-  if (name === "cp" && !flags.some((flag) => /^-[a-zA-Z]*[rRa]/.test(flag) || flag === "--recursive" || flag === "--archive")) return null;
-  const args = flags.filter((flag) => !flag.startsWith("-"));
-  if (args.length < 2) return null;
-  const leaf = foldPath(basename(args[args.length - 1].replace(/\/+$/, "")));
-  return CONFIG_FOLDER_NAMES.has(leaf) ? `puts something at a tool's config folder name (${name} ... ${leaf})` : null;
+  if (name === "cp" && !flags.some((flag) => /^-[a-zA-Z]*[rRa]/.test(flag) || flag === "--recursive" || flag === "--archive" || flag === "-t" || /^(-t.|--target-directory)/.test(flag))) return null;
+  // Every non-flag argument counts, and so does the value of a target-directory
+  // flag (`cp -t .claude x`), not only the last one: either side of the move can
+  // be the config folder. `args` keeps order so the last one is the destination.
+  const args: string[] = [];
+  const targets: string[] = [];
+  for (let i = 0; i < operands.length; i += 1) {
+    const token = operands[i];
+    if (token === "-t" || token === "--target-directory") {
+      const value = operands[i + 1];
+      if (value !== undefined) targets.push(value);
+      i += 1;
+    } else if (token.startsWith("--target-directory=")) {
+      targets.push(token.slice("--target-directory=".length));
+    } else if (/^-t.+/.test(token) && !token.startsWith("--")) {
+      targets.push(token.slice(2));
+    } else if (!token.startsWith("-")) {
+      args.push(token);
+    }
+  }
+  if (args.length + targets.length < (name === "install" ? 1 : 2)) return null;
+  // A destination this cannot read cannot be told from a config folder.
+  const destinations = [...targets, ...(args.length > 0 ? [args[args.length - 1]] : [])];
+  const dynamic = destinations.find((value) => /[$`]/.test(value));
+  if (dynamic !== undefined) return `puts something at a destination this cannot read (${label} ... ${dynamic})`;
+  for (const value of [...args, ...targets]) {
+    const leaf = foldPath(basename(value.replace(/\/+$/, "")));
+    if (CONFIG_FOLDER_NAMES.has(leaf)) return `puts something at or from a tool's config folder name (${label} ... ${leaf})`;
+  }
+  return null;
 }
 
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ksh93", "mksh", "fish", "csh", "tcsh", "ash", "yash", "pwsh", "powershell", "nu", "elvish"]);
@@ -380,6 +427,10 @@ export function commandRisk(command: string, root: string, depth = 0): string | 
     const reason = commandRisk(inner, root, depth);
     if (reason) return reason;
   }
+  // The tokenizer turns a backtick into a separator, which drops the operand
+  // a substitution stands for; a move, copy, link or sync with one fails closed.
+  const backtickDestination = /(?:^|[\s;&|(])(?:git\s+(?:-\S+\s+)*mv|mv|cp|ln|rsync|ditto|install)\s[^;&|\n]*`/.exec(command);
+  if (backtickDestination) return "puts something at a destination this cannot read (a backtick substitution)";
   for (const segment of split(tokenize(command))) {
     // What the command does comes first: `sudo rm -rf /` is "runs as root",
     // which says more than the path it reaches.

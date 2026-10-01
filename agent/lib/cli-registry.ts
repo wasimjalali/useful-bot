@@ -294,7 +294,7 @@ function derivedStores(name: string): string[] {
   // whole of it: `config` would open `~/.config`, every tool's settings
   // inside it, and `local` would open `~/.local`, the PATH directory
   // included. These are containers, never one tool's own state.
-  if (RESERVED_DERIVED_NAMES.has(name.toLowerCase())) return [];
+  if (RESERVED_DERIVED_NAMES.has(foldPath(name))) return [];
   const candidates = [
     `.${name}`,
     join(".config", name),
