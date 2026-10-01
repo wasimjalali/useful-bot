@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireDirLock } from "../shared/dir-lock.ts";
@@ -96,81 +96,12 @@ test("re-entering a lock this process holds fails loudly instead of deadlocking"
   again();
 });
 
-test("an old directory lock is dropped when its owner is dead and ignored otherwise", () => {
-  const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
-  const old = (pid: number) => {
-    const { lock } = fresh();
-    mkdirSync(lock);
-    writeFileSync(join(lock, "owner"), JSON.stringify({ pid, token: "t" }));
-    return lock;
-  };
-  const stale = old(Number(dead.stdout));
-  acquireDirLock(stale, opts(2000))();
-  assert.equal(existsSync(stale), false, "the dead owner's directory was removed");
-  const live = old(process.pid);
-  acquireDirLock(live, opts(2000))();
-  assert.equal(existsSync(live), true, "a live owner's directory is left alone, and does not block the new lock");
-});
-
-test("with legacyDir, a live old-protocol holder keeps new writers out until it lets go", async () => {
-  const { dir, lock } = fresh();
-  const held = join(dir, "held");
-  // A previous-version writer: holds the old lock directory with a live pid.
-  const old = child(dir, "oldwriter", `
-    import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-    mkdirSync(${JSON.stringify(lock)});
-    writeFileSync(${JSON.stringify(join(lock, "owner"))}, JSON.stringify({ pid: process.pid, token: "old" }));
-    appendFileSync(${JSON.stringify(held)}, "1");
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    rmSync(${JSON.stringify(lock)}, { recursive: true, force: true });
-  `);
-  await waitFor(held);
-  const started = Date.now();
-  const release = acquireDirLock(lock, { ...opts(10_000), legacyDir: true });
-  assert.ok(Date.now() - started >= 600, `got in after only ${Date.now() - started} ms`);
-  // While we hold it, the old protocol sees a live owner at the legacy path.
-  assert.equal(JSON.parse(readFileSync(join(lock, "owner"), "utf8")).pid, process.pid);
-  release();
-  assert.equal(existsSync(lock), false, "our legacy directory is removed on release");
-  await old.exited;
-});
-
-test("with legacyDir, a live old holder that never lets go makes the waiter throw within the deadline", async () => {
-  const { dir, lock } = fresh();
-  const held = join(dir, "held");
-  const old = child(dir, "oldwriter", `
-    import { mkdirSync, writeFileSync } from "node:fs";
-    mkdirSync(${JSON.stringify(lock)});
-    writeFileSync(${JSON.stringify(join(lock, "owner"))}, JSON.stringify({ pid: process.pid, token: "old" }));
-    appendFileSync(${JSON.stringify(held)}, "1");
-    await new Promise((resolve) => setTimeout(resolve, 60000));
-  `);
-  try {
-    await waitFor(held);
-    const started = Date.now();
-    assert.throws(() => acquireDirLock(lock, { ...opts(400), legacyDir: true }), /test_locked/);
-    assert.ok(Date.now() - started < 2000);
-    // The SQLite half was given back: a plain acquire is not blocked by it.
-    acquireDirLock(lock, opts(1000))();
-  } finally {
-    old.proc.kill("SIGKILL");
-    await old.exited;
-  }
-});
-
-test("with legacyDir, a dead or owner-less old lock directory is cleared", () => {
-  const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+test("a leftover directory from the old lock is ignored and does not block", () => {
   const { lock } = fresh();
   mkdirSync(lock);
-  writeFileSync(join(lock, "owner"), JSON.stringify({ pid: Number(dead.stdout), token: "old" }));
+  writeFileSync(join(lock, "owner"), JSON.stringify({ pid: process.pid, token: "old" }));
   const started = Date.now();
-  const release = acquireDirLock(lock, { ...opts(5000), legacyDir: true });
-  assert.ok(Date.now() - started < 1000);
-  release();
-  // An old-version lock has no owner file at all; it is stale after the old 2 s.
-  const bare = fresh().lock;
-  mkdirSync(bare);
-  const bareStarted = Date.now();
-  acquireDirLock(bare, { ...opts(8000), legacyDir: true })();
-  assert.ok(Date.now() - bareStarted >= 1500 && Date.now() - bareStarted < 6000);
+  acquireDirLock(lock, opts(2000))();
+  assert.ok(Date.now() - started < 500);
+  assert.equal(existsSync(lock), true, "left alone");
 });
