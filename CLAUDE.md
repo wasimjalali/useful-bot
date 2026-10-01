@@ -34,7 +34,9 @@ under review first: the reviewer reads the files, and a diff against code that i
 tree wastes the pass. Never accept a bare empty array, ask for the list
 of what it dismissed and why. Fix every finding above low (critical, high, medium, major) and
 review again until a pass from every reviewer has none. Then fix every low too; lows need no
-further pass. Then merge, rebuild the app and install it from local `main`.
+further pass. Then merge, sync local `main`, and rebuild and reinstall Useful Bot Dev from it
+(`npm run build:dev-app`, `npm run install:dev-app`). The daily app is not rebuilt per PR: it
+updates through releases (see Verification).
 
 This arrangement expires on 2026-10-15; ask Wasim what to move to rather than falling back.
 
