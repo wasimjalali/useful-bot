@@ -60,7 +60,7 @@ let warnedNoTurnId = false;
 export function perSessionModel<M>(
   build: (ids: () => RouterIds, selection: () => TurnSelection | null) => M,
   cap = 64,
-  freeze?: (eveSessionId: string) => TurnSelection,
+  freeze?: (eveSessionId: string, grantFirst: boolean) => TurnSelection,
 ): (eveSessionId: string, eveTurnId: string | undefined) => M {
   type Entry = { model: M; turnId: string | undefined; frozen: TurnSelection | null };
   const entries = new Map<string, Entry>();
@@ -99,9 +99,11 @@ export function perSessionModel<M>(
       }
       // A step with no turn id cannot be told from the turn before it, so it
       // re-reads: the old per-step behaviour, said once, never a stale freeze.
+      // That re-read prefers the grant (written once, at turn start) over the
+      // owner's live selection, so a pick made mid-turn cannot split the turn.
       const sameTurn = entry.frozen !== null && eveTurnId !== undefined && entry.turnId === eveTurnId;
       if (!sameTurn) {
-        entry.frozen = freeze(eveSessionId);
+        entry.frozen = freeze(eveSessionId, eveTurnId === undefined);
         remember(eveSessionId, { turnId: eveTurnId, selection: entry.frozen });
       }
     }

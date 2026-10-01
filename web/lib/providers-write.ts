@@ -89,6 +89,9 @@ export function applyProvidersPut(body: ProvidersPutBody): { store: ProviderStor
   if (botId !== undefined) {
     if (body.effort !== undefined && body.effort !== null && !isEffortId(body.effort)) throw new Error("invalid_request");
     if (body.speed !== undefined && !isSpeedId(body.speed)) throw new Error("invalid_request");
+    // A present modelId that is not a usable string would be skipped below and
+    // the call would answer ok having changed nothing.
+    if (body.modelId !== undefined && (typeof body.modelId !== "string" || !body.modelId)) throw new Error("invalid_request");
   }
   // Before the providers lock and before any write: an unknown bot changes nothing.
   if (botId !== undefined && !readShell().bots.some((item) => item.id === botId)) {

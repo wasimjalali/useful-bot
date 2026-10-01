@@ -1,6 +1,6 @@
 import { catalogFor } from "../../shared/live-models.ts";
 import { exactModelOption } from "../../shared/models.ts";
-import { readProviderStore, resolveUpstream } from "../../shared/providers.ts";
+import { readProviderStore, resolveUpstream, type ProviderStore } from "../../shared/providers.ts";
 import { botSelection, type ModelSelection, type TurnSelection } from "../../shared/session-selection.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import type { ShellBot, ShellStore } from "../../shared/shell-store.ts";
@@ -53,15 +53,39 @@ function pinnedBot(shell: ShellStore | null): ShellBot | undefined {
  * on the selected bot's model or on the last pick would be the wrong model for
  * someone else's chat. The store is only read here, never written.
  */
-export function freezeTurnSelection(eveSessionId: string): TurnSelection {
-  const shell = peekShell();
+export function freezeTurnSelection(eveSessionId: string, grantFirst = false): TurnSelection {
+  // Store first, roster second, never the other way round. The web process
+  // (web/lib/providers-write.ts) moves a bot's pin in the shell BEFORE it moves
+  // the default in the providers store. Reading the store first means a fresh
+  // store implies a roster at least as fresh: the only mixed view left is an
+  // old default with a new pin, and a bot with a pin ignores the default.
+  // The reverse order could pair a stale roster (bot A still unpinned) with the
+  // new default and freeze the default for a bot that was just given its own.
+  const store = readProviderStore();
+  return resolveTurnSelection(eveSessionId, store, peekShell(), grantFirst);
+}
+
+/**
+ * The resolution behind freezeTurnSelection, from one store read and one roster read.
+ * `grantFirst` is for a step that carried no turn id, which re-freezes every
+ * step: the owner's selection can change mid-turn, but the grant is only
+ * written at turn start, so reading it first keeps the turn on one model.
+ * With a turn id the owner stays first, so the next turn sees the new pick.
+ */
+export function resolveTurnSelection(
+  eveSessionId: string,
+  store: ProviderStore,
+  shell: ShellStore | null,
+  grantFirst = false,
+): TurnSelection {
   const owner = sessionOwner(shell, eveSessionId);
-  let selection: ModelSelection | null = owner ? botSelection(owner, readProviderStore()) : null;
-  if (!selection) selection = readSessionGrant(eveSessionId)?.selection ?? null;
+  const fromOwner = owner ? botSelection(owner, store) : null;
+  const fromGrant = readSessionGrant(eveSessionId)?.selection ?? null;
+  let selection: ModelSelection | null = grantFirst ? fromGrant ?? fromOwner : fromOwner ?? fromGrant;
   if (!selection) {
     const pinned = pinnedBot(shell);
     if (!pinned) throw new Error("turn_stamp_missing");
-    selection = botSelection(pinned, readProviderStore());
+    selection = botSelection(pinned, store);
   }
   return { ...selection, windowTokens: windowTokensFor(selection) };
 }

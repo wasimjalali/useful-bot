@@ -1649,3 +1649,67 @@ test("an oauth 401 then refresh then retry reports the refused attempt on its ow
     else process.env.UB_PROVIDERS_PATH = saved;
   }
 });
+
+// Each real upstream request is one usage line: the router counts onDispatch
+// (a request leaving) and onRefusedAttempt (that request settled as refused).
+// Both cases below use OpenAI, whose refresh throws without a refresh token.
+async function oauthRefreshFailure(expiresAt: number | null, status: number) {
+  const dir = mkdtempSync(join(tmpdir(), "ub-oauth-refresh-fail-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  let reached = 0;
+  const server = createServer((_req, res) => {
+    reached += 1;
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "expired" } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt, accountId: null } as const;
+    const resolved = {
+      connection: { id: "openai:oauth" },
+      providerId: "openai",
+      mode: { headers: {} },
+      modelId: "gpt-5.4-mini",
+      model: "gpt-5.4-mini",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: "openai-chat",
+      keyHeader: "bearer",
+      credential,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    let dispatches = 0;
+    let refused = 0;
+    await assert.rejects(
+      completeUpstream({
+        entry: { alias: "workhorse", maxOutputTokens: 1024 } as never,
+        body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+        sessionId: randomUUID(),
+        callerId: "desktop",
+        signal: new AbortController().signal,
+        resolved,
+        onDispatch: () => { dispatches += 1; },
+        onRefusedAttempt: () => { refused += 1; },
+      }),
+    );
+    return { reached, dispatches, refused };
+  } finally {
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+}
+
+test("a 401 whose refresh fails is one dispatch and one refused attempt, no second request", async () => {
+  const out = await oauthRefreshFailure(null, 401);
+  assert.deepEqual(out, { reached: 1, dispatches: 1, refused: 1 });
+});
+
+test("an expired credential whose refresh fails sends nothing and reports no dispatch", async () => {
+  const out = await oauthRefreshFailure(Date.now() - 60_000, 401);
+  assert.deepEqual(out, { reached: 0, dispatches: 0, refused: 0 });
+});

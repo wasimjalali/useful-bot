@@ -21,6 +21,9 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case decoding
     /// `/api/providers` answered with its own error code.
     case provider(String)
+    /// `/api/providers` removed the connection but could not finish: the server's
+    /// own sentence (`message`) says what is left to do, so it is shown as is.
+    case providerNotice(code: String, message: String)
     /// `/api/attachments` answered with its own error code.
     case attachment(String)
     /// `/api/shell` answered with its own error code.
@@ -81,6 +84,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "The local server sent data this app could not read."
         case .provider(let code):
             return code
+        case .providerNotice(_, let message):
+            return message
         case .attachment(let code):
             return code
         case .shell(let code):
@@ -140,6 +145,7 @@ public enum BackendError: Error, LocalizedError, Equatable {
     /// The `/api/providers` error code, when the failure came from that route.
     public var providerCode: String? {
         if case .provider(let code) = self { return code }
+        if case .providerNotice(let code, _) = self { return code }
         return nil
     }
 
@@ -187,7 +193,7 @@ private struct ProvidersResponse: Decodable {
     let providers: [ProviderPublic]?
     let error: String?
 }
-private struct ProvidersErrorResponse: Decodable { let error: String? }
+private struct ProvidersErrorResponse: Decodable { let error: String?; let message: String? }
 private struct ApprovalsResponse: Decodable { let approvals: [ApprovalItem] }
 private struct ConnectorAuthorizeResponse: Decodable {
     let ok: Bool?
@@ -914,13 +920,23 @@ public actor BackendClient {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a connect was refused.
-            let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
-            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
+            throw Self.providersFailure(status: http.statusCode, data: data)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersPayload.self, from: data) else {
             throw BackendError.decoding
         }
         return decoded
+    }
+
+    /// A failed `/api/providers` write as the error the app shows. A removed
+    /// connection that left pinned bots behind carries the server's message,
+    /// not a bare code, because the code alone reads as "nothing happened".
+    static func providersFailure(status: Int, data: Data) -> BackendError {
+        let decoded = try? JSONDecoder().decode(ProvidersErrorResponse.self, from: data)
+        if decoded?.error == "connection_removed_bots_pinned", let message = decoded?.message, !message.isEmpty {
+            return .providerNotice(code: "connection_removed_bots_pinned", message: message)
+        }
+        return failure(status: status, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
     }
 
     /// Start a device flow for one OAuth provider. Answers with what the
@@ -989,8 +1005,7 @@ public actor BackendClient {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             // The route reports its own code in the body; surface that so the
             // dialog can say why a key was refused.
-            let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data)
-            throw Self.failure(status: http.statusCode, code: decoded?.error, fallback: "provider_failed", typed: BackendError.provider)
+            throw Self.providersFailure(status: http.statusCode, data: data)
         }
         guard let decoded = try? JSONDecoder().decode(ProvidersResponse.self, from: data) else {
             throw BackendError.decoding

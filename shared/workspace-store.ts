@@ -48,9 +48,11 @@ export type SessionGrant = {
   permission: WorkspacePermission;
   /**
    * The model the bot runs on, stamped with the permission at turn start. The
-   * agent reads it at the first step of a turn and freezes it for the whole
-   * turn. Absent on a grant stamped before this field, or by a caller that
-   * passes none; the agent then falls back to the bot's own selection.
+   * agent prefers the owning bot's CURRENT selection at a turn's first step;
+   * the grant is the fallback for a brand new session no bot owns yet, and the
+   * source on the no-turn-id path (it only changes at turn start, so it is
+   * stable within a turn). Absent on a grant stamped before this field, or by
+   * a caller that passes none; the agent then uses the bot's own selection.
    */
   selection?: ModelSelection;
   updatedAt: string;

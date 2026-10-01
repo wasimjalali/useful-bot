@@ -186,6 +186,8 @@ export async function completeUpstream(input: {
    * to be refreshed and retried, so the caller can log that call too: one
    * upstream_usage line per dispatched call, the retry being the second.
    */
+  /** Called just before each HTTP request is sent, never when a refresh fails first. */
+  onDispatch?: () => void;
   onRefusedAttempt?: (attempt: { startedAt: number; firstByteAt: number | null; endedAt: number }) => void;
 }): Promise<{
   response: Response;
@@ -264,6 +266,7 @@ export async function completeUpstream(input: {
       headers["x-opencode-session"] = sessionHeader(input.callerId, input.sessionId, "root", `${resolved.connection.id}:${model}`);
     }
     timing.startedAt = Date.now();
+    input.onDispatch?.();
     if (resolved.protocol === "openai-responses") {
       return postResponses({
         fetchImpl,

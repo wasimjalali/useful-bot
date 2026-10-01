@@ -116,4 +116,17 @@ import Testing
         #expect(flow.verificationUrlComplete?.contains("ABCD-1234") == true)
         #expect(flow.intervalMs == 2000)
     }
+
+    @Test func aRemovedConnectionWithPinnedBotsKeepsTheServerMessage() {
+        let body = Data("""
+        {"ok":false,"error":"connection_removed_bots_pinned","message":"Disconnected, but some bots are still pinned to it."}
+        """.utf8)
+        let error = BackendClient.providersFailure(status: 500, data: body)
+        #expect(error == .providerNotice(code: "connection_removed_bots_pinned", message: "Disconnected, but some bots are still pinned to it."))
+        #expect(error.errorDescription == "Disconnected, but some bots are still pinned to it.")
+        #expect(error.providerCode == "connection_removed_bots_pinned")
+        // Any other code keeps its plain shape, and a bare pinned code without a message does too.
+        #expect(BackendClient.providersFailure(status: 400, data: Data("{\"error\":\"provider_key\"}".utf8)) == .provider("provider_key"))
+        #expect(BackendClient.providersFailure(status: 500, data: Data("{\"error\":\"connection_removed_bots_pinned\"}".utf8)) == .provider("connection_removed_bots_pinned"))
+    }
 }

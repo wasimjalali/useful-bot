@@ -617,8 +617,10 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         let dispatchedAt = 0;
         let usageOutcome: UsageOutcome = "aborted";
         let usageUpstream: { providerId: string; connectionId: string; model: string; timing: { startedAt: number; firstByteAt: number | null } } | null = null;
-        // The last usage the upstream reported; null fields when it reported none.
-        let lastUsage: ObservedUsage | null = null;
+        // The last usage the upstream reported; null when it reported none. Held
+        // in an object because record() assigns it from a closure, which would
+        // otherwise let control flow narrow a bare `let` to never in the finally.
+        const observed: { usage: ObservedUsage | null } = { usage: null };
         try {
           limits.rememberRequest(stepId, caller.callerId, Date.now());
           const reservationId = limits.reserve({
@@ -638,8 +640,6 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
           let upstream: Awaited<ReturnType<typeof completeUpstream>>;
           try {
-            dispatched = true;
-            dispatchedAt = Date.now();
             upstream = await completeUpstream({
               entry,
               body,
@@ -647,7 +647,17 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               callerId: caller.callerId,
               signal,
               resolved,
+              // Set only when a request really leaves, so a refresh that fails
+              // before any send (an expired credential) logs nothing.
+              onDispatch: () => {
+                dispatched = true;
+                dispatchedAt = Date.now();
+              },
               onRefusedAttempt: (attempt) => {
+                // The refused request has its own line below; clearing the flag
+                // keeps the finally from logging it again if the refresh fails
+                // and no retry goes out. A retry sets it again via onDispatch.
+                dispatched = false;
                 log({
                   request_id: requestId,
                   event: "upstream_usage",
@@ -699,7 +709,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           usageUpstream = upstream;
           const record = (usage: ObservedUsage | null) => {
             if (!usage || upstream.response.status >= 400) return;
-            lastUsage = usage;
+            observed.usage = usage;
             const reconciled = limits.reconcile(
               reservationId,
               usage,
@@ -876,10 +886,10 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
               connectionId: usageUpstream ? usageUpstream.connectionId : resolved.connection.id,
               modelId: usageUpstream ? usageUpstream.model : resolved.modelId,
               sessionId,
-              inputTokens: lastUsage ? lastUsage.inputTokens : null,
-              cachedInputTokens: lastUsage ? lastUsage.cachedInputTokens ?? null : null,
-              cacheWriteTokens: lastUsage ? lastUsage.cacheWriteTokens ?? null : null,
-              outputTokens: lastUsage ? lastUsage.outputTokens : null,
+              inputTokens: observed.usage ? observed.usage.inputTokens : null,
+              cachedInputTokens: observed.usage ? observed.usage.cachedInputTokens ?? null : null,
+              cacheWriteTokens: observed.usage ? observed.usage.cacheWriteTokens ?? null : null,
+              outputTokens: observed.usage ? observed.usage.outputTokens : null,
               ttfbMs: firstByteAt === null ? null : firstByteAt - startedAt,
               totalMs: Date.now() - startedAt,
             });
