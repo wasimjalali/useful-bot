@@ -6,7 +6,7 @@ import { rewrapThinkHistory, stripEarlierReasoning, usesInlineThink } from "../i
 import { UpstreamRefusalError } from "../circuit.ts";
 import type { ModelSelection } from "../../../shared/session-selection.ts";
 import { catalogFor } from "../../../shared/live-models.ts";
-import { POLICY_WINDOW_TOKENS } from "../../../shared/policy.ts";
+import { UNKNOWN_WINDOW_TOKENS } from "../../../shared/policy.ts";
 import {
   readProviderStore,
   recordConnectionError,
@@ -159,9 +159,12 @@ export function resolveFor(alias: RegistryEntry["alias"], selection?: ModelSelec
  * adapter does with the body afterwards. Headers arrive earlier than the first
  * byte on a stream; the byte is what the eval wants.
  */
-function timedFetch(timing: { firstByteAt: number | null }): typeof fetch {
+function timedFetch(timing: { firstByteAt: number | null }, onSend?: () => void): typeof fetch {
   return async (url, init) => {
     timing.firstByteAt = null;
+    // The adapters build and validate their bodies before they call fetch, so
+    // this is the one point where a request really goes out.
+    onSend?.();
     const res = await fetch(url, init);
     if (!res.body) return res;
     const body = res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
@@ -200,7 +203,7 @@ export async function completeUpstream(input: {
 }> {
   const resolved = input.resolved;
   const timing: { startedAt: number; firstByteAt: number | null } = { startedAt: Date.now(), firstByteAt: null };
-  const fetchImpl = timedFetch(timing);
+  const fetchImpl = timedFetch(timing, () => input.onDispatch?.());
   let credential = resolved.credential;
   if (credential.kind === "oauth") {
     if (accessTokenFor(resolved.providerId, credential).expired) {
@@ -230,9 +233,10 @@ export async function completeUpstream(input: {
   // the same catalog), so the output cap keeps to the last tenth: a prompt at
   // the threshold plus a full answer still fits a small model's window.
   // `modelOption` falls back to the list's first model; only the picked
-  // model's own window may size its cap.
+  // model's own window may size its cap. A model with no catalog window is
+  // sized from the same unknown window the agent compacts at.
   const sized = option?.id === model && option.contextTokens && option.contextTokens > 0 ? option.contextTokens : null;
-  const outputCap = Math.min(input.entry.maxOutputTokens, Math.floor((sized ?? POLICY_WINDOW_TOKENS) / 10));
+  const outputCap = Math.min(input.entry.maxOutputTokens, Math.floor((sized ?? UNKNOWN_WINDOW_TOKENS) / 10));
   // Reasoning from earlier turns may belong to another model: only the
   // current turn keeps it (see stripEarlierReasoning).
   const history = withoutImagesForTextModel(stripEarlierReasoning(forwardedBody.messages), sees);
@@ -266,7 +270,6 @@ export async function completeUpstream(input: {
       headers["x-opencode-session"] = sessionHeader(input.callerId, input.sessionId, "root", `${resolved.connection.id}:${model}`);
     }
     timing.startedAt = Date.now();
-    input.onDispatch?.();
     if (resolved.protocol === "openai-responses") {
       return postResponses({
         fetchImpl,

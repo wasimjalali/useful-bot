@@ -19,6 +19,7 @@ import { startConnectionConfirm } from "../../../../shared/connection-flow.ts";
 import { deleteRoutinesForBot } from "../../../../shared/routines-store.ts";
 import { applyShellAction, isGrantableRootPath, staleSessionIds, type ShellAction, type ShellStore } from "../../../../shared/shell-store.ts";
 import { readShell, updateShell } from "../../../../shared/shell-io.ts";
+import { readProviderStore } from "../../../../shared/providers.ts";
 import { removeSessionGrant } from "../../../../shared/workspace-store.ts";
 import { groupMembers, speakersFrom } from "../../../../shared/threads.ts";
 import { webOrigin } from "../../../../shared/stack.ts";
@@ -401,7 +402,12 @@ export async function PUT(request: Request) {
       const bot = next.bots.find((item) => item.id === action.botId);
       if (bot?.sessionId) {
         try {
-          syncSessionWorkspace(bot.sessionId, bot);
+          // Providers store first, then the roster, the order the turn
+          // freeze uses: a per-bot pick pins this bot before it moves the
+          // default, so a store read first never pairs with an older roster.
+          const store = readProviderStore();
+          const fresh = readShell().bots.find((item) => item.id === bot.id) ?? bot;
+          syncSessionWorkspace(bot.sessionId, fresh, store);
         } catch {
           // The roster action stood but the grant still says the old
           // permission, and a card already open re-reads that grant before

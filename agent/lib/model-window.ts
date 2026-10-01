@@ -1,19 +1,11 @@
 import { catalogFor } from "../../shared/live-models.ts";
 import { exactModelOption } from "../../shared/models.ts";
+import { UNKNOWN_WINDOW_TOKENS } from "../../shared/policy.ts";
 import { readProviderStore, resolveUpstream, type ProviderStore } from "../../shared/providers.ts";
 import { botSelection, type ModelSelection, type TurnSelection } from "../../shared/session-selection.ts";
 import { peekShell } from "../../shared/shell-io.ts";
 import type { ShellBot, ShellStore } from "../../shared/shell-store.ts";
 import { readSessionGrant } from "../../shared/workspace-store.ts";
-
-/**
- * The window used to size compaction when the catalog does not say what the
- * selected model's is (a custom server, Ollama, LM Studio, an unlisted id).
- * Deliberately small: guessing 131,072 let a small local model overflow before
- * eve compacted. A model that really has more only compacts earlier than it
- * had to, which costs a summary, never a failed turn.
- */
-export const UNKNOWN_WINDOW_TOKENS = 32_768;
 
 /**
  * The context window of one selected model, from the catalog row for exactly

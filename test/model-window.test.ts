@@ -3,7 +3,8 @@ import test from "node:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { UNKNOWN_WINDOW_TOKENS, windowTokensFor } from "../agent/lib/model-window.ts";
+import { windowTokensFor } from "../agent/lib/model-window.ts";
+import { UNKNOWN_WINDOW_TOKENS } from "../shared/policy.ts";
 import { lastPick } from "../shared/session-selection.ts";
 import { readProviderStore } from "../shared/providers.ts";
 

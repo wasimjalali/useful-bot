@@ -82,7 +82,13 @@ const ROUTINE_IDLE_MS = 10 * 60_000;
  * reaches eve. A bot whose folder was detached revokes the grant here, so
  * capability never outlives the owner's decision.
  */
-export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
+export function syncSessionWorkspace(
+  sessionId: string,
+  bot: ShellBot,
+  // A caller that read the roster passes a store read taken BEFORE that roster
+  // read (see syncSessionWorkspaceFresh): the same order the agent freezes in.
+  store: ProviderStore = readProviderStore(),
+): void {
   if (!sessionId) return;
   // Always stamped: the permission is the bot's whether or not a folder is
   // attached. No folder means the bot works under the owner's home.
@@ -93,7 +99,7 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
     sessionId,
     path: bot.workspace?.path ?? null,
     permission: bot.permission,
-    selection: botSelection(bot, readProviderStore()),
+    selection: botSelection(bot, store),
   });
 }
 
@@ -103,8 +109,9 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
  *
  * A null bot inherits the default (the last pick, as the old global chip
  * resolved it), which is right until a pick would move it. This runs ONLY at
- * the start of a PUT /api/providers that carries a botId and a modelId, inside
- * the providers lock, with the store that call holds. Connect, sign-out, a
+ * the start of a PUT /api/providers that carries a botId and any per-bot pick
+ * (model, effort or speed), inside the providers lock, with the store that
+ * call holds. Connect, sign-out, a
  * default-model change and the turn start leave null bots alone: they keep
  * inheriting, exactly as before. The pin is the effective default (the model
  * `composerState` resolves, with its snapped effort and speed), not the raw
@@ -153,6 +160,10 @@ export function botSelectionUsable(bot: ShellBot): boolean {
 function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
   if (!sessionId) return;
   try {
+    // Providers store first, roster second: the web write order moves a pin in
+    // the shell before the default in the store, so a fresh store implies a
+    // roster at least as fresh (the same order freezeTurnSelection reads in).
+    const store = readProviderStore();
     let bot: ShellBot | undefined;
     try {
       bot = readShell().bots.find((item) => item.id === botId);
@@ -165,7 +176,7 @@ function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
       removeSessionGrant(sessionId);
       return;
     }
-    syncSessionWorkspace(sessionId, bot);
+    syncSessionWorkspace(sessionId, bot, store);
   } catch (err) {
     // A contended grants store must not surface as a raw lock code in a
     // routine's transcript note. The turn does not start: running it against a

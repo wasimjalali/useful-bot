@@ -15,7 +15,7 @@ import {
 } from "../../../../../shared/eve-proxy.ts";
 import { catalogFor } from "../../../../../shared/live-models.ts";
 import { exactModelOption, modelSeesImages } from "../../../../../shared/models.ts";
-import { readProviderStore } from "../../../../../shared/providers.ts";
+import { readProviderStore, type ProviderStore } from "../../../../../shared/providers.ts";
 import { botSelection, lastPick } from "../../../../../shared/session-selection.ts";
 import {
   cancelEveTurn,
@@ -215,8 +215,11 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       }
       if (extras.retry) notes.push(RETRY_NOTE);
+      let stampStore: ProviderStore | null = null;
       try {
         const raw = new TextDecoder().decode(body);
+        // Store before roster, as the agent freezes (see syncSessionWorkspaceFresh).
+        stampStore = readProviderStore();
         const shell = readShell();
         route = eveSessionRoute(raw, shell);
         if (!route) {
@@ -251,7 +254,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         const sessionId = suffix.split("/")[1] ?? "";
         if (sessionId) {
           try {
-            if (bot) syncSessionWorkspace(sessionId, bot);
+            if (bot) syncSessionWorkspace(sessionId, bot, stampStore ?? undefined);
             else removeSessionGrant(sessionId);
           } catch {
             return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
@@ -340,8 +343,10 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       }
       if (created) {
         try {
+          // Store before roster, as the agent freezes.
+          const store = readProviderStore();
           const bot = readShell().bots.find((item) => item.id === route?.threadId) ?? null;
-          if (bot) syncSessionWorkspace(created, bot);
+          if (bot) syncSessionWorkspace(created, bot, store);
           else removeSessionGrant(created);
         } catch {
           // The session exists upstream either way, so the body goes back. What

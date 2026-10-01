@@ -72,6 +72,12 @@ Time to first byte (TTFB) is the median time from dispatch to the first upstream
   `2026-10-01-ub002-round1-sanity-usage.jsonl`. The first call's 26.9 s TTFB is measured from the
   router's dispatch, so the wait was upstream.
 
+- Re-run on the round 3 build (commit 4343a5c), whose freeze reads the owning bot's current
+  selection first. Test Bot was on Kimi K3. It ran `sleep 20` and then `date -u`, and during the
+  sleep its chip moved to GLM 5.3 Flash. All 3 calls of that turn stayed on `kimi-k3` (16:24:38 to
+  16:25:03 UTC). The next turn ran on `glm-5.3-flash`. Neither turn logged `turn_stamp_missing`.
+  Raw lines: `2026-10-01-ub002-final-midturn-usage.jsonl`.
+
 ## Conclusion
 - Per-bot selection, next-turn switching and concurrent bots on different models work live on
   OpenCode Go.

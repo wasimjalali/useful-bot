@@ -32,16 +32,16 @@ import { applyProvidersDelete, applyProvidersPut, CONNECTION_REMOVED_BOTS_PINNED
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
 import { listThreadEvents } from "../shared/agent-store.ts";
-import { perSessionModel, frozenTurnFor } from "../agent/lib/session-model.ts";
+import { perSessionModel, frozenTurnFor, isFirstStepOfTurn } from "../agent/lib/session-model.ts";
 import {
   awaitTurnStamp,
   freezeTurnSelection,
   resolveTurnSelection,
   STAMP_WAIT_MS,
   reviewerWindowTokens,
-  UNKNOWN_WINDOW_TOKENS,
   windowTokensFor,
 } from "../agent/lib/model-window.ts";
+import { UNKNOWN_WINDOW_TOKENS } from "../shared/policy.ts";
 import { routerFetch } from "../agent/lib/router-fetch.ts";
 import { routerIds } from "../agent/lib/router-identity.ts";
 
@@ -830,15 +830,22 @@ test("a per-bot PUT with an effort or speed that is not a known id is invalid_re
   });
 });
 
-test("a DELETE whose bot reset fails twice reports that the connection was removed but bots still name it", () => {
+test("a first step with no turn id waits for the stamp; only the same turn id skips it", () => {
+  assert.equal(isFirstStepOfTurn(null, undefined), true, "no frozen entry, no turn id: undefined === undefined must not skip the wait");
+  assert.equal(isFirstStepOfTurn(null, "t1"), true);
+  assert.equal(isFirstStepOfTurn({ turnId: "t1" } as never, "t2"), true);
+  assert.equal(isFirstStepOfTurn({ turnId: "t1" } as never, "t1"), false);
+});
+
+test("a DELETE whose bot reset fails twice is refused, the connection stays and the bots are untouched", () => {
   withWorld(({ dir, shell }) => {
     twoBots(selOa, null, shell);
     // A path under a regular file: every shell write fails.
     writeFileSync(join(dir, "not-a-dir"), "x");
     process.env.UB_SHELL_PATH = join(dir, "not-a-dir", "shell.json");
     assert.throws(() => applyProvidersDelete({ connectionId: OA }), (error: unknown) => (
-      error instanceof Error && error.message === CONNECTION_REMOVED_BOTS_PINNED && /removed.*still name it/.test(error.message)
+      error instanceof Error && error.message === CONNECTION_REMOVED_BOTS_PINNED
     ));
-    assert.equal(readProviderStore().connections[OA], undefined, "the providers write landed");
+    assert.notEqual(readProviderStore().connections[OA], undefined, "the providers write did not land");
   });
 });

@@ -6,6 +6,14 @@ export type SandboxBackendName = "microsandbox" | "docker" | "just-bash";
 export type Isolation = "verified-vm" | "non-vm";
 
 export const POLICY_WINDOW_TOKENS = 131_072;
+/**
+ * The window used to size compaction and the router's output cap when the catalog does not say what the
+ * selected model's is (a custom server, Ollama, LM Studio, an unlisted id).
+ * Deliberately small: guessing 131,072 let a small local model overflow before
+ * eve compacted. A model that really has more only compacts earlier than it
+ * had to, which costs a summary, never a failed turn.
+ */
+export const UNKNOWN_WINDOW_TOKENS = 32_768;
 export const POLICY_OUTPUT_TOKENS = 4_096;
 export const POLICY_APPROVAL_TTL_MS = 5 * 60 * 1000;
 export const POLICY_NODE_MAJOR = 24;

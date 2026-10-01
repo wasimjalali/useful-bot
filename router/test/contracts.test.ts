@@ -1713,3 +1713,98 @@ test("an expired credential whose refresh fails sends nothing and reports no dis
   const out = await oauthRefreshFailure(Date.now() - 60_000, 401);
   assert.deepEqual(out, { reached: 0, dispatches: 0, refused: 0 });
 });
+
+// A request the adapter cannot build (never sent) is not a dispatch, and a model
+// with no catalog window sizes its output cap from the agent's unknown window.
+async function runCompleteUpstream(options: {
+  protocol: "openai-chat" | "anthropic-messages";
+  body: Record<string, unknown>;
+  maxOutputTokens: number;
+  expectReject: boolean;
+}) {
+  const dir = mkdtempSync(join(tmpdir(), "ub-dispatch-build-"));
+  const saved = process.env.UB_PROVIDERS_PATH;
+  process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
+  let reached = 0;
+  let forwarded: Record<string, unknown> | null = null;
+  const server = createServer((req, res) => {
+    reached += 1;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      forwarded = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        id: "cmpl_test",
+        object: "chat.completion",
+        model: "mystery-1",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const credential = { kind: "oauth", accessToken: "tok-12345678", refreshToken: null, expiresAt: null, accountId: null } as const;
+    const resolved = {
+      connection: { id: "custom:no-catalog" },
+      providerId: "openai",
+      mode: { headers: {} },
+      modelId: "mystery-1",
+      model: "mystery-1",
+      effort: null,
+      speed: "standard",
+      baseUrl: `http://127.0.0.1:${port}`,
+      protocol: options.protocol,
+      keyHeader: "bearer",
+      credential,
+      opencodeSession: false,
+      fallback: false,
+    } as unknown as ResolvedUpstream;
+    let dispatches = 0;
+    const run = completeUpstream({
+      entry: { alias: "workhorse", maxOutputTokens: options.maxOutputTokens } as never,
+      body: options.body,
+      sessionId: randomUUID(),
+      callerId: "desktop",
+      signal: new AbortController().signal,
+      resolved,
+      onDispatch: () => { dispatches += 1; },
+    });
+    if (options.expectReject) await assert.rejects(run);
+    else await run;
+    return { reached, dispatches, forwarded: forwarded as Record<string, unknown> | null };
+  } finally {
+    server.close();
+    if (saved === undefined) delete process.env.UB_PROVIDERS_PATH;
+    else process.env.UB_PROVIDERS_PATH = saved;
+  }
+}
+
+test("malformed Anthropic tool arguments throw before any fetch and report zero dispatches", async () => {
+  const out = await runCompleteUpstream({
+    protocol: "anthropic-messages",
+    maxOutputTokens: 1024,
+    expectReject: true,
+    body: {
+      model: "workhorse",
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "t", arguments: "{not json" } }] },
+      ],
+    },
+  });
+  assert.deepEqual({ reached: out.reached, dispatches: out.dispatches }, { reached: 0, dispatches: 0 });
+});
+
+test("a model with no catalog window caps its output at a tenth of 32768, not of 131072", async () => {
+  const out = await runCompleteUpstream({
+    protocol: "openai-chat",
+    maxOutputTokens: 32_768,
+    expectReject: false,
+    body: { model: "workhorse", messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(out.dispatches, 1);
+  assert.equal(out.forwarded?.max_tokens, 3_276);
+});

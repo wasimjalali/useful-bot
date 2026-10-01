@@ -4,7 +4,7 @@ import { POLICY_WINDOW_TOKENS } from "../shared/policy.ts";
 import { awaitTurnStamp, freezeTurnSelection } from "./lib/model-window.ts";
 import { routerFetch } from "./lib/router-fetch.ts";
 import { turnIdOf } from "./lib/router-identity.ts";
-import { frozenTurnFor, perSessionModel } from "./lib/session-model.ts";
+import { frozenTurnFor, isFirstStepOfTurn, perSessionModel } from "./lib/session-model.ts";
 import { routerApiBase } from "../shared/stack.ts";
 
 const PLANTED = "S2-TOOL-PLANT-001";
@@ -187,7 +187,7 @@ export default defineAgent({
         const turnId = turnIdOf(event);
         // Only the first step of a turn freezes; give a brand new session's
         // stamp a moment to land before it does (see awaitTurnStamp).
-        if (frozenTurnFor(ctx.session.id)?.turnId !== turnId && !(await awaitTurnStamp(ctx.session.id))) {
+        if (isFirstStepOfTurn(frozenTurnFor(ctx.session.id), turnId) && !(await awaitTurnStamp(ctx.session.id))) {
           console.warn(JSON.stringify({ event: "turn_stamp_missing", sessionId: ctx.session.id, turnId: turnId ?? null }));
         }
         const model = routerModel(ctx.session.id, turnId);

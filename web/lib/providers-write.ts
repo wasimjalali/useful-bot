@@ -182,19 +182,23 @@ export function applyProvidersPut(body: ProvidersPutBody): { store: ProviderStor
   return { store, bot };
 }
 
-/** The DELETE error when the connection is gone but resetting the bots that named it failed twice. */
+/** The DELETE error when resetting the bots that name a removed connection failed twice; the connection stays. */
 export const CONNECTION_REMOVED_BOTS_PINNED =
-  "The connection was removed, but some bots still name it. They show as unavailable until you pick a model for them again.";
+  "The connection could not be removed because some bots that name it could not be reset. Try again.";
 
 /**
  * Apply one DELETE. Bots pinned to a connection that goes away are reset to
- * inherit the new default, in the same request after the providers write: an
- * explicit owner action on the connection, visible on every affected chip, not
- * a substitution inside a running turn.
+ * inherit the default BEFORE the providers write, inside its update callback
+ * (the same order as the PUT pins): a freeze can then never see "connection
+ * gone, bot still pinned". An explicit owner action on the connection, visible
+ * on every affected chip, not a substitution inside a running turn. If the
+ * providers write then fails, the reset bots just inherit the unchanged default.
+ * Every removed id is attempted (one retry each) before the one error is
+ * raised, and that error comes before the providers write, so nothing is
+ * left half done.
  */
 export function applyProvidersDelete(body: { connectionId?: unknown; providerId?: unknown }): ProviderStore {
-  let removed: string[] = [];
-  const store = updateProviderStore((current) => {
+  return updateProviderStore((current) => {
     let next: ProviderStore;
     if (typeof body.connectionId === "string" && body.connectionId) {
       next = clearConnection(current, body.connectionId);
@@ -204,21 +208,21 @@ export function applyProvidersDelete(body: { connectionId?: unknown; providerId?
     } else {
       throw new Error("invalid");
     }
-    removed = Object.keys(current.connections).filter((id) => !next.connections[id]);
-    return next;
-  });
-  for (const id of removed) {
-    try {
-      updateShell((shell) => clearConnectionSelections(shell, id));
-    } catch {
-      // One retry; the providers write already landed, so a second failure is
-      // reported, not rolled back.
+    const removed = Object.keys(current.connections).filter((id) => !next.connections[id]);
+    let failed = false;
+    for (const id of removed) {
       try {
         updateShell((shell) => clearConnectionSelections(shell, id));
       } catch {
-        throw new Error(CONNECTION_REMOVED_BOTS_PINNED);
+        // One retry per id; every id is attempted before the single throw.
+        try {
+          updateShell((shell) => clearConnectionSelections(shell, id));
+        } catch {
+          failed = true;
+        }
       }
     }
-  }
-  return store;
+    if (failed) throw new Error(CONNECTION_REMOVED_BOTS_PINNED);
+    return next;
+  });
 }

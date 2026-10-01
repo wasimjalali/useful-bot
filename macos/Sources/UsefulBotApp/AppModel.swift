@@ -2795,10 +2795,11 @@ final class AppModel: ObservableObject {
         do {
             applyProviders(try await client.disconnectConnection(connectionId))
         } catch BackendError.providerNotice(_, let message) {
-            // The connection is gone but its bots could not all be re-pinned:
-            // say so, and re-read so the pane and chips stop showing it.
-            providersError = message
+            // The bots that name this connection could not all be reset, so it
+            // was not removed: re-read first (a read clears providersError),
+            // then say so.
             await loadProviders()
+            providersError = message
         } catch {
             providersError = "Could not disconnect."
         }
@@ -2998,8 +2999,9 @@ final class AppModel: ObservableObject {
         do {
             providers = try await client.disconnectProvider(id: id)
         } catch BackendError.providerNotice(_, let message) {
-            providersError = message
+            // Re-read first: a read clears providersError.
             await loadProviders()
+            providersError = message
         } catch {
             providersError = "Could not disconnect."
         }
