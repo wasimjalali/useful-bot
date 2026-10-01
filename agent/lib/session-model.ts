@@ -50,7 +50,8 @@ let warnedNoTurnId = false;
  * moment cannot stamp each other's id. The turn id moves with each turn, so
  * the entry holds it and the fetch reads it per attempt.
  *
- * With `freeze`, the entry also holds the turn's selection. `freeze` runs on
+ * With `freeze`, the entry also holds the turn's selection (and a rebuilt
+ * entry takes it back from the process registry for the same turn). `freeze` runs on
  * the first step of every turn (a new turn id) and its result stays for every
  * later step, retry, 429 wait and compaction call of that turn: the handle's
  * fetch reads it from the entry, so a pick made mid-turn changes nothing until
@@ -72,6 +73,15 @@ export function perSessionModel<M>(
       entries.set(eveSessionId, entry);
     } else {
       const created: Entry = { model: undefined as M, turnId: undefined, frozen: null };
+      // A handle evicted mid-turn (the cap) comes back for the next step of the
+      // SAME turn: the process registry still holds that turn's selection, so
+      // it is reused and the turn does not re-read a grant or last pick that
+      // moved meanwhile. A different turn id freezes afresh below.
+      const held = eveTurnId === undefined ? null : frozenTurnFor(eveSessionId);
+      if (freeze && held && held.turnId === eveTurnId) {
+        created.turnId = eveTurnId;
+        created.frozen = held.selection;
+      }
       created.model = build(
         () => routerIds(eveSessionId, created.turnId),
         () => created.frozen,

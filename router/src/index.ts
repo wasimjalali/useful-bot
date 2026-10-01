@@ -176,6 +176,14 @@ function timeoutError(headersSent: boolean): RouterError {
   });
 }
 
+type UsageOutcome = "ok" | "refused" | "timeout" | "error" | "aborted";
+
+/** How a dispatched call that threw ended, for its upstream_usage line. */
+function usageOutcomeOf(error: unknown): UsageOutcome {
+  if (error instanceof RouterError) return error.code === "upstream_timeout" ? "timeout" : "refused";
+  return "error";
+}
+
 function assertHost(req: IncomingMessage, port: number): void {
   const host = req.headers.host ?? "";
   const allowed = new Set([
@@ -600,6 +608,17 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
         const circuitId = circuitKey(entry.alias, resolved.connection.id, resolved.modelId);
         circuit.assertClosed(circuitId);
         const release = concurrency.acquire(ConcurrencyGate.key(caller.callerId, sessionId));
+        // One upstream_usage line per DISPATCHED call, written from the finally
+        // below so a refusal, a timeout, a body failure and a client disconnect
+        // are counted too, not only the exchanges that finished. Source for the
+        // cache and latency evals: ids, counts and the outcome, never prompt
+        // text or keys. A return that no branch marks "ok" is a disconnect.
+        let dispatched = false;
+        let dispatchedAt = 0;
+        let usageOutcome: UsageOutcome = "aborted";
+        let usageUpstream: { providerId: string; connectionId: string; model: string; timing: { startedAt: number; firstByteAt: number | null } } | null = null;
+        // The last usage the upstream reported; null fields when it reported none.
+        let lastUsage: ObservedUsage | null = null;
         try {
           limits.rememberRequest(stepId, caller.callerId, Date.now());
           const reservationId = limits.reserve({
@@ -619,6 +638,8 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           const signal = AbortSignal.any([AbortSignal.timeout(REQUEST_TOTAL_MS), controller.signal]);
           let upstream: Awaited<ReturnType<typeof completeUpstream>>;
           try {
+            dispatched = true;
+            dispatchedAt = Date.now();
             upstream = await completeUpstream({
               entry,
               body,
@@ -658,27 +679,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             log({ request_id: requestId, event: "upstream_fallback", alias: entry.alias, provider: upstream.providerId });
           }
           void turnId;
-          // The last usage the upstream reported, for the one log line per call.
-          let lastUsage: ObservedUsage | null = null;
-          // Source for the cache and latency evals: ids and counts only, never
-          // prompt text or keys. ttfbMs is the time to the first upstream body byte.
-          const logUsage = () => {
-            const firstByteAt = upstream.timing.firstByteAt;
-            log({
-              request_id: requestId,
-              event: "upstream_usage",
-              providerId: upstream.providerId,
-              connectionId: upstream.connectionId,
-              modelId: upstream.model,
-              sessionId,
-              inputTokens: lastUsage ? lastUsage.inputTokens : null,
-              cachedInputTokens: lastUsage ? lastUsage.cachedInputTokens ?? null : null,
-              cacheWriteTokens: lastUsage ? lastUsage.cacheWriteTokens ?? null : null,
-              outputTokens: lastUsage ? lastUsage.outputTokens : null,
-              ttfbMs: firstByteAt === null ? null : firstByteAt - upstream.timing.startedAt,
-              totalMs: Date.now() - upstream.timing.startedAt,
-            });
-          };
+          usageUpstream = upstream;
           const record = (usage: ObservedUsage | null) => {
             if (!usage || upstream.response.status >= 400) return;
             lastUsage = usage;
@@ -704,7 +705,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (!upstream.response.body) {
               writeHeaders();
               res.end();
-              logUsage();
+              usageOutcome = "ok";
               circuit.recordSuccess(circuitId);
               return;
             }
@@ -807,7 +808,7 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
             if (held) tail += `${held}\n\n`;
             if (tail) res.end(tail);
             else res.end();
-            logUsage();
+            usageOutcome = "ok";
             circuit.recordSuccess(circuitId);
             return;
           }
@@ -839,11 +840,33 @@ export function startRouter(options?: { port?: number; configPath?: string; lock
           settleCompletion(json);
           if (splitThinkCompletion(json)) learnInlineThink(requestId, upstream.providerId, upstream.model);
           send(res, upstream.response.status, json, outHeaders);
-          logUsage();
+          usageOutcome = "ok";
           if (upstream.response.status < 500) circuit.recordSuccess(circuitId);
           return;
+        } catch (error) {
+          usageOutcome = usageOutcomeOf(error);
+          throw error;
         } finally {
           release();
+          if (dispatched) {
+            const firstByteAt = usageUpstream ? usageUpstream.timing.firstByteAt : null;
+            const startedAt = usageUpstream ? usageUpstream.timing.startedAt : dispatchedAt;
+            log({
+              request_id: requestId,
+              event: "upstream_usage",
+              outcome: usageOutcome,
+              providerId: usageUpstream ? usageUpstream.providerId : resolved.providerId,
+              connectionId: usageUpstream ? usageUpstream.connectionId : resolved.connection.id,
+              modelId: usageUpstream ? usageUpstream.model : resolved.modelId,
+              sessionId,
+              inputTokens: lastUsage ? lastUsage.inputTokens : null,
+              cachedInputTokens: lastUsage ? lastUsage.cachedInputTokens ?? null : null,
+              cacheWriteTokens: lastUsage ? lastUsage.cacheWriteTokens ?? null : null,
+              outputTokens: lastUsage ? lastUsage.outputTokens : null,
+              ttfbMs: firstByteAt === null ? null : firstByteAt - startedAt,
+              totalMs: Date.now() - startedAt,
+            });
+          }
         }
       }
       if (req.method === "POST" && url.pathname === "/v1/images/generations") {

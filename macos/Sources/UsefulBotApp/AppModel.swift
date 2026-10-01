@@ -1910,6 +1910,11 @@ final class AppModel: ObservableObject {
                     self.finishSend(botId: bot.id, generation: generation)
                     return
                 }
+                // The server says this bot's model is gone: re-read the chip
+                // now so it shows as unavailable, rather than at the next poll.
+                if case BackendError.modelSelectionUnavailable = error, self.selectedBotId == bot.id {
+                    Task { await self.refreshComposer() }
+                }
                 if delivered {
                     // The server has the turn, so the draft stays cleared and
                     // the transcript keeps what the stream already applied.

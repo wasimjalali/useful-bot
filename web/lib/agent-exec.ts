@@ -38,8 +38,8 @@ import { peekShell, readShell, shellWasReseeded, updateShell } from "../../share
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
-import { botSelection, lastPick } from "../../shared/session-selection.ts";
-import { readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
+import { botSelection } from "../../shared/session-selection.ts";
+import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
 import { eveOrigin } from "../../shared/stack.ts";
 
 /**
@@ -87,8 +87,8 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
   // Always stamped: the permission is the bot's whether or not a folder is
   // attached. No folder means the bot works under the owner's home.
   // The model rides in the same write, so the agent reads one grant for both:
-  // the bot's own selection, or the last pick for a bot that has none yet
-  // (callers run ensureBotSelections first, so that is the same thing).
+  // the bot's own selection, or the current effective default for a bot that
+  // inherits it (model null).
   upsertSessionGrant({
     sessionId,
     path: bot.workspace?.path ?? null,
@@ -98,24 +98,42 @@ export function syncSessionWorkspace(sessionId: string, bot: ShellBot): void {
 }
 
 /**
- * Give every bot that has no model of its own the last pick as it stands now.
+ * Pin every bot that has no model of its own to the effective default as it
+ * stands now, so the per-bot pick that follows moves one bot only.
  *
- * A bot created after the per-bot change, or one from an older roster, has
- * `model: null` and would follow whatever is picked next. This pins it to the
- * current last pick, under the shell lock, so the pick that comes after
- * belongs to one bot only. Call it BEFORE anything that moves the last pick
- * (a model pick, a connect or sign-out), and before stamping a turn. Pass the
- * store a caller holds under its own lock to pin to exactly that state.
- * Idempotent: bots that already chose are untouched, and nothing is written
- * when there is none to pin.
- *
- * Every bot is born through applyShellAction (createBot, createGroup, the
- * seed), which leaves `model` null, so this one rule covers every path.
+ * A null bot inherits the default (the last pick, as the old global chip
+ * resolved it), which is right until a pick would move it. This runs ONLY at
+ * the start of a PUT /api/providers that carries a botId and a modelId, inside
+ * the providers lock, with the store that call holds. Connect, sign-out, a
+ * default-model change and the turn start leave null bots alone: they keep
+ * inheriting, exactly as before. The pin is the effective default (the model
+ * `composerState` resolves, with its snapped effort and speed), not the raw
+ * stored model, so it is what the owner's chip showed. When that default is
+ * not usable (nothing connected yet) nothing is pinned and the bots stay null.
+ * Idempotent: bots that already chose are untouched.
  */
 export function ensureBotSelections(providerStore: ProviderStore = readProviderStore()): void {
   if (!readShell().bots.some((bot) => bot.model === null)) return;
-  const pick = lastPick(providerStore);
+  const pick = effectiveDefault(providerStore);
+  if (!pick) return;
   updateShell((current) => freezeNullSelections(current, pick));
+}
+
+/**
+ * The eve proxy's refusal for a send to a bot whose selection cannot carry a
+ * turn, or null when it can. The same envelope as the proxy's other errors.
+ * Pure of eve: the caller answers with it before any fetch to eve.
+ */
+export function modelSelectionRefusal(bot: ShellBot): Response | null {
+  if (botSelectionUsable(bot)) return null;
+  return Response.json(
+    {
+      ok: false,
+      error: "model_selection_unavailable",
+      message: "This bot's model or its connection is no longer available. Pick a model for it again.",
+    },
+    { status: 409 },
+  );
 }
 
 /** Whether the bot's selection can carry a turn: its connection is live and its model is still listed. */
@@ -616,7 +634,6 @@ async function runEveTurn(
   // The bot's own model has to be servable before the turn exists. The code is
   // the message, so a routine's failure note and a handoff's failure record
   // carry it as they do the other codes here. Never a substitute model.
-  ensureBotSelections();
   const current = readShell().bots.find((item) => item.id === bot.id) ?? bot;
   if (!botSelectionUsable(current)) throw new Error("model_selection_unavailable");
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
@@ -879,8 +896,11 @@ async function pumpOnce(limit: number): Promise<{
     } catch (err) {
       const message = err instanceof Error ? err.message : "handoff_failed";
       if (message === "claim_lost") return;
-      const next = markFailed(record.id, message, undefined, claimToken);
-      const terminal = next && next.status === "failed" && next.attempts >= HANDOFF_ATTEMPTS_MAX;
+      // A gone model is not fixed by trying again: that failure is terminal at once.
+      const modelGone = message === "model_selection_unavailable";
+      const shown = modelGone ? MODEL_UNAVAILABLE_TEXT : message;
+      const next = markFailed(record.id, message, undefined, claimToken, modelGone);
+      const terminal = next && next.status === "failed" && (modelGone || next.attempts >= HANDOFF_ATTEMPTS_MAX);
       if (terminal) {
         // The sender card still reads as a normal outgoing handoff, so say
         // here that delivery gave up, the way a failed routine run does.
@@ -895,7 +915,7 @@ async function pumpOnce(limit: number): Promise<{
           appendAgentEvent(record.sourceBotId, {
             kind: "note",
             threadKind,
-            text: `Handoff to ${record.targetName} failed: ${message}`.slice(0, 300),
+            text: `Handoff to ${record.targetName} failed: ${shown}`.slice(0, 300),
           });
         } catch {
           /* the failed status still records the outcome */
@@ -903,9 +923,11 @@ async function pumpOnce(limit: number): Promise<{
       }
       failed.push({
         id: record.id,
-        error: terminal
-          ? `gave up after ${next?.attempts} tries: ${message}`
-          : message,
+        error: modelGone
+          ? shown
+          : terminal
+            ? `gave up after ${next?.attempts} tries: ${message}`
+            : message,
       });
     } finally {
       inflight.delete(record.id);
@@ -1026,6 +1048,9 @@ function failedSession(err: unknown): string | null {
   return typeof carried === "string" && carried ? carried : null;
 }
 
+/** What the owner reads when a routine or handoff could not run on the bot's own model. */
+const MODEL_UNAVAILABLE_TEXT = "This bot's model isn't available any more. Pick another model in its chat.";
+
 /** The failure note the owner reads in the chat, not the code the log holds. */
 function routineFailureText(err: unknown): string {
   const code = err instanceof Error ? err.message : "routine_failed";
@@ -1035,6 +1060,7 @@ function routineFailureText(err: unknown): string {
   if (code === "turn_went_silent") {
     return "the bot went quiet part way through and the run was stopped.";
   }
+  if (code === "model_selection_unavailable") return MODEL_UNAVAILABLE_TEXT;
   return code;
 }
 

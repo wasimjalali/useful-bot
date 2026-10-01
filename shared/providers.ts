@@ -1257,12 +1257,34 @@ export function botComposerState(
 }
 
 /**
+ * What a bot with no model of its own runs on: the model the old global chip
+ * showed and the router used, which is `composerState`'s resolution of the
+ * last pick (its list-first stand-in for a stored model that dropped out of a
+ * live list, the env Go plan fallback), with that model's snapped effort and
+ * speed. Null when that cannot carry a turn (nothing connected yet), so a
+ * caller never pins a bot to a pick that would only be refused later.
+ */
+export function effectiveDefault(store: ProviderStore, env: NodeJS.ProcessEnv = process.env): ModelSelection | null {
+  const composer = composerState(store, env);
+  if (!composer.connectionId || !composer.modelId) return null;
+  const selection: ModelSelection = {
+    connectionId: composer.connectionId,
+    modelId: composer.modelId,
+    effort: composer.effort,
+    speed: composer.speed,
+  };
+  return selectionAvailability(store, selection, env).available ? selection : null;
+}
+
+/**
  * One bot's pick, applied to that bot's selection and nothing else. Returns the
  * new selection and the store with the last pick moved to it (the default for
- * bots that have not chosen). A full pick ("<connection>::<model>") goes
- * through the same code as the legacy global pick; effort and speed snap to
- * the model's own levels without ever re-resolving the model, so a bot whose
- * model dropped out of a list keeps it, and the change is refused instead.
+ * bots that have not chosen). The requested connection and model are stored
+ * exactly: nothing here goes through the substituting `setComposer` snap, so a
+ * model that is not in the connection's fetched list is refused
+ * (`model_selection_unavailable`) instead of replaced by the list's first.
+ * Effort and speed snap to that model's own levels with the exact lookup. A
+ * free-form id on a connection with no fetched list is stored as is.
  */
 export function applyBotPick(
   store: ProviderStore,
@@ -1270,32 +1292,20 @@ export function applyBotPick(
   patch: { modelId?: string; effort?: EffortId | null; speed?: SpeedId },
   env: NodeJS.ProcessEnv = process.env,
 ): { store: ProviderStore; selection: ModelSelection } {
-  let working = store;
   let selection = base;
   if (patch.modelId !== undefined) {
-    const start: ProviderStore = {
-      ...store,
-      activeConnectionId: base.connectionId,
-      selectedModel: base.modelId,
-      effort: base.effort,
-      speed: base.speed,
-    };
-    // A bare model id means "on this bot's connection", which has to exist.
-    if (!patch.modelId.includes("::")) {
-      const conn = selectionConnection(store, base.connectionId, env);
-      if (!conn || !isConnected(conn)) throw new ModelSelectionUnavailableError(conn ? "provider_disconnected" : "connection_missing");
-    }
-    working = pickComposerModel(start, patch.modelId, env);
-    if (!working.activeConnectionId || !working.selectedModel) throw new ModelSelectionUnavailableError("model_missing");
-    selection = {
-      connectionId: working.activeConnectionId,
-      modelId: working.selectedModel,
-      effort: working.effort,
-      speed: working.speed,
-    };
+    // "<connectionId>::<modelId>" names the connection; a bare id means "on this bot's connection".
+    const sep = patch.modelId.lastIndexOf("::");
+    const connId = sep < 0 ? base.connectionId : patch.modelId.slice(0, sep);
+    const modelId = sep < 0 ? patch.modelId : patch.modelId.slice(sep + 2);
+    if (sep >= 0) parseConnectionId(connId);
+    if (!modelId) throw new ModelSelectionUnavailableError("model_missing");
+    selection = { ...base, connectionId: connId, modelId };
+    const verdict = selectionAvailability(store, selection, env);
+    if (!verdict.available) throw new ModelSelectionUnavailableError(verdict.reason);
   }
-  if (patch.effort !== undefined || patch.speed !== undefined) {
-    const conn = selectionConnection(working, selection.connectionId, env);
+  if (patch.modelId !== undefined || patch.effort !== undefined || patch.speed !== undefined) {
+    const conn = selectionConnection(store, selection.connectionId, env);
     if (!conn || !isConnected(conn)) throw new ModelSelectionUnavailableError(conn ? "provider_disconnected" : "connection_missing");
     const name = conn.providerId === "custom" && conn.fields.name ? conn.fields.name : providerDef(conn.providerId).name;
     const snapped = snapComposer(
@@ -1312,8 +1322,9 @@ export function applyBotPick(
   }
   return {
     selection,
+    // The implicit env-key Go plan row is materialized as setActiveConnection does.
     store: {
-      ...working,
+      ...withImplicit(store, selection.connectionId, env),
       activeConnectionId: selection.connectionId,
       selectedModel: selection.modelId,
       effort: selection.effort,

@@ -92,11 +92,11 @@ export type ShellBot = {
   permission: WorkspacePermission;
   workspace: BotWorkspace | null;
   /**
-   * The model, connection, effort and speed this bot runs on. Null on a bot
-   * that has never chosen: it then follows the last pick, until the web layer
-   * freezes it (ensureBotSelections) before anything can change that pick.
-   * Every create path leaves it null, and so does a roster from before this
-   * field, so one rule covers both.
+   * The model, connection, effort and speed this bot runs on. Null means it
+   * inherits the default (the last pick, as the old global chip resolved it).
+   * A bot is pinned only where a pick would otherwise move it: a per-bot chip
+   * pick pins every null bot first (ensureBotSelections). Every create path
+   * leaves it null, and so does a roster from before this field.
    */
   model: ModelSelection | null;
 };
@@ -1116,6 +1116,19 @@ export function freezeNullSelections(store: ShellStore, pick: ModelSelection): S
   return {
     ...store,
     bots: store.bots.map((bot) => (bot.model === null ? { ...bot, model: { ...pick } } : bot)),
+  };
+}
+
+/**
+ * Reset every bot pinned to one connection back to "inherit the default"
+ * (null). Used when the owner signs that connection out: the bot's chip then
+ * shows the new default instead of an unavailable model.
+ */
+export function clearConnectionSelections(store: ShellStore, connectionId: string): ShellStore {
+  if (!store.bots.some((bot) => bot.model?.connectionId === connectionId)) return store;
+  return {
+    ...store,
+    bots: store.bots.map((bot) => (bot.model?.connectionId === connectionId ? { ...bot, model: null } : bot)),
   };
 }
 

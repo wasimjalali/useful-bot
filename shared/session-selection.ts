@@ -1,6 +1,6 @@
 import { isEffortId, isSpeedId, type EffortId, type SpeedId } from "./models.ts";
 import { parseConnectionId, providerMode } from "./provider-catalog.ts";
-import type { ProviderStore } from "./providers.ts";
+import { effectiveDefault, type ProviderStore } from "./providers.ts";
 
 /**
  * What one bot runs on: the connection, the model and how hard it thinks.
@@ -110,12 +110,17 @@ export function parseModelSelection(raw: unknown): ModelSelection | null {
 }
 
 /**
- * The provider store's own selection, read as "the last pick". With no active
- * connection the app runs on the OpenCode Go plan (stored row or env key), and
- * with no model picked it runs that plan's everyday model, so those defaults
- * are written out here rather than left as holes.
+ * What a bot with no model of its own runs on, and what a new bot starts with:
+ * the model the old global chip showed (`effectiveDefault`: the last pick as
+ * the composer resolves it, including its list-first stand-in for a stored
+ * model that left a live list and the env Go plan fallback). When that cannot
+ * carry a turn (nothing connected yet) it falls back to the raw stored pick,
+ * with the Go plan's everyday model for holes, so a bot reads as unavailable
+ * rather than as no selection.
  */
 export function lastPick(store: ProviderStore): ModelSelection {
+  const resolved = effectiveDefault(store);
+  if (resolved) return resolved;
   const connectionId = store.activeConnectionId ?? "opencode-go:plan";
   const { providerId, mode } = parseConnectionId(connectionId);
   return {
@@ -126,7 +131,7 @@ export function lastPick(store: ProviderStore): ModelSelection {
   };
 }
 
-/** A bot's own selection, else the last pick (for a bot that has not frozen one yet). */
+/** A bot's own selection, else the effective default (a bot that has not chosen follows it). */
 export function botSelection(bot: { model: ModelSelection | null }, store: ProviderStore): ModelSelection {
   return bot.model ?? lastPick(store);
 }

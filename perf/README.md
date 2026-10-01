@@ -24,15 +24,14 @@ perf/run.sh check --quick  # fewer runs, to try the rig; never a merge gate
 
 Never `pkill -f 'scripts/service.mjs web'`: that name matches the daily app's web service too.
 
-**The first dev perf run needs the fixtures built on the dev stack.** The lock
-`perf/fixtures.dev.lock.json` (`config.json` `fixtureLock`) does not exist until then, and
-`npm run perf:check` and `perf/run.sh baseline` stop at once with `missing
-perf/fixtures.dev.lock.json` (exit 1) rather than measure against nothing. The old
-`perf/fixtures.lock.json` belongs to the daily stack and is never used. To create it: open the
-dev app, connect a model provider in its first-run screen (the dev stack has its own Keychain
-items, so the daily provider does not carry over), set Perf Long Tools to Full access by hand,
-then run `perf/run.sh fixtures` (real model turns: it costs provider usage and time, hours for
-Perf Long Replies) and `perf/run.sh lock` (see [Fixtures](#fixtures)). The limits in
+**The dev fixtures are built and locked** (2026-10-01, `perf/fixtures.dev.lock.json`, see
+`fixtures.json` `_devBuild`). If that lock is ever missing, `npm run perf:check` and
+`perf/run.sh baseline` stop at once with `missing perf/fixtures.dev.lock.json` (exit 1) rather than
+measure against nothing. The old `perf/fixtures.lock.json` belongs to the daily stack and is never
+used. To rebuild them: open the dev app, connect a model provider in its first-run screen (the dev
+stack has its own Keychain items, so the daily provider does not carry over), create Perf Long
+Tools and set it to Full access by hand, then run `perf/run.sh fixtures` (real model turns: it costs
+provider usage and time) and `perf/run.sh lock` (see [Fixtures](#fixtures)). The limits in
 `budgets.json` were set from daily-app runs (2026-09-26), so the first dev run is also their first
 check against the dev app.
 

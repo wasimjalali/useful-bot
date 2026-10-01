@@ -13,7 +13,10 @@ say once the router logs them?
 - Driven with cua-driver in the background (no pointer, no focus).
 - Data: the router's new `upstream_usage` line, one per completed upstream call. Raw lines are in
   `2026-10-01-ub002-model-switching-usage.jsonl` (29 calls, 15:09 to 15:17 UTC).
-- Screenshots in the repo root: `ub002-running-model.png` and `ub002-overlap.png`.
+- Screenshots beside this file: `2026-10-01-ub002-running-model.png` and
+  `2026-10-01-ub002-overlap.png`.
+- Extraction and summary: `2026-10-01-ub002-extract.py` (usage in its docstring; the jsonl was
+  cut from `~/Library/Logs/UsefulBotDev/service-router.log` for 15:09 to 15:18 UTC).
 - Cost: OpenCode Go subscription, no per-call charge. 404,194 input tokens (317,824 cached) and
   1,031 output tokens in total.
 
@@ -22,7 +25,7 @@ say once the router logs them?
 | # | Scenario | Expected | Observed |
 |---|---|---|---|
 | 1 | Pick DeepSeek V4 Flash on Test Bot 2 | Only Test Bot 2 changes | `shell.json`: Test Bot 2 `deepseek-v4-flash`, Test Bot still `glm-5.3-flash` |
-| 2 | Upgrade with bots that had no model | Every bot pinned to the last pick, none follows later picks | First turn after install pinned all seven bots to `glm-5.3-flash` |
+| 2 | Upgrade with bots that had no model | No bot follows a pick made on another bot | This run used the first build, which pinned all seven bots at the first turn. Review round 1 changed the rule (see below); the shipped rule is unit-tested |
 | 3 | Test Bot runs 6 tool calls on GLM 5.3 Flash; mid-turn its chip moves to Kimi K3 | All 7 calls of that turn stay on GLM; working row shows the running model | 7/7 calls `glm-5.3-flash` (15:14:34 to 15:14:57). Working row read "Thinking · GLM 5.3 Flash" while the chip showed "Kimi K3 Low" |
 | 4 | Test Bot's next turn | Kimi K3 | 5/5 calls `kimi-k3` (15:16:11 to 15:16:18) |
 | 5 | Test Bot 2's first turn in a brand-new session | DeepSeek from the first step (stamp wait) | 3/3 calls `deepseek-v4-flash`, first call included |
@@ -33,7 +36,7 @@ Time to first byte (TTFB) is the median time from dispatch to the first upstream
 
 | Model | Calls | Calls with 0 cached | Median TTFB, 0 cached | Median TTFB, cached | Share of input cached |
 |---|---|---|---|---|---|
-| deepseek-v4-flash | 12 | 1 | 1,273 ms | 740 ms | 90.5% |
+| deepseek-v4-flash | 12 | 0 (1 not reported) | n/a | 740 ms | 90.5% |
 | kimi-k3 | 8 | 1 | 2,102 ms | 1,397 ms | 85.8% |
 | glm-5.3-flash | 9 | 3 | 722 ms | 512 ms | 55.3% |
 
@@ -54,6 +57,15 @@ Time to first byte (TTFB) is the median time from dispatch to the first upstream
 - **Compaction after a switch to a smaller window:** not triggered (chats stayed near 15k tokens).
   Covered by unit tests and the agent's compaction log hook.
 - **The "unavailable model" chip state:** unit-tested only.
+
+## What changed because of it
+- Review round 1 (GPT-6.1-Sol and Sonnet 5.5) changed the pinning rule. A bot with no model of its
+  own now inherits the default, which is what the old global chip resolved to. Bots are pinned only
+  just before a per-bot pick moves the default. Removing a connection resets the bots pinned to it to
+  "inherit". Pinning every bot at connect, sign-out and turn start had stranded a fresh install's
+  default bot on an unconnected provider.
+- After the round 1 fixes, a sanity turn on Test Bot 2 stayed on `deepseek-v4-flash`, the new
+  `outcome` field was logged on every call, and no turn waited on a missing stamp.
 
 ## Conclusion
 - Per-bot selection, next-turn switching and concurrent bots on different models work live on

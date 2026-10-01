@@ -18,11 +18,10 @@ import { exactModelOption, modelSeesImages } from "../../../../../shared/models.
 import { readProviderStore } from "../../../../../shared/providers.ts";
 import { botSelection, lastPick } from "../../../../../shared/session-selection.ts";
 import {
-  botSelectionUsable,
   cancelEveTurn,
   channelJwt,
   continuationBriefFor,
-  ensureBotSelections,
+  modelSelectionRefusal,
   sessionHasCompletedTurn,
   syncSessionWorkspace,
 } from "../../../../lib/agent-exec";
@@ -156,10 +155,11 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // turn exists: eve would stage the bytes, the upstream would reject
       // the call, and the session would retire on the failed turn. A model
       // the catalog does not know goes through, and the upstream decides.
+      let sender: ShellBot | null = null;
       try {
         const sent = JSON.parse(new TextDecoder().decode(body)) as { message?: unknown; botId?: unknown };
         const parsed = parseTurnMessage(sent.message);
-        const sender = typeof sent.botId === "string"
+        sender = typeof sent.botId === "string"
           ? readShell().bots.find((item) => item.id === sent.botId) ?? null
           : null;
         if (parsed !== null && turnHasImages(parsed) && rejectsImages(sender)) {
@@ -167,6 +167,19 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       } catch {
         /* a malformed body is judged by the rewrite below, as before */
+      }
+      // The bot's own model has to be servable before the turn reaches eve:
+      // its connection signed in and its model still in the live list. The
+      // router would refuse it too, but a turn eve has accepted and failed
+      // retires the session, so the owner is told here and picks again. Never
+      // a quiet switch to another model. A cheap refusal too, so it sits above
+      // the carry-over read.
+      try {
+        const refusal = sender === null ? null : modelSelectionRefusal(sender);
+        if (refusal) return refusal;
+      } catch (err) {
+        console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
+        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
       }
       if (carriedFrom) notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
       if (suffix !== "session") {
@@ -202,16 +215,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         }
       }
       if (extras.retry) notes.push(RETRY_NOTE);
-      // Pin any bot that has no model of its own to the current last pick
-      // before the roster is read for this turn. Outside the rewrite's catch
-      // on purpose: a pin that failed must not let the turn run on a model
-      // that a later pick could move.
-      try {
-        ensureBotSelections();
-      } catch (err) {
-        console.error("bot selections could not be pinned", err instanceof Error ? err.message : err);
-        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
-      }
       try {
         const raw = new TextDecoder().decode(body);
         const shell = readShell();
@@ -233,30 +236,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           return Response.json({ ok: false, error: "eve_message_invalid" }, { status: 400 });
         }
         /* keep the original body: a malformed turn must fail at eve, not here */
-      }
-      // The bot's own model has to be servable before the turn reaches eve:
-      // its connection signed in and its model still in the live list. The
-      // router would refuse it too, but a turn eve has accepted and failed
-      // retires the session, so the owner is told here and picks again. Never
-      // a quiet switch to another model.
-      let usable = true;
-      try {
-        usable = bot === null || botSelectionUsable(bot);
-      } catch (err) {
-        console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
-        return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
-      }
-      if (!usable) {
-        return Response.json(
-          {
-            ok: false,
-            error: {
-              code: "model_selection_unavailable",
-              message: "This bot's model or its connection is no longer available. Pick a model for it again.",
-            },
-          },
-          { status: 409 },
-        );
       }
       // Outside the body-rewrite try on purpose. The tools that run during
       // this turn read the workspace grant for the session, so it has to be

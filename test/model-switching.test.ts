@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyBotPick,
   botComposerState,
+  composerState,
+  effectiveDefault,
   ModelSelectionUnavailableError,
   readProviderStore,
   resolveUpstream,
@@ -25,7 +27,8 @@ import { readShell, updateShell, writeShell } from "../shared/shell-io.ts";
 import { readSessionGrant, upsertSessionGrant } from "../shared/workspace-store.ts";
 import { exactModelOption, snapComposer } from "../shared/models.ts";
 import { catalogFor } from "../shared/live-models.ts";
-import { ensureBotSelections, pumpHandoffs, startRoutineNow, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
+import { ensureBotSelections, modelSelectionRefusal, pumpHandoffs, startRoutineNow, syncSessionWorkspace } from "../web/lib/agent-exec.ts";
+import { applyProvidersDelete, applyProvidersPut } from "../web/lib/providers-write.ts";
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
 import { listThreadEvents } from "../shared/agent-store.ts";
@@ -33,6 +36,7 @@ import { perSessionModel, frozenTurnFor } from "../agent/lib/session-model.ts";
 import {
   awaitTurnStamp,
   freezeTurnSelection,
+  STAMP_WAIT_MS,
   reviewerWindowTokens,
   UNKNOWN_WINDOW_TOKENS,
   windowTokensFor,
@@ -40,6 +44,7 @@ import {
 import { routerFetch } from "../agent/lib/router-fetch.ts";
 import { routerIds } from "../agent/lib/router-identity.ts";
 
+const PLAIN_UNAVAILABLE = "This bot's model isn't available any more. Pick another model in its chat.";
 const GO = "opencode-go:plan";
 const OA = "openai:api";
 
@@ -413,7 +418,8 @@ test("a missing model or a removed connection refuses with model_selection_unava
       assert.equal(run.status, "failed");
       assert.match(run.error ?? "", /model_selection_unavailable/);
       const notes = listThreadEvents(bId).map((event) => ("text" in event ? String(event.text) : ""));
-      assert.ok(notes.some((text) => text.includes("model_selection_unavailable")), "the transcript note carries the code");
+      assert.ok(notes.some((text) => text.includes(PLAIN_UNAVAILABLE)), "the transcript note says it in plain words");
+      assert.ok(!notes.some((text) => text.includes("model_selection_unavailable")), "the note never shows the code");
 
       const handoff = queueHandoff({
         sourceBotId: bId,
@@ -424,8 +430,13 @@ test("a missing model or a removed connection refuses with model_selection_unava
       });
       const result = await pumpHandoffs(1);
       assert.equal(result.failed.length, 1);
-      assert.match(result.failed[0].error, /model_selection_unavailable/);
+      assert.equal(result.failed[0].error, PLAIN_UNAVAILABLE);
+      // Terminal on the first attempt: another try cannot bring the model back.
+      assert.equal(readHandoff(handoff.id)?.status, "failed");
+      assert.equal(readHandoff(handoff.id)?.attempts, 1);
       assert.match(readHandoff(handoff.id)?.lastError ?? "", /model_selection_unavailable/);
+      const senderNotes = listThreadEvents(bId).map((event) => ("text" in event ? String(event.text) : ""));
+      assert.ok(senderNotes.some((text) => text.includes(`failed: ${PLAIN_UNAVAILABLE}`)), "the sender's note is plain too");
       assert.equal(eve.calls(), 0, "nothing was sent to eve");
     } finally {
       eve.restore();
@@ -517,5 +528,172 @@ test("a new session's first step waits for its stamp, and an owned or stamped se
 
     // Nothing ever stamps it: bounded, and reported as missing.
     assert.equal(await awaitTurnStamp("sess-orphan", 200), false);
+  });
+});
+
+/** The two files a refused write must leave byte for byte as they were. */
+function snapshotStores(providers: string, shell: string): [string | null, string | null] {
+  return [
+    existsSync(providers) ? readFileSync(providers, "utf8") : null,
+    existsSync(shell) ? readFileSync(shell, "utf8") : null,
+  ];
+}
+
+test("fresh install: connecting a provider leaves a null bot inheriting the new default, and a send is not refused", async () => {
+  await withWorld(async ({ shell }) => {
+    // Nothing connected: the seeded bot has no model, and its send is refused by the proxy before eve.
+    const before = readShell(shell).bots[0];
+    assert.equal(before.model, null);
+    assert.equal(effectiveDefault(readProviderStore()), null, "nothing usable to pin to yet");
+    const refusal = modelSelectionRefusal(before);
+    assert.ok(refusal, "no connection: refused");
+    assert.equal(refusal.status, 409);
+    assert.deepEqual(await refusal.json(), {
+      ok: false,
+      error: "model_selection_unavailable",
+      message: "This bot's model or its connection is no longer available. Pick a model for it again.",
+    });
+
+    // Connect OpenAI (no botId): no pin, the bot follows the new default.
+    const { store } = applyProvidersPut({ providerId: "openai", mode: "api", key: "oa-key-12345678" });
+    const after = readShell(shell).bots[0];
+    assert.equal(after.model, null, "connect does not pin");
+    assert.equal(botSelection(after, store).connectionId, OA);
+    assert.deepEqual(botSelection(after, store), effectiveDefault(store));
+    assert.equal(modelSelectionRefusal(after), null, "the send goes through");
+  }, { connections: {}, cache: {} });
+});
+
+test("a chip pick on bot B pins bot A (null) to the effective default first, so A's stamp keeps the old model", () => {
+  withWorld(({ shell }) => {
+    const { aId, bId } = twoBots(null, null, shell);
+    const oldDefault = effectiveDefault(readProviderStore());
+    assert.ok(oldDefault);
+    assert.equal(oldDefault.connectionId, GO);
+
+    const { store, bot } = applyProvidersPut({ botId: bId, modelId: `${OA}::gpt-4.1` });
+    assert.equal(bot?.model?.connectionId, OA);
+    assert.equal(store.activeConnectionId, OA, "the last pick followed B");
+    const roster = readShell(shell);
+    const a = roster.bots.find((item) => item.id === aId)!;
+    assert.deepEqual(a.model, oldDefault, "A was pinned to what its chip showed");
+    assert.ok(roster.bots.every((item) => item.model !== null), "every inheriting bot was pinned");
+    syncSessionWorkspace("sess-pin-a", a);
+    assert.deepEqual(readSessionGrant("sess-pin-a")?.selection, oldDefault);
+  });
+});
+
+test("upgrade: a stored model missing from a live list resolves to the substitute the old chip showed, and a pick pins that, not the missing id", () => {
+  withWorld(({ shell }) => {
+    // glm-5.3-flash (the stored pick) left the fetched list.
+    const { aId, bId } = twoBots(null, null, shell);
+    const store = readProviderStore();
+    const oldChip = composerState(store);
+    assert.notEqual(oldChip.modelId, "glm-5.3-flash", "the old chip substituted another model");
+    const a = readShell(shell).bots.find((item) => item.id === aId)!;
+    assert.equal(botSelection(a, store).modelId, oldChip.modelId);
+    assert.equal(botSelection(a, store).effort, oldChip.effort);
+    assert.equal(modelSelectionRefusal(a), null, "a null bot still runs on the substitute");
+
+    applyProvidersPut({ botId: bId, modelId: `${OA}::gpt-4.1` });
+    const pinned = readShell(shell).bots.find((item) => item.id === aId)!;
+    assert.equal(pinned.model?.connectionId, GO);
+    assert.equal(pinned.model?.modelId, oldChip.modelId, "pinned to the substitute");
+    assert.notEqual(pinned.model?.modelId, "glm-5.3-flash");
+  }, {
+    cache: {
+      [GO]: { fetchedAt: Date.now(), models: [row("glm-5", 202_752), row("no-window")] },
+      [OA]: { fetchedAt: Date.now(), models: [row("gpt-4.1-mini", 128_000), row("gpt-4.1", 1_047_576)] },
+    },
+  });
+});
+
+test("signing out a bot's connection resets that bot to inherit the new default", () => {
+  withWorld(({ shell }) => {
+    const { aId, bId } = twoBots(selOa, selGo5, shell);
+    applyProvidersDelete({ connectionId: OA });
+    const roster = readShell(shell);
+    assert.equal(roster.bots.find((item) => item.id === aId)!.model, null, "A was on the removed connection");
+    assert.deepEqual(roster.bots.find((item) => item.id === bId)!.model, selGo5, "B is untouched");
+    const store = readProviderStore();
+    assert.deepEqual(botSelection(roster.bots.find((item) => item.id === aId)!, store), effectiveDefault(store));
+    assert.equal(effectiveDefault(store)?.connectionId, GO);
+  });
+});
+
+test("a per-bot pick is exact: an unknown bot is a 404 and a missing model a 400, and both write nothing", () => {
+  withWorld(({ providers, shell }) => {
+    const { aId } = twoBots(null, selGo5, shell);
+    const before = snapshotStores(providers, shell);
+
+    assert.throws(() => applyProvidersPut({ botId: "bot-nope", modelId: `${OA}::gpt-4.1` }), /^Error: shell_bot_missing$/);
+    assert.deepEqual(snapshotStores(providers, shell), before, "unknown bot: nothing written");
+
+    // Absent from a non-empty catalog: not replaced by the list's first model.
+    assert.throws(() => applyProvidersPut({ botId: aId, modelId: `${GO}::glm-not-listed` }), /model_selection_unavailable/);
+    assert.throws(() => applyProvidersPut({ botId: aId, modelId: `${OA}::gpt-not-listed` }), /model_selection_unavailable/);
+    // A connection that is not there.
+    assert.throws(() => applyProvidersPut({ botId: aId, modelId: "anthropic:api::claude-x" }), /model_selection_unavailable/);
+    assert.deepEqual(snapshotStores(providers, shell), before, "refused picks: nothing written, no pin");
+
+    // Listed models are stored exactly, effort snapped to that model.
+    const { bot } = applyProvidersPut({ botId: aId, modelId: `${OA}::gpt-4.1-mini`, effort: "max" });
+    assert.equal(bot?.model?.modelId, "gpt-4.1-mini");
+    assert.equal(bot?.model?.effort, "max");
+  });
+  // No fetched list for the connection: a free-form id is stored as typed.
+  withWorld(({ shell }) => {
+    const { aId } = twoBots(null, null, shell);
+    const { bot } = applyProvidersPut({ botId: aId, modelId: `${OA}::my-local-model` });
+    assert.equal(bot?.model?.connectionId, OA);
+    assert.equal(bot?.model?.modelId, "my-local-model");
+  }, {
+    cache: { [GO]: { fetchedAt: Date.now(), models: [row("glm-5.3-flash", 1_000_000), row("glm-5", 202_752)] } },
+  });
+});
+
+test("an unstamped session no bot owns throws turn_stamp_missing, never the selected bot's or the last pick's model", async () => {
+  await withWorld(async ({ shell }) => {
+    assert.equal(STAMP_WAIT_MS, 10_000);
+    const { aId } = twoBots(selOa, null, shell);
+    // The selected bot and the last pick both exist, and neither may be used.
+    assert.ok(readShell(shell).selectedBotId);
+    assert.throws(() => freezeTurnSelection("sess-unowned"), /turn_stamp_missing/);
+    assert.equal(await awaitTurnStamp("sess-unowned", 100), false);
+
+    // The bot that holds the session, or opened it as a carry-over, owns it.
+    updateShell((current) => ({
+      ...current,
+      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-owned", continuedSessionId: "sess-carried" } : bot)),
+    }));
+    assert.equal(freezeTurnSelection("sess-owned").modelId, selOa.modelId);
+    assert.equal(freezeTurnSelection("sess-carried").modelId, selOa.modelId);
+    assert.equal(await awaitTurnStamp("sess-carried", 100), true);
+
+    // Tests and probes pin a bot with the env var.
+    process.env.UB_ACTIVE_BOT_ID = aId;
+    assert.equal(freezeTurnSelection("sess-probe").modelId, selOa.modelId);
+  });
+});
+
+test("a turn's snapshot survives the handle being evicted: the same turn keeps it, a new turn re-reads", () => {
+  withWorld(() => {
+    upsertSessionGrant({ sessionId: "sess-evict-1", path: null, permission: "auto", selection: selGo });
+    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 1, freezeTurnSelection);
+    const first = modelFor("sess-evict-1", "turn-T");
+    assert.equal(first.selection()?.modelId, selGo.modelId);
+
+    // Another session steps and the cap of one drops sess-evict-1's handle.
+    upsertSessionGrant({ sessionId: "sess-evict-2", path: null, permission: "auto", selection: selGo5 });
+    modelFor("sess-evict-2", "turn-U");
+
+    // Mid turn, the grant moves to another model.
+    upsertSessionGrant({ sessionId: "sess-evict-1", path: null, permission: "auto", selection: selOa });
+    const rebuilt = modelFor("sess-evict-1", "turn-T");
+    assert.notEqual(rebuilt, first, "the handle really was rebuilt");
+    assert.deepEqual(rebuilt.selection(), { ...selGo, windowTokens: 1_000_000 }, "the same turn keeps the frozen selection");
+
+    modelFor("sess-evict-1", "turn-T2");
+    assert.equal(rebuilt.selection()?.modelId, selOa.modelId, "a new turn picks up the grant");
   });
 });
