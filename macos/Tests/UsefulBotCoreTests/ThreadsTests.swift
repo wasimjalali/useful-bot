@@ -54,20 +54,37 @@ import Testing
         #expect(members.map(\.id) == ["b1", "b3"])
     }
 
-    @Test func speakerLabelPicksTheMentionedMemberForAGroup() {
+    @Test func aGroupReplyIsCreditedToTheOrchestratorNeverTheMember() {
         let group = ShellBot.sample(id: "g1", kind: "group", name: "Launch")
         let roster = speakers()
-        let labelled = Threads.speakerLabel(bot: group, speakers: roster, mentionIds: ["b2"])
-        #expect(labelled.authorBotId == "b2")
-        #expect(labelled.authorName == "Research Lead")
-        let untargeted = Threads.speakerLabel(bot: group, speakers: roster, mentionIds: [])
-        #expect(untargeted.authorName == "Useful Bot")
-        #expect(untargeted.authorBotId == nil)
+        // No orchestrator named: the default name, no bot id.
+        let plain = Threads.speakerLabel(bot: group)
+        #expect(plain.authorName == "Useful Bot")
+        #expect(plain.authorBotId == nil)
+        // The default bot as orchestrator: its real name, still no bot id.
+        let generalist = Speaker(id: "bot-useful", kind: "bot", name: "Generalist", title: "")
+        let byDefault = Threads.speakerLabel(bot: group, orchestrator: generalist)
+        #expect(byDefault.authorName == "Generalist")
+        #expect(byDefault.authorBotId == nil)
+        // A fallback orchestrator is credited by id and name, never a member of the roster.
+        let fallback = roster[0]
+        let credited = Threads.speakerLabel(bot: group, orchestrator: fallback)
+        #expect(credited.authorBotId == fallback.id)
+        #expect(credited.authorName == fallback.name)
+    }
+
+    @Test func groupMembersExcludeTheOrchestratorWhoeverItIs() {
+        let roster = [
+            Speaker(id: "b1", kind: "bot", name: "Research", title: ""),
+            Speaker(id: "b3", kind: "bot", name: "Writer", title: ""),
+        ]
+        let members = Threads.groupMembers(roster, memberIds: ["b1", "b3"], orchestratorId: "b1")
+        #expect(members.map(\.id) == ["b3"])
     }
 
     @Test func speakerLabelForAOneOnOneBotIsItself() {
         let bot = ShellBot.sample(id: "b1", kind: "bot", name: "Research")
-        let labelled = Threads.speakerLabel(bot: bot, speakers: speakers(), mentionIds: [])
+        let labelled = Threads.speakerLabel(bot: bot)
         #expect(labelled.authorBotId == "b1")
     }
 }

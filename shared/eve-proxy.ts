@@ -1,4 +1,4 @@
-import { DEFAULT_BOT_ID } from "./shell-store.ts";
+import { DEFAULT_BOT_ID, orchestratorId } from "./shell-store.ts";
 import type { ShellBot, ShellStore } from "./shell-store.ts";
 import {
   IMAGE_DATA_URL,
@@ -176,6 +176,7 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
     text: message,
     bots: speakers,
     memberIds: bot.memberIds,
+    orchestrator: orchestratorId(store),
   });
   const mentionNames = route.mentionIds
     .map((id) => speakers.find((speaker) => speaker.id === id)?.name ?? "")
@@ -188,6 +189,12 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
  * targeted member when the owner used an @mention. Empty for the default bot, so
  * the verified 1:1 path is byte identical.
  */
+/** The note a group turn carries when the owner @mentioned members. */
+export function mentionLine(names: string[]): string {
+  const who = names.join(", ");
+  return `The owner addressed ${who}. Answer for that member's part as the orchestrator; don't claim to be ${who}.`;
+}
+
 export function rewriteEveTurnBody(
   raw: string,
   bot: ShellBot | null,
@@ -199,7 +206,7 @@ export function rewriteEveTurnBody(
   const json = JSON.parse(raw) as { message?: unknown };
   const message = parseTurnMessage(json.message);
   if (message === null) throw new Error("eve_message");
-  if ((!bot || bot.id === DEFAULT_BOT_ID) && notes.length === 0) {
+  if ((!bot || bot.id === DEFAULT_BOT_ID) && notes.length === 0 && (route?.mentionNames ?? []).length === 0) {
     return JSON.stringify({ message });
   }
   const identity = !bot || bot.id === DEFAULT_BOT_ID ? "" : threadPrefix({
@@ -211,9 +218,12 @@ export function rewriteEveTurnBody(
       description: bot.description,
     },
     members: members.length > 0 ? members : undefined,
-    mentionNames: route?.mentionNames ?? [],
   });
-  const prefix = withSessionNotes(identity, notes);
+  // A mention no longer tells the orchestrator to speak as the member. The
+  // line is an app note, so the transcript hides it with the rest.
+  const mentioned = (route?.mentionNames ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter((name) => name.length > 0);
+  const allNotes = mentioned.length > 0 ? [...notes, mentionLine(mentioned)] : notes;
+  const prefix = withSessionNotes(identity, allNotes);
   if (typeof message === "string") {
     return JSON.stringify({ message: `${prefix}${message}` });
   }

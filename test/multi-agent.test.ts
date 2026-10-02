@@ -112,7 +112,10 @@ test("group turns carry the roster and the targeted member; default bot stays cl
   assert.match(rewritten.message, /Group chat: Launch\./);
   assert.match(rewritten.message, /- Research\n/);
   assert.match(rewritten.message, /- Writer\n/);
-  assert.match(rewritten.message, /directed this turn at Research/);
+  // The mention is an app note now: it never tells the orchestrator to speak as the member.
+  assert.doesNotMatch(rewritten.message, /directed this turn at/);
+  assert.match(rewritten.message, /The owner addressed Research\. Answer for that member's part as the orchestrator; don't claim to be Research\./);
+  assert.equal(stripThreadPrefix(rewritten.message), "@Research find sources");
   assert.match(rewritten.message, /@Research find sources$/);
 
   const defaultBot = withGroup.bots.find((bot) => bot.id === DEFAULT_BOT_ID);
@@ -237,7 +240,7 @@ test("roster lines carry the ids the agent tools need", () => {
   assert.equal(line.startsWith("- Research"), true);
 });
 
-test("reply attribution names the targeted member only for a single mention", () => {
+test("a group reply is credited to the orchestrator, whoever the owner mentioned", () => {
   const store = withBots();
   const group = applyShellAction(store, {
     type: "createGroup",
@@ -246,26 +249,32 @@ test("reply attribution names the targeted member only for a single mention", ()
   });
   const groupBot = group.store.bots.find((bot) => bot.id === group.createdId);
   assert.ok(groupBot);
-  const speakers = speakersFrom(group.store.bots);
-  const one = speakerLabel({
-    bot: groupBot,
-    speakers,
-    route: { threadId: groupBot.id, kind: "group", mentionIds: [idOf(store, "Research")], untargeted: false },
-  });
-  assert.equal(one.authorName, "Research");
-  assert.equal(one.authorBotId, idOf(store, "Research"));
-  const many = speakerLabel({
-    bot: groupBot,
-    speakers,
-    route: {
-      threadId: groupBot.id,
-      kind: "group",
-      mentionIds: [idOf(store, "Research"), idOf(store, "Writer")],
-      untargeted: false,
-    },
-  });
-  assert.equal(many.authorName, "Useful Bot");
-  assert.equal(many.authorBotId, null);
+  // No orchestrator given: the default name, no member credited.
+  assert.deepEqual(speakerLabel({ bot: groupBot }), { authorBotId: null, authorName: "Useful Bot" });
+  // The default bot answers under its real name and carries no author id.
+  assert.deepEqual(
+    speakerLabel({ bot: groupBot, orchestrator: { id: DEFAULT_BOT_ID, name: "Generalist" } }),
+    { authorBotId: null, authorName: "Generalist" },
+  );
+  // A fallback orchestrator is credited by id.
+  const lead = idOf(store, "Research");
+  assert.deepEqual(
+    speakerLabel({ bot: groupBot, orchestrator: { id: lead, name: "Research" } }),
+    { authorBotId: lead, authorName: "Research" },
+  );
+  // A 1:1 bot is itself; the default bot has no label.
+  assert.deepEqual(speakerLabel({ bot: store.bots.find((bot) => bot.name === "Writer")! }).authorName, "Writer");
+  assert.deepEqual(speakerLabel({ bot: store.bots.find((bot) => bot.id === DEFAULT_BOT_ID)! }), { authorBotId: null, authorName: null });
+});
+
+test("groupMembers leaves out the orchestrator, whoever it is", () => {
+  const store = withBots();
+  const research = idOf(store, "Research");
+  const writer = idOf(store, "Writer");
+  const speakers = speakersFrom(store.bots);
+  assert.deepEqual(groupMembers(speakers, [research, writer]).map((member) => member.id), [research, writer]);
+  assert.deepEqual(groupMembers(speakers, [research, writer], research).map((member) => member.id), [writer]);
+  assert.deepEqual(groupMembers(speakers, [DEFAULT_BOT_ID, research], null).map((member) => member.id), [research]);
 });
 
 test("session route header round trips and rejects junk", () => {

@@ -34,12 +34,17 @@ public enum Threads {
         }
     }
 
-    public static func groupMembers(_ speakers: [Speaker], memberIds: [String]) -> [Speaker] {
+    /// The orchestrator is never a member; it defaults to the default bot.
+    public static func groupMembers(
+        _ speakers: [Speaker],
+        memberIds: [String],
+        orchestratorId: String? = defaultBotId
+    ) -> [Speaker] {
         var members: [Speaker] = []
         for id in memberIds {
             if members.contains(where: { $0.id == id }) { continue }
             guard let bot = speakers.first(where: { $0.id == id }) else { continue }
-            guard bot.kind == "bot", bot.id != defaultBotId, !bot.hidden else { continue }
+            guard bot.kind == "bot", bot.id != defaultBotId, bot.id != orchestratorId, !bot.hidden else { continue }
             members.append(bot)
             if members.count >= groupRosterMax { break }
         }
@@ -111,18 +116,15 @@ public enum Threads {
     }
 
     /// Transcript label for the bot a routed turn answered as, matching
-    /// `speakerLabel` in `shared/threads.ts`.
+    /// `speakerLabel` in `shared/threads.ts`. A group reply is the
+    /// orchestrator's, whoever the owner mentioned: the member does not speak.
     public static func speakerLabel(
         bot: ShellBot?,
-        speakers: [Speaker],
-        mentionIds: [String]
+        orchestrator: Speaker? = nil
     ) -> (authorBotId: String?, authorName: String?) {
         guard let bot, bot.id != defaultBotId else { return (nil, nil) }
         if bot.kind != "group" { return (bot.id, bot.name) }
-        if mentionIds.count == 1,
-           let speaker = speakers.first(where: { $0.id == mentionIds[0] }) {
-            return (speaker.id, speaker.name)
-        }
-        return (nil, "Useful Bot")
+        let id = orchestrator.flatMap { $0.id == defaultBotId ? nil : $0.id }
+        return (id, orchestrator?.name ?? "Useful Bot")
     }
 }

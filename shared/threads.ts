@@ -87,6 +87,8 @@ export function resolveRoute(input: {
   text: string;
   bots: Speaker[];
   memberIds?: string[];
+  /** The orchestrator's id; it is never a member. Defaults to the default bot. */
+  orchestrator?: string | null;
 }): Route {
   const target = input.bots.find((bot) => bot.id === input.botId) ?? null;
   const kind: ThreadKind = target?.kind === "group" ? "group" : "bot";
@@ -94,7 +96,7 @@ export function resolveRoute(input: {
   if (kind !== "group") {
     return { threadId, kind, mentionIds: [], untargeted: false };
   }
-  const members = groupMembers(input.bots, input.memberIds ?? []);
+  const members = groupMembers(input.bots, input.memberIds ?? [], input.orchestrator);
   const scanned = parseMentions(input.text, members);
   return {
     threadId,
@@ -104,12 +106,21 @@ export function resolveRoute(input: {
   };
 }
 
-export function groupMembers(bots: Speaker[], memberIds: string[]): Speaker[] {
+/**
+ * The member bots of a group. The orchestrator is never a member: pass its id
+ * (see `orchestratorId` in shell-store.ts); it defaults to the default bot, and
+ * null excludes nobody on that ground.
+ */
+export function groupMembers(
+  bots: Speaker[],
+  memberIds: string[],
+  orchestrator: string | null = DEFAULT_BOT_ID,
+): Speaker[] {
   const members: Speaker[] = [];
   for (const id of memberIds) {
     if (members.some((member) => member.id === id)) continue;
     const bot = bots.find((item) => item.id === id) ?? null;
-    if (!bot || bot.kind !== "bot" || bot.id === DEFAULT_BOT_ID || bot.hidden) continue;
+    if (!bot || bot.kind !== "bot" || bot.id === DEFAULT_BOT_ID || bot.id === orchestrator || bot.hidden) continue;
     members.push(bot);
     if (members.length >= GROUP_ROSTER_MAX) break;
   }
@@ -244,19 +255,21 @@ export function stripThreadPrefix(text: string): string {
   return breakAt === -1 ? text : text.slice(breakAt + 2);
 }
 
-/** Transcript label for the bot a routed turn is answering as. */
+/**
+ * Transcript label for the bot a routed turn is answering as. A group reply is
+ * the orchestrator's, whoever the owner mentioned: the member does not speak.
+ */
 export function speakerLabel(input: {
   bot: { id: string; kind: BotKind; name: string; label: string } | null;
-  speakers?: Speaker[];
-  route?: Route | null;
+  /** The orchestrator that answers for a group; the default name when absent. */
+  orchestrator?: { id: string; name: string } | null;
 }): { authorBotId: string | null; authorName: string | null } {
   const bot = input.bot;
   if (!bot || bot.id === DEFAULT_BOT_ID) return { authorBotId: null, authorName: null };
   if (bot.kind !== "group") return { authorBotId: bot.id, authorName: bot.name };
-  const mentioned = input.route?.mentionIds ?? [];
-  if (mentioned.length === 1 && input.speakers) {
-    const speaker = speakerFor(input.speakers, mentioned[0]);
-    if (speaker) return { authorBotId: speaker.id, authorName: speaker.name };
-  }
-  return { authorBotId: null, authorName: "Useful Bot" };
+  const orchestrator = input.orchestrator ?? null;
+  return {
+    authorBotId: orchestrator && orchestrator.id !== DEFAULT_BOT_ID ? orchestrator.id : null,
+    authorName: orchestrator?.name ?? "Useful Bot",
+  };
 }

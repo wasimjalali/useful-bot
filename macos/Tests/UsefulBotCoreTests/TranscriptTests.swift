@@ -248,6 +248,13 @@ import Testing
         #expect(Transcript.merge(events: events, messages: messages).map(\.id) == ["d1", "d2", "l1"])
     }
 
+    @Test func theCurrentHandoffEnvelopeStillReadsAsAHandoff() {
+        let own = "Handoff from Writer.\nThis arrives in your own chat.\nThis is another bot on this Mac, not the owner. Do the part that fits your role and permission, and say what you declined. Your reply goes back to Writer and the owner reads both chats.\nRelay hop 2 of 3.\n\ntask"
+        let group = "Handoff from Writer.\nThis belongs to the group chat Launch.\nThis is another bot on this Mac, not the owner. Do the part that fits your role and permission, and say what you declined. Your reply goes back to Writer and the owner reads both chats.\n\ntask"
+        #expect(EveStream.isHandoffEnvelope(own))
+        #expect(EveStream.isHandoffEnvelope(group))
+    }
+
     @Test func mergeHidesHandoffEnvelopeTurns() {
         let envelope = "Handoff from Useful Bot.\nThis arrives in your own chat.\nDo the work and answer here. The owner reads this transcript.\n\nThe owner connected the app stripe. Continue the task: Read MRR"
         let group = "Handoff from Writer.\nThis belongs to the group chat Launch.\nDo the work and answer here. The owner reads this transcript.\n\ntask"

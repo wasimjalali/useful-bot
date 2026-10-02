@@ -38,7 +38,7 @@ import { peekShell, readShell, shellWasReseeded, updateShell } from "../../share
 import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
-import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V2, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V2, orchestratorId, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
 import { eveOrigin } from "../../shared/stack.ts";
@@ -684,8 +684,10 @@ function handoffEnvelope(handoff: HandoffRecord): string {
   const lines = [
     `Handoff from ${handoff.sourceName}.`,
     handoff.groupName ? `This belongs to the group chat ${handoff.groupName}.` : "This arrives in your own chat.",
-    "Do the work and answer here. Your reply is returned to the sender and the owner reads both transcripts.",
-    ...(handoff.depth > 0 ? [`This is relay hop ${handoff.depth} of at most ${HANDOFF_DEPTH_MAX}.`] : []),
+    // Lines 1 and 2 above are parsed by the transcript (Swift isHandoffEnvelope,
+    // continuation-brief.ts): keep them exactly.
+    `This is another bot on this Mac, not the owner. Do the part that fits your role and permission, and say what you declined. Your reply goes back to ${handoff.sourceName} and the owner reads both chats.`,
+    ...(handoff.depth > 0 ? [`Relay hop ${handoff.depth} of ${HANDOFF_DEPTH_MAX}.`] : []),
     "",
     handoff.message,
   ];
@@ -714,7 +716,7 @@ function turnPrefixFor(bot: ShellBot): string {
   let members: ReturnType<typeof groupMembers> = [];
   if (bot.kind === "group") {
     try {
-      members = groupMembers(speakersFrom(readShell().bots), bot.memberIds);
+      members = groupMembers(speakersFrom(readShell().bots), bot.memberIds, orchestratorId(readShell()));
     } catch {
       members = [];
     }
@@ -777,6 +779,8 @@ async function runEveTurn(
   message: string,
   budget: { totalMs: number; idleMs?: number } = { totalMs: DELIVER_TIMEOUT_MS },
   delivery: ChannelDelivery = "owner",
+  /** App notes for the turn's hidden lines (a routine's "nobody is watching"); the transcript hides them. */
+  notes: string[] = [],
 ): Promise<{ sessionId: string; reply: string }> {
   // Every eve call of this turn, the history read, the send, the stream and the
   // cancel, carries this bot's claim and this delivery kind.
@@ -796,7 +800,7 @@ async function runEveTurn(
   // The body the proxy would have built for this bot: identity prefix first,
   // then the caller's text. readHandoffStream arms on this exact string,
   // because eve echoes the turn as it was stored.
-  const sent = `${turnPrefixFor(bot)}${message}`;
+  const sent = `${withSessionNotes(turnPrefixFor(bot), notes)}${message}`;
   const controller = new AbortController();
   // Which of the two clocks ran out, for the error the caller reports. A bare
   // "This operation was aborted" was the whole explanation a cut-off routine
@@ -854,11 +858,11 @@ async function runEveTurn(
         if (live?.sessionId && live.sessionId !== retired) {
           clearTimeout(timer);
           if (idleTimer) clearTimeout(idleTimer);
-          return await runEveTurn(live, message, budget, delivery);
+          return await runEveTurn(live, message, budget, delivery, notes);
         }
         const brief = await continuationBriefFor(retired, jwt, undefined, undefined, briefMaxCharsFor(current, readShell(), store));
         if (!admitTurn(current, readShell(), store, brief.length).ok) throw new Error("context_too_large");
-        const carried = `${withSessionNotes(turnPrefixFor(bot), [brief])}${message}`;
+        const carried = `${withSessionNotes(turnPrefixFor(bot), [brief, ...notes])}${message}`;
         const retry = await fetch(`${EVE}/eve/v1/session`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
@@ -1240,6 +1244,11 @@ function routineFailureText(err: unknown): string {
   return code;
 }
 
+/** The note a scheduled run carries: nobody is there to answer a question or a card. */
+function routineLine(routine: Routine): string {
+  return `Scheduled run of the routine ${routine.name.replace(/\s+/g, " ").trim()}. Nobody is watching: don't ask questions or wait for a card. Do what is safe and report what needs the owner.`;
+}
+
 async function executeRoutine(
   routine: Routine,
   trigger: "schedule" | "manual",
@@ -1297,7 +1306,7 @@ async function executeRoutine(
     ({ sessionId, reply } = await runEveTurn(bot, routine.instruction, {
       totalMs: ROUTINE_TIMEOUT_MS,
       idleMs: ROUTINE_IDLE_MS,
-    }, "routine"));
+    }, "routine", [routineLine(routine)]));
     routineLog(routine, "finished", { ms: Date.now() - startedAt, session: sessionId, replyChars: reply.length });
   } catch (err) {
     // The session the turn really ran in, which runEveTurn tagged onto the
