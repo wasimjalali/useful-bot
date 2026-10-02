@@ -3,6 +3,7 @@ import { z } from "zod";
 import { listConnectorToolkits } from "../../shared/composio.ts";
 import { readConnectorsStore } from "../../shared/connectors-store.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 /**
  * Search the whole Composio catalogue, connected or not. Read-only and never
@@ -15,7 +16,8 @@ export default defineTool({
   inputSchema: z.object({
     query: z.string().min(3).max(80),
   }),
-  async execute(input) {
+  async execute(input, ctx) {
+    markOutside(ctx);
     const store = readConnectorsStore();
     if (!store.apiKey) return { status: "blocked", error: "connectors_not_set_up" };
     try {

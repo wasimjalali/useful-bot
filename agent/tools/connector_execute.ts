@@ -7,6 +7,7 @@ import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { connectorGate, connectorRisk } from "../lib/connector-risk.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending } from "../lib/approvals.ts";
 import { getApprovalStore } from "../lib/write.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 const RESULT_MAX_BYTES = 24 * 1024;
 /**
@@ -32,6 +33,7 @@ export default defineTool({
     arguments: z.record(z.string(), z.unknown()).default({}),
   }),
   async execute(input, ctx) {
+    markOutside(ctx);
     const tool = input.tool.trim();
     if (!SLUG.test(tool)) return { status: "blocked", error: "tool_slug_invalid" };
     const store = readConnectorsStore();

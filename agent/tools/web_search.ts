@@ -3,6 +3,7 @@ import { z } from "zod";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
 import { toolRouterIds } from "../lib/router-identity.ts";
 import { routerOrigin } from "../../shared/stack.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 /** The router allows one search a second per caller, and says how long is left. */
 const MAX_SEARCH_WAIT_MS = 2_500;
@@ -15,6 +16,7 @@ export default defineTool({
     count: z.number().int().min(1).max(5).optional(),
   }),
   async execute(input, ctx) {
+    markOutside(ctx);
     const token = process.env.UB_ROUTER_DESKTOP_TOKEN;
     if (!token) {
       throw new Error("router token missing");

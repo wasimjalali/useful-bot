@@ -8,7 +8,7 @@ import {
 import { sweepOrphanWidgets } from "../../shared/widgets-store.ts";
 import { libraryDrawingIds } from "../../shared/media-store.ts";
 import { parseEveStreamLine, takeStreamLines, type EveEvent as StreamEvent } from "../../shared/eve-stream.ts";
-import { buildContinuationBrief, settledByBriefTurn, withSessionNotes } from "../../shared/continuation-brief.ts";
+import { BRIEF_MAX_CHARS, buildContinuationBrief, settledByBriefTurn, withSessionNotes } from "../../shared/continuation-brief.ts";
 import { relayedEveCode } from "../../shared/eve-proxy.ts";
 import { sendHandoff, writeHandoffReply } from "../../shared/agents-send.ts";
 import {
@@ -35,13 +35,29 @@ import {
   type RoutineRunStatus,
 } from "../../shared/routines-store.ts";
 import { peekShell, readShell, shellWasReseeded, updateShell } from "../../shared/shell-io.ts";
-import { groupMembers, speakersFrom, threadPrefix } from "../../shared/threads.ts";
 import { removeSessionGrant, upsertSessionGrant } from "../../shared/workspace-store.ts";
 import { bindSession, resolveSessionBot } from "../../shared/session-bindings.ts";
-import { freezeNullSelections, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
+import { DESCRIPTION_MAX, freezeNullSelections, GENERALIST_SEED_V2, recordSessionLineage, type ShellBot } from "../../shared/shell-store.ts";
 import { botSelection, type ModelSelection } from "../../shared/session-selection.ts";
 import { effectiveDefault, readProviderStore, selectionAvailability, type ProviderStore } from "../../shared/providers.ts";
 import { eveOrigin } from "../../shared/stack.ts";
+import {
+  admission,
+  briefBudgetChars,
+  CONTEXT_TOO_LARGE_TEXT,
+  DESCRIPTION_TOO_LONG_TEXT,
+  descriptionTooLong,
+  envelopeFor,
+  seedFor,
+  type Admission,
+} from "../../shared/admission.ts";
+import { flat } from "../../shared/context-blocks.ts";
+import { NOTES_BLOCK_CAP } from "../../shared/notes-block.ts";
+import { renderNotesFor } from "../../agent/memory/notes.ts";
+import { eagerConnections, mountedToolBytes, selectMountedTools } from "../../shared/connection-tools.ts";
+import { connectionIndex, sessionTools } from "../../shared/connection-tools-store.ts";
+import { readConnectionsStore } from "../../shared/connections-store.ts";
+import { sharedMemoryStore } from "../../agent/lib/memory.ts";
 
 /**
  * Handoff delivery. The sending agent tool only writes a queue record, so a
@@ -75,6 +91,131 @@ const ROUTINE_TIMEOUT_MS = 60 * 60_000;
  * not coming back rather than one taking its time.
  */
 const ROUTINE_IDLE_MS = 10 * 60_000;
+
+/**
+ * Length of the notes block this bot's turn carries, read from the memory
+ * store without writing. A store that will not read counts as a full block:
+ * admission stays conservative and the failure is logged, so a notes outage
+ * never fails a chat and never makes a send look smaller than it is.
+ */
+export function notesCharsFor(botId: string): number {
+  try {
+    return renderNotesFor(botId, sharedMemoryStore).length;
+  } catch (err) {
+    console.error("notes could not be read for admission; counted as a full block", err instanceof Error ? err.message : err);
+    return NOTES_BLOCK_CAP;
+  }
+}
+
+/**
+ * Characters of tool schemas mounted on top of the built-in set: the OpenAPI
+ * connections mounted every turn (already clamped to their budget) and the
+ * MCP tools this session picked up on demand, each weighed the way it is
+ * mounted. A new session holds none.
+ */
+export function mountedToolChars(sessionId: string | null): number {
+  let chars = 0;
+  for (const entry of eagerConnections()) chars += mountedToolBytes(entry) ?? 0;
+  if (sessionId) {
+    const connections = readConnectionsStore().connections;
+    // The same selection the resolver mounts with (agent/tools/connection_tools.ts).
+    for (const pick of selectMountedTools(sessionTools(sessionId), {
+      connection: (id) => connections.find((item) => item.id === id),
+      indexed: (id, tool) => connectionIndex(id)?.tools.find((item) => item.name === tool),
+    })) {
+      chars += pick.weight;
+    }
+  }
+  return chars;
+}
+
+/**
+ * What the Settings counter shows for one bot (GET /api/bots/context): its
+ * instructions' length, the fixed envelope of a turn against the model's
+ * window, and for the Generalist the shipped text with whether the saved one
+ * differs. Null when the bot is not on the roster. Providers first, then the
+ * roster, the order the freeze reads them in.
+ */
+export function botContextReport(botId: string) {
+  const store = readProviderStore();
+  const shell = readShell();
+  const bot = shell.bots.find((item) => item.id === botId);
+  if (!bot) return null;
+  const envelope = envelopeFor({
+    bot,
+    shell,
+    store,
+    notesChars: notesCharsFor(bot.id),
+    mountedToolChars: mountedToolChars(bot.sessionId ?? null),
+  });
+  return {
+    descriptionChars: envelope.descriptionChars,
+    max: DESCRIPTION_MAX,
+    envelopeTokens: envelope.tokens,
+    windowTokens: envelope.windowTokens,
+    modelLabel: envelope.modelLabel,
+    fits: envelope.tokens <= envelope.windowTokens && envelope.descriptionChars <= DESCRIPTION_MAX,
+    seed: seedFor(bot, GENERALIST_SEED_V2),
+  };
+}
+
+/**
+ * Admission for one bot's turn, reading the notes it would carry and the tool
+ * schemas mounted for its session. `hiddenChars` is the whole hidden prefix the
+ * turn adds (see `hiddenPrefixChars`). `sessionId` is the session the turn goes
+ * into, or null for a new one.
+ */
+export function admitTurn(
+  bot: ShellBot,
+  shell: { bots: ShellBot[] },
+  store: ProviderStore,
+  hiddenChars = 0,
+  sessionId: string | null = bot.sessionId ?? null,
+): Admission {
+  return admission({
+    bot,
+    shell,
+    store,
+    notesChars: notesCharsFor(bot.id),
+    briefChars: hiddenChars,
+    mountedToolChars: mountedToolChars(sessionId),
+  });
+}
+
+/** The most a carry-over brief may take for this bot's model. */
+export function briefMaxCharsFor(
+  bot: ShellBot,
+  shell: { bots: ShellBot[] },
+  store: ProviderStore,
+  sessionId: string | null = bot.sessionId ?? null,
+): number {
+  return briefBudgetChars(
+    { bot, shell, store, notesChars: notesCharsFor(bot.id), mountedToolChars: mountedToolChars(sessionId) },
+    BRIEF_MAX_CHARS,
+  );
+}
+
+/**
+ * The 409 a proxy send gets back when the bot's stored instructions are over
+ * the cap, or the fixed envelope does not fit its model. Null when it fits.
+ */
+export function admissionRefusal(
+  bot: ShellBot,
+  shell: { bots: ShellBot[] },
+  store: ProviderStore,
+  hiddenChars = 0,
+  sessionId: string | null = bot.sessionId ?? null,
+): Response | null {
+  if (descriptionTooLong(bot)) {
+    return Response.json(
+      { ok: false, error: "description_too_long", message: DESCRIPTION_TOO_LONG_TEXT },
+      { status: 409 },
+    );
+  }
+  const verdict = admitTurn(bot, shell, store, hiddenChars, sessionId);
+  if (verdict.ok) return null;
+  return Response.json({ ok: false, error: verdict.code, message: verdict.message }, { status: 409 });
+}
 
 /**
  * Stamp — or revoke — the workspace grant a turn's tools will read. Called
@@ -173,7 +314,7 @@ function syncSessionWorkspaceFresh(sessionId: string, botId: string): void {
   try {
     // Providers store first, roster second: the web write order moves a pin in
     // the shell before the default in the store, so a fresh store implies a
-    // roster at least as fresh (the same order freezeTurnSelection reads in).
+    // roster at least as fresh (the same order the turn snapshot reads in).
     const store = readProviderStore();
     let bot: ShellBot | undefined;
     try {
@@ -223,13 +364,23 @@ const inflight = pumpState.inflight;
 
 type EveEvent = { type?: string; data?: Record<string, unknown>; meta?: { id?: string; at?: string } };
 
-function signChannelJwt(secret: string, sub: string): string {
+/** Who is calling eve: the owner's app, a handoff pump delivery or a routine run. */
+export type ChannelDelivery = "owner" | "handoff" | "routine";
+
+/**
+ * The bot claim is a string on purpose: eve projects only string claims into
+ * the session's auth attributes and drops the rest. A null bot is a token with
+ * no claim, which eve's channel accepts for nothing but a cancel.
+ */
+function signChannelJwt(secret: string, sub: string, botId: string | null, delivery?: ChannelDelivery): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const now = Math.floor(Date.now() / 1000);
   const payload = Buffer.from(JSON.stringify({
     sub,
     iss: "useful-bot",
     aud: "useful-bot",
+    ...(botId === null ? {} : { botId }),
+    ...(delivery ? { delivery } : {}),
     iat: now,
     exp: now + 12 * 60 * 60,
   })).toString("base64url");
@@ -241,29 +392,40 @@ export function agentsEnabled(): boolean {
   return Boolean(process.env.UB_CHANNEL_JWT || process.env.UB_CHANNEL_JWT_SECRET);
 }
 
-// A token signed from the channel secret, cached until it nears expiry. The
-// web process is long-lived and service.mjs bakes a 12-hour token into the
-// env at boot, so a process that only ever returned UB_CHANNEL_JWT would 401
-// against eve after 12 hours until the next restart.
-let signedChannelJwt: { secret: string; token: string; exp: number } | null = null;
+// A token per bot and delivery kind, signed from the channel secret and cached
+// until it nears expiry. The web process is long-lived, so a cached token has
+// to be re-signed before its 12 hours run out. There is no fallback to the
+// UB_CHANNEL_JWT env token for eve: it carries no bot claim, and eve refuses
+// a token without one. That env value stays only as the tick route's key.
+const signedChannelJwts = new Map<string, { secret: string; token: string; exp: number }>();
 
-export function channelJwt(): string | null {
+/** A token for one bot. A call is never made as no bot: an empty id throws. */
+export function channelJwt(botId: string, delivery: ChannelDelivery = "owner"): string {
+  if (typeof botId !== "string" || botId.length === 0) throw new Error("channel_bot_missing");
+  return cachedChannelJwt(botId, delivery);
+}
+
+/**
+ * A token with no bot claim, for the calls eve accepts without one: health,
+ * info and the cancel of a session nobody bound. Never for a turn or a read.
+ */
+export function channelJwtNoBot(): string {
+  return cachedChannelJwt(null, "owner");
+}
+
+function cachedChannelJwt(botId: string | null, delivery: ChannelDelivery): string {
   const secret = process.env.UB_CHANNEL_JWT_SECRET;
-  if (!secret) return process.env.UB_CHANNEL_JWT ?? null;
-  try {
-    const now = Math.floor(Date.now() / 1000);
-    // Re-sign once the cached token is within an hour of its exp, or when the
-    // secret itself changed; signing is cheap but there is no reason to do it
-    // on every proxy request.
-    if (!signedChannelJwt || signedChannelJwt.secret !== secret || now >= signedChannelJwt.exp - 60 * 60) {
-      const token = signChannelJwt(secret, "desktop-app");
-      signedChannelJwt = { secret, token, exp: now + 12 * 60 * 60 };
-      return token;
-    }
-    return signedChannelJwt.token;
-  } catch {
-    return process.env.UB_CHANNEL_JWT ?? null;
-  }
+  if (!secret) throw new Error("channel_credential_missing");
+  const now = Math.floor(Date.now() / 1000);
+  const key = `${botId ?? ""}\u0000${delivery}`;
+  const cached = signedChannelJwts.get(key);
+  // Re-sign once the cached token is within an hour of its exp, or when the
+  // secret itself changed; signing is cheap but there is no reason to do it
+  // on every proxy request.
+  if (cached && cached.secret === secret && now < cached.exp - 60 * 60) return cached.token;
+  const token = signChannelJwt(secret, "desktop-app", botId, delivery);
+  signedChannelJwts.set(key, { secret, token, exp: now + 12 * 60 * 60 });
+  return token;
 }
 
 function textField(data: Record<string, unknown> | undefined, key: string): string {
@@ -558,10 +720,12 @@ export async function continuationBriefFor(
   jwt: string,
   reason?: string,
   signal?: AbortSignal,
+  /** The most the brief may take, sized from the bot's window (see briefMaxCharsFor). */
+  maxChars?: number,
 ): Promise<string> {
   try {
     const read = await readSessionEvents(sessionId, jwt, signal);
-    return buildContinuationBrief(read.events, { reason, skipped: read.skipped, cut: read.cut });
+    return buildContinuationBrief(read.events, { reason, skipped: read.skipped, cut: read.cut, maxChars });
   } catch {
     return buildContinuationBrief([], {
       reason: `${reason ?? "the previous session stopped"}; its conversation could not be read back, so tell the owner you lost the earlier context and ask what to pick up`,
@@ -570,11 +734,17 @@ export async function continuationBriefFor(
 }
 
 function handoffEnvelope(handoff: HandoffRecord): string {
+  // Names are flattened to one line: the transcript and the brief recognise a
+  // handoff by lines 1 and 2, and a newline in a name would break both.
+  const source = flat(handoff.sourceName) || "a bot";
+  const group = handoff.groupName ? flat(handoff.groupName) || "this group" : "";
   const lines = [
-    `Handoff from ${handoff.sourceName}.`,
-    handoff.groupName ? `This belongs to the group chat ${handoff.groupName}.` : "This arrives in your own chat.",
-    "Do the work and answer here. Your reply is returned to the sender and the owner reads both transcripts.",
-    ...(handoff.depth > 0 ? [`This is relay hop ${handoff.depth} of at most ${HANDOFF_DEPTH_MAX}.`] : []),
+    `Handoff from ${source}.`,
+    group ? `This belongs to the group chat ${group}.` : "This arrives in your own chat.",
+    // Lines 1 and 2 above are parsed by the transcript (Swift isHandoffEnvelope,
+    // continuation-brief.ts): keep them exactly.
+    `This is another bot on this Mac, not the owner. Do the part that fits your role and permission, and say what you declined. Your reply goes back to ${source} and the owner reads both chats.`,
+    ...(handoff.depth > 0 ? [`Relay hop ${handoff.depth} of ${HANDOFF_DEPTH_MAX}.`] : []),
     "",
     handoff.message,
   ];
@@ -588,30 +758,6 @@ function receiverOf(handoff: HandoffRecord, bots: ShellBot[]): { bot: ShellBot; 
   }
   const target = bots.find((bot) => bot.id === handoff.targetBotId);
   return target ? { bot: target, kind: "bot" } : null;
-}
-
-/**
- * The identity prefix the eve proxy puts on a UI turn for this bot. Handoff
- * delivery and routine runs reach eve directly, not through the proxy, so
- * without it a teammate bot would answer as the default Useful Bot unless the
- * session already carried a prefix from an earlier owner turn.
- */
-function turnPrefixFor(bot: ShellBot): string {
-  // Only a group needs the roster: its member list is part of the prefix. A
-  // roster that will not read must not fail the turn, which never needed it
-  // before; the group then speaks without its member list.
-  let members: ReturnType<typeof groupMembers> = [];
-  if (bot.kind === "group") {
-    try {
-      members = groupMembers(speakersFrom(readShell().bots), bot.memberIds);
-    } catch {
-      members = [];
-    }
-  }
-  return threadPrefix({
-    bot: { id: bot.id, kind: bot.kind, name: bot.name, label: bot.label, description: bot.description },
-    members,
-  });
 }
 
 /**
@@ -665,21 +811,38 @@ async function runEveTurn(
   bot: ShellBot,
   message: string,
   budget: { totalMs: number; idleMs?: number } = { totalMs: DELIVER_TIMEOUT_MS },
+  delivery: ChannelDelivery = "owner",
+  /** App notes for the turn's hidden lines (a routine's "nobody is watching"); the transcript hides them. */
+  notes: string[] = [],
 ): Promise<{ sessionId: string; reply: string }> {
-  const jwt = channelJwt();
-  if (!jwt) throw new Error("channel_credential_missing");
+  // Every eve call of this turn, the history read, the send, the stream and the
+  // cancel, carries this bot's claim and this delivery kind.
+  const jwt = channelJwt(bot.id, delivery);
   // The bot's own model has to be servable before the turn exists. The code is
   // the message, so a routine's failure note and a handoff's failure record
   // carry it as they do the other codes here. Never a substitute model.
-  // Providers store first, then the roster, as the freeze reads them.
-  const store = readProviderStore();
-  const current = readShell().bots.find((item) => item.id === bot.id) ?? bot;
-  if (!botSelectionUsable(current, store)) throw new Error("model_selection_unavailable");
+  // Checked against the stores as they are at the moment of each send, since
+  // every await between a check and its fetch lets the owner change the model,
+  // the instructions or the notes. Providers store first, then the roster, as
+  // the freeze reads them. Refused before any eve call, never clipped: the
+  // stored instructions are over the cap, or the fixed envelope (with the
+  // hidden prefix this very send carries) does not fit the bot's model window.
+  const admitFresh = (hiddenChars: number, intoSession: string | null): ShellBot => {
+    const freshStore = readProviderStore();
+    const freshShell = readShell();
+    const live = freshShell.bots.find((item) => item.id === bot.id) ?? bot;
+    if (!botSelectionUsable(live, freshStore)) throw new Error("model_selection_unavailable");
+    if (descriptionTooLong(live)) throw new Error("description_too_long");
+    if (!admitTurn(live, freshShell, freshStore, hiddenChars, intoSession).ok) throw new Error("context_too_large");
+    return live;
+  };
+  const hidden = withSessionNotes("", notes).length;
+  admitFresh(hidden, bot.sessionId ?? null);
   const path = bot.sessionId ? `session/${bot.sessionId}` : "session";
-  // The body the proxy would have built for this bot: identity prefix first,
-  // then the caller's text. readHandoffStream arms on this exact string,
+  // The body the proxy would have built for this bot: app notes first, then
+  // the caller's text. readHandoffStream arms on this exact string,
   // because eve echoes the turn as it was stored.
-  const sent = `${turnPrefixFor(bot)}${message}`;
+  const sent = `${withSessionNotes("", notes)}${message}`;
   const controller = new AbortController();
   // Which of the two clocks ran out, for the error the caller reports. A bare
   // "This operation was aborted" was the whole explanation a cut-off routine
@@ -714,6 +877,8 @@ async function runEveTurn(
       if (owner !== bot.id) throw new Error(owner ? "session_owner_conflict" : "session_binding_ambiguous");
     }
     let historyIds = sessionId ? await sessionEventIds(sessionId, jwt) : new Set<string>();
+    // Again after the history read: that await is where a pick or an edit lands.
+    admitFresh(hidden, sessionId || null);
     if (sessionId) syncSessionWorkspaceFresh(sessionId, bot.id);
     const res = await fetch(`${EVE}/eve/v1/${path}`, {
       method: "POST",
@@ -737,10 +902,20 @@ async function runEveTurn(
         if (live?.sessionId && live.sessionId !== retired) {
           clearTimeout(timer);
           if (idleTimer) clearTimeout(idleTimer);
-          return await runEveTurn(live, message, budget);
+          return await runEveTurn(live, message, budget, delivery, notes);
         }
-        const brief = await continuationBriefFor(retired, jwt);
-        const carried = `${withSessionNotes(turnPrefixFor(bot), [brief])}${message}`;
+        const sizing = admitFresh(hidden, null);
+        const brief = await continuationBriefFor(
+          retired,
+          jwt,
+          undefined,
+          undefined,
+          briefMaxCharsFor(sizing, readShell(), readProviderStore(), null),
+        );
+        // The whole hidden prefix of the carried send, and the stores as they
+        // are after the brief read, not the ones the first send was sized on.
+        const carried = `${withSessionNotes("", [brief, ...notes])}${message}`;
+        admitFresh(carried.length - message.length, null);
         const retry = await fetch(`${EVE}/eve/v1/session`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${jwt}` },
@@ -833,7 +1008,7 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
   const { bot, kind } = receiver;
   if (bot.hidden) throw new Error("receiver_hidden");
 
-  const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff));
+  const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff), undefined, "handoff");
 
   // A stale takeover may have handed this record to another process; only the
   // token holder may write the transcript, or both would append a reply.
@@ -946,9 +1121,15 @@ async function pumpOnce(limit: number): Promise<{
     } catch (err) {
       const message = err instanceof Error ? err.message : "handoff_failed";
       if (message === "claim_lost") return;
-      // A gone model is not fixed by trying again: that failure is terminal at once.
-      const modelGone = message === "model_selection_unavailable";
-      const shown = modelGone ? MODEL_UNAVAILABLE_TEXT : message;
+      // Neither a gone model nor a refused size is fixed by trying again.
+      const modelGone = message === "model_selection_unavailable"
+        || message === "context_too_large"
+        || message === "description_too_long";
+      const shown = message === "model_selection_unavailable"
+        ? MODEL_UNAVAILABLE_TEXT
+        : message === "context_too_large"
+          ? CONTEXT_TOO_LARGE_TEXT
+          : message === "description_too_long" ? DESCRIPTION_TOO_LONG_TEXT : message;
       const next = markFailed(record.id, message, undefined, claimToken, modelGone);
       const terminal = next && next.status === "failed" && (modelGone || next.attempts >= HANDOFF_ATTEMPTS_MAX);
       if (terminal) {
@@ -1111,7 +1292,14 @@ function routineFailureText(err: unknown): string {
     return "the bot went quiet part way through and the run was stopped.";
   }
   if (code === "model_selection_unavailable") return MODEL_UNAVAILABLE_TEXT;
+  if (code === "context_too_large") return CONTEXT_TOO_LARGE_TEXT;
+  if (code === "description_too_long") return DESCRIPTION_TOO_LONG_TEXT;
   return code;
+}
+
+/** The note a scheduled run carries: nobody is there to answer a question or a card. */
+function routineLine(routine: Routine): string {
+  return `Scheduled run of the routine ${routine.name.replace(/\s+/g, " ").trim()}. Nobody is watching: don't ask questions or wait for a card. Do what is safe and report what needs the owner.`;
 }
 
 async function executeRoutine(
@@ -1171,7 +1359,7 @@ async function executeRoutine(
     ({ sessionId, reply } = await runEveTurn(bot, routine.instruction, {
       totalMs: ROUTINE_TIMEOUT_MS,
       idleMs: ROUTINE_IDLE_MS,
-    }));
+    }, "routine", [routineLine(routine)]));
     routineLog(routine, "finished", { ms: Date.now() - startedAt, session: sessionId, replyChars: reply.length });
   } catch (err) {
     // The session the turn really ran in, which runEveTurn tagged onto the

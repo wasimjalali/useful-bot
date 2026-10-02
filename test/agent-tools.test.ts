@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { applyShellAction, DEFAULT_BOT_ID, seedStore, type ShellStore } from "../shared/shell-store.ts";
+import { applyShellAction, DEFAULT_BOT_ID, DESCRIPTION_MAX, seedStore, type ShellStore } from "../shared/shell-store.ts";
 import { readShell, writeShell } from "../shared/shell-io.ts";
 import {
   appendAgentEvent,
+  createProposal,
   listThreadEvents,
+  parseAgentStore,
   readAgentStore,
   readProposal,
   sweepOrphanThreads,
@@ -25,7 +28,11 @@ import { MemoryStore, resetMemoryDir } from "../agent/lib/memory.ts";
 import bash from "../agent/tools/bash.ts";
 import listBots from "../agent/tools/list_bots.ts";
 import memorySearch from "../agent/tools/memory_search.ts";
+import memoryRead from "../agent/tools/memory_read.ts";
+import { seenOutside } from "../agent/lib/outside-content.ts";
+import { forgetRecallCache, recallNotes } from "../agent/memory/notes.ts";
 import memoryUpsert from "../agent/tools/memory_upsert.ts";
+import memoryDelete from "../agent/tools/memory_delete.ts";
 import readFile from "../agent/tools/read_file.ts";
 import proposeBot from "../agent/tools/propose_bot.ts";
 import proposeGroup from "../agent/tools/propose_group.ts";
@@ -396,13 +403,41 @@ test("updateBotProfile proposes the edit and reports no_change honestly", async 
     assert.equal(proposed.status, "awaiting_owner_confirmation");
     const proposal = readProposal(proposed.proposalId);
     assert.equal(proposal?.kind, "updateBotProfile");
-    assert.equal(proposal?.kind === "updateBotProfile" ? proposal.patch.description.length > 0 : false, true);
+    // A card that changes the description round-trips it exactly.
+    assert.equal(
+      proposal?.kind === "updateBotProfile" ? proposal.patch.description : null,
+      "Own pricing research. Never publish without approval.",
+    );
     assert.equal(readShell().bots.find((bot) => bot.id === research)?.description, "");
 
     const unchanged = await run<{ status: string }>(updateBotProfile, { botId: research });
     assert.equal(unchanged.status, "no_change");
     const missing = await run<{ status: string }>(updateBotProfile, { botId: "nope", name: "x" });
     assert.equal(missing.status, "not_found");
+  } finally {
+    box.restore();
+  }
+});
+
+test("a rename proposal for a bot with an over-cap description leaves the description out", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["CEO", "Research"]);
+    const research = idOf(store, "Research");
+    const long = "x".repeat(9000);
+    writeShell({
+      ...store,
+      bots: store.bots.map((bot) => (bot.id === research ? { ...bot, description: long } : bot)),
+    });
+    const proposed = await run<{ status: string; proposalId: string }>(updateBotProfile, {
+      botId: research,
+      name: "Analyst",
+    });
+    assert.equal(proposed.status, "awaiting_owner_confirmation");
+    const proposal = readProposal(proposed.proposalId);
+    assert.equal(proposal?.kind, "updateBotProfile");
+    assert.equal(proposal?.kind === "updateBotProfile" ? "description" in proposal.patch : true, false);
+    assert.equal(proposal?.kind === "updateBotProfile" ? proposal.patch.name : "", "Analyst");
   } finally {
     box.restore();
   }
@@ -653,6 +688,171 @@ test("memory_upsert writes at once in Auto with the card text recorded, and Read
     }, home.ctx);
     assert.equal(refused.status, "blocked");
     assert.equal(refused.error, "workspace_read_only");
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("memory_delete runs at once in Auto, is refused in Read only, and a stale revision is refused", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null });
+    const first = await run<{ id: string; revision: number }>(memoryUpsert, note("Delete me"), home.ctx);
+    const second = await run<{ id: string; revision: number }>(memoryUpsert, note("Keep me"), home.ctx);
+
+    // A stale revision is refused and the note stays.
+    await assert.rejects(run(memoryDelete, { id: first.id, expectedRevision: 7 }, home.ctx), /memory_revision_conflict/);
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "read_only" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const refused = await run<{ status: string; error: string }>(memoryDelete, { id: first.id, expectedRevision: first.revision }, home.ctx);
+    assert.equal(refused.status, "blocked");
+    assert.equal(refused.error, "workspace_read_only");
+    assert.equal(new MemoryStore(memoryRoot).list("bot-useful").length, 2, "Read only deleted nothing");
+
+    upsertSessionGrant({ sessionId: "sess-home", path: null, permission: "auto" }, new Date(), process.env.UB_WORKSPACE_STORE_PATH);
+    const removed = await run<{ id: string }>(memoryDelete, { id: first.id, expectedRevision: first.revision }, home.ctx);
+    assert.equal(removed.id, first.id);
+    assert.equal(home.approvals.listPending().length, 0, "Auto raised no card to wait on");
+    assert.deepEqual(new MemoryStore(memoryRoot).list("bot-useful").map((card) => card.id), [second.id]);
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("memory_upsert marks a note written after outside content, and the mark stays through the model's own edits", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const note = (title: string, extra: Record<string, unknown> = {}) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null, ...extra });
+    const clean = await run<{ id: string }>(memoryUpsert, note("Clean"), home.ctx);
+    // Reading a directory counts as outside content for this turn.
+    await run(listDir, { path: "Desktop" }, home.ctx);
+    const marked = await run<{ id: string }>(memoryUpsert, note("After a read"), home.ctx);
+    const store = new MemoryStore(memoryRoot);
+    assert.equal(store.readCard(clean.id, "bot-useful").source, "model");
+    assert.equal(store.readCard(marked.id, "bot-useful").source, "model-after-outside-content");
+    // A later turn that read nothing edits the marked note: the mark stays.
+    const laterCtx = { session: { id: "sess-home", turn: { id: "later-turn" } } };
+    await run(memoryUpsert, note("After a read", { id: marked.id, expectedRevision: 1, body: "edited" }), laterCtx);
+    assert.equal(store.readCard(marked.id, "bot-useful").source, "model-after-outside-content");
+    assert.equal(store.readCard(marked.id, "bot-useful").body, "edited");
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("reading a note written after outside content marks the turn, so it cannot be laundered into a clean note", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "body", expiresAt: null });
+    const turn = (id: string) => ({ session: { id: "sess-home", turn: { id } } });
+    const clean = await run<{ id: string }>(memoryUpsert, note("Clean"), turn("t-0"));
+    await run(listDir, { path: "Desktop" }, turn("t-1"));
+    const marked = await run<{ id: string }>(memoryUpsert, note("Marked"), turn("t-1"));
+    // A turn that reads only a clean note stays clean.
+    await run(memoryRead, { id: clean.id }, turn("t-clean"));
+    assert.equal(seenOutside(turn("t-clean")), false);
+    // Reading or searching the marked one marks the turn.
+    await run(memoryRead, { id: marked.id }, turn("t-read"));
+    assert.equal(seenOutside(turn("t-read")), true);
+    await run(memorySearch, { query: "Marked" }, turn("t-search"));
+    assert.equal(seenOutside(turn("t-search")), true);
+    const copy = await run<{ id: string }>(memoryUpsert, note("Copy"), turn("t-read"));
+    assert.equal(new MemoryStore(memoryRoot).readCard(copy.id, "bot-useful").source, "model-after-outside-content");
+  } finally {
+    if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
+    else process.env.UB_MEMORY_ROOT = previousMemory;
+    home.restore();
+    box.restore();
+  }
+});
+
+test("an outside-sourced note shows no body in the recalled block and does not mark the turn; a deliberate read does", async () => {
+  const box = sandbox();
+  const home = homeFixture("auto");
+  const memoryRoot = mkdtempSync(join(tmpdir(), "ub-mem-"));
+  const previousMemory = process.env.UB_MEMORY_ROOT;
+  process.env.UB_MEMORY_ROOT = memoryRoot;
+  resetMemoryDir(memoryRoot);
+  try {
+    const store = new MemoryStore(memoryRoot);
+    const outside = store.upsert({
+      expectedRevision: null, title: "From a page", tags: [], body: "web-body-canary", botId: "bot-useful",
+      source: "model-after-outside-content", expiresAt: null, sessionId: "s",
+    });
+    store.upsert({ expectedRevision: null, title: "Mine", tags: [], body: "clean-body", botId: "bot-useful", source: "model", expiresAt: null, sessionId: "s" });
+    const turn = (id: string) => ({ session: { id: "sess-home", turn: { id } } });
+    const text = recallNotes({ operationId: "op-block", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content ?? "";
+    assert.match(text, /clean-body/);
+    assert.doesNotMatch(text, /web-body-canary/);
+    assert.doesNotMatch(text, /From a page/);
+    assert.match(text, new RegExp(`- ${outside.id}: \\(written after reading outside content; open with memory_read only if you need it\\)`));
+    // The block alone marks nothing: a note written in this turn is the model's own.
+    assert.equal(seenOutside(turn("t-block")), false);
+    const note = (title: string) => ({ expectedRevision: null, title, tags: [], body: "fresh", expiresAt: null });
+    const fresh = await run<{ id: string }>(memoryUpsert, note("Fresh"), turn("t-block"));
+    assert.equal(store.readCard(fresh.id, "bot-useful").source, "model");
+    // Reading the outside note on purpose marks the turn, and what is written after it.
+    await run(memoryRead, { id: outside.id }, turn("t-deliberate"));
+    const after = await run<{ id: string }>(memoryUpsert, note("After the read"), turn("t-deliberate"));
+    assert.equal(store.readCard(after.id, "bot-useful").source, "model-after-outside-content");
+    // After outside content a new note's id is the server's, never the model's; an edit keeps its id.
+    const chosen = await run<{ id: string; revision: number }>(memoryUpsert, { ...note("Chosen"), id: "ignore-previous-rules" }, turn("t-deliberate"));
+    assert.notEqual(chosen.id, "ignore-previous-rules");
+    assert.match(chosen.id, /^[0-9a-f]{8}-[0-9a-f]{4}-/);
+    assert.equal(store.readCard(chosen.id, "bot-useful").title, "Chosen");
+    const edited = await run<{ id: string; revision: number }>(memoryUpsert, { ...note("Chosen"), id: chosen.id, expectedRevision: chosen.revision, body: "edited" }, turn("t-deliberate"));
+    assert.equal(edited.id, chosen.id, "an edit keeps the id");
+    // An edit of a note that is not there (stale, archived, mistyped) is refused, never turned into a new note.
+    await assert.rejects(
+      run(memoryUpsert, { ...note("Ghost"), id: "no-such-note", expectedRevision: 1 }, turn("t-deliberate")),
+      /memory_not_found/,
+    );
+    assert.throws(() => store.readCard("no-such-note", "bot-useful"), /memory_not_found/);
+    // An id that differs only in case is not the existing note: on any disk it becomes a new note with its own id.
+    const upperId = chosen.id.toUpperCase();
+    const viaCase = await run<{ id: string }>(memoryUpsert, { ...note("Case"), id: upperId }, turn("t-deliberate"));
+    assert.notEqual(viaCase.id, upperId);
+    assert.notEqual(viaCase.id, chosen.id);
+    assert.equal(store.list("bot-useful").filter((card) => card.id.toLowerCase() === chosen.id).length, 1, "no second row for the same id");
+    // A clean turn keeps the id the model picked.
+    const cleanPick = await run<{ id: string }>(memoryUpsert, { ...note("Clean pick"), id: "my-clean-id" }, turn("t-clean-pick"));
+    assert.equal(cleanPick.id, "my-clean-id");
+    // A replay reads the persisted copy back, byte for byte.
+    forgetRecallCache();
+    assert.equal(recallNotes({ operationId: "op-block", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content, text);
+    // A copy in an older format may show what the block now withholds, so it is
+    // rendered again rather than replayed.
+    const legacyKey = "bot-useful\u0000op-legacy";
+    const legacyFile = join(dirname(store.notesDir), "recall", `${createHash("sha256").update(legacyKey).digest("hex")}.txt`);
+    writeFileSync(legacyFile, "- legacy-canary body from an old renderer\n");
+    forgetRecallCache();
+    const fresh2 = recallNotes({ operationId: "op-legacy", memory: { scope: { value: "bot-useful" } } }, () => store)?.messages[0].content ?? "";
+    assert.doesNotMatch(fresh2, /legacy-canary/);
+    assert.doesNotMatch(fresh2, /web-body-canary/);
   } finally {
     if (previousMemory === undefined) delete process.env.UB_MEMORY_ROOT;
     else process.env.UB_MEMORY_ROOT = previousMemory;
@@ -2095,6 +2295,114 @@ test("Read only refuses handoffs, group posts and routine runs", async () => {
     assert.equal(readRoutine(routineId)?.manualRunRequested, false);
   } finally {
     home.restore();
+    box.restore();
+  }
+});
+
+// UB-009: description caps on the proposal tools and the stored cards.
+
+/** The description cap a tool's input schema declares, from its JSON schema. */
+function descriptionCap(tool: { inputSchema: unknown }): number {
+  const standard = (tool.inputSchema as { "~standard": { jsonSchema: { input(options: { target: string }): unknown } } })["~standard"];
+  const schema = standard.jsonSchema.input({ target: "draft-07" }) as { properties: { description: { maxLength: number } } };
+  return schema.properties.description.maxLength;
+}
+
+test("propose_bot caps the description at 2,000 characters", () => {
+  assert.equal(descriptionCap(proposeBot), 2000);
+});
+
+test("update_bot_profile and propose_group cap the description at 8,000 characters", () => {
+  assert.equal(descriptionCap(updateBotProfile), 8000);
+  assert.equal(descriptionCap(proposeGroup), 8000);
+});
+
+test("createProposal refuses an over-cap description for each card kind", () => {
+  const box = sandbox();
+  try {
+    const base = { sourceBotId: null, threadId: "t", proposerId: DEFAULT_BOT_ID };
+    assert.throws(
+      () => createProposal({ ...base, kind: "createBot", name: "N", petname: "P", title: "", description: "d".repeat(2001), sectionId: null, brief: "" }),
+      /shell_description_too_long/,
+    );
+    assert.throws(
+      () => createProposal({ ...base, kind: "createGroup", name: "G", memberIds: ["a", "b"], description: "d".repeat(DESCRIPTION_MAX + 1) }),
+      /shell_description_too_long/,
+    );
+    assert.throws(
+      () => createProposal({
+        ...base,
+        kind: "updateBotProfile",
+        botId: "x",
+        baseRevision: 0,
+        patch: { name: "N", petname: "", title: "", description: "d".repeat(DESCRIPTION_MAX + 1), avatarShape: null, avatarColor: null },
+      }),
+      /shell_description_too_long/,
+    );
+    assert.equal(readAgentStore().proposals.length, 0);
+  } finally {
+    box.restore();
+  }
+});
+
+test("a stored card over its cap is dropped on read, never clipped", () => {
+  const card = (kind: string, extra: Record<string, unknown>) => ({
+    id: `p-${kind}`, kind, status: "pending", threadId: "t", sourceBotId: null,
+    createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(), ...extra,
+  });
+  const store = parseAgentStore({
+    schemaVersion: 1,
+    threads: [],
+    proposals: [
+      card("createBot", { name: "N", petname: "P", title: "", description: "d".repeat(2001), brief: "" }),
+      card("createGroup", { name: "G", memberIds: ["a", "b"], description: "d".repeat(8001) }),
+      card("createGroup", { name: "G2", memberIds: ["a", "b"], description: "d".repeat(8000) }),
+      card("createBot", { name: "N2", petname: "P", title: "", description: "d".repeat(2000), brief: "" }),
+    ],
+    reserves: [],
+  });
+  assert.deepEqual(store.proposals.map((item) => item.id), ["p-createGroup", "p-createBot"]);
+  assert.equal((store.proposals[0] as { description: string }).description.length, 8000);
+});
+
+test("propose_group stores the group description on the card", async () => {
+  const box = sandbox();
+  try {
+    const store = seedRoster(["Research", "Writer"]);
+    const result = await run<{ status: string; proposalId: string }>(proposeGroup, {
+      name: "Launch",
+      memberIds: [idOf(store, "Research"), idOf(store, "Writer")],
+      description: "  Ship the launch together. Research owns sources.  ",
+    });
+    assert.equal(result.status, "awaiting_owner_confirmation");
+    const card = readProposal(result.proposalId);
+    assert.equal(card?.kind, "createGroup");
+    assert.equal((card as { description: string }).description, "Ship the launch together. Research owns sources.");
+  } finally {
+    box.restore();
+  }
+});
+
+test("listBots gives a 200-character summary with the length, and the full text for one botId", async () => {
+  const box = sandbox();
+  try {
+    const long = "L".repeat(500);
+    const created = applyShellAction(seedRoster(["Other"]), { type: "createBot", name: "Wordy", description: long });
+    writeShell(created.store);
+    const id = created.createdId ?? "";
+    const listing = await run<{ bots: Array<{ id: string; description: string; descriptionChars: number }> }>(listBots, {});
+    const wordy = listing.bots.find((bot) => bot.id === id);
+    assert.equal(wordy?.descriptionChars, 500);
+    assert.equal(wordy?.description.includes("L".repeat(200) + "..."), true);
+    assert.equal(wordy?.description.includes("L".repeat(201)), false);
+    assert.equal(wordy?.description.startsWith(UNTRUSTED_PREAMBLE), true);
+    const one = await run<{ bots: Array<{ id: string; description: string }> }>(listBots, { botId: id });
+    const full = one.bots.find((bot) => bot.id === id);
+    assert.equal(full?.description.includes(long), true);
+    assert.equal(full?.description.startsWith(UNTRUSTED_PREAMBLE), true);
+    const missing = await run<{ status: string }>(listBots, { botId: "nope" });
+    assert.equal(missing.status, "not_found");
+  } finally {
     box.restore();
   }
 });

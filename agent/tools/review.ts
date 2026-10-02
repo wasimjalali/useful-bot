@@ -4,6 +4,7 @@ import { z } from "zod";
 import { toolRouterIds } from "../lib/router-identity.ts";
 import { routerApiBase } from "../../shared/stack.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 // The router refuses /v1/chat/completions without the session, turn and request
 // UUIDs, and gates one call per session: the session is the calling bot's, so
@@ -15,6 +16,7 @@ export default defineTool({
     text: z.string().min(1).max(8000),
   }),
   async execute(input, ctx) {
+    markOutside(ctx);
     const token = process.env.UB_ROUTER_REVIEWER_TOKEN;
     if (!token) {
       // The S2 probe relies on the fixture; otherwise the model must never be

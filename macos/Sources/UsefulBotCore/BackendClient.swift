@@ -135,6 +135,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "Give the routine an instruction."
         case "routine_limit":
             return "This bot already has the maximum number of routines."
+        case "shell_description_too_long":
+            return "Instructions can be up to \(InstructionsLimit.grouped(InstructionsLimit.max)) characters."
         case "agent_credential_missing":
             return "Routines need the agent credential. Restart the local services."
         default:
@@ -1294,6 +1296,58 @@ public actor BackendClient {
             throw BackendError.decoding
         }
         return decoded.notes
+    }
+
+    /// The JSON body of `DELETE /api/memory`.
+    static func memoryDeleteBody(botId: String, id: String, revision: MemoryRevision?) throws -> Data {
+        var body: [String: Any] = ["botId": botId, "id": id]
+        if let revision { body["revision"] = revision.json }
+        return try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+    }
+
+    /// `GET /api/memory?botId=&id=`: one full note.
+    public func memoryNote(botId: String, id: String) async throws -> MemoryNote {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/memory"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "botId", value: botId), URLQueryItem(name: "id", value: id)]
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        try Self.expectOK(data, response)
+        struct One: Decodable { let note: MemoryNote }
+        guard let decoded = try? JSONDecoder().decode(One.self, from: data) else { throw BackendError.decoding }
+        return decoded.note
+    }
+
+    public func deleteMemoryNote(botId: String, id: String, revision: MemoryRevision?) async throws {
+        let body = try Self.memoryDeleteBody(botId: botId, id: id, revision: revision)
+        let (data, response) = try await perform { client, token in
+            var request = URLRequest(url: client.base.appendingPathComponent("api/memory"))
+            request.httpMethod = "DELETE"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.setValue(token, forHTTPHeaderField: "x-ub-csrf")
+            request.httpBody = body
+            return request
+        }
+        try Self.expectOK(data, response)
+    }
+
+    public func botContext(botId: String) async throws -> BotContextInfo {
+        let (data, response) = try await perform { client, _ in
+            var components = URLComponents(
+                url: client.base.appendingPathComponent("api/bots/context"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "botId", value: botId)]
+            guard let url = components?.url else { throw BackendError.decoding }
+            return URLRequest(url: url)
+        }
+        try Self.expectOK(data, response)
+        guard let decoded = try? JSONDecoder().decode(BotContextInfo.self, from: data) else { throw BackendError.decoding }
+        return decoded
     }
 
     /// The chip's state for one bot: its own model, effort and speed. Without

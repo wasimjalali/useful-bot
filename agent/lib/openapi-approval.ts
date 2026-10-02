@@ -4,6 +4,7 @@ import type { WorkspacePermission } from "../../shared/workspace-store.ts";
 import { actionSha256, approvalActor, executeIfApproved, waitUntilNotPending, type ApprovalStore } from "./approvals.ts";
 import { sessionPermission } from "./permission.ts";
 import { getApprovalStore } from "./write.ts";
+import { markOutside } from "./outside-content.ts";
 
 /**
  * The permission gate for an OpenAPI connection's operations (UB-009 PR A).
@@ -53,6 +54,7 @@ const denied = (reason: string): Decision => ({ type: "denied", reason });
 export function openApiApproval(entry: ConnectionEntry, overrides: Partial<OpenApiApprovalDeps> = {}) {
   const deps = { ...defaultDeps, ...overrides };
   return async (ctx: PolicyContext): Promise<Decision> => {
+    markOutside(ctx);
     try {
       const permission = deps.permission(ctx);
       if (permission === "read_only") {

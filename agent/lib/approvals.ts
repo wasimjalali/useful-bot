@@ -57,6 +57,7 @@ export type ApprovalTool =
   | "bash"
   | "write_file"
   | "memory.upsert"
+  | "memory.delete"
   | "delete_bot"
   | "remove_section"
   | "clear_history"

@@ -1,10 +1,10 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { defineAgent, defineDynamic } from "eve";
 import { POLICY_WINDOW_TOKENS } from "../shared/policy.ts";
-import { awaitTurnStamp, freezeTurnSelection } from "./lib/model-window.ts";
 import { routerFetch } from "./lib/router-fetch.ts";
 import { turnIdOf } from "./lib/router-identity.ts";
-import { frozenTurnFor, isFirstStepOfTurn, perSessionModel } from "./lib/session-model.ts";
+import { frozenTurnFor, perSessionModel } from "./lib/session-model.ts";
+import { ensureTurnSnapshot, frozenSelection } from "./lib/turn-snapshot.ts";
 import { routerApiBase } from "../shared/stack.ts";
 
 const PLANTED = "S2-TOOL-PLANT-001";
@@ -160,7 +160,7 @@ const routerModel = perSessionModel((ids, selection) => {
     fetch: routerFetch({ ids, selection }),
   });
   return provider.chatModel("workhorse");
-}, 64, freezeTurnSelection);
+}, 64, frozenSelection);
 
 // Built once: the fixture never reaches the router, so it has no session.
 const FIXTURE_MODEL = process.env.UB_S2_FIXTURE === "1" ? s2FixtureModel() : null;
@@ -185,14 +185,27 @@ export default defineAgent({
       "step.started": async (event, ctx) => {
         if (FIXTURE_MODEL) return { model: FIXTURE_MODEL, modelContextWindowTokens: POLICY_WINDOW_TOKENS };
         const turnId = turnIdOf(event);
-        // Only the first step of a turn freezes; give a brand new session's
-        // stamp a moment to land before it does (see awaitTurnStamp).
-        if (isFirstStepOfTurn(frozenTurnFor(ctx.session.id), turnId) && !(await awaitTurnStamp(ctx.session.id))) {
-          console.warn(JSON.stringify({ event: "turn_stamp_missing", sessionId: ctx.session.id, turnId: turnId ?? null }));
+        // The backstop of the bot context. A throwing instruction resolver is
+        // skipped silently, so the refusal lives here, where a throw fails the
+        // turn. The snapshot is rebuilt when there is none (a process restart
+        // mid-turn), and refused only when the session is unbound, the claim and
+        // the binding name different bots, or the context resolver recorded a
+        // failure for this turn.
+        const snapshot = await ensureTurnSnapshot(ctx, turnId);
+        if (!snapshot || snapshot.status !== "ok") {
+          console.error(JSON.stringify({
+            event: "bot_context_missing",
+            count: 1,
+            sessionId: ctx.session.id,
+            turnId: turnId ?? null,
+            reason: snapshot ? "context_failed" : "unbound_or_mismatch",
+          }));
+          throw new Error("bot_context_missing");
         }
         const model = routerModel(ctx.session.id, turnId);
+        // The window is the frozen selection's, the one the handle sends.
         const frozen = frozenTurnFor(ctx.session.id);
-        if (!frozen) throw new Error("turn selection was not frozen");
+        if (!frozen) throw new Error("bot_context_missing");
         return { model, modelContextWindowTokens: frozen.selection.windowTokens };
       },
     },

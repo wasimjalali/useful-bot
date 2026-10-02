@@ -28,16 +28,13 @@ function registry(): Map<string, FrozenTurn> {
 
 /** The turn a session froze most recently, or null before its first step. */
 export function frozenTurnFor(eveSessionId: string): FrozenTurn | null {
-  return registry().get(eveSessionId) ?? null;
-}
-
-/**
- * Whether a step is the first of its turn and so must wait for the stamp: no
- * frozen entry at all, or one for a different turn. Comparing the ids alone
- * would skip the wait for a first step with no turn id (undefined === undefined).
- */
-export function isFirstStepOfTurn(frozen: FrozenTurn | null, turnId: string | undefined): boolean {
-  return !frozen || frozen.turnId !== turnId;
+  const map = registry();
+  const held = map.get(eveSessionId);
+  if (!held) return null;
+  // A read keeps the session alive, so an active turn is never the idlest key.
+  map.delete(eveSessionId);
+  map.set(eveSessionId, held);
+  return held;
 }
 
 function remember(eveSessionId: string, frozen: FrozenTurn): void {
@@ -69,7 +66,7 @@ let warnedNoTurnId = false;
 export function perSessionModel<M>(
   build: (ids: () => RouterIds, selection: () => TurnSelection | null) => M,
   cap = 64,
-  freeze?: (eveSessionId: string, grantFirst: boolean) => TurnSelection,
+  freeze?: (eveSessionId: string, eveTurnId: string | undefined) => TurnSelection,
 ): (eveSessionId: string, eveTurnId: string | undefined) => M {
   type Entry = { model: M; turnId: string | undefined; frozen: TurnSelection | null };
   const entries = new Map<string, Entry>();
@@ -112,7 +109,7 @@ export function perSessionModel<M>(
       // owner's live selection, so a pick made mid-turn cannot split the turn.
       const sameTurn = entry.frozen !== null && eveTurnId !== undefined && entry.turnId === eveTurnId;
       if (!sameTurn) {
-        entry.frozen = freeze(eveSessionId, eveTurnId === undefined);
+        entry.frozen = freeze(eveSessionId, eveTurnId);
         remember(eveSessionId, { turnId: eveTurnId, selection: entry.frozen });
       }
     }

@@ -21,8 +21,14 @@ import { statePath } from "../../shared/stack.ts";
  */
 export type Audience = "desktop";
 
-/** Who wrote the note last: the owner (Settings) or the model (memory_upsert). */
-export type NoteSource = "owner" | "model";
+/**
+ * Who wrote the note last: the owner (Settings), the model (memory_upsert), or
+ * the model in a turn that had read outside content (a page, an app result, a
+ * file, a handoff). The last one is sticky: the model editing such a note
+ * keeps the mark, and only the owner's edit or delete clears it.
+ */
+export type NoteSource = "owner" | "model" | "model-after-outside-content";
+const NOTE_SOURCES: readonly string[] = ["owner", "model", "model-after-outside-content"];
 
 export interface NoteMeta {
   schemaVersion: 1;
@@ -50,6 +56,8 @@ export interface MemoryExcerpt {
   id: string;
   revision: number;
   title: string;
+  /** Who wrote it last: a tool that returns a note marks the turn when this is outside-sourced. */
+  source: NoteSource;
   body: string;
   truncated: boolean;
 }
@@ -57,6 +65,7 @@ export interface MemoryExcerpt {
 export interface MemoryNoteCard extends MemoryExcerpt {
   tags: string[];
   updatedAt: string;
+  source: NoteSource;
 }
 
 /** Index schema: 2 added `bot_id` and folded `shared-phone` into `desktop`. */
@@ -139,7 +148,7 @@ function normalizeMeta(rec: Record<string, unknown>): { meta: NoteMeta; legacy: 
     if (!Number.isFinite(at)) throw new Error("note_format");
     expiresAt = new Date(at).toISOString();
   }
-  const source: NoteSource = rec.source === "owner" || rec.source === "model" ? rec.source : "model";
+  const source: NoteSource = typeof rec.source === "string" && NOTE_SOURCES.includes(rec.source) ? rec.source as NoteSource : "model";
   const legacy = typeof rec.botId !== "string"
     || rec.botId === ""
     || rec.audience !== "desktop"
@@ -197,11 +206,12 @@ function serializeNote(meta: NoteMeta, body: string): string {
 }
 
 /** A note as search and list show it: the body clipped to a preview. */
-function previewOf(note: { id: string; revision: number; title: string }, body: string): MemoryExcerpt {
+function previewOf(note: { id: string; revision: number; title: string; source: NoteSource }, body: string): MemoryExcerpt {
   return {
     id: note.id,
     revision: note.revision,
     title: note.title,
+    source: note.source,
     body: body.slice(0, PREVIEW_CHARS),
     truncated: body.length > PREVIEW_CHARS,
   };
@@ -438,6 +448,22 @@ export class MemoryStore {
     return excerpts;
   }
 
+  /**
+   * How many live notes a bot has, however many a page of them shows. Counted
+   * from the index, where `list` also checks each note's file. They cannot
+   * diverge for long: every write puts the file first and the index second
+   * under one lock, and an open that finds the dirty marker rebuilds the index
+   * from the files, so the only gap is a note whose file is unreadable, which
+   * `list` skips and this still counts (an over-count by one, never under).
+   */
+  countLive(botId: string): number {
+    if (!botId) throw new Error("memory_bot_required");
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS c FROM notes WHERE status = 'active' AND bot_id = ? AND (expires_at IS NULL OR expires_at > ?)",
+    ).get(botId, new Date().toISOString()) as { c: number };
+    return row.c;
+  }
+
   list(botId: string, limit = 100): MemoryNoteCard[] {
     if (!botId) throw new Error("memory_bot_required");
     const now = new Date().toISOString();
@@ -502,6 +528,7 @@ export class MemoryStore {
       id: meta.id,
       revision: meta.revision,
       title: meta.title,
+      source: meta.source,
       body,
       truncated: false,
     };
@@ -544,9 +571,13 @@ export class MemoryStore {
       const id = input.id ?? randomUUID();
       const existingPath = join(this.notesDir, `${id}.md`);
       let revision = 1;
+      let source: NoteSource = input.source;
       const now = new Date().toISOString();
       if (existsSync(existingPath)) {
         const prev = parseNote(readFileSync(existingPath, "utf8"));
+        // A case-insensitive disk finds `abc.md` for the id `ABC`; writing it
+        // would index a second row. Ids differing only in case are refused.
+        if (prev.meta.id !== id) throw new Error("memory_id_conflict");
         // Ownership is the first check, under the write lock and before the
         // revision check, so a bot that guessed another bot's id learns
         // nothing about its revision and cannot overwrite it. A note is
@@ -554,10 +585,16 @@ export class MemoryStore {
         if (prev.meta.botId !== input.botId) {
           throw new Error("memory_forbidden");
         }
+        // An archived note is gone: it is never brought back by a write.
+        if (prev.meta.status !== "active") throw new Error("memory_not_found");
         if (input.expectedRevision !== prev.meta.revision) {
           throw new Error("memory_revision_conflict");
         }
         revision = prev.meta.revision + 1;
+        // The outside-content mark outlasts the model's own edits.
+        if (input.source === "model" && prev.meta.source === "model-after-outside-content") {
+          source = "model-after-outside-content";
+        }
       } else if (count >= 10_000) {
         throw new Error("memory_capacity");
       }
@@ -570,7 +607,7 @@ export class MemoryStore {
         tags: input.tags.filter((tag) => !tag.startsWith(BOT_TAG_PREFIX)),
         audience: "desktop",
         botId: input.botId,
-        source: input.source,
+        source,
         createdAt: now,
         updatedAt: now,
         expiresAt,
@@ -603,6 +640,63 @@ export class MemoryStore {
     } finally {
       release();
     }
+  }
+
+  /**
+   * Remove a note: its status becomes `archived` in the file and in the index,
+   * so list, search and read no longer see it. Ownership is checked first,
+   * under the write lock, so a bot that guessed another bot's id learns
+   * nothing about its revision; then the revision, so a note edited since it
+   * was read is not deleted blind.
+   */
+  archive(id: string, botId: string, expectedRevision: number): { id: string; revision: number } {
+    assertNoteId(id);
+    if (!botId) throw new Error("memory_bot_required");
+    const release = this.acquire();
+    try {
+      const path = join(this.notesDir, `${id}.md`);
+      const raw = readNoteFile(path);
+      if (raw === null) throw new Error("memory_not_found");
+      const prev = parseNote(raw);
+      if (prev.meta.botId !== botId) throw new Error("memory_forbidden");
+      if (prev.meta.status !== "active") throw new Error("memory_not_found");
+      if (expectedRevision !== prev.meta.revision) throw new Error("memory_revision_conflict");
+      const meta: NoteMeta = {
+        ...prev.meta,
+        revision: prev.meta.revision + 1,
+        updatedAt: new Date().toISOString(),
+        status: "archived",
+      };
+      const tmp = join(this.notesDir, `.${id}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+      writeFileSync(tmp, serializeNote(meta, prev.body), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      this.markDirty(id);
+      try {
+        renameSync(tmp, path);
+      } catch (error) {
+        try { unlinkSync(tmp); } catch { /* ignore */ }
+        throw error;
+      }
+      this.transaction(() => this.insertIndex(meta, prev.body));
+      this.clearDirty();
+      return { id, revision: meta.revision };
+    } finally {
+      release();
+    }
+  }
+
+  /** One of the bot's live notes, whole, with the fields Settings shows. Refused like `read`. */
+  readCard(id: string, botId: string): MemoryNoteCard & { body: string } {
+    assertNoteId(id);
+    if (!botId) throw new Error("memory_bot_required");
+    const path = join(this.notesDir, `${id}.md`);
+    const raw = readNoteFile(path);
+    if (raw === null) throw new Error("memory_not_found");
+    const { meta, body } = parseNote(raw);
+    if (meta.botId !== botId) throw new Error("memory_forbidden");
+    if (meta.status !== "active" || (meta.expiresAt !== null && meta.expiresAt <= new Date().toISOString())) {
+      throw new Error("memory_not_found");
+    }
+    return { id: meta.id, revision: meta.revision, title: meta.title, source: meta.source, body, truncated: false, tags: meta.tags, updatedAt: meta.updatedAt };
   }
 
   private insertIndex(meta: NoteMeta, body: string): void {

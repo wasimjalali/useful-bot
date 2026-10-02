@@ -10,6 +10,7 @@ import { inAppGate, READ_ONLY_BLOCKED, settle } from "../lib/permission.ts";
 import { CLI_REGISTRY, cliStatus, findCli, resolveBin } from "../lib/cli-registry.ts";
 import { ownerPath, rescanOwnerPath } from "../../shared/user-path.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 /** An install fetches a package and builds it; npm on a cold cache is slow. */
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -86,6 +87,8 @@ export default defineTool({
     await settle(store, record.id, hash, gate, ctx, permission);
 
     return executeIfApproved(store, record.id, hash, async () => {
+      // The installer's output is text from outside.
+      markOutside(ctx);
       // Approved on a card: run it as the owner read it. Full access: run it
       // confined, which at that posture still refuses the credential files
       // and the app's own stores.

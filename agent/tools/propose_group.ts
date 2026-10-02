@@ -3,7 +3,7 @@ import { z } from "zod";
 import { callerOf, notAvailable, ORCHESTRATOR_ONLY_HINT, orchestratorId } from "../lib/permission.ts";
 import { appendAgentEvent, createProposal, releaseSend, reserveSend } from "../../shared/agent-store.ts";
 import { readShell } from "../../shared/shell-io.ts";
-import { GROUP_MAX_MEMBERS, GROUP_MIN_MEMBERS, DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
+import { DESCRIPTION_MAX, GROUP_MAX_MEMBERS, GROUP_MIN_MEMBERS, DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
 
 export default defineTool({
@@ -12,7 +12,7 @@ export default defineTool({
   inputSchema: z.object({
     name: z.string().min(1).max(80),
     memberIds: z.array(z.string().min(1).max(80)).min(GROUP_MIN_MEMBERS).max(GROUP_MAX_MEMBERS),
-    description: z.string().max(500).optional(),
+    description: z.string().max(DESCRIPTION_MAX).optional(),
     requestId: z.string().min(1).max(120).optional(),
   }),
   async execute(input, ctx) {
@@ -45,6 +45,7 @@ export default defineTool({
         proposerId: who.caller.id,
         name: input.name.trim(),
         memberIds: members.map((member) => member.id),
+        description: (input.description ?? "").trim(),
         sourceBotId,
         threadId: sourceBotId ?? who.caller.id,
       });

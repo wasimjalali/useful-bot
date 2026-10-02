@@ -180,8 +180,30 @@ export function bindSession(
 const loggedConflicts = new Set<string>();
 
 /**
- * Bind every session pointer the roster holds (`sessionId`, `continuedSessionId`)
- * that is not bound yet. A pointer naming a session another bot already owns
+ * Every session id the shell ties to a bot: a bot's live and carried-over
+ * pointers, the sessions it replaced (`previousSessionIds`) and the sessions
+ * its recents name. A recent whose bot is no longer on the roster names no one.
+ */
+function sessionPointers(shell: ShellStore): Array<{ sessionId: string; botId: string }> {
+  const out: Array<{ sessionId: string; botId: string }> = [];
+  const roster = new Set<string>();
+  for (const bot of shell.bots) {
+    roster.add(bot.id);
+    for (const sessionId of [bot.sessionId, bot.continuedSessionId, ...(bot.previousSessionIds ?? [])]) {
+      if (sessionId && SESSION_ID.test(sessionId)) out.push({ sessionId, botId: bot.id });
+    }
+  }
+  for (const recent of shell.recents) {
+    if (recent.sessionId && SESSION_ID.test(recent.sessionId) && roster.has(recent.botId)) {
+      out.push({ sessionId: recent.sessionId, botId: recent.botId });
+    }
+  }
+  return out;
+}
+
+/**
+ * Bind every session pointer the roster holds (`sessionId`, `continuedSessionId`,
+ * `previousSessionIds`, and the sessions its recents name) that is not bound yet. A pointer naming a session another bot already owns
  * is skipped and logged (once per pair per process): the binding wins over a
  * pointer. Returns how many rows it added.
  */
@@ -195,11 +217,10 @@ export function backfillSessionOwners(
   // Two bots naming the same unbound session is ambiguous: roster order must
   // not decide who owns it, so neither is bound.
   const claimants = new Map<string, Set<string>>();
-  for (const bot of shell.bots) {
-    for (const sessionId of [bot.sessionId, bot.continuedSessionId]) {
-      if (!sessionId || !SESSION_ID.test(sessionId) || known[sessionId]) continue;
-      claimants.set(sessionId, (claimants.get(sessionId) ?? new Set()).add(bot.id));
-    }
+  const pointers = sessionPointers(shell);
+  for (const { sessionId, botId } of pointers) {
+    if (known[sessionId]) continue;
+    claimants.set(sessionId, (claimants.get(sessionId) ?? new Set()).add(botId));
   }
   const ambiguous = new Set<string>();
   for (const [sessionId, bots] of claimants) {
@@ -211,21 +232,19 @@ export function backfillSessionOwners(
       console.warn(`[useful-bot] session ${sessionId} is named by ${[...bots].join(", ")}; bound to none`);
     }
   }
-  for (const bot of shell.bots) {
-    for (const sessionId of [bot.sessionId, bot.continuedSessionId]) {
-      if (!sessionId || !SESSION_ID.test(sessionId) || ambiguous.has(sessionId)) continue;
-      const owner = known[sessionId]?.botId;
-      if (owner === bot.id) continue;
-      if (owner) {
-        const key = `${sessionId}:${bot.id}`;
-        if (!loggedConflicts.has(key)) {
-          loggedConflicts.add(key);
-          console.warn(`[useful-bot] session ${sessionId} is bound to ${owner}; the pointer on ${bot.id} was skipped`);
-        }
-        continue;
+  for (const { sessionId, botId } of pointers) {
+    if (ambiguous.has(sessionId)) continue;
+    const owner = known[sessionId]?.botId;
+    if (owner === botId) continue;
+    if (owner) {
+      const key = `${sessionId}:${botId}`;
+      if (!loggedConflicts.has(key)) {
+        loggedConflicts.add(key);
+        console.warn(`[useful-bot] session ${sessionId} is bound to ${owner}; the pointer on ${botId} was skipped`);
       }
-      wanted.push({ sessionId, botId: bot.id });
+      continue;
     }
+    wanted.push({ sessionId, botId });
   }
   if (wanted.length === 0) return 0;
   return updateStore((store) => {
@@ -265,8 +284,7 @@ export function resolveSessionBot(
   const bound = readSessionBot(sessionId, path);
   if (bound) return bound;
   if (!shell || !SESSION_ID.test(sessionId)) return null;
-  const points = shell.bots.some((bot) => bot.sessionId === sessionId || bot.continuedSessionId === sessionId);
-  if (!points) return null;
+  if (!sessionPointers(shell).some((pointer) => pointer.sessionId === sessionId)) return null;
   backfillSessionOwners(shell, new Date(), path);
   return readSessionBot(sessionId, path);
 }
@@ -284,8 +302,9 @@ export function sessionCarriesOverFor(
 ): boolean {
   const owner = resolveSessionBot(sessionId, shell, path);
   if (owner !== null) return owner === botId;
-  const claimants = (shell?.bots ?? []).filter((bot) => bot.sessionId === sessionId || bot.continuedSessionId === sessionId);
-  return claimants.every((bot) => bot.id === botId);
+  const claimants = shell ? sessionPointers(shell).filter((pointer) => pointer.sessionId === sessionId) : [];
+  // No binding and no pointer at all is an unknown session, not an owned one.
+  return claimants.length > 0 && claimants.every((pointer) => pointer.botId === botId);
 }
 
 /** Drop every row of a bot that was deleted. The only way a row leaves. */

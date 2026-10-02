@@ -1,4 +1,4 @@
-import { DEFAULT_BOT_ID } from "./shell-store.ts";
+import { DEFAULT_BOT_ID, orchestratorId } from "./shell-store.ts";
 import type { ShellBot, ShellStore } from "./shell-store.ts";
 import {
   IMAGE_DATA_URL,
@@ -10,7 +10,7 @@ import {
   type TurnTextPart,
 } from "./attachments.ts";
 
-import { resolveRoute, speakersFrom, threadPrefix, type Route, type Speaker } from "./threads.ts";
+import { resolveRoute, speakersFrom, type Route } from "./threads.ts";
 import { withSessionNotes } from "./continuation-brief.ts";
 import type { ThreadKind } from "./agent-store.ts";
 
@@ -176,6 +176,7 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
     text: message,
     bots: speakers,
     memberIds: bot.memberIds,
+    orchestrator: orchestratorId(store),
   });
   const mentionNames = route.mentionIds
     .map((id) => speakers.find((speaker) => speaker.id === id)?.name ?? "")
@@ -183,37 +184,45 @@ export function eveSessionRoute(raw: string, store: ShellStore): SessionRoute | 
   return { ...route, mentionNames };
 }
 
+/** The note a group turn carries when the owner @mentioned members. */
+export function mentionLine(names: string[]): string {
+  const who = names.join(", ");
+  return `The owner addressed ${who}. Answer for that member's part as the orchestrator; don't claim to be ${who}.`;
+}
+
 /**
- * Full turn rewrite: bot or group identity, the resolved group roster, and the
- * targeted member when the owner used an @mention. Empty for the default bot, so
- * the verified 1:1 path is byte identical.
+ * The turn rewrite: the message validated, and the app notes folded in as
+ * hidden lines the transcript strips (a carry-over brief, a retry note, and
+ * the mention line when the owner @mentioned members of a group). The bot's
+ * identity is not part of the turn: it is a system block built from the bot.
  */
+/** Every app note a turn carries: the caller's notes, then the mention line for a group turn. */
+function turnNotes(route: SessionRoute | null, notes: string[]): string[] {
+  const mentioned = (route?.mentionNames ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter((name) => name.length > 0);
+  return mentioned.length > 0 ? [...notes, mentionLine(mentioned)] : notes;
+}
+
+/**
+ * Characters of the whole hidden prefix `rewriteEveTurnBody` puts in front of
+ * the owner's message for these notes and this route, session-note framing
+ * included. Admission sizes exactly this.
+ */
+export function hiddenPrefixChars(route: SessionRoute | null, notes: string[]): number {
+  return withSessionNotes("", turnNotes(route, notes)).length;
+}
+
 export function rewriteEveTurnBody(
   raw: string,
-  bot: ShellBot | null,
   route: SessionRoute | null,
-  members: Speaker[] = [],
   /** App notes for the hidden prefix: a carry-over brief, a retry note. */
   notes: string[] = [],
 ): string {
   const json = JSON.parse(raw) as { message?: unknown };
   const message = parseTurnMessage(json.message);
   if (message === null) throw new Error("eve_message");
-  if ((!bot || bot.id === DEFAULT_BOT_ID) && notes.length === 0) {
-    return JSON.stringify({ message });
-  }
-  const identity = !bot || bot.id === DEFAULT_BOT_ID ? "" : threadPrefix({
-    bot: {
-      id: bot.id,
-      kind: bot.kind,
-      name: bot.name,
-      label: bot.label,
-      description: bot.description,
-    },
-    members: members.length > 0 ? members : undefined,
-    mentionNames: route?.mentionNames ?? [],
-  });
-  const prefix = withSessionNotes(identity, notes);
+  const allNotes = turnNotes(route, notes);
+  if (allNotes.length === 0) return JSON.stringify({ message });
+  const prefix = withSessionNotes("", allNotes);
   if (typeof message === "string") {
     return JSON.stringify({ message: `${prefix}${message}` });
   }

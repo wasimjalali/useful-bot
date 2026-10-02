@@ -33,14 +33,9 @@ import { applyProvidersDelete, applyProvidersPut, CONNECTION_REMOVED_BOTS_PINNED
 import { createRoutine, readRoutinesStore } from "../shared/routines-store.ts";
 import { queueHandoff, readHandoff } from "../shared/handoffs.ts";
 import { listThreadEvents } from "../shared/agent-store.ts";
-import { perSessionModel, frozenTurnFor, isFirstStepOfTurn } from "../agent/lib/session-model.ts";
-import {
-  awaitTurnStamp,
-  freezeTurnSelection,
-  resolveTurnSelection,
-  STAMP_WAIT_MS,
-  windowTokensFor,
-} from "../agent/lib/model-window.ts";
+import { perSessionModel, frozenTurnFor } from "../agent/lib/session-model.ts";
+import { windowTokensFor } from "../agent/lib/model-window.ts";
+import { buildSnapshot, frozenSelection, snapshotForBot } from "../agent/lib/turn-snapshot.ts";
 import { UNKNOWN_WINDOW_TOKENS } from "../shared/policy.ts";
 import { routerFetch } from "../agent/lib/router-fetch.ts";
 import { routerIds } from "../agent/lib/router-identity.ts";
@@ -103,8 +98,8 @@ function withWorld<T>(
   process.env.UB_ROUTINES_PATH = join(dir, "routines.json");
   process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
   process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
-  process.env.UB_CHANNEL_JWT = "test-jwt";
-  delete process.env.UB_CHANNEL_JWT_SECRET;
+  process.env.UB_CHANNEL_JWT_SECRET = "test-channel-secret";
+  delete process.env.UB_CHANNEL_JWT;
   delete process.env.UB_OPENCODE_GO_KEY;
   delete process.env.UB_ACTIVE_BOT_ID;
   writeFileSync(providers, JSON.stringify({
@@ -164,6 +159,27 @@ function twoBots(a: ModelSelection | null, b: ModelSelection | null, path: strin
   };
   writeShell(store, path);
   return { aId: first.createdId as string, bId: second.createdId as string };
+}
+
+/** What the model resolver does at a step: ensure the turn's snapshot for the bot, then take the handle. */
+function step<M>(modelFor: (sessionId: string, turnId: string | undefined) => M, sessionId: string, botId: string, turnId: string | undefined): M {
+  snapshotForBot(botId, { session: { id: sessionId } }, turnId);
+  return modelFor(sessionId, turnId);
+}
+
+/** The selection a turn of this bot freezes. */
+function frozenFor(sessionId: string, botId: string, turnId: string | undefined) {
+  const snapshot = snapshotForBot(botId, { session: { id: sessionId } }, turnId);
+  if (snapshot.status !== "ok") assert.fail("no snapshot");
+  return snapshot.selection;
+}
+
+/** Point a bot's live session at an id. */
+function ownSession(botId: string, sessionId: string): void {
+  updateShell((current) => ({
+    ...current,
+    bots: current.bots.map((bot) => (bot.id === botId ? { ...bot, sessionId } : bot)),
+  }));
 }
 
 test("two bots with different selections resolve different upstreams at the same time", () => {
@@ -240,15 +256,15 @@ test("ensureBotSelections pins legacy and new bots before the last pick moves, a
   });
 });
 
-test("a turn keeps its selection and window across steps after the store and grant change, a new turn re-reads", () => {
-  withWorld(() => {
-    upsertSessionGrant({ sessionId: "sess-1", path: null, permission: "auto", selection: selGo });
-    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, freezeTurnSelection);
-    const handle = modelFor("sess-1", "turn-1");
+test("a turn keeps its selection and window across steps after the store and the bot's pick change, a new turn re-reads", () => {
+  withWorld(({ shell }) => {
+    const { aId } = twoBots(selGo, null, shell);
+    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, frozenSelection);
+    const handle = step(modelFor, "sess-1", aId, "turn-1");
     assert.deepEqual(handle.selection(), { ...selGo, windowTokens: 1_000_000 });
 
-    // Mid turn: the bot's grant moves to another model, the last pick moves, the catalog window changes.
-    upsertSessionGrant({ sessionId: "sess-1", path: null, permission: "auto", selection: selOa });
+    // Mid turn: the bot's pick moves to another model, the last pick moves, the catalog window changes.
+    updateShell((current) => withBotSelection(current, aId, selOa));
     updateProviderStore((current) => ({ ...current, activeConnectionId: OA, selectedModel: "gpt-4.1" }));
     writeFileSync(process.env.UB_MODELS_CACHE_PATH as string, JSON.stringify({
       schemaVersion: 3,
@@ -256,13 +272,13 @@ test("a turn keeps its selection and window across steps after the store and gra
     }));
 
     // Later steps, a retry and the compaction call are the same turn id.
-    for (let step = 0; step < 3; step += 1) {
-      assert.equal(modelFor("sess-1", "turn-1"), handle);
+    for (let index = 0; index < 3; index += 1) {
+      assert.equal(step(modelFor, "sess-1", aId, "turn-1"), handle);
       assert.deepEqual(handle.selection(), { ...selGo, windowTokens: 1_000_000 });
       assert.equal(frozenTurnFor("sess-1")?.selection.windowTokens, 1_000_000);
     }
     // The next turn picks up everything that changed.
-    assert.equal(modelFor("sess-1", "turn-2"), handle);
+    assert.equal(step(modelFor, "sess-1", aId, "turn-2"), handle);
     assert.deepEqual(handle.selection(), { ...selOa, windowTokens: UNKNOWN_WINDOW_TOKENS });
     assert.equal(frozenTurnFor("sess-1")?.turnId, "turn-2");
   });
@@ -271,32 +287,25 @@ test("a turn keeps its selection and window across steps after the store and gra
 test("with no turn id the grant wins over the owner's live pick, so a mid-turn pick waits for the next turn", () => {
   withWorld(({ shell }) => {
     const { aId } = twoBots(selGo, null, shell);
-    updateShell((current) => ({
-      ...current,
-      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-nt" } : bot)),
-    }));
     upsertSessionGrant({ sessionId: "sess-nt", path: null, permission: "auto", selection: selGo });
-    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, freezeTurnSelection);
-    const handle = modelFor("sess-nt", undefined);
+    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, frozenSelection);
+    const handle = step(modelFor, "sess-nt", aId, undefined);
     assert.equal(handle.selection()?.modelId, selGo.modelId);
     // The owner picks another model mid-turn: the grant is untouched until the next turn starts.
-    updateShell((current) => ({
-      ...current,
-      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, model: selOa } : bot)),
-    }));
-    modelFor("sess-nt", undefined);
+    updateShell((current) => withBotSelection(current, aId, selOa));
+    step(modelFor, "sess-nt", aId, undefined);
     assert.equal(handle.selection()?.modelId, selGo.modelId, "the next step keeps the grant's selection");
     // With a turn id the owner's current pick still wins.
-    modelFor("sess-nt", "turn-9");
+    step(modelFor, "sess-nt", aId, "turn-9");
     assert.equal(handle.selection()?.modelId, selOa.modelId);
   });
 });
 
 test("every request of a turn sends the frozen selection, through a 429 wait that outlasts a pick", async () => {
-  await withWorld(async () => {
-    upsertSessionGrant({ sessionId: "sess-2", path: null, permission: "auto", selection: selGo5 });
-    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, freezeTurnSelection);
-    const handle = modelFor("sess-2", "turn-1");
+  await withWorld(async ({ shell }) => {
+    const { aId } = twoBots(selGo5, null, shell);
+    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, frozenSelection);
+    const handle = step(modelFor, "sess-2", aId, "turn-1");
     const seen: Array<string | null> = [];
     const fetchStub = async (_input: RequestInfo | URL, init?: RequestInit) => {
       seen.push(new Headers(init?.headers).get(SELECTION_HEADER));
@@ -311,8 +320,8 @@ test("every request of a turn sends the frozen selection, through a 429 wait tha
       random: () => 0,
       sleep: async () => {
         // The owner picks another model for this bot while the call waits.
-        upsertSessionGrant({ sessionId: "sess-2", path: null, permission: "auto", selection: selOa });
-        modelFor("sess-2", "turn-1");
+        updateShell((current) => withBotSelection(current, aId, selOa));
+        step(modelFor, "sess-2", aId, "turn-1");
       },
     });
     const response = await send("http://router.test/v1/chat/completions", { method: "POST" });
@@ -560,23 +569,6 @@ test("the selection header round trips and a malformed one throws", () => {
   assert.throws(() => encodeSelectionHeader({ ...selGo, modelId: "" }), /selection_header_invalid/);
 });
 
-test("a new session's first step waits for its stamp, and an owned or stamped session does not wait", async () => {
-  await withWorld(async () => {
-    const started = Date.now();
-    setTimeout(() => upsertSessionGrant({ sessionId: "sess-new", path: null, permission: "auto", selection: selOa }), 150);
-    assert.equal(await awaitTurnStamp("sess-new", 2_000), true);
-    assert.ok(Date.now() - started >= 140, "returned before the stamp landed");
-    assert.equal(freezeTurnSelection("sess-new").modelId, selOa.modelId);
-
-    const quick = Date.now();
-    assert.equal(await awaitTurnStamp("sess-new", 2_000), true);
-    assert.ok(Date.now() - quick < 100, "a stamped session waited");
-
-    // Nothing ever stamps it: bounded, and reported as missing.
-    assert.equal(await awaitTurnStamp("sess-orphan", 200), false);
-  });
-});
-
 /** The two files a refused write must leave byte for byte as they were. */
 function snapshotStores(providers: string, shell: string): [string | null, string | null] {
   return [
@@ -698,100 +690,58 @@ test("a per-bot pick is exact: an unknown bot is a 404 and a missing model a 400
   });
 });
 
-test("an unstamped session no bot owns throws turn_stamp_missing, never the selected bot's or the last pick's model", async () => {
-  await withWorld(async ({ shell }) => {
-    assert.equal(STAMP_WAIT_MS, 10_000);
-    const { aId } = twoBots(selOa, null, shell);
-    // The selected bot and the last pick both exist, and neither may be used.
-    assert.ok(readShell(shell).selectedBotId);
-    assert.throws(() => freezeTurnSelection("sess-unowned"), /turn_stamp_missing/);
-    assert.equal(await awaitTurnStamp("sess-unowned", 100), false);
-
-    // The bot that holds the session, or opened it as a carry-over, owns it.
-    updateShell((current) => ({
-      ...current,
-      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-owned", continuedSessionId: "sess-carried" } : bot)),
-    }));
-    assert.equal(freezeTurnSelection("sess-owned").modelId, selOa.modelId);
-    assert.equal(freezeTurnSelection("sess-carried").modelId, selOa.modelId);
-    assert.equal(await awaitTurnStamp("sess-carried", 100), true);
-
-    // Tests and probes pin a bot with the env var.
-    process.env.UB_ACTIVE_BOT_ID = aId;
-    assert.equal(freezeTurnSelection("sess-probe").modelId, selOa.modelId);
-  });
-});
-
-test("the freeze reads the store before the roster, so a fresh default never pairs with a stale pin", () => {
+test("the snapshot reads the providers store before the roster, so a fresh default never pairs with a stale pin", () => {
   withWorld(({ shell }) => {
-    // Web order for a pick on bot B that moves the default: shell pins first
-    // (bot A null -> selOa), then the providers store (default -> glm-5).
     const { aId } = twoBots(null, null, shell);
-    updateShell((current) => ({
-      ...current,
-      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-a" } : bot)),
-    }));
-    const staleShell = readShell(shell);
-    const freshShell = { ...staleShell, bots: staleShell.bots.map((bot) => (bot.id === aId ? { ...bot, model: selOa } : bot)) };
-    const oldStore = readProviderStore();
-    const newStore = { ...oldStore, selectedModel: "glm-5" };
-    // The views a reader that reads the store first can get: (old, stale),
-    // (old, fresh), (new, fresh). (new, stale) needs a roster read older than
-    // the store read, which store-first never produces.
-    assert.equal(resolveTurnSelection("sess-a", oldStore, staleShell).modelId, "glm-5.3-flash");
-    assert.equal(resolveTurnSelection("sess-a", oldStore, freshShell).modelId, selOa.modelId);
-    assert.equal(resolveTurnSelection("sess-a", newStore, freshShell).modelId, selOa.modelId);
-    // The order the old code allowed: this is the wrong freeze it produced.
-    assert.equal(resolveTurnSelection("sess-a", newStore, staleShell).modelId, "glm-5");
-    // The real entry point, after both writes landed.
-    writeShell(freshShell, shell);
-    assert.equal(freezeTurnSelection("sess-a").modelId, selOa.modelId);
+    const order: string[] = [];
+    const snapshot = buildSnapshot(aId, { session: { id: "sess-order" } }, "turn-1", new Date(), {
+      store: () => { order.push("store"); return readProviderStore(); },
+      shell: () => { order.push("shell"); return readShell(shell); },
+    });
+    assert.deepEqual(order, ["store", "shell"]);
+    assert.equal(snapshot.selection.modelId, "glm-5.3-flash");
   });
 });
 
 test("a turn's snapshot survives the handle being evicted: the same turn keeps it, a new turn re-reads", () => {
-  withWorld(() => {
-    upsertSessionGrant({ sessionId: "sess-evict-1", path: null, permission: "auto", selection: selGo });
-    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 1, freezeTurnSelection);
-    const first = modelFor("sess-evict-1", "turn-T");
+  withWorld(({ shell }) => {
+    const { aId, bId } = twoBots(selGo, selGo5, shell);
+    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 1, frozenSelection);
+    const first = step(modelFor, "sess-evict-1", aId, "turn-T");
     assert.equal(first.selection()?.modelId, selGo.modelId);
 
     // Another session steps and the cap of one drops sess-evict-1's handle.
-    upsertSessionGrant({ sessionId: "sess-evict-2", path: null, permission: "auto", selection: selGo5 });
-    modelFor("sess-evict-2", "turn-U");
+    step(modelFor, "sess-evict-2", bId, "turn-U");
 
-    // Mid turn, the grant moves to another model.
-    upsertSessionGrant({ sessionId: "sess-evict-1", path: null, permission: "auto", selection: selOa });
-    const rebuilt = modelFor("sess-evict-1", "turn-T");
+    // Mid turn, the bot's pick moves to another model.
+    updateShell((current) => withBotSelection(current, aId, selOa));
+    const rebuilt = step(modelFor, "sess-evict-1", aId, "turn-T");
     assert.notEqual(rebuilt, first, "the handle really was rebuilt");
     assert.deepEqual(rebuilt.selection(), { ...selGo, windowTokens: 1_000_000 }, "the same turn keeps the frozen selection");
 
-    modelFor("sess-evict-1", "turn-T2");
-    assert.equal(rebuilt.selection()?.modelId, selOa.modelId, "a new turn picks up the grant");
+    step(modelFor, "sess-evict-1", aId, "turn-T2");
+    assert.equal(rebuilt.selection()?.modelId, selOa.modelId, "a new turn picks up the pick");
   });
 });
 
 test("a turn eve starts by itself (a report) freezes the owner's CURRENT selection, not the stale grant", () => {
   withWorld(({ shell }) => {
     const { aId } = twoBots(selGo, null, shell);
-    updateShell((current) => ({
-      ...current,
-      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-report" } : bot)),
-    }));
+    ownSession(aId, "sess-report");
     // The last proxied turn stamped X; the owner has since picked Y.
     upsertSessionGrant({ sessionId: "sess-report", path: null, permission: "auto", selection: selGo });
     applyProvidersPut({ botId: aId, modelId: `${OA}::gpt-4.1` });
     assert.equal(readSessionGrant("sess-report")?.selection?.connectionId, GO, "the grant still says X");
-    assert.equal(freezeTurnSelection("sess-report").connectionId, OA, "the report turn runs on Y");
-    assert.equal(freezeTurnSelection("sess-report").modelId, "gpt-4.1");
+    assert.equal(frozenFor("sess-report", aId, "turn-r0").connectionId, OA, "the report turn runs on Y");
+    assert.equal(frozenFor("sess-report", aId, "turn-r0").modelId, "gpt-4.1");
 
     // Mid-turn picks apply to the next turn only.
-    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, freezeTurnSelection);
-    const handle = modelFor("sess-report", "turn-r1");
+    const modelFor = perSessionModel((ids, selection) => ({ ids, selection }), 8, frozenSelection);
+    const handle = step(modelFor, "sess-report", aId, "turn-r1");
     applyProvidersPut({ botId: aId, modelId: `${GO}::glm-5` });
-    modelFor("sess-report", "turn-r1");
+    step(modelFor, "sess-report", aId, "turn-r1");
     assert.equal(handle.selection()?.modelId, "gpt-4.1");
-    modelFor("sess-report", "turn-r2");
+    step(modelFor, "sess-report", aId, "turn-r2");
     assert.equal(handle.selection()?.modelId, "glm-5");
   });
 });
@@ -799,24 +749,13 @@ test("a turn eve starts by itself (a report) freezes the owner's CURRENT selecti
 test("a report turn after the connection was deleted freezes the usable default, not the deleted connection", () => {
   withWorld(({ shell }) => {
     const { aId } = twoBots(selOa, null, shell);
-    updateShell((current) => ({
-      ...current,
-      bots: current.bots.map((bot) => (bot.id === aId ? { ...bot, sessionId: "sess-gone" } : bot)),
-    }));
+    ownSession(aId, "sess-gone");
     upsertSessionGrant({ sessionId: "sess-gone", path: null, permission: "auto", selection: selOa });
     applyProvidersDelete({ connectionId: OA });
     assert.equal(readShell(shell).bots.find((bot) => bot.id === aId)!.model, null);
-    const frozen = freezeTurnSelection("sess-gone");
+    const frozen = frozenFor("sess-gone", aId, "turn-g");
     assert.equal(frozen.connectionId, GO);
     assert.deepEqual({ ...frozen, windowTokens: undefined }, { ...effectiveDefault(readProviderStore()), windowTokens: undefined });
-  });
-});
-
-test("a new session no bot owns yet still freezes from its grant", () => {
-  withWorld(() => {
-    upsertSessionGrant({ sessionId: "sess-fresh", path: null, permission: "auto", selection: selOa });
-    assert.equal(freezeTurnSelection("sess-fresh").connectionId, OA);
-    assert.equal(freezeTurnSelection("sess-fresh").modelId, selOa.modelId);
   });
 });
 
@@ -849,13 +788,6 @@ test("a per-bot PUT with an effort or speed that is not a known id is invalid_re
     // null effort is a real value, not an invalid one: it is accepted (and snapped to the model's levels).
     assert.doesNotThrow(() => applyProvidersPut({ botId: aId, effort: null }));
   });
-});
-
-test("a first step with no turn id waits for the stamp; only the same turn id skips it", () => {
-  assert.equal(isFirstStepOfTurn(null, undefined), true, "no frozen entry, no turn id: undefined === undefined must not skip the wait");
-  assert.equal(isFirstStepOfTurn(null, "t1"), true);
-  assert.equal(isFirstStepOfTurn({ turnId: "t1" } as never, "t2"), true);
-  assert.equal(isFirstStepOfTurn({ turnId: "t1" } as never, "t1"), false);
 });
 
 test("a DELETE whose bot reset fails twice is refused, the connection stays and the bots are untouched", () => {

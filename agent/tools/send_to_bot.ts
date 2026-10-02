@@ -8,6 +8,7 @@ import { readShell } from "../../shared/shell-io.ts";
 import { DEFAULT_BOT_ID } from "../../shared/shell-store.ts";
 import { groupMembers, speakersFrom } from "../../shared/threads.ts";
 import { wrapUntrusted } from "../../shared/untrusted.ts";
+import { markOutside } from "../lib/outside-content.ts";
 
 /** How long sendToBot waits for the teammate. Tests set this to 0. */
 const HANDOFF_WAIT_DEFAULT_MS = 180_000;
@@ -154,6 +155,8 @@ export default defineTool({
           note: "The teammate finished with no reply.",
         };
       }
+      // Another bot's reply is text this turn did not write.
+      markOutside(ctx);
       return {
         status: "delivered",
         handoffId: record.id,
