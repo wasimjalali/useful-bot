@@ -1,5 +1,6 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
+import { lenientNullableString } from "../lib/lenient-null.ts";
 import { approvalActor } from "../lib/approvals.ts";
 import { awaitActiveBotId } from "../lib/active-bot.ts";
 import { approvedWrite } from "../lib/write.ts";
@@ -12,7 +13,7 @@ export default defineTool({
   inputSchema: z.object({
     path: z.string(),
     content: z.string(),
-    expectedSha256: z.string().nullable(),
+    expectedSha256: lenientNullableString(),
   }),
   async execute(input, ctx) {
     const written = await approvedWrite({
