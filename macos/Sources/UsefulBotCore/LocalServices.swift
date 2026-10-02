@@ -409,8 +409,10 @@ public struct LocalServices: Sendable {
     /// processes are found from the process table by the install-path ownership
     /// rule, independent of sockets (one already draining holds no port), with
     /// everything below them. SIGTERM, wait up to `stopExitGraceSeconds`,
-    /// SIGKILL, wait again, then look again: anything still there (or newly
-    /// there) gets a second round, and after that `.wouldNotStop` comes back and
+    /// SIGKILL, wait again, then look again: the verified survivors plus
+    /// anything newly found (a survivor whose launcher parent already exited
+    /// can drop out of a fresh scan, so the scan never replaces them) get a
+    /// second round, and after that `.wouldNotStop` comes back and
     /// the caller must leave the files alone. Each signal is preceded by a fresh
     /// check that the pid still has the start time and command line it was
     /// recorded with.
@@ -451,9 +453,13 @@ public struct LocalServices: Sendable {
                 remaining = await waitForExit(remaining, seconds: stopExitGraceSeconds)
                 if Task.isCancelled { return .cancelled }
             }
-            // Look again, from the table: whatever remains, and anything the
-            // old version started while it was going down.
-            owned = runner.ownServiceProcesses(owns: owns)
+            // Look again: what is verified to still run, plus anything the old
+            // version started while it was going down. A rescan alone could
+            // lose a survivor whose parent has gone.
+            let survivors = remaining.filter { runner.isStillRunning($0) }
+            owned = survivors + runner.ownServiceProcesses(owns: owns).filter { new in
+                !survivors.contains { $0.pid == new.pid && $0.started == new.started }
+            }
             if owned.isEmpty { return .stopped }
         }
         return .wouldNotStop(owned.map(\.args))
@@ -1140,6 +1146,9 @@ public struct FoundationProcessRunner: ProcessRunner {
 
     func signalOwnListeners(port: Int, signal: Int32, owns: @escaping @Sendable (String) -> Bool) {
         for pid in listenerPids(port: port) {
+            // Recorded before the ownership check: the signal goes only to this
+            // process, not to a pid that exited and was reused meanwhile.
+            guard let identity = ProcessTable.identity(of: pid) else { continue }
             guard ownsProcess(pid: pid, owns: owns) else {
                 if registry.shouldReport(port: port, pid: pid) {
                     Self.appendEvent(
@@ -1149,7 +1158,15 @@ public struct FoundationProcessRunner: ProcessRunner {
                 }
                 continue
             }
-            if kill(pid, signal) != 0 {
+            let process = OwnedProcess(pid: pid, args: identity.args, started: identity.started)
+            guard isStillRunning(process) else {
+                Self.appendEvent(
+                    "port \(port): listener pid \(pid) changed before the signal; skipped",
+                    to: Self.supervisorLogURL
+                )
+                continue
+            }
+            if !signalProcess(process, force: signal == SIGKILL) {
                 Self.appendEvent(
                     "kill(\(signal)) failed for pid \(pid) on port \(port): \(String(cString: strerror(errno)))",
                     to: Self.supervisorLogURL

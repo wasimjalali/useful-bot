@@ -56,6 +56,11 @@ private final class DrainingRunner: ProcessRunner, @unchecked Sendable {
     var stubborn: Set<pid_t> = []
     /// Processes that survive SIGKILL too (uninterruptible).
     var unkillable: Set<pid_t> = []
+    /// How many SIGKILLs an unkillable process ignores before it dies.
+    var survivesKills = Int.max
+    /// A rescan finds the processes only once: their launcher parent is gone after that.
+    var hideAfterFirstScan = false
+    private var scans = 0
     /// Checks of a TERMed process after which it exits (when not stubborn).
     var exitAfterChecks = 2
     private(set) var termed: [pid_t] = []
@@ -71,6 +76,8 @@ private final class DrainingRunner: ProcessRunner, @unchecked Sendable {
     /// Found from the process table: listening or not.
     func ownServiceProcesses(owns: @escaping @Sendable (String) -> Bool) -> [OwnedProcess] {
         lock.lock(); defer { lock.unlock() }
+        scans += 1
+        if hideAfterFirstScan, scans > 1 { return [] }
         return running
     }
     func isStillRunning(_ process: OwnedProcess) -> Bool {
@@ -87,7 +94,7 @@ private final class DrainingRunner: ProcessRunner, @unchecked Sendable {
         guard running.contains(process) else { return false }
         if force {
             killed.append(process.pid)
-            if !unkillable.contains(process.pid) { running.removeAll { $0 == process } }
+            if !unkillable.contains(process.pid) || killed.count > survivesKills { running.removeAll { $0 == process } }
         } else {
             termed.append(process.pid)
         }
@@ -437,6 +444,31 @@ private final class ParentRunner: ProcessRunner, @unchecked Sendable {
         #expect(result == .wouldNotStop(["next-server (v15)"]))
         #expect(result.didNotStop)
         #expect(runner.killed.count >= 1)
+    }
+
+    @Test func aSurvivorWhoseParentIsGoneIsStillReportedNotDroppedByTheRescan() async {
+        let runner = DrainingRunner()
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1")]
+        runner.stubborn = [9001]
+        runner.unkillable = [9001]
+        runner.hideAfterFirstScan = true
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.2)
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .wouldNotStop(["next-server (v15)"]))
+    }
+
+    @Test func aSurvivorThatDiesInTheSecondRoundIsStopped() async {
+        let runner = DrainingRunner()
+        runner.running = [OwnedProcess(pid: 9001, args: "next-server (v15)", started: "t1")]
+        runner.stubborn = [9001]
+        runner.unkillable = [9001]
+        runner.survivesKills = 1
+        runner.hideAfterFirstScan = true
+        let services = LocalServices(runner: runner, probe: allHealthy(.dev, stack: "dev"), supervisor: nodeOK, startGraceSeconds: 0, stopExitGraceSeconds: 0.2)
+        let result = await services.stopOwnServices(config: devConfig)
+        #expect(result == .stopped)
+        #expect(runner.killed == [9001, 9001])
+        #expect(runner.running.isEmpty)
     }
 
     @Test func aForeignStackPortIsNotSignalledByTheListenerStop() async {
