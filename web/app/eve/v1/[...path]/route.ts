@@ -1,7 +1,6 @@
 import { isGateError, requireOwner } from "../../../../lib/desktop-gate";
 import { ApprovalStore, defaultApprovalsPath } from "../../../../../agent/lib/approvals.ts";
 import {
-  bindTurnBody,
   turnRewriteFailure,
   eveGetAllowed,
   evePostAllowed,
@@ -27,6 +26,7 @@ import {
   sessionHasCompletedTurn,
   syncSessionWorkspace,
 } from "../../../../lib/agent-exec";
+import { authorizeEveCall, carryOverReader, type EveCallAuth } from "../../../../lib/eve-session-auth";
 import { RETRY_NOTE } from "../../../../../shared/continuation-brief.ts";
 import { EVE_BODY_MAX, apiError, rateLimited, readBody } from "../../../../lib/api-guard";
 import { readShell, updateShell } from "../../../../../shared/shell-io.ts";
@@ -105,14 +105,31 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
   const headers = new Headers();
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
-  // Same credential path as the handoff pump: env token if present, otherwise
-  // sign one from the channel secret.
-  const jwt = channelJwt();
-  if (jwt) headers.set("authorization", `Bearer ${jwt}`);
+  // The token names the bot the session path is bound to (see
+  // authorizeEveCall). A create has none yet: it is minted below, once the
+  // route has validated the bot.
+  let jwt: string | null = null;
+  const authorize = (raw: string | null): EveCallAuth | Response => {
+    try {
+      return authorizeEveCall(method, suffix, raw, (sessionId) => resolveSessionBot(sessionId, readShell()));
+    } catch (err) {
+      console.error("eve call could not be authorised", err instanceof Error ? err.message : err);
+      const missing = err instanceof Error && err.message === "channel_credential_missing";
+      return Response.json({ ok: false, error: missing ? "channel_credential_missing" : "workspace_unavailable" }, { status: 503 });
+    }
+  };
+  if (method === "GET") {
+    const auth = authorize(null);
+    if (auth instanceof Response) return auth;
+    if (!auth.ok) return Response.json({ ok: false, error: auth.error }, { status: auth.status });
+    jwt = auth.jwt;
+    if (jwt) headers.set("authorization", `Bearer ${jwt}`);
+  }
   let body: Uint8Array | undefined;
   let route: SessionRoute | null = null;
   // The session a replacement carries over from, once verified.
   let carriedFrom: string | null = null;
+  let carriedOwner: string | null = null;
   if (method !== "GET") {
     try {
       body = await readBody(request, EVE_BODY_MAX);
@@ -121,6 +138,16 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       if (guarded) return guarded;
       throw err;
     }
+    // Every session path, a cancel included, is authorised against the binding
+    // for its path id before anything else; a create has no session yet.
+    if (suffix !== "session") {
+      const auth = authorize(new TextDecoder().decode(body));
+      if (auth instanceof Response) return auth;
+      if (!auth.ok) return Response.json({ ok: false, error: auth.error }, { status: auth.status });
+      jwt = auth.jwt;
+      if (jwt) headers.set("authorization", `Bearer ${jwt}`);
+      if (isEveSessionPost(suffix) && auth.body !== null) body = new TextEncoder().encode(auth.body);
+    }
     if (isEveSessionPost(suffix)) {
       // Identity first. A turn into an existing session belongs to the bot the
       // durable binding names for that session id, never to the bot the body
@@ -128,21 +155,6 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       // field a client chooses. A body that names another bot is refused, and
       // a session nobody bound is refused before eve sees it (a turn eve
       // accepts and then fails retires the session).
-      if (suffix !== "session") {
-        const sessionId = suffix.split("/")[1] ?? "";
-        let bound: string | null;
-        try {
-          bound = resolveSessionBot(sessionId, readShell());
-        } catch (err) {
-          console.error("session binding could not be read", err instanceof Error ? err.message : err);
-          return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
-        }
-        const turn = bindTurnBody(new TextDecoder().decode(body), bound);
-        if (!turn.ok) {
-          return Response.json({ ok: false, error: turn.error }, { status: 400 });
-        }
-        body = new TextEncoder().encode(turn.body);
-      }
       let bot: ShellBot | null = null;
       // Outside the rewrite's catch on purpose: that one forwards the original
       // body when anything throws, and a carry-over that failed its check must
@@ -179,6 +191,7 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
           return Response.json({ ok: false, error: "continue_from_refused" }, { status: 400 });
         }
         carriedFrom = extras.continueFrom;
+        carriedOwner = owner?.id ?? null;
       }
       // The cheap refusals come before any read of an old session. A
       // carry-over reads one back for its brief, thousands of events on a
@@ -222,7 +235,20 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
         console.error("bot selection could not be checked", err instanceof Error ? err.message : err);
         return Response.json({ ok: false, error: "workspace_unavailable" }, { status: 503 });
       }
-      if (carriedFrom) notes.push(await continuationBriefFor(carriedFrom, jwt ?? "", undefined, request.signal));
+      // The carried session is read as the bot that owns it, the same claim the
+      // new session will carry.
+      if (carriedFrom) {
+        let reader: ReturnType<typeof carryOverReader>;
+        try {
+          reader = carryOverReader(carriedFrom, carriedOwner, (id) => resolveSessionBot(id, readShell()));
+        } catch (err) {
+          console.error("carry-over could not be authorised", err instanceof Error ? err.message : err);
+          const missing = err instanceof Error && err.message === "channel_credential_missing";
+          return Response.json({ ok: false, error: missing ? "channel_credential_missing" : "workspace_unavailable" }, { status: 503 });
+        }
+        if (!reader.ok) return Response.json({ ok: false, error: reader.error }, { status: reader.status });
+        notes.push(await continuationBriefFor(carriedFrom, reader.jwt, undefined, request.signal));
+      }
       if (suffix !== "session") {
         // A send into the session a carry-over opened, before that session
         // has finished a turn: a step-zero failure (a rate limit, say) drops
@@ -251,7 +277,15 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
               console.error("carry-over settle not recorded", err instanceof Error ? err.message : err);
             }
           } else {
-            notes.push(await continuationBriefFor(previous, jwt ?? "", undefined, request.signal));
+            // The earlier session is read only as the bot that owns it.
+            let reader: ReturnType<typeof carryOverReader> | null = null;
+            try {
+              reader = carryOverReader(previous, owner.id, (id) => resolveSessionBot(id, readShell()));
+            } catch (err) {
+              console.error("earlier session could not be authorised", err instanceof Error ? err.message : err);
+            }
+            if (reader?.ok) notes.push(await continuationBriefFor(previous, reader.jwt, undefined, request.signal));
+            else console.error("earlier session is not this bot's; its brief was not read");
           }
         }
       }
@@ -283,6 +317,17 @@ async function proxy(request: Request, params: { path: string[] }, method: strin
       }
       if (!route) {
         return Response.json({ ok: false, error: "session_route_failed" }, { status: 503 });
+      }
+      if (suffix === "session") {
+        // A create is made as the validated route bot, never as a bot the body
+        // names but the roster does not hold (eveSessionRoute returned null for it).
+        try {
+          jwt = channelJwt(route.threadId);
+        } catch (err) {
+          console.error("new session could not be authorised", err instanceof Error ? err.message : err);
+          return Response.json({ ok: false, error: "channel_credential_missing" }, { status: 503 });
+        }
+        headers.set("authorization", `Bearer ${jwt}`);
       }
       // Outside the body-rewrite try on purpose. The tools that run during
       // this turn read the workspace grant for the session, so it has to be

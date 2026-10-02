@@ -80,8 +80,8 @@ async function withWorld<T>(fn: (world: { dir: string; alpha: string; beta: stri
   process.env.UB_PROVIDERS_PATH = join(dir, "providers.json");
   process.env.UB_MODELS_CACHE_PATH = join(dir, "models-cache.json");
   process.env.UB_MEMORY_ROOT = join(dir, "memory");
-  process.env.UB_CHANNEL_JWT = "test-jwt";
-  delete process.env.UB_CHANNEL_JWT_SECRET;
+  process.env.UB_CHANNEL_JWT_SECRET = "test-channel-secret";
+  delete process.env.UB_CHANNEL_JWT;
   delete process.env.UB_ACTIVE_BOT_ID;
   writeFileSync(process.env.UB_PROVIDERS_PATH, JSON.stringify({
     schemaVersion: 2,
@@ -288,6 +288,41 @@ test("backfill binds neither bot when two point at the same unbound session", as
     assert.equal(backfillSessionOwners(withOne), 1);
     assert.equal(readSessionBot("sess-alpha-only"), alpha);
     assert.equal(readSessionBot("sess-both"), null);
+  });
+});
+
+test("backfill also binds previousSessionIds and recents, and treats a shared one as ambiguous", async () => {
+  await withWorld(({ alpha, beta }) => {
+    const shell = readShell();
+    const recent = (id: string, botId: string, sessionId: string | null) => ({
+      id, botId, title: "t", sessionId, preview: "", updatedAt: new Date().toISOString(),
+    });
+    const roster: ShellStore = {
+      ...shell,
+      bots: shell.bots.map((bot) => (bot.id === alpha ? { ...bot, previousSessionIds: ["sess-old-a"] } : bot)),
+      recents: [
+        recent("r1", alpha, "sess-recent-a"),
+        recent("r2", beta, "sess-recent-b"),
+        // A recent of a bot no longer on the roster names no one.
+        recent("r3", "bot-gone", "sess-recent-gone"),
+        // Both a bot's previous session and a recent of another bot: ambiguous.
+        recent("r4", beta, "sess-old-a"),
+        recent("r5", alpha, null),
+      ],
+    };
+    assert.equal(backfillSessionOwners(roster), 2);
+    assert.equal(readSessionBot("sess-recent-a"), alpha);
+    assert.equal(readSessionBot("sess-recent-b"), beta);
+    assert.equal(readSessionBot("sess-recent-gone"), null);
+    assert.equal(readSessionBot("sess-old-a"), null, "two bots name it, so neither owns it");
+    assert.equal(sessionCarriesOverFor("sess-old-a", alpha, roster), false);
+    // Resolving a session only an old pointer names binds it.
+    const onlyPrevious: ShellStore = {
+      ...roster,
+      bots: roster.bots.map((bot) => (bot.id === alpha ? { ...bot, previousSessionIds: ["sess-prev-only"] } : bot)),
+      recents: [],
+    };
+    assert.equal(resolveSessionBot("sess-prev-only", onlyPrevious), alpha);
   });
 });
 
@@ -543,6 +578,10 @@ test("a carry-over is allowed only from the destination bot's own session", asyn
     bindSession("sess-a", alpha);
     assert.equal(sessionCarriesOverFor("sess-a", alpha), true);
     assert.equal(sessionCarriesOverFor("sess-a", beta), false);
+    // A session id nothing binds and no bot points at is unknown: nobody may carry it over.
+    assert.equal(sessionCarriesOverFor("sess-unknown", alpha), false);
+    assert.equal(sessionCarriesOverFor("sess-unknown", beta, readShell()), false);
+    assert.equal(sessionCarriesOverFor("sess-unknown", alpha, null), false);
     // Both bots point at one unbound session: ambiguous, so neither may.
     const shell = readShell();
     const both: ShellStore = {

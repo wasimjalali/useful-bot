@@ -223,13 +223,23 @@ const inflight = pumpState.inflight;
 
 type EveEvent = { type?: string; data?: Record<string, unknown>; meta?: { id?: string; at?: string } };
 
-function signChannelJwt(secret: string, sub: string): string {
+/** Who is calling eve: the owner's app, a handoff pump delivery or a routine run. */
+export type ChannelDelivery = "owner" | "handoff" | "routine";
+
+/**
+ * The bot claim is a string on purpose: eve projects only string claims into
+ * the session's auth attributes and drops the rest. A null bot is a token with
+ * no claim, which eve's channel accepts for nothing but a cancel.
+ */
+function signChannelJwt(secret: string, sub: string, botId: string | null, delivery?: ChannelDelivery): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const now = Math.floor(Date.now() / 1000);
   const payload = Buffer.from(JSON.stringify({
     sub,
     iss: "useful-bot",
     aud: "useful-bot",
+    ...(botId === null ? {} : { botId }),
+    ...(delivery ? { delivery } : {}),
     iat: now,
     exp: now + 12 * 60 * 60,
   })).toString("base64url");
@@ -241,29 +251,40 @@ export function agentsEnabled(): boolean {
   return Boolean(process.env.UB_CHANNEL_JWT || process.env.UB_CHANNEL_JWT_SECRET);
 }
 
-// A token signed from the channel secret, cached until it nears expiry. The
-// web process is long-lived and service.mjs bakes a 12-hour token into the
-// env at boot, so a process that only ever returned UB_CHANNEL_JWT would 401
-// against eve after 12 hours until the next restart.
-let signedChannelJwt: { secret: string; token: string; exp: number } | null = null;
+// A token per bot and delivery kind, signed from the channel secret and cached
+// until it nears expiry. The web process is long-lived, so a cached token has
+// to be re-signed before its 12 hours run out. There is no fallback to the
+// UB_CHANNEL_JWT env token for eve: it carries no bot claim, and eve refuses
+// a token without one. That env value stays only as the tick route's key.
+const signedChannelJwts = new Map<string, { secret: string; token: string; exp: number }>();
 
-export function channelJwt(): string | null {
+/** A token for one bot. A call is never made as no bot: an empty id throws. */
+export function channelJwt(botId: string, delivery: ChannelDelivery = "owner"): string {
+  if (typeof botId !== "string" || botId.length === 0) throw new Error("channel_bot_missing");
+  return cachedChannelJwt(botId, delivery);
+}
+
+/**
+ * A token with no bot claim, for the calls eve accepts without one: health,
+ * info and the cancel of a session nobody bound. Never for a turn or a read.
+ */
+export function channelJwtNoBot(): string {
+  return cachedChannelJwt(null, "owner");
+}
+
+function cachedChannelJwt(botId: string | null, delivery: ChannelDelivery): string {
   const secret = process.env.UB_CHANNEL_JWT_SECRET;
-  if (!secret) return process.env.UB_CHANNEL_JWT ?? null;
-  try {
-    const now = Math.floor(Date.now() / 1000);
-    // Re-sign once the cached token is within an hour of its exp, or when the
-    // secret itself changed; signing is cheap but there is no reason to do it
-    // on every proxy request.
-    if (!signedChannelJwt || signedChannelJwt.secret !== secret || now >= signedChannelJwt.exp - 60 * 60) {
-      const token = signChannelJwt(secret, "desktop-app");
-      signedChannelJwt = { secret, token, exp: now + 12 * 60 * 60 };
-      return token;
-    }
-    return signedChannelJwt.token;
-  } catch {
-    return process.env.UB_CHANNEL_JWT ?? null;
-  }
+  if (!secret) throw new Error("channel_credential_missing");
+  const now = Math.floor(Date.now() / 1000);
+  const key = `${botId ?? ""}\u0000${delivery}`;
+  const cached = signedChannelJwts.get(key);
+  // Re-sign once the cached token is within an hour of its exp, or when the
+  // secret itself changed; signing is cheap but there is no reason to do it
+  // on every proxy request.
+  if (cached && cached.secret === secret && now < cached.exp - 60 * 60) return cached.token;
+  const token = signChannelJwt(secret, "desktop-app", botId, delivery);
+  signedChannelJwts.set(key, { secret, token, exp: now + 12 * 60 * 60 });
+  return token;
 }
 
 function textField(data: Record<string, unknown> | undefined, key: string): string {
@@ -665,9 +686,11 @@ async function runEveTurn(
   bot: ShellBot,
   message: string,
   budget: { totalMs: number; idleMs?: number } = { totalMs: DELIVER_TIMEOUT_MS },
+  delivery: ChannelDelivery = "owner",
 ): Promise<{ sessionId: string; reply: string }> {
-  const jwt = channelJwt();
-  if (!jwt) throw new Error("channel_credential_missing");
+  // Every eve call of this turn, the history read, the send, the stream and the
+  // cancel, carries this bot's claim and this delivery kind.
+  const jwt = channelJwt(bot.id, delivery);
   // The bot's own model has to be servable before the turn exists. The code is
   // the message, so a routine's failure note and a handoff's failure record
   // carry it as they do the other codes here. Never a substitute model.
@@ -737,7 +760,7 @@ async function runEveTurn(
         if (live?.sessionId && live.sessionId !== retired) {
           clearTimeout(timer);
           if (idleTimer) clearTimeout(idleTimer);
-          return await runEveTurn(live, message, budget);
+          return await runEveTurn(live, message, budget, delivery);
         }
         const brief = await continuationBriefFor(retired, jwt);
         const carried = `${withSessionNotes(turnPrefixFor(bot), [brief])}${message}`;
@@ -833,7 +856,7 @@ async function deliverOne(handoff: HandoffRecord, claimToken: string): Promise<s
   const { bot, kind } = receiver;
   if (bot.hidden) throw new Error("receiver_hidden");
 
-  const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff));
+  const { sessionId, reply } = await runEveTurn(bot, handoffEnvelope(handoff), undefined, "handoff");
 
   // A stale takeover may have handed this record to another process; only the
   // token holder may write the transcript, or both would append a reply.
@@ -1171,7 +1194,7 @@ async function executeRoutine(
     ({ sessionId, reply } = await runEveTurn(bot, routine.instruction, {
       totalMs: ROUTINE_TIMEOUT_MS,
       idleMs: ROUTINE_IDLE_MS,
-    }));
+    }, "routine"));
     routineLog(routine, "finished", { ms: Date.now() - startedAt, session: sessionId, replyChars: reply.length });
   } catch (err) {
     // The session the turn really ran in, which runEveTurn tagged onto the

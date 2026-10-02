@@ -103,8 +103,8 @@ function withWorld<T>(
   process.env.UB_ROUTINES_PATH = join(dir, "routines.json");
   process.env.UB_AGENT_STORE_PATH = join(dir, "agents.json");
   process.env.UB_HANDOFF_DIR = join(dir, "handoffs");
-  process.env.UB_CHANNEL_JWT = "test-jwt";
-  delete process.env.UB_CHANNEL_JWT_SECRET;
+  process.env.UB_CHANNEL_JWT_SECRET = "test-channel-secret";
+  delete process.env.UB_CHANNEL_JWT;
   delete process.env.UB_OPENCODE_GO_KEY;
   delete process.env.UB_ACTIVE_BOT_ID;
   writeFileSync(providers, JSON.stringify({

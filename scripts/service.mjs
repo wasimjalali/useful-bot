@@ -238,6 +238,8 @@ async function main() {
     };
     try {
       const secret = await keychain(keychainName("channel.desktop"));
+      // The tick route's key only. It carries no bot claim, so eve refuses it:
+      // the web service signs its own per-bot tokens from the secret below.
       env.UB_CHANNEL_JWT = signChannelJwt(secret, "desktop-app");
       // The agent tool wakes the handoff pump with the raw secret as its key
       // (see shared/agents-send.ts). Without it here every wake-up would 403
